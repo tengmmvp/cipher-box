@@ -5,6 +5,8 @@ from PyQt6.QtWidgets import (
     QGroupBox, QFormLayout, QScrollArea, QProgressBar, QFrame,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
+from html import escape
+from urllib.parse import urlparse
 
 from ..database.models import Entry
 from ..crypto.password_generator import PasswordGenerator
@@ -41,6 +43,7 @@ class DetailPanel(QWidget):
         self._totp_code_label = None
         self._totp_bar = None
         self._totp_secret = ''
+        self._current_password = ''
         self._setup_ui()
 
     def _setup_ui(self):
@@ -204,11 +207,19 @@ class DetailPanel(QWidget):
 
         # 网址
         if entry.url:
-            url_label = QLabel(f'<a href="{entry.url}" style="color: {c("link")}; text-decoration:none;">{entry.url}</a>')
+            parsed_url = urlparse(entry.url)
+            safe_url = parsed_url.scheme.lower() in ('http', 'https')
+            escaped_url = escape(entry.url, quote=True)
+            if safe_url:
+                text = f'<a href="{escaped_url}" style="color: {c("link")}; text-decoration:none;">{escaped_url}</a>'
+            else:
+                text = escaped_url
+            url_label = QLabel(text)
             url_label.setWordWrap(True)
             url_label.setTextFormat(Qt.TextFormat.RichText)
-            url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-            url_label.setOpenExternalLinks(True)
+            if safe_url:
+                url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+                url_label.setOpenExternalLinks(True)
             core_form.addRow('网址：', url_label)
 
         self._content_layout.addLayout(core_form)
@@ -599,6 +610,7 @@ class DetailPanel(QWidget):
         self._totp_code_label = None
         self._totp_bar = None
         self._totp_secret = ''
+        self._current_password = ''
         self._pwd_label_ref = None
         self._show_btn_ref = None
         self._clear_layout(self._content_layout)
@@ -641,6 +653,7 @@ class DetailPanel(QWidget):
         """显示空状态"""
         self._clear_content()
         self._current_entry = None
+        self._current_password = ''
         self._pwd_hide_timer.stop()
         self._totp_timer.stop()
         self._title_label.setText('选择一个条目查看详情')

@@ -1,7 +1,11 @@
 """数据库管理器 - SQLite 数据库操作"""
 
 import logging
+import os
 import sqlite3
+import uuid
+from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -14,19 +18,51 @@ from .models import Category, Entry, PasswordHistory
 class DatabaseManager:
     """SQLite 数据库管理器"""
 
-    SCHEMA_VERSION = 3
+    SCHEMA_FORMAT = 'cipherbox-schema'
 
     def __init__(self, db_path: Path):
         self._db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None
         self._in_transaction = False
+        self._write_guard: Callable[[], None] | None = None
+
+    def set_write_guard(self, guard: Callable[[], None]):
+        """设置写入前校验，用于阻止过期密钥会话继续写库。"""
+        self._write_guard = guard
+
+    def _guard_write(self):
+        if self._write_guard:
+            self._write_guard()
 
     # ========== 事务管理 ==========
+
+    @property
+    def in_transaction(self) -> bool:
+        return self._in_transaction
+
+    @property
+    def is_open(self) -> bool:
+        return self._conn is not None
+
+    @contextmanager
+    def transaction(self):
+        """事务上下文；嵌套调用复用外层事务。"""
+        if self._in_transaction:
+            yield
+            return
+        self.begin_transaction()
+        try:
+            yield
+            self.commit_transaction()
+        except Exception:
+            self.rollback_transaction()
+            raise
 
     def begin_transaction(self):
         """开始事务（抑制内部 commit）"""
         if self._conn is None:
             raise RuntimeError("数据库未连接")
+        self._guard_write()
         self._conn.execute("BEGIN TRANSACTION")
         self._in_transaction = True
 
@@ -66,6 +102,13 @@ class DatabaseManager:
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
+            self._conn.execute("PRAGMA secure_delete=ON")
+            self._conn.execute("PRAGMA busy_timeout=5000")
+            self._conn.execute("PRAGMA synchronous=FULL")
+            try:
+                os.chmod(self._db_path, 0o600)
+            except OSError:
+                pass
             return True
         except sqlite3.Error:
             logger.error("数据库打开失败", exc_info=True)
@@ -82,6 +125,7 @@ class DatabaseManager:
         if self._conn is None:
             raise RuntimeError("数据库未连接")
         cursor = self._conn.cursor()
+        is_new_database = self._assert_schema_compatible(cursor)
 
         cursor.executescript("""
             CREATE TABLE IF NOT EXISTS vault_meta (
@@ -100,6 +144,7 @@ class DatabaseManager:
 
             CREATE TABLE IF NOT EXISTS entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                crypto_id TEXT NOT NULL DEFAULT '',
                 title TEXT NOT NULL DEFAULT '',
                 username_enc TEXT DEFAULT '',
                 password_enc TEXT DEFAULT '',
@@ -136,8 +181,10 @@ class DatabaseManager:
             CREATE INDEX IF NOT EXISTS idx_pw_history_entry ON password_history(entry_id);
         """)
 
-        # 迁移：为已有的 entries 表添加新列
-        self._migrate_schema(cursor)
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_crypto_id ON entries(crypto_id)"
+        )
+        self._validate_current_schema(cursor)
 
         # 插入默认分类
         default_categories = [
@@ -159,60 +206,58 @@ class DatabaseManager:
             except sqlite3.IntegrityError:
                 pass
 
-        # 记录 schema 版本
-        cursor.execute(
-            "INSERT OR REPLACE INTO vault_meta (key, value) VALUES (?, ?)",
-            ('schema_version', str(self.SCHEMA_VERSION)),
-        )
+        if is_new_database:
+            cursor.execute(
+                "INSERT INTO vault_meta (key, value) VALUES (?, ?)",
+                ('schema_format', self.SCHEMA_FORMAT),
+            )
 
         self._auto_commit()
 
-    def _migrate_schema(self, cursor):
-        """迁移旧版数据库结构"""
-        # 检查是否需要迁移
-        try:
-            row = cursor.execute(
-                "SELECT value FROM vault_meta WHERE key = 'schema_version'"
-            ).fetchone()
-            version = int(row['value']) if row else 0
-        except Exception:
-            version = 0
-
-        if version >= self.SCHEMA_VERSION:
-            return
-
-        # V1 → V2: 添加 entry_type、totp_secret_enc 列和 password_history 表
-        if version < 2:
-            # 检查列是否已存在
-            cols = [r[1] for r in cursor.execute("PRAGMA table_info(entries)").fetchall()]
-            if 'entry_type' not in cols:
-                cursor.execute("ALTER TABLE entries ADD COLUMN entry_type TEXT DEFAULT 'login'")
-            if 'totp_secret_enc' not in cols:
-                cursor.execute("ALTER TABLE entries ADD COLUMN totp_secret_enc TEXT DEFAULT ''")
-
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS password_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    entry_id INTEGER NOT NULL,
-                    old_password_enc TEXT DEFAULT '',
-                    changed_at TEXT DEFAULT '',
-                    FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE
-                )
-            """)
-            cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_pw_history_entry ON password_history(entry_id)"
+    def _assert_schema_compatible(self, cursor) -> bool:
+        """仅接受空数据库或当前 Schema，拒绝隐式迁移。"""
+        tables = {
+            row['name'] for row in cursor.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+        }
+        if not tables:
+            return True
+        if 'vault_meta' not in tables:
+            raise RuntimeError('数据库缺少版本信息，不支持旧格式')
+        row = cursor.execute(
+            "SELECT value FROM vault_meta WHERE key = 'schema_format'"
+        ).fetchone()
+        if row is None or row['value'] != self.SCHEMA_FORMAT:
+            actual = row['value'] if row else '未知'
+            raise RuntimeError(
+                f'不支持的数据库格式：{actual}'
             )
+        return False
 
-        if version < 3:
-            cols = [r[1] for r in cursor.execute("PRAGMA table_info(entries)").fetchall()]
-            if 'password_changed_at' not in cols:
-                cursor.execute("ALTER TABLE entries ADD COLUMN password_changed_at TEXT DEFAULT ''")
-            cursor.execute("""
-                UPDATE entries
-                SET password_changed_at = CASE
-                    WHEN updated_at != '' THEN updated_at ELSE created_at END
-                WHERE password_changed_at = ''
-            """)
+    @staticmethod
+    def _validate_current_schema(cursor):
+        required = {
+            'vault_meta': {'key', 'value'},
+            'categories': {'id', 'name', 'icon_char', 'color', 'sort_order', 'created_at'},
+            'entries': {
+                'id', 'crypto_id', 'title', 'username_enc', 'password_enc', 'url',
+                'category_id', 'tags', 'notes_enc', 'custom_fields_enc',
+                'is_favorite', 'is_deleted', 'password_strength', 'entry_type',
+                'totp_secret_enc', 'created_at', 'updated_at', 'deleted_at',
+                'password_changed_at',
+            },
+            'password_history': {'id', 'entry_id', 'old_password_enc', 'changed_at'},
+        }
+        for table, expected_columns in required.items():
+            columns = {
+                row['name'] for row in cursor.execute(
+                    f'PRAGMA table_info({table})'
+                ).fetchall()
+            }
+            if not expected_columns.issubset(columns):
+                raise RuntimeError(f'数据库结构损坏或不是当前格式：{table}')
 
     # ========== Vault Meta ==========
 
@@ -229,6 +274,7 @@ class DatabaseManager:
         """设置元数据"""
         if self._conn is None:
             raise RuntimeError("数据库未连接")
+        self._guard_write()
         self._conn.execute(
             "INSERT OR REPLACE INTO vault_meta (key, value) VALUES (?, ?)",
             (key, value),
@@ -259,6 +305,7 @@ class DatabaseManager:
         """添加分类，返回 ID"""
         if self._conn is None:
             raise RuntimeError("数据库未连接")
+        self._guard_write()
         cursor = self._conn.execute(
             "INSERT INTO categories (name, icon_char, color, sort_order, created_at) VALUES (?, ?, ?, ?, ?)",
             (category.name, category.icon_char, category.color, category.sort_order,
@@ -271,6 +318,7 @@ class DatabaseManager:
         """更新分类"""
         if self._conn is None:
             raise RuntimeError("数据库未连接")
+        self._guard_write()
         self._conn.execute(
             "UPDATE categories SET name=?, icon_char=?, color=?, sort_order=? WHERE id=?",
             (category.name, category.icon_char, category.color, category.sort_order, category.id),
@@ -281,6 +329,7 @@ class DatabaseManager:
         """删除分类"""
         if self._conn is None:
             raise RuntimeError("数据库未连接")
+        self._guard_write()
         self._conn.execute(
             "UPDATE entries SET category_id=NULL WHERE category_id=?", (category_id,)
         )
@@ -358,17 +407,20 @@ class DatabaseManager:
         """添加条目，返回 ID"""
         if self._conn is None:
             raise RuntimeError("数据库未连接")
+        self._guard_write()
         now = datetime.now().isoformat()
+        entry.crypto_id = entry.crypto_id or uuid.uuid4().hex
         updated_at = entry.updated_at if preserve_metadata and entry.updated_at else now
         deleted_at = entry.deleted_at if preserve_metadata else ''
         cursor = self._conn.execute(
             """INSERT INTO entries
-               (title, username_enc, password_enc, url, category_id, tags,
+               (crypto_id, title, username_enc, password_enc, url, category_id, tags,
                 notes_enc, custom_fields_enc, is_favorite, is_deleted,
                  password_strength, entry_type, totp_secret_enc, created_at, updated_at,
                  deleted_at, password_changed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
+                entry.crypto_id,
                 entry.title,
                 entry.username,
                 entry.password,
@@ -395,15 +447,17 @@ class DatabaseManager:
         """更新条目"""
         if self._conn is None:
             raise RuntimeError("数据库未连接")
+        self._guard_write()
         now = entry.updated_at if preserve_updated_at and entry.updated_at else datetime.now().isoformat()
         self._conn.execute(
             """UPDATE entries SET
-               title=?, username_enc=?, password_enc=?, url=?, category_id=?,
+               crypto_id=?, title=?, username_enc=?, password_enc=?, url=?, category_id=?,
                tags=?, notes_enc=?, custom_fields_enc=?, is_favorite=?,
                password_strength=?, entry_type=?, totp_secret_enc=?, updated_at=?,
                password_changed_at=?
                WHERE id=?""",
             (
+                entry.crypto_id,
                 entry.title,
                 entry.username,
                 entry.password,
@@ -427,6 +481,7 @@ class DatabaseManager:
         """软删除条目"""
         if self._conn is None:
             raise RuntimeError("数据库未连接")
+        self._guard_write()
         now = datetime.now().isoformat()
         self._conn.execute(
             "UPDATE entries SET is_deleted=1, deleted_at=? WHERE id=?",
@@ -438,6 +493,7 @@ class DatabaseManager:
         """恢复条目"""
         if self._conn is None:
             raise RuntimeError("数据库未连接")
+        self._guard_write()
         self._conn.execute(
             "UPDATE entries SET is_deleted=0, deleted_at='' WHERE id=?",
             (entry_id,),
@@ -448,15 +504,37 @@ class DatabaseManager:
         """永久删除条目"""
         if self._conn is None:
             raise RuntimeError("数据库未连接")
+        self._guard_write()
         self._conn.execute("DELETE FROM entries WHERE id=?", (entry_id,))
         self._auto_commit()
+        self.secure_checkpoint()
 
     def empty_trash(self):
         """清空回收站"""
         if self._conn is None:
             raise RuntimeError("数据库未连接")
+        self._guard_write()
         self._conn.execute("DELETE FROM entries WHERE is_deleted=1")
         self._auto_commit()
+        self.secure_checkpoint()
+
+    def clear_vault_data(self):
+        """清空领域数据，供事务化恢复使用。"""
+        if self._conn is None:
+            raise RuntimeError("数据库未连接")
+        self._guard_write()
+        self._conn.execute("DELETE FROM password_history")
+        self._conn.execute("DELETE FROM entries")
+        self._conn.execute("DELETE FROM categories")
+        self._auto_commit()
+
+    def secure_checkpoint(self):
+        """截断 WAL，降低已删除或重加密数据残留。"""
+        if self._conn is not None and not self._in_transaction:
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.Error:
+                logger.warning("WAL 安全截断失败", exc_info=True)
 
     def get_entry_count(self, include_deleted: bool = False) -> int:
         """获取条目数量"""
@@ -506,6 +584,7 @@ class DatabaseManager:
         """添加密码历史记录"""
         if self._conn is None:
             raise RuntimeError("数据库未连接")
+        self._guard_write()
         self._conn.execute(
             "INSERT INTO password_history (entry_id, old_password_enc, changed_at) VALUES (?, ?, ?)",
             (entry_id, old_password_enc, changed_at or datetime.now().isoformat()),
@@ -524,7 +603,9 @@ class DatabaseManager:
         if self._conn is None:
             raise RuntimeError("数据库未连接")
         rows = self._conn.execute(
-            "SELECT * FROM password_history WHERE entry_id = ? ORDER BY changed_at DESC, id DESC",
+            """SELECT h.*, e.crypto_id AS entry_crypto_id
+               FROM password_history h JOIN entries e ON e.id=h.entry_id
+               WHERE h.entry_id = ? ORDER BY h.changed_at DESC, h.id DESC""",
             (entry_id,),
         ).fetchall()
         return [PasswordHistory(
@@ -532,6 +613,7 @@ class DatabaseManager:
             entry_id=r['entry_id'],
             old_password_enc=r['old_password_enc'],
             changed_at=r['changed_at'],
+            entry_crypto_id=r['entry_crypto_id'],
         ) for r in rows]
 
     def get_all_password_history(self) -> list[PasswordHistory]:
@@ -539,19 +621,23 @@ class DatabaseManager:
         if self._conn is None:
             raise RuntimeError("数据库未连接")
         rows = self._conn.execute(
-            "SELECT * FROM password_history ORDER BY id"
+            """SELECT h.*, e.crypto_id AS entry_crypto_id
+               FROM password_history h JOIN entries e ON e.id=h.entry_id
+               ORDER BY h.id"""
         ).fetchall()
         return [PasswordHistory(
             id=r['id'],
             entry_id=r['entry_id'],
             old_password_enc=r['old_password_enc'],
             changed_at=r['changed_at'],
+            entry_crypto_id=r['entry_crypto_id'],
         ) for r in rows]
 
     def update_password_history_ciphertext(self, history_id: int, ciphertext: str):
         """更新密码历史密文，不改变历史时间。"""
         if self._conn is None:
             raise RuntimeError("数据库未连接")
+        self._guard_write()
         self._conn.execute(
             "UPDATE password_history SET old_password_enc=? WHERE id=?",
             (ciphertext, history_id),
@@ -575,6 +661,7 @@ class DatabaseManager:
     def _row_to_entry(row: sqlite3.Row) -> Entry:
         return Entry(
             id=row['id'],
+            crypto_id=row['crypto_id'],
             title=row['title'],
             username=row['username_enc'],
             password=row['password_enc'],
@@ -587,12 +674,10 @@ class DatabaseManager:
             is_favorite=bool(row['is_favorite']),
             is_deleted=bool(row['is_deleted']),
             password_strength=row['password_strength'],
-            entry_type=row['entry_type'] if 'entry_type' in row.keys() else 'login',
-            totp_secret=row['totp_secret_enc'] if 'totp_secret_enc' in row.keys() else '',
+            entry_type=row['entry_type'],
+            totp_secret=row['totp_secret_enc'],
             created_at=row['created_at'] or '',
             updated_at=row['updated_at'] or '',
             deleted_at=row['deleted_at'] or '',
-            password_changed_at=(
-                row['password_changed_at'] if 'password_changed_at' in row.keys() else row['updated_at']
-            ) or '',
+            password_changed_at=row['password_changed_at'] or '',
         )

@@ -74,7 +74,7 @@ class ImportExportDialog(QDialog):
         pwd_layout.setContentsMargins(0, 0, 0, 0)
         self._include_pwd_check = QRadioButton('包含密码')
         self._exclude_pwd_check = QRadioButton('不包含密码')
-        self._include_pwd_check.setChecked(True)
+        self._exclude_pwd_check.setChecked(True)
         pwd_layout.addWidget(self._include_pwd_check)
         pwd_layout.addWidget(self._exclude_pwd_check)
         layout.addWidget(self._password_container)

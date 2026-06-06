@@ -102,7 +102,7 @@ class TestEntryTypes(unittest.TestCase):
         self.assertEqual(d['totp_secret'], 'SECRET')
 
         d_no_pwd = entry.to_dict(include_password=False)
-        self.assertEqual(d_no_pwd['totp_secret'], '')
+        self.assertNotIn('totp_secret', d_no_pwd)
 
 
 class TestPasswordHistory(unittest.TestCase):
@@ -157,19 +157,19 @@ class TestPasswordHistory(unittest.TestCase):
         self.assertEqual(history[1].old_password_enc, 'first')
 
 
-class TestDatabaseMigration(unittest.TestCase):
-    """数据库迁移测试"""
+class TestDatabaseFormat(unittest.TestCase):
+    """数据库固定格式测试"""
 
-    def test_schema_version_stored(self):
-        """schema 版本号存储"""
+    def test_schema_format_stored(self):
+        """数据库保存固定格式标识"""
         tmp_dir = tempfile.mkdtemp()
         db_path = Path(tmp_dir) / 'test.db'
         db = DatabaseManager(db_path)
         db.open()
         db.init_tables()
 
-        version = db.get_meta('schema_version')
-        self.assertEqual(version, '3')
+        schema_format = db.get_meta('schema_format')
+        self.assertEqual(schema_format, 'cipherbox-schema')
         db.close()
         db_path.unlink(missing_ok=True)
 

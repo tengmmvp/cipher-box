@@ -9,18 +9,25 @@ from .encryption import EncryptionEngine
 
 # PBKDF2 迭代次数 (OWASP 2023 推荐)
 PBKDF2_ITERATIONS = 600_000
+MIN_PBKDF2_ITERATIONS = 100_000
+MAX_PBKDF2_ITERATIONS = 2_000_000
 SALT_SIZE = 32
 KEY_SIZE = 32  # AES-256
 
 # 验证令牌 - 用于验证主密码是否正确
-VERIFY_PLAINTEXT = "CipherBox::MasterKey::Verification::v1"
+VERIFY_PLAINTEXT = "CipherBox::MasterKey::Verification"
+VERIFY_AAD = "vault:master-verification"
 
 
 class MasterKeyManager:
     """主密码密钥管理器"""
 
     @staticmethod
-    def derive_key(password: str, salt: bytes) -> bytes:
+    def derive_key(
+        password: str,
+        salt: bytes,
+        iterations: int = PBKDF2_ITERATIONS,
+    ) -> bytes:
         """使用 PBKDF2-HMAC-SHA256 从密码派生 256 位密钥
 
         Args:
@@ -34,12 +41,15 @@ class MasterKeyManager:
             algorithm=hashes.SHA256(),
             length=KEY_SIZE,
             salt=salt,
-            iterations=PBKDF2_ITERATIONS,
+            iterations=iterations,
         )
         return kdf.derive(password.encode('utf-8'))
 
     @staticmethod
-    def create(password: str) -> tuple[bytes, str]:
+    def create(
+        password: str,
+        iterations: int = PBKDF2_ITERATIONS,
+    ) -> tuple[bytes, str]:
         """创建新的主密码凭据
 
         Args:
@@ -49,12 +59,19 @@ class MasterKeyManager:
             (salt, encrypted_verify_token) 元组
         """
         salt = os.urandom(SALT_SIZE)
-        key = MasterKeyManager.derive_key(password, salt)
-        verify_token = EncryptionEngine.encrypt(VERIFY_PLAINTEXT, key)
+        if not MIN_PBKDF2_ITERATIONS <= iterations <= MAX_PBKDF2_ITERATIONS:
+            raise ValueError('PBKDF2 参数无效')
+        key = MasterKeyManager.derive_key(password, salt, iterations)
+        verify_token = EncryptionEngine.encrypt(VERIFY_PLAINTEXT, key, VERIFY_AAD)
         return salt, verify_token
 
     @staticmethod
-    def verify(password: str, salt: bytes, verify_token: str) -> bytes | None:
+    def verify(
+        password: str,
+        salt: bytes,
+        verify_token: str,
+        iterations: int = PBKDF2_ITERATIONS,
+    ) -> bytes | None:
         """验证主密码
 
         Args:
@@ -65,9 +82,11 @@ class MasterKeyManager:
         Returns:
             验证成功返回派生密钥，失败返回 None
         """
-        key = MasterKeyManager.derive_key(password, salt)
+        if not MIN_PBKDF2_ITERATIONS <= iterations <= MAX_PBKDF2_ITERATIONS:
+            return None
+        key = MasterKeyManager.derive_key(password, salt, iterations)
         try:
-            decrypted = EncryptionEngine.decrypt(verify_token, key)
+            decrypted = EncryptionEngine.decrypt(verify_token, key, VERIFY_AAD)
             if decrypted == VERIFY_PLAINTEXT:
                 return key
         except ValueError:
@@ -80,6 +99,8 @@ class MasterKeyManager:
         new_password: str,
         old_salt: bytes,
         old_verify_token: str,
+        old_iterations: int = PBKDF2_ITERATIONS,
+        new_iterations: int = PBKDF2_ITERATIONS,
     ) -> tuple[bytes, str, bytes] | None:
         """修改主密码
 
@@ -93,8 +114,12 @@ class MasterKeyManager:
             成功返回 (new_salt, new_verify_token, old_key) 元组，
             失败返回 None
         """
-        old_key = MasterKeyManager.verify(old_password, old_salt, old_verify_token)
+        old_key = MasterKeyManager.verify(
+            old_password, old_salt, old_verify_token, old_iterations
+        )
         if old_key is None:
             return None
-        new_salt, new_verify_token = MasterKeyManager.create(new_password)
+        new_salt, new_verify_token = MasterKeyManager.create(
+            new_password, new_iterations
+        )
         return new_salt, new_verify_token, old_key

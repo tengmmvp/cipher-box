@@ -70,12 +70,14 @@ class PasswordHistory:
     entry_id: int = 0
     old_password_enc: str = ''  # 加密后的旧密码
     changed_at: str = ''
+    entry_crypto_id: str = ''
 
 
 @dataclass
 class Entry:
     """密码条目"""
     id: int | None = None
+    crypto_id: str = ''
     title: str = ''
     username: str = ''
     password: str = ''
@@ -96,6 +98,8 @@ class Entry:
     password_changed_at: str = ''
     integrity_error: bool = False
     integrity_message: str = ''
+    password_present: bool = False
+    totp_present: bool = False
 
     @property
     def type_icon(self) -> str:
@@ -110,7 +114,7 @@ class Entry:
     @property
     def has_totp(self) -> bool:
         """是否配置了 TOTP"""
-        return bool(self.totp_secret)
+        return self.totp_present or bool(self.totp_secret)
 
     def get_tag_list(self) -> list[str]:
         """获取标签列表"""
@@ -127,17 +131,20 @@ class Entry:
             'category': self.category_name,
             'tags': self.tags,
             'notes': self.notes,
-            'custom_fields': [f.to_dict() for f in self.custom_fields],
+            'custom_fields': [
+                f.to_dict() for f in self.custom_fields
+                if include_password or f.field_type != 'password'
+            ],
             'is_favorite': self.is_favorite,
             'password_strength': self.password_strength,
             'entry_type': self.entry_type,
-            'totp_secret': self.totp_secret if include_password else '',
             'created_at': self.created_at,
             'updated_at': self.updated_at,
             'password_changed_at': self.password_changed_at,
         }
         if include_password:
             d['password'] = self.password
+            d['totp_secret'] = self.totp_secret
         return d
 
     @classmethod

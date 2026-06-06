@@ -15,46 +15,55 @@ from src.crypto.password_generator import PasswordGenerator
 class TestEncryptionEngine(unittest.TestCase):
     """AES-256-GCM 加密解密测试"""
 
+    AAD = 'test:secret'
+
     def test_encrypt_decrypt(self):
         key = os.urandom(32)
         plaintext = 'Hello, CipherBox!'
-        encrypted = EncryptionEngine.encrypt(plaintext, key)
+        encrypted = EncryptionEngine.encrypt(plaintext, key, self.AAD)
         self.assertNotEqual(encrypted, plaintext)
-        decrypted = EncryptionEngine.decrypt(encrypted, key)
+        decrypted = EncryptionEngine.decrypt(encrypted, key, self.AAD)
         self.assertEqual(decrypted, plaintext)
 
     def test_empty_string(self):
         key = os.urandom(32)
-        self.assertEqual(EncryptionEngine.encrypt('', key), '')
-        self.assertEqual(EncryptionEngine.decrypt('', key), '')
+        self.assertEqual(EncryptionEngine.encrypt('', key, self.AAD), '')
+        self.assertEqual(EncryptionEngine.decrypt('', key, self.AAD), '')
 
     def test_unicode(self):
         key = os.urandom(32)
         plaintext = '中文密码测试 🔐 émojis 🎉'
-        encrypted = EncryptionEngine.encrypt(plaintext, key)
-        decrypted = EncryptionEngine.decrypt(encrypted, key)
+        encrypted = EncryptionEngine.encrypt(plaintext, key, self.AAD)
+        decrypted = EncryptionEngine.decrypt(encrypted, key, self.AAD)
         self.assertEqual(decrypted, plaintext)
 
     def test_wrong_key_fails(self):
         key1 = os.urandom(32)
         key2 = os.urandom(32)
-        encrypted = EncryptionEngine.encrypt('secret', key1)
+        encrypted = EncryptionEngine.encrypt('secret', key1, self.AAD)
         with self.assertRaises(ValueError):
-            EncryptionEngine.decrypt(encrypted, key2)
+            EncryptionEngine.decrypt(encrypted, key2, self.AAD)
 
     def test_different_encryptions(self):
         """相同明文两次加密结果应不同（因为随机 nonce）"""
         key = os.urandom(32)
-        enc1 = EncryptionEngine.encrypt('same text', key)
-        enc2 = EncryptionEngine.encrypt('same text', key)
+        enc1 = EncryptionEngine.encrypt('same text', key, self.AAD)
+        enc2 = EncryptionEngine.encrypt('same text', key, self.AAD)
         self.assertNotEqual(enc1, enc2)
 
     def test_encrypt_decrypt_bytes(self):
         key = os.urandom(32)
         data = b'binary data test'
-        encrypted = EncryptionEngine.encrypt_bytes(data, key)
-        decrypted = EncryptionEngine.decrypt_bytes(encrypted, key)
+        encrypted = EncryptionEngine.encrypt_bytes(data, key, self.AAD)
+        decrypted = EncryptionEngine.decrypt_bytes(encrypted, key, self.AAD)
         self.assertEqual(decrypted, data)
+
+    def test_rejects_ciphertext_without_current_prefix(self):
+        key = os.urandom(32)
+        with self.assertRaises(ValueError):
+            EncryptionEngine.decrypt('AAAA', key, self.AAD)
+        with self.assertRaises(ValueError):
+            EncryptionEngine.decrypt_bytes(b'legacy', key, self.AAD)
 
 
 class TestMasterKeyManager(unittest.TestCase):

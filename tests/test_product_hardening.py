@@ -142,8 +142,94 @@ def test_lock_preparation_clears_decrypted_ui_and_clipboard():
 
         assert window._entry_list.count() == 0
         assert window._detail_panel._current_entry is None
+        assert window._detail_panel._current_password == ''
         assert QApplication.clipboard().text() != 'VisibleSecret!2026'
         window.close()
+
+
+def test_lock_closes_and_scrubs_open_entry_dialog():
+    with tempfile.TemporaryDirectory() as root:
+        config = _config(root)
+        vault = VaultManager(config)
+        assert vault.initialize('MasterPassword!2026')
+        manager = EntryManager(vault)
+        entry_id = manager.add_entry(Entry(title='Secret', password='DialogSecret!2026'))
+        window = MainWindow(config, vault)
+        window.show()
+        dialog = EntryDialog(
+            manager,
+            manager.get_categories(),
+            entry=manager.get_entry(entry_id),
+            parent=window,
+            config=config,
+        )
+        dialog.show()
+        _APP.processEvents()
+
+        window.prepare_for_lock()
+        vault.lock()
+        _APP.processEvents()
+
+        assert not dialog.isVisible()
+        assert dialog._password_edit.text() == ''
+        window.close()
+
+
+def test_stale_key_session_cannot_write_after_master_password_change():
+    with tempfile.TemporaryDirectory() as root:
+        first = VaultManager(_config(root))
+        assert first.initialize('OldMasterPassword!2026')
+        stale = VaultManager(_config(root))
+        assert stale.unlock('OldMasterPassword!2026')
+        assert first.change_master_password(
+            'OldMasterPassword!2026', 'NewMasterPassword!2026'
+        )
+
+        try:
+            EntryManager(stale).add_entry(
+                Entry(title='Stale write', password='OldKeyPassword!2026')
+            )
+        except RuntimeError as exc:
+            assert '密钥已被其他进程更新' in str(exc)
+        else:
+            raise AssertionError('过期密钥会话不应继续写入')
+        assert not stale.is_unlocked
+        stale.close()
+        first.close()
+
+
+def test_context_bound_ciphertext_rejects_cross_entry_swap():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('MasterPassword!2026')
+        manager = EntryManager(vault)
+        first_id = manager.add_entry(Entry(title='First', password='FirstSecret!2026'))
+        second_id = manager.add_entry(Entry(title='Second', password='SecondSecret!2026'))
+        first_raw = vault.db.get_entry(first_id)
+        second_raw = vault.db.get_entry(second_id)
+        first_raw.password = second_raw.password
+        vault.db.update_entry(first_raw, preserve_updated_at=True)
+
+        swapped = manager.get_entry(first_id)
+        assert swapped.password == ''
+        assert swapped.integrity_error is True
+        assert 'password' in swapped.integrity_message
+        vault.close()
+
+
+def test_vault_persists_kdf_parameters_and_ciphertext_format():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('MasterPassword!2026')
+        manager = EntryManager(vault)
+        entry_id = manager.add_entry(Entry(title='Account', password='Secret!2026'))
+        raw = vault.db.get_entry(entry_id)
+
+        assert vault.db.get_meta('master_kdf') == 'pbkdf2-sha256'
+        assert int(vault.db.get_meta('master_kdf_iterations')) >= 600_000
+        assert vault.db.get_meta('ciphertext_format') == 'aes-256-gcm-aad'
+        assert raw.password.startswith('cb:')
+        vault.close()
 
 
 def test_selecting_first_entry_opens_detail_panel_without_crash():
@@ -245,6 +331,8 @@ def test_import_rolls_back_when_any_entry_fails():
         importer = ImportExportManager(manager)
         path = Path(root) / 'entries.json'
         path.write_text(json.dumps({
+            'app': 'CipherBox',
+            'secrets_included': True,
             'entries': [
                 {'title': 'First', 'password': 'a'},
                 {'title': 'Second', 'password': 'b'},
@@ -266,6 +354,66 @@ def test_import_rolls_back_when_any_entry_fails():
             except RuntimeError:
                 pass
         assert manager.get_entry_count() == 0
+        vault.close()
+
+
+def test_export_without_password_excludes_secret_custom_fields():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('MasterPassword!2026')
+        manager = EntryManager(vault)
+        manager.add_entry(Entry(
+            title='Card',
+            password='LoginSecret!2026',
+            totp_secret='JBSWY3DPEHPK3PXP',
+            custom_fields=[
+                CustomField('Display name', 'Public value'),
+                CustomField('_card_number', '4111111111111111', 'password'),
+                CustomField('_card_cvv', '123', 'password'),
+            ],
+        ))
+        path = Path(root) / 'safe-export.json'
+        ImportExportManager(manager).export_to_json(
+            str(path), manager.get_entries(), include_password=False
+        )
+        payload = json.loads(path.read_text(encoding='utf-8'))
+        exported = payload['entries'][0]
+
+        assert payload['secrets_included'] is False
+        assert 'password' not in exported
+        assert 'totp_secret' not in exported
+        assert exported['custom_fields'] == [{
+            'name': 'Display name', 'value': 'Public value', 'field_type': 'text'
+        }]
+        vault.close()
+
+
+def test_passwordless_overwrite_import_preserves_existing_secrets():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('MasterPassword!2026')
+        manager = EntryManager(vault)
+        entry_id = manager.add_entry(Entry(
+            title='Account',
+            username='user@example.com',
+            password='ExistingPassword!2026',
+            totp_secret='JBSWY3DPEHPK3PXP',
+            custom_fields=[CustomField('PIN', '1234', 'password')],
+        ))
+        exporter = ImportExportManager(manager)
+        path = Path(root) / 'without-secrets.json'
+        exporter.export_to_json(str(path), manager.get_entries(), include_password=False)
+
+        payload = json.loads(path.read_text(encoding='utf-8'))
+        payload['entries'][0]['notes'] = 'updated'
+        path.write_text(json.dumps(payload), encoding='utf-8')
+        assert exporter.import_from_json(str(path), duplicate_action='overwrite') == 1
+
+        restored = manager.get_entry(entry_id)
+        assert restored.password == 'ExistingPassword!2026'
+        assert restored.totp_secret == 'JBSWY3DPEHPK3PXP'
+        assert restored.custom_fields[0].value == '1234'
+        assert restored.notes == 'updated'
         vault.close()
 
 

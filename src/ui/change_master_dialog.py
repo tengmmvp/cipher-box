@@ -58,7 +58,7 @@ class ChangeMasterDialog(QDialog):
         new_pwd_layout = QHBoxLayout()
         self._new_pwd = QLineEdit()
         self._new_pwd.setEchoMode(QLineEdit.EchoMode.Password)
-        self._new_pwd.setPlaceholderText('请输入新主密码（至少 8 位）')
+        self._new_pwd.setPlaceholderText('请输入新主密码（至少 12 位）')
         self._new_pwd.textChanged.connect(self._on_pwd_changed)
         new_pwd_layout.addWidget(self._new_pwd)
         self._new_toggle = QPushButton()
@@ -143,8 +143,9 @@ class ChangeMasterDialog(QDialog):
         if not new:
             self._msg_label.setText('请输入新主密码')
             return
-        if len(new) < 8:
-            self._msg_label.setText('新密码长度不能少于 8 个字符')
+        valid, error = PasswordGenerator.validate_master_password(new)
+        if not valid:
+            self._msg_label.setText(error)
             return
         if new != confirm:
             self._msg_label.setText('两次输入的新密码不一致')

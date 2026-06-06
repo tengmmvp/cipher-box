@@ -209,8 +209,9 @@ class LoginWindow(QDialog):
             if password != confirm_pwd:
                 self._show_error('两次输入的密码不一致')
                 return
-            if len(password) < 8:
-                self._show_error('主密码长度不能少于 8 个字符')
+            valid, error = PasswordGenerator.validate_master_password(password)
+            if not valid:
+                self._show_error(error)
                 return
 
             if self._vault.initialize(password):
@@ -219,11 +220,12 @@ class LoginWindow(QDialog):
                 self.accept()
             else:
                 self._fail_count += 1
+                error = getattr(self._vault, 'last_error', '')
                 if self._fail_count >= 5:
                     self._lock_until = time.monotonic() + 30
                     self._show_error('尝试次数过多，请等待 30 秒后重试')
                 else:
-                    self._show_error('初始化失败，请重试')
+                    self._show_error(error or '初始化失败，请重试')
         else:
             if self._vault.unlock(password):
                 self._fail_count = 0
@@ -231,11 +233,12 @@ class LoginWindow(QDialog):
                 self.accept()
             else:
                 self._fail_count += 1
+                error = getattr(self._vault, 'last_error', '')
                 if self._fail_count >= 5:
                     self._lock_until = time.monotonic() + 30
                     self._show_error('尝试次数过多，请等待 30 秒后重试')
                 else:
-                    self._show_error('主密码错误')
+                    self._show_error(error or '主密码错误')
 
     def _show_error(self, msg: str):
         self._message_label.setText(msg)

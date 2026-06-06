@@ -1,8 +1,8 @@
 """应用主控 - 管理应用生命周期、登录流程和窗口切换"""
 
 import sys
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtCore import QLockFile, Qt
 
 from .config import ConfigManager
 from .business.vault_manager import VaultManager
@@ -23,6 +23,7 @@ class CipherBoxApp:
         self._vault = VaultManager(self._config)
         self._main_window: MainWindow | None = None
         self._running = False
+        self._instance_lock = QLockFile(str(self._config.data_dir / 'cipherbox.lock'))
 
     def run(self) -> int:
         """启动应用"""
@@ -35,10 +36,17 @@ class CipherBoxApp:
         self._app.setOrganizationName('CipherBox')
         self._app.setApplicationVersion(__version__)
 
+        if not self._instance_lock.tryLock(100):
+            QMessageBox.warning(None, 'CipherBox', 'CipherBox 已在运行，请勿重复启动。')
+            return 1
+
         self._running = True
         self._show_login()
 
-        return self._app.exec()
+        try:
+            return self._app.exec()
+        finally:
+            self._instance_lock.unlock()
 
     def _show_login(self):
         """显示登录窗口"""

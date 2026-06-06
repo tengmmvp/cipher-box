@@ -3,7 +3,9 @@
 import csv
 import json
 import logging
+import os
 from functools import wraps
+from pathlib import Path
 from typing import Callable, Optional
 
 from ..database.models import (
@@ -13,20 +15,19 @@ from ..database.models import (
 
 logger = logging.getLogger(__name__)
 
+MAX_IMPORT_FILE_SIZE = 25 * 1024 * 1024
+MAX_IMPORT_ENTRIES = 50_000
+MAX_IMPORT_ENTRY_SIZE = 2 * 1024 * 1024
+
 
 def _transactional_import(method):
     """确保一次导入要么全部成功，要么完全回滚。"""
     @wraps(method)
     def wrapper(self, *args, **kwargs):
-        db = self._entry_mgr._vault.db
-        db.begin_transaction()
-        try:
-            result = method(self, *args, **kwargs)
-            db.commit_transaction()
-            return result
-        except Exception:
-            db.rollback_transaction()
-            raise
+        if args:
+            self._validate_import_path(args[0])
+        with self._entry_mgr.db.transaction():
+            return method(self, *args, **kwargs)
     return wrapper
 
 
@@ -35,6 +36,40 @@ class ImportExportManager:
 
     def __init__(self, entry_manager):
         self._entry_mgr = entry_manager
+
+    @staticmethod
+    def _validate_import_path(filepath: str):
+        size = Path(filepath).stat().st_size
+        if size > MAX_IMPORT_FILE_SIZE:
+            raise ValueError('导入文件过大，最大允许 25 MB')
+
+    @staticmethod
+    def _validate_items(items: list):
+        if len(items) > MAX_IMPORT_ENTRIES:
+            raise ValueError(f'导入条目过多，最大允许 {MAX_IMPORT_ENTRIES} 条')
+        for item in items:
+            if len(json.dumps(item, ensure_ascii=False)) > MAX_IMPORT_ENTRY_SIZE:
+                raise ValueError('导入条目字段过大')
+
+    @staticmethod
+    def _atomic_target(filepath: str) -> tuple[Path, Path]:
+        target = Path(filepath)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return target, target.with_name(target.name + '.tmp')
+
+    @staticmethod
+    def _csv_safe(value):
+        text = str(value) if value is not None else ''
+        return "'" + text if text.startswith(('=', '+', '-', '@')) else text
+
+    @staticmethod
+    def _merge_non_exported_secrets(entry: Entry, existing: Entry):
+        entry.password = existing.password
+        entry.totp_secret = existing.totp_secret
+        sensitive = [field for field in existing.custom_fields if field.field_type == 'password']
+        entry.custom_fields = [
+            field for field in entry.custom_fields if field.field_type != 'password'
+        ] + sensitive
 
     def _resolve_category(
         self,
@@ -50,7 +85,7 @@ class ImportExportManager:
         if key in categories:
             return categories[key].id
         category = Category(name=clean_name, icon_char='📥', color='#0f766e')
-        category.id = self._entry_mgr._vault.db.add_category(category)
+        category.id = self._entry_mgr.db.add_category(category)
         categories[key] = category
         return category.id
 
@@ -65,12 +100,19 @@ class ImportExportManager:
         """导出为 JSON 文件"""
         data = {
             'app': 'CipherBox',
-            'version': '1.0',
             'exported_at': self._now(),
+            'secrets_included': include_password,
             'entries': [e.to_dict(include_password=include_password) for e in entries],
         }
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        target, temp = self._atomic_target(filepath)
+        try:
+            with open(temp, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp, target)
+        finally:
+            temp.unlink(missing_ok=True)
 
     def export_to_csv(
         self,
@@ -84,18 +126,29 @@ class ImportExportManager:
         if not include_password:
             fieldnames.remove('password')
 
-        with open(filepath, 'w', encoding='utf-8-sig', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
-            writer.writeheader()
-            for entry in entries:
-                row = entry.to_dict(include_password=include_password)
-                if entry.custom_fields:
-                    cf_str = '; '.join(f"{cf.name}={cf.value}" for cf in entry.custom_fields)
+        target, temp = self._atomic_target(filepath)
+        try:
+            with open(temp, 'w', encoding='utf-8-sig', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+                writer.writeheader()
+                for entry in entries:
+                    row = entry.to_dict(include_password=include_password)
+                    exported_fields = [
+                        field for field in entry.custom_fields
+                        if include_password or field.field_type != 'password'
+                    ]
+                    cf_str = '; '.join(f"{cf.name}={cf.value}" for cf in exported_fields)
                     if row.get('notes'):
-                        row['notes'] += f'\n[自定义字段] {cf_str}'
-                    else:
+                        if cf_str:
+                            row['notes'] += f'\n[自定义字段] {cf_str}'
+                    elif cf_str:
                         row['notes'] = f'[自定义字段] {cf_str}'
-                writer.writerow(row)
+                    writer.writerow({key: self._csv_safe(value) for key, value in row.items()})
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp, target)
+        finally:
+            temp.unlink(missing_ok=True)
 
     # ========== 导入 ==========
 
@@ -154,14 +207,22 @@ class ImportExportManager:
             duplicate_action: 重复处理策略
                 - 'skip': 跳过重复项
                 - 'overwrite': 覆盖匹配的已有条目
-                - 'import_all': 全部导入（默认，向后兼容）
+                - 'import_all': 全部导入（默认）
         """
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
+        if not isinstance(data, dict) or data.get('app') != 'CipherBox':
+            raise ValueError('不是 CipherBox JSON 导出文件')
+        if type(data.get('secrets_included')) is not bool:
+            raise ValueError('CipherBox JSON 缺少敏感字段声明')
         entries_data = data.get('entries', [])
+        if not isinstance(entries_data, list):
+            raise ValueError('JSON 导入结构无效')
+        self._validate_items(entries_data)
         if not entries_data:
             return 0
+        secrets_included = data.get('secrets_included', True) is not False
 
         categories = {c.name.casefold(): c for c in self._entry_mgr.get_categories()}
         existing_entries = self._entry_mgr.get_entries()
@@ -201,6 +262,8 @@ class ImportExportManager:
                 existing = overwrite_map[i]
                 entry.id = existing.id
                 entry.created_at = existing.created_at
+                if not secrets_included:
+                    self._merge_non_exported_secrets(entry, existing)
                 self._entry_mgr.update_entry(entry)
             else:
                 self._entry_mgr.add_entry(entry)
@@ -228,11 +291,18 @@ class ImportExportManager:
             duplicate_action: 重复处理策略
                 - 'skip': 跳过重复项
                 - 'overwrite': 覆盖匹配的已有条目
-                - 'import_all': 全部导入（默认，向后兼容）
+                - 'import_all': 全部导入（默认）
         """
         with open(filepath, 'r', encoding='utf-8-sig', newline='') as f:
             reader = csv.DictReader(f)
             rows = list(reader)
+            headers = reader.fieldnames or []
+
+        self._validate_items(rows)
+        password_present = any(
+            header.lower().strip() in {'password', '密码', 'login_password', 'pass'}
+            for header in headers
+        )
 
         if not rows:
             return 0
@@ -291,6 +361,8 @@ class ImportExportManager:
                 existing = overwrite_map[i]
                 entry.id = existing.id
                 entry.created_at = existing.created_at
+                if not password_present:
+                    entry.password = existing.password
                 self._entry_mgr.update_entry(entry)
             else:
                 self._entry_mgr.add_entry(entry)
@@ -317,7 +389,7 @@ class ImportExportManager:
             duplicate_action: 重复处理策略
                 - 'skip': 跳过重复项
                 - 'overwrite': 覆盖匹配的已有条目
-                - 'import_all': 全部导入（默认，向后兼容）
+                - 'import_all': 全部导入（默认）
         """
         return self.import_from_csv(filepath, default_category_id, progress_callback, duplicate_action)
 
@@ -340,11 +412,13 @@ class ImportExportManager:
             duplicate_action: 重复处理策略
                 - 'skip': 跳过重复项
                 - 'overwrite': 覆盖匹配的已有条目
-                - 'import_all': 全部导入（默认，向后兼容）
+                - 'import_all': 全部导入（默认）
         """
         with open(filepath, 'r', encoding='utf-8-sig', newline='') as f:
             reader = csv.DictReader(f)
             rows = list(reader)
+
+        self._validate_items(rows)
 
         if not rows:
             return 0
@@ -373,6 +447,7 @@ class ImportExportManager:
                         break
                 if internal in col_map:
                     break
+        password_present = 'password' in col_map
 
         categories = {c.name.casefold(): c for c in self._entry_mgr.get_categories()}
         existing_entries = self._entry_mgr.get_entries()
@@ -429,6 +504,8 @@ class ImportExportManager:
                 existing = overwrite_map[i]
                 entry.id = existing.id
                 entry.created_at = existing.created_at
+                if not password_present:
+                    entry.password = existing.password
                 self._entry_mgr.update_entry(entry)
             else:
                 self._entry_mgr.add_entry(entry)
@@ -456,12 +533,15 @@ class ImportExportManager:
             duplicate_action: 重复处理策略
                 - 'skip': 跳过重复项
                 - 'overwrite': 覆盖匹配的已有条目
-                - 'import_all': 全部导入（默认，向后兼容）
+                - 'import_all': 全部导入（默认）
         """
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
-        items = data.get('items', data.get('entries', []))
+        items = data.get('items', [])
+        if not isinstance(items, list):
+            raise ValueError('Bitwarden 导入结构无效')
+        self._validate_items(items)
         if not items:
             return 0
 
@@ -592,6 +672,8 @@ class ImportExportManager:
         for key in keys:
             val = row.get(key, '')
             if val:
+                if isinstance(val, str) and len(val) > 1 and val[0] == "'" and val[1] in '=+-@':
+                    return val[1:]
                 return val
         return ''
 

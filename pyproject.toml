@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cipher-box"
-version = "1.1.0"
+version = "1.0.0"
 description = "Local-first encrypted password manager built with PyQt6"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,4 +27,3 @@ include = ["src*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-

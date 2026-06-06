@@ -92,7 +92,7 @@ class EntryItemWidget(QWidget):
 
         # 强度指示点
         strength = self._entry.password_strength
-        if self._entry.password:
+        if self._entry.password_present or self._entry.password:
             color = get_strength_color(strength)
             strength_text = {0: '很弱', 1: '弱', 2: '一般', 3: '强', 4: '很强'}.get(strength, '')
             dot = QLabel('●')

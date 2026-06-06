@@ -11,7 +11,10 @@ def get_data_dir() -> Path:
     if os.name == 'nt':
         base = os.environ.get('APPDATA', os.path.expanduser('~'))
     else:
-        base = os.environ.get('XDG_CONFIG_HOME', os.path.join(os.path.expanduser('~'), '.config'))
+        base = os.environ.get(
+            'XDG_DATA_HOME',
+            os.path.join(os.path.expanduser('~'), '.local', 'share'),
+        )
     data_dir = Path(base) / 'CipherBox'
     data_dir.mkdir(parents=True, exist_ok=True)
     return data_dir
@@ -41,6 +44,22 @@ DEFAULT_CONFIG = {
     'sort_field': 'updated_at',       # title, updated_at, created_at, password_strength
     'sort_order': 'desc',             # asc, desc
     'window_geometry': None,
+    'splitter_sizes': None,
+}
+
+_INT_RANGES = {
+    'auto_lock_minutes': (0, 60),
+    'clipboard_clear_seconds': (0, 300),
+    'password_visible_seconds': (3, 60),
+    'default_password_length': (4, 64),
+    'auto_backup_interval_hours': (1, 168),
+    'auto_backup_retention': (2, 50),
+    'old_password_warning_days': (30, 365),
+}
+_BOOL_KEYS = {
+    'default_uppercase', 'default_lowercase', 'default_digits',
+    'default_symbols', 'default_exclude_ambiguous', 'auto_backup_enabled',
+    'show_tray_icon', 'minimize_to_tray', 'close_to_tray',
 }
 
 
@@ -67,12 +86,17 @@ class ConfigManager:
 
     def load(self):
         """从文件加载配置"""
+        self._config = dict(DEFAULT_CONFIG)
         if self._config_path.exists():
             try:
                 with open(self._config_path, 'r', encoding='utf-8') as f:
                     saved = json.load(f)
-                self._config.update(saved)
-            except (json.JSONDecodeError, OSError):
+                if not isinstance(saved, dict):
+                    raise ValueError('配置文件根节点必须是对象')
+                for key, value in saved.items():
+                    if key in DEFAULT_CONFIG and self._is_valid(key, value):
+                        self._config[key] = value
+            except (json.JSONDecodeError, OSError, ValueError):
                 pass
 
     def save(self):
@@ -84,6 +108,10 @@ class ConfigManager:
             f.flush()
             os.fsync(f.fileno())
         os.replace(temp_path, self._config_path)
+        try:
+            os.chmod(self._config_path, 0o600)
+        except OSError:
+            pass
 
     def get(self, key: str, default: Any = None) -> Any:
         """获取配置项"""
@@ -91,7 +119,44 @@ class ConfigManager:
 
     def set(self, key: str, value: Any):
         """设置配置项"""
+        if key not in DEFAULT_CONFIG:
+            raise KeyError(f'未知配置项：{key}')
+        if not self._is_valid(key, value):
+            raise ValueError(f'配置项值无效：{key}')
         self._config[key] = value
+
+    @staticmethod
+    def _is_valid(key: str, value: Any) -> bool:
+        if key in _INT_RANGES:
+            minimum, maximum = _INT_RANGES[key]
+            return type(value) is int and minimum <= value <= maximum
+        if key in _BOOL_KEYS:
+            return type(value) is bool
+        if key == 'theme':
+            return value in {'light', 'dark'}
+        if key == 'sort_field':
+            return value in {'title', 'updated_at', 'created_at', 'password_strength'}
+        if key == 'sort_order':
+            return value in {'asc', 'desc'}
+        if key in {'backup_directory', 'last_auto_backup_at'}:
+            return isinstance(value, str) and len(value) <= 4096
+        if key == 'window_geometry':
+            if value is None:
+                return True
+            if not isinstance(value, str) or len(value) > 16384:
+                return False
+            try:
+                bytes.fromhex(value)
+                return True
+            except ValueError:
+                return False
+        if key == 'splitter_sizes':
+            return value is None or (
+                isinstance(value, list)
+                and len(value) == 3
+                and all(type(item) is int and 0 <= item <= 10000 for item in value)
+            )
+        return False
 
     def get_all(self) -> dict:
         """获取所有配置"""

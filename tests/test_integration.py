@@ -3,7 +3,6 @@
 import json
 import os
 import shutil
-import struct
 import sys
 import tempfile
 import unittest
@@ -11,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from src.business.backup_restore import BackupRestoreManager, BACKUP_MAGIC
+from src.business.backup_restore import BackupRestoreManager
 from src.business.entry_manager import EntryManager
 from src.business.import_export import ImportExportManager
 from src.business.security_analyzer import SecurityAnalyzer
@@ -310,7 +309,7 @@ class TestVaultManagerLifecycle(unittest.TestCase):
         vault.close()
 
 
-class TestBackupRestoreV2(unittest.TestCase):
+class TestBackupRestore(unittest.TestCase):
     """备份恢复测试（需要真实加密）"""
 
     def setUp(self):
@@ -390,67 +389,35 @@ class TestBackupRestoreV2(unittest.TestCase):
         self.assertEqual(len(decrypted_history), 1)
         self.assertEqual(decrypted_history[0]['password'], 'OriginalP@ss!')
 
-    def test_restore_v1_format(self):
-        """V1 格式备份可恢复（不含 entry_type/totp）"""
-        # 手动构造 V1 格式的备份数据
-        key = self._vault.key
-        self.assertIsNotNone(key)
-        assert key is not None  # 供类型检查器确认
-
-        # V1 数据中没有 entry_type 和 totp_secret_enc 字段
-        backup_data = {
-            'version': 1,
-            'created_at': '2025-01-01T00:00:00',
-            'vault_meta': {
-                'master_salt': self._vault.db.get_meta('master_salt'),
-                'master_verify': self._vault.db.get_meta('master_verify'),
-            },
-            'categories': [
-                {'id': 1, 'name': '未分类', 'icon_char': '📎', 'color': '#888888', 'sort_order': 0, 'created_at': '2025-01-01T00:00:00'},
-            ],
-            'entries': [
-                {
-                    'id': 1,
-                    'title': 'V1条目',
-                    'username_enc': EncryptionEngine.encrypt('v1_user', key),
-                    'password_enc': EncryptionEngine.encrypt('v1_password', key),
-                    'url': 'https://v1.example.com',
-                    'category_id': 1,
-                    'tags': 'v1,旧版',
-                    'notes_enc': EncryptionEngine.encrypt('V1 笔记', key),
-                    'custom_fields_enc': '',
-                    'is_favorite': False,
-                    'is_deleted': False,
-                    'password_strength': 2,
-                    # V1 格式没有 entry_type 和 totp_secret_enc
-                    'created_at': '2025-01-01T00:00:00',
-                    'updated_at': '2025-01-01T00:00:00',
-                    'deleted_at': '',
-                },
-            ],
-            'password_history': [],
-        }
-
-        # 编写 V1 备份文件
-        backup_path = str(Path(self._tmp_dir) / 'v1_backup.cbox')
-        json_bytes = json.dumps(backup_data, ensure_ascii=False).encode('utf-8')
-        encrypted = EncryptionEngine.encrypt_bytes(json_bytes, key)
+    def test_rejects_unknown_format(self):
+        """仅接受 CipherBox 当前固定格式。"""
+        backup_path = str(Path(self._tmp_dir) / 'unknown_backup.cbox')
         with open(backup_path, 'wb') as f:
-            f.write(BACKUP_MAGIC)
-            f.write(struct.pack('<I', 1))  # version = 1
-            f.write(encrypted)
+            f.write(b'CBOX-UNKNOWN')
 
-        # 恢复 V1 备份
-        self.assertTrue(self._backup_mgr.restore_backup(backup_path))
+        success, error = self._backup_mgr.restore_backup(backup_path)
+        self.assertFalse(success)
+        self.assertIn('无效的备份文件格式', error)
 
-        # 验证恢复后 entry_type 默认为 'login'
-        entries = self._entry_mgr.get_entries()
-        self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0].title, 'V1条目')
-        self.assertEqual(entries[0].username, 'v1_user')
-        self.assertEqual(entries[0].password, 'v1_password')
-        self.assertEqual(entries[0].entry_type, 'login')  # 默认值
-        self.assertEqual(entries[0].totp_secret, '')  # 默认空
+    def test_snapshot_survives_master_password_change(self):
+        entry_id = self._entry_mgr.add_entry(Entry(
+            title='快照条目', password='SnapshotSecret!2026'
+        ))
+        backup_path = str(Path(self._tmp_dir) / 'snapshot.cbox')
+        success, error = self._backup_mgr.create_backup(
+            backup_path, use_snapshot_key=True
+        )
+        self.assertTrue(success, error)
+
+        self.assertTrue(self._vault.change_master_password(
+            'test_password_123', 'NewMasterPassword!2026'
+        ))
+        self._entry_mgr.permanent_delete_entry(entry_id)
+        success, error = self._backup_mgr.restore_backup(backup_path)
+        self.assertTrue(success, error)
+        restored = self._entry_mgr.get_entries()
+        self.assertEqual(len(restored), 1)
+        self.assertEqual(restored[0].password, 'SnapshotSecret!2026')
 
 
 class TestSecurityAnalyzer(unittest.TestCase):
@@ -495,7 +462,8 @@ class TestSecurityAnalyzer(unittest.TestCase):
         self.assertEqual(len(weak), 1)
         self.assertEqual(weak[0].title, '弱密码条目')
         self.assertEqual(weak[0].username, 'weak_user')
-        self.assertEqual(weak[0].password, 'password')
+        self.assertEqual(weak[0].password, '')
+        self.assertTrue(weak[0].password_present)
 
     def test_find_duplicate_passwords(self):
         """检测重复密码分组"""
@@ -764,12 +732,13 @@ class TestErrorPaths(unittest.TestCase):
         key1 = os.urandom(32)
         key2 = os.urandom(32)
 
-        ciphertext = EncryptionEngine.encrypt("hello", key1)
+        aad = 'test:integration'
+        ciphertext = EncryptionEngine.encrypt("hello", key1, aad)
         self.assertNotEqual(ciphertext, '')
 
         # AES-GCM 会因 tag 校验失败而抛出 ValueError
         with self.assertRaises(ValueError):
-            EncryptionEngine.decrypt(ciphertext, key2)
+            EncryptionEngine.decrypt(ciphertext, key2, aad)
 
     def test_backup_with_locked_vault(self):
         """锁定状态创建备份应失败"""

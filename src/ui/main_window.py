@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QLineEdit, QListWidget, QListWidgetItem,
     QSplitter, QMenu, QMessageBox, QStatusBar, QStackedWidget,
-    QComboBox, QApplication,
+    QComboBox, QApplication, QDialog, QLineEdit, QTextEdit,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QEvent
 from PyQt6.QtGui import QAction, QShortcut, QKeySequence
@@ -488,7 +488,9 @@ class MainWindow(QMainWindow):
         directory = Path(backup_dir) if backup_dir else self._config.data_dir / 'backups'
         directory.mkdir(parents=True, exist_ok=True)
         filename = f'cipherbox_snapshot_{datetime.now():%Y%m%d_%H%M%S}.cbox'
-        success, error = self._backup.create_backup(str(directory / filename))
+        success, error = self._backup.create_backup(
+            str(directory / filename), use_snapshot_key=True
+        )
         if not success:
             Toast.show(self, f'自动快照失败：{error}', Toast.ERROR, duration=5000)
             return
@@ -617,13 +619,13 @@ class MainWindow(QMainWindow):
         entries = []
 
         if self._current_filter == 'all':
-            entries = self._entry_mgr.get_entries(
+            entries = self._entry_mgr.get_entry_summaries(
                 category_id=self._current_category_id,
                 search=self._current_search,
             )
             self._list_title.setText('全部条目')
         elif self._current_filter == 'favorite':
-            entries = self._entry_mgr.get_entries(favorite_only=True, search=self._current_search)
+            entries = self._entry_mgr.get_entry_summaries(favorite_only=True, search=self._current_search)
             self._list_title.setText('收藏')
         elif self._current_filter == 'weak':
             entries = self._security.find_weak_passwords()
@@ -633,15 +635,15 @@ class MainWindow(QMainWindow):
             entries = [e for group in groups for e in group]
             self._list_title.setText('重复密码')
         elif self._current_filter == 'recent':
-            entries = self._entry_mgr.get_entries(search=self._current_search)
+            entries = self._entry_mgr.get_entry_summaries(search=self._current_search)
             entries.sort(key=lambda e: e.updated_at, reverse=True)
             entries = entries[:20]
             self._list_title.setText('近期更新')
         elif self._current_filter == 'trash':
-            entries = self._entry_mgr.get_entries(deleted_only=True, search=self._current_search)
+            entries = self._entry_mgr.get_entry_summaries(deleted_only=True, search=self._current_search)
             self._list_title.setText('回收站')
         else:
-            entries = self._entry_mgr.get_entries(search=self._current_search)
+            entries = self._entry_mgr.get_entry_summaries(search=self._current_search)
 
         if self._current_search and self._current_filter in ('weak', 'duplicate'):
             keyword = self._current_search.lower()
@@ -852,9 +854,11 @@ class MainWindow(QMainWindow):
             if cur_widget and hasattr(cur_widget, 'set_selected'):
                 cur_widget.set_selected(True)
 
-            entry = current.data(Qt.ItemDataRole.UserRole)
-            if entry:
-                self._detail_panel.show_entry(entry)
+            summary = current.data(Qt.ItemDataRole.UserRole)
+            if summary:
+                entry = self._entry_mgr.get_entry(summary.id)
+                if entry:
+                    self._detail_panel.show_entry(entry)
 
     def _on_entry_context_menu(self, pos):
         item = self._entry_list.itemAt(pos)
@@ -891,7 +895,7 @@ class MainWindow(QMainWindow):
             copy_pwd_act.setIcon(icon(COPY, size=SIZE_MENU))
             # TOTP 验证码（仅当条目配置了 TOTP 密钥时显示）
             copy_totp_act = None
-            if entry.totp_secret:
+            if entry.has_totp:
                 copy_totp_act = menu.addAction('复制验证码')
                 copy_totp_act.setIcon(icon(COPY, size=SIZE_MENU))
             menu.addSeparator()
@@ -910,14 +914,19 @@ class MainWindow(QMainWindow):
             action = menu.exec(self._entry_list.mapToGlobal(pos))
 
             if action == copy_user_act:
-                self._clipboard.copy_text(entry.username)
-                Toast.show(self, '已复制账号', Toast.SUCCESS, duration=2000)
+                full_entry = self._entry_mgr.get_entry(entry.id)
+                if full_entry:
+                    self._clipboard.copy_text(full_entry.username)
+                    Toast.show(self, '已复制账号', Toast.SUCCESS, duration=2000)
             elif action == copy_pwd_act:
-                self._clipboard.copy_text(entry.password)
-                Toast.show(self, '已复制密码', Toast.SUCCESS, duration=2000)
+                full_entry = self._entry_mgr.get_entry(entry.id)
+                if full_entry:
+                    self._clipboard.copy_text(full_entry.password)
+                    Toast.show(self, '已复制密码', Toast.SUCCESS, duration=2000)
             elif copy_totp_act and action == copy_totp_act:
                 from ..crypto.totp import TOTPGenerator
-                code = TOTPGenerator.generate(entry.totp_secret)
+                full_entry = self._entry_mgr.get_entry(entry.id)
+                code = TOTPGenerator.generate(full_entry.totp_secret) if full_entry else None
                 if code:
                     self._clipboard.copy_text(code)
                     Toast.show(self, f'验证码 {code} 已复制', Toast.SUCCESS, duration=3000)
@@ -1197,7 +1206,8 @@ class MainWindow(QMainWindow):
             # 刷新详情面板：如有选中条目则重新显示，否则显示空状态
             current = self._entry_list.currentItem()
             if current:
-                entry = current.data(Qt.ItemDataRole.UserRole)
+                summary = current.data(Qt.ItemDataRole.UserRole)
+                entry = self._entry_mgr.get_entry(summary.id) if summary else None
                 if entry:
                     self._detail_panel.show_entry(entry)
                 else:
@@ -1252,6 +1262,16 @@ class MainWindow(QMainWindow):
         """在清除主密钥前销毁界面和剪贴板中的明文副本。"""
         self._locked_ui = True
         self._lock_timer.stop()
+        app = QApplication.instance()
+        if app:
+            for widget in list(app.topLevelWidgets()):
+                if widget is self or not isinstance(widget, QDialog):
+                    continue
+                for line_edit in widget.findChildren(QLineEdit):
+                    line_edit.clear()
+                for text_edit in widget.findChildren(QTextEdit):
+                    text_edit.clear()
+                widget.reject()
         self._current_search = ''
         self._search_edit.blockSignals(True)
         self._search_edit.clear()

@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 from ..ui.resources.theme_colors import c
+from ..crypto.password_generator import PasswordGenerator
 
 
 class BackupDialog(QDialog):
@@ -135,8 +136,9 @@ class BackupDialog(QDialog):
         )
         if not ok:
             return
-        if len(password) < 8:
-            QMessageBox.warning(self, '备份密码过短', '备份密码至少需要 8 个字符。')
+        valid, error = PasswordGenerator.validate_master_password(password)
+        if not valid:
+            QMessageBox.warning(self, '备份密码不安全', error.replace('主密码', '备份密码'))
             return
         confirm, ok = QInputDialog.getText(
             self, '确认备份密码', '请再次输入备份密码：',

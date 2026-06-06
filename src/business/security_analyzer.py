@@ -1,10 +1,10 @@
 """安全分析器 - 弱密码检测、重复密码检测、过期提醒"""
 
-import json
+import hmac
 
 from ..crypto.encryption import EncryptionEngine
 from ..crypto.password_generator import PasswordGenerator
-from ..database.models import Entry, CustomField
+from ..database.models import Entry
 
 
 class SecurityAnalyzer:
@@ -20,40 +20,38 @@ class SecurityAnalyzer:
             raise RuntimeError("保险库未解锁")
         return key
 
-    def _make_decrypted_copy(self, raw: Entry, password: str) -> Entry:
-        """创建解密后的 Entry 副本（不修改原始对象）"""
-        # 解密 custom_fields
-        custom_fields = []
-        if raw.custom_fields:
-            try:
-                cf_json = EncryptionEngine.decrypt(raw.custom_fields, self._key) if isinstance(raw.custom_fields, str) else ''
-                if cf_json:
-                    items = json.loads(cf_json)
-                    custom_fields = [CustomField.from_dict(item) for item in items]
-            except (json.JSONDecodeError, ValueError):
-                pass
+    def _decrypt(self, raw: Entry, field_name: str, value: str) -> str:
+        if not value:
+            return ''
+        return EncryptionEngine.decrypt(
+            value, self._key, f'entry:{raw.crypto_id}:{field_name}'
+        )
 
+    def _make_summary(self, raw: Entry) -> Entry:
+        """只返回分析界面所需字段，避免缓存敏感明文。"""
         return Entry(
             id=raw.id,
+            crypto_id=raw.crypto_id,
             title=raw.title,
-            username=EncryptionEngine.decrypt(raw.username, self._key) if raw.username else '',
-            password=password,
+            username=self._decrypt(raw, 'username', raw.username),
             url=raw.url,
             category_id=raw.category_id,
             category_name=raw.category_name,
             tags=raw.tags,
-            notes=EncryptionEngine.decrypt(raw.notes, self._key) if raw.notes else '',
-            custom_fields=custom_fields,
             is_favorite=raw.is_favorite,
             is_deleted=raw.is_deleted,
             password_strength=raw.password_strength,
             entry_type=raw.entry_type,
-            totp_secret=EncryptionEngine.decrypt(raw.totp_secret, self._key) if raw.totp_secret else '',
             created_at=raw.created_at,
             updated_at=raw.updated_at,
             deleted_at=raw.deleted_at,
             password_changed_at=raw.password_changed_at,
+            password_present=bool(raw.password),
+            totp_present=bool(raw.totp_secret),
         )
+
+    def _password_fingerprint(self, password: str) -> bytes:
+        return hmac.digest(self._key, password.encode('utf-8'), 'sha256')
 
     def find_weak_passwords(self) -> list[Entry]:
         """查找弱密码条目（强度评分 <= 1）"""
@@ -61,11 +59,11 @@ class SecurityAnalyzer:
         weak = []
         for raw in entries:
             try:
-                password = EncryptionEngine.decrypt(raw.password, self._key) if raw.password else ''
+                password = self._decrypt(raw, 'password', raw.password)
                 if password:
                     strength = PasswordGenerator.check_strength(password)
                     if strength.score <= 1:
-                        weak.append(self._make_decrypted_copy(raw, password))
+                        weak.append(self._make_summary(raw))
             except ValueError:
                 continue
         return weak
@@ -73,16 +71,16 @@ class SecurityAnalyzer:
     def find_duplicate_passwords(self) -> list[list[Entry]]:
         """查找重复密码（返回分组列表，每组包含使用相同密码的条目）"""
         entries = self._vault.db.get_entries(include_deleted=False)
-        password_map: dict[str, list[Entry]] = {}
+        password_map: dict[bytes, list[Entry]] = {}
 
         for raw in entries:
             try:
-                password = EncryptionEngine.decrypt(raw.password, self._key) if raw.password else ''
+                password = self._decrypt(raw, 'password', raw.password)
                 if password:
-                    copy = self._make_decrypted_copy(raw, password)
-                    if password not in password_map:
-                        password_map[password] = []
-                    password_map[password].append(copy)
+                    fingerprint = self._password_fingerprint(password)
+                    password_map.setdefault(fingerprint, []).append(
+                        self._make_summary(raw)
+                    )
             except ValueError:
                 continue
 
@@ -94,8 +92,7 @@ class SecurityAnalyzer:
         result = []
         for raw in raw_entries:
             try:
-                password = EncryptionEngine.decrypt(raw.password, self._key) if raw.password else ''
-                result.append(self._make_decrypted_copy(raw, password))
+                result.append(self._make_summary(raw))
             except ValueError:
                 continue
         return result
@@ -105,22 +102,21 @@ class SecurityAnalyzer:
         entries = self._vault.db.get_entries(include_deleted=False)
         total = len(entries)
         weak_entries = []
-        password_map: dict[str, list[Entry]] = {}
+        password_map: dict[bytes, list[Entry]] = {}
 
         for raw in entries:
             try:
-                password = EncryptionEngine.decrypt(raw.password, self._key) if raw.password else ''
+                password = self._decrypt(raw, 'password', raw.password)
                 if not password:
                     continue
 
                 strength = PasswordGenerator.check_strength(password)
+                summary = self._make_summary(raw)
                 if strength.score <= 1:
-                    weak_entries.append(self._make_decrypted_copy(raw, password))
+                    weak_entries.append(summary)
 
-                copy = self._make_decrypted_copy(raw, password)
-                if password not in password_map:
-                    password_map[password] = []
-                password_map[password].append(copy)
+                fingerprint = self._password_fingerprint(password)
+                password_map.setdefault(fingerprint, []).append(summary)
             except ValueError:
                 continue
 
