@@ -6,10 +6,10 @@
 
 所有敏感数据使用 AES-256-GCM 加密，存储在本地 SQLite 数据库中，不上传至任何服务器。
 
-[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://python.org)
-[![PyQt6](https://img.shields.io/badge/PyQt6-6.6+-41CD52?logo=qt&logoColor=white)](https://pypi.org/project/PyQt6/)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-1.1.0-orange.svg)](src/__init__.py)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![PyQt6](https://img.shields.io/badge/PyQt6-6.6+-41CD52?style=for-the-badge&logo=qt&logoColor=white)](https://pypi.org/project/PyQt6/)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
+[![Version](https://img.shields.io/badge/Version-1.1.0-orange?style=for-the-badge)](src/__init__.py)
 
 </div>
 
