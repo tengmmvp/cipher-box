@@ -1,0 +1,194 @@
+"""统一图标管理模块 - 基于 QtAwesome 的语义化图标系统
+
+使用方式：
+    from .resources.icons import icon, set_icon, EYE, COPY
+    set_icon(btn, EYE)                    # 设置按钮图标（自动清除文字）
+    act.setIcon(icon(COPY, size=SIZE_MENU))  # 菜单项图标
+"""
+
+from PyQt6.QtCore import QSize
+from PyQt6.QtGui import QIcon, QPixmap
+
+import qtawesome as qta
+
+from .theme_colors import c
+
+# ============================================================
+# 预设尺寸
+# ============================================================
+SIZE_BTN = 16       # 标准按钮图标
+SIZE_SMALL = 14     # 小型操作按钮
+SIZE_MENU = 14      # 菜单项图标
+SIZE_SIDEBAR = 14   # 侧边栏列表项
+SIZE_EMPTY = 48     # 空状态大图标
+SIZE_TOAST = 18     # Toast 通知图标
+SIZE_STAR = 12      # 收藏星标
+
+# ============================================================
+# 图标名常量
+# ============================================================
+
+# --- 密码显示/隐藏 ---
+EYE = 'eye'
+EYE_SLASH = 'eye_slash'
+LOCK = 'lock'
+
+# --- 操作 ---
+COPY = 'copy'
+CHECK = 'check'
+EDIT = 'edit'
+DELETE = 'delete'
+PLUS = 'plus'
+CLOSE = 'close'
+REFRESH = 'refresh'
+GENERATE = 'generate'
+
+# --- 收藏 ---
+STAR = 'star'
+STAR_OUTLINE = 'star_outline'
+
+# --- 状态 ---
+SUCCESS = 'success'
+ERROR = 'error'
+WARNING = 'warning'
+INFO = 'info'
+
+# --- 导航/分类 ---
+SEARCH = 'search'
+FOLDER = 'folder'
+KEY = 'key'
+SHIELD = 'shield'
+LOCK_SOLID = 'lock_solid'
+SETTINGS = 'settings'
+
+# --- 侧边栏筛选项 ---
+FILTER_ALL = 'filter_all'
+FILTER_FAVORITE = 'filter_favorite'
+FILTER_WEAK = 'filter_weak'
+FILTER_DUPLICATE = 'filter_duplicate'
+FILTER_RECENT = 'filter_recent'
+FILTER_TRASH = 'filter_trash'
+
+# --- 空状态 ---
+EMPTY_SEARCH = 'empty_search'
+EMPTY_TRASH = 'empty_trash'
+EMPTY_SUCCESS = 'empty_success'
+EMPTY_FOLDER = 'empty_folder'
+EMPTY_VAULT = 'empty_vault'
+EMPTY_GENERIC = 'empty_generic'
+
+# --- 其他 ---
+TOTP = 'totp'
+HISTORY = 'history'
+BROWSE = 'browse'
+DOWNLOAD = 'download'
+UPLOAD = 'upload'
+HELP = 'help'
+SHORTCUT = 'shortcut'
+UNDO = 'undo'
+
+# ============================================================
+# 图标映射表: 常量 → (qtawesome glyph, 默认颜色键)
+# ============================================================
+
+_ICON_MAP: dict[str, tuple[str, str]] = {
+    # 密码显示/隐藏
+    EYE:         ('fa6s.eye',              'text_secondary'),
+    EYE_SLASH:   ('fa6s.eye-slash',        'text_secondary'),
+    LOCK:        ('fa6s.lock',             'text_secondary'),
+
+    # 操作
+    COPY:        ('fa6s.copy',             'text_secondary'),
+    CHECK:       ('fa6s.check',            'success'),
+    EDIT:        ('fa6s.pen-to-square',    'text_secondary'),
+    DELETE:      ('fa6s.trash-can',        'text_secondary'),
+    PLUS:        ('fa6s.plus',             'accent'),
+    CLOSE:       ('fa6s.xmark',            'text_muted'),
+    REFRESH:     ('fa6s.rotate-left',      'text_secondary'),
+    GENERATE:    ('fa6s.dice',             'accent'),
+
+    # 收藏
+    STAR:        ('fa6s.star',             'warning'),
+    STAR_OUTLINE:('mdi6.star-outline',     'text_muted'),
+
+    # 状态
+    SUCCESS:     ('fa6s.circle-check',     'success'),
+    ERROR:       ('fa6s.circle-xmark',     'danger'),
+    WARNING:     ('fa6s.triangle-exclamation', 'warning_orange'),
+    INFO:        ('fa6s.circle-info',      'accent'),
+
+    # 导航
+    SEARCH:      ('fa6s.magnifying-glass', 'text_muted'),
+    FOLDER:      ('fa6s.folder',           'text_secondary'),
+    KEY:         ('fa6s.key',              'accent'),
+    SHIELD:      ('fa6s.shield-halved',    'accent'),
+    LOCK_SOLID:  ('fa6s.lock',             'accent'),
+    SETTINGS:    ('fa6s.gear',             'text_secondary'),
+
+    # 侧边栏筛选项
+    FILTER_ALL:      ('fa6s.clipboard-list',         'text_secondary'),
+    FILTER_FAVORITE: ('fa6s.star',                   'warning'),
+    FILTER_WEAK:     ('fa6s.triangle-exclamation',   'warning_orange'),
+    FILTER_DUPLICATE:('fa6s.repeat',                 'text_secondary'),
+    FILTER_RECENT:   ('fa6s.clock-rotate-left',      'text_secondary'),
+    FILTER_TRASH:    ('fa6s.trash-can',               'text_secondary'),
+
+    # 空状态
+    EMPTY_SEARCH:  ('fa6s.magnifying-glass', 'text_muted'),
+    EMPTY_TRASH:   ('fa6s.trash-can',        'text_muted'),
+    EMPTY_SUCCESS: ('fa6s.circle-check',     'success'),
+    EMPTY_FOLDER:  ('fa6s.folder-open',      'text_muted'),
+    EMPTY_VAULT:   ('fa6s.shield-halved',    'accent'),
+    EMPTY_GENERIC: ('fa6s.clipboard',        'text_muted'),
+
+    # 其他
+    TOTP:         ('fa6s.shield-halved',        'accent'),
+    HISTORY:      ('fa6s.clock-rotate-left',    'text_secondary'),
+    BROWSE:       ('fa6s.folder-open',          'accent'),
+    DOWNLOAD:     ('fa6s.download',             'accent'),
+    UPLOAD:       ('fa6s.upload',               'accent'),
+    HELP:         ('fa6s.circle-question',      'text_secondary'),
+    SHORTCUT:     ('fa6s.keyboard',             'text_secondary'),
+    UNDO:         ('fa6s.rotate-left',          'accent'),
+}
+
+# ============================================================
+# 核心 API
+# ============================================================
+
+
+def _make_icon(name: str, color_key: str | None = None) -> QIcon:
+    """内部：创建 QIcon 实例。"""
+    glyph, default_color_key = _ICON_MAP[name]
+    ck = color_key or default_color_key
+    color = c(ck)
+    return qta.icon(glyph, color=color)
+
+
+def icon(name: str, color_key: str | None = None, size: int = SIZE_BTN) -> QIcon:
+    """获取着色后的 QIcon。"""
+    return _make_icon(name, color_key)
+
+
+def icon_pixmap(name: str, color_key: str | None = None, size: int = SIZE_BTN) -> QPixmap:
+    """获取 QPixmap，用于 QLabel 等无法直接设置 QIcon 的控件。"""
+    qicon = _make_icon(name, color_key)
+    return qicon.pixmap(QSize(size, size))
+
+
+def set_icon(widget, name: str, color_key: str | None = None, size: int = SIZE_BTN):
+    """给 QPushButton 设置图标并自动清除文字。"""
+    qicon = _make_icon(name, color_key)
+    widget.setIcon(qicon)
+    widget.setIconSize(QSize(size, size))
+    widget.setText('')
+    widget.setAccessibleName(name.replace('_', ' '))
+
+
+def set_icon_with_text(widget, text: str, name: str, color_key: str | None = None, size: int = SIZE_BTN):
+    """给 QPushButton 同时设置图标和文字。"""
+    qicon = _make_icon(name, color_key)
+    widget.setIcon(qicon)
+    widget.setIconSize(QSize(size, size))
+    widget.setText(text)
+    widget.setAccessibleName(text)

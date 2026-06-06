@@ -1,0 +1,87 @@
+"""关于页面"""
+
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
+)
+from PyQt6.QtGui import QPixmap, QPainter, QColor, QFont
+from PyQt6.QtCore import Qt
+
+from .. import __version__, __app_name__
+from ..ui.resources.theme_colors import c
+
+
+class AboutDialog(QDialog):
+    """关于 CipherBox"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        self.setWindowTitle(f'关于 {__app_name__}')
+        self.setMinimumSize(400, 340)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.setContentsMargins(36, 30, 36, 30)
+
+        # 图标和名称（QPainter 绘制 Logo，与 tray_icon 同源）
+        pixmap = QPixmap(64, 64)
+        pixmap.fill(QColor(0, 0, 0, 0))
+        p = QPainter(pixmap)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QColor(c('brand')))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(4, 4, 56, 56, 12, 12)
+        p.setPen(QColor('white'))
+        p.setFont(QFont('Arial', 28, QFont.Weight.Bold))
+        p.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, 'C')
+        p.end()
+
+        icon = QLabel()
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setPixmap(pixmap)
+        layout.addWidget(icon)
+
+        name = QLabel(__app_name__)
+        name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        name.setStyleSheet('font-size: 20px; font-weight: bold;')
+        layout.addWidget(name)
+
+        version = QLabel(f'版本 {__version__}')
+        version.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        version.setStyleSheet(f'color: {c("text_muted")};')
+        layout.addWidget(version)
+
+        desc = QLabel(
+            '一款安全的本地密码管理器\n'
+            '使用 AES-256-GCM 加密存储所有敏感数据\n'
+            '所有数据保存在本地，不上传至任何服务器'
+        )
+        desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        desc.setStyleSheet(f'color: {c("text_secondary")}; font-size: 12px;')
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        tech = QLabel(
+            '技术栈：Python + PyQt6 + cryptography\n'
+            '加密算法：AES-256-GCM + PBKDF2-SHA256\n'
+            '数据存储：SQLite'
+        )
+        tech.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tech.setStyleSheet(f'color: {c("text_muted")}; font-size: 11px;')
+        tech.setWordWrap(True)
+        layout.addWidget(tech)
+
+        layout.addStretch()
+
+        # 关闭按钮
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+        close_btn = QPushButton('关闭')
+        close_btn.setFixedSize(90, 34)
+        close_btn.clicked.connect(self.close)
+        btn_layout.addWidget(close_btn)
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)

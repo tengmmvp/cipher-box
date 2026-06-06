@@ -1,0 +1,267 @@
+"""正式交付前的关键业务与 UI 回归测试。"""
+
+import json
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+from PyQt6.QtWidgets import QApplication
+
+from src.business.backup_restore import BackupRestoreManager
+from src.business.entry_manager import EntryManager
+from src.business.import_export import ImportExportManager
+from src.business.vault_manager import VaultManager
+from src.config import ConfigManager, DEFAULT_CONFIG
+from src.database.models import CustomField, Entry
+from src.crypto.totp import TOTPGenerator
+from src.ui.entry_dialog import EntryDialog
+from src.ui.main_window import MainWindow
+
+
+_APP = QApplication.instance() or QApplication([])
+
+
+def _config(root: str) -> ConfigManager:
+    config = ConfigManager.__new__(ConfigManager)
+    config._data_dir = Path(root)
+    config._config_path = Path(root) / 'config.json'
+    config._config = dict(DEFAULT_CONFIG)
+    config._config['show_tray_icon'] = False
+    return config
+
+
+def test_unchanged_password_does_not_create_history():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('MasterPassword!2026')
+        manager = EntryManager(vault)
+        entry_id = manager.add_entry(Entry(title='Account', password='SamePassword!2026'))
+        entry = manager.get_entry(entry_id)
+        manager.update_entry(entry)
+        assert manager.get_password_history(entry_id) == []
+        vault.close()
+
+
+def test_password_history_survives_master_password_change():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('OldMasterPassword!2026')
+        manager = EntryManager(vault)
+        entry_id = manager.add_entry(Entry(title='Account', password='FirstPassword!2026'))
+        entry = manager.get_entry(entry_id)
+        entry.password = 'SecondPassword!2026'
+        manager.update_entry(entry)
+
+        assert vault.change_master_password(
+            'OldMasterPassword!2026', 'NewMasterPassword!2026'
+        )
+        history = manager.decrypt_password_history(manager.get_password_history(entry_id))
+        assert [item['password'] for item in history] == ['FirstPassword!2026']
+        vault.close()
+
+
+def test_portable_backup_restores_into_different_vault():
+    with tempfile.TemporaryDirectory() as source_root, tempfile.TemporaryDirectory() as target_root:
+        source = VaultManager(_config(source_root))
+        assert source.initialize('SourceMasterPassword!2026')
+        source_manager = EntryManager(source)
+        entry_id = source_manager.add_entry(Entry(
+            title='Portable entry',
+            username='user@example.com',
+            password='FirstPassword!2026',
+            entry_type='server',
+            custom_fields=[CustomField('_server_host', '10.0.0.8')],
+        ))
+        edited = source_manager.get_entry(entry_id)
+        edited.password = 'SecondPassword!2026'
+        source_manager.update_entry(edited)
+        source_manager.delete_entry(entry_id)
+        backup_path = str(Path(source_root) / 'portable.cbox')
+        success, error = BackupRestoreManager(source).create_backup(
+            backup_path, 'IndependentBackupPassword!2026'
+        )
+        assert success, error
+
+        target = VaultManager(_config(target_root))
+        assert target.initialize('DifferentMasterPassword!2026')
+        success, error = BackupRestoreManager(target).restore_backup(
+            backup_path, 'IndependentBackupPassword!2026'
+        )
+        assert success, error
+        target_manager = EntryManager(target)
+        restored = target_manager.get_entries(include_deleted=True)
+        assert len(restored) == 1
+        assert restored[0].is_deleted is True
+        assert restored[0].password == 'SecondPassword!2026'
+        assert restored[0].custom_fields[0].value == '10.0.0.8'
+        history = target_manager.decrypt_password_history(
+            target_manager.get_password_history(restored[0].id)
+        )
+        assert [item['password'] for item in history] == ['FirstPassword!2026']
+        source.close()
+        target.close()
+
+
+def test_entry_dialog_restores_type_specific_fields():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('MasterPassword!2026')
+        manager = EntryManager(vault)
+        entry = Entry(
+            title='Card',
+            entry_type='card',
+            custom_fields=[
+                CustomField('_card_holder', 'Test User'),
+                CustomField('_card_number', '4111111111111111', 'password'),
+            ],
+        )
+        dialog = EntryDialog(manager, manager.get_categories(), entry=entry, config=_config(root))
+        assert dialog._type_combo.currentData() == 'card'
+        assert not dialog._special_widgets['card_number'].isHidden()
+        assert dialog._special_widgets['card_holder'].text() == 'Test User'
+        assert dialog._special_widgets['card_number'].text() == '4111 1111 1111 1111'
+        dialog.close()
+        vault.close()
+
+
+def test_lock_preparation_clears_decrypted_ui_and_clipboard():
+    with tempfile.TemporaryDirectory() as root:
+        config = _config(root)
+        vault = VaultManager(config)
+        assert vault.initialize('MasterPassword!2026')
+        manager = EntryManager(vault)
+        manager.add_entry(Entry(title='Secret', password='VisibleSecret!2026'))
+        window = MainWindow(config, vault)
+        assert window._entry_list.count() == 1
+        window._clipboard.copy_text('VisibleSecret!2026')
+
+        window.prepare_for_lock()
+        vault.lock()
+
+        assert window._entry_list.count() == 0
+        assert window._detail_panel._current_entry is None
+        assert QApplication.clipboard().text() != 'VisibleSecret!2026'
+        window.close()
+
+
+def test_selecting_first_entry_opens_detail_panel_without_crash():
+    with tempfile.TemporaryDirectory() as root:
+        config = _config(root)
+        config.set('theme', 'dark')
+        vault = VaultManager(config)
+        assert vault.initialize('MasterPassword!2026')
+        manager = EntryManager(vault)
+        entry_id = manager.add_entry(Entry(title='Selectable', password='Strong!2026Password'))
+        window = MainWindow(config, vault)
+        window._entry_list.setCurrentRow(0)
+        _APP.processEvents()
+        assert window._detail_panel._current_entry.id == entry_id
+        assert window._detail_panel._title_label.text().endswith('Selectable')
+        window.close()
+
+
+def test_totp_accepts_standard_otpauth_uri():
+    uri = (
+        'otpauth://totp/CipherBox:test@example.com?'
+        'secret=JBSWY3DPEHPK3PXP&algorithm=SHA1&digits=6&period=60'
+    )
+    assert TOTPGenerator.validate_secret(uri)
+    assert len(TOTPGenerator.generate(uri)) == 6
+    assert TOTPGenerator.get_period(uri) == 60
+
+
+def test_bitwarden_import_preserves_folder_totp_and_custom_fields():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('MasterPassword!2026')
+        manager = EntryManager(vault)
+        importer = ImportExportManager(manager)
+        payload = {
+            'folders': [{'id': 'folder-1', 'name': 'Work'}],
+            'items': [{
+                'type': 1,
+                'name': 'Imported login',
+                'folderId': 'folder-1',
+                'favorite': True,
+                'login': {
+                    'username': 'user@example.com',
+                    'password': 'ImportedPassword!2026',
+                    'totp': 'JBSWY3DPEHPK3PXP',
+                    'uris': [{'uri': 'https://example.com'}],
+                },
+                'fields': [{'name': 'PIN', 'value': '1234', 'type': 1}],
+            }],
+        }
+        path = Path(root) / 'bitwarden.json'
+        path.write_text(json.dumps(payload), encoding='utf-8')
+        assert importer.import_from_bitwarden_json(str(path)) == 1
+        entry = manager.get_entries()[0]
+        assert entry.category_name == 'Work'
+        assert entry.totp_secret == 'JBSWY3DPEHPK3PXP'
+        assert entry.is_favorite is True
+        assert entry.custom_fields[0].name == 'PIN'
+        assert entry.custom_fields[0].field_type == 'password'
+        vault.close()
+
+
+def test_import_rolls_back_when_any_entry_fails():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('MasterPassword!2026')
+        manager = EntryManager(vault)
+        importer = ImportExportManager(manager)
+        path = Path(root) / 'entries.json'
+        path.write_text(json.dumps({
+            'entries': [
+                {'title': 'First', 'password': 'a'},
+                {'title': 'Second', 'password': 'b'},
+            ]
+        }), encoding='utf-8')
+        original_add = manager.add_entry
+        calls = 0
+
+        def fail_second(entry):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError('simulated import failure')
+            return original_add(entry)
+
+        with patch.object(manager, 'add_entry', side_effect=fail_second):
+            try:
+                importer.import_from_json(str(path))
+            except RuntimeError:
+                pass
+        assert manager.get_entry_count() == 0
+        vault.close()
+
+
+def test_favorite_change_does_not_reset_password_age():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('MasterPassword!2026')
+        manager = EntryManager(vault)
+        entry_id = manager.add_entry(Entry(title='Account', password='Password!2026'))
+        before = manager.get_entry(entry_id).password_changed_at
+        manager.toggle_favorite(entry_id)
+        after = manager.get_entry(entry_id).password_changed_at
+        assert after == before
+        vault.close()
+
+
+def test_main_window_filters_entries_by_tag():
+    with tempfile.TemporaryDirectory() as root:
+        config = _config(root)
+        vault = VaultManager(config)
+        assert vault.initialize('MasterPassword!2026')
+        manager = EntryManager(vault)
+        manager.add_entry(Entry(title='Work', tags='工作,重要'))
+        manager.add_entry(Entry(title='Personal', tags='个人'))
+        window = MainWindow(config, vault)
+        index = window._tag_combo.findData('工作')
+        assert index >= 0
+        window._tag_combo.setCurrentIndex(index)
+        _APP.processEvents()
+        assert window._entry_list.count() == 1
+        assert window._entry_list.item(0).data(256).title == 'Work'
+        window.close()
