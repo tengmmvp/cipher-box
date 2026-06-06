@@ -26,7 +26,7 @@ class LoginWindow(QDialog):
 
     def _setup_ui(self):
         self.setWindowTitle('CipherBox 密匣 - 登录')
-        self.setFixedSize(500, 520 if self._is_first_time else 450)
+        self.setFixedWidth(500)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
 
         outer = QVBoxLayout(self)
@@ -72,6 +72,7 @@ class LoginWindow(QDialog):
         layout.addWidget(pwd_label)
 
         pwd_layout = QHBoxLayout()
+        pwd_layout.setSpacing(6)
         self._password_edit = QLineEdit()
         self._password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self._password_edit.setPlaceholderText('请输入主密码')
@@ -89,6 +90,9 @@ class LoginWindow(QDialog):
 
         # 确认密码（仅首次）
         self._confirm_container = QWidget()
+        self._confirm_container.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         confirm_layout = QVBoxLayout(self._confirm_container)
         confirm_layout.setContentsMargins(0, 0, 0, 0)
         confirm_layout.setSpacing(6)
@@ -98,6 +102,7 @@ class LoginWindow(QDialog):
         confirm_layout.addWidget(confirm_label)
 
         confirm_pwd_layout = QHBoxLayout()
+        confirm_pwd_layout.setSpacing(6)
         self._confirm_edit = QLineEdit()
         self._confirm_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self._confirm_edit.setPlaceholderText('请再次输入主密码')
@@ -148,6 +153,11 @@ class LoginWindow(QDialog):
         btn_layout.addStretch()
 
         layout.addLayout(btn_layout)
+
+        # 不同 DPI、系统字体和窗口样式下控件高度会变化，不能用固定高度压缩布局。
+        outer.activate()
+        preferred_height = 520 if self._is_first_time else 450
+        self.setFixedHeight(max(preferred_height, self.minimumSizeHint().height()))
 
     def _toggle_main_password(self):
         if self._password_edit.echoMode() == QLineEdit.EchoMode.Password:

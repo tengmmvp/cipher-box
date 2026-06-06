@@ -65,6 +65,8 @@ QPushButton#iconBtn {{
     background: transparent;
     padding: 4px;
     font-size: 16px;
+    min-width: 0px;
+    min-height: 0px;
 }}
 QPushButton#iconBtn:hover {{
     background: rgba(128,128,128,0.1);

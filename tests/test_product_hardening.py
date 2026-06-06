@@ -15,7 +15,9 @@ from src.config import ConfigManager, DEFAULT_CONFIG
 from src.database.models import CustomField, Entry
 from src.crypto.totp import TOTPGenerator
 from src.ui.entry_dialog import EntryDialog
+from src.ui.login_window import LoginWindow
 from src.ui.main_window import MainWindow
+from src.ui.resources.styles import get_style
 
 
 _APP = QApplication.instance() or QApplication([])
@@ -158,6 +160,28 @@ def test_selecting_first_entry_opens_detail_panel_without_crash():
         assert window._detail_panel._current_entry.id == entry_id
         assert window._detail_panel._title_label.text().endswith('Selectable')
         window.close()
+
+
+def test_first_time_login_password_fields_have_matching_dimensions():
+    previous_style = _APP.styleSheet()
+    _APP.setStyleSheet(get_style('light'))
+    try:
+        vault = type('FirstTimeVault', (), {'is_initialized': False})()
+        dialog = LoginWindow(vault)
+        dialog.show()
+        _APP.processEvents()
+
+        assert dialog.height() >= dialog.minimumSizeHint().height()
+        assert dialog._password_edit.width() == dialog._confirm_edit.width()
+        assert dialog._password_edit.height() == dialog._confirm_edit.height()
+        assert dialog._confirm_edit.visibleRegion().boundingRect() == dialog._confirm_edit.rect()
+        assert (
+            dialog._toggle_confirm_btn.visibleRegion().boundingRect()
+            == dialog._toggle_confirm_btn.rect()
+        )
+        dialog.close()
+    finally:
+        _APP.setStyleSheet(previous_style)
 
 
 def test_totp_accepts_standard_otpauth_uri():
