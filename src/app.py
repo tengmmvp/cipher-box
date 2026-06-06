@@ -31,7 +31,7 @@ class CipherBoxApp:
         self._app.setStyleSheet(get_style(theme))  # type: ignore[attr-defined]
 
         # 设置应用属性
-        self._app.setApplicationName('CipherBox 密匣')
+        self._app.setApplicationName('CipherBox')
         self._app.setOrganizationName('CipherBox')
         self._app.setApplicationVersion(__version__)
 

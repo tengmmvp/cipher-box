@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QLabel
 
 from src.business.backup_restore import BackupRestoreManager
 from src.business.entry_manager import EntryManager
@@ -182,6 +182,15 @@ def test_first_time_login_password_fields_have_matching_dimensions():
         dialog.close()
     finally:
         _APP.setStyleSheet(previous_style)
+
+
+def test_visible_branding_uses_single_product_name():
+    vault = type('FirstTimeVault', (), {'is_initialized': False})()
+    dialog = LoginWindow(vault)
+
+    assert dialog.windowTitle() == 'CipherBox - 登录'
+    assert all('密匣' not in label.text() for label in dialog.findChildren(QLabel))
+    dialog.close()
 
 
 def test_totp_accepts_standard_otpauth_uri():

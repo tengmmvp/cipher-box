@@ -1,4 +1,4 @@
-"""主窗口 - CipherBox 密匣主界面（重构版）
+"""主窗口 - CipherBox 主界面（重构版）
 
 集成：快捷键、排序、Toast 通知、分类管理、标签筛选、撤销删除、主题刷新、安全仪表盘
 """
@@ -85,7 +85,7 @@ class MainWindow(QMainWindow):
         self._refresh_entries()
 
     def _setup_ui(self):
-        self.setWindowTitle('CipherBox 密匣')
+        self.setWindowTitle('CipherBox')
         self.setMinimumSize(980, 640)
         self.resize(1180, 760)
 
@@ -156,7 +156,7 @@ class MainWindow(QMainWindow):
         brand_row.addWidget(self._brand_icon)
         brand_text = QVBoxLayout()
         brand_text.setSpacing(0)
-        self._brand_title = QLabel('CipherBox 密匣')
+        self._brand_title = QLabel('CipherBox')
         self._brand_title.setStyleSheet(f'font-size: 15px; font-weight: 700; color: {c("text_primary")};')
         self._brand_subtitle = QLabel('本地加密保险库')
         self._brand_subtitle.setStyleSheet(f'font-size: 10px; color: {c("text_muted")};')

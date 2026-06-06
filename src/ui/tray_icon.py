@@ -20,7 +20,7 @@ class TrayIcon(QSystemTrayIcon):
         # 使用文字作为图标（无外部图标文件）
         self.setIcon(TrayIcon._create_icon(QColor(c('brand')), 'C'))
 
-        self.setToolTip('CipherBox 密匣')
+        self.setToolTip('CipherBox')
 
         self._create_menu()
 
@@ -47,10 +47,10 @@ class TrayIcon(QSystemTrayIcon):
         """切换锁定/解锁状态的托盘图标"""
         if locked:
             self.setIcon(TrayIcon._create_icon(QColor(c('text_muted')), '🔒'))
-            self.setToolTip('CipherBox 密匣（已锁定）')
+            self.setToolTip('CipherBox（已锁定）')
         else:
             self.setIcon(TrayIcon._create_icon(QColor(c('brand')), 'C'))
-            self.setToolTip('CipherBox 密匣')
+            self.setToolTip('CipherBox')
 
     def _create_menu(self):
         menu = QMenu()

@@ -25,7 +25,7 @@ class LoginWindow(QDialog):
         self._setup_ui()
 
     def _setup_ui(self):
-        self.setWindowTitle('CipherBox 密匣 - 登录')
+        self.setWindowTitle('CipherBox - 登录')
         self.setFixedWidth(500)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
 
@@ -44,7 +44,7 @@ class LoginWindow(QDialog):
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(logo)
 
-        title = QLabel('CipherBox 密匣')
+        title = QLabel('CipherBox')
         title.setObjectName('sectionLabel')
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(f'font-size: 24px; font-weight: 700; color: {c("text_primary")};')
