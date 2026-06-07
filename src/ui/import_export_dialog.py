@@ -201,7 +201,7 @@ class ImportExportDialog(QDialog):
                 return
 
         try:
-            entries = self._entry_mgr.get_entries()
+            entries = self._entry_mgr.get_entries_for_export(include_pwd)
             if fmt == 'JSON':
                 self._import_export.export_to_json(path, entries, include_pwd)
             else:

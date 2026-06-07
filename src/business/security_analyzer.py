@@ -1,6 +1,7 @@
 """安全分析器 - 弱密码检测、重复密码检测、过期提醒"""
 
 import hmac
+from datetime import datetime, timedelta
 
 from ..crypto.encryption import EncryptionEngine
 from ..crypto.password_generator import PasswordGenerator
@@ -54,77 +55,58 @@ class SecurityAnalyzer:
         return hmac.digest(self._key, password.encode('utf-8'), 'sha256')
 
     def find_weak_passwords(self) -> list[Entry]:
-        """查找弱密码条目（强度评分 <= 1）"""
-        entries = self._vault.db.get_entries(include_deleted=False)
-        weak = []
-        for raw in entries:
-            try:
-                password = self._decrypt(raw, 'password', raw.password)
-                if password:
-                    strength = PasswordGenerator.check_strength(password)
-                    if strength.score <= 1:
-                        weak.append(self._make_summary(raw))
-            except ValueError:
-                continue
-        return weak
+        """查找弱密码条目（强度评分 <= 1）。"""
+        return self.full_analysis()['weak_entries']
 
     def find_duplicate_passwords(self) -> list[list[Entry]]:
         """查找重复密码（返回分组列表，每组包含使用相同密码的条目）"""
-        entries = self._vault.db.get_entries(include_deleted=False)
-        password_map: dict[bytes, list[Entry]] = {}
-
-        for raw in entries:
-            try:
-                password = self._decrypt(raw, 'password', raw.password)
-                if password:
-                    fingerprint = self._password_fingerprint(password)
-                    password_map.setdefault(fingerprint, []).append(
-                        self._make_summary(raw)
-                    )
-            except ValueError:
-                continue
-
-        return [group for group in password_map.values() if len(group) > 1]
+        return self.full_analysis()['duplicate_groups']
 
     def find_old_passwords(self, days: int = 90) -> list[Entry]:
         """查找超过指定天数未修改的条目"""
-        raw_entries = self._vault.db.get_old_entries(days)
-        result = []
-        for raw in raw_entries:
-            try:
-                result.append(self._make_summary(raw))
-            except ValueError:
-                continue
-        return result
+        return self.full_analysis(days)['old_entries']
 
     def full_analysis(self, days: int = 90) -> dict:
         """一次性完成所有安全分析，避免重复解密"""
         entries = self._vault.db.get_entries(include_deleted=False)
         total = len(entries)
         weak_entries = []
+        old_entries = []
         password_map: dict[bytes, list[Entry]] = {}
+        cutoff = datetime.now() - timedelta(days=days)
 
         for raw in entries:
             try:
+                summary = self._make_summary(raw)
+                changed_at = (
+                    raw.password_changed_at or raw.updated_at or raw.created_at
+                )
+                if changed_at:
+                    changed = datetime.fromisoformat(changed_at)
+                    comparable_cutoff = cutoff
+                    if changed.tzinfo is not None:
+                        comparable_cutoff = cutoff.astimezone(changed.tzinfo)
+                    if changed < comparable_cutoff:
+                        old_entries.append(summary)
+
                 password = self._decrypt(raw, 'password', raw.password)
                 if not password:
                     continue
 
                 strength = PasswordGenerator.check_strength(password)
-                summary = self._make_summary(raw)
+                summary.password_strength = strength.score
                 if strength.score <= 1:
                     weak_entries.append(summary)
 
                 fingerprint = self._password_fingerprint(password)
                 password_map.setdefault(fingerprint, []).append(summary)
-            except ValueError:
-                continue
+            except ValueError as exc:
+                raise RuntimeError(
+                    f'条目 {raw.id} 安全分析失败，数据可能已损坏'
+                ) from exc
 
         duplicate_groups = [g for g in password_map.values() if len(g) > 1]
         duplicate_count = sum(len(g) - 1 for g in duplicate_groups)
-
-        # 旧密码单独查（这个查询量小，可以保留 DB 层过滤）
-        old_entries = self.find_old_passwords(days)
 
         return {
             'total': total,

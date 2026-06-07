@@ -1,9 +1,14 @@
 """配置管理模块 - 管理 CipherBox 应用的所有配置项"""
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
+
+from .utils.file_security import secure_directory, secure_file
+
+logger = logging.getLogger(__name__)
 
 
 def get_data_dir() -> Path:
@@ -16,8 +21,7 @@ def get_data_dir() -> Path:
             os.path.join(os.path.expanduser('~'), '.local', 'share'),
         )
     data_dir = Path(base) / 'CipherBox'
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return data_dir
+    return secure_directory(data_dir)
 
 
 # 默认配置
@@ -97,7 +101,7 @@ class ConfigManager:
                     if key in DEFAULT_CONFIG and self._is_valid(key, value):
                         self._config[key] = value
             except (json.JSONDecodeError, OSError, ValueError):
-                pass
+                logger.warning('配置文件无效，已使用默认配置', exc_info=True)
 
     def save(self):
         """原子保存配置，避免异常退出留下半个 JSON 文件。"""
@@ -107,11 +111,9 @@ class ConfigManager:
             json.dump(self._config, f, indent=2, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
+        secure_file(temp_path)
         os.replace(temp_path, self._config_path)
-        try:
-            os.chmod(self._config_path, 0o600)
-        except OSError:
-            pass
+        secure_file(self._config_path)
 
     def get(self, key: str, default: Any = None) -> Any:
         """获取配置项"""

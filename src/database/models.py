@@ -86,7 +86,7 @@ class Entry:
     category_name: str = ''
     tags: str = ''
     notes: str = ''
-    custom_fields: list[CustomField] = field(default_factory=list)
+    custom_fields: list[CustomField] | str = field(default_factory=list)
     is_favorite: bool = False
     is_deleted: bool = False
     password_strength: int = 0
@@ -96,6 +96,7 @@ class Entry:
     updated_at: str = ''
     deleted_at: str = ''
     password_changed_at: str = ''
+    metadata_mac: str = ''
     integrity_error: bool = False
     integrity_message: str = ''
     password_present: bool = False
@@ -122,8 +123,11 @@ class Entry:
             return []
         return [t.strip() for t in self.tags.split(',') if t.strip()]
 
-    def to_dict(self, include_password: bool = True) -> dict:
+    def to_dict(self, include_password: bool = False) -> dict:
         """转换为字典（用于导出）"""
+        custom_fields = (
+            self.custom_fields if isinstance(self.custom_fields, list) else []
+        )
         d = {
             'title': self.title,
             'username': self.username,
@@ -132,7 +136,7 @@ class Entry:
             'tags': self.tags,
             'notes': self.notes,
             'custom_fields': [
-                f.to_dict() for f in self.custom_fields
+                f.to_dict() for f in custom_fields
                 if include_password or f.field_type != 'password'
             ],
             'is_favorite': self.is_favorite,

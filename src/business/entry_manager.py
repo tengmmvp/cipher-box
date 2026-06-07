@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 from ..crypto.encryption import EncryptionEngine
 from ..crypto.password_generator import PasswordGenerator
-from ..database.models import Category, CustomField, Entry, PasswordHistory
+from ..database.models import ENTRY_TYPES, Category, CustomField, Entry, PasswordHistory
 
 
 class EntryManager:
@@ -62,10 +62,18 @@ class EntryManager:
                 raise
             return ''
 
-    def _encrypt_custom_fields(self, fields: list[CustomField], crypto_id: str) -> str:
+    def _encrypt_custom_fields(
+        self,
+        fields: list[CustomField] | str,
+        crypto_id: str,
+    ) -> str:
         """加密自定义字段列表"""
         if not fields:
             return ''
+        if not isinstance(fields, list) or not all(
+            isinstance(field, CustomField) for field in fields
+        ):
+            raise ValueError('自定义字段必须是 CustomField 列表')
         data = json.dumps([f.to_dict() for f in fields], ensure_ascii=False)
         return self._encrypt_field(data, crypto_id, 'custom_fields')
 
@@ -73,14 +81,15 @@ class EntryManager:
         """解密自定义字段列表"""
         if not encrypted:
             return []
-        try:
-            data = self._decrypt_field(
-                encrypted, crypto_id, 'custom_fields', strict=True
-            )
-            items = json.loads(data)
-            return [CustomField.from_dict(item) for item in items]
-        except json.JSONDecodeError:
-            return []
+        data = self._decrypt_field(
+            encrypted, crypto_id, 'custom_fields', strict=True
+        )
+        items = json.loads(data)
+        if not isinstance(items, list) or not all(
+            isinstance(item, dict) for item in items
+        ):
+            raise ValueError('自定义字段结构无效')
+        return [CustomField.from_dict(item) for item in items]
 
     def decrypt_entry(self, raw_entry: Entry) -> Entry:
         """解密条目的所有敏感字段，返回新的 Entry 对象"""
@@ -131,6 +140,64 @@ class EntryManager:
             totp_present=bool(raw_entry.totp_secret),
         )
 
+    def decrypt_entry_for_export(
+        self,
+        raw_entry: Entry,
+        include_secrets: bool = False,
+    ) -> Entry:
+        """仅解密导出所需字段，默认不让密码与 TOTP 进入内存结果。"""
+        try:
+            custom_fields = self._decrypt_custom_fields(
+                raw_entry.custom_fields
+                if isinstance(raw_entry.custom_fields, str)
+                else '',
+                raw_entry.crypto_id,
+            )
+            return Entry(
+                id=raw_entry.id,
+                crypto_id=raw_entry.crypto_id,
+                title=raw_entry.title,
+                username=self._decrypt_field(
+                    raw_entry.username, raw_entry.crypto_id, 'username', strict=True
+                ),
+                password=(
+                    self._decrypt_field(
+                        raw_entry.password,
+                        raw_entry.crypto_id,
+                        'password',
+                        strict=True,
+                    )
+                    if include_secrets else ''
+                ),
+                url=raw_entry.url,
+                category_id=raw_entry.category_id,
+                category_name=raw_entry.category_name,
+                tags=raw_entry.tags,
+                notes=self._decrypt_field(
+                    raw_entry.notes, raw_entry.crypto_id, 'notes', strict=True
+                ),
+                custom_fields=custom_fields,
+                is_favorite=raw_entry.is_favorite,
+                password_strength=raw_entry.password_strength,
+                entry_type=raw_entry.entry_type,
+                totp_secret=(
+                    self._decrypt_field(
+                        raw_entry.totp_secret,
+                        raw_entry.crypto_id,
+                        'totp_secret',
+                        strict=True,
+                    )
+                    if include_secrets else ''
+                ),
+                created_at=raw_entry.created_at,
+                updated_at=raw_entry.updated_at,
+                password_changed_at=raw_entry.password_changed_at,
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f'条目 {raw_entry.id} 导出失败，数据可能已损坏'
+            ) from exc
+
     def _decrypt_summary(self, raw_entry: Entry) -> Entry:
         """仅解密列表展示所需字段，不让密码等明文进入列表模型。"""
         integrity_error = False
@@ -166,6 +233,7 @@ class EntryManager:
 
     def add_entry(self, entry: Entry) -> int:
         """添加新条目（自动加密并检测强度）"""
+        self._validate_plain_entry(entry)
         strength = PasswordGenerator.check_strength(entry.password)
         entry.password_strength = strength.score
         crypto_id = entry.crypto_id or uuid.uuid4().hex
@@ -196,6 +264,7 @@ class EntryManager:
 
     def update_entry(self, entry: Entry):
         """更新条目（自动加密、记录密码历史）"""
+        self._validate_plain_entry(entry)
         if entry.integrity_error:
             raise RuntimeError(
                 f"条目存在无法解密的字段（{entry.integrity_message}），为避免数据丢失已禁止保存"
@@ -328,6 +397,13 @@ class EntryManager:
             ]
         return summaries
 
+    def get_entries_for_export(self, include_secrets: bool = False) -> list[Entry]:
+        raw_entries = self.db.get_entries(include_deleted=False)
+        return [
+            self.decrypt_entry_for_export(entry, include_secrets)
+            for entry in raw_entries
+        ]
+
     def get_categories(self) -> list[Category]:
         """获取所有分类"""
         return self._vault.db.get_categories()
@@ -369,3 +445,17 @@ class EntryManager:
             for tag in e.get_tag_list():
                 tag_count[tag] = tag_count.get(tag, 0) + 1
         return sorted(tag_count.items(), key=lambda x: -x[1])
+
+    @staticmethod
+    def _validate_plain_entry(entry: Entry):
+        if entry.entry_type not in ENTRY_TYPES:
+            raise ValueError('条目类型无效')
+        for field_name in (
+            'title', 'username', 'password', 'url', 'tags', 'notes', 'totp_secret'
+        ):
+            if not isinstance(getattr(entry, field_name), str):
+                raise ValueError(f'条目字段 {field_name} 类型无效')
+        if not isinstance(entry.custom_fields, list) or not all(
+            isinstance(field, CustomField) for field in entry.custom_fields
+        ):
+            raise ValueError('自定义字段结构无效')

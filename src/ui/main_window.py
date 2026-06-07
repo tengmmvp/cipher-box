@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QMenu, QMessageBox, QStatusBar, QStackedWidget,
     QComboBox, QApplication, QDialog, QLineEdit, QTextEdit,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QEvent
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QEvent, QSize
 from PyQt6.QtGui import QAction, QShortcut, QKeySequence
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -31,7 +31,7 @@ from .backup_dialog import BackupDialog
 from .change_master_dialog import ChangeMasterDialog
 from .about_dialog import AboutDialog
 from .tray_icon import TrayIcon
-from .entry_list_widget import EntryItemWidget
+from .entry_list_widget import EntryItemDelegate
 from .empty_state_widget import EmptyStateWidget
 from .toast import Toast
 from .category_dialog import CategoryDialog
@@ -334,6 +334,8 @@ class MainWindow(QMainWindow):
         self._list_stack = QStackedWidget()
 
         self._entry_list = QListWidget()
+        self._entry_list.setItemDelegate(EntryItemDelegate(self._entry_list))
+        self._entry_list.setUniformItemSizes(True)
         self._entry_list.setAlternatingRowColors(True)
         self._entry_list.currentItemChanged.connect(self._on_entry_selected)
         self._entry_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -581,8 +583,9 @@ class MainWindow(QMainWindow):
         self._category_list.addItem(all_item)
 
         categories = self._entry_mgr.get_categories()
+        category_counts = self._vault.db.get_category_entry_counts()
         for cat in categories:
-            count = self._vault.db.get_category_entry_count(cat.id)
+            count = category_counts.get(cat.id, 0)
             label = f'{cat.icon_char} {cat.name} ({count})' if count > 0 else f'{cat.icon_char} {cat.name}'
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, cat.id)
@@ -628,10 +631,10 @@ class MainWindow(QMainWindow):
             entries = self._entry_mgr.get_entry_summaries(favorite_only=True, search=self._current_search)
             self._list_title.setText('收藏')
         elif self._current_filter == 'weak':
-            entries = self._security.find_weak_passwords()
+            entries = self._get_security_summary()['weak_entries']
             self._list_title.setText('弱密码')
         elif self._current_filter == 'duplicate':
-            groups = self._security.find_duplicate_passwords()
+            groups = self._get_security_summary()['duplicate_groups']
             entries = [e for group in groups for e in group]
             self._list_title.setText('重复密码')
         elif self._current_filter == 'recent':
@@ -667,9 +670,7 @@ class MainWindow(QMainWindow):
 
         for entry in entries:
             item = QListWidgetItem(self._entry_list)
-            widget = EntryItemWidget(entry, highlight=self._current_search)
-            item.setSizeHint(widget.sizeHint())
-            self._entry_list.setItemWidget(item, widget)
+            item.setSizeHint(QSize(0, EntryItemDelegate.ROW_HEIGHT))
             item.setData(Qt.ItemDataRole.UserRole, entry)
 
         self._count_label.setText(f'{len(entries)} 项')
@@ -755,17 +756,7 @@ class MainWindow(QMainWindow):
 
     def _update_status_bar(self):
         try:
-            import time
-            now = time.time()
-            # 30 秒缓存
-            if self._security_cache is not None and (now - self._security_cache_time) < 30:
-                summary = self._security_cache
-            else:
-                summary = self._security.full_analysis(
-                    self._config.get('old_password_warning_days', 90)
-                )
-                self._security_cache = summary
-                self._security_cache_time = now
+            summary = self._get_security_summary()
 
             total = summary['total']
             self._stats_label.setText(f'共 {total} 项')
@@ -792,8 +783,21 @@ class MainWindow(QMainWindow):
                 if old_warn:
                     self._status_bar.removeWidget(old_warn)
                     old_warn.deleteLater()
-        except Exception:
-            pass
+        except Exception as exc:
+            self._status_bar.showMessage(f'安全分析不可用：{exc}')
+
+    def _get_security_summary(self) -> dict:
+        import time
+        now = time.time()
+        if (
+            self._security_cache is None
+            or now - self._security_cache_time >= 30
+        ):
+            self._security_cache = self._security.full_analysis(
+                self._config.get('old_password_warning_days', 90)
+            )
+            self._security_cache_time = now
+        return self._security_cache
 
     # ========== 事件处理 ==========
 
@@ -842,18 +846,7 @@ class MainWindow(QMainWindow):
             self._refresh_entries()
 
     def _on_entry_selected(self, current, previous):
-        # 取消前一项选中态
-        if previous is not None:
-            prev_widget = self._entry_list.itemWidget(previous)
-            if prev_widget and hasattr(prev_widget, 'set_selected'):
-                prev_widget.set_selected(False)
-
         if current:
-            # 设置当前项选中态
-            cur_widget = self._entry_list.itemWidget(current)
-            if cur_widget and hasattr(cur_widget, 'set_selected'):
-                cur_widget.set_selected(True)
-
             summary = current.data(Qt.ItemDataRole.UserRole)
             if summary:
                 entry = self._entry_mgr.get_entry(summary.id)

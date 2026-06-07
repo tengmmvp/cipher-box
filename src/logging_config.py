@@ -4,16 +4,20 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from .utils.file_security import secure_directory, secure_file
+
 
 def configure_logging(data_dir: Path):
     log_dir = data_dir / 'logs'
-    log_dir.mkdir(parents=True, exist_ok=True)
+    secure_directory(log_dir)
+    log_path = log_dir / 'cipherbox.log'
     handler = RotatingFileHandler(
-        log_dir / 'cipherbox.log',
+        log_path,
         maxBytes=1_000_000,
         backupCount=3,
         encoding='utf-8',
     )
+    secure_file(log_path)
     handler.setFormatter(logging.Formatter(
         '%(asctime)s %(levelname)s %(name)s: %(message)s'
     ))

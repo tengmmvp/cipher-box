@@ -1,6 +1,9 @@
 """保险库管理器 - 高层保险库操作"""
 
 import base64
+import hashlib
+import hmac
+import json
 import logging
 import os
 import uuid
@@ -11,6 +14,7 @@ logger = logging.getLogger(__name__)
 from ..config import ConfigManager
 from ..crypto.master_key import MasterKeyManager, PBKDF2_ITERATIONS
 from ..crypto.encryption import EncryptionEngine
+from ..crypto.password_generator import PasswordGenerator
 from ..database.db_manager import DatabaseManager
 
 
@@ -21,6 +25,10 @@ class VaultManager:
         self._config = config
         self._db = DatabaseManager(config.db_path)
         self._db.set_write_guard(self.assert_current_key)
+        self._db.set_entry_integrity_handlers(
+            self._sign_entry_metadata,
+            self._verify_entry_metadata,
+        )
         self._key: Optional[bytes] = None
         self._is_unlocked = False
         self._key_epoch: str | None = None
@@ -93,11 +101,17 @@ class VaultManager:
         """
         try:
             self._last_error = ''
+            valid, error = PasswordGenerator.validate_master_password(master_password)
+            if not valid:
+                raise ValueError(error)
+            if not self._db.is_open and not self._db.open():
+                raise RuntimeError('数据库无法打开')
+            self._db.init_tables()
+            if self._db.get_meta('master_salt') or self._db.get_meta('master_verify'):
+                raise RuntimeError('保险库已经初始化，不能重复设置主密码')
             salt, verify_token = MasterKeyManager.create(
                 master_password, PBKDF2_ITERATIONS
             )
-            self._db.open()
-            self._db.init_tables()
             derived_key = MasterKeyManager.derive_key(
                 master_password, salt, PBKDF2_ITERATIONS
             )
@@ -203,6 +217,14 @@ class VaultManager:
             是否成功
         """
         try:
+            self._last_error = ''
+            valid, error = PasswordGenerator.validate_master_password(new_password)
+            if not valid:
+                self._last_error = error
+                return False
+            if old_password == new_password:
+                self._last_error = '新密码不能与当前主密码相同'
+                return False
             salt_b64 = self._db.get_meta('master_salt')
             verify_token = self._db.get_meta('master_verify')
             if not salt_b64 or not verify_token:
@@ -222,6 +244,7 @@ class VaultManager:
                 PBKDF2_ITERATIONS,
             )
             if result is None:
+                self._last_error = '当前主密码错误'
                 return False
 
             new_salt, new_verify_token, _ = result
@@ -232,7 +255,8 @@ class VaultManager:
             return True
         except RuntimeError:
             raise  # 让 RuntimeError（如重加密失败）向上传播到 UI 层
-        except Exception:
+        except Exception as exc:
+            self._last_error = str(exc) or '修改主密码失败'
             return False
 
     def _re_encrypt_all(self, new_password: str, new_salt: bytes, new_verify_token: str):
@@ -277,7 +301,11 @@ class VaultManager:
                 raw_entry.custom_fields = self._encrypt_entry_field(raw_entry, 'custom_fields', raw_entry.custom_fields, new_key)
                 raw_entry.totp_secret = self._encrypt_entry_field(raw_entry, 'totp_secret', raw_entry.totp_secret, new_key)
 
-                self._db.update_entry(raw_entry, preserve_updated_at=True)
+                self._db.update_entry(
+                    raw_entry,
+                    preserve_updated_at=True,
+                    metadata_mac=self._sign_entry_metadata(raw_entry, new_key),
+                )
 
             for history in history_rows:
                 try:
@@ -323,8 +351,7 @@ class VaultManager:
         except Exception:
             # 回滚所有变更，保护数据一致性
             self._db.rollback_transaction()
-            self._key = None
-            self._is_unlocked = False
+            self.lock()
             logger.error("重加密失败: 回滚所有变更", exc_info=True)
             raise
 
@@ -345,6 +372,52 @@ class VaultManager:
     @staticmethod
     def _aad(crypto_id: str, field_name: str) -> str:
         return f'entry:{crypto_id}:{field_name}'
+
+    @staticmethod
+    def _entry_metadata_payload(entry) -> bytes:
+        data = {
+            'crypto_id': entry.crypto_id,
+            'title': entry.title,
+            'url': entry.url,
+            'category_id': entry.category_id,
+            'tags': entry.tags,
+            'is_favorite': bool(entry.is_favorite),
+            'is_deleted': bool(entry.is_deleted),
+            'password_strength': entry.password_strength,
+            'entry_type': entry.entry_type,
+            'created_at': entry.created_at,
+            'updated_at': entry.updated_at,
+            'deleted_at': entry.deleted_at,
+            'password_changed_at': entry.password_changed_at,
+        }
+        return json.dumps(
+            data,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(',', ':'),
+        ).encode('utf-8')
+
+    def _sign_entry_metadata(self, entry, key: bytes | None = None) -> str:
+        signing_key = key or self._key
+        if signing_key is None:
+            raise RuntimeError('保险库未解锁，无法签名条目元数据')
+        domain_key = hmac.new(
+            signing_key,
+            b'cipherbox:entry-metadata-key',
+            hashlib.sha256,
+        ).digest()
+        return hmac.new(
+            domain_key,
+            self._entry_metadata_payload(entry),
+            hashlib.sha256,
+        ).hexdigest()
+
+    def _verify_entry_metadata(self, entry):
+        if not entry.metadata_mac:
+            raise RuntimeError(f'条目 {entry.id} 缺少元数据完整性签名')
+        expected = self._sign_entry_metadata(entry)
+        if not hmac.compare_digest(entry.metadata_mac, expected):
+            raise RuntimeError(f'条目 {entry.id} 元数据完整性校验失败')
 
     def _decrypt_entry_field(self, entry, field_name: str, value: str, key: bytes) -> str:
         if not value:

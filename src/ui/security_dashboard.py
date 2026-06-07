@@ -257,10 +257,11 @@ class SecurityDashboard(QDialog):
     def _load_data(self):
         """加载安全分析数据"""
         try:
-            self._weak_entries = self._analyzer.find_weak_passwords()
-            self._duplicate_groups = self._analyzer.find_duplicate_passwords()
             days = self._config.get('old_password_warning_days', 90)
-            self._old_entries = self._analyzer.find_old_passwords(days)
+            analysis = self._analyzer.full_analysis(days)
+            self._weak_entries = analysis['weak_entries']
+            self._duplicate_groups = analysis['duplicate_groups']
+            self._old_entries = analysis['old_entries']
         except Exception as e:
             QMessageBox.critical(self, '错误', f'加载安全数据失败：{e}')
             return

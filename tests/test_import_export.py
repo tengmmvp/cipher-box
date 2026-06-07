@@ -36,7 +36,7 @@ class TestImportExport(unittest.TestCase):
         )
 
         # 导出
-        d = entry.to_dict()
+        d = entry.to_dict(include_password=True)
         self.assertEqual(d['title'], '测试条目')
         self.assertEqual(d['password'], 'MyP@ssw0rd')
         self.assertEqual(len(d['custom_fields']), 2)
@@ -70,7 +70,7 @@ class TestImportExport(unittest.TestCase):
             writer = csv.DictWriter(f, fieldnames=['title', 'username', 'password', 'url'], extrasaction='ignore')
             writer.writeheader()
             for e in entries:
-                writer.writerow(e.to_dict())
+                writer.writerow(e.to_dict(include_password=True))
             filepath = f.name
 
         with open(filepath, 'r', encoding='utf-8-sig', newline='') as f:
@@ -88,6 +88,10 @@ class TestImportExport(unittest.TestCase):
         entry = Entry(title='Test', username='u', password='secret')
         d = entry.to_dict(include_password=False)
         self.assertNotIn('password', d)
+
+    def test_entry_export_excludes_secrets_by_default(self):
+        entry = Entry(title='Test', password='secret')
+        self.assertNotIn('password', entry.to_dict())
 
     def test_custom_field_serialization(self):
         """测试自定义字段序列化"""

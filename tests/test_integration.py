@@ -640,7 +640,9 @@ class TestImportExport(unittest.TestCase):
         # 2. 导出 JSON
         entries = self._entry_mgr.get_entries()
         json_path = str(Path(self._tmpdir) / 'export.json')
-        self._import_export.export_to_json(json_path, entries)
+        self._import_export.export_to_json(
+            json_path, entries, include_password=True
+        )
         self.assertTrue(os.path.exists(json_path))
 
         # 3. 删除条目
@@ -678,7 +680,9 @@ class TestImportExport(unittest.TestCase):
         # 2. 导出 CSV
         entries = self._entry_mgr.get_entries()
         csv_path = str(Path(self._tmpdir) / 'export.csv')
-        self._import_export.export_to_csv(csv_path, entries)
+        self._import_export.export_to_csv(
+            csv_path, entries, include_password=True
+        )
         self.assertTrue(os.path.exists(csv_path))
 
         # 3. 删除条目
@@ -766,15 +770,17 @@ class TestErrorPaths(unittest.TestCase):
         self._tmp_dir = tempfile.mkdtemp()
         config = _make_config_with_temp_db(self._tmp_dir)
         vault = VaultManager(config)
-        vault.initialize("password1")
+        vault.initialize("OriginalMaster!2026")
 
         # 用错误的旧密码改密应返回 False
-        result = vault.change_master_password("wrong_old_password", "new_password_2")
+        result = vault.change_master_password(
+            "WrongOldMaster!2026", "NewMasterPassword!2026"
+        )
         self.assertFalse(result)
 
         # 验证原密码仍然可用
         vault.lock()
-        self.assertTrue(vault.unlock("password1"))
+        self.assertTrue(vault.unlock("OriginalMaster!2026"))
 
         vault.close()
         shutil.rmtree(self._tmp_dir)

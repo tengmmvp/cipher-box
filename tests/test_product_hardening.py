@@ -1,6 +1,7 @@
 """正式交付前的关键业务与 UI 回归测试。"""
 
 import json
+import sqlite3
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -446,3 +447,188 @@ def test_main_window_filters_entries_by_tag():
         assert window._entry_list.count() == 1
         assert window._entry_list.item(0).data(256).title == 'Work'
         window.close()
+
+
+def test_existing_vault_cannot_be_initialized_again():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('OriginalMaster!2026')
+        manager = EntryManager(vault)
+        entry_id = manager.add_entry(Entry(title='Keep', password='KeepSecret!2026'))
+
+        assert vault.initialize('ReplacementMaster!2026') is False
+        assert '已经初始化' in vault.last_error
+        vault.lock()
+        assert vault.unlock('OriginalMaster!2026')
+        assert manager.get_entry(entry_id).password == 'KeepSecret!2026'
+        vault.close()
+
+
+def test_entry_metadata_tampering_is_rejected():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('MasterPassword!2026')
+        manager = EntryManager(vault)
+        entry_id = manager.add_entry(Entry(title='Original', password='Secret!2026'))
+
+        connection = sqlite3.connect(Path(root) / 'vault.db')
+        connection.execute(
+            "UPDATE entries SET title='Tampered' WHERE id=?",
+            (entry_id,),
+        )
+        connection.commit()
+        connection.close()
+
+        try:
+            manager.get_entry(entry_id)
+        except RuntimeError as exc:
+            assert '元数据完整性校验失败' in str(exc)
+        else:
+            raise AssertionError('被篡改的元数据不应被读取')
+        vault.close()
+
+
+def test_entry_metadata_is_resigned_after_master_password_change():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('OldMasterPassword!2026')
+        manager = EntryManager(vault)
+        entry_id = manager.add_entry(Entry(title='Account', password='Secret!2026'))
+        old_mac = vault.db.get_entry(entry_id).metadata_mac
+
+        assert vault.change_master_password(
+            'OldMasterPassword!2026', 'NewMasterPassword!2026'
+        )
+        entry = manager.get_entry(entry_id)
+        assert entry.password == 'Secret!2026'
+        assert vault.db.get_entry(entry_id).metadata_mac != old_mac
+        vault.close()
+
+
+def test_vault_api_rejects_weak_master_passwords():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('aaaaaaaaaaaa') is False
+        assert '强度不足' in vault.last_error
+        assert not (Path(root) / 'vault.db').exists()
+
+
+def test_nested_transaction_uses_savepoint_for_inner_rollback():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('MasterPassword!2026')
+        manager = EntryManager(vault)
+        with vault.db.transaction():
+            manager.add_entry(Entry(title='Outer', password='OuterSecret!2026'))
+            try:
+                with vault.db.transaction():
+                    manager.add_entry(Entry(title='Inner', password='InnerSecret!2026'))
+                    raise RuntimeError('rollback inner')
+            except RuntimeError:
+                pass
+
+        assert [entry.title for entry in manager.get_entries()] == ['Outer']
+        vault.close()
+
+
+def test_import_all_does_not_decrypt_existing_vault():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('MasterPassword!2026')
+        manager = EntryManager(vault)
+        manager.add_entry(Entry(title='Existing', password='ExistingSecret!2026'))
+        path = Path(root) / 'entries.json'
+        path.write_text(json.dumps({
+            'app': 'CipherBox',
+            'secrets_included': True,
+            'entries': [{'title': 'Imported', 'password': 'ImportedSecret!2026'}],
+        }), encoding='utf-8')
+
+        importer = ImportExportManager(manager)
+        with patch.object(
+            manager, 'get_entry_summaries',
+            side_effect=AssertionError('import_all 不应扫描现有条目'),
+        ):
+            assert importer.import_from_json(
+                str(path), duplicate_action='import_all'
+            ) == 1
+        assert manager.get_entry_count() == 2
+        vault.close()
+
+
+def test_pre_restore_snapshot_survives_master_password_change():
+    with tempfile.TemporaryDirectory() as source_root, tempfile.TemporaryDirectory() as target_root:
+        source = VaultManager(_config(source_root))
+        assert source.initialize('SourceMaster!2026')
+        EntryManager(source).add_entry(
+            Entry(title='Incoming', password='IncomingSecret!2026')
+        )
+        portable = str(Path(source_root) / 'portable.cbox')
+        success, error = BackupRestoreManager(source).create_backup(
+            portable, 'PortableBackup!2026'
+        )
+        assert success, error
+
+        target = VaultManager(_config(target_root))
+        assert target.initialize('OldTargetMaster!2026')
+        target_manager = EntryManager(target)
+        target_manager.add_entry(
+            Entry(title='Before restore', password='OriginalSecret!2026')
+        )
+        backup_manager = BackupRestoreManager(target)
+        success, error = backup_manager.restore_backup(
+            portable, 'PortableBackup!2026'
+        )
+        assert success, error
+        restore_point = next(
+            (Path(target_root) / 'backups').glob('pre_restore_*.cbox')
+        )
+
+        assert target.change_master_password(
+            'OldTargetMaster!2026', 'NewTargetMaster!2026'
+        )
+        success, error = backup_manager.restore_backup(str(restore_point))
+        assert success, error
+        restored = target_manager.get_entries()
+        assert [entry.title for entry in restored] == ['Before restore']
+        source.close()
+        target.close()
+
+
+def test_existing_database_missing_table_is_rejected_without_repair():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('MasterPassword!2026')
+        vault.close()
+        db_path = Path(root) / 'vault.db'
+        connection = sqlite3.connect(db_path)
+        connection.execute('DROP TABLE password_history')
+        connection.commit()
+        connection.close()
+
+        reopened = VaultManager(_config(root))
+        assert reopened.is_initialized is True
+        assert 'password_history' in reopened.last_error
+        connection = sqlite3.connect(db_path)
+        tables = {
+            row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        connection.close()
+        assert 'password_history' not in tables
+        reopened.close()
+
+
+def test_deleted_default_category_does_not_reappear_after_restart():
+    with tempfile.TemporaryDirectory() as root:
+        vault = VaultManager(_config(root))
+        assert vault.initialize('MasterPassword!2026')
+        category = next(item for item in vault.db.get_categories() if item.name == '社交')
+        vault.db.delete_category(category.id)
+        vault.close()
+
+        reopened = VaultManager(_config(root))
+        assert reopened.is_initialized is True
+        assert all(item.name != '社交' for item in reopened.db.get_categories())
+        reopened.close()

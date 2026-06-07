@@ -97,7 +97,7 @@ class TestEntryTypes(unittest.TestCase):
     def test_entry_to_dict_with_type(self):
         """导出包含类型信息"""
         entry = Entry(title='Test', entry_type='server', totp_secret='SECRET')
-        d = entry.to_dict()
+        d = entry.to_dict(include_password=True)
         self.assertEqual(d['entry_type'], 'server')
         self.assertEqual(d['totp_secret'], 'SECRET')
 

@@ -1,152 +1,110 @@
-"""条目列表自定义 Widget - 卡片式展示，含类型图标与强度指示"""
+"""条目列表的轻量委托绘制。"""
 
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-)
-from PyQt6.QtCore import Qt
-from html import escape
+from PyQt6.QtCore import QRectF, QSize, Qt
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen
+from PyQt6.QtWidgets import QStyle, QStyledItemDelegate
 
-from ..database.models import Entry, ENTRY_TYPES, ENTRY_TYPE_LOGIN
-from ..ui.resources.theme_colors import c, get_strength_color
-from ..ui.resources.icons import icon_pixmap, STAR, SIZE_STAR
+from ..database.models import ENTRY_TYPE_LOGIN, ENTRY_TYPES
+from .resources.theme_colors import c, get_strength_color
 
 
-class EntryItemWidget(QWidget):
-    """条目列表自定义控件 - 卡片式布局"""
+class EntryItemDelegate(QStyledItemDelegate):
+    """按需绘制条目卡片，避免为每条记录创建常驻 QWidget。"""
 
-    def __init__(self, entry: Entry, parent=None, highlight: str = ''):
-        super().__init__(parent)
-        self._entry = entry
-        self._highlight = highlight
-        self._setup_ui()
+    ROW_HEIGHT = 62
 
-    def _setup_ui(self):
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(10)
+    def sizeHint(self, option, index):
+        return QSize(option.rect.width(), self.ROW_HEIGHT)
 
-        # 左侧：类型图标
-        type_info = ENTRY_TYPES.get(self._entry.entry_type, ENTRY_TYPES[ENTRY_TYPE_LOGIN])
-        type_icon = QLabel(type_info['icon'])
-        type_icon.setFixedSize(28, 28)
-        type_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        type_icon.setStyleSheet(
-            f'font-size: 18px; background: {c("bg_card")}; border-radius: 6px;'
-        )
-        layout.addWidget(type_icon)
+    def paint(self, painter: QPainter, option, index):
+        entry = index.data(Qt.ItemDataRole.UserRole)
+        if entry is None:
+            super().paint(painter, option, index)
+            return
 
-        # 中间：标题 + 副标题
-        text_container = QVBoxLayout()
-        text_container.setSpacing(2)
-
-        # 标题行：收藏星标 + 标题
-        title_row = QHBoxLayout()
-        title_row.setSpacing(4)
-
-        if self._entry.is_favorite:
-            fav = QLabel()
-            fav.setPixmap(icon_pixmap(STAR, size=SIZE_STAR))
-            fav.setFixedSize(SIZE_STAR, SIZE_STAR)
-            title_row.addWidget(fav)
-
-        title_text = self._highlight_text(self._entry.title or '(无标题)', self._highlight)
-        title_label = QLabel(title_text)
-        title_label.setStyleSheet(
-            f'font-weight: bold; font-size: 13px; color: {c("text_primary")}; background: transparent;'
-        )
-        title_label.setTextFormat(Qt.TextFormat.RichText)
-        title_label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
-        title_row.addWidget(title_label, 1)
-        text_container.addLayout(title_row)
-
-        # 副标题行
-        subtitle_parts = []
-        if self._entry.username:
-            subtitle_parts.append(self._entry.username)
-        if self._entry.category_name and self._entry.category_name != '未分类':
-            subtitle_parts.append(self._entry.category_name)
-        if self._entry.url:
-            url = self._entry.url
-            if '://' in url:
-                url = url.split('://')[1]
-            url = url.split('/')[0]
-            if len(url) > 25:
-                url = url[:25] + '...'
-            subtitle_parts.append(url)
-
-        subtitle = ' · '.join(subtitle_parts) if subtitle_parts else '无额外信息'
-        subtitle_text = self._highlight_text(subtitle, self._highlight)
-        subtitle_label = QLabel(subtitle_text)
-        subtitle_label.setStyleSheet(
-            f'font-size: 11px; color: {c("text_secondary")}; background: transparent;'
-        )
-        subtitle_label.setTextFormat(Qt.TextFormat.RichText)
-        subtitle_label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
-        text_container.addWidget(subtitle_label)
-
-        layout.addLayout(text_container, 1)
-
-        # 右侧：密码强度指示点 + 已删除标记
-        right_layout = QVBoxLayout()
-        right_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        # 强度指示点
-        strength = self._entry.password_strength
-        if self._entry.password_present or self._entry.password:
-            color = get_strength_color(strength)
-            strength_text = {0: '很弱', 1: '弱', 2: '一般', 3: '强', 4: '很强'}.get(strength, '')
-            dot = QLabel('●')
-            dot.setStyleSheet(f'color: {color}; font-size: 10px; background: transparent;')
-            dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            dot.setToolTip(f'密码强度: {strength_text}')
-            right_layout.addWidget(dot)
-
-        if self._entry.integrity_error:
-            warning = QLabel('!')
-            warning.setToolTip(f'数据完整性异常：{self._entry.integrity_message}')
-            warning.setStyleSheet(
-                f'color: {c("danger")}; font-weight: bold; background: transparent;'
-            )
-            right_layout.addWidget(warning)
-
-        layout.addLayout(right_layout)
-
-        # 已删除标记
-        if self._entry.is_deleted:
-            tag = QLabel('已删除')
-            tag.setStyleSheet(
-                f'font-size: 10px; color: {c("danger")}; '
-                f'background: {c("danger_light")}; border-radius: 3px; padding: 1px 6px;'
-            )
-            layout.addWidget(tag)
-
-    def set_selected(self, selected: bool):
-        """设置选中状态视觉反馈"""
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(option.rect.adjusted(4, 2, -4, -2))
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        background = c('accent_light') if selected else c('bg_card')
+        painter.setPen(QPen(QColor(c('border_light')), 1))
+        painter.setBrush(QColor(background))
+        painter.drawRoundedRect(rect, 7, 7)
         if selected:
-            self.setStyleSheet(
-                f'background: {c("accent_light")}; '
-                f'border-left: 3px solid {c("accent")};'
-            )
-        else:
-            self.setStyleSheet(
-                f'background: {c("bg_card")}; '
-                f'border-left: none;'
+            painter.fillRect(
+                QRectF(rect.left(), rect.top(), 3, rect.height()),
+                QColor(c('accent')),
             )
 
-    @staticmethod
-    def _highlight_text(text: str, keyword: str) -> str:
-        """将文本中匹配关键词的部分用 HTML span 高亮"""
-        if not keyword:
-            return escape(text)
-        keyword_lower = keyword.lower()
-        text_lower = text.lower()
-        idx = text_lower.find(keyword_lower)
-        if idx < 0:
-            return escape(text)
-        before = escape(text[:idx])
-        match = escape(text[idx:idx + len(keyword)])
-        after = escape(text[idx + len(keyword):])
-        highlight_color = c('accent_light')
-        text_color = c('accent_text')
-        return (f'{before}<span style="background: {highlight_color}; color: {text_color}; '
-                f'border-radius: 2px; padding: 0 2px;">{match}</span>{after}')
+        icon_rect = QRectF(rect.left() + 10, rect.top() + 13, 28, 28)
+        painter.setPen(QColor(c('text_primary')))
+        painter.setFont(QFont('Microsoft YaHei UI', 15))
+        type_info = ENTRY_TYPES.get(
+            entry.entry_type, ENTRY_TYPES[ENTRY_TYPE_LOGIN]
+        )
+        painter.drawText(icon_rect, Qt.AlignmentFlag.AlignCenter, type_info['icon'])
+
+        text_left = rect.left() + 48
+        right_reserved = 76 if entry.is_deleted else 38
+        text_width = max(40, rect.right() - text_left - right_reserved)
+        title = entry.title or '(无标题)'
+        if entry.is_favorite:
+            title = f'★ {title}'
+        painter.setFont(QFont('Microsoft YaHei UI', 10, QFont.Weight.DemiBold))
+        painter.setPen(QColor(c('text_primary')))
+        title_text = painter.fontMetrics().elidedText(
+            title, Qt.TextElideMode.ElideRight, int(text_width)
+        )
+        painter.drawText(
+            QRectF(text_left, rect.top() + 7, text_width, 22),
+            Qt.AlignmentFlag.AlignVCenter,
+            title_text,
+        )
+
+        subtitle_parts = []
+        if entry.username:
+            subtitle_parts.append(entry.username)
+        if entry.category_name and entry.category_name != '未分类':
+            subtitle_parts.append(entry.category_name)
+        if entry.url:
+            subtitle_parts.append(entry.url.split('://', 1)[-1].split('/', 1)[0])
+        subtitle = ' · '.join(subtitle_parts) if subtitle_parts else '无额外信息'
+        painter.setFont(QFont('Microsoft YaHei UI', 8))
+        painter.setPen(QColor(c('text_secondary')))
+        subtitle_text = painter.fontMetrics().elidedText(
+            subtitle, Qt.TextElideMode.ElideRight, int(text_width)
+        )
+        painter.drawText(
+            QRectF(text_left, rect.top() + 30, text_width, 19),
+            Qt.AlignmentFlag.AlignVCenter,
+            subtitle_text,
+        )
+
+        marker_x = rect.right() - 22
+        if entry.password_present or entry.password:
+            painter.setPen(QColor(get_strength_color(entry.password_strength)))
+            painter.setFont(QFont('Microsoft YaHei UI', 8))
+            painter.drawText(
+                QRectF(marker_x, rect.top() + 10, 12, 16),
+                Qt.AlignmentFlag.AlignCenter,
+                '●',
+            )
+        if entry.integrity_error:
+            painter.setPen(QColor(c('danger')))
+            painter.setFont(QFont('Microsoft YaHei UI', 10, QFont.Weight.Bold))
+            painter.drawText(
+                QRectF(marker_x, rect.top() + 30, 12, 16),
+                Qt.AlignmentFlag.AlignCenter,
+                '!',
+            )
+
+        if entry.is_deleted:
+            badge = QRectF(rect.right() - 61, rect.top() + 20, 48, 20)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(c('danger_light')))
+            painter.drawRoundedRect(badge, 4, 4)
+            painter.setPen(QColor(c('danger')))
+            painter.setFont(QFont('Microsoft YaHei UI', 7))
+            painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, '已删除')
+
+        painter.restore()

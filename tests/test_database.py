@@ -148,7 +148,7 @@ class TestModels(unittest.TestCase):
             tags='a,b', notes='note',
             custom_fields=[CustomField(name='key', value='val')],
         )
-        d = entry.to_dict()
+        d = entry.to_dict(include_password=True)
         self.assertEqual(d['title'], 'Test')
         self.assertEqual(d['password'], 'pass')
 

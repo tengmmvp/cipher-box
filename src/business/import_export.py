@@ -12,6 +12,7 @@ from ..database.models import (
     Category, CustomField, Entry,
     ENTRY_TYPE_CARD, ENTRY_TYPE_IDENTITY, ENTRY_TYPE_NOTE,
 )
+from ..utils.file_security import secure_file
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ class ImportExportManager:
         if len(items) > MAX_IMPORT_ENTRIES:
             raise ValueError(f'导入条目过多，最大允许 {MAX_IMPORT_ENTRIES} 条')
         for item in items:
-            if len(json.dumps(item, ensure_ascii=False)) > MAX_IMPORT_ENTRY_SIZE:
+            if len(json.dumps(item, ensure_ascii=False).encode('utf-8')) > MAX_IMPORT_ENTRY_SIZE:
                 raise ValueError('导入条目字段过大')
 
     @staticmethod
@@ -70,6 +71,45 @@ class ImportExportManager:
         entry.custom_fields = [
             field for field in entry.custom_fields if field.field_type != 'password'
         ] + sensitive
+
+    def _duplicate_plan(
+        self,
+        entries_data: list[dict],
+        duplicate_action: str,
+        source_label: str,
+    ) -> tuple[set[int], dict[int, Entry]]:
+        if duplicate_action not in {'import_all', 'skip', 'overwrite'}:
+            raise ValueError('无效的重复项处理策略')
+        if duplicate_action == 'import_all':
+            return set(), {}
+
+        existing_entries = self._entry_mgr.get_entry_summaries()
+        existing_by_key = {
+            (entry.title.casefold(), entry.username.casefold()): entry
+            for entry in existing_entries
+            if entry.title
+        }
+        matched = {
+            index: existing_by_key[key]
+            for index, item in enumerate(entries_data)
+            if (
+                key := (
+                    str(item.get('title') or '').strip().casefold(),
+                    str(item.get('username') or '').strip().casefold(),
+                )
+            ) in existing_by_key
+        }
+        if duplicate_action == 'skip':
+            logger.info('%s: 检测到 %d 个重复项，将跳过', source_label, len(matched))
+            return set(matched), {}
+        logger.info('%s: 检测到 %d 个重复项，将覆盖', source_label, len(matched))
+        return set(), matched
+
+    def _load_overwrite_entry(self, summary: Entry) -> Entry:
+        entry = self._entry_mgr.get_entry(summary.id)
+        if entry is None:
+            raise RuntimeError('待覆盖条目已不存在')
+        return entry
 
     def _resolve_category(
         self,
@@ -95,7 +135,7 @@ class ImportExportManager:
         self,
         filepath: str,
         entries: list[Entry],
-        include_password: bool = True,
+        include_password: bool = False,
     ):
         """导出为 JSON 文件"""
         data = {
@@ -110,7 +150,9 @@ class ImportExportManager:
                 json.dump(data, f, indent=2, ensure_ascii=False)
                 f.flush()
                 os.fsync(f.fileno())
+            secure_file(temp)
             os.replace(temp, target)
+            secure_file(target)
         finally:
             temp.unlink(missing_ok=True)
 
@@ -118,7 +160,7 @@ class ImportExportManager:
         self,
         filepath: str,
         entries: list[Entry],
-        include_password: bool = True,
+        include_password: bool = False,
     ):
         """导出为 CSV 文件"""
         fieldnames = ['title', 'username', 'password', 'url', 'category',
@@ -146,7 +188,9 @@ class ImportExportManager:
                     writer.writerow({key: self._csv_safe(value) for key, value in row.items()})
                 f.flush()
                 os.fsync(f.fileno())
+            secure_file(temp)
             os.replace(temp, target)
+            secure_file(target)
         finally:
             temp.unlink(missing_ok=True)
 
@@ -225,25 +269,9 @@ class ImportExportManager:
         secrets_included = data.get('secrets_included', True) is not False
 
         categories = {c.name.casefold(): c for c in self._entry_mgr.get_categories()}
-        existing_entries = self._entry_mgr.get_entries()
-
-        # 去重检测
-        duplicate_indices: set[int] = set()
-        overwrite_map: dict[int, Entry] = {}  # index -> existing Entry
-        if duplicate_action != 'import_all':
-            duplicates = self.check_duplicates(entries_data, existing_entries)
-            if duplicate_action == 'skip':
-                duplicate_indices = {d['index'] for d in duplicates}
-                logger.info("JSON 导入: 检测到 %d 个重复项，将跳过", len(duplicate_indices))
-            elif duplicate_action == 'overwrite':
-                for d in duplicates:
-                    # 用 (title, username) 查找现有条目
-                    key = (d['title'].lower(), d['username'].lower())
-                    for ex in existing_entries:
-                        if ex.title.lower() == key[0] and ex.username.lower() == key[1]:
-                            overwrite_map[d['index']] = ex
-                            break
-                logger.info("JSON 导入: 检测到 %d 个重复项，将覆盖", len(overwrite_map))
+        duplicate_indices, overwrite_map = self._duplicate_plan(
+            entries_data, duplicate_action, 'JSON 导入'
+        )
 
         count = 0
         total = len(entries_data)
@@ -259,7 +287,7 @@ class ImportExportManager:
 
             # 覆盖已有条目
             if i in overwrite_map:
-                existing = overwrite_map[i]
+                existing = self._load_overwrite_entry(overwrite_map[i])
                 entry.id = existing.id
                 entry.created_at = existing.created_at
                 if not secrets_included:
@@ -308,7 +336,6 @@ class ImportExportManager:
             return 0
 
         categories = {c.name.casefold(): c for c in self._entry_mgr.get_categories()}
-        existing_entries = self._entry_mgr.get_entries()
 
         # 将 rows 转换为统一格式用于去重检测
         entries_data = [
@@ -319,22 +346,9 @@ class ImportExportManager:
             for row in rows
         ]
 
-        # 去重检测
-        duplicate_indices: set[int] = set()
-        overwrite_map: dict[int, Entry] = {}  # index -> existing Entry
-        if duplicate_action != 'import_all':
-            duplicates = self.check_duplicates(entries_data, existing_entries)
-            if duplicate_action == 'skip':
-                duplicate_indices = {d['index'] for d in duplicates}
-                logger.info("CSV 导入: 检测到 %d 个重复项，将跳过", len(duplicate_indices))
-            elif duplicate_action == 'overwrite':
-                for d in duplicates:
-                    key = (d['title'].lower(), d['username'].lower())
-                    for ex in existing_entries:
-                        if ex.title.lower() == key[0] and ex.username.lower() == key[1]:
-                            overwrite_map[d['index']] = ex
-                            break
-                logger.info("CSV 导入: 检测到 %d 个重复项，将覆盖", len(overwrite_map))
+        duplicate_indices, overwrite_map = self._duplicate_plan(
+            entries_data, duplicate_action, 'CSV 导入'
+        )
 
         count = 0
         total = len(rows)
@@ -358,7 +372,7 @@ class ImportExportManager:
 
             # 覆盖已有条目
             if i in overwrite_map:
-                existing = overwrite_map[i]
+                existing = self._load_overwrite_entry(overwrite_map[i])
                 entry.id = existing.id
                 entry.created_at = existing.created_at
                 if not password_present:
@@ -450,7 +464,6 @@ class ImportExportManager:
         password_present = 'password' in col_map
 
         categories = {c.name.casefold(): c for c in self._entry_mgr.get_categories()}
-        existing_entries = self._entry_mgr.get_entries()
 
         # 将 rows 转换为统一格式用于去重检测
         entries_data = [
@@ -461,22 +474,9 @@ class ImportExportManager:
             for row in rows
         ]
 
-        # 去重检测
-        duplicate_indices: set[int] = set()
-        overwrite_map: dict[int, Entry] = {}  # index -> existing Entry
-        if duplicate_action != 'import_all':
-            duplicates = self.check_duplicates(entries_data, existing_entries)
-            if duplicate_action == 'skip':
-                duplicate_indices = {d['index'] for d in duplicates}
-                logger.info("KeePass CSV 导入: 检测到 %d 个重复项，将跳过", len(duplicate_indices))
-            elif duplicate_action == 'overwrite':
-                for d in duplicates:
-                    key = (d['title'].lower(), d['username'].lower())
-                    for ex in existing_entries:
-                        if ex.title.lower() == key[0] and ex.username.lower() == key[1]:
-                            overwrite_map[d['index']] = ex
-                            break
-                logger.info("KeePass CSV 导入: 检测到 %d 个重复项，将覆盖", len(overwrite_map))
+        duplicate_indices, overwrite_map = self._duplicate_plan(
+            entries_data, duplicate_action, 'KeePass CSV 导入'
+        )
 
         count = 0
         total = len(rows)
@@ -501,7 +501,7 @@ class ImportExportManager:
 
             # 覆盖已有条目
             if i in overwrite_map:
-                existing = overwrite_map[i]
+                existing = self._load_overwrite_entry(overwrite_map[i])
                 entry.id = existing.id
                 entry.created_at = existing.created_at
                 if not password_present:
@@ -551,8 +551,6 @@ class ImportExportManager:
             for folder in data.get('folders', [])
             if folder.get('id')
         }
-        existing_entries = self._entry_mgr.get_entries()
-
         # 预构建条目数据用于去重检测
         entries_data = []
         for item in items:
@@ -562,22 +560,9 @@ class ImportExportManager:
                 'username': login.get('username', ''),
             })
 
-        # 去重检测
-        duplicate_indices: set[int] = set()
-        overwrite_map: dict[int, Entry] = {}  # index -> existing Entry
-        if duplicate_action != 'import_all':
-            duplicates = self.check_duplicates(entries_data, existing_entries)
-            if duplicate_action == 'skip':
-                duplicate_indices = {d['index'] for d in duplicates}
-                logger.info("Bitwarden 导入: 检测到 %d 个重复项，将跳过", len(duplicate_indices))
-            elif duplicate_action == 'overwrite':
-                for d in duplicates:
-                    key = (d['title'].lower(), d['username'].lower())
-                    for ex in existing_entries:
-                        if ex.title.lower() == key[0] and ex.username.lower() == key[1]:
-                            overwrite_map[d['index']] = ex
-                            break
-                logger.info("Bitwarden 导入: 检测到 %d 个重复项，将覆盖", len(overwrite_map))
+        duplicate_indices, overwrite_map = self._duplicate_plan(
+            entries_data, duplicate_action, 'Bitwarden 导入'
+        )
 
         count = 0
         total = len(items)
@@ -653,7 +638,7 @@ class ImportExportManager:
 
             # 覆盖已有条目
             if i in overwrite_map:
-                existing = overwrite_map[i]
+                existing = self._load_overwrite_entry(overwrite_map[i])
                 entry.id = existing.id
                 entry.created_at = existing.created_at
                 self._entry_mgr.update_entry(entry)

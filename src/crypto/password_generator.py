@@ -210,10 +210,12 @@ class PasswordGenerator:
 
     @staticmethod
     def validate_master_password(password: str) -> tuple[bool, str]:
-        """主密码策略：至少 12 字符，并拒绝已知的明显弱口令。"""
+        """主密码策略：至少 12 字符，并达到最低强度要求。"""
         if len(password) < 12:
             return False, '主密码长度不能少于 12 个字符'
         strength = PasswordGenerator.check_strength(password)
         if strength.is_common:
             return False, '不能使用常见弱密码作为主密码'
+        if strength.score < 3:
+            return False, '主密码强度不足，请增加字符种类并避免重复字符'
         return True, ''
