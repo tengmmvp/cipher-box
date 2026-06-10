@@ -5,7 +5,7 @@ QMainWindow, QDialog {{
     background-color: {bg_primary};
 }}
 QWidget {{
-    font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Segoe UI", sans-serif;
+    font-family: {font_family};
     font-size: 13px;
     color: {text_primary};
 }}
@@ -69,7 +69,7 @@ QPushButton#iconBtn {{
     min-height: 0px;
 }}
 QPushButton#iconBtn:hover {{
-    background: rgba(128,128,128,0.1);
+    background: {icon_btn_hover};
     border-radius: 4px;
 }}
 QComboBox {{
@@ -297,8 +297,14 @@ QWidget#listPane, QWidget#detailPanel {{
 
 
 def get_style(theme: str) -> str:
-    """获取指定主题的样式表"""
+    """获取指定主题的样式表。
+
+    Note: 此方法会调用 set_theme(theme) 设置全局活跃主题作为副作用。
+    这是设计上的有意耦合：样式表生成与主题激活必须同步。
+    """
+    from .constants import FONT_FAMILY_CSS
     from .theme_colors import get_colors, set_theme
     colors = get_colors(theme)
     set_theme(theme)
-    return STYLE_TEMPLATE.format(**colors)
+    return STYLE_TEMPLATE.format(font_family=FONT_FAMILY_CSS, **colors)
+

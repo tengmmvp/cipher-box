@@ -6,15 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from src.config import ConfigManager, DEFAULT_CONFIG
+from src.config import DEFAULT_CONFIG, ConfigManager
+
+from tests.helpers import make_test_config
 
 
 def _manager(root: str) -> ConfigManager:
-    manager = ConfigManager.__new__(ConfigManager)
-    manager._data_dir = Path(root)
-    manager._config_path = Path(root) / 'config.json'
-    manager._config = dict(DEFAULT_CONFIG)
-    return manager
+    return make_test_config(root)
 
 
 def test_load_drops_unknown_and_invalid_values():

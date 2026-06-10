@@ -1,14 +1,31 @@
 """登录窗口 - 首次设置主密码 / 主密码登录"""
 
-from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QWidget, QSpacerItem, QSizePolicy, QFrame,
-)
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtWidgets import (
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSizePolicy,
+    QSpacerItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..crypto.password_generator import PasswordGenerator
-from ..ui.resources.theme_colors import c, get_strength_color
-from ..ui.resources.icons import set_icon, icon_pixmap, EYE, LOCK, SHIELD
+from ..ui.resources.constants import LOGIN_HEIGHT_FIRST, LOGIN_HEIGHT_LOGIN, WORKER_WAIT_TIMEOUT_MS
+from ..ui.resources.icons import EYE, LOCK, SHIELD, icon_pixmap, set_icon
+from ..ui.resources.theme_colors import c
+from ..ui.widgets import (
+    RateLimiter,
+    create_password_toggle_btn,
+    release_worker,
+    setup_dialog_flags,
+    update_strength_label,
+)
+from ..ui.workers import BackgroundWorker
 
 
 class LoginWindow(QDialog):
@@ -20,14 +37,22 @@ class LoginWindow(QDialog):
         super().__init__(parent)
         self._vault = vault_manager
         self._is_first_time = not vault_manager.is_initialized
-        self._fail_count = 0
-        self._lock_until = 0.0
+        self._rate_limiter = RateLimiter()
+        self._worker = None  # H4：后台 KDF worker
         self._setup_ui()
+
+    def reject(self):
+        """关闭前等待后台认证 worker 完成（H4），避免窗口销毁后发信号。"""
+        if self._worker and self._worker.isRunning():
+            self._worker.cancel()
+            self._worker.wait(WORKER_WAIT_TIMEOUT_MS)
+        release_worker(self)
+        super().reject()
 
     def _setup_ui(self):
         self.setWindowTitle('CipherBox - 登录')
         self.setFixedWidth(500)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        setup_dialog_flags(self)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(34, 30, 34, 30)
@@ -79,12 +104,9 @@ class LoginWindow(QDialog):
         self._password_edit.returnPressed.connect(self._on_confirm)
         pwd_layout.addWidget(self._password_edit)
 
-        self._toggle_pwd_btn = QPushButton()
-        self._toggle_pwd_btn.setObjectName('iconBtn')
-        self._toggle_pwd_btn.setFixedSize(32, 32)
-        set_icon(self._toggle_pwd_btn, EYE)
-        self._toggle_pwd_btn.setToolTip('显示/隐藏密码')
-        self._toggle_pwd_btn.clicked.connect(self._toggle_main_password)
+        self._toggle_pwd_btn = create_password_toggle_btn(
+            self._password_edit, EYE, LOCK
+        )
         pwd_layout.addWidget(self._toggle_pwd_btn)
         layout.addLayout(pwd_layout)
 
@@ -109,12 +131,9 @@ class LoginWindow(QDialog):
         self._confirm_edit.returnPressed.connect(self._on_confirm)
         confirm_pwd_layout.addWidget(self._confirm_edit)
 
-        self._toggle_confirm_btn = QPushButton()
-        self._toggle_confirm_btn.setObjectName('iconBtn')
-        self._toggle_confirm_btn.setFixedSize(32, 32)
-        set_icon(self._toggle_confirm_btn, EYE)
-        self._toggle_confirm_btn.setToolTip('显示/隐藏密码')
-        self._toggle_confirm_btn.clicked.connect(self._toggle_confirm_password)
+        self._toggle_confirm_btn = create_password_toggle_btn(
+            self._confirm_edit, EYE, LOCK
+        )
         confirm_pwd_layout.addWidget(self._toggle_confirm_btn)
         confirm_layout.addLayout(confirm_pwd_layout)
 
@@ -156,47 +175,42 @@ class LoginWindow(QDialog):
 
         # 不同 DPI、系统字体和窗口样式下控件高度会变化，不能用固定高度压缩布局。
         outer.activate()
-        preferred_height = 520 if self._is_first_time else 450
+        preferred_height = LOGIN_HEIGHT_FIRST if self._is_first_time else LOGIN_HEIGHT_LOGIN
         self.setFixedHeight(max(preferred_height, self.minimumSizeHint().height()))
-
-    def _toggle_main_password(self):
-        if self._password_edit.echoMode() == QLineEdit.EchoMode.Password:
-            self._password_edit.setEchoMode(QLineEdit.EchoMode.Normal)
-            set_icon(self._toggle_pwd_btn, LOCK)
-        else:
-            self._password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-            set_icon(self._toggle_pwd_btn, EYE)
-
-    def _toggle_confirm_password(self):
-        if self._confirm_edit.echoMode() == QLineEdit.EchoMode.Password:
-            self._confirm_edit.setEchoMode(QLineEdit.EchoMode.Normal)
-            set_icon(self._toggle_confirm_btn, LOCK)
-        else:
-            self._confirm_edit.setEchoMode(QLineEdit.EchoMode.Password)
-            set_icon(self._toggle_confirm_btn, EYE)
 
     def _on_password_changed(self, text: str):
         """密码输入变化时更新强度提示"""
-        if text:
-            strength = PasswordGenerator.check_strength(text)
-            color = get_strength_color(strength.score)
-            self._strength_label.setText(f'密码强度：{strength.label}')
-            self._strength_label.setStyleSheet(f'color: {color}; font-size: 12px;')
+        update_strength_label(self._strength_label, text, prefix='密码强度：')
+
+    def _on_auth_result(self, success: bool, error_msg: str = ''):
+        """处理初始化/解锁的结果。"""
+        if success:
+            self._rate_limiter.record_success()
+            # 登录成功后立即清除密码输入框，减少明文密码在内存中的驻留时间。
+            self._password_edit.clear()
+            if hasattr(self, '_confirm_edit'):
+                self._confirm_edit.clear()
+            self.login_success.emit()
+            self.accept()
         else:
-            self._strength_label.setText('')
+            lock_seconds = self._rate_limiter.record_failure()
+            if lock_seconds > 0:
+                self._show_error(f'尝试次数过多，请等待 {lock_seconds} 秒后重试')
+            else:
+                self._show_error(error_msg or '操作失败，请重试')
 
     def _on_confirm(self):
         """确认按钮"""
-        import time
 
-        if self._lock_until and time.monotonic() < self._lock_until:
-            remaining = int(self._lock_until - time.monotonic()) + 1
-            self._show_error(f'尝试次数过多，请等待 {remaining} 秒后重试')
+        # L13：速率限制委托给 RateLimiter
+        msg = self._rate_limiter.check()
+        if msg:
+            self._show_error(msg)
             return
-        # 锁定已过期，重置计数
-        if self._lock_until and time.monotonic() >= self._lock_until:
-            self._fail_count = 0
-            self._lock_until = 0.0
+
+        # 认证进行中禁止重复提交
+        if self._worker and self._worker.isRunning():
+            return
 
         password = self._password_edit.text()
 
@@ -213,32 +227,45 @@ class LoginWindow(QDialog):
             if not valid:
                 self._show_error(error)
                 return
-
-            if self._vault.initialize(password):
-                self._fail_count = 0
-                self.login_success.emit()
-                self.accept()
-            else:
-                self._fail_count += 1
-                error = getattr(self._vault, 'last_error', '')
-                if self._fail_count >= 5:
-                    self._lock_until = time.monotonic() + 30
-                    self._show_error('尝试次数过多，请等待 30 秒后重试')
-                else:
-                    self._show_error(error or '初始化失败，请重试')
+            action = self._vault.initialize
+            error_default = '初始化失败，请重试'
         else:
-            if self._vault.unlock(password):
-                self._fail_count = 0
-                self.login_success.emit()
-                self.accept()
-            else:
-                self._fail_count += 1
-                error = getattr(self._vault, 'last_error', '')
-                if self._fail_count >= 5:
-                    self._lock_until = time.monotonic() + 30
-                    self._show_error('尝试次数过多，请等待 30 秒后重试')
-                else:
-                    self._show_error(error or '主密码错误')
+            action = self._vault.unlock
+            error_default = '主密码错误'
+
+        # H4：KDF（PBKDF2 600k 迭代）在后台线程执行，避免冻结 UI。
+        self._start_auth(action, password, error_default)
+
+    def _start_auth(self, action, password: str, error_default: str):
+        """在后台 worker 中执行 KDF + 解锁/初始化，完成后回到主线程处理结果。"""
+        self._confirm_btn.setEnabled(False)
+        self._confirm_btn.setText('正在解锁...')
+        self._message_label.setText('')
+        self._worker = BackgroundWorker(lambda: action(password), parent=self)
+        self._worker.finished.connect(self._on_auth_done)
+        self._worker.error.connect(lambda _msg: self._on_auth_error(error_default))
+        self._worker.start()
+
+    def _on_auth_done(self, success: bool):
+        """后台认证完成（主线程回调）。"""
+        release_worker(self)
+        self._reset_confirm_btn()
+        self._on_auth_result(
+            success,
+            '' if success else getattr(self._vault, 'last_error', ''),
+        )
+
+    def _on_auth_error(self, error_default: str):
+        """后台认证异常（主线程回调）。"""
+        release_worker(self)
+        self._reset_confirm_btn()
+        self._on_auth_result(
+            False, getattr(self._vault, 'last_error', '') or error_default
+        )
+
+    def _reset_confirm_btn(self):
+        self._confirm_btn.setEnabled(True)
+        self._confirm_btn.setText('确认')
 
     def _show_error(self, msg: str):
         self._message_label.setText(msg)

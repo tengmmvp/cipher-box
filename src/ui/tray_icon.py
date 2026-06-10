@@ -1,9 +1,10 @@
 """系统托盘图标"""
 
-from PyQt6.QtWidgets import QSystemTrayIcon, QMenu
-from PyQt6.QtGui import QAction, QIcon, QPixmap, QPainter, QColor, QFont
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtGui import QAction, QColor, QIcon
+from PyQt6.QtWidgets import QMenu, QSystemTrayIcon
 
+from .resources.icons import draw_logo_pixmap
 from .resources.theme_colors import c
 
 
@@ -29,24 +30,20 @@ class TrayIcon(QSystemTrayIcon):
     @staticmethod
     def _create_icon(color: QColor, text: str) -> QIcon:
         """根据背景色和文字生成托盘图标"""
-        pixmap = QPixmap(32, 32)
-        pixmap.fill(QColor(0, 0, 0, 0))
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setBrush(color)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(2, 2, 28, 28, 6, 6)
-        painter.setPen(QColor('white'))
-        font_size = 12 if len(text) > 1 else 16
-        painter.setFont(QFont('Arial', font_size, QFont.Weight.Bold))
-        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, text)
-        painter.end()
+        bg = color.name() if isinstance(color, QColor) else str(color)
+        pixmap = draw_logo_pixmap(
+            size=32,
+            bg_color=bg,
+            text=text,
+            text_color=c('text_on_accent'),
+            font_size=12 if len(text) > 1 else 16,
+        )
         return QIcon(pixmap)
 
     def set_locked(self, locked: bool):
         """切换锁定/解锁状态的托盘图标"""
         if locked:
-            self.setIcon(TrayIcon._create_icon(QColor(c('text_muted')), '🔒'))
+            self.setIcon(TrayIcon._create_icon(QColor(c('text_muted')), 'LOCK'))
             self.setToolTip('CipherBox（已锁定）')
         else:
             self.setIcon(TrayIcon._create_icon(QColor(c('brand')), 'C'))

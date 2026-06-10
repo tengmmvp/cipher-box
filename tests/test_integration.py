@@ -1,34 +1,23 @@
 """集成测试 - 覆盖加密→存储→解密真实流程"""
 
-import json
 import os
 import shutil
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+import pytest
 
 from src.business.backup_restore import BackupRestoreManager
 from src.business.entry_manager import EntryManager
 from src.business.import_export import ImportExportManager
 from src.business.security_analyzer import SecurityAnalyzer
 from src.business.vault_manager import VaultManager
-from src.config import ConfigManager, DEFAULT_CONFIG  # noqa: F401
 from src.crypto.encryption import EncryptionEngine
 from src.database.db_manager import DatabaseManager
 from src.database.models import Category, CustomField, Entry
 
-
-def _make_config_with_temp_db(tmp_dir: str) -> ConfigManager:
-    """创建指向临时目录的 ConfigManager（不污染真实配置）"""
-    config = ConfigManager.__new__(ConfigManager)
-    tmp_path = Path(tmp_dir)
-    config._data_dir = tmp_path
-    config._config_path = tmp_path / 'config.json'
-    config._config = {}
-    return config
+from tests.helpers import make_test_config
 
 
 class TestEntryManagerIntegration(unittest.TestCase):
@@ -36,23 +25,14 @@ class TestEntryManagerIntegration(unittest.TestCase):
 
     def setUp(self):
         self._tmp_dir = tempfile.mkdtemp()
-        config = _make_config_with_temp_db(self._tmp_dir)
+        config = make_test_config(self._tmp_dir)
         self._vault = VaultManager(config)
         self._vault.initialize("test_password_123")
         self._entry_mgr = EntryManager(self._vault)
 
     def tearDown(self):
         self._vault.close()
-        # 清理临时文件
-        db_path = Path(self._tmp_dir) / 'vault.db'
-        try:
-            db_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        try:
-            Path(self._tmp_dir).rmdir()
-        except Exception:
-            pass
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
     def test_add_and_retrieve_entry(self):
         """添加条目→解密获取→验证所有字段"""
@@ -88,11 +68,13 @@ class TestEntryManagerIntegration(unittest.TestCase):
         self.assertEqual(decrypted.totp_secret, 'JBSWY3DPEHPK3PXP')
 
         # 验证自定义字段
-        self.assertEqual(len(decrypted.custom_fields), 2)
-        self.assertEqual(decrypted.custom_fields[0].name, '安全问题')
-        self.assertEqual(decrypted.custom_fields[0].value, '小学名字')
-        self.assertEqual(decrypted.custom_fields[1].name, 'API Key')
-        self.assertEqual(decrypted.custom_fields[1].value, 'sk-12345')
+        fields = decrypted.custom_fields
+        assert isinstance(fields, list)
+        self.assertEqual(len(fields), 2)
+        self.assertEqual(fields[0].name, '安全问题')
+        self.assertEqual(fields[0].value, '小学名字')
+        self.assertEqual(fields[1].name, 'API Key')
+        self.assertEqual(fields[1].value, 'sk-12345')
 
     def test_update_preserves_password_history(self):
         """更新密码→密码历史记录归档→验证旧密码可查"""
@@ -120,6 +102,7 @@ class TestEntryManagerIntegration(unittest.TestCase):
 
         # 验证当前密码是新密码
         current = self._entry_mgr.get_entry(entry_id)
+        assert current is not None
         self.assertEqual(current.password, 'NewPassword456!')
 
     def test_search_by_username(self):
@@ -164,6 +147,7 @@ class TestEntryManagerIntegration(unittest.TestCase):
 
         # 2. 验证初始状态为非收藏
         entry_before = self._entry_mgr.get_entry(entry_id)
+        assert entry_before is not None
         self.assertFalse(entry_before.is_favorite)
 
         # 3. toggle_favorite
@@ -171,12 +155,32 @@ class TestEntryManagerIntegration(unittest.TestCase):
 
         # 4. 获取条目验证 is_favorite 为 True
         entry_after = self._entry_mgr.get_entry(entry_id)
+        assert entry_after is not None
         self.assertTrue(entry_after.is_favorite)
 
         # 再次 toggle 应变回 False
         self._entry_mgr.toggle_favorite(entry_id)
         entry_final = self._entry_mgr.get_entry(entry_id)
+        assert entry_final is not None
         self.assertFalse(entry_final.is_favorite)
+
+    def test_toggle_favorite_returns_new_state(self):
+        """toggle_favorite 应返回新的收藏状态"""
+        entry = Entry(title='收藏返回值测试', username='fav_user', password='Password123!')
+        entry_id = self._entry_mgr.add_entry(entry)
+
+        # 初始状态应为非收藏
+        new_state = self._entry_mgr.toggle_favorite(entry_id)
+        assert new_state is True
+
+        # 再次切换
+        new_state = self._entry_mgr.toggle_favorite(entry_id)
+        assert new_state is False
+
+    def test_toggle_favorite_nonexistent_returns_none(self):
+        """切换不存在条目的收藏状态应返回 None"""
+        result = self._entry_mgr.toggle_favorite(99999)
+        assert result is None
 
     def test_get_all_tags(self):
         """获取标签频率统计"""
@@ -205,21 +209,13 @@ class TestVaultManagerLifecycle(unittest.TestCase):
 
     def setUp(self):
         self._tmp_dir = tempfile.mkdtemp()
-        self._config = _make_config_with_temp_db(self._tmp_dir)
+        self._config = make_test_config(self._tmp_dir)
 
     def _create_vault(self) -> VaultManager:
         return VaultManager(self._config)
 
     def tearDown(self):
-        db_path = Path(self._tmp_dir) / 'vault.db'
-        try:
-            db_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        try:
-            Path(self._tmp_dir).rmdir()
-        except Exception:
-            pass
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
     def test_initialize_and_unlock(self):
         """初始化→锁定→解锁→验证数据可读"""
@@ -298,6 +294,7 @@ class TestVaultManagerLifecycle(unittest.TestCase):
         self.assertTrue(vault.unlock(new_pwd))
         entry_mgr3 = EntryManager(vault)
         entry = entry_mgr3.get_entry(entry_id)
+        assert entry is not None
         self.assertEqual(entry.username, 'rekey_user')
         self.assertEqual(entry.password, 'MySecretP@ss!')
         self.assertEqual(entry.totp_secret, totp_secret)
@@ -314,7 +311,7 @@ class TestBackupRestore(unittest.TestCase):
 
     def setUp(self):
         self._tmp_dir = tempfile.mkdtemp()
-        config = _make_config_with_temp_db(self._tmp_dir)
+        config = make_test_config(self._tmp_dir)
         self._vault = VaultManager(config)
         self._vault.initialize("test_password_123")
         self._entry_mgr = EntryManager(self._vault)
@@ -322,15 +319,7 @@ class TestBackupRestore(unittest.TestCase):
 
     def tearDown(self):
         self._vault.close()
-        for f in ['vault.db', 'test_backup.cbox']:
-            try:
-                (Path(self._tmp_dir) / f).unlink(missing_ok=True)
-            except Exception:
-                pass
-        try:
-            Path(self._tmp_dir).rmdir()
-        except Exception:
-            pass
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
     def test_backup_and_restore_preserves_all_fields(self):
         """备份→恢复→验证 entry_type/totp/password_history 完整"""
@@ -358,9 +347,9 @@ class TestBackupRestore(unittest.TestCase):
         )
         self._entry_mgr.update_entry(entry)
 
-        # 3. 创建备份
+        # 3. 创建备份（H3：必须指定密码或使用快照密钥，flags=0 已移除）
         backup_path = str(Path(self._tmp_dir) / 'test_backup.cbox')
-        self.assertTrue(self._backup_mgr.create_backup(backup_path))
+        self.assertTrue(self._backup_mgr.create_backup(backup_path, use_snapshot_key=True))
         self.assertTrue(os.path.exists(backup_path))
 
         # 4. 清空条目（通过删除后恢复来验证）
@@ -384,6 +373,7 @@ class TestBackupRestore(unittest.TestCase):
         self.assertEqual(restored.notes, '服务器凭据')
 
         # 验证密码历史恢复
+        assert restored.id is not None
         history = self._entry_mgr.get_password_history(restored.id)
         decrypted_history = self._entry_mgr.decrypt_password_history(history)
         self.assertEqual(len(decrypted_history), 1)
@@ -425,7 +415,7 @@ class TestSecurityAnalyzer(unittest.TestCase):
 
     def setUp(self):
         self._tmp_dir = tempfile.mkdtemp()
-        config = _make_config_with_temp_db(self._tmp_dir)
+        config = make_test_config(self._tmp_dir)
         self._vault = VaultManager(config)
         self._vault.initialize("test_password_123")
         self._entry_mgr = EntryManager(self._vault)
@@ -433,15 +423,7 @@ class TestSecurityAnalyzer(unittest.TestCase):
 
     def tearDown(self):
         self._vault.close()
-        db_path = Path(self._tmp_dir) / 'vault.db'
-        try:
-            db_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        try:
-            Path(self._tmp_dir).rmdir()
-        except Exception:
-            pass
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
     def test_find_weak_passwords(self):
         """检测弱密码"""
@@ -518,7 +500,7 @@ class TestSecurityAnalyzer(unittest.TestCase):
 
         # 验证返回结构完整
         self.assertIn('total', result)
-        self.assertIn('weak', result)
+        self.assertIn('weak_count', result)
         self.assertIn('weak_entries', result)
         self.assertIn('duplicate_groups', result)
         self.assertIn('duplicate_count', result)
@@ -526,10 +508,11 @@ class TestSecurityAnalyzer(unittest.TestCase):
         self.assertIn('old', result)
 
         self.assertEqual(result['total'], 3)
-        self.assertGreaterEqual(result['weak'], 1)
+        self.assertGreaterEqual(result['weak_count'], 1)
         self.assertEqual(result['duplicate_count'], 1)  # 2 个重复中有 1 个多余
 
 
+@pytest.mark.usefixtures('_disable_encrypted_assertions')
 class TestDatabaseTransaction(unittest.TestCase):
     """数据库事务机制测试"""
 
@@ -542,14 +525,7 @@ class TestDatabaseTransaction(unittest.TestCase):
 
     def tearDown(self):
         self._db.close()
-        try:
-            self._db_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        try:
-            Path(self._tmp_dir).rmdir()
-        except Exception:
-            pass
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
     def test_transaction_commit(self):
         """begin→多个操作→commit，所有变更持久化"""
@@ -613,7 +589,7 @@ class TestImportExport(unittest.TestCase):
 
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp()
-        config = _make_config_with_temp_db(self._tmpdir)
+        config = make_test_config(self._tmpdir)
         self._vault = VaultManager(config)
         self._vault.initialize("test_password_123")
         self._entry_mgr = EntryManager(self._vault)
@@ -747,7 +723,7 @@ class TestErrorPaths(unittest.TestCase):
     def test_backup_with_locked_vault(self):
         """锁定状态创建备份应失败"""
         self._tmp_dir = tempfile.mkdtemp()
-        config = _make_config_with_temp_db(self._tmp_dir)
+        config = make_test_config(self._tmp_dir)
         vault = VaultManager(config)
         vault.initialize("test_password_123")
         backup_mgr = BackupRestoreManager(vault)
@@ -768,7 +744,7 @@ class TestErrorPaths(unittest.TestCase):
     def test_change_password_wrong_old(self):
         """旧密码错误时改密应失败"""
         self._tmp_dir = tempfile.mkdtemp()
-        config = _make_config_with_temp_db(self._tmp_dir)
+        config = make_test_config(self._tmp_dir)
         vault = VaultManager(config)
         vault.initialize("OriginalMaster!2026")
 
@@ -781,6 +757,27 @@ class TestErrorPaths(unittest.TestCase):
         # 验证原密码仍然可用
         vault.lock()
         self.assertTrue(vault.unlock("OriginalMaster!2026"))
+
+        vault.close()
+        shutil.rmtree(self._tmp_dir)
+
+    def test_is_initialized_returns_false_when_db_cannot_open(self):
+        """is_initialized 在 DB 打开失败时应返回 False"""
+        from unittest.mock import PropertyMock, patch
+        self._tmp_dir = tempfile.mkdtemp()
+        config = make_test_config(self._tmp_dir)
+        vault = VaultManager(config)
+
+        # 确保 db_path 存在使文件检查通过
+        db_file = Path(self._tmp_dir) / 'vault.db'
+        db_file.touch()
+
+        # Mock: is_open 返回 False, open() 返回 False → 模拟 DB 无法打开
+        with patch.object(type(vault._db), 'is_open', new_callable=PropertyMock, return_value=False):
+            with patch.object(vault._db, 'open', return_value=False):
+                result = vault.is_initialized
+                self.assertFalse(result)
+                self.assertIn('数据库无法打开', vault.last_error)
 
         vault.close()
         shutil.rmtree(self._tmp_dir)

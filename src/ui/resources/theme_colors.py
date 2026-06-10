@@ -1,4 +1,12 @@
-"""主题颜色系统 - 统一管理所有颜色常量"""
+"""主题颜色系统 - 统一管理所有颜色常量
+
+单例契约：本模块使用模块级可变状态（_current_theme、_current_colors）追踪
+当前主题。set_theme() 必须在任何 c() 调用之前执行（通常由 styles.get_style()
+或 MainWindow._apply_theme() 触发）。
+
+线程安全：PyQt6 采用单线程 UI 模型，所有 c() 调用均在主线程上发生，
+无需额外同步。后台线程不应直接调用 c()。
+"""
 
 LIGHT_COLORS = {
     # 基础色
@@ -86,6 +94,8 @@ LIGHT_COLORS = {
     'sidebar_count_text': '#666666',
     # 品牌
     'brand': '#0f766e',
+    # 图标按钮
+    'icon_btn_hover': 'rgba(128,128,128,0.1)',
 }
 
 DARK_COLORS = {
@@ -174,6 +184,8 @@ DARK_COLORS = {
     'sidebar_count_text': '#a6adc8',
     # 品牌
     'brand': '#5eead4',
+    # 图标按钮
+    'icon_btn_hover': 'rgba(200,200,200,0.15)',
 }
 
 _current_theme = 'light'
@@ -190,12 +202,13 @@ def get_colors(theme: str = '') -> dict:
 def set_theme(theme: str):
     """设置当前主题"""
     global _current_theme, _current_colors
+    assert set(LIGHT_COLORS.keys()) == set(DARK_COLORS.keys()), '浅色/深色主题颜色 key 不一致'
     _current_theme = theme
     _current_colors = dict(DARK_COLORS) if theme == 'dark' else dict(LIGHT_COLORS)
 
 
 def c(key: str) -> str:
-    """获取当前主题的颜色值"""
+    """获取当前主题的颜色值。未知 key 返回中性灰色 '#888888'。"""
     return _current_colors.get(key, '#888888')
 
 

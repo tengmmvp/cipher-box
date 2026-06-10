@@ -1,23 +1,37 @@
 """分类管理对话框 - 新增/编辑分类"""
 
-from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QComboBox, QWidget, QFormLayout, QMessageBox,
-    QColorDialog,
-)
+import logging
+
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import (
+    QColorDialog,
+    QComboBox,
+    QDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..database.models import Category
+from ..ui.resources.constants import BTN_DIALOG, DIALOG_CATEGORY_MIN_SIZE
 from ..ui.resources.theme_colors import c
+from ..ui.widgets import setup_dialog_flags
+
+logger = logging.getLogger(__name__)
 
 
-# 图标候选列表
+# 图标候选列表（单字符标识，用于分类视觉区分）
 ICON_CANDIDATES = [
-    '📎', '📁', '📋', '🗂️', '👥', '💬', '📧', '🌐',
-    '🏦', '💰', '🛒', '🛍️', '💼', '🎯', '🎮', '🎲',
-    '💻', '🎬', '📚', '🎵', '🏠', '✈️', '🏥', '🔒',
-    '🔑', '💡', '⚙️', '🔔', '🎓', '❤️', '🌟', '🏋️',
+    '[CLIP]', '[DIR]', '[LIST]', '[ORG]', '[SOC]', '[CHAT]', '[MAIL]', '[WEB]',
+    '[BANK]', '[COIN]', '[CART]', '[BAG]', '[WORK]', '[GOAL]', '[GAME]', '[DICE]',
+    '[PC]', '[FILM]', '[BOOK]', '[MUSIC]', '[HOME]', '[FLY]', '[MED]', '[LOCK]',
+    '[KEY]', '[IDEA]', '[GEAR]', '[BELL]', '[EDU]', '[LOVE]', '[STAR]', '[GYM]',
 ]
 
 # 预设颜色（供 c() 包装使用）
@@ -78,9 +92,9 @@ class CategoryDialog(QDialog):
 
     saved = pyqtSignal()
 
-    def __init__(self, db_manager, category=None, parent=None):
+    def __init__(self, entry_manager, category=None, parent=None):
         super().__init__(parent)
-        self._db_manager = db_manager
+        self._entry_mgr = entry_manager
         self._category = category  # None 表示新增，否则编辑
         self._selected_color = PRESET_COLORS[0]
         self._color_dots: list[_ColorDotButton] = []
@@ -91,10 +105,8 @@ class CategoryDialog(QDialog):
     def _setup_ui(self):
         is_edit = self._category is not None
         self.setWindowTitle('编辑分类' if is_edit else '新增分类')
-        self.setMinimumWidth(420)
-        self.setWindowFlags(
-            self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint
-        )
+        self.setMinimumSize(*DIALOG_CATEGORY_MIN_SIZE)
+        setup_dialog_flags(self)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(16)
@@ -172,13 +184,13 @@ class CategoryDialog(QDialog):
         btn_layout.addStretch()
 
         cancel_btn = QPushButton('取消')
-        cancel_btn.setFixedSize(90, 34)
+        cancel_btn.setFixedSize(*BTN_DIALOG)
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
 
         save_btn = QPushButton('保存')
         save_btn.setObjectName('primaryBtn')
-        save_btn.setFixedSize(90, 34)
+        save_btn.setFixedSize(*BTN_DIALOG)
         save_btn.clicked.connect(self._on_save)
         btn_layout.addWidget(save_btn)
 
@@ -242,7 +254,7 @@ class CategoryDialog(QDialog):
                 self._category.name = name
                 self._category.icon_char = icon_char
                 self._category.color = self._selected_color
-                self._db_manager.update_category(self._category)
+                self._entry_mgr.update_category(self._category)
             else:
                 # 新增模式
                 category = Category(
@@ -250,9 +262,10 @@ class CategoryDialog(QDialog):
                     icon_char=icon_char,
                     color=self._selected_color,
                 )
-                self._db_manager.add_category(category)
+                self._entry_mgr.add_category(category)
 
             self.saved.emit()
             self.accept()
-        except Exception as e:
-            QMessageBox.critical(self, '错误', f'保存失败：{e}')
+        except Exception as exc:
+            logger.error("保存分类失败: %s", type(exc).__name__, exc_info=True)
+            QMessageBox.critical(self, '错误', '保存失败，请重试')

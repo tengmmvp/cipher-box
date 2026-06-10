@@ -1,15 +1,26 @@
 """剪贴板管理器 - 复制密码后自动清空"""
 
-from PyQt6.QtWidgets import QApplication
+import hmac
+import os
+
 from PyQt6.QtCore import QTimer
+from PyQt6.QtWidgets import QApplication
+
+# 每次会话随机生成 HMAC 密钥，避免硬编码可被预测
+_CLIPBOARD_HMAC_KEY: bytes = os.urandom(32)
 
 
 class ClipboardManager:
-    """管理剪贴板复制与自动清空"""
+    """管理剪贴板复制与自动清空。
+
+    ClipboardManager 是长生命周期对象（由 MainWindow 持有），因此内部
+    QTimer 虽未指定 parent，但随 ClipboardManager 一同被 MainWindow
+    管理，生命周期安全。
+    """
 
     def __init__(self, clear_seconds: int = 30):
         self._clear_seconds = clear_seconds
-        self._last_copied: str = ''
+        self._last_copied_hash: bytes = b''
         self._timer = QTimer()
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._clear_clipboard)
@@ -29,19 +40,25 @@ class ClipboardManager:
         clipboard = QApplication.clipboard()
         if clipboard:
             clipboard.setText(text)
-            self._last_copied = text
-
-        if self._clear_seconds > 0:
-            self._timer.start(self._clear_seconds * 1000)
+            self._last_copied_hash = hmac.digest(_CLIPBOARD_HMAC_KEY, text.encode('utf-8'), 'sha256')
+            if self._clear_seconds > 0:
+                self._timer.start(self._clear_seconds * 1000)
 
     def _clear_clipboard(self):
         """清空剪贴板（仅当内容仍为上次复制的文本时才清空）"""
+        self._timer.stop()
         clipboard = QApplication.clipboard()
         if clipboard:
             current_text = clipboard.text()
-            if current_text == self._last_copied:
-                clipboard.clear()
-            self._last_copied = ''
+            if self._last_copied_hash:
+                current_hash = hmac.digest(_CLIPBOARD_HMAC_KEY, current_text.encode('utf-8'), 'sha256')
+                if hmac.compare_digest(current_hash, self._last_copied_hash):
+                    clipboard.clear()
+                    self._last_copied_hash = b''
+                else:
+                    # 用户已复制其他内容，原始内容已不在剪贴板中，清除 hash。
+                    self._last_copied_hash = b''
+            # 如果 _last_copied_hash 已经为空，无需操作
 
     def cancel(self):
         """取消自动清空"""

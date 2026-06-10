@@ -1,13 +1,19 @@
 """关于页面"""
 
-from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout,
-)
-from PyQt6.QtGui import QPixmap, QPainter, QColor, QFont
 from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+)
 
-from .. import __version__, __app_name__
+from .. import __app_name__, __version__
+from ..ui.resources.constants import BTN_DIALOG, DIALOG_ABOUT_MIN_SIZE
+from ..ui.resources.icons import draw_logo_pixmap
 from ..ui.resources.theme_colors import c
+from ..ui.widgets import setup_dialog_flags
 
 
 class AboutDialog(QDialog):
@@ -19,25 +25,15 @@ class AboutDialog(QDialog):
 
     def _setup_ui(self):
         self.setWindowTitle(f'关于 {__app_name__}')
-        self.setMinimumSize(400, 340)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        self.setMinimumSize(*DIALOG_ABOUT_MIN_SIZE)
+        setup_dialog_flags(self)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
         layout.setContentsMargins(36, 30, 36, 30)
 
-        # 图标和名称（QPainter 绘制 Logo，与 tray_icon 同源）
-        pixmap = QPixmap(64, 64)
-        pixmap.fill(QColor(0, 0, 0, 0))
-        p = QPainter(pixmap)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setBrush(QColor(c('brand')))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(4, 4, 56, 56, 12, 12)
-        p.setPen(QColor('white'))
-        p.setFont(QFont('Arial', 28, QFont.Weight.Bold))
-        p.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, 'C')
-        p.end()
+        # 图标和名称（使用共享 draw_logo_pixmap 绘制 Logo）
+        pixmap = draw_logo_pixmap(size=64, font_size=28)
 
         icon = QLabel()
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -80,7 +76,7 @@ class AboutDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         close_btn = QPushButton('关闭')
-        close_btn.setFixedSize(90, 34)
+        close_btn.setFixedSize(*BTN_DIALOG)
         close_btn.clicked.connect(self.close)
         btn_layout.addWidget(close_btn)
         btn_layout.addStretch()

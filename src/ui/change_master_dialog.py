@@ -1,14 +1,31 @@
 """修改主密码对话框"""
 
-from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QLabel, QLineEdit,
-    QPushButton, QMessageBox, QHBoxLayout,
-)
+import logging
+
 from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+)
 
 from ..crypto.password_generator import PasswordGenerator
-from ..ui.resources.theme_colors import c, get_strength_color
-from ..ui.resources.icons import set_icon, EYE, LOCK, SIZE_BTN
+from ..ui.resources.constants import BTN_DIALOG, DIALOG_CHANGE_MASTER_MIN_SIZE, WORKER_WAIT_TIMEOUT_MS
+from ..ui.resources.theme_colors import c
+from ..ui.widgets import (
+    RateLimiter,
+    create_password_toggle_btn,
+    release_worker,
+    setup_dialog_flags,
+    update_strength_label,
+)
+from ..ui.workers import BackgroundWorker
+
+logger = logging.getLogger(__name__)
 
 
 class ChangeMasterDialog(QDialog):
@@ -17,19 +34,29 @@ class ChangeMasterDialog(QDialog):
     def __init__(self, vault_manager, parent=None):
         super().__init__(parent)
         self._vault = vault_manager
+        self._rate_limiter = RateLimiter()
+        self._worker = None
         self._setup_ui()
+
+    def reject(self):
+        """关闭对话框前取消并等待后台 worker 完成。"""
+        if self._worker and self._worker.isRunning():
+            self._worker.cancel()
+            self._worker.wait(WORKER_WAIT_TIMEOUT_MS)
+        release_worker(self)
+        super().reject()
 
     def _setup_ui(self):
         self.setWindowTitle('修改主密码')
-        self.setMinimumSize(420, 420)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        self.setMinimumSize(*DIALOG_CHANGE_MASTER_MIN_SIZE)
+        setup_dialog_flags(self)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(14)
         layout.setContentsMargins(36, 30, 36, 30)
 
         # 标题
-        title = QLabel('🔑 修改主密码')
+        title = QLabel('修改主密码')
         title.setStyleSheet('font-size: 16px; font-weight: bold;')
         layout.addWidget(title)
 
@@ -45,11 +72,7 @@ class ChangeMasterDialog(QDialog):
         self._old_pwd.setEchoMode(QLineEdit.EchoMode.Password)
         self._old_pwd.setPlaceholderText('请输入当前主密码')
         old_pwd_layout.addWidget(self._old_pwd)
-        self._old_toggle = QPushButton()
-        self._old_toggle.setObjectName('iconBtn')
-        self._old_toggle.setFixedSize(32, 32)
-        set_icon(self._old_toggle, EYE)
-        self._old_toggle.clicked.connect(lambda: self._toggle_pwd(self._old_pwd, self._old_toggle))
+        self._old_toggle = create_password_toggle_btn(self._old_pwd)
         old_pwd_layout.addWidget(self._old_toggle)
         layout.addLayout(old_pwd_layout)
 
@@ -61,11 +84,7 @@ class ChangeMasterDialog(QDialog):
         self._new_pwd.setPlaceholderText('请输入新主密码（至少 12 位）')
         self._new_pwd.textChanged.connect(self._on_pwd_changed)
         new_pwd_layout.addWidget(self._new_pwd)
-        self._new_toggle = QPushButton()
-        self._new_toggle.setObjectName('iconBtn')
-        self._new_toggle.setFixedSize(32, 32)
-        set_icon(self._new_toggle, EYE)
-        self._new_toggle.clicked.connect(lambda: self._toggle_pwd(self._new_pwd, self._new_toggle))
+        self._new_toggle = create_password_toggle_btn(self._new_pwd)
         new_pwd_layout.addWidget(self._new_toggle)
         layout.addLayout(new_pwd_layout)
 
@@ -77,11 +96,7 @@ class ChangeMasterDialog(QDialog):
         self._confirm_pwd.setPlaceholderText('请再次输入新主密码')
         self._confirm_pwd.returnPressed.connect(self._on_change)
         confirm_pwd_layout.addWidget(self._confirm_pwd)
-        self._confirm_toggle = QPushButton()
-        self._confirm_toggle.setObjectName('iconBtn')
-        self._confirm_toggle.setFixedSize(32, 32)
-        set_icon(self._confirm_toggle, EYE)
-        self._confirm_toggle.clicked.connect(lambda: self._toggle_pwd(self._confirm_pwd, self._confirm_toggle))
+        self._confirm_toggle = create_password_toggle_btn(self._confirm_pwd)
         confirm_pwd_layout.addWidget(self._confirm_toggle)
         layout.addLayout(confirm_pwd_layout)
 
@@ -102,37 +117,28 @@ class ChangeMasterDialog(QDialog):
         btn_layout.addStretch()
 
         cancel_btn = QPushButton('取消')
-        cancel_btn.setFixedSize(90, 34)
+        cancel_btn.setFixedSize(*BTN_DIALOG)
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
 
-        change_btn = QPushButton('修改')
-        change_btn.setObjectName('primaryBtn')
-        change_btn.setFixedSize(90, 34)
-        change_btn.clicked.connect(self._on_change)
-        btn_layout.addWidget(change_btn)
+        self._change_btn = QPushButton('修改')
+        self._change_btn.setObjectName('primaryBtn')
+        self._change_btn.setFixedSize(*BTN_DIALOG)
+        self._change_btn.clicked.connect(self._on_change)
+        btn_layout.addWidget(self._change_btn)
 
         layout.addLayout(btn_layout)
 
-    @staticmethod
-    def _toggle_pwd(line_edit: QLineEdit, button: QPushButton):
-        if line_edit.echoMode() == QLineEdit.EchoMode.Password:
-            line_edit.setEchoMode(QLineEdit.EchoMode.Normal)
-            set_icon(button, LOCK)
-        else:
-            line_edit.setEchoMode(QLineEdit.EchoMode.Password)
-            set_icon(button, EYE)
-
     def _on_pwd_changed(self, text: str):
-        if text:
-            strength = PasswordGenerator.check_strength(text)
-            color = get_strength_color(strength.score)
-            self._strength_label.setText(f'强度：{strength.label}')
-            self._strength_label.setStyleSheet(f'color: {color}; font-size: 12px;')
-        else:
-            self._strength_label.setText('')
+        update_strength_label(self._strength_label, text)
 
     def _on_change(self):
+        # L13：速率限制委托给 RateLimiter
+        msg = self._rate_limiter.check()
+        if msg:
+            self._msg_label.setText(msg)
+            return
+
         old = self._old_pwd.text()
         new = self._new_pwd.text()
         confirm = self._confirm_pwd.text()
@@ -163,14 +169,44 @@ class ChangeMasterDialog(QDialog):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        try:
-            success = self._vault.change_master_password(old, new)
-        except RuntimeError as e:
-            QMessageBox.critical(self, '错误', str(e))
-            return
+        # 在后台线程执行重新加密，避免冻结 UI
+        self._change_btn.setEnabled(False)
+        self._msg_label.setStyleSheet(f'color: {c("accent")}; font-size: 12px; min-height: 18px;')
+        self._msg_label.setText('正在重新加密所有数据...')
 
+        self._worker = BackgroundWorker(
+            lambda: self._vault.change_master_password(old, new),
+            parent=self,
+        )
+        self._worker.finished.connect(self._on_change_done)
+        self._worker.error.connect(self._on_change_error)
+        self._worker.start()
+
+    def _on_change_done(self, success):
+        release_worker(self)
+        self._change_btn.setEnabled(True)
+        self._msg_label.setStyleSheet(f'color: {c("danger")}; font-size: 12px; min-height: 18px;')
+        # 清除旧密码输入框，减少明文驻留内存时间。
+        self._old_pwd.clear()
         if success:
+            self._rate_limiter.record_success()
             QMessageBox.information(self, '成功', '主密码已修改成功！')
             self.accept()
         else:
-            self._msg_label.setText('当前主密码错误')
+            lock_seconds = self._rate_limiter.record_failure()
+            if lock_seconds > 0:
+                self._msg_label.setText(
+                    f'当前主密码错误。尝试次数过多，请等待 {lock_seconds} 秒后重试'
+                )
+            else:
+                self._msg_label.setText('当前主密码错误')
+
+    def _on_change_error(self, error_msg: str):
+        release_worker(self)
+        self._change_btn.setEnabled(True)
+        self._msg_label.setStyleSheet(f'color: {c("danger")}; font-size: 12px; min-height: 18px;')
+        self._msg_label.setText('')
+        # 清除旧密码输入框。
+        self._old_pwd.clear()
+        logger.error("主密码修改失败", exc_info=True)
+        QMessageBox.critical(self, '错误', error_msg)

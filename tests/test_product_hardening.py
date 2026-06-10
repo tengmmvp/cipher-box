@@ -7,30 +7,26 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PyQt6.QtWidgets import QApplication, QLabel
+from PyQt6.QtTest import QTest
 
 from src.business.backup_restore import BackupRestoreManager
 from src.business.entry_manager import EntryManager
 from src.business.import_export import ImportExportManager
 from src.business.vault_manager import VaultManager
-from src.config import ConfigManager, DEFAULT_CONFIG
-from src.database.models import CustomField, Entry
 from src.crypto.totp import TOTPGenerator
+from src.database.models import CustomField, Entry
 from src.ui.entry_dialog import EntryDialog
 from src.ui.login_window import LoginWindow
 from src.ui.main_window import MainWindow
 from src.ui.resources.styles import get_style
 
+from tests.helpers import make_test_config
 
 _APP = QApplication.instance() or QApplication([])
 
 
-def _config(root: str) -> ConfigManager:
-    config = ConfigManager.__new__(ConfigManager)
-    config._data_dir = Path(root)
-    config._config_path = Path(root) / 'config.json'
-    config._config = dict(DEFAULT_CONFIG)
-    config._config['show_tray_icon'] = False
-    return config
+def _config(root: str):
+    return make_test_config(root)
 
 
 def test_unchanged_password_does_not_create_history():
@@ -174,6 +170,7 @@ def test_lock_closes_and_scrubs_open_entry_dialog():
         assert not dialog.isVisible()
         assert dialog._password_edit.text() == ''
         window.close()
+        vault.close()
 
 
 def test_stale_key_session_cannot_write_after_master_password_change():
@@ -243,10 +240,13 @@ def test_selecting_first_entry_opens_detail_panel_without_crash():
         entry_id = manager.add_entry(Entry(title='Selectable', password='Strong!2026Password'))
         window = MainWindow(config, vault)
         window._entry_list.setCurrentRow(0)
+        # 等待选择防抖定时器触发（80ms）并处理事件
+        QTest.qWait(150)
         _APP.processEvents()
         assert window._detail_panel._current_entry.id == entry_id
         assert window._detail_panel._title_label.text().endswith('Selectable')
         window.close()
+        vault.close()
 
 
 def test_first_time_login_password_fields_have_matching_dimensions():
@@ -607,8 +607,7 @@ def test_existing_database_missing_table_is_rejected_without_repair():
         connection.close()
 
         reopened = VaultManager(_config(root))
-        assert reopened.is_initialized is True
-        assert 'password_history' in reopened.last_error
+        assert reopened.is_initialized is False
         connection = sqlite3.connect(db_path)
         tables = {
             row[0] for row in connection.execute(

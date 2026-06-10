@@ -4,10 +4,12 @@ import functools
 import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 _SECURED_WINDOWS_OBJECTS: dict[str, tuple[int, int]] = {}
+_MAX_SECURED_CACHE = 256
 
 
 @functools.lru_cache(maxsize=1)
@@ -45,6 +47,8 @@ def _restrict_windows_acl(path: Path, is_directory: bool):
     identity = _windows_object_identity(path)
     if identity is not None and _SECURED_WINDOWS_OBJECTS.get(cache_key) == identity:
         return
+    if len(_SECURED_WINDOWS_OBJECTS) > _MAX_SECURED_CACHE:
+        _SECURED_WINDOWS_OBJECTS.clear()
     permission = '(OI)(CI)F' if is_directory else 'F'
     common = {
         'capture_output': True,
@@ -74,22 +78,63 @@ def _restrict_windows_acl(path: Path, is_directory: bool):
 
 def secure_directory(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try:
-        os.chmod(path, 0o700)
-    except OSError:
-        logger.warning('无法限制目录权限：%s', path, exc_info=True)
+    if sys.platform != 'win32':
+        try:
+            os.chmod(path, 0o700)
+        except OSError:
+            logger.warning('无法限制目录权限：%s', path, exc_info=True)
     if os.name == 'nt':
         _restrict_windows_acl(path, True)
     return path
 
 
+def validate_file_path(path, base_dir: Path | None = None) -> Path:
+    """验证文件路径，用于导入/导出/备份操作。
+
+    解析路径并拒绝可能允许目录遍历（path traversal）的路径组件，
+    包括通过 symlink（符号链接）解析到预期目录树之外的情况。
+
+    调用方**必须**使用返回的 resolved 路径而非原始 path 参数，
+    以避免 TOCTOU 竞态窗口。
+
+    Args:
+        path: 待验证的文件路径
+        base_dir: 可选的基目录约束。若提供，解析后的路径必须位于该目录下。
+
+    Returns:
+        解析后的安全路径（调用方应使用此返回值）。
+    """
+    resolved = Path(path).resolve()
+    # Reject paths with '..' components (potential traversal)
+    parts = Path(path).parts
+    if '..' in parts:
+        raise ValueError('文件路径包含非法遍历组件')
+    # 当未指定 base_dir 时，检测符号链接并记录警告。
+    # 指定了 base_dir 时，resolve() 已展开符号链接，is_relative_to 检查足够。
+    if base_dir is None and Path(path).is_symlink():
+        raise ValueError(f'检测到符号链接，拒绝访问: {path}')
+    # 检查父目录中的符号链接
+    if base_dir is None:
+        current = Path(path).parent
+        while current != current.parent:  # 未到根目录
+            if current.is_symlink():
+                raise ValueError(f'父目录包含符号链接，拒绝访问: {current}')
+            current = current.parent
+    if base_dir is not None:
+        base_resolved = Path(base_dir).resolve()
+        if not resolved.is_relative_to(base_resolved):
+            raise ValueError('文件路径超出允许的目录范围')
+    return resolved
+
+
 def secure_file(path: Path) -> Path:
     if not path.exists():
         return path
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        logger.warning('无法限制文件权限：%s', path, exc_info=True)
+    if sys.platform != 'win32':
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            logger.warning('无法限制文件权限：%s', path, exc_info=True)
     if os.name == 'nt':
         _restrict_windows_acl(path, False)
     return path

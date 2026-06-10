@@ -1,14 +1,38 @@
 """安全仪表盘 - 可视化展示安全概况"""
 
-from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QWidget, QTabWidget, QScrollArea, QFrame,
-    QMessageBox,
-)
-from PyQt6.QtCore import Qt, pyqtSignal, QRectF
-from PyQt6.QtGui import QPainter, QColor, QPen, QFont
+import logging
+from datetime import datetime
 
+from PyQt6.QtCore import QRectF, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen
+from PyQt6.QtWidgets import (
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ..ui.resources.constants import (
+    BTN_DIALOG,
+    BTN_FIX,
+    DIALOG_SECURITY_DASHBOARD_MIN_SIZE,
+    FONT_FAMILY_DISPLAY,
+    HEALTH_PENALTY_DUPLICATE,
+    HEALTH_PENALTY_OLD,
+    HEALTH_PENALTY_WEAK,
+    WORKER_WAIT_TIMEOUT_MS,
+)
 from ..ui.resources.theme_colors import c, get_strength_color
+from ..ui.widgets import clear_layout, release_worker, setup_dialog_flags
+from ..ui.workers import BackgroundWorker
+
+logger = logging.getLogger(__name__)
 
 
 class _HealthScoreWidget(QWidget):
@@ -25,48 +49,52 @@ class _HealthScoreWidget(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.save()
 
-        side = min(self.width(), self.height())
-        center_x = self.width() / 2
-        center_y = self.height() / 2
-        radius = side / 2 - 12
-        pen_width = 10
+            side = min(self.width(), self.height())
+            center_x = self.width() / 2
+            center_y = self.height() / 2
+            radius = side / 2 - 12  # 12px 内边距，圆环与控件边缘的间距
+            pen_width = 10  # 圆环线条粗细（像素）
 
-        # 背景圆环
-        bg_pen = QPen(QColor(c('progress_bg')), pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
-        painter.setPen(bg_pen)
-        draw_rect = QRectF(
-            center_x - radius, center_y - radius,
-            radius * 2, radius * 2,
-        )
-        painter.drawArc(draw_rect, 0, 360 * 16)
+            # 背景圆环
+            bg_pen = QPen(QColor(c('progress_bg')), pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+            painter.setPen(bg_pen)
+            draw_rect = QRectF(
+                center_x - radius, center_y - radius,
+                radius * 2, radius * 2,
+            )
+            painter.drawArc(draw_rect, 0, 360 * 16)
 
-        # 进度圆环
-        score_color = self._score_color(self._score)
-        fg_pen = QPen(QColor(score_color), pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
-        painter.setPen(fg_pen)
-        span_angle = int(self._score / 100 * 360 * 16)
-        start_angle = 90 * 16  # 从顶部开始
-        painter.drawArc(draw_rect, start_angle, -span_angle)
+            # 进度圆环
+            score_color = self._score_color(self._score)
+            fg_pen = QPen(QColor(score_color), pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+            painter.setPen(fg_pen)
+            span_angle = int(self._score / 100 * 360 * 16)
+            start_angle = 90 * 16  # 从顶部开始
+            painter.drawArc(draw_rect, start_angle, -span_angle)
 
-        # 中心文字 - 分数
-        painter.setPen(QColor(c('text_primary')))
-        font = QFont('Microsoft YaHei', 28, QFont.Weight.Bold)
-        painter.setFont(font)
-        painter.drawText(draw_rect, Qt.AlignmentFlag.AlignCenter, str(self._score))
+            # 中心文字 - 分数
+            painter.setPen(QColor(c('text_primary')))
+            font = QFont(FONT_FAMILY_DISPLAY, 28, QFont.Weight.Bold)
+            painter.setFont(font)
+            painter.drawText(draw_rect, Qt.AlignmentFlag.AlignCenter, str(self._score))
 
-        # 底部小标签
-        font_small = QFont('Microsoft YaHei', 9)
-        painter.setFont(font_small)
-        painter.setPen(QColor(c('text_secondary')))
-        label_rect = QRectF(
-            center_x - radius, center_y + 8,
-            radius * 2, 20,
-        )
-        painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, '安全评分')
+            # 底部小标签
+            font_small = QFont(FONT_FAMILY_DISPLAY, 9)
+            painter.setFont(font_small)
+            painter.setPen(QColor(c('text_secondary')))
+            label_rect = QRectF(
+                center_x - radius, center_y + 8,
+                radius * 2, 20,
+            )
+            painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, '安全评分')
 
-        painter.end()
+            painter.restore()
+        finally:
+            painter.end()
 
     @staticmethod
     def _score_color(score: int) -> str:
@@ -85,10 +113,11 @@ class _StatCard(QFrame):
 
     def __init__(self, title: str, count: int, color: str, button_text: str, parent=None):
         super().__init__(parent)
-        self._color = color
-        self._count = count
-        self._button_text = button_text
         self._setup_ui(title, count, color, button_text)
+
+    def update_count(self, count: int):
+        """更新卡片显示的数字"""
+        self._count_label.setText(str(count))
 
     def _setup_ui(self, title: str, count: int, color: str, button_text: str):
         self.setFrameShape(QFrame.Shape.StyledPanel)
@@ -116,6 +145,7 @@ class _StatCard(QFrame):
         count_label.setStyleSheet(
             f"font-size: 32px; font-weight: bold; color: {color};"
         )
+        self._count_label = count_label  # 保存引用供外部更新
         layout.addWidget(count_label)
 
         # 操作按钮
@@ -154,15 +184,22 @@ class SecurityDashboard(QDialog):
         self._weak_entries = []
         self._duplicate_groups = []
         self._old_entries = []
+        self._worker = None  # H1：预声明，确保 reject 时可安全检查
         self._setup_ui()
         self._load_data()
 
+    def reject(self):
+        """关闭前等待后台分析 worker 完成（H1），避免对已销毁部件发信号。"""
+        if self._worker and self._worker.isRunning():
+            self._worker.cancel()
+            self._worker.wait(WORKER_WAIT_TIMEOUT_MS)
+        release_worker(self)
+        super().reject()
+
     def _setup_ui(self):
         self.setWindowTitle('安全仪表盘')
-        self.setMinimumSize(680, 580)
-        self.setWindowFlags(
-            self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint
-        )
+        self.setMinimumSize(*DIALOG_SECURITY_DASHBOARD_MIN_SIZE)
+        setup_dialog_flags(self)
 
         main_layout = QVBoxLayout(self)
         main_layout.setSpacing(16)
@@ -199,8 +236,8 @@ class SecurityDashboard(QDialog):
 
         # 分隔线
         separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setStyleSheet(f"color: {c('divider')};")
+        separator.setFixedHeight(1)
+        separator.setStyleSheet(f"background-color: {c('divider')}; border: none;")
         main_layout.addWidget(separator)
 
         # ===== 详细列表区域 =====
@@ -214,7 +251,7 @@ class SecurityDashboard(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         close_btn = QPushButton('关闭')
-        close_btn.setFixedSize(90, 34)
+        close_btn.setFixedSize(*BTN_DIALOG)
         close_btn.clicked.connect(self.accept)
         btn_layout.addWidget(close_btn)
         main_layout.addLayout(btn_layout)
@@ -255,23 +292,46 @@ class SecurityDashboard(QDialog):
         return widget
 
     def _load_data(self):
-        """加载安全分析数据"""
+        """在后台线程加载安全分析数据，避免冻结 UI。"""
+        days = self._config.get('old_password_warning_days', 90)
+
+        # 显示加载状态
+        self._health_widget.set_score(0)
+        self._status_hint = QLabel('正在分析安全数据...')
+        self._status_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status_hint.setStyleSheet(f"color: {c('text_muted')}; font-size: 14px; padding: 16px;")
+        self._weak_layout.addWidget(self._status_hint)
+
+        self._worker = BackgroundWorker(
+            lambda: self._analyzer.get_or_compute_report(days),
+            parent=self,
+        )
+        self._worker.finished.connect(self._on_data_loaded)
+        self._worker.error.connect(self._on_data_error)
+        self._worker.start()
+
+    def _on_data_loaded(self, analysis):
+        """后台分析完成，更新 UI。"""
+        # 移除加载提示
+        if hasattr(self, '_status_hint') and self._status_hint:
+            self._status_hint.deleteLater()
+            self._status_hint = None
+
         try:
-            days = self._config.get('old_password_warning_days', 90)
-            analysis = self._analyzer.full_analysis(days)
             self._weak_entries = analysis['weak_entries']
             self._duplicate_groups = analysis['duplicate_groups']
             self._old_entries = analysis['old_entries']
-        except Exception as e:
-            QMessageBox.critical(self, '错误', f'加载安全数据失败：{e}')
+        except Exception as exc:
+            logger.error("加载安全报告失败: %s", type(exc).__name__, exc_info=True)
+            QMessageBox.critical(self, '错误', '加载安全数据失败，请重试')
             return
 
         weak_count = len(self._weak_entries)
         dup_count = len(self._duplicate_groups)
         old_count = len(self._old_entries)
+        total = analysis.get('total', 0)
 
-        # 计算健康评分
-        score = max(0, 100 - (weak_count * 15 + dup_count * 10 + old_count * 5))
+        score = self._compute_health_score(weak_count, dup_count, old_count, total)
 
         # 更新评分圆环
         self._health_widget.set_score(score)
@@ -285,15 +345,35 @@ class SecurityDashboard(QDialog):
         self._populate_weak_tab()
         self._populate_duplicate_tab()
         self._populate_old_tab()
+        release_worker(self)
+
+    def _on_data_error(self, error_msg: str):
+        """后台分析失败。"""
+        release_worker(self)
+        if hasattr(self, '_status_hint') and self._status_hint:
+            self._status_hint.deleteLater()
+            self._status_hint = None
+        logger.error("加载安全数据失败", exc_info=True)
+        QMessageBox.critical(self, '错误', '加载安全数据失败，请重试')
+
+    @staticmethod
+    def _compute_health_score(weak_count: int, dup_count: int, old_count: int, total: int) -> int:
+        """计算安全健康评分（0-100）。"""
+        if total == 0:
+            return 100
+        max_total = total
+        weak_ratio = min(weak_count / max_total, 1.0)
+        dup_ratio = min(dup_count / max_total, 1.0)
+        old_ratio = min(old_count / max_total, 1.0)
+        return max(0, int(100 - (
+            weak_ratio * 100 * HEALTH_PENALTY_WEAK
+            + dup_ratio * 100 * HEALTH_PENALTY_DUPLICATE
+            + old_ratio * 100 * HEALTH_PENALTY_OLD
+        )))
 
     def _update_stat_card(self, card: _StatCard, count: int):
         """更新统计卡片的数字"""
-        # 更新卡片内的 count QLabel（索引 1）
-        layout = card.layout()
-        if layout and layout.count() > 1:
-            count_widget = layout.itemAt(1).widget()
-            if isinstance(count_widget, QLabel):
-                count_widget.setText(str(count))
+        card.update_count(count)
 
     def _populate_weak_tab(self):
         """填充弱密码列表"""
@@ -365,9 +445,14 @@ class SecurityDashboard(QDialog):
         days = self._config.get('old_password_warning_days', 90)
         for entry in self._old_entries:
             updated = entry.password_changed_at or entry.updated_at or entry.created_at or '未知'
+            try:
+                dt = datetime.fromisoformat(updated)
+                formatted = dt.strftime('%Y-%m-%d')
+            except (ValueError, TypeError):
+                formatted = updated[:10] if updated else ''
             row = self._create_entry_row(
                 title=entry.title or '未命名',
-                subtitle=f'上次更新: {updated[:10]}',
+                subtitle=f'上次更新: {formatted}',
                 badge_text=f'> {days}天',
                 badge_color=c('warning'),
                 entry_id=entry.id,
@@ -418,8 +503,10 @@ class SecurityDashboard(QDialog):
 
         # 徽章
         badge = QLabel(badge_text)
+        bc = QColor(badge_color)
+        bc.setAlpha(int(255 * 0.13))
         badge.setStyleSheet(
-            f"background-color: {badge_color}22;"
+            f"background-color: rgba({bc.red()},{bc.green()},{bc.blue()},{bc.alpha()});"
             f"color: {badge_color};"
             f"border-radius: 10px;"
             f"padding: 3px 10px;"
@@ -432,7 +519,7 @@ class SecurityDashboard(QDialog):
         # 操作按钮
         fix_btn = QPushButton('修复')
         fix_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        fix_btn.setFixedSize(56, 28)
+        fix_btn.setFixedSize(*BTN_FIX)
         fix_btn.setStyleSheet(
             f"QPushButton {{"
             f"  background-color: {c('accent')};"
@@ -461,16 +548,9 @@ class SecurityDashboard(QDialog):
         )
         return label
 
-    def _clear_layout(self, layout: QVBoxLayout):
-        """清空布局中的所有子组件"""
-        while layout.count():
-            item = layout.takeAt(0)
-            widget = item.widget()
-            if widget:
-                widget.deleteLater()
-            child_layout = item.layout()
-            if child_layout:
-                self._clear_layout(child_layout)
+    @staticmethod
+    def _clear_layout(layout):
+        clear_layout(layout)
 
     def _on_fix_weak(self):
         """点击弱密码的立即修复按钮，跳转到弱密码标签页"""

@@ -1,19 +1,17 @@
 """数据库模块测试"""
 
-import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+import pytest
 
 from src.database.db_manager import DatabaseManager
-from src.database.models import Category, Entry, CustomField
+from src.database.models import Category, CustomField, Entry
 
 
+# TODO: 迁移到 conftest.py make_entry fixture（需将 unittest.TestCase 改为 pytest 风格）
 def _make_entry(**kwargs) -> Entry:
-    """创建测试用 Entry（确保 custom_fields 为字符串）"""
     kwargs.setdefault('username', 'x')
     kwargs.setdefault('password', 'x')
     kwargs.setdefault('notes', '')
@@ -21,6 +19,7 @@ def _make_entry(**kwargs) -> Entry:
     return Entry(**kwargs)
 
 
+@pytest.mark.usefixtures('_disable_encrypted_assertions')
 class TestDatabaseManager(unittest.TestCase):
     """数据库管理器测试"""
 
@@ -120,22 +119,75 @@ class TestDatabaseManager(unittest.TestCase):
         self.assertIsNone(retrieved)
 
     def test_search(self):
-        """测试搜索"""
+        """测试搜索（search 参数已弃用，搜索由 EntryManager 在 Python 端执行）"""
         self._db.add_entry(_make_entry(title='GitHub 账号'))
         self._db.add_entry(_make_entry(title='Gitee 账号'))
         self._db.add_entry(_make_entry(title='Google 邮箱'))
 
-        results = self._db.get_entries(search='Git')
-        self.assertEqual(len(results), 2)
+        # search 参数已从 DB 层移除，返回全部条目
+        results = self._db.get_entries()
+        self.assertEqual(len(results), 3)
 
-        results = self._db.get_entries(search='Google')
-        self.assertEqual(len(results), 1)
+        # Python 端搜索由 EntryManager.get_entries 负责
+        all_entries = self._db.get_entries()
+        self.assertEqual(len(all_entries), 3)
 
     def test_entry_count(self):
         """测试条目计数"""
         initial = self._db.get_entry_count()
         self._db.add_entry(_make_entry(title='新条目'))
         self.assertEqual(self._db.get_entry_count(), initial + 1)
+
+    def test_nested_transaction_savepoint(self):
+        """嵌套事务使用带引号的 savepoint 标识符"""
+        with self._db.transaction():
+            self._db.set_meta('test_key', 'outer')
+            with self._db.transaction():
+                self._db.set_meta('test_key', 'inner')
+            # Inner should be committed (released savepoint)
+            self.assertEqual(self._db.get_meta('test_key'), 'inner')
+
+        # After outer commit, value should still be inner
+        self.assertEqual(self._db.get_meta('test_key'), 'inner')
+
+    def test_get_all_tags_returns_only_tags(self):
+        """get_all_tags 轻量查询只返回标签字段"""
+        # Add entries with tags
+        entry1 = _make_entry(title='A', tags='work,important')
+        entry2 = _make_entry(title='B', tags='personal')
+        entry3 = _make_entry(title='C', tags='')
+        self._db.add_entry(entry1)
+        self._db.add_entry(entry2)
+        self._db.add_entry(entry3)
+
+        tags_list = self._db.get_all_tags()
+        self.assertIsInstance(tags_list, list)
+        self.assertTrue(all(isinstance(t, str) for t in tags_list))
+        self.assertEqual(len(tags_list), 3)
+        # Verify specific tag values are present
+        self.assertIn('work,important', tags_list)
+        self.assertIn('personal', tags_list)
+
+    def test_get_entries_with_limit(self):
+        """get_entries limit 参数应限制返回数量"""
+        for i in range(10):
+            self._db.add_entry(_make_entry(title=f'条目{i}'))
+
+        # 无 limit 返回全部
+        all_entries = self._db.get_entries()
+        self.assertEqual(len(all_entries), 10)
+
+        # limit=3 只返回 3 条
+        limited = self._db.get_entries(limit=3)
+        self.assertEqual(len(limited), 3)
+
+        # limit=0 返回空（SQL LIMIT 0）
+        empty = self._db.get_entries(limit=0)
+        self.assertEqual(len(empty), 0)
+
+        # limit 大于总数时返回全部
+        over = self._db.get_entries(limit=100)
+        self.assertEqual(len(over), 10)
 
 
 class TestModels(unittest.TestCase):

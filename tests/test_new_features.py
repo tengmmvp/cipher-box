@@ -1,20 +1,18 @@
 """新功能测试 - TOTP、密码历史、条目类型、模型增强"""
 
-import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+import pytest
 
 from src.crypto.totp import TOTPGenerator
-from src.database.models import Entry, Category, ENTRY_TYPES, ENTRY_TYPE_LOGIN
 from src.database.db_manager import DatabaseManager
+from src.database.models import ENTRY_TYPE_LOGIN, ENTRY_TYPES, Category, Entry
 
 
+# TODO: 迁移到 conftest.py make_entry fixture（需将 unittest.TestCase 改为 pytest 风格）
 def _make_entry(**kwargs) -> Entry:
-    kwargs.setdefault('username', 'x')
     kwargs.setdefault('password', 'x')
     kwargs.setdefault('notes', '')
     kwargs.setdefault('custom_fields', '')
@@ -77,14 +75,14 @@ class TestEntryTypes(unittest.TestCase):
     def test_entry_type_icon(self):
         """条目类型图标"""
         entry = Entry(title='Test', entry_type='card')
-        self.assertEqual(entry.type_icon, '💳')
+        self.assertEqual(entry.type_icon, '[CARD]')
         self.assertEqual(entry.type_label, '信用卡')
 
     def test_entry_default_type(self):
         """默认类型为 login"""
         entry = Entry(title='Test')
         self.assertEqual(entry.entry_type, ENTRY_TYPE_LOGIN)
-        self.assertEqual(entry.type_icon, '🔑')
+        self.assertEqual(entry.type_icon, '[KEY]')
 
     def test_has_totp(self):
         """TOTP 状态检测"""
@@ -105,6 +103,7 @@ class TestEntryTypes(unittest.TestCase):
         self.assertNotIn('totp_secret', d_no_pwd)
 
 
+@pytest.mark.usefixtures('_disable_encrypted_assertions')
 class TestPasswordHistory(unittest.TestCase):
     """密码历史功能测试"""
 
@@ -157,6 +156,7 @@ class TestPasswordHistory(unittest.TestCase):
         self.assertEqual(history[1].old_password_enc, 'first')
 
 
+@pytest.mark.usefixtures('_disable_encrypted_assertions')
 class TestDatabaseFormat(unittest.TestCase):
     """数据库固定格式测试"""
 
@@ -191,6 +191,7 @@ class TestDatabaseFormat(unittest.TestCase):
         db_path.unlink(missing_ok=True)
 
 
+@pytest.mark.usefixtures('_disable_encrypted_assertions')
 class TestCategoryManagement(unittest.TestCase):
     """分类管理增强测试"""
 

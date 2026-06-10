@@ -1,15 +1,12 @@
 """导入导出测试"""
 
-import os
-import sys
-import tempfile
-import json
 import csv
+import json
+import os
+import tempfile
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
-from src.database.models import Entry, CustomField
+from src.database.models import CustomField, Entry
 
 
 class TestImportExport(unittest.TestCase):

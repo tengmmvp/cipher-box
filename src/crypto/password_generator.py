@@ -1,21 +1,34 @@
 """密码生成器与强度检测"""
 
+import logging
 import re
 import secrets
 import string
 from dataclasses import dataclass
 
+logger = logging.getLogger(__name__)
+
+# 模块级密码安全随机数生成器，避免每次调用重复创建
+_RNG = secrets.SystemRandom()
 
 # 模糊字符集
 AMBIGUOUS_CHARS = 'Il1O0o'
 
-# 常见弱密码模式
+# 常见弱密码模式（预编译，避免 check_strength 每次调用重新编译）
+_COMMON_WEAK = r'^(123456|password|qwerty|abc123|111111|admin|letmein|welcome|monkey|dragon)'
 COMMON_PATTERNS = [
-    r'^(123456|password|qwerty|abc123|111111|admin|letmein|welcome|monkey|dragon)$',
-    r'^(\d)\1{4,}$',           # 全相同数字如 111111
-    r'^(012345|123456|234567|345678|456789)$',  # 连续数字
-    r'^(abcdef|bcdefg|cdefgh|qwerty|asdfgh|zxcvbn)$',  # 连续字母
+    re.compile(_COMMON_WEAK + r'$'),           # 精确匹配
+    re.compile(r'^(\d)\1{4,}$'),                # 全相同数字如 111111
+    re.compile(r'^(012345|123456|234567|345678|456789)$'),  # 连续数字
+    re.compile(r'^(abcdef|bcdefg|cdefgh|qwerty|asdfgh|zxcvbn)$'),  # 连续字母
+    re.compile(_COMMON_WEAK),                    # 前缀匹配：以常见弱密码开头的变体
 ]
+
+# 字符组成检测正则（预编译）
+_RE_UPPER = re.compile(r'[A-Z]')
+_RE_LOWER = re.compile(r'[a-z]')
+_RE_DIGIT = re.compile(r'\d')
+_RE_SYMBOL = re.compile(r'[^A-Za-z0-9]')
 
 
 @dataclass
@@ -30,6 +43,21 @@ class StrengthResult:
     has_symbol: bool
     is_common: bool
     feedback: list[str]  # 改进建议
+
+
+def _build_charset(base_chars: str, exclude_ambiguous: bool) -> str:
+    """构建字符集，可选排除模糊字符。
+
+    Args:
+        base_chars: 基础字符集
+        exclude_ambiguous: 是否排除模糊字符（Il1O0o）
+
+    Returns:
+        处理后的字符集字符串
+    """
+    if exclude_ambiguous:
+        return ''.join(c for c in base_chars if c not in AMBIGUOUS_CHARS)
+    return base_chars
 
 
 class PasswordGenerator:
@@ -58,37 +86,36 @@ class PasswordGenerator:
             生成的随机密码
         """
         if length < 4:
+            logger.warning("密码长度 %d 低于最小值 4，已自动调整", length)
             length = 4
+        if length > 128:
+            logger.warning("密码长度 %d 超过上限 128，已自动截断", length)
+            length = 128
 
         charset = ''
         required = []
 
         if uppercase:
-            chars = string.ascii_uppercase
-            if exclude_ambiguous:
-                chars = ''.join(c for c in chars if c not in AMBIGUOUS_CHARS)
+            chars = _build_charset(string.ascii_uppercase, exclude_ambiguous)
             charset += chars
             if chars:
                 required.append(chars)
 
         if lowercase:
-            chars = string.ascii_lowercase
-            if exclude_ambiguous:
-                chars = ''.join(c for c in chars if c not in AMBIGUOUS_CHARS)
+            chars = _build_charset(string.ascii_lowercase, exclude_ambiguous)
             charset += chars
             if chars:
                 required.append(chars)
 
         if digits:
-            chars = string.digits
-            if exclude_ambiguous:
-                chars = ''.join(c for c in chars if c not in AMBIGUOUS_CHARS)
+            chars = _build_charset(string.digits, exclude_ambiguous)
             charset += chars
             if chars:
                 required.append(chars)
 
         if symbols:
-            chars = '!@#$%^&*()_+-=[]{}|;:,.<>?'
+            # 符号字符集：排除反引号/引号/反斜杠/正斜杠以保证 shell/URL 兼容性
+            chars = _build_charset('!@#$%^&*()_+-=[]{}|;:,.<>?~', exclude_ambiguous)
             charset += chars
             if chars:
                 required.append(chars)
@@ -100,15 +127,15 @@ class PasswordGenerator:
         # 确保每种要求的字符类型至少出现一次
         password_chars = []
         for req_chars in required:
-            password_chars.append(secrets.choice(req_chars))
+            password_chars.append(_RNG.choice(req_chars))
 
         # 填充剩余长度
         remaining = length - len(password_chars)
         for _ in range(max(0, remaining)):
-            password_chars.append(secrets.choice(charset))
+            password_chars.append(_RNG.choice(charset))
 
         # 随机打乱顺序
-        secrets.SystemRandom().shuffle(password_chars)
+        _RNG.shuffle(password_chars)
         return ''.join(password_chars)
 
     @staticmethod
@@ -130,26 +157,30 @@ class PasswordGenerator:
             )
 
         length_ok = len(password) >= 12
-        has_upper = bool(re.search(r'[A-Z]', password))
-        has_lower = bool(re.search(r'[a-z]', password))
-        has_digit = bool(re.search(r'\d', password))
-        has_symbol = bool(re.search(r'[^A-Za-z0-9]', password))
+        has_upper = bool(_RE_UPPER.search(password))
+        has_lower = bool(_RE_LOWER.search(password))
+        has_digit = bool(_RE_DIGIT.search(password))
+        has_symbol = bool(_RE_SYMBOL.search(password))
 
         # 检查是否为常见密码
         is_common = False
         pwd_lower = password.lower()
         for pattern in COMMON_PATTERNS:
-            if re.match(pattern, pwd_lower, re.IGNORECASE):
+            if pattern.match(pwd_lower):
                 is_common = True
+                logger.debug("检测到常见密码模式")
                 break
 
         # 计算分数
+        # 评分体系：0=非常弱, 1=弱, 2=一般, 3=强, 4=非常强
+        # 理论最大原始分 6（len>=8 + len>=12 + upper + lower + digit + symbol），
+        # 通过 is_common 惩罚和 unique_ratio 惩罚降低后，最终 clamp 到 [0, 4]。
         score = 0
         feedback = []
 
         if len(password) >= 8:
             score += 1
-        elif len(password) < 8:
+        else:
             feedback.append('建议密码长度不少于 8 个字符')
 
         if len(password) >= 12:
@@ -177,17 +208,18 @@ class PasswordGenerator:
         else:
             feedback.append('建议包含特殊字符')
 
+        # 常见密码惩罚：无论得分多高，强制降至最高 1 分
         if is_common:
             score = min(score, 1)
             feedback.append('这是一个常见密码，极易被破解')
 
-        # 有重复字符惩罚
+        # 有重复字符惩罚：降低 1 分，但不低于 0
         unique_ratio = len(set(password)) / len(password) if password else 0
         if unique_ratio < 0.4:
             score = max(0, score - 1)
             feedback.append('密码中重复字符过多')
 
-        # 限制分数在 0-4 范围
+        # 最终 clamp：确保分数在 [0, 4] 范围内（labels 数组仅有 5 个元素）
         score = min(4, max(0, score))
 
         labels = ['非常弱', '弱', '一般', '强', '非常强']
@@ -209,13 +241,15 @@ class PasswordGenerator:
         )
 
     @staticmethod
-    def validate_master_password(password: str) -> tuple[bool, str]:
-        """主密码策略：至少 12 字符，并达到最低强度要求。"""
+    def validate_master_password(password: str, label: str = '主密码') -> tuple[bool, str]:
+        """密码策略：至少 12 字符，并达到最低强度要求。"""
+        if not password:
+            return False, f'{label}不能为空'
         if len(password) < 12:
-            return False, '主密码长度不能少于 12 个字符'
+            return False, f'{label}长度不能少于 12 个字符'
         strength = PasswordGenerator.check_strength(password)
         if strength.is_common:
-            return False, '不能使用常见弱密码作为主密码'
+            return False, f'不能使用常见弱密码作为{label}'
         if strength.score < 3:
-            return False, '主密码强度不足，请增加字符种类并避免重复字符'
+            return False, f'{label}强度不足，请增加字符种类并避免重复字符'
         return True, ''

@@ -1,13 +1,25 @@
 """设置对话框"""
 
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLineEdit,
-    QPushButton, QComboBox, QSpinBox, QCheckBox, QGroupBox,
-    QFormLayout, QTabWidget, QWidget, QFileDialog, QMessageBox,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt6.QtCore import Qt
 
 from ..config import ConfigManager
+from ..ui.resources.constants import BTN_DIALOG, DIALOG_SETTINGS_MIN_SIZE
+from ..ui.widgets import setup_dialog_flags
 
 
 class SettingsDialog(QDialog):
@@ -21,8 +33,8 @@ class SettingsDialog(QDialog):
 
     def _setup_ui(self):
         self.setWindowTitle('设置')
-        self.setMinimumSize(520, 480)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        self.setMinimumSize(*DIALOG_SETTINGS_MIN_SIZE)
+        setup_dialog_flags(self)
 
         layout = QVBoxLayout(self)
 
@@ -38,18 +50,18 @@ class SettingsDialog(QDialog):
         btn_layout.addStretch()
 
         reset_btn = QPushButton('恢复默认')
-        reset_btn.setFixedSize(90, 34)
+        reset_btn.setFixedSize(*BTN_DIALOG)
         reset_btn.clicked.connect(self._reset_to_defaults)
         btn_layout.addWidget(reset_btn)
 
         cancel_btn = QPushButton('取消')
-        cancel_btn.setFixedSize(90, 34)
+        cancel_btn.setFixedSize(*BTN_DIALOG)
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(cancel_btn)
 
         save_btn = QPushButton('保存')
         save_btn.setObjectName('primaryBtn')
-        save_btn.setFixedSize(90, 34)
+        save_btn.setFixedSize(*BTN_DIALOG)
         save_btn.clicked.connect(self._save_settings)
         btn_layout.addWidget(save_btn)
 
@@ -197,30 +209,48 @@ class SettingsDialog(QDialog):
         if path:
             self._backup_path_edit.setText(path)
 
+    # (config_key, widget_attr, accessor_type, default_value)
+    # accessor_type: 'combo' | 'check' | 'spin'
+    _SETTINGS_MAP = [
+        ('theme', '_theme_combo', 'combo', 'light'),
+        ('show_tray_icon', '_show_tray_check', 'check', True),
+        ('minimize_to_tray', '_minimize_tray_check', 'check', True),
+        ('close_to_tray', '_close_tray_check', 'check', False),
+        ('auto_lock_minutes', '_auto_lock_spin', 'spin', 5),
+        ('clipboard_clear_seconds', '_clipboard_spin', 'spin', 30),
+        ('password_visible_seconds', '_pwd_visible_spin', 'spin', 10),
+        ('default_password_length', '_default_length_spin', 'spin', 16),
+        ('default_uppercase', '_default_upper_check', 'check', True),
+        ('default_lowercase', '_default_lower_check', 'check', True),
+        ('default_digits', '_default_digits_check', 'check', True),
+        ('default_symbols', '_default_symbols_check', 'check', True),
+        ('default_exclude_ambiguous', '_default_exclude_check', 'check', False),
+        ('old_password_warning_days', '_old_pwd_spin', 'spin', 90),
+        ('auto_backup_enabled', '_auto_backup_check', 'check', False),
+        ('auto_backup_interval_hours', '_backup_interval_spin', 'spin', 24),
+        ('auto_backup_retention', '_backup_retention_spin', 'spin', 10),
+    ]
+
+    def _set_widget_value(self, widget, accessor_type: str, value):
+        if accessor_type == 'combo':
+            widget.setCurrentIndex(0 if value == 'light' else 1)
+        elif accessor_type == 'check':
+            widget.setChecked(value)
+        elif accessor_type == 'spin':
+            widget.setValue(value)
+
+    def _get_widget_value(self, widget, accessor_type: str):
+        if accessor_type == 'combo':
+            return 'light' if widget.currentIndex() == 0 else 'dark'
+        elif accessor_type == 'check':
+            return widget.isChecked()
+        elif accessor_type == 'spin':
+            return widget.value()
+
     def _load_settings(self):
-        theme = self._config.get('theme', 'light')
-        self._theme_combo.setCurrentIndex(0 if theme == 'light' else 1)
-
-        self._show_tray_check.setChecked(self._config.get('show_tray_icon', True))
-        self._minimize_tray_check.setChecked(self._config.get('minimize_to_tray', True))
-        self._close_tray_check.setChecked(self._config.get('close_to_tray', False))
-
-        self._auto_lock_spin.setValue(self._config.get('auto_lock_minutes', 5))
-        self._clipboard_spin.setValue(self._config.get('clipboard_clear_seconds', 30))
-        self._pwd_visible_spin.setValue(self._config.get('password_visible_seconds', 10))
-
-        self._default_length_spin.setValue(self._config.get('default_password_length', 16))
-        self._default_upper_check.setChecked(self._config.get('default_uppercase', True))
-        self._default_lower_check.setChecked(self._config.get('default_lowercase', True))
-        self._default_digits_check.setChecked(self._config.get('default_digits', True))
-        self._default_symbols_check.setChecked(self._config.get('default_symbols', True))
-        self._default_exclude_check.setChecked(self._config.get('default_exclude_ambiguous', False))
-
-        self._old_pwd_spin.setValue(self._config.get('old_password_warning_days', 90))
+        for key, attr, atype, default in self._SETTINGS_MAP:
+            self._set_widget_value(getattr(self, attr), atype, self._config.get(key, default))
         self._backup_path_edit.setText(self._config.get('backup_directory', ''))
-        self._auto_backup_check.setChecked(self._config.get('auto_backup_enabled', False))
-        self._backup_interval_spin.setValue(self._config.get('auto_backup_interval_hours', 24))
-        self._backup_retention_spin.setValue(self._config.get('auto_backup_retention', 10))
         self._update_tray_options(self._show_tray_check.isChecked())
         self._update_backup_options(self._auto_backup_check.isChecked())
 
@@ -241,46 +271,21 @@ class SettingsDialog(QDialog):
         )):
             QMessageBox.warning(self, '生成规则无效', '至少需要选择一种密码字符类型。')
             return
-        self._config.set('theme', 'light' if self._theme_combo.currentIndex() == 0 else 'dark')
-        self._config.set('show_tray_icon', self._show_tray_check.isChecked())
-        self._config.set('minimize_to_tray', self._minimize_tray_check.isChecked())
-        self._config.set('close_to_tray', self._close_tray_check.isChecked())
-        self._config.set('auto_lock_minutes', self._auto_lock_spin.value())
-        self._config.set('clipboard_clear_seconds', self._clipboard_spin.value())
-        self._config.set('password_visible_seconds', self._pwd_visible_spin.value())
-        self._config.set('default_password_length', self._default_length_spin.value())
-        self._config.set('default_uppercase', self._default_upper_check.isChecked())
-        self._config.set('default_lowercase', self._default_lower_check.isChecked())
-        self._config.set('default_digits', self._default_digits_check.isChecked())
-        self._config.set('default_symbols', self._default_symbols_check.isChecked())
-        self._config.set('default_exclude_ambiguous', self._default_exclude_check.isChecked())
-        self._config.set('old_password_warning_days', self._old_pwd_spin.value())
+        for key, attr, atype, _default in self._SETTINGS_MAP:
+            self._config.set(key, self._get_widget_value(getattr(self, attr), atype))
         self._config.set('backup_directory', self._backup_path_edit.text().strip())
-        self._config.set('auto_backup_enabled', self._auto_backup_check.isChecked())
-        self._config.set('auto_backup_interval_hours', self._backup_interval_spin.value())
-        self._config.set('auto_backup_retention', self._backup_retention_spin.value())
-        self._config.save()
+        try:
+            self._config.save()
+        except OSError:
+            QMessageBox.critical(
+                self, '保存失败',
+                '无法写入配置文件，请检查磁盘空间和文件权限。',
+            )
+            return
         self.accept()
 
     def _reset_to_defaults(self):
         """恢复默认设置"""
-        from ..config import DEFAULT_CONFIG
-        defaults = DEFAULT_CONFIG
-        self._theme_combo.setCurrentIndex(0)
-        self._show_tray_check.setChecked(defaults.get('show_tray_icon', True))
-        self._minimize_tray_check.setChecked(defaults.get('minimize_to_tray', True))
-        self._close_tray_check.setChecked(defaults.get('close_to_tray', False))
-        self._auto_lock_spin.setValue(defaults.get('auto_lock_minutes', 5))
-        self._clipboard_spin.setValue(defaults.get('clipboard_clear_seconds', 30))
-        self._pwd_visible_spin.setValue(defaults.get('password_visible_seconds', 10))
-        self._default_length_spin.setValue(defaults.get('default_password_length', 16))
-        self._default_upper_check.setChecked(defaults.get('default_uppercase', True))
-        self._default_lower_check.setChecked(defaults.get('default_lowercase', True))
-        self._default_digits_check.setChecked(defaults.get('default_digits', True))
-        self._default_symbols_check.setChecked(defaults.get('default_symbols', True))
-        self._default_exclude_check.setChecked(defaults.get('default_exclude_ambiguous', False))
-        self._old_pwd_spin.setValue(defaults.get('old_password_warning_days', 90))
+        for _key, attr, atype, default in self._SETTINGS_MAP:
+            self._set_widget_value(getattr(self, attr), atype, default)
         self._backup_path_edit.setText('')
-        self._auto_backup_check.setChecked(defaults.get('auto_backup_enabled', False))
-        self._backup_interval_spin.setValue(defaults.get('auto_backup_interval_hours', 24))
-        self._backup_retention_spin.setValue(defaults.get('auto_backup_retention', 10))

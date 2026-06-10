@@ -1,31 +1,33 @@
 """轻量级 Toast 通知组件 - 支持多类型、堆叠显示、淡入淡出动画"""
 
-from PyQt6.QtWidgets import (
-    QWidget, QFrame, QHBoxLayout, QVBoxLayout, QLabel,
-    QPushButton, QGraphicsOpacityEffect, QGraphicsDropShadowEffect,
-)
+import weakref
+
 from PyQt6.QtCore import (
-    Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal,
+    QEasingCurve,
+    QPropertyAnimation,
+    Qt,
+    QTimer,
+    pyqtSignal,
 )
-from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import (
+    QFrame,
+    QGraphicsOpacityEffect,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
+from .resources.icons import CLOSE, SIZE_TOAST, icon_pixmap, set_icon
+from .resources.icons import ERROR as ICON_ERROR
+from .resources.icons import INFO as ICON_INFO
+from .resources.icons import SUCCESS as ICON_SUCCESS
+from .resources.icons import WARNING as ICON_WARNING
 from .resources.theme_colors import c
-from .resources.icons import icon_pixmap, set_icon, SUCCESS, ERROR, WARNING, INFO, CLOSE, SIZE_TOAST
+from .resources.constants import BTN_CLOSE_TOAST, TOAST_HOVER_RESTART_MS, TOAST_MARGIN_BOTTOM, TOAST_MARGIN_RIGHT, TOAST_SPACING, TOAST_WIDTH
 
-
-def _parse_shadow_color(color_str: str) -> QColor:
-    """解析 rgba 颜色字符串为 QColor"""
-    color_str = color_str.strip()
-    if color_str.startswith('rgba('):
-        parts = color_str[5:-1].split(',')
-        r, g, b = int(parts[0].strip()), int(parts[1].strip()), int(parts[2].strip())
-        a = int(float(parts[3].strip()) * 255) if len(parts) > 3 else 255
-        return QColor(r, g, b, a)
-    if color_str.startswith('rgb('):
-        parts = color_str[4:-1].split(',')
-        r, g, b = int(parts[0].strip()), int(parts[1].strip()), int(parts[2].strip())
-        return QColor(r, g, b, 255)
-    return QColor(color_str)
+_TOAST_SHADOW_WIDTH = TOAST_WIDTH + 4
 
 
 class ToastWidget(QFrame):
@@ -46,10 +48,10 @@ class ToastWidget(QFrame):
 
     # 类型对应的图标
     _ICONS = {
-        SUCCESS: SUCCESS,
-        ERROR: ERROR,
-        INFO: INFO,
-        WARNING: WARNING,
+        SUCCESS: ICON_SUCCESS,
+        ERROR: ICON_ERROR,
+        INFO: ICON_INFO,
+        WARNING: ICON_WARNING,
     }
 
     def __init__(
@@ -74,6 +76,8 @@ class ToastWidget(QFrame):
         self._opacity_effect.setOpacity(0.0)
         self.setGraphicsEffect(self._opacity_effect)
         self._shadow_frame: QFrame | None = None  # 阴影层（由 ToastManager 设置）
+        self._fade_in_anim = None
+        self._fade_out_anim = None
 
         self._setup_ui(message, toast_type, action_text)
         self._apply_style(toast_type)
@@ -81,7 +85,7 @@ class ToastWidget(QFrame):
     # ------------------------------------------------------------------ UI
     def _setup_ui(self, message: str, toast_type: str, action_text: str):
         """构建内部布局"""
-        self.setFixedWidth(320)
+        self.setFixedWidth(TOAST_WIDTH)
         self.setMinimumHeight(20)
 
         # 根布局：左边彩色竖条 + 内容区
@@ -105,7 +109,7 @@ class ToastWidget(QFrame):
         top_row.setSpacing(8)
 
         # 类型图标
-        icon_name = self._ICONS.get(toast_type, INFO)
+        icon_name = self._ICONS.get(toast_type, ICON_INFO)
         icon_label = QLabel()
         icon_label.setPixmap(icon_pixmap(icon_name, size=SIZE_TOAST))
         icon_label.setFixedSize(SIZE_TOAST, SIZE_TOAST)
@@ -123,7 +127,7 @@ class ToastWidget(QFrame):
 
         # 关闭按钮
         close_btn = QPushButton()
-        close_btn.setFixedSize(20, 20)
+        close_btn.setFixedSize(*BTN_CLOSE_TOAST)
         close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         close_btn.clicked.connect(self._start_fade_out)
@@ -194,6 +198,10 @@ class ToastWidget(QFrame):
         self.show()
         self.raise_()
 
+        # M-14：启动新动画前停止旧动画，防止淡入/淡出动画重叠导致闪烁
+        if self._fade_out_anim is not None:
+            self._fade_out_anim.stop()
+
         # 淡入动画（使用 QGraphicsOpacityEffect）
         anim = QPropertyAnimation(self._opacity_effect, b'opacity')
         anim.setDuration(250)
@@ -209,6 +217,10 @@ class ToastWidget(QFrame):
     def _start_fade_out(self):
         """开始淡出动画"""
         self._auto_close_timer.stop()
+
+        # M-14：启动新动画前停止旧动画，防止淡入/淡出动画重叠导致闪烁
+        if self._fade_in_anim is not None:
+            self._fade_in_anim.stop()
 
         anim = QPropertyAnimation(self._opacity_effect, b'opacity')
         anim.setDuration(200)
@@ -237,9 +249,9 @@ class ToastWidget(QFrame):
         super().enterEvent(a0)
 
     def leaveEvent(self, a0):
-        """鼠标离开时重启自动关闭（缩短为 1 秒）"""
+        """鼠标离开时重启自动关闭（缩短但不超过原 duration）"""
         if self._duration > 0:
-            self._auto_close_timer.start(1000)
+            self._auto_close_timer.start(min(self._duration, TOAST_HOVER_RESTART_MS))
         super().leaveEvent(a0)
 
 
@@ -253,47 +265,34 @@ class ToastManager:
     同时为每个 Toast 创建一层 QGraphicsDropShadowEffect 包装。
     """
 
-    _instances: dict[int, 'ToastManager'] = {}
+    _instances: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
     def __init__(self, parent: QWidget):
         self._parent = parent
         self._toasts: list[ToastWidget] = []
-        self._spacing = 10
-        self._margin_bottom = 20
-        self._margin_right = 20
+        self._spacing = TOAST_SPACING
+        self._margin_bottom = TOAST_MARGIN_BOTTOM
+        self._margin_right = TOAST_MARGIN_RIGHT
 
     @staticmethod
     def get_manager(parent: QWidget) -> 'ToastManager':
         """获取或创建 parent 对应的 ToastManager"""
-        pid = id(parent)
-        if pid not in ToastManager._instances:
-            ToastManager._instances[pid] = ToastManager(parent)
-        return ToastManager._instances[pid]
+        if parent not in ToastManager._instances:
+            ToastManager._instances[parent] = ToastManager(parent)
+        return ToastManager._instances[parent]
 
     def add_toast(self, toast: ToastWidget):
         """添加一个 Toast 并更新所有位置"""
-        # 为 Toast 添加阴影效果
+        # 阴影效果：QGraphicsDropShadowEffect 无法叠加在 QGraphicsOpacityEffect 上，
+        # 因此使用同位的 QFrame 作为阴影层（见下方 shadow_frame）。
         shadow_color = c('toast_shadow')
-        shadow = QGraphicsDropShadowEffect(toast)
-        shadow.setBlurRadius(16)
-        shadow.setOffset(0, 4)
-        shadow.setColor(_parse_shadow_color(shadow_color))
-        # 注意：toast 已经有 QGraphicsOpacityEffect 作为 graphicsEffect
-        # QGraphicsDropShadowEffect 只能设置给另一个 widget
-        # 解决方案：给 toast 的父级或用一个包装容器
-        # 这里我们给 _accent_bar 或 content_widget 设置阴影不太合适，
-        # 所以直接给 toast 设置阴影层 —— 但一个 widget 只能有一个 effect。
-        #
-        # 最终方案：ToastWidget 上使用 QGraphicsOpacityEffect，
-        # 阴影通过额外的 Shadow QFrame 实现（放在 toast 同级的下层）。
-        self._shadow = shadow  # 暂存
 
         toast.closed.connect(self._remove_toast)
         self._toasts.append(toast)
 
         # 创建一个同位的阴影 QFrame
         shadow_frame = QFrame(self._parent)
-        shadow_frame.setFixedWidth(324)
+        shadow_frame.setFixedWidth(_TOAST_SHADOW_WIDTH)
         shadow_frame.setStyleSheet(f"""
             QFrame {{
                 background-color: {shadow_color};
@@ -308,6 +307,12 @@ class ToastManager:
         self._reposition_all()
         toast.show_toast()
 
+    def cancel_all(self):
+        """取消所有活跃 Toast：清空回调并淡出。锁定前调用（A5）。"""
+        for toast in list(self._toasts):
+            toast._action_callback = None
+            toast._start_fade_out()
+
     def _remove_toast(self, toast: ToastWidget):
         """移除一个 Toast 并更新所有位置"""
         if toast in self._toasts:
@@ -321,8 +326,7 @@ class ToastManager:
 
         # 当没有 Toast 时清理 Manager 引用
         if not self._toasts:
-            pid = id(self._parent)
-            ToastManager._instances.pop(pid, None)
+            ToastManager._instances.pop(self._parent, None)
 
     def _reposition_all(self):
         """重新计算所有 Toast 的位置（从右下角向上堆叠）"""
@@ -330,11 +334,13 @@ class ToastManager:
             return
 
         parent_rect = self._parent.rect()
-        x = parent_rect.width() - 320 - self._margin_right
+        x = parent_rect.width() - TOAST_WIDTH - self._margin_right
 
         # 从下往上堆叠
         y = parent_rect.height() - self._margin_bottom
         for toast in reversed(self._toasts):
+            # 高度回退链：首次布局前 sizeHint 可能返回 0，
+            # 此时回退到实际 height()，最终使用保守默认值 60px。
             toast_height = toast.sizeHint().height()
             if toast_height <= 20:
                 toast_height = toast.height()
@@ -363,11 +369,11 @@ class Toast:
         Toast.show(parent, "已删除", Toast.INFO, action_text="撤销", action_callback=undo)
     """
 
-    # 类型常量（方便外部使用）
-    SUCCESS = 'success'
-    ERROR = 'error'
-    INFO = 'info'
-    WARNING = 'warning'
+    # 类型常量（方便外部使用）— 引用自 ToastWidget 避免重复定义
+    SUCCESS = ToastWidget.SUCCESS
+    ERROR = ToastWidget.ERROR
+    INFO = ToastWidget.INFO
+    WARNING = ToastWidget.WARNING
 
     @staticmethod
     def show(

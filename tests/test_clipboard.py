@@ -1,23 +1,21 @@
 """ClipboardManager 单元测试"""
 
-import sys
+import hmac
+
 import pytest
-from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer
+from PyQt6.QtWidgets import QApplication
 
-from src.utils.clipboard import ClipboardManager
-
-
-# ---------------------------------------------------------------------------
-# 确保 QApplication 单例存在（PyQt6 要求）
-# ---------------------------------------------------------------------------
-_app = QApplication.instance()
-if _app is None:
-    _app = QApplication(sys.argv)
+from src.utils.clipboard import _CLIPBOARD_HMAC_KEY, ClipboardManager
 
 
 class TestClipboardManager:
     """ClipboardManager 核心逻辑测试"""
+
+    @pytest.fixture(autouse=True)
+    def _ensure_qapp(self, qapp):
+        """在 setup_method 之前确保 QApplication 已创建。"""
+        self._qapp = qapp
 
     def setup_method(self):
         self.mgr = ClipboardManager(clear_seconds=30)
@@ -31,7 +29,8 @@ class TestClipboardManager:
 
         clipboard = QApplication.clipboard()
         assert clipboard.text() == text
-        assert self.mgr._last_copied == text
+        expected_hash = hmac.digest(_CLIPBOARD_HMAC_KEY, text.encode('utf-8'), 'sha256')
+        assert self.mgr._last_copied_hash == expected_hash
 
     # ---- 自动清空计时器 ----
 
@@ -56,7 +55,7 @@ class TestClipboardManager:
 
     # ---- 仅清空匹配内容 ----
 
-    def test_clear_only_matching(self, qapp):
+    def test_clear_only_matching(self):
         """只清空与上次复制匹配的内容"""
         self.mgr.clear_seconds = 1
         self.mgr.copy_text("password_A")
@@ -78,15 +77,6 @@ class TestClipboardManager:
         self.mgr.copy_text("")
 
         clipboard = QApplication.clipboard()
-        # _last_copied 应保持初始空字符串，未被设置
-        assert self.mgr._last_copied == ''
+        # _last_copied_hash 应保持初始空值，未被设置
+        assert self.mgr._last_copied_hash == b''
         assert not self.mgr._timer.isActive()
-
-
-# ---------------------------------------------------------------------------
-# pytest-qt 插件兼容：提供 qapp fixture（若未安装 pytest-qt）
-# ---------------------------------------------------------------------------
-@pytest.fixture(scope="session")
-def qapp():
-    """返回已创建的 QApplication 单例，供需要 qapp fixture 的测试使用。"""
-    return QApplication.instance() or QApplication(sys.argv)

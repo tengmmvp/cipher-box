@@ -1,15 +1,36 @@
 """密码生成器对话框"""
 
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QCheckBox, QSlider, QGroupBox, QGridLayout,
-    QSpacerItem, QSizePolicy, QMessageBox,
+    QCheckBox,
+    QDialog,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QSlider,
+    QSpacerItem,
+    QVBoxLayout,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 
 from ..crypto.password_generator import PasswordGenerator
+from ..ui.resources.constants import (
+    BTN_COMPACT,
+    BTN_GENERATE,
+    BTN_PRIMARY,
+    BTN_SECONDARY,
+    DIALOG_PASSWORD_GEN_MIN_SIZE,
+    FONT_FAMILY_MONOSPACE,
+    MS_FEEDBACK,
+    PWD_GENERATE_LENGTH_DEFAULT,
+)
+from ..ui.resources.icons import COPY, GENERATE, set_icon, set_icon_with_text
 from ..ui.resources.theme_colors import get_strength_color
-from ..ui.resources.icons import set_icon, set_icon_with_text, COPY, GENERATE
+from ..ui.widgets import setup_dialog_flags
 
 
 class PasswordGeneratorDialog(QDialog):
@@ -21,13 +42,18 @@ class PasswordGeneratorDialog(QDialog):
         super().__init__(parent)
         self._clipboard = clipboard_manager
         self._config = config
+        self._copy_feedback_timer: QTimer | None = None
         self._setup_ui()
         self._generate()
 
+    def _cfg(self, key: str, default):
+        """读取配置值，config 为 None 时使用默认值。"""
+        return self._config.get(key, default) if self._config else default
+
     def _setup_ui(self):
         self.setWindowTitle('密码生成器')
-        self.setMinimumSize(480, 420)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        self.setMinimumSize(*DIALOG_PASSWORD_GEN_MIN_SIZE)
+        setup_dialog_flags(self)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(14)
@@ -36,12 +62,12 @@ class PasswordGeneratorDialog(QDialog):
         pwd_layout = QHBoxLayout()
         self._password_display = QLineEdit()
         self._password_display.setReadOnly(True)
-        self._password_display.setStyleSheet('font-size: 16px; padding: 10px; font-family: monospace;')
+        self._password_display.setStyleSheet(f'font-size: 16px; padding: 10px; font-family: {FONT_FAMILY_MONOSPACE};')
         self._password_display.setPlaceholderText('点击「生成」按钮')
         pwd_layout.addWidget(self._password_display)
 
         self._copy_btn = QPushButton()
-        self._copy_btn.setFixedSize(80, 40)
+        self._copy_btn.setFixedSize(*BTN_COMPACT)
         set_icon_with_text(self._copy_btn, '复制', COPY)
         self._copy_btn.clicked.connect(self._copy_password)
         pwd_layout.addWidget(self._copy_btn)
@@ -63,7 +89,7 @@ class PasswordGeneratorDialog(QDialog):
         settings_layout.addWidget(QLabel('密码长度：'), 0, 0)
         self._length_slider = QSlider(Qt.Orientation.Horizontal)
         self._length_slider.setRange(4, 64)
-        default_length = self._config.get('default_password_length', 16) if self._config else 16
+        default_length = self._cfg('default_password_length', PWD_GENERATE_LENGTH_DEFAULT)
         self._length_slider.setValue(default_length)
         self._length_slider.valueChanged.connect(self._on_length_changed)
         settings_layout.addWidget(self._length_slider, 0, 1)
@@ -74,23 +100,23 @@ class PasswordGeneratorDialog(QDialog):
 
         # 字符类型
         self._upper_check = QCheckBox('大写字母 (A-Z)')
-        self._upper_check.setChecked(self._config.get('default_uppercase', True) if self._config else True)
+        self._upper_check.setChecked(self._cfg('default_uppercase', True))
         settings_layout.addWidget(self._upper_check, 1, 0, 1, 3)
 
         self._lower_check = QCheckBox('小写字母 (a-z)')
-        self._lower_check.setChecked(self._config.get('default_lowercase', True) if self._config else True)
+        self._lower_check.setChecked(self._cfg('default_lowercase', True))
         settings_layout.addWidget(self._lower_check, 2, 0, 1, 3)
 
         self._digits_check = QCheckBox('数字 (0-9)')
-        self._digits_check.setChecked(self._config.get('default_digits', True) if self._config else True)
+        self._digits_check.setChecked(self._cfg('default_digits', True))
         settings_layout.addWidget(self._digits_check, 3, 0, 1, 3)
 
         self._symbols_check = QCheckBox('特殊字符 (!@#$%...)')
-        self._symbols_check.setChecked(self._config.get('default_symbols', True) if self._config else True)
+        self._symbols_check.setChecked(self._cfg('default_symbols', True))
         settings_layout.addWidget(self._symbols_check, 4, 0, 1, 3)
 
         self._exclude_ambiguous = QCheckBox('排除模糊字符 (I, l, 1, O, 0)')
-        self._exclude_ambiguous.setChecked(self._config.get('default_exclude_ambiguous', False) if self._config else False)
+        self._exclude_ambiguous.setChecked(self._cfg('default_exclude_ambiguous', False))
         settings_layout.addWidget(self._exclude_ambiguous, 5, 0, 1, 3)
 
         layout.addWidget(settings_group)
@@ -102,20 +128,20 @@ class PasswordGeneratorDialog(QDialog):
 
         gen_btn = QPushButton()
         gen_btn.setObjectName('primaryBtn')
-        gen_btn.setFixedSize(140, 38)
+        gen_btn.setFixedSize(*BTN_GENERATE)
         set_icon_with_text(gen_btn, '生成密码', GENERATE)
         gen_btn.clicked.connect(self._generate)
         btn_layout.addWidget(gen_btn)
 
         use_btn = QPushButton('使用此密码')
-        use_btn.setFixedSize(120, 38)
+        use_btn.setFixedSize(*BTN_PRIMARY)
         use_btn.clicked.connect(self._use_password)
         btn_layout.addWidget(use_btn)
 
         btn_layout.addStretch()
 
         close_btn = QPushButton('关闭')
-        close_btn.setFixedSize(80, 38)
+        close_btn.setFixedSize(*BTN_SECONDARY)
         close_btn.clicked.connect(self.close)
         btn_layout.addWidget(close_btn)
 
@@ -155,16 +181,40 @@ class PasswordGeneratorDialog(QDialog):
         if self._clipboard:
             self._clipboard.copy_text(password)
         else:
-            from PyQt6.QtWidgets import QApplication
-            clipboard = QApplication.clipboard()
-            if clipboard:
-                clipboard.setText(password)
+            # 剪贴板管理器不可用时直接返回，避免绕过自动清除机制
+            return
         # 按钮反馈
         self._copy_btn.setText('已复制 ✓')
-        QTimer.singleShot(1500, lambda: set_icon_with_text(self._copy_btn, '复制', COPY))
+        if self._copy_feedback_timer is not None:
+            self._copy_feedback_timer.stop()
+        self._copy_feedback_timer = QTimer(self)
+        self._copy_feedback_timer.setSingleShot(True)
+        self._copy_feedback_timer.setInterval(MS_FEEDBACK)
+        self._copy_feedback_timer.timeout.connect(
+            lambda: set_icon_with_text(self._copy_btn, '复制', COPY),
+        )
+        self._copy_feedback_timer.start()
 
     def _use_password(self):
         password = self._password_display.text()
         if password:
             self.password_selected.emit(password)
+            self._clear_sensitive()
             self.close()
+
+    def _clear_sensitive(self):
+        """关闭前清除生成的密码，减少明文在内存中的驻留时间。"""
+        self._password_display.clear()
+        if self._copy_feedback_timer is not None:
+            self._copy_feedback_timer.stop()
+            self._copy_feedback_timer = None
+
+    def reject(self):
+        """取消/关闭前清除敏感输入。"""
+        self._clear_sensitive()
+        super().reject()
+
+    def closeEvent(self, event):
+        """窗口关闭前清除敏感输入。"""
+        self._clear_sensitive()
+        super().closeEvent(event)

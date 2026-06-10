@@ -1,12 +1,16 @@
 """空状态组件 - 友好的空列表/无结果提示"""
 
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QPushButton,
-)
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtWidgets import (
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
+from ..ui.resources.icons import EMPTY_GENERIC, SIZE_EMPTY, icon_pixmap
 from ..ui.resources.theme_colors import c
-from ..ui.resources.icons import icon_pixmap, EMPTY_GENERIC, SIZE_EMPTY
+from ..ui.resources.constants import BTN_ACTION
 
 
 class EmptyStateWidget(QWidget):
@@ -55,7 +59,7 @@ class EmptyStateWidget(QWidget):
         if action_text:
             action_btn = QPushButton(action_text)
             action_btn.setObjectName('primaryBtn')
-            action_btn.setFixedSize(140, 36)
+            action_btn.setFixedSize(*BTN_ACTION)
             action_btn.clicked.connect(self.action_clicked.emit)
             layout.addSpacing(8)
 

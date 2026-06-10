@@ -6,10 +6,9 @@
     act.setIcon(icon(COPY, size=SIZE_MENU))  # 菜单项图标
 """
 
-from PyQt6.QtCore import QSize
-from PyQt6.QtGui import QIcon, QPixmap
-
 import qtawesome as qta
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 
 from .theme_colors import c
 
@@ -158,15 +157,24 @@ _ICON_MAP: dict[str, tuple[str, str]] = {
 
 
 def _make_icon(name: str, color_key: str | None = None) -> QIcon:
-    """内部：创建 QIcon 实例。"""
+    """内部：创建 QIcon 实例。
+
+    颜色在创建时烘焙到 QIcon 中（主题颜色通过 c() 获取）。
+    主题切换时需重建所有图标（通过 _build_filter_list、_update_menu_icons 等），
+    遗漏重建的图标将保留旧主题颜色。
+    """
     glyph, default_color_key = _ICON_MAP[name]
     ck = color_key or default_color_key
     color = c(ck)
     return qta.icon(glyph, color=color)
 
 
-def icon(name: str, color_key: str | None = None, size: int = SIZE_BTN) -> QIcon:
-    """获取着色后的 QIcon。"""
+def icon(name: str, color_key: str | None = None, size: int = SIZE_BTN) -> QIcon:  # noqa: ARG001
+    """获取着色后的 QIcon。
+
+    Note: ``size`` 参数暂未使用，QIcon 渲染尺寸由目标 widget 的 iconSize 决定。
+    保留此参数以便未来支持固定尺寸输出。
+    """
     return _make_icon(name, color_key)
 
 
@@ -192,3 +200,46 @@ def set_icon_with_text(widget, text: str, name: str, color_key: str | None = Non
     widget.setIconSize(QSize(size, size))
     widget.setText(text)
     widget.setAccessibleName(text)
+
+
+def draw_logo_pixmap(
+    size: int = 64,
+    bg_color: str | None = None,
+    text: str = 'C',
+    text_color: str | None = None,
+    font_size: int | None = None,
+) -> QPixmap:
+    """绘制 CipherBox Logo 的 QPixmap。
+
+    Args:
+        size: 画布尺寸（正方形）
+        bg_color: 背景色，默认使用主题 brand 色
+        text: 显示文字
+        text_color: 文字颜色，默认使用 text_on_accent
+        font_size: 字体大小，默认按 size 自动计算
+    """
+    from .constants import FONT_FAMILY_PRIMARY
+
+    if bg_color is None:
+        bg_color = c('brand')
+    if text_color is None:
+        text_color = c('text_on_accent')
+    if font_size is None:
+        font_size = max(12, size // 2 - 4) if len(text) <= 1 else max(8, size // 3)
+
+    margin = max(1, size // 16)
+    rect_size = size - 2 * margin
+    radius = max(2, size // 5)
+
+    pixmap = QPixmap(size, size)
+    pixmap.fill(QColor(0, 0, 0, 0))
+    p = QPainter(pixmap)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setBrush(QColor(bg_color))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawRoundedRect(margin, margin, rect_size, rect_size, radius, radius)
+    p.setPen(QColor(text_color))
+    p.setFont(QFont(FONT_FAMILY_PRIMARY, font_size, QFont.Weight.Bold))
+    p.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, text)
+    p.end()
+    return pixmap
