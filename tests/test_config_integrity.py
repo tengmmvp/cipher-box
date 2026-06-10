@@ -5,7 +5,6 @@ import json
 import pytest
 
 from src.config import DEFAULT_CONFIG
-
 from tests.helpers import make_test_config
 
 

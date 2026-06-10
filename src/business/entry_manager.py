@@ -31,20 +31,32 @@ def _format_datetime(iso_str: str) -> str:
 
 from ..crypto.totp import TOTPGenerator
 from ..database.models import (
-    ENTRY_TYPES, Category, CustomField, Entry, PasswordHistory,
-    MAX_FIELD_TITLE, MAX_FIELD_USERNAME, MAX_FIELD_URL,
-    MAX_FIELD_PASSWORD, MAX_FIELD_NOTES, MAX_FIELD_TAGS,
+    ENTRY_TYPES,
+    MAX_FIELD_NOTES,
+    MAX_FIELD_PASSWORD,
+    MAX_FIELD_TAGS,
+    MAX_FIELD_TITLE,
     MAX_FIELD_TOTP_SECRET,
+    MAX_FIELD_URL,
+    MAX_FIELD_USERNAME,
+    Category,
+    CustomField,
+    Entry,
+    PasswordHistory,
 )
-from .exceptions import DecryptionError, EntryIntegrityError, VaultLockedError
 from .crypto_utils import (
     build_entry_summary,
     copy_entry_fields,
-    decrypt_field as _decrypt_field_impl,
-    encrypt_field as _encrypt_field_impl,
     matches_search,
     require_vault_key,
 )
+from .crypto_utils import (
+    decrypt_field as _decrypt_field_impl,
+)
+from .crypto_utils import (
+    encrypt_field as _encrypt_field_impl,
+)
+from .exceptions import DecryptionError, EntryIntegrityError, VaultLockedError
 
 _MAX_TITLE_LEN = MAX_FIELD_TITLE
 _MAX_USERNAME_LEN = MAX_FIELD_USERNAME

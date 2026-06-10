@@ -20,6 +20,8 @@ from ..crypto.encryption import EncryptionEngine
 from ..crypto.master_key import PBKDF2_ITERATIONS, MasterKeyManager
 from ..crypto.password_generator import PasswordGenerator
 from ..database.db_manager import DatabaseManager
+from .crypto_utils import decrypt_field as _decrypt_field_impl
+from .crypto_utils import encrypt_field as _encrypt_field_impl
 from .exceptions import (
     CipherBoxError,
     DatabaseError,
@@ -30,8 +32,6 @@ from .exceptions import (
     VaultKeyEpochMismatchError,
     VaultLockedError,
 )
-from .crypto_utils import decrypt_field as _decrypt_field_impl
-from .crypto_utils import encrypt_field as _encrypt_field_impl
 
 _SNAPSHOT_KEY_AAD = 'vault:snapshot-key'
 _RE_ENCRYPT_BATCH_SIZE = 200

@@ -19,13 +19,20 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from .resources.constants import (
+    BTN_CLOSE_TOAST,
+    TOAST_HOVER_RESTART_MS,
+    TOAST_MARGIN_BOTTOM,
+    TOAST_MARGIN_RIGHT,
+    TOAST_SPACING,
+    TOAST_WIDTH,
+)
 from .resources.icons import CLOSE, SIZE_TOAST, icon_pixmap, set_icon
 from .resources.icons import ERROR as ICON_ERROR
 from .resources.icons import INFO as ICON_INFO
 from .resources.icons import SUCCESS as ICON_SUCCESS
 from .resources.icons import WARNING as ICON_WARNING
 from .resources.theme_colors import c
-from .resources.constants import BTN_CLOSE_TOAST, TOAST_HOVER_RESTART_MS, TOAST_MARGIN_BOTTOM, TOAST_MARGIN_RIGHT, TOAST_SPACING, TOAST_WIDTH
 
 _TOAST_SHADOW_WIDTH = TOAST_WIDTH + 4
 

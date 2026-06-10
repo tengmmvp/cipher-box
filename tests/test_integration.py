@@ -16,7 +16,6 @@ from src.business.vault_manager import VaultManager
 from src.crypto.encryption import EncryptionEngine
 from src.database.db_manager import DatabaseManager
 from src.database.models import Category, CustomField, Entry
-
 from tests.helpers import make_test_config
 
 

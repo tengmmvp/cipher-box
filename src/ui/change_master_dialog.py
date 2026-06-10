@@ -14,7 +14,11 @@ from PyQt6.QtWidgets import (
 )
 
 from ..crypto.password_generator import PasswordGenerator
-from ..ui.resources.constants import BTN_DIALOG, DIALOG_CHANGE_MASTER_MIN_SIZE, WORKER_WAIT_TIMEOUT_MS
+from ..ui.resources.constants import (
+    BTN_DIALOG,
+    DIALOG_CHANGE_MASTER_MIN_SIZE,
+    WORKER_WAIT_TIMEOUT_MS,
+)
 from ..ui.resources.theme_colors import c
 from ..ui.widgets import (
     RateLimiter,

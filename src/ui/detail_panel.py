@@ -1,9 +1,9 @@
 """详情面板 - 展示密码条目详细信息（重构版）"""
 
+import time as _time
 from datetime import datetime
 from html import escape
 from urllib.parse import urlparse
-import time as _time
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (

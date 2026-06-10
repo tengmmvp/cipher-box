@@ -4,7 +4,6 @@ import pytest
 
 from src.database.db_manager import DatabaseManager
 from src.database.models import Entry
-
 from tests.helpers import make_test_config
 
 

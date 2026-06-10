@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 
 from src.business.vault_manager import VaultManager
-
 from tests.helpers import make_test_config
 
 

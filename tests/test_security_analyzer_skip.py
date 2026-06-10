@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.business.security_analyzer import SecurityAnalyzer
-from src.exceptions import EntryIntegrityError
 from src.database.models import Entry
+from src.exceptions import EntryIntegrityError
 
 
 class TestSecurityAnalyzerSkipCorrupt:

@@ -19,7 +19,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..ui.resources.constants import BTN_DIALOG, DIALOG_IMPORT_EXPORT_MIN_SIZE, WORKER_WAIT_TIMEOUT_MS
+from ..ui.resources.constants import (
+    BTN_DIALOG,
+    DIALOG_IMPORT_EXPORT_MIN_SIZE,
+    WORKER_WAIT_TIMEOUT_MS,
+)
 from ..ui.resources.theme_colors import c
 from ..ui.widgets import format_status, release_worker, setup_dialog_flags
 from ..ui.workers import BackgroundWorker

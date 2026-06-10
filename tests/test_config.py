@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from src.config import DEFAULT_CONFIG, ConfigManager
-
 from tests.helpers import make_test_config
 
 

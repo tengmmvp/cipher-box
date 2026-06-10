@@ -6,8 +6,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from PyQt6.QtWidgets import QApplication, QLabel
 from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QApplication, QLabel
 
 from src.business.backup_restore import BackupRestoreManager
 from src.business.entry_manager import EntryManager
@@ -19,7 +19,6 @@ from src.ui.entry_dialog import EntryDialog
 from src.ui.login_window import LoginWindow
 from src.ui.main_window import MainWindow
 from src.ui.resources.styles import get_style
-
 from tests.helpers import make_test_config
 
 _APP = QApplication.instance() or QApplication([])

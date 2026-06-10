@@ -23,8 +23,8 @@ from ..crypto.master_key import MasterKeyManager
 from ..database.db_manager import DatabaseManager
 from ..database.models import ENTRY_TYPES, Category, Entry
 from ..utils.file_security import secure_directory, secure_file, validate_file_path
-from .exceptions import BackupError, DecryptionError, EntryIntegrityError
 from .crypto_utils import decrypt_field, encrypt_field, require_vault_key
+from .exceptions import BackupError, DecryptionError, EntryIntegrityError
 
 logger = logging.getLogger(__name__)
 

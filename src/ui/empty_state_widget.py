@@ -8,9 +8,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ..ui.resources.constants import BTN_ACTION
 from ..ui.resources.icons import EMPTY_GENERIC, SIZE_EMPTY, icon_pixmap
 from ..ui.resources.theme_colors import c
-from ..ui.resources.constants import BTN_ACTION
 
 
 class EmptyStateWidget(QWidget):

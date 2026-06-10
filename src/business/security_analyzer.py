@@ -14,8 +14,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 from ..database.models import Entry
-from .exceptions import EntryIntegrityError
 from .crypto_utils import build_entry_summary, decrypt_field, require_vault_key
+from .exceptions import EntryIntegrityError
 
 
 class SecurityAnalyzer:
