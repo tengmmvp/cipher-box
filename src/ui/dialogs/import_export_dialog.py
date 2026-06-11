@@ -321,22 +321,37 @@ class ImportExportDialog(QDialog):
         self._set_busy(True)
 
         self._worker_is_export = False
+        # 进度条初始为不确定模式，收到首个 progress 信号后切换到确定范围
+        self._progress.setRange(0, 0)
+        self._progress.setValue(0)
+        self._progress.show()
 
         def _import_task():
+            # self._worker 在 worker 线程执行时已由主线程赋值（start 前），
+            # 局部取出并判空以安抚类型检查器。
+            worker = self._worker
+            progress_cb = worker.emit_progress if worker is not None else None
             fmt_name = _IMPORT_FORMATS[fmt_index] if 0 <= fmt_index < len(_IMPORT_FORMATS) else ''
             method_name = self._IMPORT_HANDLERS.get(fmt_name)
             if method_name:
                 handler = getattr(self._import_export, method_name)
                 return handler(
-                    path, progress_callback=None,
+                    path,
+                    progress_callback=progress_cb,
                     duplicate_action=duplicate_action,
                 )
             return 0
 
         self._worker = BackgroundWorker(_import_task, parent=self)
+        self._worker.progress.connect(self._on_import_progress)
         self._worker.finished.connect(self._on_import_done)
         self._worker.error.connect(self._on_import_error)
         self._worker.start()
+
+    def _on_import_progress(self, current: int, total: int):
+        """导入进度回调：切换到确定范围并更新进度条。"""
+        self._progress.setRange(0, total)
+        self._progress.setValue(current)
 
     def _on_import_done(self, count):
         release_worker(self)

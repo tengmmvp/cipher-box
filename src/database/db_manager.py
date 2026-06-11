@@ -49,8 +49,9 @@ class EntryVerifier(Protocol):
 class DatabaseManager:
     """SQLite 数据库管理器
 
-    通过 ``entries`` / ``categories`` / ``schema`` 属性访问子 Repository，
-    也可直接通过 DatabaseManager 上的委托方法调用。
+    通过 ``entries`` / ``categories`` / ``schema`` 属性暴露子 Repository
+    （供 Repository 间协作，如 category_repository 经 ``entries`` 复用行转换），
+    并通过自身的委托方法为外部调用方提供统一入口。
     """
 
     def __init__(self, db_path: Path, *, test_mode: bool = False):

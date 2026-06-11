@@ -39,7 +39,7 @@ class MasterKeyManager:
             raise ValueError('PBKDF2 参数无效')
 
     @classmethod
-    def derive_backup_key(cls, password: str, salt: bytes, iterations: int) -> bytes:
+    def derive_backup_key(cls, password: str, salt: bytes, iterations: int) -> bytearray:
         """从备份密码派生独立的备份加密密钥，与主密钥域分离。"""
         cls._validate_iterations(iterations)
         return cls.derive_key(password, b'backup:' + salt, iterations)
@@ -50,7 +50,7 @@ class MasterKeyManager:
         password: str,
         salt: bytes,
         iterations: int = PBKDF2_ITERATIONS,
-    ) -> bytes:
+    ) -> bytearray:
         """使用 PBKDF2-HMAC-SHA256 从密码派生 256 位密钥
 
         Args:
@@ -58,7 +58,8 @@ class MasterKeyManager:
             salt: 随机盐值
 
         Returns:
-            32 字节密钥
+            32 字节密钥（bytearray，可被 secure_zero_buffer 真正清零；
+            PBKDF2 内部派生的中间 bytes 由 GC 回收）。
         """
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
@@ -66,14 +67,14 @@ class MasterKeyManager:
             salt=salt,
             iterations=iterations,
         )
-        return kdf.derive(password.encode('utf-8'))
+        return bytearray(kdf.derive(password.encode('utf-8')))
 
     @classmethod
     def create(
         cls,
         password: str,
         iterations: int = PBKDF2_ITERATIONS,
-    ) -> tuple[bytes, str, bytes]:
+    ) -> tuple[bytes, str, bytearray]:
         """创建新的主密码凭据
 
         Args:
@@ -96,7 +97,7 @@ class MasterKeyManager:
         salt: bytes,
         verify_token: str,
         iterations: int = PBKDF2_ITERATIONS,
-    ) -> bytes | None:
+    ) -> bytearray | None:
         """验证主密码
 
         Args:
@@ -127,7 +128,7 @@ class MasterKeyManager:
         old_verify_token: str,
         old_iterations: int = PBKDF2_ITERATIONS,
         new_iterations: int = PBKDF2_ITERATIONS,
-    ) -> tuple[bytes, str, bytes] | None:
+    ) -> tuple[bytes, str, bytearray] | None:
         """修改主密码
 
         Args:

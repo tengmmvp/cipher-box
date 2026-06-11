@@ -125,10 +125,17 @@ class BackupRestoreManager:
                 )
                 continue
             # 基于字段原始长度的粗略估算，每条目约 512 字节固定开销
+            # 估算覆盖全部将进入 JSON payload 的字段（用密文长度作上界，
+            # base64 密文 ≥ 明文），避免大 notes/custom_fields 场景下
+            # 粗估漏判、直至序列化才产生内存峰值。
             estimated_size += (
                 len(raw.title.encode('utf-8'))
+                + len((raw.username or '').encode('utf-8'))
                 + len((raw.url or '').encode('utf-8'))
                 + len((raw.tags or '').encode('utf-8'))
+                + len((raw.notes or '').encode('utf-8'))
+                + len(raw.custom_fields_db_value.encode('utf-8'))
+                + len((raw.totp_secret or '').encode('utf-8'))
                 + 512
             )
             if estimated_size > MAX_BACKUP_PAYLOAD_SIZE:
@@ -527,6 +534,24 @@ class BackupRestoreManager:
             except OSError:
                 logger.warning('清理过期恢复点失败：%s', expired, exc_info=True)
         return target_path
+
+    def clear_restore_points(self) -> int:
+        """删除所有恢复前安全快照（pre_restore_*.cbox），返回删除数量。
+
+        供 UI 手动清理；改密时由 VaultManager 自动清理。恢复点含恢复前全部
+        条目明文，定期清理可收缩泄漏面。
+        """
+        directory = self._vault.data_dir / 'backups'
+        if not directory.is_dir():
+            return 0
+        count = 0
+        for f in directory.glob('pre_restore_*.cbox'):
+            try:
+                f.unlink()
+                count += 1
+            except OSError:
+                logger.warning('清理恢复点失败：%s', f, exc_info=True)
+        return count
 
     def _restore_data(self, data: dict):
         db = self._vault.db

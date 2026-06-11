@@ -13,24 +13,7 @@ from PyQt6.QtWidgets import (
 from ..resources.constants import BTN_COPY, FONT_FAMILY_MONOSPACE, MAX_HISTORY_DISPLAY
 from ..resources.icons import COPY, EYE, LOCK, set_icon
 from ..resources.theme_colors import c
-
-
-def zero_buffer_copy(value: str) -> None:
-    """尽力零化字符串的编码副本（纵深防御）。
-
-    WARNING: 此方法在 CPython 下**不保证**清除原始字符串内存。
-    Python ``str`` 不可变，此方法仅零化 ``encode()`` 后的 bytearray 副本，
-    **不影响**原始字符串对象。
-    """
-    if not value:
-        return
-    try:
-        buf = bytearray(value.encode('utf-16-le'))
-        for i in range(len(buf)):
-            buf[i] = 0
-        del buf
-    except Exception:
-        pass
+from ...utils.memory import secure_zero_str
 
 
 class PasswordHistoryWidget(QWidget):
@@ -113,7 +96,7 @@ class PasswordHistoryWidget(QWidget):
     def clear(self):
         """安全清除所有状态和密码。"""
         for p in self._history_passwords:
-            zero_buffer_copy(p)
+            secure_zero_str(p)
         self._history_passwords.clear()
         self._entry_mgr = None
 

@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 from ...crypto.password_generator import PasswordGenerator
 from ...crypto.totp import TOTPGenerator
-from ...exceptions import DecryptionError, EntryIntegrityError, VaultLockedError
+from ...exceptions import DecryptionError, EntryIntegrityError
 from ...models import (
     ENTRY_TYPES,
     MAX_FIELD_NOTES,
@@ -33,6 +33,7 @@ from ...models import (
     CustomField,
     Entry,
     PasswordHistory,
+    Sensitive,
 )
 from ...utils.format import format_datetime
 from ..services.crypto_utils import (
@@ -189,11 +190,16 @@ class EntryManager:
         self._username_decrypt_failed.clear()
         self._cache_epoch = None
 
-    def _notify_entry_change(self):
-        """通知所有注册的条目变更回调，事件驱动缓存失效。"""
+    def _notify_entry_change(self, password_changed: bool = True):
+        """通知所有注册的条目变更回调，事件驱动缓存失效。
+
+        password_changed 为 False（如仅修改标题/URL）时，不涉及密码的分析维度
+        （弱密码/重复/过期）结果不变，订阅方可据此跳过昂贵的缓存重算。
+        增删条目等结构性变更保持默认 True，因其改变 total 与重复分组。
+        """
         for cb in self._on_entry_change_callbacks:
             try:
-                cb()
+                cb(password_changed)
             except Exception:
                 logger.debug("条目变更回调执行失败", exc_info=True)
 
@@ -251,10 +257,10 @@ class EntryManager:
         return copy_entry_fields(
             raw_entry,
             username=decrypt('username', raw_entry.username),
-            password=decrypt('password', raw_entry.password),
+            password=Sensitive(decrypt('password', raw_entry.password)),
             notes=decrypt('notes', raw_entry.notes),
             custom_fields=custom_fields,
-            totp_secret=decrypt('totp_secret', raw_entry.totp_secret),
+            totp_secret=Sensitive(decrypt('totp_secret', raw_entry.totp_secret)),
             integrity_error=bool(integrity_errors),
             integrity_message='、'.join(integrity_errors),
         )
@@ -397,7 +403,7 @@ class EntryManager:
             if old_pwd_enc and password_changed and entry.id is not None:
                 self.db.add_password_history(entry.id, old_pwd_enc)
             self.db.update_entry(enc_entry)
-        self._notify_entry_change()
+        self._notify_entry_change(password_changed)
 
     def delete_entry(self, entry_id: int):
         """软删除条目（移入回收站）"""

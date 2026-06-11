@@ -13,24 +13,7 @@ from PyQt6.QtWidgets import (
 from ..resources.constants import BTN_COPY, FONT_FAMILY_MONOSPACE
 from ..resources.icons import COPY, EYE, LOCK, set_icon
 from ..resources.theme_colors import c
-
-
-def zero_buffer_copy(value: str) -> None:
-    """尽力零化字符串的编码副本（纵深防御）。
-
-    WARNING: 此方法在 CPython 下**不保证**清除原始字符串内存。
-    Python ``str`` 不可变，此方法仅零化 ``encode()`` 后的 bytearray 副本，
-    **不影响**原始字符串对象。
-    """
-    if not value:
-        return
-    try:
-        buf = bytearray(value.encode('utf-16-le'))
-        for i in range(len(buf)):
-            buf[i] = 0
-        del buf
-    except Exception:
-        pass
+from ...utils.memory import secure_zero_str
 
 
 class CustomFieldsRenderer:
@@ -100,11 +83,11 @@ class CustomFieldsRenderer:
     def clear(self):
         """安全清除所有值。"""
         for k in list(self._plain_values):
-            zero_buffer_copy(self._plain_values[k])
+            secure_zero_str(self._plain_values[k])
         self._plain_values.clear()
         self._plain_row_counter = 0
         for k in list(self._secret_values):
-            zero_buffer_copy(self._secret_values[k])
+            secure_zero_str(self._secret_values[k])
         self._secret_values.clear()
 
     # ---- 内部方法 ----

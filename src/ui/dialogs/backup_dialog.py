@@ -100,6 +100,11 @@ class BackupDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
+        purge_btn = QPushButton('清理恢复点')
+        purge_btn.setFixedSize(*BTN_DIALOG)
+        purge_btn.clicked.connect(self._purge_restore_points)
+        btn_layout.addWidget(purge_btn)
+
         cancel_btn = QPushButton('取消')
         cancel_btn.setFixedSize(*BTN_DIALOG)
         cancel_btn.clicked.connect(self.reject)
@@ -300,3 +305,17 @@ class BackupDialog(QDialog):
         self._status_label.setText(format_status(False, '恢复失败'))
         self._status_label.setStyleSheet(f'color: {c("danger")};')
         QMessageBox.critical(self, '错误', f'恢复失败：{error_msg}')
+
+    def _purge_restore_points(self):
+        """手动清理恢复前自动创建的安全快照，收缩已删除条目的明文泄漏面。"""
+        reply = QMessageBox.question(
+            self, '清理恢复点',
+            '将删除所有恢复前自动创建的安全快照（pre_restore_*.cbox）。\n'
+            '这些快照含恢复前的条目明文，清理可收缩泄漏面。\n\n'
+            '确定继续吗？',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        count = self._backup_mgr.clear_restore_points()
+        QMessageBox.information(self, '完成', f'已清理 {count} 个恢复点。')

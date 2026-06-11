@@ -21,3 +21,21 @@ def secure_zero_buffer(data: bytes | bytearray) -> None:
         )
     except Exception:
         logger.debug("安全清零失败（CPython 限制）", exc_info=True)
+
+
+def secure_zero_str(value: str) -> None:
+    """尽力零化字符串的 UTF-16 编码副本（纵深防御）。
+
+    WARNING: CPython 下 ``str`` 不可变，此函数仅零化 ``encode()`` 后的
+    bytearray 副本，**不影响**原始字符串对象。真正的清理依赖置空所有引用
+    触发 GC。方法名如实反映其能力（零化副本，非清除原串）。
+    """
+    if not value:
+        return
+    try:
+        buf = bytearray(value.encode('utf-16-le'))
+        for i in range(len(buf)):
+            buf[i] = 0
+        del buf
+    except Exception:
+        logger.debug("字符串副本清零失败（CPython 限制）", exc_info=True)

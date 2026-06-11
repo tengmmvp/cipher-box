@@ -45,3 +45,8 @@ python_version = "3.10"
 ignore_missing_imports = true
 check_untyped_defs = true
 warn_unused_ignores = true
+
+[tool.pyright]
+# 密钥以 bytearray 持有以便 secure_zero_buffer 真正清零；bytearray 是 bytes-like，
+# 启用类型提升以避免在加密/哈希调用处产生大量 bytes|bytearray 注解噪音。
+disableBytesTypePromotions = false

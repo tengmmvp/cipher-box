@@ -296,7 +296,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         self._list_stack.setCurrentWidget(loading)
 
     def _show_empty_state(self):
-        """根据当前场景显示不同的空状态提示"""
+        """根据当前场景显示不同的空状态提示。"""
         # 清除旧的空状态 widget，即索引 1 及之后的所有 widget
         while self._list_stack.count() > 1:
             old = self._list_stack.widget(1)
@@ -308,70 +308,37 @@ class _MainWindowFiltersMixin(QMainWindow):
         total_entries = getattr(self, '_cached_total_entries', -1)
         if total_entries < 0:
             total_entries = self._entry_mgr.get_entry_count()
-        empty = None
 
-        if self._current_search:
-            # 搜索无结果
-            empty = EmptyStateWidget(
-                icon_name=EMPTY_SEARCH,
-                title='没有找到匹配的条目',
-                subtitle='尝试不同的搜索关键词',
-                action_text='清除搜索',
-            )
-            empty.action_clicked.connect(self._clear_search)
-        elif self._current_filter == 'trash':
-            # 回收站为空
-            empty = EmptyStateWidget(
-                icon_name=EMPTY_TRASH,
-                title='回收站是空的',
-                subtitle='删除的条目会出现在这里',
-            )
-        elif self._current_filter == 'weak':
-            # 无弱密码
-            empty = EmptyStateWidget(
-                icon_name=EMPTY_SUCCESS,
-                title='没有发现弱密码',
-                subtitle='所有密码强度良好',
-            )
-        elif self._current_filter == 'duplicate':
-            # 无重复密码
-            empty = EmptyStateWidget(
-                icon_name=EMPTY_SUCCESS,
-                title='没有重复密码',
-                subtitle='所有密码都是唯一的',
-            )
-        elif self._current_filter == 'recent':
-            # 无近期更新
-            empty = EmptyStateWidget(
-                icon_name=EMPTY_SUCCESS,
-                title='没有近期更新',
-                subtitle='最近没有修改过条目',
-            )
-        elif self._current_category_id is not None:
-            # 分类为空
-            empty = EmptyStateWidget(
-                icon_name=EMPTY_FOLDER,
-                title='该分类下暂无条目',
-                subtitle='新增或编辑条目时可选择该分类',
-            )
-        elif total_entries == 0:
-            # 新用户
-            empty = EmptyStateWidget(
-                icon_name=EMPTY_VAULT,
-                title='还没有密码条目',
-                subtitle='点击工具栏「新增」按钮开始添加',
-                action_text='新增条目',
-            )
-            empty.action_clicked.connect(self._add_entry)
-        else:
-            # 其他场景：通用空状态
-            empty = EmptyStateWidget(
-                icon_name=EMPTY_GENERIC,
-                title='暂无条目',
-            )
-
+        icon, title, subtitle, action_text, slot = self._resolve_empty_state(total_entries)
+        empty = EmptyStateWidget(
+            icon_name=icon, title=title, subtitle=subtitle, action_text=action_text,
+        )
+        if slot is not None:
+            empty.action_clicked.connect(slot)
         self._list_stack.addWidget(empty)
         self._list_stack.setCurrentWidget(empty)
+
+    def _resolve_empty_state(self, total_entries: int):
+        """按优先级解析当前空状态配置，返回 (icon, title, subtitle, action_text, slot)。
+
+        将 7 种空态场景的文案/图标配置集中于此；EmptyStateWidget 的构造与信号
+        连接统一在 _show_empty_state 一处完成，新增或修改空态文案只需调整本表。
+        """
+        if self._current_search:
+            return (EMPTY_SEARCH, '没有找到匹配的条目', '尝试不同的搜索关键词', '清除搜索', self._clear_search)
+        if self._current_filter == 'trash':
+            return (EMPTY_TRASH, '回收站是空的', '删除的条目会出现在这里', '', None)
+        if self._current_filter == 'weak':
+            return (EMPTY_SUCCESS, '没有发现弱密码', '所有密码强度良好', '', None)
+        if self._current_filter == 'duplicate':
+            return (EMPTY_SUCCESS, '没有重复密码', '所有密码都是唯一的', '', None)
+        if self._current_filter == 'recent':
+            return (EMPTY_SUCCESS, '没有近期更新', '最近没有修改过条目', '', None)
+        if self._current_category_id is not None:
+            return (EMPTY_FOLDER, '该分类下暂无条目', '新增或编辑条目时可选择该分类', '', None)
+        if total_entries == 0:
+            return (EMPTY_VAULT, '还没有密码条目', '点击工具栏「新增」按钮开始添加', '新增条目', self._add_entry)
+        return (EMPTY_GENERIC, '暂无条目', '', '', None)
 
     def _update_status_bar(self):
         days = self._config.get('old_password_warning_days', 90)
@@ -384,23 +351,21 @@ class _MainWindowFiltersMixin(QMainWindow):
         self._status_bar.showMessage('安全分析中...')
         if self._status_worker and self._status_worker.isRunning():
             return
-        # 断开旧 worker 的信号，防止重复连接导致信号泄漏
-        if self._status_worker:
-            try:
-                self._status_worker.finished.disconnect(self._on_status_analyzed)
-                self._status_worker.error.disconnect()
-            except (TypeError, RuntimeError):
-                pass
-        self._status_worker = BackgroundWorker(
+        worker = BackgroundWorker(
             lambda: self._security.get_or_compute_report(days),
             parent=self,
         )
-        self._status_worker.finished.connect(self._on_status_analyzed)
-        self._status_worker.error.connect(lambda _: None)
-        self._status_worker.start()
+        self._status_worker = worker
 
-    def _on_status_analyzed(self, summary):
-        self._apply_status_summary(summary)
+        def _on_finished(summary):
+            # 仅当该 worker 仍是当前活跃 worker 时应用结果，
+            # 避免旧 worker 的延迟回调覆盖更新的状态
+            if self._status_worker is worker:
+                self._apply_status_summary(summary)
+
+        worker.finished.connect(_on_finished)
+        worker.error.connect(lambda _: None)
+        worker.start()
 
     def _apply_status_summary(self, summary: dict):
         try:

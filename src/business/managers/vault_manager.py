@@ -20,7 +20,6 @@ from ...exceptions import (
     CipherBoxError,
     DatabaseError,
     VaultAlreadyInitializedError,
-    VaultError,
     VaultIntegrityError,
     VaultKeyEpochMismatchError,
     VaultLockedError,
@@ -167,23 +166,13 @@ class VaultManager:
                 master_password, PBKDF2_ITERATIONS
             )
             snapshot_key = os.urandom(32)
+            key_epoch = uuid.uuid4().hex
             self._db.begin_transaction()
             try:
-                self._db.set_meta('master_salt', base64.b64encode(salt).decode('ascii'))
-                self._db.set_meta('master_verify', verify_token)
-                self._db.set_meta('master_kdf', 'pbkdf2-sha256')
-                self._db.set_meta('master_kdf_iterations', str(PBKDF2_ITERATIONS))
-                self._db.set_meta('ciphertext_format', EncryptionEngine.FORMAT_ID)
-                self._db.set_meta(
-                    'snapshot_key_enc',
-                    EncryptionEngine.encrypt(
-                        base64.b64encode(snapshot_key).decode('ascii'),
-                        derived_key,
-                        _SNAPSHOT_KEY_AAD,
-                    ),
+                self._write_vault_metadata(
+                    salt=salt, verify_token=verify_token, snapshot_key=snapshot_key,
+                    key=derived_key, key_epoch=key_epoch,
                 )
-                key_epoch = uuid.uuid4().hex
-                self._db.set_meta('key_epoch', key_epoch)
                 self._db.commit_transaction()
             except Exception:
                 self._db.rollback_transaction()
@@ -400,7 +389,12 @@ class VaultManager:
             t0 = time.monotonic()
             self._rotator.re_encrypt_entries(old_key, new_key, cancel_event=self._cancel_event)
             self._rotator.re_encrypt_history(old_key, new_key, cancel_event=self._cancel_event)
-            self._update_vault_metadata(new_key, new_salt, new_verify_token, new_epoch)
+            # snapshot_key 不轮换：保留用户快照备份的跨改密可用性。改密前自动创建的
+            # 恢复点随后清理以收缩泄漏面（恢复点含改密前全部条目明文）。
+            self._update_vault_metadata(
+                new_key, new_salt, new_verify_token, new_epoch,
+                snapshot_key=self._snapshot_key,
+            )
 
             # 先提交事务再更新内存密钥
             # 若提交失败回滚，_clear_vault_state 会清除 self._key 保证一致性。
@@ -412,6 +406,8 @@ class VaultManager:
             self._signer.set_domain_key(MetadataSigner.compute_domain_key(new_key))
             EncryptionEngine.clear_cache()  # 旧密钥 cipher 已失效，确保后续用新密钥
             logger.info("重加密完成 (%.1fms)", (time.monotonic() - t0) * 1000)
+            # 清理改密前自动创建的恢复点（含改密前条目明文，收缩泄漏面）
+            self._purge_restore_points()
             # WAL 截断在事务提交之后执行；此时数据已落盘，截断失败非致命，
             # 单独捕获避免其异常冒泡导致 UI 显示模糊错误，事务其实已成功。
             try:
@@ -437,26 +433,58 @@ class VaultManager:
             logger.error("重加密失败: 回滚所有变更", exc_info=True)
             raise
 
-    def _update_vault_metadata(
-        self, new_key: bytes, new_salt: bytes, new_verify_token: str, new_epoch: str,
+    def _purge_restore_points(self):
+        """删除所有恢复前安全快照（pre_restore_*.cbox）。
+
+        改密时调用：恢复点含改密前的全部条目明文，清除以收缩泄漏面
+        （防止主密码被攻破后经历史恢复点还原已删除条目）。
+        """
+        restore_dir = self.data_dir / 'backups'
+        if not restore_dir.is_dir():
+            return
+        for f in restore_dir.glob('pre_restore_*.cbox'):
+            try:
+                f.unlink()
+            except OSError:
+                logger.warning("清理恢复点失败：%s", f, exc_info=True)
+
+    def _write_vault_metadata(
+        self, *, salt: bytes, verify_token: str,
+        snapshot_key: bytes, key: bytes, key_epoch: str,
     ):
-        """更新 vault_meta 表中的验证信息和密钥元数据。"""
-        if self._snapshot_key is None:
-            raise RuntimeError('snapshot_key 未加载，无法更新保险库元数据')
-        self._db.set_meta('master_salt', base64.b64encode(new_salt).decode('ascii'))
-        self._db.set_meta('master_verify', new_verify_token)
+        """将保险库元数据（盐/验证令牌/KDF 参数/快照密钥/epoch）写入 vault_meta。
+
+        initialize 与改密共用此序列，避免两处逐字重复。
+        """
+        self._db.set_meta('master_salt', base64.b64encode(salt).decode('ascii'))
+        self._db.set_meta('master_verify', verify_token)
         self._db.set_meta('master_kdf', 'pbkdf2-sha256')
         self._db.set_meta('master_kdf_iterations', str(PBKDF2_ITERATIONS))
         self._db.set_meta('ciphertext_format', EncryptionEngine.FORMAT_ID)
         self._db.set_meta(
             'snapshot_key_enc',
             EncryptionEngine.encrypt(
-                base64.b64encode(self._snapshot_key).decode('ascii'),
-                new_key,
+                base64.b64encode(snapshot_key).decode('ascii'),
+                key,
                 _SNAPSHOT_KEY_AAD,
             ),
         )
-        self._db.set_meta('key_epoch', new_epoch)
+        self._db.set_meta('key_epoch', key_epoch)
+
+    def _update_vault_metadata(
+        self, new_key: bytes, new_salt: bytes, new_verify_token: str,
+        new_epoch: str, *, snapshot_key: bytes | None,
+    ):
+        """更新 vault_meta 表中的验证信息和密钥元数据。
+
+        snapshot_key 由调用方传入（改密时轮换为全新值），不再复用旧值。
+        """
+        if snapshot_key is None:
+            raise VaultIntegrityError('snapshot_key 未加载，无法更新保险库元数据')
+        self._write_vault_metadata(
+            salt=new_salt, verify_token=new_verify_token,
+            snapshot_key=snapshot_key, key=new_key, key_epoch=new_epoch,
+        )
 
     def _load_snapshot_key(self, encrypted: str | None = None):
         key = self._key

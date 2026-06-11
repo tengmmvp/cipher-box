@@ -13,10 +13,11 @@ from ...utils.format import utc_now_iso
 if TYPE_CHECKING:
     from .entry_manager import EntryManager
 
-from ...exceptions import EntryError
+from ...exceptions import EntryError, VaultKeyEpochMismatchError
 from ...models import (
     ENTRY_TYPE_CARD,
     ENTRY_TYPE_IDENTITY,
+    ENTRY_TYPE_LOGIN,
     ENTRY_TYPE_NOTE,
     Category,
     CustomField,
@@ -74,7 +75,7 @@ def _transactional_import(method):
             with self._entry_mgr.db.transaction():
                 current_epoch = self._entry_mgr._vault.key_epoch
                 if pre_epoch != current_epoch:
-                    raise RuntimeError('导入期间检测到密钥变更，已中止导入')
+                    raise VaultKeyEpochMismatchError('导入期间检测到密钥变更，已中止导入')
                 return method(self, filepath, *args, **kwargs)
         except UnicodeDecodeError:
             raise ValueError(
@@ -675,6 +676,62 @@ class ImportExportManager:
             overwrite_merger=_merge,
         )
 
+    @staticmethod
+    def _bitwarden_entry_fields(item: dict) -> 'tuple[str, list[CustomField]]':
+        """解析 Bitwarden item 的条目类型与自定义字段。
+
+        item_type: 1=login, 2=note, 3=card, 4=identity；未知类型按 login。
+        """
+        item_type = item.get('type', 1)
+        custom_fields = [
+            CustomField(
+                name=field.get('name') or '自定义字段',
+                value=str(field.get('value') or ''),
+                field_type='password' if field.get('type') == 1 else 'text',
+            )
+            for field in item.get('fields', [])
+            if field.get('value') is not None
+        ]
+        if item_type == 2:
+            return ENTRY_TYPE_NOTE, custom_fields
+        if item_type == 3:
+            card = item.get('card', {})
+            exp_year = str(card.get('expYear', ''))
+            exp_month = str(card.get('expMonth', ''))
+            if exp_month:
+                exp_month = exp_month.zfill(2)
+            # 截断为两位年份以匹配卡片常见的 MM/YY 显示格式
+            if len(exp_year) == 4:
+                exp_year = exp_year[-2:]
+            custom_fields.extend([
+                CustomField('_card_holder', card.get('cardholderName', '')),
+                CustomField('_card_number', card.get('number', ''), 'password'),
+                CustomField(
+                    '_card_expiry',
+                    '/'.join(filter(None, [exp_month, exp_year])),
+                ),
+                CustomField('_card_cvv', card.get('code', ''), 'password'),
+            ])
+            return ENTRY_TYPE_CARD, custom_fields
+        if item_type == 4:
+            identity = item.get('identity', {})
+            fullname = ' '.join(filter(None, [
+                identity.get('firstName', ''), identity.get('middleName', ''),
+                identity.get('lastName', ''),
+            ]))
+            custom_fields.extend([
+                CustomField('_id_fullname', fullname),
+                CustomField('_id_email', identity.get('email', '')),
+                CustomField('_id_phone', identity.get('phone', '')),
+                CustomField('_id_address', ' '.join(filter(None, [
+                    identity.get('address1', ''), identity.get('address2', ''),
+                    identity.get('city', ''), identity.get('state', ''),
+                    identity.get('postalCode', ''), identity.get('country', ''),
+                ]))),
+            ])
+            return ENTRY_TYPE_IDENTITY, custom_fields
+        return ENTRY_TYPE_LOGIN, custom_fields
+
     @_transactional_import
     def import_from_bitwarden_json(
         self,
@@ -716,55 +773,7 @@ class ImportExportManager:
         entries_data = []
         for item in items:
             login = item.get('login', {})
-            item_type = item.get('type', 1)
-            custom_fields = [
-                CustomField(
-                    name=field.get('name') or '自定义字段',
-                    value=str(field.get('value') or ''),
-                    field_type='password' if field.get('type') == 1 else 'text',
-                )
-                for field in item.get('fields', [])
-                if field.get('value') is not None
-            ]
-            entry_type = 'login'
-            if item_type == 2:
-                entry_type = ENTRY_TYPE_NOTE
-            elif item_type == 3:
-                entry_type = ENTRY_TYPE_CARD
-                card = item.get('card', {})
-                exp_year = str(card.get('expYear', ''))
-                exp_month = str(card.get('expMonth', ''))
-                if exp_month:
-                    exp_month = exp_month.zfill(2)
-                # 截断为两位年份以匹配卡片常见的 MM/YY 显示格式
-                if len(exp_year) == 4:
-                    exp_year = exp_year[-2:]
-                custom_fields.extend([
-                    CustomField('_card_holder', card.get('cardholderName', '')),
-                    CustomField('_card_number', card.get('number', ''), 'password'),
-                    CustomField(
-                        '_card_expiry',
-                        '/'.join(filter(None, [exp_month, exp_year])),
-                    ),
-                    CustomField('_card_cvv', card.get('code', ''), 'password'),
-                ])
-            elif item_type == 4:
-                entry_type = ENTRY_TYPE_IDENTITY
-                identity = item.get('identity', {})
-                fullname = ' '.join(filter(None, [
-                    identity.get('firstName', ''), identity.get('middleName', ''),
-                    identity.get('lastName', ''),
-                ]))
-                custom_fields.extend([
-                    CustomField('_id_fullname', fullname),
-                    CustomField('_id_email', identity.get('email', '')),
-                    CustomField('_id_phone', identity.get('phone', '')),
-                    CustomField('_id_address', ' '.join(filter(None, [
-                        identity.get('address1', ''), identity.get('address2', ''),
-                        identity.get('city', ''), identity.get('state', ''),
-                        identity.get('postalCode', ''), identity.get('country', ''),
-                    ]))),
-                ])
+            entry_type, custom_fields = self._bitwarden_entry_fields(item)
             folder_name = folder_map.get(item.get('folderId'), '')
             uris = login.get('uris') or []
             url = uris[0].get('uri', '') if uris else ''

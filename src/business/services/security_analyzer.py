@@ -152,8 +152,19 @@ class SecurityAnalyzer:
         """返回缓存报告，若无效则重新计算并缓存。"""
         return self._cached_analysis(days)
 
-    def invalidate_cache(self):
-        """清除分析缓存，下次访问时将重新计算。"""
+    def invalidate_cache(self, password_changed: bool = True):
+        """清除分析缓存，下次访问时将重新计算。
+
+        password_changed 为 False（非密码字段变更）时直接返回：弱密码/重复/过期
+        三项分析均仅依赖密码相关字段（strength / password / password_changed_at），
+        非密码变更不改变分析结果，复用缓存可避免无谓的全量 HMAC 重算。
+
+        边界：对「从未改过密码」的条目（password_changed_at 为空，过期检测回退
+        到 updated_at），修改非密码字段会更新 updated_at，其过期归属可能短暂
+        过时，至多延迟一个 TTL（120s）周期后自动修正——对提醒类信息可接受。
+        """
+        if not password_changed:
+            return
         with self._cache_lock:
             self._analysis_cache = None
             self._analysis_cache_time = 0

@@ -65,6 +65,18 @@ class CustomField:
         )
 
 
+class Sensitive(str):
+    """敏感字符串标记类型。
+
+    透明继承 ``str``（序列化、加密、比较等行为完全一致），仅供 UI 渲染层通过
+    ``isinstance`` 检测，使敏感字段自动以密码框渲染，避免调用方遗忘
+    ``secret=True`` 导致明文 QLabel 渲染。仅由 EntryManager.decrypt_entry 在
+    解密输出时包装，不影响持久化与加密。
+    """
+
+    __slots__ = ()
+
+
 @dataclass
 class Category:
     """密码分类"""

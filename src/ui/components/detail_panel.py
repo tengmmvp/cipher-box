@@ -18,8 +18,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...models import Entry
+from ...models import Entry, Sensitive
 from ...utils.format import format_datetime
+from ...utils.memory import secure_zero_str
 from ..resources.constants import (
     BTN_COPY,
     BTN_ICON,
@@ -49,27 +50,6 @@ logger = logging.getLogger(__name__)
 
 # 密码强度标签映射，模块级常量避免每次 show_entry 重建
 _STRENGTH_LABELS = {0: '非常弱', 1: '弱', 2: '一般', 3: '强', 4: '非常强'}
-
-
-def zero_buffer_copy(value: str) -> None:
-    """尽力零化字符串的编码副本（纵深防御）。
-
-    WARNING: 此方法在 CPython 下**不保证**清除原始字符串内存。
-    Python ``str`` 不可变，此方法仅零化 ``encode()`` 后的 bytearray 副本，
-    **不影响**原始字符串对象。真正的安全清理依赖 ``_clear_content()``
-    置空所有引用以触发 GC。
-
-    方法名 ``zero_buffer_copy``（而非 _secure_wipe）如实反映了其能力。
-    """
-    if not value:
-        return
-    try:
-        buf = bytearray(value.encode('utf-16-le'))
-        for i in range(len(buf)):
-            buf[i] = 0
-        del buf
-    except Exception:
-        pass
 
 
 class DetailPanel(QWidget):
@@ -456,7 +436,8 @@ class DetailPanel(QWidget):
             copyable: 是否显示复制按钮（secret=True 时隐含可复制）
             main_password: 仅用于主密码字段，追踪引用并使用全局自动隐藏定时器
         """
-        if secret:
+        # Sensitive 标记值自动以密码框渲染，防止调用方忘传 secret=True
+        if secret or isinstance(value, Sensitive):
             return self._make_secret_field_row(label, value, main_password=main_password)
         return self._make_plain_field_row(label, value, copyable=copyable)
 
@@ -606,13 +587,13 @@ class DetailPanel(QWidget):
         self._copy_feedback_timers.clear()
         # 安全擦除主条目字段间接引用中的敏感值
         for k in list(self._secret_values_main):
-            zero_buffer_copy(self._secret_values_main[k])
+            secure_zero_str(self._secret_values_main[k])
         self._secret_values_main.clear()
         # 清除子组件状态
         self._totp_widget.clear()
         self._history_widget.clear()
         self._fields_renderer.clear()
-        zero_buffer_copy(self._current_password)
+        secure_zero_str(self._current_password)
         self._current_password = ''
         self._pwd_label_ref = None
         self._show_btn_ref = None

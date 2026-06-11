@@ -557,7 +557,8 @@ def test_import_all_does_not_decrypt_existing_vault():
         vault.close()
 
 
-def test_pre_restore_snapshot_survives_master_password_change():
+def test_pre_restore_snapshot_purged_on_master_password_change():
+    """改密后自动恢复点被清理，收缩已删除条目经历史恢复点的明文泄漏面。"""
     with tempfile.TemporaryDirectory() as source_root, tempfile.TemporaryDirectory() as target_root:
         source = VaultManager(_config(source_root))
         assert source.initialize('SourceMaster!2026')[0]
@@ -581,17 +582,14 @@ def test_pre_restore_snapshot_survives_master_password_change():
             portable, 'PortableBackup!2026'
         )
         assert success, error
-        restore_point = next(
-            (Path(target_root) / 'backups').glob('pre_restore_*.cbox')
-        )
+        backup_dir = Path(target_root) / 'backups'
+        assert list(backup_dir.glob('pre_restore_*.cbox')), '恢复后应存在恢复点'
 
+        # 改密触发自动恢复点清理（恢复点含改密前条目明文，收缩泄漏面）
         assert target.change_master_password(
             'OldTargetMaster!2026', 'NewTargetMaster!2026'
         )[0]
-        success, error = backup_manager.restore_backup(str(restore_point))
-        assert success, error
-        restored = target_manager.get_entries()
-        assert [entry.title for entry in restored] == ['Before restore']
+        assert list(backup_dir.glob('pre_restore_*.cbox')) == [], '改密后恢复点应被清理'
         source.close()
         target.close()
 
