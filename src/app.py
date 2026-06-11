@@ -6,12 +6,12 @@ from PyQt6.QtCore import QLockFile, Qt
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from . import __version__
-from .business.vault_manager import VaultManager
+from .business.managers.vault_manager import VaultManager
 from .config import ConfigManager
 from .logging_config import configure_logging
-from .ui.login_window import LoginWindow
-from .ui.main_window import MainWindow
+from .ui.dialogs.login_window import LoginWindow
 from .ui.resources.styles import get_style
+from .ui.windows.main_window import MainWindow
 
 
 class CipherBoxApp:

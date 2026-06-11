@@ -47,7 +47,7 @@ def vault_config(tmp_path):
 @pytest.fixture
 def vault(vault_config):
     """已初始化的 VaultManager 实例。"""
-    from src.business.vault_manager import VaultManager
+    from src.business.managers.vault_manager import VaultManager
     v = VaultManager(vault_config)
     v.initialize('TestPassword123!')
     yield v
@@ -60,7 +60,7 @@ def vault(vault_config):
 @pytest.fixture
 def entry_mgr(vault):
     """已初始化的 EntryManager 实例。"""
-    from src.business.entry_manager import EntryManager
+    from src.business.managers.entry_manager import EntryManager
     return EntryManager(vault)
 
 

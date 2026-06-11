@@ -1,0 +1,308 @@
+"""MainWindow 菜单与对话框 Mixin
+
+从 main_window.py 提取的菜单栏构建、快捷键注册及各类对话框展示方法。
+
+继承 QMainWindow 以支持 Pyright 静态分析，运行时由 MainWindow 通过
+多重继承统一初始化，Mixin 自身不定义 ``__init__``。
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QAction, QKeySequence, QShortcut
+from PyQt6.QtWidgets import QDialog, QMainWindow, QMessageBox
+
+from ..dialogs.about_dialog import AboutDialog
+from ..dialogs.backup_dialog import BackupDialog
+from ..dialogs.change_master_dialog import ChangeMasterDialog
+from ..dialogs.import_export_dialog import ImportExportDialog
+from ..dialogs.password_generator_dialog import PasswordGeneratorDialog
+from ..dialogs.security_dashboard import SecurityDashboard
+from ..dialogs.settings_dialog import SettingsDialog
+from ..resources.icons import (
+    CLOSE,
+    FOLDER,
+    GENERATE,
+    HELP,
+    KEY,
+    LOCK_SOLID,
+    PLUS,
+    SETTINGS,
+    SHIELD,
+    SHORTCUT,
+    SIZE_MENU,
+    UPLOAD,
+    icon,
+)
+
+if TYPE_CHECKING:
+    from PyQt6.QtCore import pyqtSignal
+    from PyQt6.QtWidgets import QLineEdit
+
+    from ...business.managers.backup_restore import BackupRestoreManager
+    from ...business.managers.entry_manager import EntryManager
+    from ...business.managers.import_export import ImportExportManager
+    from ...business.managers.vault_manager import VaultManager
+    from ...business.services.security_analyzer import SecurityAnalyzer
+    from ...config import ConfigManager
+    from ...utils.clipboard import ClipboardManager
+    from ..components.detail_panel import DetailPanel
+
+# 快捷键定义：每个条目由按键序列和显示描述组成，供 _setup_shortcuts 与 _show_shortcuts 共享。
+_SHORTCUT_DISPLAY = [
+    ('Ctrl+N', '新增条目'),
+    ('Ctrl+E', '编辑选中条目'),
+    ('Ctrl+F', '搜索'),
+    ('Ctrl+G', '密码生成器'),
+    ('Ctrl+L', '锁定保险库'),
+    ('Ctrl+,', '偏好设置'),
+    ('Ctrl+Q', '退出'),
+    ('Delete', '删除选中条目'),
+    ('Escape', '清空搜索/取消选择'),
+]
+
+
+class _MainWindowMenuMixin(QMainWindow):
+    """菜单栏、快捷键及对话框方法。
+
+    仅与 MainWindow 组合使用，以下属性由宿主 MainWindow 提供，
+    此处声明类型注解供静态分析使用。
+    """
+
+    if TYPE_CHECKING:
+        _config: ConfigManager
+        _vault: VaultManager
+        _entry_mgr: EntryManager
+        _security: SecurityAnalyzer
+        _import_export: ImportExportManager
+        _backup: BackupRestoreManager
+        _clipboard: ClipboardManager
+        _detail_panel: DetailPanel
+        _locked_ui: bool
+        _shortcuts: list[QShortcut]
+        _search_edit: QLineEdit
+        lock_requested: pyqtSignal
+
+        def _add_entry(self) -> None: ...
+        def _edit_entry(self, entry_id: int) -> None: ...
+        def _edit_selected_entry(self) -> None: ...
+        def _delete_selected_entry(self) -> None: ...
+        def _clear_search(self) -> None: ...
+        def _show_password_generator(self) -> None: ...
+        def _show_settings(self) -> None: ...
+        def _show_import_export(self) -> None: ...
+        def _show_backup(self) -> None: ...
+        def _show_change_master(self) -> None: ...
+        def _show_security_dashboard(self) -> None: ...
+        def _show_shortcuts(self) -> None: ...
+        def _show_about(self) -> None: ...
+        def _on_password_selected(self, password: str) -> None: ...
+        def _refresh_all_data(self) -> None: ...
+        def _refresh_after_entry_change(self) -> None: ...
+        def _apply_theme(self) -> None: ...
+        def _apply_runtime_settings(self) -> None: ...
+        def _run_backup_async(self, force: bool = False) -> None: ...
+
+    # ----- 菜单栏 -----
+
+    def _setup_menubar(self):
+        menubar = self.menuBar()
+        if menubar is None:
+            return
+
+        # 文件菜单
+        file_menu = menubar.addMenu('文件')
+        if file_menu is None:
+            return
+
+        add_act = QAction('新增条目', self)
+        add_act.setShortcut('Ctrl+N')
+        add_act.setIcon(icon(PLUS, size=SIZE_MENU))
+        add_act.triggered.connect(self._add_entry)
+        file_menu.addAction(add_act)
+
+        file_menu.addSeparator()
+
+        import_act = QAction('导入 / 导出', self)
+        import_act.setIcon(icon(UPLOAD, size=SIZE_MENU))
+        import_act.triggered.connect(self._show_import_export)
+        file_menu.addAction(import_act)
+
+        backup_act = QAction('备份与恢复', self)
+        backup_act.setIcon(icon(FOLDER, size=SIZE_MENU))
+        backup_act.triggered.connect(self._show_backup)
+        file_menu.addAction(backup_act)
+
+        file_menu.addSeparator()
+
+        lock_act = QAction('锁定保险库', self)
+        lock_act.setShortcut('Ctrl+L')
+        lock_act.setIcon(icon(LOCK_SOLID, size=SIZE_MENU))
+        lock_act.triggered.connect(lambda: self.lock_requested.emit())
+        file_menu.addAction(lock_act)
+
+        quit_act = QAction('退出', self)
+        quit_act.setShortcut('Ctrl+Q')
+        quit_act.setIcon(icon(CLOSE, size=SIZE_MENU))
+        quit_act.triggered.connect(self.close)
+        file_menu.addAction(quit_act)
+
+        # 工具菜单
+        tools_menu = menubar.addMenu('工具')
+        if tools_menu is None:
+            return
+
+        gen_act = QAction('密码生成器', self)
+        gen_act.setIcon(icon(GENERATE, size=SIZE_MENU))
+        gen_act.triggered.connect(self._show_password_generator)
+        tools_menu.addAction(gen_act)
+
+        security_act = QAction('安全仪表盘', self)
+        security_act.setIcon(icon(SHIELD, size=SIZE_MENU))
+        security_act.triggered.connect(self._show_security_dashboard)
+        tools_menu.addAction(security_act)
+
+        # 设置菜单
+        settings_menu = menubar.addMenu('设置')
+        if settings_menu is None:
+            return
+
+        prefs_act = QAction('偏好设置', self)
+        prefs_act.setIcon(icon(SETTINGS, size=SIZE_MENU))
+        prefs_act.triggered.connect(self._show_settings)
+        settings_menu.addAction(prefs_act)
+
+        change_pwd_act = QAction('修改主密码', self)
+        change_pwd_act.setIcon(icon(KEY, size=SIZE_MENU))
+        change_pwd_act.triggered.connect(self._show_change_master)
+        settings_menu.addAction(change_pwd_act)
+
+        # 帮助菜单
+        help_menu = menubar.addMenu('帮助')
+        if help_menu is None:
+            return
+
+        shortcuts_act = QAction('快捷键', self)
+        shortcuts_act.setIcon(icon(SHORTCUT, size=SIZE_MENU))
+        shortcuts_act.triggered.connect(self._show_shortcuts)
+        help_menu.addAction(shortcuts_act)
+
+        help_menu.addSeparator()
+
+        about_act = QAction('关于 CipherBox', self)
+        about_act.setIcon(icon(HELP, size=SIZE_MENU))
+        about_act.triggered.connect(self._show_about)
+        help_menu.addAction(about_act)
+
+    # ----- 快捷键 -----
+
+    def _setup_shortcuts(self):
+        """注册全局快捷键"""
+        shortcuts = [
+            ('Ctrl+F', lambda: self._search_edit.setFocus()),
+            ('Ctrl+E', self._edit_selected_entry),
+            ('Ctrl+G', self._show_password_generator),
+            ('Ctrl+,', self._show_settings),
+            ('Delete', self._delete_selected_entry),
+            ('Escape', self._clear_search),
+        ]
+        # 保留引用防止 GC 回收：虽然 Qt parent=self 持有引用，
+        # 但显式保存更安全，避免 PyPy 等非引用计数实现的回收风险
+        self._shortcuts: list[QShortcut] = []
+        for key, callback in shortcuts:
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.activated.connect(callback)
+            self._shortcuts.append(shortcut)
+
+    def _update_menu_icons(self):
+        """刷新菜单栏图标，主题切换时颜色需要更新"""
+        from PyQt6.QtWidgets import QMenu
+
+        menubar = self.menuBar()
+        if menubar is None:
+            return
+        icon_map = {
+            '新增条目': (PLUS, None),
+            '导入 / 导出': (UPLOAD, None),
+            '备份与恢复': (FOLDER, None),
+            '锁定保险库': (LOCK_SOLID, None),
+            '退出': (CLOSE, None),
+            '密码生成器': (GENERATE, None),
+            '安全仪表盘': (SHIELD, None),
+            '偏好设置': (SETTINGS, None),
+            '修改主密码': (KEY, None),
+            '快捷键': (SHORTCUT, None),
+            '关于 CipherBox': (HELP, None),
+        }
+        for menu in menubar.findChildren(QMenu):
+            for action in menu.actions():
+                text = action.text()
+                if text in icon_map:
+                    icon_name, color_key = icon_map[text]
+                    action.setIcon(icon(icon_name, color_key, size=SIZE_MENU))
+
+    # ----- 对话框 -----
+
+    def _show_password_generator(self):
+        dialog = PasswordGeneratorDialog(self._clipboard, self, config=self._config)
+        dialog.password_selected.connect(self._on_password_selected)
+        dialog.exec()
+
+    def _show_settings(self):
+        dialog = SettingsDialog(self._config, self)
+        if dialog.exec() == SettingsDialog.DialogCode.Accepted:
+            self._apply_theme()
+            self._apply_runtime_settings()
+
+    def _show_import_export(self):
+        dialog = ImportExportDialog(self._import_export, self._entry_mgr, self)
+        dialog.import_completed.connect(self._refresh_all_data)
+        dialog.exec()
+
+    def _show_backup(self):
+        dialog = BackupDialog(self._backup, self, config=self._config)
+        dialog.exec()
+        # 仅在对话框实际执行了备份/恢复操作时才全量刷新
+        if dialog._data_changed:
+            self._refresh_all_data()
+            self._detail_panel.show_empty()
+
+    def _show_change_master(self):
+        dialog = ChangeMasterDialog(self._vault, self)
+        result = dialog.exec()
+        if result == ChangeMasterDialog.DialogCode.Accepted:
+            self._refresh_all_data()
+            self._detail_panel.show_empty()
+            self._run_backup_async(force=True)
+
+    def _show_about(self):
+        dialog = AboutDialog(self)
+        dialog.exec()
+
+    def _show_security_dashboard(self):
+        dialog = SecurityDashboard(self._security, self._entry_mgr, self._config, self)
+        dialog.fix_requested.connect(self._edit_entry)
+        result = dialog.exec()
+        # 仅在用户实际执行了修复操作时刷新，即 Accepted 且 fix_requested 至少触发一次
+        if result == QDialog.DialogCode.Accepted:
+            self._refresh_after_entry_change()
+
+    def _show_shortcuts(self):
+        rows = ''.join(
+            f'<tr><td>{key}</td><td style="padding-left:12px">{desc}</td></tr>'
+            for key, desc in _SHORTCUT_DISPLAY
+        )
+        text = f'<table>{rows}</table>'
+        msg = QMessageBox(self)
+        msg.setWindowTitle('快捷键')
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(text)
+        msg.exec()
+
+    def _show_from_tray(self):
+        if not self._vault.is_unlocked or self._locked_ui:
+            return
+        self.showNormal()
+        self.activateWindow()
