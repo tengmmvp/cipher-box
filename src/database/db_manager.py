@@ -4,7 +4,7 @@
 - 数据库连接的打开/关闭和文件安全
 - 事务管理（begin / commit / rollback / savepoint）
 - 元数据（vault_meta 表）读写
-- ``_db_operation`` 装饰器（线程安全锁 + 连接校验）
+- ``_db_operation`` 装饰器，提供线程安全锁和连接校验
 
 CRUD 操作已委托给子 Repository：
 - ``entries`` → :class:`EntryRepository`
@@ -224,11 +224,8 @@ class DatabaseManager:
         """打开数据库连接"""
         try:
             secure_directory(self._db_path.parent)
-            # 线程安全契约：SQLite 连接仅在 DatabaseManager._lock (RLock) 保护下使用。
-            # check_same_thread=False 允许同一线程的 RLock 重入和事务内的操作，
-            # 不意味着连接可被多线程无锁共享。所有 DB 操作必须通过 @_db_operation
-            # 或在已持有 _lock 的上下文中调用。begin/commit/rollback 虽未装饰，
-            # 但仅在 @_db_operation 方法内部的事务上下文中被调用。
+            # check_same_thread=False 仅允许同一线程的 RLock 重入和事务内操作，
+            # 所有 DB 操作仍须通过 @_db_operation 或在已持有 _lock 的上下文中调用。
             self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA journal_mode=WAL")
@@ -280,7 +277,7 @@ class DatabaseManager:
             keys: 要获取的元数据键名列表。
 
         Returns:
-            字典，键为请求的键名，值为对应的元数据值（不存在则为 None）。
+            字典，键为请求的键名，值为对应的元数据值，不存在则为 None。
         """
         placeholders = ','.join('?' for _ in keys)
         assert self._conn is not None

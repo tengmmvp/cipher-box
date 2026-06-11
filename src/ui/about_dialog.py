@@ -32,7 +32,7 @@ class AboutDialog(QDialog):
         layout.setSpacing(12)
         layout.setContentsMargins(36, 30, 36, 30)
 
-        # 图标和名称（使用共享 draw_logo_pixmap 绘制 Logo）
+        # 图标和名称
         pixmap = draw_logo_pixmap(size=64, font_size=28)
 
         icon = QLabel()

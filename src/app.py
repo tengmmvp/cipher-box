@@ -18,7 +18,7 @@ class CipherBoxApp:
     """CipherBox 应用主控"""
 
     def __init__(self):
-        # sys.argv 传递给 QApplication 以支持 Qt 平台参数（如 -style、-platform）。
+        # sys.argv 传递给 QApplication 以支持 Qt 平台参数如 -style 和 -platform，
         # CipherBox 自身不处理命令行参数。
         self._app = QApplication.instance() or QApplication(sys.argv)
         self._config = ConfigManager()

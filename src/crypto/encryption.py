@@ -28,12 +28,8 @@ def _cache_key(key: bytes) -> bytes:
     return hashlib.sha256(key).digest()
 
 
-# AESGCM 实例缓存线程锁，保护 _cipher_cache 的并发读写。
 _cache_lock = threading.RLock()
-
-# AESGCM 实例缓存：按密钥 SHA-256 摘要索引，避免缓存持有原始密钥材料。
-# 缓存通常仅含 1-2 条（当前活跃密钥），_MAX_CACHE_SIZE 为安全上限。
-# 在 VaultManager.lock() 和 _re_encrypt_all 完成后显式清除。
+# AESGCM 实例缓存：按密钥摘要索引，通常仅含当前活跃密钥。
 _MAX_CACHE_SIZE = 16
 _cipher_cache: dict[bytes, AESGCM] = {}
 
@@ -79,12 +75,10 @@ class EncryptionEngine:
 
     @classmethod
     def clear_cache(cls):
-        """清除 AESGCM 实例缓存（密钥失效后调用，如锁定或改密）。
+        """清除 AESGCM 实例缓存。
 
-        清除缓存字典中所有条目，释放密钥引用。由于 CPython ``bytes`` 不可变，
-        无法原地清零密钥内容；清除引用后依赖 GC 回收释放内存。
-        调用方应在 ``clear_cache`` 后考虑触发 ``gc.collect()`` 以加速回收
-        （VaultManager.lock 已处理）。
+        密钥失效后调用，例如锁定或改密。清除引用后依赖 GC 回收，
+        VaultManager.lock 已负责触发 gc.collect。
         """
         with _cache_lock:
             _cipher_cache.clear()
@@ -109,15 +103,15 @@ class EncryptionEngine:
         Returns:
             base64 编码的 (nonce + ciphertext + tag) 字节串
         """
-        # 空字符串加密 sentinel 而非跳过，确保 AAD 始终参与认证。
-        # 旧版数据库中的空串密文字段解密时仍走 `if not encrypted: return ''` 路径，兼容。
+        # 空字符串替换为哨兵值走正常加密流程，确保 AAD 始终参与认证。
+        # 旧版数据库的空串字段解密时通过下方 `if not encrypted` 兼容路径处理。
         if not plaintext:
             plaintext = cls._EMPTY_SENTINEL
         nonce = os.urandom(cls.NONCE_SIZE)
         aesgcm = cls._get_cipher(key)
         aad = cls._aad_bytes(associated_data)
         ciphertext = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), aad)
-        # nonce + ciphertext (ciphertext 已包含 tag)
+        # nonce + ciphertext，ciphertext 已包含 GCM 认证标签
         encoded = base64.b64encode(nonce + ciphertext).decode('ascii')
         return cls.TEXT_PREFIX + encoded
 
@@ -144,16 +138,10 @@ class EncryptionEngine:
         Raises:
             ValueError: 解密失败时抛出
         """
-        # 空密文兼容路径废弃计划
-        # DESIGN LIMITATION: 空密文跳过 AAD 验证是向后兼容的必要折衷。
-        # 旧版数据库中未加密的空字段存储为空字符串，此处必须放行。
-        # 元数据完整性签名（metadata_mac）在条目级别覆盖了此场景——
-        # 即使空字段绕过了单值 AAD 验证，条目级 MAC 仍能检测篡改。
-        #
-        # DEPRECATION TIMELINE: 此兼容路径计划在 CipherBox v2.0 移除。
-        # 新数据库不再产生空密文字段（encrypt() 将空字符串替换为 sentinel）。
-        # 迁移计划：在下次 schema 升级时，将所有空字段加密为 sentinel 值，
-        # 然后移除此分支并将 strict 默认值改为 True。
+        # 向后兼容：旧版数据库中未加密的空字段存储为空字符串，此处必须放行。
+        # 空密文跳过了单值 AAD 验证，但条目级 metadata_mac 仍覆盖此场景。
+        # 此兼容路径计划在 CipherBox v2.0 移除，届时 encrypt 的哨兵机制
+        # 将确保所有字段均经过完整加密。
         if not encrypted_b64:
             if strict:
                 raise ValueError('收到空密文，数据可能已被篡改')
@@ -177,7 +165,6 @@ class EncryptionEngine:
                 return ''
             return result
         except (InvalidTag, ValueError, AttributeError, TypeError) as exc:
-            # 仅记录异常类型，不记录完整堆栈，防止密文片段泄露到日志
             logger.warning("解密失败: %s", type(exc).__name__)
             raise ValueError('解密失败，密钥或数据可能已损坏') from None
 
@@ -190,8 +177,7 @@ class EncryptionEngine:
     ) -> bytes:
         """加密字节数据"""
         if not data:
-            # 使用哨兵走正常 GCM 加密，确保 AAD 始终参与认证。
-            # 与字符串路径的 _EMPTY_SENTINEL 对称。
+            # 与字符串路径对称：空数据替换为哨兵值走正常加密流程
             data = cls._EMPTY_BYTES_SENTINEL
         nonce = os.urandom(cls.NONCE_SIZE)
         aesgcm = cls._get_cipher(key)
@@ -231,10 +217,9 @@ class EncryptionEngine:
         try:
             result = aesgcm.decrypt(nonce, ciphertext, aad)
         except (InvalidTag, ValueError, AttributeError, TypeError) as exc:
-            # 仅记录异常类型，不记录完整堆栈
             logger.warning("解密失败: %s", type(exc).__name__)
             raise ValueError('解密失败，密钥或数据可能已损坏') from None
-        # 匹配所有版本的哨兵
+        # 匹配所有版本的空值哨兵
         if result in (
             cls._EMPTY_BYTES_SENTINEL,
             cls._EMPTY_BYTES_SENTINEL_LEGACY,

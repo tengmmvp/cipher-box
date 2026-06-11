@@ -26,7 +26,7 @@ from ..ui.widgets import setup_dialog_flags
 logger = logging.getLogger(__name__)
 
 
-# 图标候选列表（单字符标识，用于分类视觉区分）
+# 图标候选列表，单字符标识用于分类视觉区分
 ICON_CANDIDATES = [
     '[CLIP]', '[DIR]', '[LIST]', '[ORG]', '[SOC]', '[CHAT]', '[MAIL]', '[WEB]',
     '[BANK]', '[COIN]', '[CART]', '[BAG]', '[WORK]', '[GOAL]', '[GAME]', '[DICE]',
@@ -34,7 +34,7 @@ ICON_CANDIDATES = [
     '[KEY]', '[IDEA]', '[GEAR]', '[BELL]', '[EDU]', '[LOVE]', '[STAR]', '[GYM]',
 ]
 
-# 预设颜色（供 c() 包装使用）
+# 预设颜色
 PRESET_COLORS = [
     '#4CAF50', '#2196F3', '#F44336', '#FF9800',
     '#9C27B0', '#00BCD4', '#607D8B', '#E91E63',
@@ -95,7 +95,7 @@ class CategoryDialog(QDialog):
     def __init__(self, entry_manager, category=None, parent=None):
         super().__init__(parent)
         self._entry_mgr = entry_manager
-        self._category = category  # None 表示新增，否则编辑
+        self._category = category  # None 为新增模式，否则编辑模式
         self._selected_color = PRESET_COLORS[0]
         self._color_dots: list[_ColorDotButton] = []
         self._setup_ui()
@@ -200,12 +200,10 @@ class CategoryDialog(QDialog):
         """加载分类数据"""
         self._name_edit.setText(category.name)
 
-        # 设置图标
         idx = self._icon_combo.findText(category.icon_char)
         if idx >= 0:
             self._icon_combo.setCurrentIndex(idx)
 
-        # 设置颜色
         if category.color:
             self._selected_color = category.color
             self._update_color_selection()
@@ -232,7 +230,6 @@ class CategoryDialog(QDialog):
         color = QColorDialog.getColor(initial, self, '选择自定义颜色')
         if color.isValid():
             self._selected_color = color.name()
-            # 取消所有预设圆点的选中
             for dot in self._color_dots:
                 dot.selected = False
             self._color_preview.setStyleSheet(
@@ -250,13 +247,11 @@ class CategoryDialog(QDialog):
 
         try:
             if self._category:
-                # 编辑模式
                 self._category.name = name
                 self._category.icon_char = icon_char
                 self._category.color = self._selected_color
                 self._entry_mgr.update_category(self._category)
             else:
-                # 新增模式
                 category = Category(
                     name=name,
                     icon_char=icon_char,

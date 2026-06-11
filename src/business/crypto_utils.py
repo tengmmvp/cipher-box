@@ -79,7 +79,7 @@ def decrypt_field(
 
 
 def matches_search(entry: Entry, query: str) -> bool:
-    """检查条目是否匹配搜索关键词（大小写不敏感，搜索 title/username/url/tags）"""
+    """检查条目是否匹配搜索关键词，大小写不敏感，搜索 title/username/url/tags"""
     if not query:
         return True
     kw = query.lower()
@@ -90,7 +90,7 @@ def matches_search(entry: Entry, query: str) -> bool:
 
 
 def matches_tag(entry: Entry, tag: str) -> bool:
-    """检查条目是否包含指定标签（大小写不敏感精确匹配）。
+    """检查条目是否包含指定标签，大小写不敏感的精确匹配。
 
     与 ``Entry.get_tag_list()`` 使用一致的解析逻辑：
     以逗号分隔、逐元素 strip 空白、大小写不敏感比较。
@@ -110,12 +110,12 @@ def copy_entry_fields(raw: Entry, **overrides) -> Entry:
     和 totp_present 根据 DB 原始值（raw.password / raw.totp_secret）
     自动设置，除非调用方已在 overrides 中显式提供。
 
-    注意：custom_fields 为 list 时执行深拷贝，避免浅拷贝导致
-    多个 Entry 共享同一个可变列表对象。
+    custom_fields 为 list 时执行深拷贝，避免浅拷贝导致多个 Entry
+    共享同一个可变列表对象。
     """
     overrides.setdefault('password_present', bool(raw.password))
     overrides.setdefault('totp_present', bool(raw.totp_secret))
-    # 深拷贝 custom_fields（当为 list[CustomField] 时），防止浅拷贝别名问题
+    # 深拷贝 custom_fields 防止浅拷贝别名问题
     if 'custom_fields' not in overrides and raw.is_decrypted:
         overrides['custom_fields'] = copy.deepcopy(raw.custom_fields)
     return dataclasses.replace(raw, **overrides)
@@ -124,7 +124,7 @@ def copy_entry_fields(raw: Entry, **overrides) -> Entry:
 def build_entry_summary(raw: Entry, username: str = '') -> Entry:
     """从原始数据库字段构建摘要 Entry，可选附带已解密的用户名。
 
-    Summary 条目不包含敏感字段（password/notes/totp_secret/custom_fields），
+    Summary 条目不含 password/notes/totp_secret/custom_fields 等敏感字段，
     仅用于列表显示和安全分析。
     """
     return copy_entry_fields(

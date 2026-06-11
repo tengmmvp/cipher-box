@@ -137,7 +137,6 @@ class ChangeMasterDialog(QDialog):
         update_strength_label(self._strength_label, text)
 
     def _on_change(self):
-        # 速率限制委托给 RateLimiter
         msg = self._rate_limiter.check()
         if msg:
             self._msg_label.setText(msg)
@@ -164,7 +163,6 @@ class ChangeMasterDialog(QDialog):
             self._msg_label.setText('新密码不能与旧密码相同')
             return
 
-        # 确认操作
         reply = QMessageBox.warning(
             self, '确认修改',
             '修改主密码将重新加密所有数据。\n此过程可能需要几秒钟。\n\n确定要继续吗？',
@@ -173,7 +171,7 @@ class ChangeMasterDialog(QDialog):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        # 在后台线程执行重新加密，避免冻结 UI
+        # 后台线程执行重新加密，避免冻结 UI
         self._change_btn.setEnabled(False)
         self._msg_label.setStyleSheet(f'color: {c("accent")}; font-size: 12px; min-height: 18px;')
         self._msg_label.setText('正在重新加密所有数据...')
@@ -190,7 +188,7 @@ class ChangeMasterDialog(QDialog):
         release_worker(self)
         self._change_btn.setEnabled(True)
         self._msg_label.setStyleSheet(f'color: {c("danger")}; font-size: 12px; min-height: 18px;')
-        # 清除旧密码输入框，减少明文驻留内存时间。
+        # 减少明文密码驻留内存时间
         self._old_pwd.clear()
         success, error_msg = result
         if success:
@@ -199,7 +197,6 @@ class ChangeMasterDialog(QDialog):
             self.accept()
         else:
             lock_seconds = self._rate_limiter.record_failure()
-            # 使用 VaultManager 返回的具体错误消息，或回退到默认提示
             display_msg = error_msg or '当前主密码错误'
             if lock_seconds > 0:
                 self._msg_label.setText(
@@ -213,7 +210,6 @@ class ChangeMasterDialog(QDialog):
         self._change_btn.setEnabled(True)
         self._msg_label.setStyleSheet(f'color: {c("danger")}; font-size: 12px; min-height: 18px;')
         self._msg_label.setText('')
-        # 清除旧密码输入框。
         self._old_pwd.clear()
         logger.error("主密码修改失败", exc_info=True)
         QMessageBox.critical(self, '错误', error_msg)

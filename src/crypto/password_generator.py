@@ -12,13 +12,13 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-# 模块级密码安全随机数生成器，避免每次调用重复创建
+# 模块级安全随机数生成器，避免每次调用重复创建
 _RNG = secrets.SystemRandom()
 
 # 模糊字符集
 AMBIGUOUS_CHARS = 'Il1O0o'
 
-# 常见弱密码模式（预编译，避免 check_strength 每次调用重新编译）
+# 常见弱密码模式，预编译以避免 check_strength 每次调用重新编译
 _COMMON_WEAK = r'^(123456|password|qwerty|abc123|111111|admin|letmein|welcome|monkey|dragon)'
 COMMON_PATTERNS = [
     re.compile(_COMMON_WEAK + r'$'),           # 精确匹配
@@ -28,7 +28,7 @@ COMMON_PATTERNS = [
     re.compile(_COMMON_WEAK),                    # 前缀匹配：以常见弱密码开头的变体
 ]
 
-# 字符组成检测正则（预编译）
+# 字符组成检测正则，预编译
 _RE_UPPER = re.compile(r'[A-Z]')
 _RE_LOWER = re.compile(r'[a-z]')
 _RE_DIGIT = re.compile(r'\d')
@@ -54,7 +54,7 @@ def _build_charset(base_chars: str, exclude_ambiguous: bool) -> str:
 
     Args:
         base_chars: 基础字符集
-        exclude_ambiguous: 是否排除模糊字符，即 Il1O0o
+        exclude_ambiguous: 是否排除模糊字符 Il1O0o
 
     Returns:
         处理后的字符集字符串
@@ -118,7 +118,7 @@ class PasswordGenerator:
                 required.append(chars)
 
         if symbols:
-            # 符号字符集：排除反引号/引号/反斜杠/正斜杠以保证 shell/URL 兼容性
+            # 排除反引号、引号、斜杠等字符以保证 shell/URL 兼容性
             chars = _build_charset('!@#$%^&*()_+-=[]{}|;:,.<>?~', exclude_ambiguous)
             charset += chars
             if chars:

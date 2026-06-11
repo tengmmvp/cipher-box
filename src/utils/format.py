@@ -15,7 +15,7 @@ def format_datetime(iso_str: str) -> str:
     """将 ISO 8601 日期字符串格式化为 'YYYY-MM-DD HH:MM:SS'。
 
     优先使用 ``datetime.fromisoformat`` 进行严格解析，
-    解析失败时原样返回（兼容非标准或历史格式）。
+    解析失败时原样返回，兼容非标准或历史格式。
 
     注意：使用 ``fromisoformat`` 解析，带时区偏移的字符串会保留为
     aware datetime，但 strftime 输出不含时区标识。当前数据库存储的

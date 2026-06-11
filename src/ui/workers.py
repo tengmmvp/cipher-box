@@ -45,11 +45,11 @@ class BackgroundWorker(QThread):
         """初始化后台工作线程。
 
         Args:
-            func: 要在线程中执行的函数。闭包可能捕获敏感数据（如密码），
+            func: 要在线程中执行的函数。闭包可能捕获敏感数据如密码，
                 函数执行完毕后 self._func 会被置 None 以释放闭包引用。
             parent: 父对象。若提供，QThread 作为 parent 的子对象，在 parent
                 销毁时一同被销毁。调用方须确保 parent 销毁前 worker 已完成
-                （调用 cancel() + wait()），否则可能导致崩溃。
+                即调用 cancel() + wait()，否则可能导致崩溃。
         """
         super().__init__(parent)
         self._func = func
@@ -65,10 +65,9 @@ class BackgroundWorker(QThread):
         self._cancel_event.set()
 
     def emit_progress(self, current: int, total: int):
-        """从工作函数内部发射进度信号（线程安全）。
+        """从工作函数内部发射进度信号，线程安全。
 
-        注意：此方法从工作线程调用，信号会通过 Qt 的队列连接
-        安全地传递到主线程。
+        从工作线程调用时，信号通过 Qt 的队列连接安全传递到主线程。
         """
         self.progress.emit(current, total)
 
@@ -88,5 +87,5 @@ class BackgroundWorker(QThread):
                 return
             self.error.emit(str(e))
         finally:
-            # 释放闭包引用（可能捕获密码等敏感数据）
+            # 释放闭包引用，可能捕获密码等敏感数据
             self._func = None

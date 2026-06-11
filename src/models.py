@@ -146,11 +146,6 @@ class Entry:
     notes: str = ''
     custom_fields_enc: str = ''
     custom_fields: list[CustomField] | str = field(default_factory=list)
-    # custom_fields 双重类型说明：
-    # - 从数据库读取后为 str（加密密文），此时 custom_fields_enc 与之相同
-    # - 经 EntryManager.decrypt_entry() 解密后为 list[CustomField]
-    # - 使用 custom_fields_db_value 属性可安全获取用于 DB 存储的密文值
-    # - 通过 is_decrypted 属性检查当前状态
     is_favorite: bool = False
     is_deleted: bool = False
     password_strength: int = 0

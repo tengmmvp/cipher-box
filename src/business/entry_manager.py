@@ -73,7 +73,7 @@ class EntryManager:
         self._on_entry_change_callbacks: list = []
 
     def register_on_change(self, callback):
-        """注册条目变更时自动调用的回调（用于缓存失效等）。"""
+        """注册条目变更时自动调用的回调，用于缓存失效等。"""
         self._on_entry_change_callbacks.append(callback)
 
     @property
@@ -128,7 +128,7 @@ class EntryManager:
         )
 
     def _encrypt_field(self, plaintext: str, crypto_id: str, field_name: str) -> str:
-        """加密单个字段（委托给 crypto_utils.encrypt_field）"""
+        """加密单个字段，委托给 crypto_utils.encrypt_field"""
         return _encrypt_field_impl(plaintext, self._key, crypto_id, field_name)
 
     def _decrypt_field(
@@ -138,7 +138,7 @@ class EntryManager:
         field_name: str,
         strict: bool = False,
     ) -> str:
-        """解密单个字段（委托给 crypto_utils.decrypt_field）"""
+        """解密单个字段，委托给 crypto_utils.decrypt_field"""
         return _decrypt_field_impl(
             encrypted, self._key, crypto_id, field_name, strict=strict,
         )
@@ -565,8 +565,8 @@ class EntryManager:
 
     # ==================== 委托方法 ====================
     # 以下方法直接委托给 DatabaseManager，无额外业务逻辑。
-    # 委托层存在是为了：(1) 为 UI 层提供单一入口点，(2) 允许未来在此层添加
-    # 验证/日志/A/B 测试逻辑，(3) 防止 UI 直接依赖 DatabaseManager。
+    # 委托层存在的理由：为 UI 层提供单一入口点，允许未来在此层添加
+    # 验证或日志逻辑，防止 UI 直接依赖 DatabaseManager。
     # DELEGATE: see DatabaseManager.get_categories
     def get_categories(self) -> list[Category]:
         return self._vault.db.get_categories()

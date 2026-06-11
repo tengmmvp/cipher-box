@@ -89,7 +89,7 @@ class SecurityAnalyzer:
         提取公共逻辑以消除 _cached_analysis 与 get_cached_report 的 DRY 违规。
         调用方须在持有 _cache_lock 的上下文中调用，且 cache 须为通过 ``dict(cache)`` 创建的浅拷贝。
 
-        注意：返回的 Entry 对象为缓存中的共享引用，属于不含敏感字段的 summary Entry。
+        返回的 Entry 对象为缓存中的共享引用，属于不含敏感字段的 summary Entry。
         调用方应将返回的 Entry 视为只读，不应修改其属性，否则会污染缓存。
         若未来需要可变返回值，应在此处改用 dataclasses.replace 创建深拷贝。
         """
@@ -183,7 +183,7 @@ class SecurityAnalyzer:
         password_map: dict[bytes, list[Entry]] = {}
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         # 保存所有条目的 summary + changed_at_utc，供缓存后不同 days 重新过滤
-        _summaries_with_dates: list[tuple] = []  # [(summary, changed_utc | None)]
+        _summaries_with_dates: list[tuple] = []  # summary 与 changed_utc 的配对列表
 
         skipped_count = 0
         for raw in entries:
@@ -213,7 +213,6 @@ class SecurityAnalyzer:
             if (raw.password_strength or 0) <= 1 and raw.password:
                 weak_entries.append(summary)
 
-            # 跳过无密码条目，不参与重复检测
             if not raw.password:
                 continue
 

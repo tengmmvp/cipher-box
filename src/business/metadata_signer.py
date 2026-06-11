@@ -62,9 +62,7 @@ class MetadataSigner:
         signing_key = key or self._domain_key
         if signing_key is None:
             raise VaultLockedError('保险库未解锁，无法签名条目元数据')
-        # 使用预计算的域密钥，仅在传入显式 key 时临时计算。
-        # 当 key=None 时 signing_key=self._domain_key，上方已验证非 None，
-        # 直接复用预计算域密钥避免重复 HMAC 派生。
+        # 当 key=None 时复用预计算域密钥，否则临时计算。
         domain_key = self._domain_key if key is None else self.compute_domain_key(signing_key)
         assert domain_key is not None  # signing_key 非空检查保证
         return hmac.new(

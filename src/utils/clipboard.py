@@ -67,9 +67,8 @@ class ClipboardManager:
                         clipboard.clear(QClipboard.Mode.Selection)
                     self._last_copied_hash = b''
                 else:
-                    # 用户已复制其他内容，原始内容已不在剪贴板中，清除 hash。
+                    # 用户已复制其他内容，原始内容已不在剪贴板中
                     self._last_copied_hash = b''
-            # 如果 _last_copied_hash 已经为空，无需操作
 
     def cancel(self):
         """取消自动清空"""

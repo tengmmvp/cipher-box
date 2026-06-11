@@ -51,7 +51,7 @@ from .widgets import clear_layout
 
 logger = logging.getLogger(__name__)
 
-# 密码强度标签映射（模块级常量，避免每次 show_entry 重建）
+# 密码强度标签映射，模块级常量避免每次 show_entry 重建
 _STRENGTH_LABELS = {0: '非常弱', 1: '弱', 2: '一般', 3: '强', 4: '非常强'}
 
 

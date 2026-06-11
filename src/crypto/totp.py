@@ -188,7 +188,7 @@ class TOTPGenerator:
     def _normalize_base32(raw: str) -> str:
         """标准化 Base32 密钥：大写、去除常见分隔符、自动补齐填充。"""
         cleaned = raw.upper().strip().replace(' ', '').replace('-', '').replace('.', '').replace('_', '')
-        # 自动补齐 Base32 填充（=），兼容其他认证器导出的非标准填充密钥
+        # 自动补齐 Base32 填充，兼容其他认证器导出的非标准填充密钥
         padding = (8 - len(cleaned) % 8) % 8
         if padding:
             cleaned += '=' * padding
@@ -211,7 +211,6 @@ class TOTPGenerator:
         if not secret:
             return False
 
-        # 解析前缀
         try:
             algorithm, raw_secret, _, _ = TOTPGenerator._parse_config(
                 secret, algorithm, TOTPGenerator.DEFAULT_PERIOD, TOTPGenerator.DEFAULT_DIGITS

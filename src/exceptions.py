@@ -62,8 +62,6 @@ class DecryptionError(CryptoError):
     """解密失败。"""
 
 
-# ---------------------------------------------------------------------------
-# Entry
 # ==================== Entry ====================
 
 class EntryError(CipherBoxError):

@@ -40,7 +40,7 @@ class EntryItemDelegate(QStyledItemDelegate):
     """按需绘制条目卡片，避免为每条记录创建常驻 QWidget。"""
 
     ROW_HEIGHT = 62
-    # 布局常量（单位：像素）
+    # 布局常量，单位为像素
     CARD_PADDING_H = 4       # 卡片水平内边距
     CARD_PADDING_V = 2       # 卡片垂直内边距
     CARD_RADIUS = 7          # 卡片圆角
@@ -48,7 +48,7 @@ class EntryItemDelegate(QStyledItemDelegate):
     ICON_SIZE = 28           # 类型图标尺寸
     ICON_OFFSET_X = 10       # 图标距左边距离
     ICON_OFFSET_Y = 13       # 图标距顶部距离
-    TEXT_LEFT_OFFSET = 48    # 文本起始水平位置（图标区域之后）
+    TEXT_LEFT_OFFSET = 48    # 文本起始水平位置，图标区域之后
     MARKER_RIGHT_MARGIN = 22 # 右侧标记距离右边距离
     DELETE_BADGE_WIDTH = 48  # "已删除"徽章宽度
     DELETE_BADGE_HEIGHT = 20
@@ -61,7 +61,7 @@ class EntryItemDelegate(QStyledItemDelegate):
         self._font_cache: dict[tuple, QFont] = {}
 
     def _get_font(self, family: str, size: int, weight: int = -1) -> QFont:
-        """获取 QFont（带缓存，避免 paint() 重复创建）。"""
+        """获取 QFont，带缓存避免 paint() 重复创建。"""
         global _RESOLVED_FONT_FAMILY
         # 首次调用时解析可用字体
         if _RESOLVED_FONT_FAMILY == FONT_FAMILY_PRIMARY and family == FONT_FAMILY_PRIMARY:
@@ -75,13 +75,13 @@ class EntryItemDelegate(QStyledItemDelegate):
         return font
 
     def _get_color(self, key: str) -> str:
-        """获取主题颜色（带缓存，主题切换时需清空）。"""
+        """获取主题颜色，带缓存，主题切换时需清空。"""
         if key not in self._color_cache:
             self._color_cache[key] = c(key)
         return self._color_cache[key]
 
     def clear_color_cache(self):
-        """清空颜色缓存（主题切换时调用）。"""
+        """清空颜色缓存，主题切换时调用。"""
         self._color_cache.clear()
 
     def sizeHint(self, option, index):

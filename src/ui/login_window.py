@@ -38,11 +38,11 @@ class LoginWindow(QDialog):
         self._vault = vault_manager
         self._is_first_time = not vault_manager.is_initialized
         self._rate_limiter = RateLimiter()
-        self._worker = None  # 后台 KDF worker
+        self._worker = None
         self._setup_ui()
 
     def reject(self):
-        """关闭前等待后台认证 worker 完成，避免窗口销毁后发信号。"""
+        """关闭前等待后台 worker 完成，避免窗口销毁后 worker 发信号。"""
         if self._worker and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(WORKER_WAIT_TIMEOUT_MS)
@@ -173,20 +173,20 @@ class LoginWindow(QDialog):
 
         layout.addLayout(btn_layout)
 
-        # 不同 DPI、系统字体和窗口样式下控件高度会变化，不能用固定高度压缩布局。
+        # 不同 DPI 和系统字体下控件高度会变化，不能使用固定高度压缩布局
         outer.activate()
         preferred_height = LOGIN_HEIGHT_FIRST if self._is_first_time else LOGIN_HEIGHT_LOGIN
         self.setFixedHeight(max(preferred_height, self.minimumSizeHint().height()))
 
     def _on_password_changed(self, text: str):
-        """密码输入变化时更新强度提示"""
+        """密码输入变化时更新强度提示。"""
         update_strength_label(self._strength_label, text, prefix='密码强度：')
 
     def _on_auth_result(self, success: bool, error_msg: str = ''):
         """处理初始化/解锁的结果。"""
         if success:
             self._rate_limiter.record_success()
-            # 登录成功后立即清除密码输入框，减少明文密码在内存中的驻留时间。
+            # 登录成功后立即清除密码输入框，减少明文驻留时间
             self._password_edit.clear()
             if hasattr(self, '_confirm_edit'):
                 self._confirm_edit.clear()
@@ -200,15 +200,13 @@ class LoginWindow(QDialog):
                 self._show_error(error_msg or '操作失败，请重试')
 
     def _on_confirm(self):
-        """确认按钮"""
-
-        # 速率限制委托给 RateLimiter
+        """处理确认按钮点击。"""
         msg = self._rate_limiter.check()
         if msg:
             self._show_error(msg)
             return
 
-        # 认证进行中禁止重复提交
+        # 认证进行中，禁止重复提交
         if self._worker and self._worker.isRunning():
             return
 
@@ -233,11 +231,11 @@ class LoginWindow(QDialog):
             action = self._vault.unlock
             error_default = '主密码错误'
 
-        # KDF 使用 PBKDF2 算法，迭代次数 600k，在后台线程执行以避免冻结 UI。
+        # PBKDF2 迭代次数 600k，在后台线程执行以避免冻结 UI
         self._start_auth(action, password, error_default)
 
     def _start_auth(self, action, password: str, error_default: str):
-        """在后台 worker 中执行 KDF + 解锁/初始化，完成后回到主线程处理结果。"""
+        """在后台线程执行 KDF 并完成解锁或初始化。"""
         self._confirm_btn.setEnabled(False)
         self._confirm_btn.setText('正在解锁...')
         self._message_label.setText('')
@@ -247,18 +245,14 @@ class LoginWindow(QDialog):
         self._worker.start()
 
     def _on_auth_done(self, result: tuple[bool, str]):
-        """后台认证完成，在主线程中回调。
-
-        Args:
-            result: (success, error_message) — 来自 VaultManager.initialize/unlock
-        """
+        """后台认证完成回调，result 为来自 VaultManager 的元组。"""
         release_worker(self)
         self._reset_confirm_btn()
         success, error_msg = result
         self._on_auth_result(success, error_msg)
 
     def _on_auth_error(self, error_default: str):
-        """后台认证异常，在主线程中回调。"""
+        """后台认证异常回调。"""
         release_worker(self)
         self._reset_confirm_btn()
         self._on_auth_result(False, error_default)

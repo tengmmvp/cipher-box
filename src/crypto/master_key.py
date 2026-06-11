@@ -18,18 +18,14 @@ from .encryption import EncryptionEngine
 
 logger = logging.getLogger(__name__)
 
-# PBKDF2 迭代次数 (OWASP 2023 推荐)
+# PBKDF2 迭代次数，遵循 OWASP 2023 推荐
 PBKDF2_ITERATIONS = 600_000
 MIN_PBKDF2_ITERATIONS = 100_000
 MAX_PBKDF2_ITERATIONS = 2_000_000
 SALT_SIZE = 32
 KEY_SIZE = 32  # AES-256
 
-# 验证令牌：用于验证主密码是否正确。
-# 验证明文和 AAD 硬编码于源码中。攻击者若获取了数据库文件，
-# 可从此常量构造伪造的 verify_token，但伪造需要先完成 PBKDF2 密钥派生，
-# 因此在实践中，暴力破解密码的成本远高于利用此常量的成本。
-# 更改此值会破坏所有已存在的保险库，不可接受。
+# 验证令牌与 AAD。详细安全分析见模块文档。
 VERIFY_PLAINTEXT = "CipherBox::MasterKey::Verification"
 VERIFY_AAD = "vault:master-verification"
 
@@ -45,13 +41,13 @@ class MasterKeyManager:
 
     @classmethod
     def derive_backup_key(cls, password: str, salt: bytes, iterations: int) -> bytes:
-        """从备份密码派生独立的备份加密密钥（与主密钥域分离）。"""
+        """从备份密码派生独立的备份加密密钥，与主密钥域分离。"""
         cls._validate_iterations(iterations)
         return cls.derive_key(password, b'backup:' + salt, iterations)
 
     @classmethod
     def derive_backup_key_legacy(cls, password: str, salt: bytes, iterations: int) -> bytes:
-        """旧版备份密钥派生（无域前缀），仅用于向后兼容旧备份文件。"""
+        """旧版备份密钥派生，无域前缀，仅用于向后兼容旧备份文件。"""
         warnings.warn(
             "derive_backup_key_legacy 已废弃，将在未来版本移除。"
             "请使用 derive_backup_key 代替。",
@@ -155,8 +151,8 @@ class MasterKeyManager:
 
         Returns:
             成功返回 (new_salt, new_verify_token, new_key) 三元组，失败返回 None。
-            返回 new_key 以便调用方（VaultManager）复用 ``create`` 内部已派生的
-            新密钥，避免在重加密流程中重复执行一次 PBKDF2 600k 迭代。
+            返回 new_key 以便 VaultManager 复用 create 内部已派生的新密钥，
+            避免在重加密流程中重复执行 PBKDF2 600k 迭代。
         """
         old_key = cls.verify(
             old_password, old_salt, old_verify_token, old_iterations

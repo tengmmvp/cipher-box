@@ -32,7 +32,7 @@ from .metadata_signer import MetadataSigner
 _SNAPSHOT_KEY_AAD = 'vault:snapshot-key'
 
 
-# key_epoch 缓存 TTL（秒）：避免每次写入都查询数据库的 key_epoch。
+# key_epoch 缓存 TTL 秒数，避免每次写入都查询数据库
 _EPOCH_CACHE_TTL_SECONDS = 2.0
 
 # TODO: 进一步拆分 VaultManager 的剩余职责：
@@ -54,7 +54,7 @@ class VaultManager:
             self._signer.verify,
         )
 
-        # 密钥轮换服务（纯加解密计算，事务仍由 VaultManager 管理）
+        # 密钥轮换服务，仅负责纯加解密计算，事务仍由 VaultManager 管理
         self._rotator = KeyRotationService(self._db, self._signer)
 
         self._key: bytes | None = None
@@ -62,7 +62,7 @@ class VaultManager:
         self._key_epoch: str | None = None
         self._snapshot_key: bytes | None = None
         self._epoch_cache_time: float = 0.0
-        self._lock = threading.RLock()  # 保护改密/重加密等关键写操作串行化
+        self._lock = threading.RLock()  # 保护改密和重加密等关键写操作串行化
         self._db_initialized = False  # 缓存标志，避免 is_initialized 重复打开数据库
         self._on_lock_callbacks: list = []
 
@@ -193,8 +193,10 @@ class VaultManager:
             self._signer.set_domain_key(MetadataSigner.compute_domain_key(derived_key))
             self._is_unlocked = True
             return True, ''
+        except VaultAlreadyInitializedError as exc:
+            return False, str(exc)
         except CipherBoxError:
-            raise  # 自定义异常向上传播，如 VaultAlreadyInitializedError
+            raise
         except Exception as exc:
             msg = str(exc) or '保险库初始化失败'
             logger.warning("保险库初始化失败", exc_info=True)
@@ -376,8 +378,7 @@ class VaultManager:
 
             new_salt, new_verify_token, new_key = result
 
-            # 用新密钥重新加密所有条目的敏感字段，
-            # 复用 MasterKeyManager.create 已派生的 new_key，省一次 PBKDF2 派生。
+            # 复用 MasterKeyManager.create 已派生的 new_key，省一次 PBKDF2 派生
             self._re_encrypt_all(new_key, new_salt, new_verify_token)
 
             return True, ''
@@ -413,7 +414,7 @@ class VaultManager:
             self._rotator.re_encrypt_history(old_key, new_key)
             self._update_vault_metadata(new_key, new_salt, new_verify_token, new_epoch)
 
-            # 全部成功 → 先提交事务，再更新内存密钥。
+            # 先提交事务再更新内存密钥
             # 若提交失败回滚，_clear_vault_state 会清除 self._key 保证一致性。
             # 将密钥赋值放在 commit 之后，避免后台线程在 commit 前读到新密钥
             # 解密尚未提交的旧数据（解密窗口问题）。

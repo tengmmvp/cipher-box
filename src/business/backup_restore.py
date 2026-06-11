@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 def _user_friendly_error(exc: Exception) -> str:
     """将异常映射为用户友好的错误消息。
 
-    按异常类型映射（精确匹配，不依赖英文错误文本，避免子串误匹配）。
+    按异常类型精确匹配映射，不依赖英文错误文本，避免子串误匹配。
     未识别的异常类型返回包含 ``type(exc).__name__`` 的通用提示。
     """
     if isinstance(exc, FileNotFoundError):
@@ -70,7 +70,7 @@ MAX_HISTORY_PER_ENTRY = MAX_PASSWORD_HISTORY * 2  # 每条目历史上限，2 �
 class BackupFlag(enum.IntEnum):
     """备份类型标志，用于二进制头部标识加密方式。
 
-    注意：使用 IntEnum 而非 IntFlag，因为 IntFlag 的 ~ 运算仅翻转已定义位，
+    使用 IntEnum 而非 IntFlag，因为 IntFlag 的 ~ 运算仅翻转已定义位，
     无法检测未知标志位。IntEnum 的 ~ 返回标准 int 按位取反，可正确检测非法组合。
     """
     NONE = 0
@@ -159,7 +159,7 @@ class BackupRestoreManager:
                     raw.crypto_id, exc_info=True,
                 )
                 continue
-            # 基于字段原始长度的粗略估算（每条目约 512 字节固定开销）
+            # 基于字段原始长度的粗略估算，每条目约 512 字节固定开销
             estimated_size += (
                 len(raw.title.encode('utf-8'))
                 + len((raw.url or '').encode('utf-8'))
@@ -568,7 +568,7 @@ class BackupRestoreManager:
             raise ValueError(f'{label}过大')
 
     def _create_restore_point(self) -> Path | None:
-        """创建恢复前安全快照。返回快照文件路径（用于失败时清理），创建失败返回 None。"""
+        """创建恢复前安全快照，返回快照文件路径用于失败时清理，创建失败返回 None。"""
         directory = self._vault.data_dir / 'backups'
         secure_directory(directory)
         filename = f'pre_restore_{datetime.now(timezone.utc):%Y%m%d_%H%M%S_%f}.cbox'
@@ -579,7 +579,7 @@ class BackupRestoreManager:
         )
         if not success:
             raise BackupError(f'无法创建恢复前安全快照：{error}')
-        # 从文件名解析时间戳排序（比 st_mtime 更精确，避免秒级精度问题）
+        # 按文件名排序比 st_mtime 更精确，避免秒级精度问题
         restore_points = sorted(
             directory.glob('pre_restore_*.cbox'),
             key=lambda p: p.name,
