@@ -2,7 +2,7 @@
 
 from urllib.parse import urlparse
 
-from PyQt6.QtCore import QRectF, QSize, Qt, QModelIndex
+from PyQt6.QtCore import QModelIndex, QRectF, QSize, Qt
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
