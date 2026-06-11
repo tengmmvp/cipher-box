@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 
 from ..exceptions import DatabaseError, TransactionError
-from ..models import MAX_PASSWORD_HISTORY, Category, Entry, PasswordHistory
+from ..models import Category, Entry, PasswordHistory
 from ..utils.file_security import secure_directory, secure_file
 from ._decorators import _db_operation
 from .category_repository import CategoryRepository
@@ -52,9 +52,6 @@ class DatabaseManager:
     通过 ``entries`` / ``categories`` / ``schema`` 属性访问子 Repository，
     也可直接通过 DatabaseManager 上的委托方法调用。
     """
-
-    SCHEMA_FORMAT = SchemaManager.SCHEMA_FORMAT
-    MAX_PASSWORD_HISTORY = MAX_PASSWORD_HISTORY
 
     def __init__(self, db_path: Path, *, test_mode: bool = False):
         self._db_path = db_path
