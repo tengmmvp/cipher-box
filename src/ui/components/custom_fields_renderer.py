@@ -10,10 +10,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ...utils.memory import secure_zero_str
 from ..resources.constants import BTN_COPY, FONT_FAMILY_MONOSPACE
 from ..resources.icons import COPY, EYE, LOCK, set_icon
 from ..resources.theme_colors import c
-from ...utils.memory import secure_zero_str
 
 
 class CustomFieldsRenderer:
