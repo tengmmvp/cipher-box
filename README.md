@@ -11,6 +11,10 @@
 [![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](LICENSE)
 [![Version](https://img.shields.io/badge/Version-1.0.0-orange?style=for-the-badge)](src/__init__.py)
 
+<a href="https://bigmodel.cn/glm-coding">
+  <img src="https://raw.githubusercontent.com/tengmmvp/img2code/main/img/zhipu-glm-coding-plan.png" alt="Powered by 智谱 GLM Coding Plan · 智谱编码套餐" />
+</a>
+
 </div>
 
 ---
