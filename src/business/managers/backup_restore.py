@@ -2,15 +2,12 @@
 
 import enum
 import errno
-import hashlib
-import hmac
 import json
 import logging
 import os
 import struct
 import time
 import uuid
-import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -20,12 +17,22 @@ if TYPE_CHECKING:
 
 from ...crypto.encryption import EncryptionEngine
 from ...crypto.master_key import MasterKeyManager
-from ...database.models import ENTRY_TYPES, MAX_CUSTOM_FIELDS_PER_ENTRY, Category, Entry
-from ...models import MAX_PASSWORD_HISTORY
+from ...exceptions import BackupError
+from ...models import (
+    ENTRY_TYPES,
+    MAX_CUSTOM_FIELDS_PER_ENTRY,
+    MAX_PASSWORD_HISTORY,
+    Category,
+    Entry,
+)
 from ...utils.file_security import secure_directory, secure_file, validate_file_path
 from ...utils.format import utc_now_iso
-from ..exceptions import BackupError, DecryptionError, EntryIntegrityError
-from ..services.crypto_utils import decrypt_field, encrypt_field, require_vault_key
+from ..services.crypto_utils import (
+    decrypt_entry_to_portable_dict,
+    decrypt_field,
+    encrypt_field,
+    require_vault_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +80,6 @@ class BackupFlag(enum.IntEnum):
     使用 IntEnum 而非 IntFlag，因为 IntFlag 的 ~ 运算仅翻转已定义位，
     无法检测未知标志位。IntEnum 的 ~ 返回标准 int 按位取反，可正确检测非法组合。
     """
-    NONE = 0
     PASSWORD = 1     # 使用独立备份密码加密
     SNAPSHOT = 2     # 使用快照密钥加密
 
@@ -92,22 +98,11 @@ class BackupRestoreManager:
     def _derive_backup_key(password: str, salt: bytes, iterations: int) -> bytes:
         return MasterKeyManager.derive_backup_key(password, salt, iterations)
 
-    @staticmethod
-    def _decrypt_text(value: str, key: bytes, label: str, aad: str) -> str:
-        if not value:
-            return ''
-        try:
-            return EncryptionEngine.decrypt(value, key, aad)
-        except ValueError as exc:
-            raise DecryptionError(f"{label}解密失败，保险库数据可能已损坏") from exc
-
     def _collect_portable_data(self) -> dict:
-        """收集备份数据：手动解密所有字段为明文，构建可移植字典。
+        """收集备份数据：解密所有字段为明文，构建可移植字典。
 
-        注意：此方法直接操作原始 DB 条目并手动解密，未复用
-        EntryManager.decrypt_entry_to_dict()，原因是备份需要同时收集
-        密码历史并在循环内做增量大小估算，这两者超出了
-        decrypt_entry_to_dict 的设计范围（该方法仅处理单条目解密）。
+        使用 crypto_utils.decrypt_entry_to_portable_dict 共享解密逻辑，
+        本方法保留备份特有的增量大小估算和密码历史收集。
         """
         db = self._vault.db
         key = self._key
@@ -122,41 +117,11 @@ class BackupRestoreManager:
             for c in categories
         )
         for raw in raw_entries:
-            # 单条目解密失败时记录警告并跳过——既不固化被篡改/损坏的明文列，
-            # 也不让单条损坏中断整个备份，_decrypt_text 失败会抛出 DecryptionError。
-            try:
-                custom_json = decrypt_field(
-                    raw.custom_fields_db_value, key, raw.crypto_id, 'custom_fields',
-                )
-                try:
-                    custom_fields = json.loads(custom_json) if custom_json else []
-                except json.JSONDecodeError as exc:
-                    raise DecryptionError("自定义字段格式损坏") from exc
-                item = {
-                    'id': raw.id,
-                    'crypto_id': raw.crypto_id,
-                    'title': raw.title,
-                    'username': decrypt_field(raw.username, key, raw.crypto_id, 'username'),
-                    'password': decrypt_field(raw.password, key, raw.crypto_id, 'password'),
-                    'url': raw.url,
-                    'category_id': raw.category_id,
-                    'tags': raw.tags,
-                    'notes': decrypt_field(raw.notes, key, raw.crypto_id, 'notes'),
-                    'custom_fields': custom_fields,
-                    'is_favorite': raw.is_favorite,
-                    'is_deleted': raw.is_deleted,
-                    'password_strength': raw.password_strength,
-                    'entry_type': raw.entry_type,
-                    'totp_secret': decrypt_field(raw.totp_secret, key, raw.crypto_id, 'totp_secret'),
-                    'created_at': raw.created_at,
-                    'updated_at': raw.updated_at,
-                    'deleted_at': raw.deleted_at,
-                    'password_changed_at': raw.password_changed_at,
-                }
-            except (DecryptionError, EntryIntegrityError):
+            item = decrypt_entry_to_portable_dict(raw, key, include_secrets=True)
+            if item is None:
                 logger.warning(
                     "备份跳过损坏条目 crypto_id=%s，数据可能已损坏",
-                    raw.crypto_id, exc_info=True,
+                    raw.crypto_id,
                 )
                 continue
             # 基于字段原始长度的粗略估算，每条目约 512 字节固定开销
@@ -222,8 +187,6 @@ class BackupRestoreManager:
                 iterations = 0
                 backup_key = self._vault.snapshot_key
             else:
-                # flags=0 即旧版主密钥派生已无生产创建路径，UI 强制备份密码、
-                # 自动备份/恢复点用快照密钥。仅恢复路径保留 flags=0 兼容旧备份。
                 raise ValueError('必须指定备份密码或使用快照密钥')
 
             payload = json.dumps(data, ensure_ascii=False).encode('utf-8')
@@ -236,17 +199,21 @@ class BackupRestoreManager:
             target = Path(filepath)
             target.parent.mkdir(parents=True, exist_ok=True)
             temp_path = target.with_name(target.name + '.tmp')
-            with open(temp_path, 'wb') as file:
-                file.write(BACKUP_MAGIC)
-                file.write(struct.pack('<B', flags))
-                file.write(salt)
-                file.write(struct.pack('<I', iterations))
-                file.write(encrypted)
-                file.flush()
-                os.fsync(file.fileno())
-            secure_file(temp_path)
-            os.replace(temp_path, target)
-            secure_file(target)
+            try:
+                with open(temp_path, 'wb') as file:
+                    file.write(BACKUP_MAGIC)
+                    file.write(struct.pack('<B', flags))
+                    file.write(salt)
+                    file.write(struct.pack('<I', iterations))
+                    file.write(encrypted)
+                    file.flush()
+                    os.fsync(file.fileno())
+                secure_file(temp_path)
+                os.replace(temp_path, target)
+                secure_file(target)
+            except Exception:
+                temp_path.unlink(missing_ok=True)
+                raise
             logger.info("备份创建完成 (%.1fms)", (time.monotonic() - t0) * 1000)
             return True, ''
         except Exception as exc:
@@ -266,17 +233,12 @@ class BackupRestoreManager:
             if len(flags) != 1:
                 raise ValueError('备份文件头已损坏')
             flag_value = struct.unpack('<B', flags)[0]
-            if flag_value & ~(BackupFlag.PASSWORD | BackupFlag.SNAPSHOT):
-                raise ValueError('备份文件格式无效或已损坏')
-            if flag_value == (BackupFlag.PASSWORD | BackupFlag.SNAPSHOT):
+            if flag_value not in (BackupFlag.PASSWORD, BackupFlag.SNAPSHOT):
                 raise ValueError('备份文件格式无效或已损坏')
             return {
                 'format': BACKUP_FORMAT,
-                'password_required': bool(flag_value & BackupFlag.PASSWORD),
-                'snapshot_required': bool(flag_value & BackupFlag.SNAPSHOT),
-                # flags=0 的旧备份用创建时的主密钥派生密钥，非密码也非快照，
-                # 一旦改密即无法恢复。UI 据此字段向用户提示风险。
-                'master_key_bound': flag_value == 0,
+                'password_required': flag_value == BackupFlag.PASSWORD,
+                'snapshot_required': flag_value == BackupFlag.SNAPSHOT,
             }
 
     def restore_backup(
@@ -312,21 +274,17 @@ class BackupRestoreManager:
         if len(flags_raw) != 1 or len(salt) != BACKUP_SALT_SIZE or len(iterations_raw) != 4:
             return False, '备份文件头已损坏'
         flags = struct.unpack('<B', flags_raw)[0]
-        if flags & ~(BackupFlag.PASSWORD | BackupFlag.SNAPSHOT):
-            return False, '备份文件格式无效或已损坏'
-        if flags == (BackupFlag.PASSWORD | BackupFlag.SNAPSHOT):
+        if flags not in (BackupFlag.PASSWORD, BackupFlag.SNAPSHOT):
             return False, '备份文件格式无效或已损坏'
         iterations = struct.unpack('<I', iterations_raw)[0]
-        if flags & BackupFlag.PASSWORD:
+        if flags == BackupFlag.PASSWORD:
             if not backup_password:
                 return False, '请输入创建备份时设置的备份密码'
             if not BACKUP_MIN_KDF_ITERATIONS <= iterations <= BACKUP_MAX_KDF_ITERATIONS:
                 return False, '备份密钥派生参数无效'
             backup_key = self._derive_backup_key(backup_password, salt, iterations)
-        elif flags & BackupFlag.SNAPSHOT:
-            backup_key = self._vault.snapshot_key
         else:
-            backup_key = hmac.new(self._key, b'cipherbox:backup-key-v1' + salt, hashlib.sha256).digest()
+            backup_key = self._vault.snapshot_key
 
         try:
             # 内存特征：峰值约 3 倍载荷大小
@@ -335,28 +293,9 @@ class BackupRestoreManager:
             encrypted = file.read(MAX_BACKUP_FILE_SIZE + 1)
             if len(encrypted) > MAX_BACKUP_FILE_SIZE:
                 return False, '备份文件过大'
-            try:
-                plaintext = EncryptionEngine.decrypt_bytes(
-                    encrypted, backup_key, BACKUP_AAD
-                )
-            except ValueError:
-                # 向后兼容：尝试旧版密钥派生（无域前缀）。
-                # 旧版密钥派生将在未来版本移除，建议用户重新创建备份。
-                if backup_password:
-                    logger.warning(
-                        "旧版密钥派生兼容模式（将在未来版本移除），"
-                        "建议使用当前版本重新创建备份"
-                    )
-                    with warnings.catch_warnings():
-                        warnings.simplefilter('ignore', DeprecationWarning)
-                        legacy_key = MasterKeyManager.derive_backup_key_legacy(
-                            backup_password, salt, iterations
-                        )
-                    plaintext = EncryptionEngine.decrypt_bytes(
-                        encrypted, legacy_key, BACKUP_AAD
-                    )
-                else:
-                    raise
+            plaintext = EncryptionEngine.decrypt_bytes(
+                encrypted, backup_key, BACKUP_AAD
+            )
             if len(plaintext) > MAX_BACKUP_PAYLOAD_SIZE:
                 return False, '备份解密数据过大'
             data = json.loads(plaintext.decode('utf-8'))
@@ -391,13 +330,10 @@ class BackupRestoreManager:
     def _validate_restore_data(data: dict):
         if data.get('format') != BACKUP_FORMAT:
             raise ValueError('备份格式标识无效')
-        # 版本检查：version=0 视为旧版（向后兼容），version>1 为未来格式（暂不支持）。
-        # 安全考量：v0 旧备份不含 version 字段，但其数据结构已通过后续校验
-        # （format 标识、entries/categories 类型检查、_validate_entries 结构验证），
-        # 因此放行是安全的。仅拒绝未知的新版本格式以防止数据误读。
-        version = data.get('version', 0)
-        if version > 1:
-            raise ValueError(f'不支持的备份格式版本：{version}（当前支持 v0/v1）')
+        # 版本检查：仅支持 v1 格式。
+        version = data['version']
+        if version != 1:
+            raise ValueError(f'不支持的备份格式版本：{version}（当前支持 v1）')
         entries = data.get('entries', [])
         categories = data.get('categories', [])
         history = data.get('password_history', [])

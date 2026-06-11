@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 
 from ...crypto.password_generator import PasswordGenerator
 from ...crypto.totp import TOTPGenerator
-from ...database.models import (
+from ...exceptions import DecryptionError, EntryIntegrityError, VaultLockedError
+from ...models import (
     ENTRY_TYPES,
     MAX_FIELD_NOTES,
     MAX_FIELD_PASSWORD,
@@ -34,10 +35,10 @@ from ...database.models import (
     PasswordHistory,
 )
 from ...utils.format import format_datetime
-from ..exceptions import DecryptionError, EntryIntegrityError, VaultLockedError
 from ..services.crypto_utils import (
     build_entry_summary,
     copy_entry_fields,
+    decrypt_entry_to_portable_dict,
     matches_search,
     require_vault_key,
 )
@@ -48,14 +49,6 @@ from ..services.crypto_utils import (
     encrypt_field as _encrypt_field_impl,
 )
 from ..services.crypto_utils import matches_tag as _matches_tag_impl
-
-_MAX_TITLE_LEN = MAX_FIELD_TITLE
-_MAX_USERNAME_LEN = MAX_FIELD_USERNAME
-_MAX_URL_LEN = MAX_FIELD_URL
-_MAX_PASSWORD_LEN = MAX_FIELD_PASSWORD
-_MAX_NOTES_LEN = MAX_FIELD_NOTES
-_MAX_TAGS_LEN = MAX_FIELD_TAGS
-_MAX_TOTP_SECRET_LEN = MAX_FIELD_TOTP_SECRET
 
 
 class EntryManager:
@@ -278,54 +271,9 @@ class EntryManager:
             raw_entry: 数据库层原始 Entry（custom_fields 为密文字符串）
             include_secrets: 是否包含密码和 TOTP 密钥等敏感字段
         """
-        try:
-            custom_json = self._decrypt_field(
-                raw_entry.custom_fields_db_value,
-                raw_entry.crypto_id, 'custom_fields',
-            )
-            try:
-                custom_fields = json.loads(custom_json) if custom_json else []
-            except json.JSONDecodeError:
-                return None
-            return {
-                'id': raw_entry.id,
-                'crypto_id': raw_entry.crypto_id,
-                'title': raw_entry.title,
-                'username': self._decrypt_field(
-                    raw_entry.username, raw_entry.crypto_id, 'username',
-                ),
-                'password': (
-                    self._decrypt_field(
-                        raw_entry.password, raw_entry.crypto_id, 'password',
-                    ) if include_secrets else ''
-                ),
-                'url': raw_entry.url,
-                'category_id': raw_entry.category_id,
-                'tags': raw_entry.tags,
-                'notes': self._decrypt_field(
-                    raw_entry.notes, raw_entry.crypto_id, 'notes',
-                ),
-                'custom_fields': custom_fields,
-                'totp_secret': (
-                    self._decrypt_field(
-                        raw_entry.totp_secret, raw_entry.crypto_id, 'totp_secret',
-                    ) if include_secrets else ''
-                ),
-                'password_strength': raw_entry.password_strength,
-                'entry_type': raw_entry.entry_type,
-                'is_favorite': raw_entry.is_favorite,
-                'is_deleted': raw_entry.is_deleted,
-                'created_at': raw_entry.created_at,
-                'updated_at': raw_entry.updated_at,
-                'deleted_at': raw_entry.deleted_at,
-                'password_changed_at': raw_entry.password_changed_at,
-            }
-        except (ValueError, DecryptionError):
-            logger.warning(
-                "decrypt_entry_to_dict 跳过损坏条目 crypto_id=%s",
-                raw_entry.crypto_id, exc_info=True,
-            )
-            return None
+        return decrypt_entry_to_portable_dict(
+            raw_entry, self._key, include_secrets=include_secrets,
+        )
 
     def decrypt_entry_for_export(
         self,
@@ -497,19 +445,11 @@ class EntryManager:
 
         if search:
             # 搜索路径：仅解密 username 用于匹配，复用会话内缓存避免重复解密。
-            # 解密失败的条目由 _cached_username 记录并缓存空串。
-            # 注意：此处的搜索逻辑与 crypto_utils.matches_search 逻辑一致
-            # title/username/url/tags 四字段大小写不敏感匹配，但不能直接调用
-            # matches_search，因为 raw 条目的 username 仍为密文，需要先通过
-            # _cached_username 解密。matches_search 仅适用于已解密的 Entry 对象。
-            kw = search.lower()
+            # 通过 username_override 将缓存值注入 matches_search，避免内联搜索逻辑。
             matched = []
             for raw in raw_entries:
                 username = self._cached_username(raw)
-                if (kw in (raw.title or '').lower()
-                        or kw in username.lower()
-                        or kw in (raw.url or '').lower()
-                        or kw in (raw.tags or '').lower()):
+                if matches_search(raw, search, username_override=username):
                     matched.append(self.decrypt_entry(raw))
             decrypted = matched
         else:
@@ -697,10 +637,10 @@ class EntryManager:
             if not isinstance(getattr(entry, field_name), str):
                 raise ValueError(f'条目字段 {field_name} 类型无效')
         field_limits = {
-            'title': _MAX_TITLE_LEN, 'username': _MAX_USERNAME_LEN,
-            'password': _MAX_PASSWORD_LEN, 'url': _MAX_URL_LEN,
-            'tags': _MAX_TAGS_LEN, 'notes': _MAX_NOTES_LEN,
-            'totp_secret': _MAX_TOTP_SECRET_LEN,
+            'title': MAX_FIELD_TITLE, 'username': MAX_FIELD_USERNAME,
+            'password': MAX_FIELD_PASSWORD, 'url': MAX_FIELD_URL,
+            'tags': MAX_FIELD_TAGS, 'notes': MAX_FIELD_NOTES,
+            'totp_secret': MAX_FIELD_TOTP_SECRET,
         }
         for field_name, max_len in field_limits.items():
             if len(getattr(entry, field_name)) > max_len:
@@ -708,6 +648,7 @@ class EntryManager:
         # 此方法仅用于 add_entry/update_entry 路径的明文条目校验。
         # custom_fields 必须为 list[CustomField]（已解密）。
         # DB 原始条目的 custom_fields 为 str 类型（密文），不经过此校验。
+        entry.assert_decrypted()
         if not isinstance(entry.custom_fields, list) or not all(
             isinstance(field, CustomField) for field in entry.custom_fields
         ):

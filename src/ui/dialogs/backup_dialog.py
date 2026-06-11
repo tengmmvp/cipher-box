@@ -41,7 +41,7 @@ class BackupDialog(QDialog):
         # 记录 worker 启动时的模式，避免 reject 时读取已切换的按钮状态
         self._worker_is_backup: bool = True
         self._selected_path: str | None = None
-        self._data_changed: bool = False
+        self.data_changed: bool = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -228,7 +228,7 @@ class BackupDialog(QDialog):
         self._release_worker()
         success, error_msg = result
         if success:
-            self._data_changed = True
+            self.data_changed = True
             self._status_label.setText(format_status(True, '备份创建成功'))
             self._status_label.setStyleSheet(f'color: {c("success")};')
             QMessageBox.information(self, '成功', f'备份已保存到：\n{self._path_label.text()}')
@@ -261,13 +261,6 @@ class BackupDialog(QDialog):
         except (OSError, ValueError) as exc:
             QMessageBox.critical(self, '错误', str(exc))
             return
-        # 旧版备份绑定创建时的主密码，改密后无法恢复
-        if info.get('master_key_bound'):
-            QMessageBox.warning(
-                self, '[!] 旧版备份格式',
-                '该备份使用旧版格式，绑定创建时的主密码。\n'
-                '若创建该备份后修改过主密码，将无法恢复。',
-            )
         password = None
         if info.get('password_required'):
             password, ok = QInputDialog.getText(
@@ -291,7 +284,7 @@ class BackupDialog(QDialog):
         self._release_worker()
         success, error_msg = result
         if success:
-            self._data_changed = True
+            self.data_changed = True
             self._status_label.setText(format_status(True, '恢复成功'))
             self._status_label.setStyleSheet(f'color: {c("success")};')
             QMessageBox.information(self, '成功', '备份恢复成功！')

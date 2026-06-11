@@ -1,7 +1,7 @@
 """搜索去重工具函数测试 — matches_search"""
 
 from src.business.services.crypto_utils import matches_search
-from src.database.models import Entry
+from src.models import Entry
 
 
 class TestMatchesSearch:

@@ -1,11 +1,10 @@
-"""数据库 schema 创建、迁移和验证。
+"""数据库 schema 创建与验证。
 
 从 DatabaseManager 拆分而来，职责单一：数据库表结构的初始化与校验。
-所有公共方法签名和返回值与原 DatabaseManager 完全一致，确保向后兼容。
+通过 DatabaseManager 委托提供统一数据访问接口。
 """
 
 import logging
-import sqlite3
 
 from ..exceptions import DatabaseError, SchemaError
 from ..utils.format import utc_now_iso
@@ -29,14 +28,14 @@ class SchemaManager:
 
     @property
     def _conn(self):
-        return self._mgr._conn
+        return self._mgr.connection
 
     @property
     def _lock(self):
-        return self._mgr._lock
+        return self._mgr.db_lock
 
     def _auto_commit(self):
-        return self._mgr._auto_commit()
+        return self._mgr.auto_commit()
 
     # ==================== Schema 管理 ====================
 
@@ -52,9 +51,9 @@ class SchemaManager:
         is_new_database = self._check_is_new_database(cursor)
         if not is_new_database:
             # 缓存 schema 验证：同一连接生命周期内仅验证一次
-            if not self._mgr._schema_validated:
+            if not self._mgr.schema_validated:
                 self._validate_current_schema(cursor)
-                self._mgr._schema_validated = True
+                self._mgr.schema_validated = True
             return
 
         cursor.executescript("""
@@ -129,13 +128,10 @@ class SchemaManager:
             ('开发', '[DEV]', '#00BCD4', 7),
         ]
         for name, icon, color, order in default_categories:
-            try:
-                cursor.execute(
-                    "INSERT OR IGNORE INTO categories (name, icon_char, color, sort_order, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (name, icon, color, order, utc_now_iso()),
-                )
-            except sqlite3.IntegrityError:
-                pass
+            cursor.execute(
+                "INSERT OR IGNORE INTO categories (name, icon_char, color, sort_order, created_at) VALUES (?, ?, ?, ?, ?)",
+                (name, icon, color, order, utc_now_iso()),
+            )
 
         cursor.execute(
             "INSERT INTO vault_meta (key, value) VALUES (?, ?)",

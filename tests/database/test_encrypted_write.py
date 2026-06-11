@@ -3,7 +3,7 @@
 import pytest
 
 from src.database.db_manager import DatabaseManager
-from src.database.models import Entry
+from src.models import Entry
 
 
 @pytest.fixture

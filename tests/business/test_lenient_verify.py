@@ -3,8 +3,8 @@ import pytest
 
 from src.business.managers.entry_manager import EntryManager
 from src.business.managers.vault_manager import VaultManager
-from src.database.models import Entry
 from src.exceptions import VaultIntegrityError
+from src.models import Entry
 
 
 class TestLenientVerify:

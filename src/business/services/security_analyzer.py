@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-from ...database.models import Entry
+from ...models import Entry
 from .crypto_utils import build_entry_summary, decrypt_field, require_vault_key
 
 

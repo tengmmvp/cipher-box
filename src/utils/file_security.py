@@ -5,10 +5,12 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 _SECURED_WINDOWS_OBJECTS: dict[str, tuple[int, int]] = {}
+_SECURED_LOCK = threading.Lock()
 _MAX_SECURED_CACHE = 256
 
 
@@ -49,10 +51,13 @@ def _restrict_windows_acl(path: Path, is_directory: bool):
         return
     cache_key = str(path.resolve())
     identity = _windows_object_identity(path)
-    if identity is not None and _SECURED_WINDOWS_OBJECTS.get(cache_key) == identity:
+    with _SECURED_LOCK:
+        cached = _SECURED_WINDOWS_OBJECTS.get(cache_key)
+    if identity is not None and cached == identity:
         return
-    if len(_SECURED_WINDOWS_OBJECTS) > _MAX_SECURED_CACHE:
-        _SECURED_WINDOWS_OBJECTS.clear()
+    with _SECURED_LOCK:
+        if len(_SECURED_WINDOWS_OBJECTS) > _MAX_SECURED_CACHE:
+            _SECURED_WINDOWS_OBJECTS.clear()
     permission = '(OI)(CI)F' if is_directory else 'F'
     common = {
         'capture_output': True,
@@ -75,7 +80,8 @@ def _restrict_windows_acl(path: Path, is_directory: bool):
         if inherit.returncode != 0:
             raise OSError(inherit.stderr.strip() or 'icacls inheritance failed')
         if identity is not None:
-            _SECURED_WINDOWS_OBJECTS[cache_key] = identity
+            with _SECURED_LOCK:
+                _SECURED_WINDOWS_OBJECTS[cache_key] = identity
     except (OSError, subprocess.TimeoutExpired):
         logger.warning('无法限制文件 ACL：%s', path, exc_info=True)
 

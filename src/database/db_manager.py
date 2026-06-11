@@ -11,8 +11,8 @@ CRUD 操作已委托给子 Repository：
 - ``categories`` → :class:`CategoryRepository`
 - ``schema`` → :class:`SchemaManager`
 
-为保持向后兼容，DatabaseManager 保留了所有原始公共方法名作为委托调用，
-现有代码无需修改即可正常工作。
+DatabaseManager 作为统一数据访问入口，将所有公共方法委托给子 Repository，
+为调用方提供简化的单一接口。
 """
 
 import logging
@@ -25,11 +25,11 @@ from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 
 from ..exceptions import DatabaseError, TransactionError
+from ..models import MAX_PASSWORD_HISTORY, Category, Entry, PasswordHistory
 from ..utils.file_security import secure_directory, secure_file
 from ._decorators import _db_operation
 from .category_repository import CategoryRepository
 from .entry_repository import EntryRepository
-from .models import Category, Entry, PasswordHistory
 from .schema_manager import SchemaManager
 
 logger = logging.getLogger(__name__)
@@ -49,14 +49,14 @@ class EntryVerifier(Protocol):
 class DatabaseManager:
     """SQLite 数据库管理器
 
-    通过 ``entries`` / ``categories`` / ``schema`` 属性访问子 Repository。
-    原始公共方法名保留为委托调用，确保向后兼容。
+    通过 ``entries`` / ``categories`` / ``schema`` 属性访问子 Repository，
+    也可直接通过 DatabaseManager 上的委托方法调用。
     """
 
     SCHEMA_FORMAT = SchemaManager.SCHEMA_FORMAT
-    MAX_PASSWORD_HISTORY = EntryRepository.MAX_PASSWORD_HISTORY
+    MAX_PASSWORD_HISTORY = MAX_PASSWORD_HISTORY
 
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, *, test_mode: bool = False):
         self._db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None
         self._lock = threading.RLock()
@@ -67,9 +67,9 @@ class DatabaseManager:
         self._entry_verifier: EntryVerifier | None = None
         self._last_secure_ts: float = 0.0
         self._schema_validated: bool = False
-        # 实例级加密断言开关。使用固定值，测试只能通过修改实例属性来关闭，
-        # 不会影响同进程其他实例。
-        self._enforce_encrypted_fields: bool = True
+        # 实例级加密断言开关。test_mode 下自动关闭，允许测试直接写入明文。
+        # 生产环境保持 True，确保密文前缀断言生效。
+        self._enforce_encrypted_fields: bool = not test_mode
 
         # 子 Repository
         self._entry_repo = EntryRepository(self)
@@ -89,6 +89,48 @@ class DatabaseManager:
     @property
     def schema(self) -> SchemaManager:
         return self._schema_mgr
+
+    # ==================== 子 Repository 公共访问接口 ====================
+    # 替代 Repository 中的 _mgr._conn / _mgr._lock 等私有属性访问。
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        """数据库连接（供 Repository 使用）。"""
+        return self._conn
+
+    @property
+    def db_lock(self) -> threading.RLock:
+        """线程安全锁（供 Repository 使用）。"""
+        return self._lock
+
+    @property
+    def entry_verifier(self):
+        """条目元数据校验函数。"""
+        return self._entry_verifier
+
+    @property
+    def schema_validated(self) -> bool:
+        return self._schema_validated
+
+    @schema_validated.setter
+    def schema_validated(self, value: bool) -> None:
+        self._schema_validated = value
+
+    def guard_write(self) -> None:
+        """写入前校验（公共接口）。"""
+        self._guard_write()
+
+    def auto_commit(self) -> None:
+        """非事务模式下自动提交（公共接口）。"""
+        self._auto_commit()
+
+    def sign_entry(self, entry: Entry) -> str:
+        """条目元数据签名（公共接口）。"""
+        return self._sign_entry(entry)
+
+    def assert_encrypted(self, value: str, field_name: str) -> None:
+        """断言加密字段的值格式正确（公共接口）。"""
+        self._assert_encrypted(value, field_name)
 
     def set_write_guard(self, guard: Callable[[], None]) -> None:
         """设置写入前校验，用于阻止过期密钥会话继续写库。"""
@@ -318,7 +360,7 @@ class DatabaseManager:
         """防御性断言：加密列的值应为密文，以 cb: 前缀，或空字符串。
 
         防止绕过 EntryManager 直接调用 db.add_entry/update_entry 时
-        明文静默写入加密列。空值允许通过，兼容旧版及未填写字段。
+        明文静默写入加密列。空值允许通过，未填写字段存储为空字符串。
         读取实例级 _enforce_encrypted_fields，避免测试覆写泄漏到其他实例。
         """
         if self._enforce_encrypted_fields and value and not value.startswith('cb:'):
@@ -332,9 +374,8 @@ class DatabaseManager:
             return self._entry_signer(entry)
         return entry.metadata_mac
 
-    # ==================== 向后兼容委托 ====================
-    # 保留 DatabaseManager 上的所有原始公共方法名，
-    # 委托给对应的子 Repository，确保现有调用方无需修改。
+    # ==================== 委托方法 ====================
+    # DatabaseManager 作为统一数据访问入口，将所有公共方法委托给子 Repository。
 
     # -- Schema --
 
@@ -459,9 +500,6 @@ class DatabaseManager:
 
     def get_password_history_count(self, entry_id: int) -> int:
         return self._entry_repo.get_password_history_count(entry_id)
-
-    def update_password_history_ciphertext(self, history_id: int, ciphertext: str) -> None:
-        return self._entry_repo.update_password_history_ciphertext(history_id, ciphertext)
 
     def update_password_history_batch(self, rows: list[tuple]) -> None:
         return self._entry_repo.update_password_history_batch(rows)

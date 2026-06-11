@@ -6,13 +6,27 @@
 """
 
 import logging
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, Protocol, runtime_checkable
 
 from ...exceptions import DecryptionError
 from .crypto_utils import decrypt_field as _decrypt_field_impl
 from .crypto_utils import encrypt_field as _encrypt_field_impl
 
+if TYPE_CHECKING:
+    from .metadata_signer import MetadataSigner
+
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class KeyRotationDB(Protocol):
+    """KeyRotationService 所需的数据库接口协议。"""
+
+    def get_entries(self, *, include_deleted: bool, limit: int, after_id: int) -> list: ...
+    def update_entries_batch(self, rows: list) -> None: ...
+    def get_all_password_history_batch(self, after_id: int, limit: int) -> list: ...
+    def update_password_history_batch(self, rows: list) -> None: ...
+
 
 _RE_ENCRYPT_BATCH_SIZE = 200
 _ENCRYPTED_ENTRY_FIELDS = ('username', 'password', 'notes', 'totp_secret', 'custom_fields')
@@ -59,7 +73,7 @@ class KeyRotationService:
     调用方 VaultManager._re_encrypt_all 负责事务包裹和密钥轮换。
     """
 
-    def __init__(self, db, metadata_signer):
+    def __init__(self, db: 'KeyRotationDB', metadata_signer: 'MetadataSigner'):
         """初始化重加密服务。
 
         Args:
@@ -69,7 +83,8 @@ class KeyRotationService:
         self._db = db
         self._signer = metadata_signer
 
-    def re_encrypt_entries(self, old_key: bytes, new_key: bytes):
+    def re_encrypt_entries(self, old_key: bytes, new_key: bytes, *,
+                           cancel_event=None):
         """分批重新加密所有条目的敏感字段。
 
         逐字段解密→加密，减少同时驻留内存的明文数量。
@@ -80,11 +95,16 @@ class KeyRotationService:
 
         每批收集所有更新行，通过 executemany 一次性写入，将 N 次单独
         UPDATE 减少为 N/200 次 executemany 调用。
+
+        Args:
+            cancel_event: 可选的 threading.Event，设置时提前终止循环。
         """
         # 预计算域密钥，避免每条条目重复 HMAC 派生，每批 200 条可省 200 次 HMAC
         precomputed_domain_key = self._signer.compute_domain_key(new_key)
         last_id = 0
         while True:
+            if cancel_event is not None and cancel_event.is_set():
+                return
             batch = self._db.get_entries(
                 include_deleted=True, limit=_RE_ENCRYPT_BATCH_SIZE,
                 after_id=last_id,
@@ -133,7 +153,8 @@ class KeyRotationService:
             self._db.update_entries_batch(rows)
             del batch, rows
 
-    def re_encrypt_history(self, old_key: bytes, new_key: bytes):
+    def re_encrypt_history(self, old_key: bytes, new_key: bytes, *,
+                           cancel_event=None):
         """分批重新加密密码历史记录。
 
         密码历史分批拉取，使用游标分页与条目批处理对齐，
@@ -141,9 +162,14 @@ class KeyRotationService:
 
         每批收集所有更新行，通过 update_password_history_batch 一次性写入，
         将 N 次单独 UPDATE 合并为 N/200 次 executemany 调用。
+
+        Args:
+            cancel_event: 可选的 threading.Event，设置时提前终止循环。
         """
         last_history_id = 0
         while True:
+            if cancel_event is not None and cancel_event.is_set():
+                return
             history_batch = self._db.get_all_password_history_batch(
                 last_history_id, _RE_ENCRYPT_BATCH_SIZE
             )

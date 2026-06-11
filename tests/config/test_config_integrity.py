@@ -1,10 +1,7 @@
 """测试配置文件 HMAC 完整性签名与篡改检测。"""
 
-import json
-
 import pytest
 
-from src.config import DEFAULT_CONFIG
 from tests.helpers import make_test_config
 
 
@@ -48,15 +45,6 @@ class TestConfigIntegrity:
         config2.load()
 
         assert config2.check_integrity() is False
-
-    def test_missing_signature_no_warning(self, config):
-        """旧格式文件无签名行，不触发完整性警告。"""
-        # 写入无签名的 JSON
-        raw_json = json.dumps(dict(DEFAULT_CONFIG))
-        config._config_path.write_text(raw_json, encoding='utf-8')
-
-        config.load()
-        assert config.check_integrity() is True  # 无签名=旧格式，不算篡改
 
     def test_atomic_write_uses_tmp(self, config):
         """save() 使用 .json.tmp 中间文件再 os.replace。"""

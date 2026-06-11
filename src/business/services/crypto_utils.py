@@ -2,6 +2,7 @@
 
 import copy
 import dataclasses
+import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -9,8 +10,8 @@ if TYPE_CHECKING:
     from ..managers.vault_manager import VaultManager
 
 from ...crypto.encryption import EncryptionEngine
-from ...database.models import Entry
-from ..exceptions import VaultLockedError
+from ...exceptions import DecryptionError, VaultLockedError
+from ...models import Entry
 
 logger = logging.getLogger(__name__)
 
@@ -78,13 +79,21 @@ def decrypt_field(
         return ''
 
 
-def matches_search(entry: Entry, query: str) -> bool:
-    """检查条目是否匹配搜索关键词，大小写不敏感，搜索 title/username/url/tags"""
+def matches_search(entry: Entry, query: str, *, username_override: str | None = None) -> bool:
+    """检查条目是否匹配搜索关键词，大小写不敏感，搜索 title/username/url/tags。
+
+    Args:
+        entry: 待匹配条目。
+        query: 搜索关键词，空字符串匹配所有条目。
+        username_override: 若提供，替代 entry.username 用于搜索。
+            用于原始条目 username 仍为密文时传入缓存解密值。
+    """
     if not query:
         return True
     kw = query.lower()
+    username = username_override if username_override is not None else (entry.username or '')
     return (kw in (entry.title or '').lower()
-            or kw in (entry.username or '').lower()
+            or kw in username.lower()
             or kw in (entry.url or '').lower()
             or kw in (entry.tags or '').lower())
 
@@ -135,3 +144,72 @@ def build_entry_summary(raw: Entry, username: str = '') -> Entry:
         custom_fields='',
         totp_secret='',
     )
+
+
+def decrypt_entry_to_portable_dict(
+    raw_entry: Entry,
+    key: bytes,
+    *,
+    include_secrets: bool = True,
+) -> dict | None:
+    """将原始 Entry 解密为明文字典（容错版本）。
+
+    供备份、导出等需要跳过损坏条目继续处理的场景使用。
+    单条目解密失败时返回 None。
+
+    EntryManager.decrypt_entry_to_dict() 和
+    BackupRestoreManager._collect_portable_data() 共享此逻辑。
+
+    Args:
+        raw_entry: 数据库层原始 Entry（加密字段为密文字符串）。
+        key: AES-256 密钥。
+        include_secrets: 是否包含密码和 TOTP 密钥等敏感字段。
+    """
+    try:
+        custom_json = decrypt_field(
+            raw_entry.custom_fields_db_value,
+            key, raw_entry.crypto_id, 'custom_fields',
+        )
+        try:
+            custom_fields = json.loads(custom_json) if custom_json else []
+        except json.JSONDecodeError:
+            return None
+        return {
+            'id': raw_entry.id,
+            'crypto_id': raw_entry.crypto_id,
+            'title': raw_entry.title,
+            'username': decrypt_field(
+                raw_entry.username, key, raw_entry.crypto_id, 'username',
+            ),
+            'password': (
+                decrypt_field(
+                    raw_entry.password, key, raw_entry.crypto_id, 'password',
+                ) if include_secrets else ''
+            ),
+            'url': raw_entry.url,
+            'category_id': raw_entry.category_id,
+            'tags': raw_entry.tags,
+            'notes': decrypt_field(
+                raw_entry.notes, key, raw_entry.crypto_id, 'notes',
+            ),
+            'custom_fields': custom_fields,
+            'totp_secret': (
+                decrypt_field(
+                    raw_entry.totp_secret, key, raw_entry.crypto_id, 'totp_secret',
+                ) if include_secrets else ''
+            ),
+            'password_strength': raw_entry.password_strength,
+            'entry_type': raw_entry.entry_type,
+            'is_favorite': raw_entry.is_favorite,
+            'is_deleted': raw_entry.is_deleted,
+            'created_at': raw_entry.created_at,
+            'updated_at': raw_entry.updated_at,
+            'deleted_at': raw_entry.deleted_at,
+            'password_changed_at': raw_entry.password_changed_at,
+        }
+    except (ValueError, DecryptionError):
+        logger.warning(
+            "decrypt_entry_to_portable_dict 跳过损坏条目 crypto_id=%s",
+            raw_entry.crypto_id, exc_info=True,
+        )
+        return None

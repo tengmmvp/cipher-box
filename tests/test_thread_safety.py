@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from src.database.db_manager import DatabaseManager
-from src.database.models import Category, Entry
+from src.models import Category, Entry
 
 
 @pytest.mark.usefixtures('_disable_encrypted_assertions')

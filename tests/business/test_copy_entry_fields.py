@@ -1,7 +1,7 @@
 """copy_entry_fields 和 build_entry_summary 工具函数测试"""
 
 from src.business.services.crypto_utils import build_entry_summary, copy_entry_fields
-from src.database.models import Entry
+from src.models import Entry
 
 
 # TODO: 迁移到 conftest.py make_entry fixture（本函数设置了更多字段默认值如 id/时间戳）

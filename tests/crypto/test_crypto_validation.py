@@ -46,10 +46,10 @@ class TestEncryptionValidation:
         with pytest.raises(ValueError):
             EncryptionEngine.decrypt("cb:abc", "not bytes", "aad")  # type: ignore[arg-type]
 
-    def test_decrypt_empty_string_returns_empty(self):
-        """空密文直接返回空字符串。"""
-        result = EncryptionEngine.decrypt("", b'\x00' * 32, "aad")
-        assert result == ''
+    def test_decrypt_empty_string_raises(self):
+        """空密文是非法输入，应抛出 ValueError。"""
+        with pytest.raises(ValueError):
+            EncryptionEngine.decrypt("", b'\x00' * 32, "aad")
 
     def test_decrypt_generic_error_message(self):
         """解密失败时不泄露内部异常信息（如 MAC/tag）。"""

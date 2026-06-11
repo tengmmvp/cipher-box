@@ -265,7 +265,7 @@ class _MainWindowMenuMixin(QMainWindow):
         dialog = BackupDialog(self._backup, self, config=self._config)
         dialog.exec()
         # 仅在对话框实际执行了备份/恢复操作时才全量刷新
-        if dialog._data_changed:
+        if dialog.data_changed:
             self._refresh_all_data()
             self._detail_panel.show_empty()
 

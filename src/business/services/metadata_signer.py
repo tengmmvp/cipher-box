@@ -90,16 +90,6 @@ class MetadataSigner:
     def verify(self, entry, key: bytes | None = None) -> None:
         """验证条目元数据完整性签名。
 
-        签名格式迁移策略：
-          - 新格式（v3+）：payload 包含加密字段哈希（``_enc_hash``），
-            由 ``sign`` 默认生成。
-          - 旧格式（v2）：payload 不含 ``_enc_hash``，由
-            ``_payload(entry, include_enc_hash=False)`` 生成。
-
-        验证时先尝试新格式，失败后回退旧格式。旧签名条目在下次写入时
-        由 ``sign`` 自动升级为新格式签名，无需显式迁移。
-        两种格式均不匹配则抛出 VaultIntegrityError。
-
         Args:
             entry: 条目对象。
             key: 可选的显式密钥。
@@ -110,34 +100,16 @@ class MetadataSigner:
         """
         if not entry.metadata_mac:
             raise VaultIntegrityError(f'条目 {entry.id} 缺少元数据完整性签名')
-        # 先尝试新格式，含加密字段哈希，失败后回退旧格式，自迁移策略
-        expected_new = self.sign(entry, key=key)
-        if hmac.compare_digest(entry.metadata_mac, expected_new):
-            return
-        # 回退旧格式，不含 _enc_hash，兼容已有条目
-        domain_key = self._domain_key
-        if domain_key is None:
-            if key is None:
-                raise VaultLockedError('保险库未解锁')
-            domain_key = self.compute_domain_key(key)
-        expected_old = hmac.new(
-            domain_key,
-            self._payload(entry, include_enc_hash=False),
-            hashlib.sha256,
-        ).hexdigest()
-        if hmac.compare_digest(entry.metadata_mac, expected_old):
-            logger.debug("条目 %s 签名使用旧格式，下次写入时自动升级", entry.id)
-            return
-        raise VaultIntegrityError(f'条目 {entry.id} 元数据完整性校验失败')
+        expected = self.sign(entry, key=key)
+        if not hmac.compare_digest(entry.metadata_mac, expected):
+            raise VaultIntegrityError(f'条目 {entry.id} 元数据完整性校验失败')
 
     @staticmethod
-    def _payload(entry, *, include_enc_hash: bool = True) -> bytes:
+    def _payload(entry) -> bytes:
         """构造签名载荷。
 
         Args:
             entry: 条目对象。
-            include_enc_hash: 是否包含加密字段密文的 SHA-256 哈希，
-                v3+ 签名包含，默认 True，v2 兼容验证不含。
 
         Returns:
             UTF-8 编码的 JSON 字节串。
@@ -157,13 +129,12 @@ class MetadataSigner:
             'deleted_at': entry.deleted_at,
             'password_changed_at': entry.password_changed_at,
         }
-        if include_enc_hash:
-            # 绑定加密字段密文到签名，防止密文置换或回滚攻击
-            enc_concat = '|'.join([
-                entry.username, entry.password, entry.notes,
-                entry.totp_secret, entry.custom_fields_db_value,
-            ])
-            data['_enc_hash'] = hashlib.sha256(enc_concat.encode('utf-8')).hexdigest()
+        # 绑定加密字段密文到签名，防止密文置换或回滚攻击
+        enc_concat = '|'.join([
+            entry.username, entry.password, entry.notes,
+            entry.totp_secret, entry.custom_fields_db_value,
+        ])
+        data['_enc_hash'] = hashlib.sha256(enc_concat.encode('utf-8')).hexdigest()
         return json.dumps(
             data,
             ensure_ascii=False,

@@ -13,7 +13,8 @@ from ...utils.format import utc_now_iso
 if TYPE_CHECKING:
     from .entry_manager import EntryManager
 
-from ...database.models import (
+from ...exceptions import EntryError
+from ...models import (
     ENTRY_TYPE_CARD,
     ENTRY_TYPE_IDENTITY,
     ENTRY_TYPE_NOTE,
@@ -22,7 +23,6 @@ from ...database.models import (
     Entry,
 )
 from ...utils.file_security import secure_file, validate_file_path
-from ..exceptions import EntryError
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ def _transactional_import(method):
             raise ValueError(
                 '文件编码不支持：请确保 CSV 文件使用 UTF-8 编码保存。'
                 '若文件来自其他密码管理器，请先以 UTF-8 编码重新保存。'
-            ) from None
+            ) from None  # 有意隐藏 UnicodeDecodeError，替换消息已自足
     return wrapper
 
 

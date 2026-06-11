@@ -38,6 +38,8 @@ from ..components.entry_list_widget import EntryItemDelegate
 from ..components.toast import Toast
 from ..components.tray_icon import TrayIcon
 from ..components.workers import BackgroundWorker
+from ..controllers.entry_list_controller import EntryListController
+from ..controllers.sidebar_controller import SidebarController
 from ..resources.constants import (
     CLIPBOARD_CLEAR_SECONDS_DEFAULT,
     FILTER_MAX_HEIGHT,
@@ -100,6 +102,8 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._vault = vault
         self._entry_mgr = EntryManager(vault)
         self._security = SecurityAnalyzer(vault, entry_manager=self._entry_mgr)
+        self._entry_list_ctrl = EntryListController(self._entry_mgr, self._security, config)
+        self._sidebar_ctrl = SidebarController(self._entry_mgr, config)
         self._import_export = ImportExportManager(self._entry_mgr)
         self._backup = BackupRestoreManager(vault)
         self._clipboard = ClipboardManager(config.get_safe('clipboard_clear_seconds', CLIPBOARD_CLEAR_SECONDS_DEFAULT))

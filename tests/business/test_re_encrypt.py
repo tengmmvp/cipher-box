@@ -7,7 +7,7 @@ import pytest
 
 from src.business.managers.entry_manager import EntryManager
 from src.business.managers.vault_manager import VaultManager
-from src.database.models import CustomField, Entry
+from src.models import CustomField, Entry
 
 
 class TestReEncryptEdgeCases:

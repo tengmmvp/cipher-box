@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from src.business.services.security_analyzer import SecurityAnalyzer
-from src.database.models import Entry
+from src.models import Entry
 
 
 class TestSecurityAnalyzerSkipCorrupt:

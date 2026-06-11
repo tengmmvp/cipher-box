@@ -1,7 +1,7 @@
 """条目数据访问层 — 条目 CRUD、批量操作、密码历史。
 
 从 DatabaseManager 拆分而来，职责单一：条目及密码历史表的增删改查。
-所有公共方法签名和返回值与原 DatabaseManager 完全一致，确保向后兼容。
+通过 DatabaseManager 委托提供统一数据访问接口。
 """
 
 import logging
@@ -10,9 +10,9 @@ import uuid
 from typing import Optional
 
 from ..exceptions import VaultError
+from ..models import MAX_PASSWORD_HISTORY, Entry, PasswordHistory
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation
-from .models import Entry, PasswordHistory
 from .types import VerifyMode
 
 logger = logging.getLogger(__name__)
@@ -27,9 +27,13 @@ _ENTRY_COLUMNS = [
     'totp_secret_enc', 'created_at', 'updated_at', 'deleted_at',
     'password_changed_at', 'metadata_mac',
 ]
-_ENTRY_SIGN_COLUMNS = ', '.join(['id'] + _ENTRY_COLUMNS)
-# 预计算签名查询 SQL，避免每次调用时重新求值 f-string
-_SELECT_ENTRY_SIGN_SQL = f"SELECT {_ENTRY_SIGN_COLUMNS} FROM entries WHERE id=?"
+# 预计算签名查询 SQL，使用 LEFT JOIN 提供与其他查询一致的列（含 category_name），
+# 避免在 _row_to_entry 中对缺失列做特殊处理。
+_SELECT_ENTRY_SIGN_SQL = (
+    f"SELECT {', '.join(['e.id'] + [f'e.{c}' for c in _ENTRY_COLUMNS])}, "
+    "c.name as category_name "
+    "FROM entries e LEFT JOIN categories c ON e.category_id = c.id WHERE e.id=?"
+)
 
 # 批量更新 SQL，列顺序与 update_entry 的 SET 子句完全一致。
 _RE_ENCRYPT_BATCH_UPDATE_SQL = """UPDATE entries SET
@@ -47,8 +51,6 @@ class EntryRepository:
     通常为 DatabaseManager 实例。
     """
 
-    MAX_PASSWORD_HISTORY = 10  # 与 src.models.MAX_PASSWORD_HISTORY 保持同步
-
     def __init__(self, conn_provider):
         # conn_provider 可以是返回 sqlite3.Connection 的可调用对象，
         # 也可以直接是持有 _conn / _lock / transaction / _auto_commit /
@@ -60,20 +62,20 @@ class EntryRepository:
 
     @property
     def _conn(self):
-        return self._mgr._conn
+        return self._mgr.connection
 
     @property
     def _lock(self):
-        return self._mgr._lock
+        return self._mgr.db_lock
 
     def _guard_write(self):
-        return self._mgr._guard_write()
+        return self._mgr.guard_write()
 
     def _auto_commit(self):
-        return self._mgr._auto_commit()
+        return self._mgr.auto_commit()
 
     def _sign_entry(self, entry: Entry) -> str:
-        return self._mgr._sign_entry(entry)
+        return self._mgr.sign_entry(entry)
 
     @property
     def in_transaction(self) -> bool:
@@ -89,7 +91,7 @@ class EntryRepository:
 
     def _assert_encrypted(self, value: str, field_name: str) -> None:
         """防御性断言：加密列的值应为密文，以 cb: 前缀，或空字符串。"""
-        self._mgr._assert_encrypted(value, field_name)
+        self._mgr.assert_encrypted(value, field_name)
 
     # ==================== 条目 ====================
 
@@ -391,7 +393,7 @@ class EntryRepository:
             "  SELECT id FROM password_history WHERE entry_id = ?"
             "  ORDER BY changed_at DESC LIMIT ?"
             ")",
-            (entry_id, entry_id, self.MAX_PASSWORD_HISTORY),
+            (entry_id, entry_id, MAX_PASSWORD_HISTORY),
         )
         self._auto_commit()
 
@@ -429,7 +431,7 @@ class EntryRepository:
             "  SELECT id FROM password_history WHERE entry_id = ?"
             "  ORDER BY changed_at DESC LIMIT ?"
             ")",
-            (entry_id, entry_id, self.MAX_PASSWORD_HISTORY),
+            (entry_id, entry_id, MAX_PASSWORD_HISTORY),
         )
         self._auto_commit()
 
@@ -482,16 +484,6 @@ class EntryRepository:
         return row[0] if row else 0
 
     @_db_operation
-    def update_password_history_ciphertext(self, history_id: int, ciphertext: str) -> None:
-        """更新密码历史密文，不改变历史时间。"""
-        self._guard_write()
-        self._conn.execute(
-            "UPDATE password_history SET old_password_enc=? WHERE id=?",
-            (ciphertext, history_id),
-        )
-        self._auto_commit()
-
-    @_db_operation
     def update_password_history_batch(self, rows: list) -> None:
         """批量更新密码历史记录的密文。
 
@@ -542,7 +534,7 @@ class EntryRepository:
             password=row['password_enc'],
             url=row['url'] or '',
             category_id=row['category_id'],
-            category_name=row['category_name'] if 'category_name' in row.keys() else '',
+            category_name=row['category_name'],
             tags=row['tags'] or '',
             notes=row['notes_enc'],
             custom_fields_enc=row['custom_fields_enc'] or '',
@@ -558,7 +550,7 @@ class EntryRepository:
             password_changed_at=row['password_changed_at'] or '',
             metadata_mac=row['metadata_mac'] or '',
         )
-        verifier = self._mgr._entry_verifier
+        verifier = self._mgr.entry_verifier
         if verifier and verify != VerifyMode.SKIP:
             try:
                 verifier(entry)

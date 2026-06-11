@@ -1,16 +1,16 @@
 """分类数据访问层 — 分类 CRUD 及条目统计。
 
 从 DatabaseManager 拆分而来，职责单一：categories 表的增删改查。
-所有公共方法签名和返回值与原 DatabaseManager 完全一致，确保向后兼容。
+通过 DatabaseManager 委托提供统一数据访问接口。
 """
 
 import logging
 import sqlite3
 from typing import Optional
 
+from ..models import Category, Entry
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation
-from .models import Category, Entry
 
 logger = logging.getLogger(__name__)
 
@@ -29,20 +29,20 @@ class CategoryRepository:
 
     @property
     def _conn(self):
-        return self._mgr._conn
+        return self._mgr.connection
 
     @property
     def _lock(self):
-        return self._mgr._lock
+        return self._mgr.db_lock
 
     def _guard_write(self):
-        return self._mgr._guard_write()
+        return self._mgr.guard_write()
 
     def _auto_commit(self):
-        return self._mgr._auto_commit()
+        return self._mgr.auto_commit()
 
     def _sign_entry(self, entry: Entry) -> str:
-        return self._mgr._sign_entry(entry)
+        return self._mgr.sign_entry(entry)
 
     def transaction(self):
         return self._mgr.transaction()

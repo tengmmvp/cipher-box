@@ -14,7 +14,7 @@ from src.business.managers.entry_manager import EntryManager
 from src.business.managers.import_export import ImportExportManager
 from src.business.managers.vault_manager import VaultManager
 from src.crypto.totp import TOTPGenerator
-from src.database.models import CustomField, Entry
+from src.models import CustomField, Entry
 from src.ui.dialogs.entry_dialog import EntryDialog
 from src.ui.dialogs.login_window import LoginWindow
 from src.ui.resources.styles import get_style

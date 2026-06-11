@@ -1,7 +1,6 @@
 """保险库管理器 - 高层保险库操作"""
 
 import base64
-import ctypes
 import gc
 import logging
 import os
@@ -17,7 +16,7 @@ from ...crypto.encryption import EncryptionEngine
 from ...crypto.master_key import PBKDF2_ITERATIONS, MasterKeyManager
 from ...crypto.password_generator import PasswordGenerator
 from ...database.db_manager import DatabaseManager
-from ..exceptions import (
+from ...exceptions import (
     CipherBoxError,
     DatabaseError,
     VaultAlreadyInitializedError,
@@ -26,6 +25,7 @@ from ..exceptions import (
     VaultKeyEpochMismatchError,
     VaultLockedError,
 )
+from ...utils.memory import secure_zero_buffer
 from ..services.key_rotation import KeyRotationService
 from ..services.metadata_signer import MetadataSigner
 
@@ -65,6 +65,7 @@ class VaultManager:
         self._lock = threading.RLock()  # 保护改密和重加密等关键写操作串行化
         self._db_initialized = False  # 缓存标志，避免 is_initialized 重复打开数据库
         self._on_lock_callbacks: list = []
+        self._cancel_event = threading.Event()  # close() 时设置，通知长时间操作提前终止
 
     def register_on_lock(self, callback):
         """注册锁定时自动调用的回调（用于清除缓存等）。"""
@@ -253,6 +254,9 @@ class VaultManager:
             self._load_snapshot_key(meta.get('snapshot_key_enc'))
             logger.info("解锁完成 (%.1fms)", (time.monotonic() - t0) * 1000)
             return True, ''
+        except CipherBoxError:
+            self.lock()
+            raise
         except Exception as exc:
             self.lock()
             msg = str(exc) or '保险库无法解锁'
@@ -270,27 +274,11 @@ class VaultManager:
             for attr in ('_key', '_snapshot_key'):
                 secret = getattr(self, attr, None)
                 if secret is not None:
-                    try:
-                        mutable = bytearray(secret)
-                        ctypes.memset(
-                            (ctypes.c_char * len(mutable)).from_buffer(mutable),
-                            0, len(mutable),
-                        )
-                        del mutable
-                    except Exception:
-                        logger.warning("密钥内存清零失败", exc_info=True)
+                    secure_zero_buffer(secret)
             # 清零 MetadataSigner 中的域密钥
             dk = self._signer.domain_key
             if dk is not None:
-                try:
-                    mutable = bytearray(dk)
-                    ctypes.memset(
-                        (ctypes.c_char * len(mutable)).from_buffer(mutable),
-                        0, len(mutable),
-                    )
-                    del mutable
-                except Exception:
-                    logger.warning("域密钥内存清零失败", exc_info=True)
+                secure_zero_buffer(dk)
         except Exception:
             logger.warning("密钥清零初始化失败", exc_info=True)
         self._key = None
@@ -310,7 +298,7 @@ class VaultManager:
 
         安全注意事项：
         Python bytes 对象不可变，无法可靠地原地清零密钥数据。
-        本方法将每个密钥转为 bytearray 可变副本并通过 ctypes.memset 清零该副本，
+        本方法通过 secure_zero_buffer 尽力清零密钥材料的可变副本，
         以缩短密钥数据在内存中的生命周期。但原始 bytes 对象仍依赖 GC 回收，
         在 GC 回收前可能仍驻留在进程内存中。这是 CPython 的固有局限。
         """
@@ -410,8 +398,8 @@ class VaultManager:
 
         try:
             t0 = time.monotonic()
-            self._rotator.re_encrypt_entries(old_key, new_key)
-            self._rotator.re_encrypt_history(old_key, new_key)
+            self._rotator.re_encrypt_entries(old_key, new_key, cancel_event=self._cancel_event)
+            self._rotator.re_encrypt_history(old_key, new_key, cancel_event=self._cancel_event)
             self._update_vault_metadata(new_key, new_salt, new_verify_token, new_epoch)
 
             # 先提交事务再更新内存密钥
@@ -486,6 +474,12 @@ class VaultManager:
             raise VaultIntegrityError('自动快照密钥损坏')
 
     def close(self):
-        """关闭保险库"""
+        """关闭保险库。
+
+        设置取消事件通知正在进行的密钥轮换等长时间操作提前终止，
+        然后锁定保险库并关闭数据库连接。
+        """
+        self._cancel_event.set()
         self.lock()
         self._db.close()
+        self._cancel_event.clear()

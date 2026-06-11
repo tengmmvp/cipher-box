@@ -20,6 +20,8 @@ from ..components.empty_state_widget import EmptyStateWidget
 from ..components.entry_list_widget import EntryItemDelegate
 from ..components.toast import Toast
 from ..components.workers import BackgroundWorker
+from ..controllers.entry_list_controller import EntryListController
+from ..controllers.sidebar_controller import SidebarController
 from ..dialogs.category_dialog import CategoryDialog
 from ..dialogs.entry_dialog import EntryDialog
 from ..resources.constants import (
@@ -65,6 +67,8 @@ if TYPE_CHECKING:
     from ...config import ConfigManager
     from ...utils.clipboard import ClipboardManager
     from ..components.detail_panel import DetailPanel
+    from ..controllers.entry_list_controller import EntryListController as _EntryListController
+    from ..controllers.sidebar_controller import SidebarController as _SidebarController
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +90,8 @@ class _MainWindowFiltersMixin(QMainWindow):
     _security: SecurityAnalyzer
     _clipboard: ClipboardManager
     _detail_panel: DetailPanel
+    _entry_list_ctrl: _EntryListController
+    _sidebar_ctrl: _SidebarController
     _status_bar: QStatusBar
     _warning_label: QLabel
     _stats_label: QLabel
@@ -128,11 +134,7 @@ class _MainWindowFiltersMixin(QMainWindow):
 
     def _get_sort_config(self) -> tuple[str, str]:
         """获取当前排序字段和方向"""
-        idx = self._sort_combo.currentIndex()
-        if 0 <= idx < len(_SORT_OPTIONS):
-            _, field, order = _SORT_OPTIONS[idx]
-            return field, order
-        return 'updated_at', 'desc'
+        return self._entry_list_ctrl.get_sort_config(self._sort_combo.currentIndex())
 
     def _on_sort_changed(self):
         """排序选项变更"""
@@ -144,20 +146,7 @@ class _MainWindowFiltersMixin(QMainWindow):
 
     def _sort_entries(self, entries: list) -> list:
         """对条目列表排序"""
-        field, order = self._get_sort_config()
-
-        def sort_key(e):
-            if field == 'title':
-                return (e.title or '').lower()
-            elif field == 'password_strength':
-                return e.password_strength
-            elif field == 'created_at':
-                return e.created_at or ''
-            else:  # updated_at
-                return e.updated_at or ''
-
-        reverse = (order == 'desc')
-        return sorted(entries, key=sort_key, reverse=reverse)
+        return self._entry_list_ctrl.sort_entries(entries, self._sort_combo.currentIndex())
 
     # ========== 数据操作 ==========
 
@@ -171,13 +160,12 @@ class _MainWindowFiltersMixin(QMainWindow):
         all_item.setIcon(icon(FOLDER, size=SIZE_SIDEBAR))
         self._category_list.addItem(all_item)
 
-        categories = self._entry_mgr.get_categories()
-        category_counts = self._entry_mgr.get_category_entry_counts()
+        categories = self._sidebar_ctrl.get_categories()
+        category_counts = self._sidebar_ctrl.get_category_entry_counts()
         for cat in categories:
             if cat.id is None:
                 continue
-            count = category_counts.get(cat.id, 0)
-            label = f'{cat.icon_char} {cat.name} ({count})' if count > 0 else f'{cat.icon_char} {cat.name}'
+            label = self._sidebar_ctrl.build_category_label(cat, category_counts.get(cat.id, 0))
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, cat.id)
             self._category_list.addItem(item)
@@ -202,7 +190,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         self._tag_combo.blockSignals(True)
         self._tag_combo.clear()
         self._tag_combo.addItem('全部标签', '')
-        all_tags = self._entry_mgr.get_all_tags()
+        all_tags = self._sidebar_ctrl.get_all_tags()
         for tag, count in all_tags:
             self._tag_combo.addItem(f'{tag}  ·  {count}', tag)
         index = self._tag_combo.findData(current)
@@ -212,35 +200,28 @@ class _MainWindowFiltersMixin(QMainWindow):
         self._tag_combo.blockSignals(False)
         self._cached_tag_names = [t[0] for t in all_tags[:MAX_TAG_AUTOCOMPLETE]]
 
-    # ======== 过滤器数据获取：各过滤器独立方法 ========
+    # ======== 过滤器数据获取：委托给 EntryListController ========
 
     def _fetch_all(self) -> tuple[list, str]:
-        return self._entry_mgr.get_entry_summaries(
+        return self._entry_list_ctrl.fetch_all(
             category_id=self._current_category_id,
             search=self._current_search,
-        ), '全部条目'
+        )
 
     def _fetch_favorite(self) -> tuple[list, str]:
-        return self._entry_mgr.get_entry_summaries(favorite_only=True, search=self._current_search), '收藏'
+        return self._entry_list_ctrl.fetch_favorite(self._current_search)
 
     def _fetch_weak(self) -> tuple[list, str]:
-        summary = self._get_security_summary()
-        return (summary or {}).get('weak_entries', []), '弱密码（全部分类）'
+        return self._entry_list_ctrl.fetch_weak()
 
     def _fetch_duplicate(self) -> tuple[list, str]:
-        summary = self._get_security_summary()
-        groups = (summary or {}).get('duplicate_groups', [])
-        return [e for group in groups for e in group], '重复密码（全部分类）'
+        return self._entry_list_ctrl.fetch_duplicate()
 
     def _fetch_recent(self) -> tuple[list, str]:
-        entries = self._entry_mgr.get_entry_summaries(
-            search=self._current_search, limit=RECENT_ENTRY_LIMIT,
-        )
-        entries.sort(key=lambda e: e.updated_at or '', reverse=True)
-        return entries, '近期更新'
+        return self._entry_list_ctrl.fetch_recent(self._current_search)
 
     def _fetch_trash(self) -> tuple[list, str]:
-        return self._entry_mgr.get_entry_summaries(deleted_only=True, search=self._current_search), '回收站'
+        return self._entry_list_ctrl.fetch_trash(self._current_search)
 
     def _get_fetcher(self, filter_key: str):
         """获取过滤器对应的数据获取方法"""
@@ -273,10 +254,10 @@ class _MainWindowFiltersMixin(QMainWindow):
         self._list_title.setText(title)
 
         if self._current_search and self._current_filter in ('weak', 'duplicate'):
-            entries = [e for e in entries if self._entry_mgr.matches_search(e, self._current_search)]
+            entries = self._entry_list_ctrl.filter_by_search(entries, self._current_search)
 
         if self._current_tag:
-            entries = [e for e in entries if self._entry_mgr.matches_tag(e, self._current_tag)]
+            entries = self._entry_list_ctrl.filter_by_tag(entries, self._current_tag)
 
         # 排序：弱密码/重复/近期使用默认顺序
         if self._current_filter in ('all', 'favorite', 'trash'):
@@ -450,9 +431,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         当缓存未就绪时返回 None，调用方应处理此情况，如显示空列表。
         首次计算由 _update_status_bar 的定时器在后台触发。
         """
-        return self._security.get_cached_report(
-            self._config.get('old_password_warning_days', 90)
-        )
+        return self._entry_list_ctrl.get_security_summary()
 
     # ========== 事件处理 ==========
 
@@ -784,21 +763,17 @@ class _MainWindowFiltersMixin(QMainWindow):
         dialog.exec()
 
     def _delete_category(self, category_id: int):
-        category = self._entry_mgr.get_category(category_id)
-        if not category:
+        msg, _has_entries, cat_name = self._sidebar_ctrl.build_delete_message(category_id)
+        if not msg:
             return
-        count = self._entry_mgr.get_category_entry_count(category_id)
-        msg = f'确定要删除分类「{category.name}」吗？'
-        if count > 0:
-            msg += f'\n\n该分类下有 {count} 个条目，删除后将取消分类归属。'
         reply = QMessageBox.question(
             self, '删除分类', msg,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self._entry_mgr.delete_category(category_id)
+            self._sidebar_ctrl.delete_category(category_id)
             self._refresh_after_entry_change()
-            Toast.show(self, f'已删除分类「{category.name}」', Toast.SUCCESS)
+            Toast.show(self, f'已删除分类「{cat_name}」', Toast.SUCCESS)
 
     # ========== 密码生成器回调 ==========
 

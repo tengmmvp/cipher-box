@@ -3,7 +3,7 @@
 import pytest
 
 from src.database.db_manager import DatabaseManager
-from src.database.models import Entry
+from src.models import Entry
 from tests.helpers import make_test_config
 
 
@@ -11,17 +11,15 @@ from tests.helpers import make_test_config
 def _disable_encrypted_assertions():
     """关闭 db_manager 的密文前缀断言。
 
-    部分测试直接调用 db.add_entry 写入明文，绕过 EntryManager 加密层。
-    通过猴子补丁 DatabaseManager.__init__，使本 fixture 活跃期间创建的
-    实例默认 _enforce_encrypted_fields=False。
+    通过 monkey-patch DatabaseManager，使本 fixture 活跃期间创建的
+    实例默认 test_mode=True（即 _enforce_encrypted_fields=False）。
     需要此 fixture 的测试类/方法应使用 @pytest.mark.usefixtures 装饰器。
     生产环境断言仍生效（默认 _enforce_encrypted_fields=True）。
     """
     original_init = DatabaseManager.__init__
 
-    def _patched_init(self, db_path):
-        original_init(self, db_path)
-        self._enforce_encrypted_fields = False
+    def _patched_init(self, db_path, *, test_mode=False):
+        original_init(self, db_path, test_mode=True)
 
     DatabaseManager.__init__ = _patched_init
     yield

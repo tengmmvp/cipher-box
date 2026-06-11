@@ -1,10 +1,9 @@
 """CipherBox 自定义异常层次结构。
 
 提供领域化的异常类型，替代散落在各层的 RuntimeError / ValueError。
-继承关系设计确保向后兼容：
-
-- VaultError / DatabaseError 继承 RuntimeError → 现有 ``except RuntimeError`` 仍可捕获
-- CryptoError 继承 ValueError → 现有 ``except ValueError`` 仍可捕获
+部分异常通过多重继承同时属于 CipherBoxError 和标准异常类型，
+使调用方既可精确捕获领域异常，也可通过 ``except ValueError`` /
+``except RuntimeError`` 兜底捕获。
 """
 
 __all__ = [
@@ -14,12 +13,10 @@ __all__ = [
     'VaultIntegrityError',
     'VaultKeyEpochMismatchError',
     'VaultAlreadyInitializedError',
-    'CryptoError',
     'DecryptionError',
     'EntryError',
     'EntryIntegrityError',
     'BackupError',
-    'BackupCorruptionError',
     'DatabaseError',
     'TransactionError',
     'SchemaError',
@@ -33,7 +30,7 @@ class CipherBoxError(Exception):
 # ==================== Vault ====================
 
 class VaultError(CipherBoxError, RuntimeError):
-    """保险库操作异常，兼容 ``except RuntimeError``。"""
+    """保险库操作异常，可被 ``except RuntimeError`` 捕获。"""
 
 
 class VaultLockedError(VaultError):
@@ -54,11 +51,7 @@ class VaultAlreadyInitializedError(VaultError):
 
 # ==================== Crypto ====================
 
-class CryptoError(CipherBoxError, ValueError):
-    """加密/解密操作异常，兼容 ``except ValueError``。"""
-
-
-class DecryptionError(CryptoError):
+class DecryptionError(CipherBoxError, ValueError):
     """解密失败。"""
 
 
@@ -78,14 +71,10 @@ class BackupError(CipherBoxError):
     """备份/恢复操作异常。"""
 
 
-class BackupCorruptionError(BackupError):
-    """备份数据损坏或格式无效。"""
-
-
 # ==================== Database ====================
 
 class DatabaseError(CipherBoxError, RuntimeError):
-    """数据库操作异常，兼容 ``except RuntimeError``。"""
+    """数据库操作异常，可被 ``except RuntimeError`` 捕获。"""
 
 
 class TransactionError(DatabaseError):

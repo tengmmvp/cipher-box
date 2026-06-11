@@ -90,6 +90,20 @@ class ConfigManager:
         self._integrity_warning = False
         self.load()
 
+    @classmethod
+    def for_testing(cls, data_dir) -> 'ConfigManager':
+        """创建用于测试的 ConfigManager 实例。
+
+        使用指定目录作为数据目录，不加载真实配置文件。
+        """
+        cfg = cls.__new__(cls)
+        cfg._data_dir = Path(data_dir)
+        cfg._config_path = Path(data_dir) / 'config.json'
+        cfg._config = dict(DEFAULT_CONFIG)
+        cfg._config['show_tray_icon'] = False
+        cfg._integrity_warning = False
+        return cfg
+
     @property
     def data_dir(self) -> Path:
         return self._data_dir
@@ -129,8 +143,6 @@ class ConfigManager:
                             '将使用默认配置覆盖异常值。'
                         )
                         self._integrity_warning = True
-                else:
-                    logger.debug('配置文件无完整性签名，属于旧格式，跳过校验')
                 saved = json.loads(json_text)
                 if not isinstance(saved, dict):
                     raise ValueError('配置文件根节点必须是对象')
@@ -240,11 +252,7 @@ class ConfigManager:
             )
         logger.debug("配置键 %s 无验证规则，已拒绝", key)
         return False
+
     def get_all(self) -> dict:
         """获取所有配置"""
         return dict(self._config)
-
-    def reset_to_defaults(self):
-        """重置为默认配置"""
-        self._config = dict(DEFAULT_CONFIG)
-        self.save()

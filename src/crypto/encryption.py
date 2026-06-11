@@ -42,13 +42,9 @@ class EncryptionEngine:
     FORMAT_ID = 'aes-256-gcm-aad'
     TEXT_PREFIX = 'cb:'
     BYTES_PREFIX = b'CBX'
-    # 空值哨兵：使用 UUID 前缀降低碰撞概率，保留旧哨兵用于解密兼容。
+    # 空值哨兵：使用 UUID 前缀降低碰撞概率，加密空输入时替换为哨兵走正常流程。
     _EMPTY_SENTINEL = '__CBX_EMPTY_7f3a2b1c-4d5e-6f8a-9b0c-1d2e3f4a5b6c__'
     _EMPTY_BYTES_SENTINEL = b'__CBX_BE_7f3a2b1c-4d5e-6f8a-9b0c-1d2e3f4a5b6c__'
-    # 旧版哨兵，仅解密时兼容
-    _EMPTY_SENTINEL_LEGACY = '__CBX_INTERNAL_EMPTY_V1__'
-    _EMPTY_BYTES_SENTINEL_LEGACY = b'__CBX_BYTES_EMPTY_V1__'
-    _EMPTY_BYTES_SENTINEL_V0 = b'\x00'  # V0 旧版哨兵，仅解密时兼容
 
     @classmethod
     def _get_cipher(cls, key: bytes) -> AESGCM:
@@ -104,7 +100,6 @@ class EncryptionEngine:
             base64 编码的 (nonce + ciphertext + tag) 字节串
         """
         # 空字符串替换为哨兵值走正常加密流程，确保 AAD 始终参与认证。
-        # 旧版数据库的空串字段解密时通过下方 `if not encrypted` 兼容路径处理。
         if not plaintext:
             plaintext = cls._EMPTY_SENTINEL
         nonce = os.urandom(cls.NONCE_SIZE)
@@ -121,32 +116,21 @@ class EncryptionEngine:
         encrypted_b64: str,
         key: bytes,
         associated_data: str | bytes,
-        *,
-        strict: bool = False,
     ) -> str:
         """解密 base64 编码的密文
 
         Args:
             encrypted_b64: base64 编码的 (nonce + ciphertext + tag)
             key: 32 字节 AES-256 密钥
-            strict: 为 True 时对空密文抛出 ValueError 而非静默返回空串。
-                新代码路径（如 EntryManager 非容错模式）可启用。
 
         Returns:
             解密后的明文字符串
 
         Raises:
-            ValueError: 解密失败时抛出
+            ValueError: 解密失败或密文为空时抛出
         """
-        # 向后兼容：旧版数据库中未加密的空字段存储为空字符串，此处必须放行。
-        # 空密文跳过了单值 AAD 验证，但条目级 metadata_mac 仍覆盖此场景。
-        # 此兼容路径计划在 CipherBox v2.0 移除，届时 encrypt 的哨兵机制
-        # 将确保所有字段均经过完整加密。
         if not encrypted_b64:
-            if strict:
-                raise ValueError('收到空密文，数据可能已被篡改')
-            logger.warning("解密收到空密文，此兼容路径计划在未来版本移除")
-            return ''
+            raise ValueError('收到空密文')
         try:
             if not encrypted_b64.startswith(cls.TEXT_PREFIX):
                 raise ValueError('不支持的密文格式')
@@ -160,13 +144,12 @@ class EncryptionEngine:
             aad = cls._aad_bytes(associated_data)
             plaintext = aesgcm.decrypt(nonce, ciphertext, aad)
             result = plaintext.decode('utf-8')
-            # 匹配新旧哨兵
-            if result in (cls._EMPTY_SENTINEL, cls._EMPTY_SENTINEL_LEGACY):
+            if result == cls._EMPTY_SENTINEL:
                 return ''
             return result
         except (InvalidTag, ValueError, AttributeError, TypeError) as exc:
             logger.warning("解密失败: %s", type(exc).__name__)
-            raise ValueError('解密失败，密钥或数据可能已损坏') from None
+            raise ValueError('解密失败，密钥或数据可能已损坏') from exc
 
     @classmethod
     def encrypt_bytes(
@@ -192,22 +175,17 @@ class EncryptionEngine:
         data: bytes,
         key: bytes,
         associated_data: str | bytes,
-        *,
-        strict: bool = False,
     ) -> bytes:
         """解密字节数据
 
-        Args:
-            strict: 为 True 时对空密文抛出 ValueError 而非静默返回空字节。
+        Raises:
+            ValueError: 解密失败或密文无效时抛出
         """
         if not data.startswith(cls.BYTES_PREFIX):
             raise ValueError('不支持的密文字节格式')
         payload = data[len(cls.BYTES_PREFIX):]
-        # 向后兼容：旧格式中空输入仅存储前缀，payload 为空。
         if not payload:
-            if strict:
-                raise ValueError('收到空密文字节，数据可能已被篡改')
-            return b''
+            raise ValueError('收到空密文字节')
         if len(payload) < cls.NONCE_SIZE + cls.TAG_SIZE:
             raise ValueError('密文长度无效')
         nonce = payload[:cls.NONCE_SIZE]
@@ -218,12 +196,7 @@ class EncryptionEngine:
             result = aesgcm.decrypt(nonce, ciphertext, aad)
         except (InvalidTag, ValueError, AttributeError, TypeError) as exc:
             logger.warning("解密失败: %s", type(exc).__name__)
-            raise ValueError('解密失败，密钥或数据可能已损坏') from None
-        # 匹配所有版本的空值哨兵
-        if result in (
-            cls._EMPTY_BYTES_SENTINEL,
-            cls._EMPTY_BYTES_SENTINEL_LEGACY,
-            cls._EMPTY_BYTES_SENTINEL_V0,
-        ):
+            raise ValueError('解密失败，密钥或数据可能已损坏') from exc
+        if result == cls._EMPTY_BYTES_SENTINEL:
             return b''
         return result

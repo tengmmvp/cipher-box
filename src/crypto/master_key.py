@@ -9,7 +9,6 @@
 import hmac
 import logging
 import os
-import warnings
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -44,18 +43,6 @@ class MasterKeyManager:
         """从备份密码派生独立的备份加密密钥，与主密钥域分离。"""
         cls._validate_iterations(iterations)
         return cls.derive_key(password, b'backup:' + salt, iterations)
-
-    @classmethod
-    def derive_backup_key_legacy(cls, password: str, salt: bytes, iterations: int) -> bytes:
-        """旧版备份密钥派生，无域前缀，仅用于向后兼容旧备份文件。"""
-        warnings.warn(
-            "derive_backup_key_legacy 已废弃，将在未来版本移除。"
-            "请使用 derive_backup_key 代替。",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        cls._validate_iterations(iterations)
-        return cls.derive_key(password, salt, iterations)
 
     @classmethod
     def derive_key(

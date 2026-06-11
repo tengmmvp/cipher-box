@@ -18,7 +18,7 @@ from src.business.managers.backup_restore import (
 from src.business.managers.entry_manager import EntryManager
 from src.business.managers.vault_manager import VaultManager
 from src.crypto.encryption import EncryptionEngine
-from src.database.models import Entry
+from src.models import Entry
 
 
 class TestBackupCorruption:

@@ -1,46 +1,47 @@
 """Entry.from_dict entry_type 校验测试"""
 
-import unittest
+import pytest
 
-from src.database.models import ENTRY_TYPE_LOGIN, ENTRY_TYPES, Entry
+from src.models import ENTRY_TYPE_LOGIN, ENTRY_TYPES, Entry
 
 
-class TestFromDictValidation(unittest.TestCase):
-    """验证 Entry.from_dict 对 entry_type 的校验"""
+def _base_dict(**overrides):
+    d = dict(
+        title='Test',
+        username='user',
+        password='pass',
+    )
+    d.update(overrides)
+    return d
 
-    def _base_dict(self, **overrides):
-        d = dict(
-            title='Test',
-            username='user',
-            password='pass',
-        )
-        d.update(overrides)
-        return d
 
-    def test_valid_entry_types(self):
-        """所有合法 entry_type 应正常构造"""
-        for entry_type in ENTRY_TYPES:
-            d = self._base_dict(entry_type=entry_type)
-            entry = Entry.from_dict(d)
-            self.assertEqual(entry.entry_type, entry_type)
+def test_valid_entry_types():
+    """所有合法 entry_type 应正常构造"""
+    for entry_type in ENTRY_TYPES:
+        d = _base_dict(entry_type=entry_type)
+        entry = Entry.from_dict(d)
+        assert entry.entry_type == entry_type
 
-    def test_default_entry_type_is_login(self):
-        """不传 entry_type 应默认为 login"""
-        entry = Entry.from_dict(self._base_dict())
-        self.assertEqual(entry.entry_type, ENTRY_TYPE_LOGIN)
 
-    def test_invalid_entry_type_raises(self):
-        """非法 entry_type 应抛出 ValueError"""
-        with self.assertRaises(ValueError) as ctx:
-            Entry.from_dict(self._base_dict(entry_type='invalid_type'))
-        self.assertIn('无效的条目类型', str(ctx.exception))
+def test_default_entry_type_is_login():
+    """不传 entry_type 应默认为 login"""
+    entry = Entry.from_dict(_base_dict())
+    assert entry.entry_type == ENTRY_TYPE_LOGIN
 
-    def test_empty_entry_type_raises(self):
-        """空字符串 entry_type 应抛出 ValueError"""
-        with self.assertRaises(ValueError):
-            Entry.from_dict(self._base_dict(entry_type=''))
 
-    def test_numeric_entry_type_raises(self):
-        """数字 entry_type 应抛出 ValueError（字符串 '123' 不是合法类型）"""
-        with self.assertRaises(ValueError):
-            Entry.from_dict(self._base_dict(entry_type='123'))
+def test_invalid_entry_type_raises():
+    """非法 entry_type 应抛出 ValueError"""
+    with pytest.raises(ValueError, match='无效的条目类型'):
+        Entry.from_dict(_base_dict(entry_type='invalid_type'))
+
+
+def test_empty_entry_type_raises():
+    """空字符串 entry_type 应抛出 ValueError"""
+    with pytest.raises(ValueError):
+        Entry.from_dict(_base_dict(entry_type=''))
+
+
+def test_numeric_entry_type_raises():
+    """数字 entry_type 应抛出 ValueError（字符串 '123' 不是合法类型）"""
+    with pytest.raises(ValueError):
+        Entry.from_dict(_base_dict(entry_type='123'))

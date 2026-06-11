@@ -1,7 +1,6 @@
 """详情面板 - 展示密码条目详细信息"""
 
 import logging
-import time as _time
 from html import escape
 from urllib.parse import urlparse
 
@@ -24,12 +23,9 @@ from ...utils.format import format_datetime
 from ..resources.constants import (
     BTN_COPY,
     BTN_ICON,
-    BTN_TOTP_COPY,
     FONT_FAMILY_MONOSPACE,
-    MAX_HISTORY_DISPLAY,
     MAX_TAG_DISPLAY,
     MS_FEEDBACK,
-    MS_TOTP_REFRESH,
     PWD_VISIBLE_SECONDS_DEFAULT,
 )
 from ..resources.icons import (
@@ -39,20 +35,41 @@ from ..resources.icons import (
     EDIT,
     EYE,
     LOCK,
-    SIZE_BTN,
-    SIZE_SMALL,
     STAR,
     STAR_OUTLINE,
     set_icon,
-    set_icon_with_text,
 )
 from ..resources.theme_colors import c, get_strength_color
+from .custom_fields_renderer import CustomFieldsRenderer
+from .password_history_widget import PasswordHistoryWidget
+from .totp_widget import TOTPWidget
 from .widgets import clear_layout
 
 logger = logging.getLogger(__name__)
 
 # 密码强度标签映射，模块级常量避免每次 show_entry 重建
 _STRENGTH_LABELS = {0: '非常弱', 1: '弱', 2: '一般', 3: '强', 4: '非常强'}
+
+
+def zero_buffer_copy(value: str) -> None:
+    """尽力零化字符串的编码副本（纵深防御）。
+
+    WARNING: 此方法在 CPython 下**不保证**清除原始字符串内存。
+    Python ``str`` 不可变，此方法仅零化 ``encode()`` 后的 bytearray 副本，
+    **不影响**原始字符串对象。真正的安全清理依赖 ``_clear_content()``
+    置空所有引用以触发 GC。
+
+    方法名 ``zero_buffer_copy``（而非 _secure_wipe）如实反映了其能力。
+    """
+    if not value:
+        return
+    try:
+        buf = bytearray(value.encode('utf-16-le'))
+        for i in range(len(buf)):
+            buf[i] = 0
+        del buf
+    except Exception:
+        pass
 
 
 class DetailPanel(QWidget):
@@ -84,21 +101,9 @@ class DetailPanel(QWidget):
         self._pwd_hide_timer.timeout.connect(self._auto_hide_password)
         self._pwd_label_ref = None
         self._show_btn_ref = None
-        self._totp_timer = QTimer(self)
-        self._totp_timer.timeout.connect(self._refresh_totp)
-        self._totp_code_label = None
-        self._totp_bar = None
-        self._totp_entry_id: int | None = None  # 通过 EntryManager 获取 TOTP 状态
-        self._totp_period: int = 30  # 缓存 TOTP 周期，避免刷新时重复调用 get_totp_state
         self._current_password = ''
-        # 间接引用存储：敏感字段值通过字典引用，_clear_content 时一并清空，
-        # 避免闭包直接捕获明文导致密码驻留内存。
-        self._secret_values: dict[str, str] = {}
-        self._history_passwords: list[str] = []
-        # 普通字段明文值间接引用：闭包通过 row_id 从字典读取而非直接捕获明文，
-        # _clear_content 时一并清空，缩短敏感数据驻留内存时间。
-        self._plain_values: dict[int, str] = {}
-        self._plain_row_counter: int = 0
+        # 主条目非主密码敏感字段的间接引用字典（自定义字段由 renderer 管理）
+        self._secret_values_main: dict[str, str] = {}
         # 非主密码敏感字段与历史密码的自动掩码定时器（持久、可取消），
         # 替代不可取消的 QTimer.singleShot。_clear_content 时统一 stop 并清空。
         self._field_hide_timers: list[QTimer] = []
@@ -106,6 +111,26 @@ class DetailPanel(QWidget):
         # 避免控件销毁后回调访问已删对象。上限 20 防止极端情况下泄漏。
         self._copy_feedback_timers: set[QTimer] = set()
         self._COPY_FEEDBACK_TIMERS_MAX = 20
+
+        # ---- 子组件 ----
+        self._totp_widget = TOTPWidget(self)
+        self._totp_widget.copy_requested.connect(self._copy)
+        self._totp_widget.copy_feedback.connect(self.copy_feedback.emit)
+
+        self._history_widget = PasswordHistoryWidget(self)
+        self._history_widget.set_hide_timers_ref(self._field_hide_timers)
+        self._history_widget.set_callbacks(
+            get_pwd_visible_ms=self._get_pwd_visible_ms,
+            copy_with_feedback=self._copy_with_feedback,
+        )
+        self._history_widget.copy_feedback.connect(self.copy_feedback.emit)
+
+        self._fields_renderer = CustomFieldsRenderer(
+            copy_callback=self._copy_with_feedback,
+            copy_feedback_callback=self.copy_feedback.emit,
+            hide_timer_callback=self._get_pwd_visible_ms,
+        )
+
         self._setup_ui()
 
     def _add_copy_feedback_timer(self, timer: QTimer):
@@ -222,7 +247,7 @@ class DetailPanel(QWidget):
         logger.debug("显示条目详情: id=%d title=%r", entry.id, entry.title)
         self._current_entry = entry
         self._pwd_hide_timer.stop()
-        self._totp_timer.stop()
+        self._totp_widget.stop()
         self._clear_content()
 
         # 更新标题
@@ -301,11 +326,11 @@ class DetailPanel(QWidget):
 
         # ===== TOTP 区域 =====
         if entry.has_totp and entry.id:
-            self._build_totp_section(entry.id)
+            self._totp_widget.start(entry.id, self._entry_mgr)
 
         # ===== 密码历史（延迟加载：仅显示摘要，点击展开才解密） =====
         if entry.id and self._entry_mgr:
-            self._build_password_history_stub(entry.id)
+            self._history_widget.build_stub(entry.id, self._entry_mgr, self._content_layout)
 
         self._build_meta_section(entry)
 
@@ -321,7 +346,8 @@ class DetailPanel(QWidget):
 
         # ===== 自定义字段 =====
         if entry.custom_fields:
-            self._build_custom_fields_section(entry)
+            cf_timers = self._fields_renderer.render(entry, self._content_layout, self)
+            self._field_hide_timers.extend(cf_timers)
 
         self._content_layout.addStretch()
 
@@ -417,235 +443,6 @@ class DetailPanel(QWidget):
         if meta_form.count() > 0:
             self._content_layout.addLayout(meta_form)
 
-    def _build_custom_fields_section(self, entry: Entry):
-        """构建自定义字段区域"""
-        cf_group = QGroupBox('自定义字段')
-        cf_layout = QFormLayout(cf_group)
-        cf_layout.setSpacing(6)
-        labels = {
-            '_card_holder': '持卡人', '_card_number': '卡号',
-            '_card_expiry': '有效期', '_card_cvv': 'CVV',
-            '_id_fullname': '姓名', '_id_email': '邮箱',
-            '_id_phone': '电话', '_id_address': '地址',
-            '_server_host': '主机', '_server_port': '端口',
-            '_server_protocol': '协议',
-        }
-        custom_fields = entry.custom_fields
-        if not isinstance(custom_fields, list):
-            return
-        for cf in custom_fields:
-            if not cf.value:
-                continue
-            icon = {'password': '[PWD]', 'url': '[URL]', 'email': '[MAIL]'}.get(cf.field_type, '[TXT]')
-            label = labels.get(cf.name, cf.name)
-            if cf.field_type == 'password':
-                cf_layout.addRow(*self._make_field_row(f'{icon} {label}', cf.value, secret=True))
-            else:
-                cf_layout.addRow(*self._make_field_row(f'{icon} {label}', cf.value, copyable=True))
-        self._content_layout.addWidget(cf_group)
-
-    def _build_totp_section(self, entry_id: int):
-        """构建 TOTP 验证码区域。
-
-        接收 entry_id 而非明文 secret，通过 EntryManager
-        获取 TOTP 状态（code/remaining/period），UI 层不直接调用 crypto。
-        """
-        if not self._entry_mgr:
-            return
-        state = self._entry_mgr.get_totp_state(entry_id)
-        if not state:
-            return
-        self._totp_entry_id = entry_id
-        self._totp_period = state['period']  # 缓存周期供刷新使用
-
-        totp_frame = QFrame()
-        totp_frame.setStyleSheet(f"""
-            QFrame {{
-                background: {c("accent_light")};
-                border: 1px solid {c("tag_border")};
-                border-radius: 8px;
-                padding: 8px;
-            }}
-        """)
-        totp_layout = QVBoxLayout(totp_frame)
-        totp_layout.setSpacing(6)
-
-        totp_title = QLabel('验证码 (TOTP)')
-        totp_title.setStyleSheet(f'font-weight: bold; font-size: 13px; color: {c("accent_text")};')
-        totp_layout.addWidget(totp_title)
-
-        code_row = QHBoxLayout()
-        code_row.setSpacing(12)
-
-        self._totp_code_label = QLabel(state['code'])
-        self._totp_code_label.setStyleSheet(
-            f'font-size: 28px; font-weight: bold; letter-spacing: 6px; '
-            f'color: {c("accent_text")}; font-family: {FONT_FAMILY_MONOSPACE};'
-        )
-        code_row.addWidget(self._totp_code_label)
-
-        # 倒计时进度条
-        self._totp_bar = QProgressBar()
-        self._totp_bar.setRange(0, state['period'])
-        self._totp_bar.setValue(state['remaining'])
-        self._totp_bar.setFixedHeight(6)
-        self._totp_bar.setTextVisible(False)
-        self._totp_bar.setStyleSheet(f"""
-            QProgressBar {{ background: {c("border_light")}; border: none; border-radius: 3px; }}
-            QProgressBar::chunk {{ background: {c("accent")}; border-radius: 3px; }}
-        """)
-        code_row.addWidget(self._totp_bar, 1)
-
-        # 复制按钮
-        copy_btn = QPushButton()
-        set_icon_with_text(copy_btn, '复制', COPY)
-        copy_btn.setFixedSize(*BTN_TOTP_COPY)
-        copy_btn.clicked.connect(self._copy_totp_code)
-        copy_btn.clicked.connect(self.copy_feedback.emit)
-        code_row.addWidget(copy_btn)
-
-        totp_layout.addLayout(code_row)
-        self._content_layout.addWidget(totp_frame)
-
-        # 启动定时刷新（每秒）
-        self._totp_timer.start(MS_TOTP_REFRESH)
-
-    def _refresh_totp(self):
-        """刷新 TOTP 验证码（仅调用 generate_totp，复用缓存的 period）。"""
-        if not self._totp_entry_id or not self._totp_code_label or not self._entry_mgr:
-            self._totp_timer.stop()
-            return
-        code = self._entry_mgr.generate_totp(self._totp_entry_id)
-        if not code:
-            self._totp_timer.stop()
-            return
-        self._totp_code_label.setText(code)
-        if self._totp_bar:
-            remaining = self._totp_period - (int(_time.time()) % self._totp_period)
-            self._totp_bar.setValue(remaining)
-
-    def _copy_totp_code(self):
-        """复制当前 TOTP 验证码（始终取最新值）"""
-        if self._totp_code_label:
-            self._copy(self._totp_code_label.text())
-
-    def _build_password_history_stub(self, entry_id: int):
-        """构建密码历史占位摘要，点击时才加载完整历史"""
-        if not self._entry_mgr:
-            return
-        count = self._entry_mgr.get_password_history_count(entry_id)
-        if not count:
-            return
-        btn = QPushButton(f'密码历史（{count} 条记录）— 点击展开')
-        btn.setFlat(True)
-        btn.setStyleSheet(f"""
-            QPushButton {{
-                text-align: left; color: {c("text_secondary")};
-                font-size: 12px; padding: 6px 0; border: none;
-            }}
-            QPushButton:hover {{ color: {c("accent")}; }}
-        """)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        def _expand(_checked=False, eid=entry_id, button=btn):
-            mgr = self._entry_mgr
-            if not mgr:
-                return
-            decrypted = mgr.decrypt_password_history(
-                mgr.get_password_history(eid)
-            )
-            if decrypted:
-                self._content_layout.removeWidget(button)
-                button.deleteLater()
-                self._build_password_history(decrypted)
-
-        btn.clicked.connect(_expand)
-        self._content_layout.addWidget(btn)
-
-    def _build_password_history(self, history: list[dict]):
-        """构建密码历史折叠区"""
-        group = QGroupBox('密码历史')
-        group_layout = QVBoxLayout(group)
-        group_layout.setSpacing(6)
-
-        for record in history[:MAX_HISTORY_DISPLAY]:
-            row = QHBoxLayout()
-            row.setSpacing(8)
-
-            # 时间
-            time_label = QLabel(record.get('changed_at', ''))
-            time_label.setFixedWidth(140)
-            time_label.setStyleSheet(f'color: {c("text_muted")}; font-size: 12px;')
-            row.addWidget(time_label)
-
-            # 密码（初始隐藏）
-            pwd_text = record.get('password', '')
-            pwd_label = QLabel('••••••••')
-            pwd_label.setStyleSheet(
-                f'font-family: {FONT_FAMILY_MONOSPACE}; font-size: 12px; color: {c("text_primary")};'
-            )
-            row.addWidget(pwd_label, 1)
-
-            # 历史密码存入间接引用列表，闭包通过索引读取，
-            # _clear_content 时清空列表即可释放明文。
-            hist_idx = len(self._history_passwords)
-            self._history_passwords.append(pwd_text)
-
-            # 显示/隐藏按钮
-            show_btn = QPushButton()
-            set_icon(show_btn, EYE)
-            show_btn.setObjectName('iconBtn')
-            show_btn.setFixedSize(*BTN_COPY)
-            show_btn.setToolTip('显示/隐藏')
-
-            # 历史密码显示超时定时器（持久、可取消）。复用主密码可见时长，
-            # 到时自动重新掩码并清空该条历史密码的明文副本，缩短敏感数据驻留。
-            # _clear_content 时统一 stop 并清空，避免切换条目/锁定后误触发。
-            hist_timer = QTimer(self)
-            hist_timer.setSingleShot(True)
-            self._field_hide_timers.append(hist_timer)
-
-            def _on_hist_timeout(lbl=pwd_label, btn=show_btn, idx=hist_idx):
-                lbl.setText('••••••••')
-                set_icon(btn, EYE)
-                if idx < len(self._history_passwords):
-                    self._history_passwords[idx] = ''
-
-            hist_timer.timeout.connect(_on_hist_timeout)
-
-            def toggle_pwd(_checked=False, lbl=pwd_label, btn=show_btn, idx=hist_idx, timer=hist_timer):
-                pwd = self._history_passwords[idx] if idx < len(self._history_passwords) else ''
-                if lbl.text() == '••••••••':
-                    lbl.setText(pwd)
-                    set_icon(btn, LOCK)
-                    timer.start(self._get_pwd_visible_ms())
-                else:
-                    lbl.setText('••••••••')
-                    set_icon(btn, EYE)
-                    timer.stop()
-
-            show_btn.clicked.connect(toggle_pwd)
-            row.addWidget(show_btn)
-
-            # 复制按钮
-            copy_btn = QPushButton()
-            set_icon(copy_btn, COPY)
-            copy_btn.setObjectName('iconBtn')
-            copy_btn.setFixedSize(*BTN_COPY)
-            copy_btn.setToolTip('复制密码')
-
-            def do_copy(_checked=False, idx=hist_idx, btn=copy_btn):
-                pwd = self._history_passwords[idx] if idx < len(self._history_passwords) else ''
-                self._copy_with_feedback(btn, pwd)
-
-            copy_btn.clicked.connect(do_copy)
-            copy_btn.clicked.connect(self.copy_feedback.emit)
-            row.addWidget(copy_btn)
-
-            group_layout.addLayout(row)
-
-        self._content_layout.addWidget(group)
-
     def _make_field_row(
         self, label: str, value: str,
         *, secret: bool = False, copyable: bool = False, main_password: bool = False,
@@ -680,20 +477,14 @@ class DetailPanel(QWidget):
         row_layout.addWidget(val_label, 1)
 
         if copyable and value:
-            # 将明文存入间接引用字典，闭包通过 row_id 读取，
-            # _clear_content 时一并清空，避免闭包直接捕获明文。
-            row_id = self._plain_row_counter
-            self._plain_row_counter += 1
-            self._plain_values[row_id] = value
-
             copy_btn = QPushButton()
             set_icon(copy_btn, COPY)
             copy_btn.setObjectName('iconBtn')
             copy_btn.setFixedSize(*BTN_COPY)
             copy_btn.setToolTip('复制')
 
-            def _copy_value(_checked=False, rid=row_id, btn=copy_btn):
-                v = self._plain_values.get(rid, '')
+            # 使用闭包捕获当前值（主条目字段不需要间接引用，生命周期与面板同步）
+            def _copy_value(_checked=False, v=value, btn=copy_btn):
                 self._copy_with_feedback(btn, v)
 
             copy_btn.clicked.connect(_copy_value)
@@ -736,12 +527,8 @@ class DetailPanel(QWidget):
             self._current_password = value
             field_timer = None
         else:
-            # 非主密码的敏感字段存入间接引用字典，
-            # 闭包从字典读取而非直接捕获值，_clear_content 可清除。
-            self._secret_values[label] = value
-            # 持久单次定时器（可取消），替代不可取消的 QTimer.singleShot。
-            # _clear_content 时 stop 并清空，避免切换条目/锁定后定时器仍触发
-            # 对已销毁控件操作。
+            # 非主密码的敏感字段 — 使用独立的间接引用字典
+            self._secret_values_main[label] = value
             field_timer = QTimer(self)
             field_timer.setSingleShot(True)
             field_timer.timeout.connect(
@@ -753,10 +540,7 @@ class DetailPanel(QWidget):
 
         def _toggle(_checked=False, lbl=val_label, btn=show_btn,
                     is_main=main_password, key=label, timer=field_timer):
-            # 所有敏感字段均通过间接引用读取（主密码用
-            # self._current_password，其他用 self._secret_values），
-            # 使得 _clear_content 清空后闭包也看到空值。
-            pwd = self._current_password if is_main else self._secret_values.get(key, '')
+            pwd = self._current_password if is_main else self._secret_values_main.get(key, '')
             if lbl.text() == '••••••••':
                 lbl.setText(pwd)
                 set_icon(btn, LOCK)
@@ -782,8 +566,7 @@ class DetailPanel(QWidget):
         copy_btn.setToolTip('复制密码')
 
         def _copy_secret(_checked=False, is_main=main_password, key=label, btn=copy_btn):
-            # 复制时也从间接引用读取，避免闭包捕获明文。
-            pwd = self._current_password if is_main else self._secret_values.get(key, '')
+            pwd = self._current_password if is_main else self._secret_values_main.get(key, '')
             self._copy_with_feedback(btn, pwd)
 
         copy_btn.clicked.connect(_copy_secret)
@@ -812,8 +595,7 @@ class DetailPanel(QWidget):
     def _clear_content(self):
         """清除详情面板内容，安全擦除敏感数据。"""
         # 停止所有自动掩码定时器，避免清除后对已销毁控件触发回调。
-        # 非主密码字段与历史密码定时器在 _clear_layout 后控件即销毁。
-        self._totp_timer.stop()
+        self._totp_widget.stop()
         self._pwd_hide_timer.stop()
         for timer in self._field_hide_timers:
             timer.stop()
@@ -822,53 +604,23 @@ class DetailPanel(QWidget):
         for timer in self._copy_feedback_timers:
             timer.stop()
         self._copy_feedback_timers.clear()
-        # 安全擦除普通字段间接引用中的明文值
-        for k in list(self._plain_values):
-            self._zero_buffer_copy(self._plain_values[k])
-        self._plain_values.clear()
-        self._plain_row_counter = 0
-        # 不再存储明文 TOTP secret，只需重置 entry_id 和缓存
-        self._totp_entry_id = None
-        self._totp_period = 30
-        self._totp_code_label = None
-        self._totp_bar = None
-        self._zero_buffer_copy(self._current_password)
+        # 安全擦除主条目字段间接引用中的敏感值
+        for k in list(self._secret_values_main):
+            zero_buffer_copy(self._secret_values_main[k])
+        self._secret_values_main.clear()
+        # 清除子组件状态
+        self._totp_widget.clear()
+        self._history_widget.clear()
+        self._fields_renderer.clear()
+        zero_buffer_copy(self._current_password)
         self._current_password = ''
         self._pwd_label_ref = None
         self._show_btn_ref = None
-        # 安全擦除间接引用中的敏感值
-        for k in list(self._secret_values):
-            self._zero_buffer_copy(self._secret_values[k])
-        self._secret_values.clear()
-        for p in self._history_passwords:
-            self._zero_buffer_copy(p)
-        self._history_passwords.clear()
         self._clear_layout(self._content_layout)
         logger.debug("详情面板内容已清除")
         # _clear_layout 通过 deleteLater 销毁所有子控件，将引用置空
         # 以便 refresh_theme 用 is not None 检查控件存活状态。
         self._empty_label = None
-
-    @staticmethod
-    def _zero_buffer_copy(value: str) -> None:
-        """尽力零化字符串的编码副本（纵深防御）。
-
-        WARNING: 此方法在 CPython 下**不保证**清除原始字符串内存。
-        Python ``str`` 不可变，此方法仅零化 ``encode()`` 后的 bytearray 副本，
-        **不影响**原始字符串对象。真正的安全清理依赖 ``_clear_content()``
-        置空所有引用以触发 GC。
-
-        方法名 ``_zero_buffer_copy``（而非 _secure_wipe）如实反映了其能力。
-        """
-        if not value:
-            return
-        try:
-            buf = bytearray(value.encode('utf-16-le'))
-            for i in range(len(buf)):
-                buf[i] = 0
-            del buf
-        except Exception:
-            pass
 
     @staticmethod
     def _clear_layout(layout):
@@ -877,20 +629,19 @@ class DetailPanel(QWidget):
     def hideEvent(self, a0):
         """面板隐藏时停止 TOTP 定时器以节省资源"""
         super().hideEvent(a0)
-        if hasattr(self, '_totp_timer') and self._totp_timer.isActive():
-            self._totp_timer.stop()
+        if hasattr(self, '_totp_widget'):
+            self._totp_widget.stop()
 
     def showEvent(self, a0):
         """面板显示时如果当前有条目含 TOTP 则重启定时器"""
         super().showEvent(a0)
         if (
-            hasattr(self, '_totp_timer')
-            and self._totp_entry_id
+            hasattr(self, '_totp_widget')
             and hasattr(self, '_current_entry')
             and self._current_entry
             and self._current_entry.has_totp
         ):
-            self._totp_timer.start(MS_TOTP_REFRESH)
+            self._totp_widget.resume_if_active()
 
     def show_empty(self):
         """显示空状态"""
