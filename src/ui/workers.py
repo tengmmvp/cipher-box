@@ -73,8 +73,11 @@ class BackgroundWorker(QThread):
         self.progress.emit(current, total)
 
     def run(self):
+        func = self._func
+        if func is None:
+            return
         try:
-            result = self._func()
+            result = func()
             if self._cancel_event.is_set():
                 self.cancelled.emit()
             else:

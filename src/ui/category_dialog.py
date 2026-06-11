@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..database.models import Category
+from ..models import Category
 from ..ui.resources.constants import BTN_DIALOG, DIALOG_CATEGORY_MIN_SIZE
 from ..ui.resources.theme_colors import c
 from ..ui.widgets import setup_dialog_flags

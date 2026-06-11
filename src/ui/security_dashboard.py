@@ -47,7 +47,7 @@ class _HealthScoreWidget(QWidget):
         self._score = max(0, min(100, score))
         self.update()
 
-    def paintEvent(self, event):
+    def paintEvent(self, a0):
         painter = QPainter(self)
         try:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -184,7 +184,7 @@ class SecurityDashboard(QDialog):
         self._weak_entries = []
         self._duplicate_groups = []
         self._old_entries = []
-        self._worker = None  # H1：预声明，确保 reject 时可安全检查
+        self._worker = None  # 预声明，确保 reject 时可安全检查
         self._setup_ui()
         self._load_data()
 

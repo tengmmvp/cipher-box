@@ -20,9 +20,10 @@ if TYPE_CHECKING:
 
 from ..crypto.encryption import EncryptionEngine
 from ..crypto.master_key import MasterKeyManager
-from ..database.db_manager import DatabaseManager
-from ..database.models import ENTRY_TYPES, Category, Entry
+from ..database.models import ENTRY_TYPES, MAX_CUSTOM_FIELDS_PER_ENTRY, Category, Entry
+from ..models import MAX_PASSWORD_HISTORY
 from ..utils.file_security import secure_directory, secure_file, validate_file_path
+from ..utils.format import utc_now_iso
 from .crypto_utils import decrypt_field, encrypt_field, require_vault_key
 from .exceptions import BackupError, DecryptionError, EntryIntegrityError
 
@@ -42,7 +43,7 @@ def _user_friendly_error(exc: Exception) -> str:
     if isinstance(exc, IsADirectoryError):
         return '所选路径是目录，请选择文件'
     if isinstance(exc, OSError):
-        # ENOSPC：磁盘满；其余 OSError 统一提示读写失败
+        # ENOSPC 表示磁盘满，其余 OSError 统一提示读写失败
         if exc.errno == errno.ENOSPC:
             return '磁盘空间不足'
         return '文件读写失败，请检查路径和磁盘'
@@ -63,7 +64,7 @@ MAX_BACKUP_ENTRIES = 50_000
 MAX_RESTORE_POINTS = 10
 MAX_ENTRY_JSON_SIZE = 2 * 1024 * 1024
 MAX_TEXT_FIELD_SIZE = 1024 * 1024
-MAX_HISTORY_PER_ENTRY = DatabaseManager.MAX_PASSWORD_HISTORY * 2  # 每条目历史上限，2 倍余量
+MAX_HISTORY_PER_ENTRY = MAX_PASSWORD_HISTORY * 2  # 每条目历史上限，2 倍余量
 
 
 class BackupFlag(enum.IntEnum):
@@ -104,16 +105,9 @@ class BackupRestoreManager:
         """收集备份数据：手动解密所有字段为明文，构建可移植字典。
 
         注意：此方法直接操作原始 DB 条目并手动解密，未复用
-        EntryManager.decrypt_entry()，原因有三：
-        1. 备份需要包含已删除条目（include_deleted=True），而 decrypt_entry
-           设计为按需解密单个条目；
-        2. 备份格式需要将解密后的明文字段序列化为 JSON 字典，而非返回 Entry 对象；
-        3. 备份需要在单条目解密失败时跳过该条目继续处理（容错），而 decrypt_entry
-           在 strict=True 模式下会抛出异常。
-
-        若未来需要消除此重复，建议方案：
-        - 在 Entry 中添加 to_plain_dict() 方法返回明文字典；
-        - 在 EntryManager 中添加 decrypt_entry_to_dict() 容错方法。
+        EntryManager.decrypt_entry_to_dict()，原因是备份需要同时收集
+        密码历史并在循环内做增量大小估算，这两者超出了
+        decrypt_entry_to_dict 的设计范围（该方法仅处理单条目解密）。
         """
         db = self._vault.db
         key = self._key
@@ -122,10 +116,14 @@ class BackupRestoreManager:
         raw_entries = db.get_entries(include_deleted=True)
         if len(raw_entries) > MAX_BACKUP_ENTRIES:
             raise ValueError('备份条目数量超出限制')
-        estimated_size = len(json.dumps(categories, ensure_ascii=False).encode('utf-8'))
+        # 基于字段原始字节长度的粗略估算，避免逐条 json.dumps 双重序列化开销
+        estimated_size = sum(
+            len(c.get('name', '').encode('utf-8')) + 128
+            for c in categories
+        )
         for raw in raw_entries:
-            # M-S2：单条目解密失败时记录警告并跳过——既不固化被篡改/损坏的明文列，
-            # 也不让单条损坏中断整个备份（_decrypt_text 失败抛 DecryptionError）。
+            # 单条目解密失败时记录警告并跳过——既不固化被篡改/损坏的明文列，
+            # 也不让单条损坏中断整个备份，_decrypt_text 失败会抛出 DecryptionError。
             try:
                 custom_json = decrypt_field(
                     raw.custom_fields_db_value, key, raw.crypto_id, 'custom_fields',
@@ -161,7 +159,13 @@ class BackupRestoreManager:
                     raw.crypto_id, exc_info=True,
                 )
                 continue
-            estimated_size += len(json.dumps(item, ensure_ascii=False).encode('utf-8'))
+            # 基于字段原始长度的粗略估算（每条目约 512 字节固定开销）
+            estimated_size += (
+                len(raw.title.encode('utf-8'))
+                + len((raw.url or '').encode('utf-8'))
+                + len((raw.tags or '').encode('utf-8'))
+                + 512
+            )
             if estimated_size > MAX_BACKUP_PAYLOAD_SIZE:
                 raise ValueError('备份数据过大')
             entries.append(item)
@@ -179,14 +183,19 @@ class BackupRestoreManager:
                 ),
                 'changed_at': item.changed_at,
             }
-            estimated_size += len(json.dumps(history_item, ensure_ascii=False).encode('utf-8'))
+            estimated_size += (
+                len(item.changed_at.encode('utf-8'))
+                + len((item.old_password_enc or '').encode('utf-8'))
+                + 64
+            )
             if estimated_size > MAX_BACKUP_PAYLOAD_SIZE:
                 raise ValueError('备份数据过大')
             history.append(history_item)
 
         return {
             'format': BACKUP_FORMAT,
-            'created_at': datetime.now(timezone.utc).isoformat(),
+            'version': 1,
+            'created_at': utc_now_iso(),
             'categories': categories,
             'entries': entries,
             'password_history': history,
@@ -213,7 +222,7 @@ class BackupRestoreManager:
                 iterations = 0
                 backup_key = self._vault.snapshot_key
             else:
-                # H3：flags=0（旧版主密钥派生）已无生产创建路径——UI 强制备份密码、
+                # flags=0 即旧版主密钥派生已无生产创建路径，UI 强制备份密码、
                 # 自动备份/恢复点用快照密钥。仅恢复路径保留 flags=0 兼容旧备份。
                 raise ValueError('必须指定备份密码或使用快照密钥')
 
@@ -265,7 +274,7 @@ class BackupRestoreManager:
                 'format': BACKUP_FORMAT,
                 'password_required': bool(flag_value & BackupFlag.PASSWORD),
                 'snapshot_required': bool(flag_value & BackupFlag.SNAPSHOT),
-                # H3：flags=0 的旧备份用创建时的主密钥派生密钥（非密码/非快照），
+                # flags=0 的旧备份用创建时的主密钥派生密钥，非密码也非快照，
                 # 一旦改密即无法恢复。UI 据此字段向用户提示风险。
                 'master_key_bound': flag_value == 0,
             }
@@ -288,6 +297,10 @@ class BackupRestoreManager:
                 if result[0]:
                     logger.info("备份恢复完成 (%.1fms)", (time.monotonic() - t0) * 1000)
                 return result
+        except ValueError as exc:
+            # _restore_current 中精心编写的错误消息直接传递给用户
+            logger.error("恢复失败: %s", exc)
+            return False, str(exc)
         except Exception as exc:
             logger.error("恢复失败: %s", exc)
             return False, _user_friendly_error(exc)
@@ -378,6 +391,13 @@ class BackupRestoreManager:
     def _validate_restore_data(data: dict):
         if data.get('format') != BACKUP_FORMAT:
             raise ValueError('备份格式标识无效')
+        # 版本检查：version=0 视为旧版（向后兼容），version>1 为未来格式（暂不支持）。
+        # 安全考量：v0 旧备份不含 version 字段，但其数据结构已通过后续校验
+        # （format 标识、entries/categories 类型检查、_validate_entries 结构验证），
+        # 因此放行是安全的。仅拒绝未知的新版本格式以防止数据误读。
+        version = data.get('version', 0)
+        if version > 1:
+            raise ValueError(f'不支持的备份格式版本：{version}（当前支持 v0/v1）')
         entries = data.get('entries', [])
         categories = data.get('categories', [])
         history = data.get('password_history', [])
@@ -440,7 +460,7 @@ class BackupRestoreManager:
         ):
             limit = 64 if field.endswith('_at') else MAX_TEXT_FIELD_SIZE
             BackupRestoreManager._require_text(item[field], f'条目字段 {field}', limit)
-        # BR-03: 基本 ISO 8601 格式校验
+        # 基本 ISO 8601 格式校验
         for key in ('created_at', 'updated_at', 'deleted_at', 'password_changed_at'):
             val = item.get(key, '')
             if val and isinstance(val, str):
@@ -465,8 +485,12 @@ class BackupRestoreManager:
 
     @staticmethod
     def _validate_entry_custom_fields(fields: list):
-        """验证自定义字段列表结构（数量、键完整性、类型）。"""
-        if not isinstance(fields, list) or len(fields) > 1000:
+        """验证自定义字段列表结构（数量、键完整性、类型）。
+
+        数量上限与 ``Entry.from_dict`` 保持一致（100），确保恢复后
+        条目能通过 ``from_dict`` 的校验。
+        """
+        if not isinstance(fields, list) or len(fields) > MAX_CUSTOM_FIELDS_PER_ENTRY:
             raise ValueError('备份自定义字段结构无效')
         for field in fields:
             if not isinstance(field, dict):
@@ -620,7 +644,7 @@ class BackupRestoreManager:
                     entry_map[item['id']] = new_id
                     crypto_id_map[item['id']] = crypto_id
 
-            # M-C1：密码历史按 entry_id 分组，批量写入 + 统一截断，
+            # 密码历史按 entry_id 分组，批量写入并统一截断，
             # 替代逐条 add_password_history 触发的 N 次截断 DELETE。
             history_by_entry: dict[int, list[tuple[str, str]]] = {}
             for item in data.get('password_history', []):
@@ -641,7 +665,7 @@ class BackupRestoreManager:
             for entry_id, items in history_by_entry.items():
                 db.add_password_history_batch(entry_id, items)
 
-            # BR-01: 轮换 key_epoch 防止旧会话写入恢复后的数据
+            # 轮换 key_epoch 防止旧会话写入恢复后的数据
             new_epoch = uuid.uuid4().hex
             db.set_meta('key_epoch', new_epoch)
 
@@ -690,7 +714,7 @@ class BackupRestoreManager:
         if not success:
             return False, error
 
-        config.set('last_auto_backup_at', datetime.now(timezone.utc).isoformat())
+        config.set('last_auto_backup_at', utc_now_iso())
         config.save()
 
         retention = config.get('auto_backup_retention', 10)

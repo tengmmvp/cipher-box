@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..crypto.password_generator import PasswordGenerator
+from ..business.password_service import PasswordService
 from ..ui.resources.constants import (
     BTN_COMPACT,
     BTN_GENERATE,
@@ -28,7 +28,7 @@ from ..ui.resources.constants import (
     MS_FEEDBACK,
     PWD_GENERATE_LENGTH_DEFAULT,
 )
-from ..ui.resources.icons import COPY, GENERATE, set_icon, set_icon_with_text
+from ..ui.resources.icons import COPY, GENERATE, set_icon_with_text
 from ..ui.resources.theme_colors import get_strength_color
 from ..ui.widgets import setup_dialog_flags
 
@@ -154,7 +154,7 @@ class PasswordGeneratorDialog(QDialog):
         )):
             QMessageBox.warning(self, '生成规则无效', '至少需要选择一种字符类型。')
             return
-        password = PasswordGenerator.generate(
+        password = PasswordService.generate(
             length=self._length_slider.value(),
             uppercase=self._upper_check.isChecked(),
             lowercase=self._lower_check.isChecked(),
@@ -166,7 +166,7 @@ class PasswordGeneratorDialog(QDialog):
         self._update_strength(password)
 
     def _update_strength(self, password: str):
-        strength = PasswordGenerator.check_strength(password)
+        strength = PasswordService.check_strength(password)
         color = get_strength_color(strength.score)
         self._strength_label.setText(f'强度：{strength.label} ({strength.score}/4)')
         self._strength_label.setStyleSheet(f'color: {color}; font-size: 13px; font-weight: bold;')
@@ -214,7 +214,7 @@ class PasswordGeneratorDialog(QDialog):
         self._clear_sensitive()
         super().reject()
 
-    def closeEvent(self, event):
+    def closeEvent(self, a0):
         """窗口关闭前清除敏感输入。"""
         self._clear_sensitive()
-        super().closeEvent(event)
+        super().closeEvent(a0)

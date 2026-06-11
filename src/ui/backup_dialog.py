@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..crypto.password_generator import PasswordGenerator
+from ..business.password_service import PasswordService
 from ..ui.resources.constants import (
     BTN_DIALOG,
     BTN_DIALOG_WIDE,
@@ -40,6 +40,7 @@ class BackupDialog(QDialog):
         self._worker = None
         self._worker_is_backup: bool = True  # 记录 worker 启动时的模式，避免 reject 时读取已切换的按钮状态
         self._selected_path: str | None = None
+        self._data_changed: bool = False  # 标记是否执行了恢复操作
         self._setup_ui()
 
     def _setup_ui(self):
@@ -117,8 +118,7 @@ class BackupDialog(QDialog):
         """关闭对话框前等待后台 worker 完成。
 
         恢复操作有数据库写入副作用，不取消 worker 以确保数据一致性；
-        备份创建无副作用，可安全取消。完成后释放 worker 引用，缩短
-        密码闭包驻留（M-S6）。
+        备份创建无副作用，可安全取消。完成后释放 worker 引用，缩短密码闭包驻留时间。
         """
         if self._worker and self._worker.isRunning():
             if self._worker_is_backup:  # 基于 worker 启动时的模式，非当前按钮状态
@@ -128,11 +128,11 @@ class BackupDialog(QDialog):
         super().reject()
 
     def _release_worker(self):
-        """断开 worker 信号并释放引用，缩短密码闭包驻留（M-S6）。
+        """断开 worker 信号并释放引用，缩短密码闭包驻留时间。
 
         worker 的可调用对象闭包捕获了备份/恢复密码；操作完成或对话框
         关闭后立即断开信号并删除 self._worker 引用，使闭包随 worker
-        对象回收而释放（parent=self，控件销毁时 worker 一并销毁）。
+        对象回收而释放。worker 的 parent 为 self，控件销毁时 worker 一并销毁。
         """
         worker = self._worker
         if worker is None:
@@ -200,7 +200,7 @@ class BackupDialog(QDialog):
         )
         if not ok:
             return
-        valid, error = PasswordGenerator.validate_master_password(password, label='备份密码')
+        valid, error = PasswordService.validate_master_password(password, label='备份密码')
         if not valid:
             QMessageBox.warning(self, '备份密码不安全', error)
             return
@@ -223,9 +223,10 @@ class BackupDialog(QDialog):
 
     def _on_backup_done(self, result):
         self._set_busy(False)
-        self._release_worker()  # M-S6：尽早释放捕获密码的 worker 闭包
+        self._release_worker()  # 尽早释放捕获密码的 worker 闭包
         success, error_msg = result
         if success:
+            self._data_changed = True
             self._status_label.setText(format_status(True, '备份创建成功'))
             self._status_label.setStyleSheet(f'color: {c("success")};')
             QMessageBox.information(self, '成功', f'备份已保存到：\n{self._path_label.text()}')
@@ -237,7 +238,7 @@ class BackupDialog(QDialog):
 
     def _on_backup_error(self, error_msg: str):
         self._set_busy(False)
-        self._release_worker()  # M-S6：尽早释放捕获密码的 worker 闭包
+        self._release_worker()  # 尽早释放捕获密码的 worker 闭包
         self._status_label.setText(format_status(False, '备份失败'))
         self._status_label.setStyleSheet(f'color: {c("danger")};')
         QMessageBox.critical(self, '错误', f'备份创建失败：{error_msg}')
@@ -258,7 +259,7 @@ class BackupDialog(QDialog):
         except (OSError, ValueError) as exc:
             QMessageBox.critical(self, '错误', str(exc))
             return
-        # H3/M-S6：旧版备份（flags=0）绑定创建时的主密码，改密后无法恢复
+        # 旧版备份即 flags=0 绑定创建时的主密码，改密后无法恢复
         if info.get('master_key_bound'):
             QMessageBox.warning(
                 self, '[!] 旧版备份格式',
@@ -285,9 +286,10 @@ class BackupDialog(QDialog):
 
     def _on_restore_done(self, result):
         self._set_busy(False)
-        self._release_worker()  # M-S6：尽早释放捕获密码的 worker 闭包
+        self._release_worker()  # 尽早释放捕获密码的 worker 闭包
         success, error_msg = result
         if success:
+            self._data_changed = True
             self._status_label.setText(format_status(True, '恢复成功'))
             self._status_label.setStyleSheet(f'color: {c("success")};')
             QMessageBox.information(self, '成功', '备份恢复成功！')
@@ -299,7 +301,7 @@ class BackupDialog(QDialog):
 
     def _on_restore_error(self, error_msg: str):
         self._set_busy(False)
-        self._release_worker()  # M-S6：尽早释放捕获密码的 worker 闭包
+        self._release_worker()  # 尽早释放捕获密码的 worker 闭包
         self._status_label.setText(format_status(False, '恢复失败'))
         self._status_label.setStyleSheet(f'color: {c("danger")};')
         QMessageBox.critical(self, '错误', f'恢复失败：{error_msg}')

@@ -2,11 +2,11 @@
 
 from urllib.parse import urlparse
 
-from PyQt6.QtCore import QRectF, QSize, Qt
+from PyQt6.QtCore import QRectF, QSize, Qt, QModelIndex
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
-from PyQt6.QtWidgets import QStyle, QStyledItemDelegate
+from PyQt6.QtWidgets import QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
-from ..database.models import ENTRY_TYPE_LOGIN, ENTRY_TYPES
+from ..models import ENTRY_TYPE_LOGIN, ENTRY_TYPES
 from .resources.constants import FONT_FAMILY_FALLBACKS, FONT_FAMILY_PRIMARY
 from .resources.theme_colors import c, get_strength_color
 
@@ -87,7 +87,7 @@ class EntryItemDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         return QSize(option.rect.width(), self.ROW_HEIGHT)
 
-    def paint(self, painter: QPainter, option, index):
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex):  # pyright: ignore[reportIncompatibleMethodOverride]
         entry = index.data(Qt.ItemDataRole.UserRole)
         if entry is None:
             super().paint(painter, option, index)

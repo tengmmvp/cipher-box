@@ -2,6 +2,7 @@
 
 import logging
 import re
+from typing import cast
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
@@ -21,9 +22,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..crypto.password_generator import PasswordGenerator
-from ..crypto.totp import TOTPGenerator
-from ..database.models import (
+from ..business.password_service import PasswordService
+from ..models import (
     ENTRY_TYPE_CARD,
     ENTRY_TYPE_IDENTITY,
     ENTRY_TYPE_LOGIN,
@@ -69,7 +69,7 @@ _SPECIAL_FIELD_PREFIXES = {
 
 
 # ------------------------------------------------------------------
-# 信用卡校验（模块级函数，方便复用与单测）
+# 信用卡校验，作为模块级函数以方便复用与单测
 # ------------------------------------------------------------------
 
 def validate_card_number(number: str) -> bool:
@@ -207,7 +207,7 @@ class EntryDialog(QDialog):
         self._url_edit.setPlaceholderText('https://')
         self._add_field_row(form, 'url', '网址：', self._url_edit)
 
-        # 类型专用字段（按 entry_type 显示/隐藏）
+        # 类型专用字段，按 entry_type 显示或隐藏
         self._build_type_fields(form)
 
         # --- 公共尾部字段 ---
@@ -381,9 +381,9 @@ class EntryDialog(QDialog):
     def _validate_card_fields(self) -> bool:
         """校验信用卡字段，失败时弹出警告并返回 False"""
         w = self._special_widgets
-        card_number = w['card_number'].text().strip()
-        card_expiry = w['card_expiry'].text().strip()
-        card_cvv = w['card_cvv'].text().strip()
+        card_number = cast(QLineEdit, w['card_number']).text().strip()
+        card_expiry = cast(QLineEdit, w['card_expiry']).text().strip()
+        card_cvv = cast(QLineEdit, w['card_cvv']).text().strip()
 
         if card_number and not validate_card_number(card_number):
             QMessageBox.warning(self, '校验失败', '卡号格式不正确，请检查后重试。')
@@ -442,18 +442,18 @@ class EntryDialog(QDialog):
         if new_type == self._current_type:
             return
 
-        # 检查当前类型的专用字段是否有用户输入数据（编辑和新建模式均检查）
+        # 检查当前类型的专用字段是否有用户输入数据，编辑和新建模式均检查
         if self._current_type:
             old_fields = _TYPE_FIELDS.get(self._current_type, [])
             has_data = False
             for key in old_fields:
                 if key in self._special_widgets:
                     widget = self._special_widgets[key]
-                    text = widget.text() if hasattr(widget, 'text') else ''
+                    text = cast(QLineEdit, widget).text() if isinstance(widget, QLineEdit) else ''
                     if text.strip():
                         has_data = True
                         break
-            # 新建模式下，通用字段（标题、密码、备注）有内容时也应确认
+            # 新建模式下，通用字段即标题、密码、备注有内容时也应确认
             if not has_data and self._entry is None:
                 if (self._title_edit.text().strip()
                         or self._password_edit.text().strip()
@@ -484,7 +484,7 @@ class EntryDialog(QDialog):
             # _strength 行跟随 password
             if key == '_strength':
                 show = 'password' in visible_keys
-            # category / tags / favorite / 自定义字段区域始终可见（不在 _field_rows 中）
+            # category / tags / favorite / 自定义字段区域始终可见，不在 _field_rows 中
             elif key in ('category', 'tags', 'favorite'):
                 show = True
             else:
@@ -532,9 +532,10 @@ class EntryDialog(QDialog):
             self._totp_edit.setText(entry.totp_secret)
 
         # 从 custom_fields 恢复专用字段值
-        if entry.custom_fields:
+        cf_raw = entry.custom_fields
+        if isinstance(cf_raw, list) and cf_raw:
             type_specific = []
-            for cf in entry.custom_fields:
+            for cf in cf_raw:
                 matched = False
                 for prefix in _SPECIAL_FIELD_PREFIXES:
                     if cf.name.startswith(prefix):
@@ -546,7 +547,7 @@ class EntryDialog(QDialog):
                                 if idx >= 0:
                                     w.setCurrentIndex(idx)
                             else:
-                                w.setText(cf.value)
+                                cast(QLineEdit, w).setText(cf.value)
                         matched = True
                         break
                 if not matched:
@@ -581,7 +582,7 @@ class EntryDialog(QDialog):
         length = PWD_GENERATE_LENGTH_DEFAULT
         if self._config:
             length = self._config.get('default_password_length', PWD_GENERATE_LENGTH_DEFAULT)
-        password = PasswordGenerator.generate(
+        password = PasswordService.generate(
             length=length,
             uppercase=self._config.get('default_uppercase', True) if self._config else True,
             lowercase=self._config.get('default_lowercase', True) if self._config else True,
@@ -592,8 +593,8 @@ class EntryDialog(QDialog):
         self._password_edit.setText(password)
         self._password_edit.setEchoMode(QLineEdit.EchoMode.Normal)
         set_icon(self._toggle_pwd_btn, LOCK)
-        # 使用按钮内置的自动隐藏定时器
-        timer = getattr(self._toggle_pwd_btn, '_auto_hide_timer', None)
+        # 使用按钮内置的自动隐藏定时器，通过 Qt 属性系统访问
+        timer = self._toggle_pwd_btn.property('autoHideTimer')
         if timer is not None:
             visible_seconds = PWD_VISIBLE_SECONDS_DEFAULT
             if self._config:
@@ -612,9 +613,9 @@ class EntryDialog(QDialog):
         secret = self._totp_edit.text().strip()
         if not secret:
             return
-        if TOTPGenerator.validate_secret(secret):
+        if PasswordService.validate_totp_secret(secret):
             try:
-                TOTPGenerator.generate_or_raise(secret)
+                PasswordService.generate_totp_or_raise(secret)
                 QMessageBox.information(self, '验证成功', '密钥有效，已成功生成验证码。')
             except ValueError as exc:
                 QMessageBox.warning(self, '验证失败', f'密钥验证出错：{exc}')
@@ -694,30 +695,30 @@ class EntryDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _collect_type_specific_fields(self) -> list[CustomField]:
-        """将当前类型的专用字段收集为 CustomField（name 带类型前缀）"""
+        """将当前类型的专用字段收集为 CustomField，name 带类型前缀"""
         fields: list[CustomField] = []
         entry_type = self._type_combo.currentData() or ENTRY_TYPE_LOGIN
 
         if entry_type == ENTRY_TYPE_CARD:
             w = self._special_widgets
-            fields.append(CustomField(name='_card_holder', value=w['card_holder'].text()))
-            raw_number = w['card_number'].text().replace(' ', '')
+            fields.append(CustomField(name='_card_holder', value=cast(QLineEdit, w['card_holder']).text()))
+            raw_number = cast(QLineEdit, w['card_number']).text().replace(' ', '')
             fields.append(CustomField(name='_card_number', value=raw_number, field_type='password'))
-            fields.append(CustomField(name='_card_expiry', value=w['card_expiry'].text()))
-            fields.append(CustomField(name='_card_cvv', value=w['card_cvv'].text(), field_type='password'))
+            fields.append(CustomField(name='_card_expiry', value=cast(QLineEdit, w['card_expiry']).text()))
+            fields.append(CustomField(name='_card_cvv', value=cast(QLineEdit, w['card_cvv']).text(), field_type='password'))
 
         elif entry_type == ENTRY_TYPE_IDENTITY:
             w = self._special_widgets
-            fields.append(CustomField(name='_id_fullname', value=w['id_fullname'].text()))
-            fields.append(CustomField(name='_id_email', value=w['id_email'].text()))
-            fields.append(CustomField(name='_id_phone', value=w['id_phone'].text()))
-            fields.append(CustomField(name='_id_address', value=w['id_address'].text()))
+            fields.append(CustomField(name='_id_fullname', value=cast(QLineEdit, w['id_fullname']).text()))
+            fields.append(CustomField(name='_id_email', value=cast(QLineEdit, w['id_email']).text()))
+            fields.append(CustomField(name='_id_phone', value=cast(QLineEdit, w['id_phone']).text()))
+            fields.append(CustomField(name='_id_address', value=cast(QLineEdit, w['id_address']).text()))
 
         elif entry_type == ENTRY_TYPE_SERVER:
             w = self._special_widgets
-            fields.append(CustomField(name='_server_host', value=w['server_host'].text()))
-            fields.append(CustomField(name='_server_port', value=w['server_port'].text()))
-            protocol = w['server_protocol'].currentText()
+            fields.append(CustomField(name='_server_host', value=cast(QLineEdit, w['server_host']).text()))
+            fields.append(CustomField(name='_server_port', value=cast(QLineEdit, w['server_port']).text()))
+            protocol = cast(QComboBox, w['server_protocol']).currentText()
             fields.append(CustomField(name='_server_protocol', value=protocol))
 
         return fields
@@ -746,9 +747,9 @@ class EntryDialog(QDialog):
 
         # 服务器类型：用 host+port 构造 url
         if entry_type == ENTRY_TYPE_SERVER:
-            host = self._special_widgets['server_host'].text().strip()
-            port = self._special_widgets['server_port'].text().strip()
-            protocol = self._special_widgets['server_protocol'].currentText().lower()
+            host = cast(QLineEdit, self._special_widgets['server_host']).text().strip()
+            port = cast(QLineEdit, self._special_widgets['server_port']).text().strip()
+            protocol = cast(QComboBox, self._special_widgets['server_protocol']).currentText().lower()
             if host:
                 url = f'{protocol}://{host}' + (f':{port}' if port else '')
             username = self._username_edit.text().strip()
@@ -770,7 +771,7 @@ class EntryDialog(QDialog):
             entry_type=entry_type,
             totp_secret=self._totp_edit.text().strip(),
             # 传播 integrity_error 以防止覆盖已损坏的加密数据。
-            # 新条目（self._entry is None）始终为 False。
+            # 新条目即 self._entry is None 时始终为 False。
             integrity_error=self._entry.integrity_error if self._entry else False,
             integrity_message=self._entry.integrity_message if self._entry else '',
         )
@@ -782,23 +783,27 @@ class EntryDialog(QDialog):
             else:
                 self._entry_mgr.add_entry(entry)
             self.saved.emit()
-            # M-S5：保存成功后立即清除敏感输入框，缩短明文在内存中的驻留。
+            # 保存成功后立即清除敏感输入框，缩短明文在内存中的驻留。
             self._clear_sensitive_inputs()
             self.accept()
+        except ValueError as exc:
+            # 字段校验失败，提示用户修改
+            logger.warning("条目校验失败: %s", exc)
+            QMessageBox.warning(self, '输入有误', str(exc))
         except Exception as exc:
             logger.error("保存条目失败: %s", type(exc).__name__, exc_info=True)
             QMessageBox.critical(self, '错误', '保存失败，请重试')
 
     def _clear_sensitive_inputs(self):
-        """清除所有敏感输入框中的明文（M-S5）。
+        """清除所有敏感输入框中的明文。
 
         在保存成功、用户取消或关闭对话框时调用。QLineEdit.clear() 会重置
-        控件文本，主要消除对话结束后的"残留可见密码"风险（控件缓存、截图），
-        非 CPython 下的密码学清除保证——字符串对象的回收仍依赖 GC。
+        控件文本，主要消除对话结束后的"残留可见密码"风险，包括控件缓存和截图。
+        注意，这并非 CPython 下的密码学清除保证——字符串对象的回收仍依赖 GC。
         """
         self._password_edit.clear()
         self._totp_edit.clear()
-        # 信用卡敏感字段（持卡人、卡号、有效期、CVV）
+        # 信用卡敏感字段，包括持卡人、卡号、有效期、CVV
         for key in ('card_holder', 'card_number', 'card_expiry', 'card_cvv'):
             widget = self._special_widgets.get(key)
             if isinstance(widget, QLineEdit):
@@ -808,17 +813,17 @@ class EntryDialog(QDialog):
             widget = self._special_widgets.get(key)
             if isinstance(widget, QLineEdit):
                 widget.clear()
-        # 自定义字段中密码型（echoMode==Password）的值
+        # 自定义字段中密码型即 echoMode==Password 的值
         for _name_edit, _type_combo, value_edit, _layout in self._custom_field_rows:
             if value_edit.echoMode() == QLineEdit.EchoMode.Password:
                 value_edit.clear()
 
     def reject(self):
-        """取消/关闭前清除敏感输入框（M-S5）。"""
+        """取消/关闭前清除敏感输入框。"""
         self._clear_sensitive_inputs()
         super().reject()
 
-    def closeEvent(self, event):
-        """窗口关闭前清除敏感输入框（M-S5）。"""
+    def closeEvent(self, a0):
+        """窗口关闭前清除敏感输入框。"""
         self._clear_sensitive_inputs()
-        super().closeEvent(event)
+        super().closeEvent(a0)

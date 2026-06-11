@@ -90,3 +90,16 @@ PWD_GENERATE_LENGTH_DEFAULT = 16     # 默认生成密码长度
 
 # ---------- 字体（CSS/QSS） ----------
 FONT_FAMILY_MONOSPACE = 'Consolas, Courier New, monospace'
+
+# ---------- 排序选项 ----------
+# (显示名称, 字段, 排序方向) — main_window 和 main_window_filters 共享
+SORT_OPTIONS = [
+    ('更新时间 ↓', 'updated_at', 'desc'),
+    ('更新时间 ↑', 'updated_at', 'asc'),
+    ('标题 A→Z', 'title', 'asc'),
+    ('标题 Z→A', 'title', 'desc'),
+    ('强度 高→低', 'password_strength', 'desc'),
+    ('强度 低→高', 'password_strength', 'asc'),
+    ('创建时间 ↓', 'created_at', 'desc'),
+    ('创建时间 ↑', 'created_at', 'asc'),
+]

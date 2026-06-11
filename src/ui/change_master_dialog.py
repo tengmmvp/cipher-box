@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..crypto.password_generator import PasswordGenerator
+from ..business.password_service import PasswordService
 from ..ui.resources.constants import (
     BTN_DIALOG,
     DIALOG_CHANGE_MASTER_MIN_SIZE,
@@ -137,7 +137,7 @@ class ChangeMasterDialog(QDialog):
         update_strength_label(self._strength_label, text)
 
     def _on_change(self):
-        # L13：速率限制委托给 RateLimiter
+        # 速率限制委托给 RateLimiter
         msg = self._rate_limiter.check()
         if msg:
             self._msg_label.setText(msg)
@@ -153,7 +153,7 @@ class ChangeMasterDialog(QDialog):
         if not new:
             self._msg_label.setText('请输入新主密码')
             return
-        valid, error = PasswordGenerator.validate_master_password(new)
+        valid, error = PasswordService.validate_master_password(new)
         if not valid:
             self._msg_label.setText(error)
             return
@@ -186,24 +186,27 @@ class ChangeMasterDialog(QDialog):
         self._worker.error.connect(self._on_change_error)
         self._worker.start()
 
-    def _on_change_done(self, success):
+    def _on_change_done(self, result: tuple[bool, str]):
         release_worker(self)
         self._change_btn.setEnabled(True)
         self._msg_label.setStyleSheet(f'color: {c("danger")}; font-size: 12px; min-height: 18px;')
         # 清除旧密码输入框，减少明文驻留内存时间。
         self._old_pwd.clear()
+        success, error_msg = result
         if success:
             self._rate_limiter.record_success()
             QMessageBox.information(self, '成功', '主密码已修改成功！')
             self.accept()
         else:
             lock_seconds = self._rate_limiter.record_failure()
+            # 使用 VaultManager 返回的具体错误消息，或回退到默认提示
+            display_msg = error_msg or '当前主密码错误'
             if lock_seconds > 0:
                 self._msg_label.setText(
-                    f'当前主密码错误。尝试次数过多，请等待 {lock_seconds} 秒后重试'
+                    f'{display_msg}。尝试次数过多，请等待 {lock_seconds} 秒后重试'
                 )
             else:
-                self._msg_label.setText('当前主密码错误')
+                self._msg_label.setText(display_msg)
 
     def _on_change_error(self, error_msg: str):
         release_worker(self)

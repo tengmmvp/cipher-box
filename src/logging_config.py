@@ -8,6 +8,7 @@ from .utils.file_security import secure_directory, secure_file
 
 
 def configure_logging(data_dir: Path):
+    """配置应用日志，使用轮转文件 handler，仅记录运行状态。"""
     log_dir = data_dir / 'logs'
     secure_directory(log_dir)
     log_path = log_dir / 'cipherbox.log'
@@ -22,6 +23,8 @@ def configure_logging(data_dir: Path):
         '%(asctime)s %(levelname)s %(name)s: %(message)s'
     ))
     root = logging.getLogger()
-    if not any(isinstance(item, RotatingFileHandler) for item in root.handlers):
-        root.addHandler(handler)
+    # 清理已有 handler，防止测试或多次调用导致重复
+    for h in root.handlers[:]:
+        root.removeHandler(h)
+    root.addHandler(handler)
     root.setLevel(logging.INFO)

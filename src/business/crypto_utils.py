@@ -2,6 +2,7 @@
 
 import copy
 import dataclasses
+import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -10,6 +11,8 @@ if TYPE_CHECKING:
 from ..crypto.encryption import EncryptionEngine
 from ..database.models import Entry
 from .exceptions import VaultLockedError
+
+logger = logging.getLogger(__name__)
 
 
 def require_vault_key(vault_manager: 'VaultManager') -> bytes:
@@ -68,6 +71,10 @@ def decrypt_field(
     except ValueError:
         if strict:
             raise
+        logger.debug(
+            "字段解密失败（容错模式）: crypto_id=%s field=%s",
+            crypto_id, field_name, exc_info=True,
+        )
         return ''
 
 
@@ -83,10 +90,16 @@ def matches_search(entry: Entry, query: str) -> bool:
 
 
 def matches_tag(entry: Entry, tag: str) -> bool:
-    """检查条目是否包含指定标签。"""
+    """检查条目是否包含指定标签（大小写不敏感精确匹配）。
+
+    与 ``Entry.get_tag_list()`` 使用一致的解析逻辑：
+    以逗号分隔、逐元素 strip 空白、大小写不敏感比较。
+    """
     if not tag:
         return True
-    return tag in (entry.tags or '').split(',')
+    tag_lower = tag.strip().lower()
+    entry_tags = [t.strip().lower() for t in (entry.tags or '').split(',') if t.strip()]
+    return tag_lower in entry_tags
 
 
 def copy_entry_fields(raw: Entry, **overrides) -> Entry:

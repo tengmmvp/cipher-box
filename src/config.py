@@ -11,10 +11,10 @@ from typing import Any
 from .utils.file_security import secure_directory, secure_file
 
 # 配置完整性 HMAC 密钥。
-# SECURITY NOTICE: 此密钥硬编码于源码中，仅用于防护意外损坏（如磁盘错误、
-# 部分写入），不防护有意篡改。攻击者若能修改配置文件且可访问源码，
-# 可重新计算 HMAC 绕过检查。所有配置值在使用时应通过 validate_file_path()
-# 等函数做二次校验。这是本地优先应用的常见防御模式。
+# 此密钥硬编码于源码中，仅用于防护意外损坏，如磁盘错误或部分写入，
+# 不防护有意篡改。攻击者若能修改配置文件且可访问源码，可重新计算 HMAC
+# 绕过检查。所有配置值在使用时应通过 validate_file_path() 等函数做二次校验。
+# 这是本地优先应用的常见防御模式。
 _CONFIG_INTEGRITY_KEY = b'cipherbox:config-integrity-v1'
 _CONFIG_SIG_PREFIX = '#__sig__:'
 
@@ -76,7 +76,7 @@ _BOOL_KEYS = {
     'show_tray_icon', 'minimize_to_tray', 'close_to_tray',
 }
 
-# 速率限制策略：(失败次数, 锁定秒数)
+# 速率限制策略：每组为失败次数和对应锁定秒数
 RATE_LIMITS: list[tuple[int, int]] = [(3, 10), (5, 30), (8, 60), (10, 120)]
 
 
@@ -130,7 +130,7 @@ class ConfigManager:
                         )
                         self._integrity_warning = True
                 else:
-                    logger.debug('配置文件无完整性签名（旧格式），跳过校验')
+                    logger.debug('配置文件无完整性签名，属于旧格式，跳过校验')
                 saved = json.loads(json_text)
                 if not isinstance(saved, dict):
                     raise ValueError('配置文件根节点必须是对象')
@@ -172,9 +172,10 @@ class ConfigManager:
         """获取配置项"""
         return self._config.get(key, default)
 
-    # 安全关键配置项的运行时下限（SEC-06：即使配置文件被篡改也不接受低于阈值的值）
+    # 安全关键配置项的运行时下限，即使配置文件被篡改也不接受低于阈值的值
     _SECURITY_MINIMUMS: dict[str, int] = {
         'clipboard_clear_seconds': 10,
+        'auto_lock_minutes': 1,
     }
 
     def get_safe(self, key: str, default=None):
@@ -182,10 +183,17 @@ class ConfigManager:
 
         与 get() 相同，但对 _SECURITY_MINIMUMS 中定义的键，
         返回值不低于安全阈值，防止配置文件被篡改后降低安全策略。
+
+        设计折衷：``auto_lock_minutes=0`` 是用户主动禁用自动锁定的合法语义，
+        不受安全下限约束，直接返回 0。这优先尊重用户选择而非强制安全策略。
+        负值等非法篡改值仍会被修正为安全下限。
         """
         value = self.get(key, default)
         if isinstance(value, int) and key in self._SECURITY_MINIMUMS:
             minimum = self._SECURITY_MINIMUMS[key]
+            # auto_lock_minutes=0 是合法的"禁用"语义，不受安全下限约束
+            if key == 'auto_lock_minutes' and value == 0:
+                return value
             if value < minimum:
                 logger.warning("配置 %s=%d 低于安全下限 %d，已修正", key, value, minimum)
                 return minimum

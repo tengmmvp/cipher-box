@@ -14,6 +14,7 @@ _MAX_SECURED_CACHE = 256
 
 @functools.lru_cache(maxsize=1)
 def _windows_user_sid() -> str:
+    """获取当前 Windows 用户的 SID，用于 ACL 权限设置。"""
     if os.name != 'nt':
         return ''
     try:
@@ -32,6 +33,7 @@ def _windows_user_sid() -> str:
 
 
 def _windows_object_identity(path: Path) -> tuple[int, int] | None:
+    """获取文件的设备号和 inode，用于 ACL 缓存的唯一标识。"""
     try:
         stat = path.stat()
         return stat.st_dev, stat.st_ino
@@ -40,8 +42,10 @@ def _windows_object_identity(path: Path) -> tuple[int, int] | None:
 
 
 def _restrict_windows_acl(path: Path, is_directory: bool):
+    """限制文件或目录的 ACL 权限为当前用户独占访问。"""
     sid = _windows_user_sid()
     if not sid:
+        logger.warning('无法获取 Windows 用户 SID，跳过 ACL 权限限制：%s', path)
         return
     cache_key = str(path.resolve())
     identity = _windows_object_identity(path)
@@ -77,6 +81,7 @@ def _restrict_windows_acl(path: Path, is_directory: bool):
 
 
 def secure_directory(path: Path) -> Path:
+    """创建目录并设置最小权限，仅当前用户可访问。"""
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     if sys.platform != 'win32':
         try:
@@ -91,10 +96,10 @@ def secure_directory(path: Path) -> Path:
 def validate_file_path(path, base_dir: Path | None = None) -> Path:
     """验证文件路径，用于导入/导出/备份操作。
 
-    解析路径并拒绝可能允许目录遍历（path traversal）的路径组件，
-    包括通过 symlink（符号链接）解析到预期目录树之外的情况。
+    解析路径并拒绝可能允许目录遍历的路径组件，
+    包括通过符号链接解析到预期目录树之外的情况。
 
-    调用方**必须**使用返回的 resolved 路径而非原始 path 参数，
+    调用方必须使用返回的 resolved 路径而非原始 path 参数，
     以避免 TOCTOU 竞态窗口。
 
     Args:
@@ -102,10 +107,10 @@ def validate_file_path(path, base_dir: Path | None = None) -> Path:
         base_dir: 可选的基目录约束。若提供，解析后的路径必须位于该目录下。
 
     Returns:
-        解析后的安全路径（调用方应使用此返回值）。
+        解析后的安全路径，调用方应使用此返回值。
     """
     resolved = Path(path).resolve()
-    # Reject paths with '..' components (potential traversal)
+    # 拒绝含 '..' 组件的路径，防止目录遍历攻击
     parts = Path(path).parts
     if '..' in parts:
         raise ValueError('文件路径包含非法遍历组件')
@@ -128,6 +133,7 @@ def validate_file_path(path, base_dir: Path | None = None) -> Path:
 
 
 def secure_file(path: Path) -> Path:
+    """设置文件最小权限，仅当前用户可读写。"""
     if not path.exists():
         return path
     if sys.platform != 'win32':

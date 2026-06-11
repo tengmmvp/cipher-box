@@ -31,7 +31,7 @@ def _config(root: str):
 def test_unchanged_password_does_not_create_history():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         manager = EntryManager(vault)
         entry_id = manager.add_entry(Entry(title='Account', password='SamePassword!2026'))
         entry = manager.get_entry(entry_id)
@@ -43,7 +43,7 @@ def test_unchanged_password_does_not_create_history():
 def test_password_history_survives_master_password_change():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('OldMasterPassword!2026')
+        assert vault.initialize('OldMasterPassword!2026')[0]
         manager = EntryManager(vault)
         entry_id = manager.add_entry(Entry(title='Account', password='FirstPassword!2026'))
         entry = manager.get_entry(entry_id)
@@ -52,7 +52,7 @@ def test_password_history_survives_master_password_change():
 
         assert vault.change_master_password(
             'OldMasterPassword!2026', 'NewMasterPassword!2026'
-        )
+        )[0]
         history = manager.decrypt_password_history(manager.get_password_history(entry_id))
         assert [item['password'] for item in history] == ['FirstPassword!2026']
         vault.close()
@@ -61,7 +61,7 @@ def test_password_history_survives_master_password_change():
 def test_portable_backup_restores_into_different_vault():
     with tempfile.TemporaryDirectory() as source_root, tempfile.TemporaryDirectory() as target_root:
         source = VaultManager(_config(source_root))
-        assert source.initialize('SourceMasterPassword!2026')
+        assert source.initialize('SourceMasterPassword!2026')[0]
         source_manager = EntryManager(source)
         entry_id = source_manager.add_entry(Entry(
             title='Portable entry',
@@ -81,7 +81,7 @@ def test_portable_backup_restores_into_different_vault():
         assert success, error
 
         target = VaultManager(_config(target_root))
-        assert target.initialize('DifferentMasterPassword!2026')
+        assert target.initialize('DifferentMasterPassword!2026')[0]
         success, error = BackupRestoreManager(target).restore_backup(
             backup_path, 'IndependentBackupPassword!2026'
         )
@@ -103,7 +103,7 @@ def test_portable_backup_restores_into_different_vault():
 def test_entry_dialog_restores_type_specific_fields():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         manager = EntryManager(vault)
         entry = Entry(
             title='Card',
@@ -126,7 +126,7 @@ def test_lock_preparation_clears_decrypted_ui_and_clipboard():
     with tempfile.TemporaryDirectory() as root:
         config = _config(root)
         vault = VaultManager(config)
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         manager = EntryManager(vault)
         manager.add_entry(Entry(title='Secret', password='VisibleSecret!2026'))
         window = MainWindow(config, vault)
@@ -147,7 +147,7 @@ def test_lock_closes_and_scrubs_open_entry_dialog():
     with tempfile.TemporaryDirectory() as root:
         config = _config(root)
         vault = VaultManager(config)
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         manager = EntryManager(vault)
         entry_id = manager.add_entry(Entry(title='Secret', password='DialogSecret!2026'))
         window = MainWindow(config, vault)
@@ -177,10 +177,10 @@ def test_stale_key_session_cannot_write_after_master_password_change():
         first = VaultManager(_config(root))
         assert first.initialize('OldMasterPassword!2026')
         stale = VaultManager(_config(root))
-        assert stale.unlock('OldMasterPassword!2026')
+        assert stale.unlock('OldMasterPassword!2026')[0]
         assert first.change_master_password(
             'OldMasterPassword!2026', 'NewMasterPassword!2026'
-        )
+        )[0]
 
         try:
             EntryManager(stale).add_entry(
@@ -198,7 +198,7 @@ def test_stale_key_session_cannot_write_after_master_password_change():
 def test_context_bound_ciphertext_rejects_cross_entry_swap():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         manager = EntryManager(vault)
         first_id = manager.add_entry(Entry(title='First', password='FirstSecret!2026'))
         second_id = manager.add_entry(Entry(title='Second', password='SecondSecret!2026'))
@@ -217,7 +217,7 @@ def test_context_bound_ciphertext_rejects_cross_entry_swap():
 def test_vault_persists_kdf_parameters_and_ciphertext_format():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         manager = EntryManager(vault)
         entry_id = manager.add_entry(Entry(title='Account', password='Secret!2026'))
         raw = vault.db.get_entry(entry_id)
@@ -234,7 +234,7 @@ def test_selecting_first_entry_opens_detail_panel_without_crash():
         config = _config(root)
         config.set('theme', 'dark')
         vault = VaultManager(config)
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         manager = EntryManager(vault)
         entry_id = manager.add_entry(Entry(title='Selectable', password='Strong!2026Password'))
         window = MainWindow(config, vault)
@@ -292,7 +292,7 @@ def test_totp_accepts_standard_otpauth_uri():
 def test_bitwarden_import_preserves_folder_totp_and_custom_fields():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         manager = EntryManager(vault)
         importer = ImportExportManager(manager)
         payload = {
@@ -326,7 +326,7 @@ def test_bitwarden_import_preserves_folder_totp_and_custom_fields():
 def test_import_rolls_back_when_any_entry_fails():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         manager = EntryManager(vault)
         importer = ImportExportManager(manager)
         path = Path(root) / 'entries.json'
@@ -360,7 +360,7 @@ def test_import_rolls_back_when_any_entry_fails():
 def test_export_without_password_excludes_secret_custom_fields():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         manager = EntryManager(vault)
         manager.add_entry(Entry(
             title='Card',
@@ -391,7 +391,7 @@ def test_export_without_password_excludes_secret_custom_fields():
 def test_passwordless_overwrite_import_preserves_existing_secrets():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         manager = EntryManager(vault)
         entry_id = manager.add_entry(Entry(
             title='Account',
@@ -420,7 +420,7 @@ def test_passwordless_overwrite_import_preserves_existing_secrets():
 def test_favorite_change_does_not_reset_password_age():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         manager = EntryManager(vault)
         entry_id = manager.add_entry(Entry(title='Account', password='Password!2026'))
         before = manager.get_entry(entry_id).password_changed_at
@@ -434,7 +434,7 @@ def test_main_window_filters_entries_by_tag():
     with tempfile.TemporaryDirectory() as root:
         config = _config(root)
         vault = VaultManager(config)
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         manager = EntryManager(vault)
         manager.add_entry(Entry(title='Work', tags='工作,重要'))
         manager.add_entry(Entry(title='Personal', tags='个人'))
@@ -451,14 +451,15 @@ def test_main_window_filters_entries_by_tag():
 def test_existing_vault_cannot_be_initialized_again():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('OriginalMaster!2026')
+        assert vault.initialize('OriginalMaster!2026')[0]
         manager = EntryManager(vault)
         entry_id = manager.add_entry(Entry(title='Keep', password='KeepSecret!2026'))
 
-        assert vault.initialize('ReplacementMaster!2026') is False
-        assert '已经初始化' in vault.last_error
+        ok, msg = vault.initialize('ReplacementMaster!2026')
+        assert ok is False
+        assert '已经初始化' in msg
         vault.lock()
-        assert vault.unlock('OriginalMaster!2026')
+        assert vault.unlock('OriginalMaster!2026')[0]
         assert manager.get_entry(entry_id).password == 'KeepSecret!2026'
         vault.close()
 
@@ -466,7 +467,7 @@ def test_existing_vault_cannot_be_initialized_again():
 def test_entry_metadata_tampering_is_rejected():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         manager = EntryManager(vault)
         entry_id = manager.add_entry(Entry(title='Original', password='Secret!2026'))
 
@@ -490,14 +491,14 @@ def test_entry_metadata_tampering_is_rejected():
 def test_entry_metadata_is_resigned_after_master_password_change():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('OldMasterPassword!2026')
+        assert vault.initialize('OldMasterPassword!2026')[0]
         manager = EntryManager(vault)
         entry_id = manager.add_entry(Entry(title='Account', password='Secret!2026'))
         old_mac = vault.db.get_entry(entry_id).metadata_mac
 
         assert vault.change_master_password(
             'OldMasterPassword!2026', 'NewMasterPassword!2026'
-        )
+        )[0]
         entry = manager.get_entry(entry_id)
         assert entry.password == 'Secret!2026'
         assert vault.db.get_entry(entry_id).metadata_mac != old_mac
@@ -507,15 +508,16 @@ def test_entry_metadata_is_resigned_after_master_password_change():
 def test_vault_api_rejects_weak_master_passwords():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('aaaaaaaaaaaa') is False
-        assert '强度不足' in vault.last_error
+        ok, msg = vault.initialize('aaaaaaaaaaaa')
+        assert ok is False
+        assert '强度不足' in msg
         assert not (Path(root) / 'vault.db').exists()
 
 
 def test_nested_transaction_uses_savepoint_for_inner_rollback():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         manager = EntryManager(vault)
         with vault.db.transaction():
             manager.add_entry(Entry(title='Outer', password='OuterSecret!2026'))
@@ -533,7 +535,7 @@ def test_nested_transaction_uses_savepoint_for_inner_rollback():
 def test_import_all_does_not_decrypt_existing_vault():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         manager = EntryManager(vault)
         manager.add_entry(Entry(title='Existing', password='ExistingSecret!2026'))
         path = Path(root) / 'entries.json'
@@ -558,7 +560,7 @@ def test_import_all_does_not_decrypt_existing_vault():
 def test_pre_restore_snapshot_survives_master_password_change():
     with tempfile.TemporaryDirectory() as source_root, tempfile.TemporaryDirectory() as target_root:
         source = VaultManager(_config(source_root))
-        assert source.initialize('SourceMaster!2026')
+        assert source.initialize('SourceMaster!2026')[0]
         EntryManager(source).add_entry(
             Entry(title='Incoming', password='IncomingSecret!2026')
         )
@@ -569,7 +571,7 @@ def test_pre_restore_snapshot_survives_master_password_change():
         assert success, error
 
         target = VaultManager(_config(target_root))
-        assert target.initialize('OldTargetMaster!2026')
+        assert target.initialize('OldTargetMaster!2026')[0]
         target_manager = EntryManager(target)
         target_manager.add_entry(
             Entry(title='Before restore', password='OriginalSecret!2026')
@@ -585,7 +587,7 @@ def test_pre_restore_snapshot_survives_master_password_change():
 
         assert target.change_master_password(
             'OldTargetMaster!2026', 'NewTargetMaster!2026'
-        )
+        )[0]
         success, error = backup_manager.restore_backup(str(restore_point))
         assert success, error
         restored = target_manager.get_entries()
@@ -597,7 +599,7 @@ def test_pre_restore_snapshot_survives_master_password_change():
 def test_existing_database_missing_table_is_rejected_without_repair():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         vault.close()
         db_path = Path(root) / 'vault.db'
         connection = sqlite3.connect(db_path)
@@ -621,7 +623,7 @@ def test_existing_database_missing_table_is_rejected_without_repair():
 def test_deleted_default_category_does_not_reappear_after_restart():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('MasterPassword!2026')
+        assert vault.initialize('MasterPassword!2026')[0]
         category = next(item for item in vault.db.get_categories() if item.name == '社交')
         vault.db.delete_category(category.id)
         vault.close()

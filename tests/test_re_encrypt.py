@@ -43,7 +43,7 @@ class TestReEncryptEdgeCases:
             totp_secret='',
         ))
 
-        ok = self._vault.change_master_password(
+        ok, _ = self._vault.change_master_password(
             'original_pwd_123', 'new_password_456'
         )
         assert ok
@@ -70,7 +70,7 @@ class TestReEncryptEdgeCases:
             custom_fields=custom,
         ))
 
-        ok = self._vault.change_master_password(
+        ok, _ = self._vault.change_master_password(
             'original_pwd_123', 'new_password_456'
         )
         assert ok
@@ -98,7 +98,7 @@ class TestReEncryptEdgeCases:
         ))
         self._entry_mgr.delete_entry(eid)
 
-        ok = self._vault.change_master_password(
+        ok, _ = self._vault.change_master_password(
             'original_pwd_123', 'new_password_456'
         )
         assert ok
@@ -135,7 +135,7 @@ class TestReEncryptEdgeCases:
         assert history[0]['password'] == 'first_password'
 
         # 改密
-        ok = self._vault.change_master_password(
+        ok, _ = self._vault.change_master_password(
             'original_pwd_123', 'new_password_456'
         )
         assert ok
@@ -175,7 +175,7 @@ class TestReEncryptEdgeCases:
             password='',
         ))
 
-        ok = self._vault.change_master_password(
+        ok, _ = self._vault.change_master_password(
             'original_pwd_123', 'new_password_456'
         )
         assert ok
@@ -211,7 +211,7 @@ class TestReEncryptEdgeCases:
             raise OSError('模拟写入失败')
 
         with patch.object(self._vault._db, 'update_entries_batch', side_effect=failing_batch):
-            ok = self._vault.change_master_password(
+            ok, _ = self._vault.change_master_password(
                 'original_pwd_123', 'new_password_456'
             )
 
@@ -220,7 +220,7 @@ class TestReEncryptEdgeCases:
 
         # 改密失败后旧密钥仍有效，会话保留
         # 重新解锁后数据应完好（事务回滚保障）
-        assert self._vault.unlock('original_pwd_123')
+        assert self._vault.unlock('original_pwd_123')[0]
         entry_mgr = EntryManager(self._vault)
         entries = entry_mgr.get_entries()
         assert len(entries) == 1
@@ -244,12 +244,12 @@ class TestReEncryptEdgeCases:
 
         originals = self._entry_mgr.get_entries()
 
-        ok = self._vault.change_master_password(
+        ok, _ = self._vault.change_master_password(
             'original_pwd_123', 'new_password_456'
         )
         assert ok
 
-        assert self._vault.unlock('new_password_456')
+        assert self._vault.unlock('new_password_456')[0]
 
         restored = self._entry_mgr.get_entries()
         assert len(restored) == len(originals)
@@ -279,11 +279,11 @@ class TestReEncryptEdgeCases:
         originals = {e.title: e for e in self._entry_mgr.get_entries()}
         assert len(originals) == 10
 
-        ok = self._vault.change_master_password(
+        ok, _ = self._vault.change_master_password(
             'original_pwd_123', 'another_password'
         )
         assert ok
-        assert self._vault.unlock('another_password')
+        assert self._vault.unlock('another_password')[0]
 
         restored = {e.title: e for e in self._entry_mgr.get_entries()}
         assert len(restored) == 10
@@ -307,11 +307,11 @@ class TestReEncryptEdgeCases:
         )
         self._entry_mgr.add_entry(entry)
 
-        ok = self._vault.change_master_password(
+        ok, _ = self._vault.change_master_password(
             'original_pwd_123', 'new_password_456'
         )
         assert ok
-        assert self._vault.unlock('new_password_456')
+        assert self._vault.unlock('new_password_456')[0]
 
         restored = self._entry_mgr.get_entries()[0]
         assert isinstance(restored.custom_fields, list)

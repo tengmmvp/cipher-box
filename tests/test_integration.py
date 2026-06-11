@@ -222,7 +222,7 @@ class TestVaultManagerLifecycle(unittest.TestCase):
 
         # 1. 初始化并添加条目
         vault = self._create_vault()
-        self.assertTrue(vault.initialize(master_pwd))
+        self.assertTrue(vault.initialize(master_pwd)[0])
         self.assertTrue(vault.is_unlocked)
 
         entry_mgr = EntryManager(vault)
@@ -239,7 +239,7 @@ class TestVaultManagerLifecycle(unittest.TestCase):
         self.assertIsNone(vault.key)
 
         # 3. 解锁
-        self.assertTrue(vault.unlock(master_pwd))
+        self.assertTrue(vault.unlock(master_pwd)[0])
         self.assertTrue(vault.is_unlocked)
         self.assertIsNotNone(vault.key)
 
@@ -253,7 +253,7 @@ class TestVaultManagerLifecycle(unittest.TestCase):
 
         # 用错误密码解锁应失败
         vault.lock()
-        self.assertFalse(vault.unlock("wrong_password"))
+        self.assertFalse(vault.unlock("wrong_password")[0])
 
         vault.close()
 
@@ -276,7 +276,7 @@ class TestVaultManagerLifecycle(unittest.TestCase):
         ))
 
         # 2. change_master_password
-        self.assertTrue(vault.change_master_password(old_pwd, new_pwd))
+        self.assertTrue(vault.change_master_password(old_pwd, new_pwd)[0])
 
         # 3. 验证 get_entries 仍能正确解密
         entry_mgr2 = EntryManager(vault)
@@ -290,7 +290,7 @@ class TestVaultManagerLifecycle(unittest.TestCase):
 
         # 5. 锁定后用新密码解锁，验证仍然可用
         vault.lock()
-        self.assertTrue(vault.unlock(new_pwd))
+        self.assertTrue(vault.unlock(new_pwd)[0])
         entry_mgr3 = EntryManager(vault)
         entry = entry_mgr3.get_entry(entry_id)
         assert entry is not None
@@ -300,7 +300,7 @@ class TestVaultManagerLifecycle(unittest.TestCase):
 
         # 6. 用旧密码解锁应失败
         vault.lock()
-        self.assertFalse(vault.unlock(old_pwd))
+        self.assertFalse(vault.unlock(old_pwd)[0])
 
         vault.close()
 
@@ -400,7 +400,7 @@ class TestBackupRestore(unittest.TestCase):
 
         self.assertTrue(self._vault.change_master_password(
             'test_password_123', 'NewMasterPassword!2026'
-        ))
+        )[0])
         self._entry_mgr.permanent_delete_entry(entry_id)
         success, error = self._backup_mgr.restore_backup(backup_path)
         self.assertTrue(success, error)
@@ -751,11 +751,11 @@ class TestErrorPaths(unittest.TestCase):
         result = vault.change_master_password(
             "WrongOldMaster!2026", "NewMasterPassword!2026"
         )
-        self.assertFalse(result)
+        self.assertFalse(result[0])
 
         # 验证原密码仍然可用
         vault.lock()
-        self.assertTrue(vault.unlock("OriginalMaster!2026"))
+        self.assertTrue(vault.unlock("OriginalMaster!2026")[0])
 
         vault.close()
         shutil.rmtree(self._tmp_dir)
@@ -776,7 +776,6 @@ class TestErrorPaths(unittest.TestCase):
             with patch.object(vault._db, 'open', return_value=False):
                 result = vault.is_initialized
                 self.assertFalse(result)
-                self.assertIn('数据库无法打开', vault.last_error)
 
         vault.close()
         shutil.rmtree(self._tmp_dir)

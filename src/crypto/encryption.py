@@ -1,10 +1,10 @@
 """加密引擎 - AES-256-GCM 加密/解密。
 
-内存安全说明（SEC-10）：``_cipher_cache`` 使用密钥的 SHA-256 摘要作为
-缓存键，不再以原始密钥 bytes 作为 dict key。这避免了缓存字典持有原始
-密钥材料的额外引用。缓存在 ``clear_cache`` 被显式调用前会一直驻留进程内存
-（``VaultManager.lock`` 与 ``_re_encrypt_all`` 负责调用）。
-调用方必须在密钥失效（锁定 / 改密）时调用 ``clear_cache``。
+内存安全说明：``_cipher_cache`` 使用密钥的 SHA-256 摘要作为缓存键，
+不再以原始密钥 bytes 作为 dict key，避免缓存字典持有原始密钥材料的额外
+引用。缓存在 ``clear_cache`` 被显式调用前会一直驻留进程内存，
+``VaultManager.lock`` 与 ``_re_encrypt_all`` 负责调用。
+调用方必须在密钥失效（锁定或改密）时调用 ``clear_cache``。
 
 CPython 固有限制：``bytes`` 对象不可变，无法从 Python 层面原地清零。
 ``clear_cache`` 仅清除缓存字典的引用，原始 ``bytes`` 对象依赖 GC 回收。
@@ -17,6 +17,7 @@ import logging
 import os
 import threading
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ def _cache_key(key: bytes) -> bytes:
 # AESGCM 实例缓存线程锁，保护 _cipher_cache 的并发读写。
 _cache_lock = threading.RLock()
 
-# AESGCM 实例缓存：按密钥 SHA-256 摘要索引（SEC-10：避免缓存持有原始密钥材料）。
+# AESGCM 实例缓存：按密钥 SHA-256 摘要索引，避免缓存持有原始密钥材料。
 # 缓存通常仅含 1-2 条（当前活跃密钥），_MAX_CACHE_SIZE 为安全上限。
 # 在 VaultManager.lock() 和 _re_encrypt_all 完成后显式清除。
 _MAX_CACHE_SIZE = 16
@@ -41,11 +42,11 @@ class EncryptionEngine:
     """使用 AES-256-GCM 进行数据加密和解密"""
 
     NONCE_SIZE = 12  # GCM 推荐 nonce 长度
-    TAG_SIZE = 16    # GCM 认证标签长度（128 位）
+    TAG_SIZE = 16    # GCM 认证标签长度，128 位
     FORMAT_ID = 'aes-256-gcm-aad'
     TEXT_PREFIX = 'cb:'
     BYTES_PREFIX = b'CBX'
-    # 空值哨兵（S4）：使用 UUID 前缀降低碰撞概率，保留旧哨兵用于解密兼容。
+    # 空值哨兵：使用 UUID 前缀降低碰撞概率，保留旧哨兵用于解密兼容。
     _EMPTY_SENTINEL = '__CBX_EMPTY_7f3a2b1c-4d5e-6f8a-9b0c-1d2e3f4a5b6c__'
     _EMPTY_BYTES_SENTINEL = b'__CBX_BE_7f3a2b1c-4d5e-6f8a-9b0c-1d2e3f4a5b6c__'
     # 旧版哨兵，仅解密时兼容
@@ -55,8 +56,8 @@ class EncryptionEngine:
 
     @classmethod
     def _get_cipher(cls, key: bytes) -> AESGCM:
-        """获取或创建 AESGCM 实例（按密钥 SHA-256 摘要缓存）"""
-        # S3: 密钥校验 —— 类型与长度，防止意外降级为 AES-128
+        """获取或创建 AESGCM 实例，按密钥 SHA-256 摘要缓存"""
+        # 密钥校验：类型与长度，防止意外降级为 AES-128
         if not isinstance(key, (bytes, bytearray)):
             raise TypeError(f'AES-256 密钥类型无效：期望 bytes，实际 {type(key).__name__}')
         if len(key) != 32:
@@ -143,19 +144,20 @@ class EncryptionEngine:
         Raises:
             ValueError: 解密失败时抛出
         """
-        # S2 文档增强: 空密文兼容路径废弃计划
+        # 空密文兼容路径废弃计划
         # DESIGN LIMITATION: 空密文跳过 AAD 验证是向后兼容的必要折衷。
         # 旧版数据库中未加密的空字段存储为空字符串，此处必须放行。
         # 元数据完整性签名（metadata_mac）在条目级别覆盖了此场景——
         # 即使空字段绕过了单值 AAD 验证，条目级 MAC 仍能检测篡改。
         #
-        # DEPRECATION: 此兼容路径将在未来版本移除。新数据库不再产生空密文字段。
+        # DEPRECATION TIMELINE: 此兼容路径计划在 CipherBox v2.0 移除。
+        # 新数据库不再产生空密文字段（encrypt() 将空字符串替换为 sentinel）。
         # 迁移计划：在下次 schema 升级时，将所有空字段加密为 sentinel 值，
-        # 然后移除此分支并默认 strict=True。
+        # 然后移除此分支并将 strict 默认值改为 True。
         if not encrypted_b64:
             if strict:
                 raise ValueError('收到空密文，数据可能已被篡改')
-            logger.warning("解密收到空密文（此兼容路径计划在未来版本移除）")
+            logger.warning("解密收到空密文，此兼容路径计划在未来版本移除")
             return ''
         try:
             if not encrypted_b64.startswith(cls.TEXT_PREFIX):
@@ -170,14 +172,14 @@ class EncryptionEngine:
             aad = cls._aad_bytes(associated_data)
             plaintext = aesgcm.decrypt(nonce, ciphertext, aad)
             result = plaintext.decode('utf-8')
-            # S4: 匹配新旧哨兵
+            # 匹配新旧哨兵
             if result in (cls._EMPTY_SENTINEL, cls._EMPTY_SENTINEL_LEGACY):
                 return ''
             return result
-        except Exception as exc:
-            # S5: 仅记录异常类型，不记录完整堆栈（防止密文片段泄露到日志）
+        except (InvalidTag, ValueError, AttributeError, TypeError) as exc:
+            # 仅记录异常类型，不记录完整堆栈，防止密文片段泄露到日志
             logger.warning("解密失败: %s", type(exc).__name__)
-            raise ValueError('解密失败，密钥或数据可能已损坏') from exc
+            raise ValueError('解密失败，密钥或数据可能已损坏') from None
 
     @classmethod
     def encrypt_bytes(
@@ -228,11 +230,11 @@ class EncryptionEngine:
         aad = cls._aad_bytes(associated_data)
         try:
             result = aesgcm.decrypt(nonce, ciphertext, aad)
-        except Exception as exc:
-            # S5: 仅记录异常类型，不记录完整堆栈
+        except (InvalidTag, ValueError, AttributeError, TypeError) as exc:
+            # 仅记录异常类型，不记录完整堆栈
             logger.warning("解密失败: %s", type(exc).__name__)
-            raise ValueError('解密失败，密钥或数据可能已损坏') from exc
-        # S4: 匹配所有版本的哨兵
+            raise ValueError('解密失败，密钥或数据可能已损坏') from None
+        # 匹配所有版本的哨兵
         if result in (
             cls._EMPTY_BYTES_SENTINEL,
             cls._EMPTY_BYTES_SENTINEL_LEGACY,

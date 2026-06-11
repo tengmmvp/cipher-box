@@ -1,10 +1,16 @@
-"""条目管理器 - 密码条目的加密 CRUD 操作"""
+"""条目管理器 - 密码条目的加密 CRUD 操作。
+
+架构说明：EntryManager 直接依赖 crypto_utils 的 encrypt_field / decrypt_field，
+这属于 Business → Crypto 的同层依赖，符合架构约束。UI 层通过 EntryManager
+间接访问这些加密原语，不直接导入 crypto 模块。
+"""
 
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
+
+from ..utils.format import utc_now_iso
 
 if TYPE_CHECKING:
     from .vault_manager import VaultManager
@@ -12,23 +18,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 from ..crypto.password_generator import PasswordGenerator
-
-
-def _format_datetime(iso_str: str) -> str:
-    """将 ISO 8601 日期字符串格式化为 'YYYY-MM-DD HH:MM:SS'。
-
-    优先使用 datetime.fromisoformat 进行严格解析，
-    解析失败时回退到截断前 19 字符并替换 'T' 的兼容方式。
-    """
-    if not iso_str:
-        return ''
-    try:
-        dt = datetime.fromisoformat(iso_str)
-        return dt.strftime('%Y-%m-%d %H:%M:%S')
-    except (ValueError, TypeError):
-        return iso_str[:19].replace('T', ' ')
-
-
 from ..crypto.totp import TOTPGenerator
 from ..database.models import (
     ENTRY_TYPES,
@@ -44,6 +33,7 @@ from ..database.models import (
     Entry,
     PasswordHistory,
 )
+from ..utils.format import format_datetime
 from .crypto_utils import (
     build_entry_summary,
     copy_entry_fields,
@@ -56,6 +46,7 @@ from .crypto_utils import (
 from .crypto_utils import (
     encrypt_field as _encrypt_field_impl,
 )
+from .crypto_utils import matches_tag as _matches_tag_impl
 from .exceptions import DecryptionError, EntryIntegrityError, VaultLockedError
 
 _MAX_TITLE_LEN = MAX_FIELD_TITLE
@@ -72,13 +63,13 @@ class EntryManager:
 
     def __init__(self, vault_manager: 'VaultManager'):
         self._vault = vault_manager
-        # M-P1：username 明文缓存（crypto_id → 解密 username），减少重复搜索解密。
-        # 生命周期：会话内有效，key_epoch 变化（改密/锁定）时自动失效。
+        # username 明文缓存，crypto_id → 解密 username，减少重复搜索解密。
+        # 生命周期：会话内有效，key_epoch 变化即改密或锁定时自动失效。
         # username 非密码，缓存风险可控；详见 _cached_username。
         self._username_cache: dict[str, str] = {}
         self._username_decrypt_failed: set[str] = set()
         self._cache_epoch: str | None = None
-        # A-06：条目变更回调列表，用于事件驱动的缓存失效（如 SecurityAnalyzer）。
+        # 条目变更回调列表，用于事件驱动的缓存失效，如 SecurityAnalyzer。
         self._on_entry_change_callbacks: list = []
 
     def register_on_change(self, callback):
@@ -107,10 +98,10 @@ class EntryManager:
         """构建加密 Entry 对象，统一处理字段加密逻辑。
 
         add_entry 和 update_entry 共用此方法，避免加密字段遗漏。
-        password_override: 若提供，视为已加密的密文，直接赋值（不再加密）。
+        password_override: 若提供，视为已加密的密文，直接赋值，不再重复加密。
         """
-        # password_override 已是密文（update_entry 场景），直接赋值；
-        # 否则加密明文密码（add_entry 场景）。
+        # password_override 已是密文，即 update_entry 场景，直接赋值；
+        # 否则加密明文密码，即 add_entry 场景。
         encrypted_pwd = (
             password_override
             if password_override is not None
@@ -159,13 +150,13 @@ class EntryManager:
     def _cached_username(self, raw_entry: Entry) -> str:
         """返回解密后的 username，带会话内缓存（key_epoch 失效）。
 
-        M-P1：加密 username 使 SQL 无法下推搜索匹配，每次搜索需解密全部 username。
+        加密 username 使 SQL 无法下推搜索匹配，每次搜索需解密全部 username。
         本缓存避免重复解密：首次解密后按 crypto_id 缓存，后续命中直接返回。
 
         生命周期与安全：
-        - key_epoch 变化（改密/锁定）时，下次访问检测到并清空缓存。
+        - key_epoch 变化即改密或锁定时，下次访问检测到并清空缓存。
         - 锁定后 key_epoch 为 None，触发清空；MainWindow.prepare_for_lock 亦会
-          显式调用 invalidate_caches() 以立即释放明文（避免锁定到进程退出的残留窗口）。
+          显式调用 invalidate_caches() 以立即释放明文，避免锁定到进程退出的残留窗口。
         - 缓存的是 username 明文（PII，非密码），风险可控。
         - 解密失败的 crypto_id 记入 _username_decrypt_failed，供 _decrypt_summary
           标记 integrity_error。
@@ -188,9 +179,13 @@ class EntryManager:
         return username
 
     def _invalidate_if_epoch_changed(self):
-        """检测 vault.key_epoch 变化，变化则清空所有明文缓存。"""
+        """检测 vault.key_epoch 变化，变化则清空所有明文缓存。
+
+        当 key_epoch 变为 None（保险库已锁定或 epoch 不匹配强制清除）时，
+        无论 _cache_epoch 是否也为 None，都应清空缓存。
+        """
         current = self._vault.key_epoch
-        if current != self._cache_epoch:
+        if current is None or current != self._cache_epoch:
             self._username_cache.clear()
             self._username_decrypt_failed.clear()
             self._cache_epoch = current
@@ -202,7 +197,7 @@ class EntryManager:
         self._cache_epoch = None
 
     def _notify_entry_change(self):
-        """A-06：通知所有注册的条目变更回调（事件驱动缓存失效）。"""
+        """通知所有注册的条目变更回调，事件驱动缓存失效。"""
         for cb in self._on_entry_change_callbacks:
             try:
                 cb()
@@ -271,6 +266,67 @@ class EntryManager:
             integrity_message='、'.join(integrity_errors),
         )
 
+    def decrypt_entry_to_dict(
+        self, raw_entry: Entry, include_secrets: bool = True,
+    ) -> dict | None:
+        """将原始 Entry 解密为明文字典（容错版本）。
+
+        单条目解密失败时返回 None 而非抛出异常，供备份、导出等需要
+        跳过损坏条目继续处理的场景使用。
+
+        Args:
+            raw_entry: 数据库层原始 Entry（custom_fields 为密文字符串）
+            include_secrets: 是否包含密码和 TOTP 密钥等敏感字段
+        """
+        try:
+            custom_json = self._decrypt_field(
+                raw_entry.custom_fields_db_value,
+                raw_entry.crypto_id, 'custom_fields',
+            )
+            try:
+                custom_fields = json.loads(custom_json) if custom_json else []
+            except json.JSONDecodeError:
+                return None
+            return {
+                'id': raw_entry.id,
+                'crypto_id': raw_entry.crypto_id,
+                'title': raw_entry.title,
+                'username': self._decrypt_field(
+                    raw_entry.username, raw_entry.crypto_id, 'username',
+                ),
+                'password': (
+                    self._decrypt_field(
+                        raw_entry.password, raw_entry.crypto_id, 'password',
+                    ) if include_secrets else ''
+                ),
+                'url': raw_entry.url,
+                'category_id': raw_entry.category_id,
+                'tags': raw_entry.tags,
+                'notes': self._decrypt_field(
+                    raw_entry.notes, raw_entry.crypto_id, 'notes',
+                ),
+                'custom_fields': custom_fields,
+                'totp_secret': (
+                    self._decrypt_field(
+                        raw_entry.totp_secret, raw_entry.crypto_id, 'totp_secret',
+                    ) if include_secrets else ''
+                ),
+                'password_strength': raw_entry.password_strength,
+                'entry_type': raw_entry.entry_type,
+                'is_favorite': raw_entry.is_favorite,
+                'is_deleted': raw_entry.is_deleted,
+                'created_at': raw_entry.created_at,
+                'updated_at': raw_entry.updated_at,
+                'deleted_at': raw_entry.deleted_at,
+                'password_changed_at': raw_entry.password_changed_at,
+            }
+        except (ValueError, DecryptionError):
+            logger.warning(
+                "decrypt_entry_to_dict 跳过损坏条目 crypto_id=%s",
+                raw_entry.crypto_id, exc_info=True,
+            )
+            return None
+
     def decrypt_entry_for_export(
         self,
         raw_entry: Entry,
@@ -310,7 +366,7 @@ class EntryManager:
     def _decrypt_summary(self, raw_entry: Entry) -> Entry:
         """仅解密列表展示所需字段，不让密码等明文进入列表模型。
 
-        M-P1：username 经 _cached_username 复用会话内缓存，避免列表/搜索路径
+        username 经 _cached_username 复用会话内缓存，避免列表/搜索路径
         重复解密。解密失败由 _username_decrypt_failed 记录并据此标记完整性。
         """
         username = self._cached_username(raw_entry)
@@ -327,7 +383,7 @@ class EntryManager:
         entry.password_strength = strength.score
         crypto_id = entry.crypto_id or uuid.uuid4().hex
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = utc_now_iso()
         enc_entry = self._build_encrypted_entry(
             entry, crypto_id, now,
             created_at=entry.created_at or now,
@@ -372,7 +428,7 @@ class EntryManager:
         password_changed = (old_password != entry.password)
         del old_password  # 尽快释放明文引用
         password_changed_at = (
-            datetime.now(timezone.utc).isoformat()
+            utc_now_iso()
             if password_changed
             else raw.password_changed_at
         )
@@ -380,7 +436,7 @@ class EntryManager:
         strength = PasswordGenerator.check_strength(entry.password)
         entry.password_strength = strength.score
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = utc_now_iso()
         enc_entry = self._build_encrypted_entry(
             entry, raw.crypto_id, now,
             created_at=raw.created_at,
@@ -440,8 +496,12 @@ class EntryManager:
         )
 
         if search:
-            # 搜索路径：仅解密 username 用于匹配（M-P1：复用会话内缓存避免重复解密，
-            # 解密失败的条目由 _cached_username 记录并缓存空串）。
+            # 搜索路径：仅解密 username 用于匹配，复用会话内缓存避免重复解密。
+            # 解密失败的条目由 _cached_username 记录并缓存空串。
+            # 注意：此处的搜索逻辑与 crypto_utils.matches_search 逻辑一致
+            # title/username/url/tags 四字段大小写不敏感匹配，但不能直接调用
+            # matches_search，因为 raw 条目的 username 仍为密文，需要先通过
+            # _cached_username 解密。matches_search 仅适用于已解密的 Entry 对象。
             kw = search.lower()
             matched = []
             for raw in raw_entries:
@@ -477,7 +537,14 @@ class EntryManager:
         search: str = '',
         limit: int | None = None,
     ) -> list[Entry]:
-        """获取不含密码等敏感明文的列表摘要。"""
+        """获取不含密码等敏感明文的列表摘要。
+
+        Note:
+            当 ``limit`` 非空且 ``search`` 为空时，``limit`` 在 SQL 层生效，即 LIMIT 子句。
+            但当 ``search`` 非空时，因加密字段无法在数据库层面搜索，
+            必须先全量解密 username 再在内存中过滤，此时 SQL LIMIT 无法正确下推，
+            可能返回少于 ``limit`` 条结果。这是加密数据库的根本限制。
+        """
         raw_entries = self.db.get_entries(
             deleted_only=deleted_only,
             category_id=category_id,
@@ -502,37 +569,30 @@ class EntryManager:
     # 验证/日志/A/B 测试逻辑，(3) 防止 UI 直接依赖 DatabaseManager。
     # DELEGATE: see DatabaseManager.get_categories
     def get_categories(self) -> list[Category]:
-        """获取所有分类"""
         return self._vault.db.get_categories()
 
     # DELEGATE: see DatabaseManager.get_category
     def get_category(self, category_id: int) -> Category | None:
-        """获取单个分类"""
         return self._vault.db.get_category(category_id)
 
     # DELEGATE: see DatabaseManager.get_category_entry_count
     def get_category_entry_count(self, category_id: int) -> int:
-        """获取指定分类的条目数"""
         return self._vault.db.get_category_entry_count(category_id)
 
     # DELEGATE: see DatabaseManager.get_category_entry_counts
     def get_category_entry_counts(self) -> dict[int, int]:
-        """获取所有分类的条目计数"""
         return self._vault.db.get_category_entry_counts()
 
     # DELEGATE: see DatabaseManager.add_category
     def add_category(self, category: Category) -> int:
-        """添加分类"""
         return self._vault.db.add_category(category)
 
     # DELEGATE: see DatabaseManager.update_category
     def update_category(self, category: Category) -> None:
-        """更新分类"""
         self._vault.db.update_category(category)
 
     # DELEGATE: see DatabaseManager.delete_category
     def delete_category(self, category_id: int) -> None:
-        """删除分类"""
         self._vault.db.delete_category(category_id)
 
     def toggle_favorite(self, entry_id: int) -> bool | None:
@@ -553,17 +613,14 @@ class EntryManager:
 
     # DELEGATE: see DatabaseManager.get_entry_count
     def get_entry_count(self, include_deleted: bool = False) -> int:
-        """获取条目数量"""
         return self._vault.db.get_entry_count(include_deleted)
 
     # DELEGATE: see DatabaseManager.get_password_history
     def get_password_history(self, entry_id: int) -> list[PasswordHistory]:
-        """获取密码历史（返回加密记录）"""
         return self._vault.db.get_password_history(entry_id)
 
     # DELEGATE: see DatabaseManager.get_password_history_count
     def get_password_history_count(self, entry_id: int) -> int:
-        """获取密码历史记录数（轻量 COUNT 查询，避免加载全部记录）。"""
         return self.db.get_password_history_count(entry_id)
 
     def decrypt_password_history(self, history: list[PasswordHistory]) -> list[dict]:
@@ -575,52 +632,51 @@ class EntryManager:
             )
             if pwd:
                 result.append({
-                    'changed_at': _format_datetime(h.changed_at),
+                    'changed_at': format_datetime(h.changed_at),
                     'password': pwd,
                 })
         return result
 
-    # ------------------------------------------------------------------
-    # TOTP（4A：UI→Business 迁移，调用方不接触明文 secret）
-    # ------------------------------------------------------------------
+    # ==================== TOTP 生成 ====================
+    # UI→Business 迁移，调用方不接触明文 TOTP secret
 
     def generate_totp(self, entry_id: int) -> str | None:
         """生成指定条目的 TOTP 验证码。
 
-        4A 架构迁移：封装 get_entry→解密→TOTPGenerator.generate 流程，
-        使 main_window 等调用方不直接接触明文 TOTP secret。
+        仅解密 totp_secret 字段，避免触发 password/notes/custom_fields
+        等其他敏感字段的不必要解密。
 
-        Returns
-        -------
-        str | None
+        Returns:
             6 位验证码字符串，条目不存在或无 TOTP 密钥时返回 None。
         """
-        entry = self.get_entry(entry_id)
-        if entry and entry.totp_secret:
-            return TOTPGenerator.generate(entry.totp_secret)
-        return None
+        raw = self.db.get_entry(entry_id)
+        if raw is None or not raw.totp_secret:
+            return None
+        secret = self._decrypt_field(raw.totp_secret, raw.crypto_id, 'totp_secret')
+        if not secret:
+            return None
+        return TOTPGenerator.generate(secret)
 
     def get_totp_state(self, entry_id: int) -> dict | None:
-        """获取指定条目的 TOTP 完整状态（验证码 + 倒计时 + 周期）。
+        """获取指定条目的 TOTP 完整状态，含验证码、倒计时和周期。
 
-        4A 架构迁移：供 detail_panel 的 TOTP 显示和刷新定时器使用，
-        避免在 UI 层直接调用 crypto 模块。
+        仅解密 totp_secret 字段，供 detail_panel 的 TOTP 显示和刷新定时器使用。
 
-        Returns
-        -------
-        dict | None
+        Returns:
             ``{'code': str, 'remaining': int, 'period': int}``，
             条目不存在或无 TOTP 密钥时返回 None。
         """
-        entry = self.get_entry(entry_id)
-        if entry and entry.totp_secret:
-            secret = entry.totp_secret
-            return {
-                'code': TOTPGenerator.generate(secret),
-                'remaining': TOTPGenerator.get_remaining_seconds(secret=secret),
-                'period': TOTPGenerator.get_period(secret),
-            }
-        return None
+        raw = self.db.get_entry(entry_id)
+        if raw is None or not raw.totp_secret:
+            return None
+        secret = self._decrypt_field(raw.totp_secret, raw.crypto_id, 'totp_secret')
+        if not secret:
+            return None
+        return {
+            'code': TOTPGenerator.generate(secret),
+            'remaining': TOTPGenerator.get_remaining_seconds(secret=secret),
+            'period': TOTPGenerator.get_period(secret),
+        }
 
     def get_all_tags(self) -> list[tuple[str, int]]:
         """获取所有标签及其使用频率"""
@@ -665,8 +721,21 @@ class EntryManager:
         供 UI 层使用，避免 UI 直接依赖 ``business.crypto_utils`` 模块，
         同时消除两份相同实现必须手动同步的维护负担。
 
-        .. note::
+        Note:
             内部实现委托给 ``crypto_utils.matches_search``。UI 层应通过
             此公共方法调用，避免直接依赖 ``crypto_utils`` 模块。
         """
         return matches_search(entry, query)
+
+    @staticmethod
+    def matches_tag(entry, tag: str) -> bool:
+        """检查条目是否包含指定标签。
+
+        标签匹配为大小写不敏感的精确匹配：条目 tags 字段以逗号分隔后，
+        逐个与目标 tag 比对。即 ``tag="work"`` 匹配 ``"Work,Personal"``
+        但不匹配 ``"network"``。
+
+        此方法作为 EntryManager 的公共 API 委托给 ``crypto_utils.matches_tag``，
+        供 UI 层使用，避免 UI 直接依赖 ``crypto_utils`` 模块。
+        """
+        return _matches_tag_impl(entry, tag)

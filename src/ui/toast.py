@@ -205,7 +205,7 @@ class ToastWidget(QFrame):
         self.show()
         self.raise_()
 
-        # M-14：启动新动画前停止旧动画，防止淡入/淡出动画重叠导致闪烁
+        # 启动新动画前停止旧动画，防止淡入/淡出动画重叠导致闪烁
         if self._fade_out_anim is not None:
             self._fade_out_anim.stop()
 
@@ -225,7 +225,7 @@ class ToastWidget(QFrame):
         """开始淡出动画"""
         self._auto_close_timer.stop()
 
-        # M-14：启动新动画前停止旧动画，防止淡入/淡出动画重叠导致闪烁
+        # 启动新动画前停止旧动画，防止淡入/淡出动画重叠导致闪烁
         if self._fade_in_anim is not None:
             self._fade_in_anim.stop()
 
@@ -250,10 +250,10 @@ class ToastWidget(QFrame):
             self._action_callback()
         self._start_fade_out()
 
-    def enterEvent(self, a0):
+    def enterEvent(self, event):
         """鼠标进入时暂停自动关闭"""
         self._auto_close_timer.stop()
-        super().enterEvent(a0)
+        super().enterEvent(event)
 
     def leaveEvent(self, a0):
         """鼠标离开时重启自动关闭（缩短但不超过原 duration）"""
@@ -315,10 +315,21 @@ class ToastManager:
         toast.show_toast()
 
     def cancel_all(self):
-        """取消所有活跃 Toast：清空回调并淡出。锁定前调用（A5）。"""
+        """取消所有活跃 Toast：清空回调并淡出。在锁定前调用此方法。"""
         for toast in list(self._toasts):
             toast._action_callback = None
             toast._start_fade_out()
+
+    @staticmethod
+    def cancel_all_for(parent: QWidget):
+        """取消指定 parent 窗口的所有活跃 Toast（公共 API）。
+
+        替代直接访问 ``ToastManager._instances`` 的私有属性模式，
+        供 MainWindow.prepare_for_lock 等外部调用方使用。
+        """
+        mgr = ToastManager._instances.get(parent)
+        if mgr:
+            mgr.cancel_all()
 
     def _remove_toast(self, toast: ToastWidget):
         """移除一个 Toast 并更新所有位置"""

@@ -1,17 +1,14 @@
 """保险库管理器 - 高层保险库操作"""
 
 import base64
+import ctypes
 import gc
-import hashlib
-import hmac
-import json
 import logging
 import os
 import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -20,30 +17,27 @@ from ..crypto.encryption import EncryptionEngine
 from ..crypto.master_key import PBKDF2_ITERATIONS, MasterKeyManager
 from ..crypto.password_generator import PasswordGenerator
 from ..database.db_manager import DatabaseManager
-from .crypto_utils import decrypt_field as _decrypt_field_impl
-from .crypto_utils import encrypt_field as _encrypt_field_impl
 from .exceptions import (
     CipherBoxError,
     DatabaseError,
-    DecryptionError,
     VaultAlreadyInitializedError,
     VaultError,
     VaultIntegrityError,
     VaultKeyEpochMismatchError,
     VaultLockedError,
 )
+from .key_rotation import KeyRotationService
+from .metadata_signer import MetadataSigner
 
 _SNAPSHOT_KEY_AAD = 'vault:snapshot-key'
-_RE_ENCRYPT_BATCH_SIZE = 200
-_ENCRYPTED_ENTRY_FIELDS = ('username', 'password', 'notes', 'totp_secret', 'custom_fields')
 
 
-# TODO: God Object 分解计划
-# VaultManager 当前承担了密钥管理、数据库生命周期、元数据签名、重加密等职责。
-# 建议分解为：
-# - KeyManager: 密钥派生、存储、零化
-# - MetadataSigner: 条目元数据签名/验证
-# - VaultLifecycle: 初始化、解锁、锁定、改密
+# key_epoch 缓存 TTL（秒）：避免每次写入都查询数据库的 key_epoch。
+_EPOCH_CACHE_TTL_SECONDS = 2.0
+
+# TODO: 进一步拆分 VaultManager 的剩余职责：
+# - 密钥生命周期管理（派生/清零）可提取为独立的 KeyManager
+# - 初始化/解锁/锁定/改密流程可提取为 VaultLifecycle
 
 class VaultManager:
     """管理保险库的创建、解锁、锁定等操作"""
@@ -52,18 +46,23 @@ class VaultManager:
         self._config = config
         self._db = DatabaseManager(config.db_path)
         self._db.set_write_guard(self._enforce_key_epoch)
+
+        # 元数据签名器
+        self._signer = MetadataSigner()
         self._db.set_entry_integrity_handlers(
-            self._sign_entry_metadata,
-            self._verify_entry_metadata,
+            self._signer.sign,
+            self._signer.verify,
         )
-        self._key: Optional[bytes] = None
+
+        # 密钥轮换服务（纯加解密计算，事务仍由 VaultManager 管理）
+        self._rotator = KeyRotationService(self._db, self._signer)
+
+        self._key: bytes | None = None
         self._is_unlocked = False
         self._key_epoch: str | None = None
         self._snapshot_key: bytes | None = None
-        self._last_error = ''
         self._epoch_cache_time: float = 0.0
-        self._metadata_domain_key: bytes | None = None
-        self._lock = threading.RLock()  # M-A3：保护改密/重加密等关键写操作串行化
+        self._lock = threading.RLock()  # 保护改密/重加密等关键写操作串行化
         self._db_initialized = False  # 缓存标志，避免 is_initialized 重复打开数据库
         self._on_lock_callbacks: list = []
 
@@ -80,21 +79,15 @@ class VaultManager:
         return self._config.data_dir
 
     @property
-    def last_error(self) -> str:
-        return self._last_error
-
-    @property
     def is_initialized(self) -> bool:
         """保险库是否已初始化（是否设置了主密码）"""
         if not self._config.db_path.exists():
             return False
         try:
-            self._last_error = ''
             self._ensure_db_open()
             salt_b64 = self._db.get_meta('master_salt')
             return salt_b64 is not None
-        except Exception as exc:
-            self._last_error = str(exc) or '保险库格式无效'
+        except Exception:
             logger.error("检查保险库状态失败", exc_info=True)
             return False
 
@@ -107,17 +100,12 @@ class VaultManager:
         self._db.init_tables()
         self._db_initialized = True
 
-    @staticmethod
-    def _compute_domain_key(key: bytes) -> bytes:
-        """从主密钥派生 metadata 签名域密钥"""
-        return hmac.new(key, b'cipherbox:entry-metadata-key', hashlib.sha256).digest()
-
     @property
     def is_unlocked(self) -> bool:
         return self._is_unlocked and self._key is not None
 
     @property
-    def key(self) -> Optional[bytes]:
+    def key(self) -> bytes | None:
         return self._key
 
     @property
@@ -128,7 +116,7 @@ class VaultManager:
 
     @property
     def key_epoch(self) -> str | None:
-        """当前主密钥版本（改密时轮换），用于缓存失效判定（M-S4）。"""
+        """当前主密钥版本，改密时自动轮换，用于缓存失效判定。"""
         return self._key_epoch
 
     def update_key_epoch(self, new_epoch: str):
@@ -150,7 +138,7 @@ class VaultManager:
         if not self.is_unlocked:
             raise VaultLockedError("保险库已锁定，不能写入数据")
         now = time.monotonic()
-        if now - self._epoch_cache_time < 2.0:
+        if now - self._epoch_cache_time < _EPOCH_CACHE_TTL_SECONDS:
             return
         current_epoch = self._db.get_meta('key_epoch')
         if current_epoch and current_epoch != self._key_epoch:
@@ -158,17 +146,16 @@ class VaultManager:
             raise VaultKeyEpochMismatchError("保险库密钥已被其他进程更新，请重新启动并解锁")
         self._epoch_cache_time = now
 
-    def initialize(self, master_password: str) -> bool:
+    def initialize(self, master_password: str) -> tuple[bool, str]:
         """首次初始化保险库，设置主密码
 
         Args:
             master_password: 主密码
 
         Returns:
-            是否成功
+            (success, error_message) — 成功时 error_message 为空字符串
         """
         try:
-            self._last_error = ''
             valid, error = PasswordGenerator.validate_master_password(master_password)
             if not valid:
                 raise ValueError(error)
@@ -203,37 +190,44 @@ class VaultManager:
             self._key = derived_key
             self._snapshot_key = snapshot_key
             self._key_epoch = key_epoch
-            self._metadata_domain_key = self._compute_domain_key(derived_key)
+            self._signer.set_domain_key(MetadataSigner.compute_domain_key(derived_key))
             self._is_unlocked = True
-            return True
+            return True, ''
+        except CipherBoxError:
+            raise  # 自定义异常向上传播，如 VaultAlreadyInitializedError
         except Exception as exc:
-            self._last_error = str(exc) or '保险库初始化失败'
+            msg = str(exc) or '保险库初始化失败'
             logger.warning("保险库初始化失败", exc_info=True)
-            return False
+            return False, msg
 
-    def unlock(self, master_password: str) -> bool:
+    def unlock(self, master_password: str) -> tuple[bool, str]:
         """使用主密码解锁保险库
 
         Args:
             master_password: 主密码
 
         Returns:
-            是否成功
+            (success, error_message) — 成功时 error_message 为空字符串
         """
         try:
             t0 = time.monotonic()
-            self._last_error = ''
             self._ensure_db_open()
 
-            salt_b64 = self._db.get_meta('master_salt')
-            verify_token = self._db.get_meta('master_verify')
+            # 单次查询获取全部元数据，避免 7 次独立 DB 锁获取
+            meta = self._db.get_meta_batch([
+                'master_salt', 'master_verify', 'master_kdf_iterations',
+                'master_kdf', 'ciphertext_format', 'key_epoch',
+                'snapshot_key_enc',
+            ])
+
+            salt_b64 = meta['master_salt']
+            verify_token = meta['master_verify']
 
             if not salt_b64 or not verify_token:
-                self._last_error = '保险库凭据不完整'
-                return False
+                return False, '保险库凭据不完整'
 
             salt = base64.b64decode(salt_b64)
-            iterations_text = self._db.get_meta('master_kdf_iterations')
+            iterations_text = meta['master_kdf_iterations']
             if not iterations_text:
                 raise VaultLockedError('保险库缺少密钥派生参数')
             iterations = int(iterations_text)
@@ -242,27 +236,26 @@ class VaultManager:
             )
 
             if key is None:
-                self._last_error = '主密码错误'
-                return False
+                return False, '主密码错误'
 
             self._key = key
-            if self._db.get_meta('master_kdf') != 'pbkdf2-sha256':
+            if meta['master_kdf'] != 'pbkdf2-sha256':
                 raise VaultLockedError('不支持的主密钥派生格式')
-            if self._db.get_meta('ciphertext_format') != EncryptionEngine.FORMAT_ID:
+            if meta['ciphertext_format'] != EncryptionEngine.FORMAT_ID:
                 raise VaultLockedError('不支持的密文格式')
-            self._key_epoch = self._db.get_meta('key_epoch')
+            self._key_epoch = meta['key_epoch']
             if not self._key_epoch:
                 raise VaultLockedError('保险库缺少当前格式的密钥版本')
             self._is_unlocked = True
-            self._metadata_domain_key = self._compute_domain_key(key)
-            self._load_snapshot_key()
+            self._signer.set_domain_key(MetadataSigner.compute_domain_key(key))
+            self._load_snapshot_key(meta.get('snapshot_key_enc'))
             logger.info("解锁完成 (%.1fms)", (time.monotonic() - t0) * 1000)
-            return True
+            return True, ''
         except Exception as exc:
             self.lock()
-            self._last_error = str(exc) or '保险库无法解锁'
+            msg = str(exc) or '保险库无法解锁'
             logger.warning("解锁失败", exc_info=True)
-            return False
+            return False, msg
 
     def _clear_vault_state(self):
         """清除密钥材料和加密缓存（不触发回调，不执行 gc）。
@@ -272,8 +265,7 @@ class VaultManager:
         """
         # 尽力清零密钥内存
         try:
-            import ctypes
-            for attr in ('_key', '_snapshot_key', '_metadata_domain_key'):
+            for attr in ('_key', '_snapshot_key'):
                 secret = getattr(self, attr, None)
                 if secret is not None:
                     try:
@@ -285,14 +277,29 @@ class VaultManager:
                         del mutable
                     except Exception:
                         logger.warning("密钥内存清零失败", exc_info=True)
+            # 清零 MetadataSigner 中的域密钥
+            dk = self._signer.domain_key
+            if dk is not None:
+                try:
+                    mutable = bytearray(dk)
+                    ctypes.memset(
+                        (ctypes.c_char * len(mutable)).from_buffer(mutable),
+                        0, len(mutable),
+                    )
+                    del mutable
+                except Exception:
+                    logger.warning("域密钥内存清零失败", exc_info=True)
         except Exception:
             logger.warning("密钥清零初始化失败", exc_info=True)
         self._key = None
         self._snapshot_key = None
         self._is_unlocked = False
         self._key_epoch = None
-        self._metadata_domain_key = None
+        self._signer.domain_key = None
         self._epoch_cache_time = 0.0
+        # 重置初始化标志：下次 _ensure_db_open 将重新验证 schema。
+        # 注意：不关闭数据库连接（_conn 仍可能被后续操作使用），
+        # 但 _db_initialized=False 确保 init_tables 在下次访问时重新运行。
         self._db_initialized = False
         EncryptionEngine.clear_cache()
 
@@ -307,10 +314,10 @@ class VaultManager:
         """
         self._clear_vault_state()
         gc.collect()
-        # SEC-02: 恢复 gc.collect() 以缩短密钥材料在内存中的驻留时间。
-        # lock() 属于低频操作（用户手动锁定或自动超时），10-50ms 的 GC 暂停
+        # 恢复 gc.collect() 以缩短密钥材料在内存中的驻留时间。
+        # lock() 属于低频操作，用户手动锁定或自动超时，10-50ms 的 GC 暂停
         # 完全可接受，换来的是更短的生命周期，减少密钥残留风险。
-        # SEC-08：自动通知依赖方清除缓存，不依赖调用方纪律
+        # 自动通知依赖方清除缓存，不依赖调用方纪律。
         for cb in self._on_lock_callbacks:
             try:
                 cb()
@@ -319,7 +326,7 @@ class VaultManager:
 
     def change_master_password(
         self, old_password: str, new_password: str
-    ) -> bool:
+    ) -> tuple[bool, str]:
         """修改主密码
 
         Args:
@@ -327,32 +334,32 @@ class VaultManager:
             new_password: 新主密码
 
         Returns:
-            是否成功
+            (success, error_message) — 成功时 error_message 为空字符串
 
-        M-A3：获取可重入锁，与 _re_encrypt_all 的写操作串行化。
+        获取可重入锁，与 _re_encrypt_all 的写操作串行化。
         """
         with self._lock:
             return self._change_master_password_locked(old_password, new_password)
 
     def _change_master_password_locked(
         self, old_password: str, new_password: str
-    ) -> bool:
+    ) -> tuple[bool, str]:
         try:
-            self._last_error = ''
             valid, error = PasswordGenerator.validate_master_password(new_password)
             if not valid:
-                self._last_error = error
-                return False
+                return False, error
             if old_password == new_password:
-                self._last_error = '新密码不能与当前主密码相同'
-                return False
-            salt_b64 = self._db.get_meta('master_salt')
-            verify_token = self._db.get_meta('master_verify')
+                return False, '新密码不能与当前主密码相同'
+            meta = self._db.get_meta_batch([
+                'master_salt', 'master_verify', 'master_kdf_iterations',
+            ])
+            salt_b64 = meta['master_salt']
+            verify_token = meta['master_verify']
             if not salt_b64 or not verify_token:
-                return False
+                return False, '保险库凭据不完整'
 
             old_salt = base64.b64decode(salt_b64)
-            iterations_text = self._db.get_meta('master_kdf_iterations')
+            iterations_text = meta['master_kdf_iterations']
             if not iterations_text:
                 raise VaultLockedError('保险库缺少密钥派生参数')
             old_iterations = int(iterations_text)
@@ -365,21 +372,19 @@ class VaultManager:
                 PBKDF2_ITERATIONS,
             )
             if result is None:
-                self._last_error = '当前主密码错误'
-                return False
+                return False, '当前主密码错误'
 
             new_salt, new_verify_token, new_key = result
 
-            # 用新密钥重新加密所有条目的敏感字段
-            # （复用 MasterKeyManager.create 已派生的 new_key，省一次 PBKDF2 派生）
+            # 用新密钥重新加密所有条目的敏感字段，
+            # 复用 MasterKeyManager.create 已派生的 new_key，省一次 PBKDF2 派生。
             self._re_encrypt_all(new_key, new_salt, new_verify_token)
 
-            return True
+            return True, ''
         except CipherBoxError:
             raise  # 所有 CipherBox 自定义异常向上传播
         except Exception as exc:
-            self._last_error = str(exc) or '修改主密码失败'
-            return False
+            return False, str(exc) or '修改主密码失败'
 
     def _re_encrypt_all(self, new_key: bytes, new_salt: bytes, new_verify_token: str):
         """使用新密钥重新加密所有条目（含已删除），事务保护。
@@ -404,21 +409,22 @@ class VaultManager:
 
         try:
             t0 = time.monotonic()
-            self._re_encrypt_entries(old_key, new_key)
-            self._re_encrypt_history(old_key, new_key)
+            self._rotator.re_encrypt_entries(old_key, new_key)
+            self._rotator.re_encrypt_history(old_key, new_key)
             self._update_vault_metadata(new_key, new_salt, new_verify_token, new_epoch)
 
-            # 全部成功 → 先更新内存密钥，再提交事务。
-            # 若提交失败回滚，lock() 会清除 self._key 保证一致性。
+            # 全部成功 → 先提交事务，再更新内存密钥。
+            # 若提交失败回滚，_clear_vault_state 会清除 self._key 保证一致性。
+            # 将密钥赋值放在 commit 之后，避免后台线程在 commit 前读到新密钥
+            # 解密尚未提交的旧数据（解密窗口问题）。
+            self._db.commit_transaction()
             self._key = new_key
             self._key_epoch = new_epoch
-            self._metadata_domain_key = self._compute_domain_key(new_key)
+            self._signer.set_domain_key(MetadataSigner.compute_domain_key(new_key))
             EncryptionEngine.clear_cache()  # 旧密钥 cipher 已失效，确保后续用新密钥
-            self._db.commit_transaction()
-            entry_count = self._db.get_entry_count()
-            logger.info("重加密完成 (%.1fms, %d 条)", (time.monotonic() - t0) * 1000, entry_count)
+            logger.info("重加密完成 (%.1fms)", (time.monotonic() - t0) * 1000)
             # WAL 截断在事务提交之后执行；此时数据已落盘，截断失败非致命，
-            # 单独捕获避免其异常冒泡导致 UI 显示模糊错误（事务其实已成功）。
+            # 单独捕获避免其异常冒泡导致 UI 显示模糊错误，事务其实已成功。
             try:
                 self._db.secure_checkpoint()
             except Exception:
@@ -432,105 +438,15 @@ class VaultManager:
                 rollback_ok = True
             except Exception:
                 logger.error("改密回滚失败，数据库可能不一致", exc_info=True)
-            if rollback_ok:
-                self.lock()
+            # 即使 lock() 异常也必须确保密钥被清除，防止内存状态不一致
+            try:
+                if rollback_ok:
+                    self.lock()
+            except Exception:
+                logger.error("改密后锁定失败", exc_info=True)
+                self._clear_vault_state()
             logger.error("重加密失败: 回滚所有变更", exc_info=True)
             raise
-
-    def _re_encrypt_entries(self, old_key: bytes, new_key: bytes):
-        """分批重新加密所有条目的敏感字段。
-
-        逐字段解密→加密，减少同时驻留内存的明文数量。
-        不变量：raw_entry 来自 get_entries，_row_to_entry 将 custom_fields
-        设为与 custom_fields_enc 相同的密文字符串（str 类型），因此 getattr
-        读取的是密文字符串，setattr 写入的也是密文字符串。
-        若 _row_to_entry 的行为改变（如改为解密后设为 list），此处会静默损坏。
-
-        P-03：每批收集所有更新行，通过 executemany 一次性写入，减少 N 次单独
-        UPDATE 为 N/200 次 executemany 调用。
-        """
-        last_id = 0
-        while True:
-            batch = self._db.get_entries(
-                include_deleted=True, limit=_RE_ENCRYPT_BATCH_SIZE,
-                after_id=last_id,
-            )
-            if not batch:
-                break
-            last_id = batch[-1].id
-            rows = []
-            for raw_entry in batch:
-                try:
-                    for field in _ENCRYPTED_ENTRY_FIELDS:
-                        value = getattr(raw_entry, field)
-                        if value:
-                            plain = _decrypt_field_impl(
-                                value, old_key, raw_entry.crypto_id, field,
-                            )
-                            setattr(raw_entry, field,
-                                    _encrypt_field_impl(plain, new_key, raw_entry.crypto_id, field))
-                            del plain
-                except ValueError:
-                    logger.error("重加密中止：条目 id=%s 解密失败", raw_entry.id)
-                    raise DecryptionError(
-                        "某条目解密失败，数据可能已损坏。中止改密以保护数据完整性。"
-                    )
-
-                mac = self._sign_entry_metadata(raw_entry, new_key)
-                # 列顺序须与 _RE_ENCRYPT_BATCH_UPDATE_SQL 匹配
-                rows.append((
-                    raw_entry.crypto_id, raw_entry.title,
-                    raw_entry.username, raw_entry.password, raw_entry.url,
-                    raw_entry.category_id, raw_entry.tags,
-                    raw_entry.notes, raw_entry.custom_fields_db_value,
-                    1 if raw_entry.is_favorite else 0,
-                    raw_entry.password_strength, raw_entry.entry_type,
-                    raw_entry.totp_secret, raw_entry.updated_at,
-                    raw_entry.password_changed_at, mac,
-                    raw_entry.id,
-                ))
-            self._db.update_entries_batch(rows)
-            del batch, rows
-
-    def _re_encrypt_history(self, old_key: bytes, new_key: bytes):
-        """分批重新加密密码历史记录。
-
-        M-P2：密码历史分批拉取，使用游标分页与条目批处理对齐，
-        控制改密重加密时的内存峰值（复用 _RE_ENCRYPT_BATCH_SIZE）。
-
-        M-15：每批收集所有更新行，通过 update_password_history_batch 一次性写入，
-        将 N 次单独 UPDATE 合并为 N/200 次 executemany 调用。
-        """
-        last_history_id = 0
-        while True:
-            history_batch = self._db.get_all_password_history_batch(
-                last_history_id, _RE_ENCRYPT_BATCH_SIZE
-            )
-            if not history_batch:
-                break
-            last_history_id = history_batch[-1].id or 0
-            rows: list[tuple] = []
-            for history in history_batch:
-                if history.id is None:
-                    continue  # 跳过无 ID 的历史记录（不应出现，防御性编程）
-                try:
-                    plaintext = _decrypt_field_impl(
-                        history.old_password_enc, old_key,
-                        history.entry_crypto_id, 'password',
-                    )
-                except ValueError as exc:
-                    logger.error("重加密中止：密码历史 id=%s 解密失败", history.id)
-                    raise DecryptionError(
-                        "某密码历史记录解密失败，数据可能已损坏。"
-                    ) from exc
-                ciphertext = _encrypt_field_impl(
-                    plaintext, new_key,
-                    history.entry_crypto_id, 'password',
-                )
-                rows.append((ciphertext, history.id))
-            if rows:
-                self._db.update_password_history_batch(rows)
-            del history_batch, rows
 
     def _update_vault_metadata(
         self, new_key: bytes, new_salt: bytes, new_verify_token: str, new_epoch: str,
@@ -553,11 +469,12 @@ class VaultManager:
         )
         self._db.set_meta('key_epoch', new_epoch)
 
-    def _load_snapshot_key(self):
+    def _load_snapshot_key(self, encrypted: str | None = None):
         key = self._key
         if key is None:
             raise VaultLockedError('保险库未解锁')
-        encrypted = self._db.get_meta('snapshot_key_enc')
+        if encrypted is None:
+            encrypted = self._db.get_meta('snapshot_key_enc')
         if not encrypted:
             raise VaultLockedError('保险库缺少自动快照密钥')
         encoded = EncryptionEngine.decrypt(
@@ -566,76 +483,6 @@ class VaultManager:
         self._snapshot_key = base64.b64decode(encoded)
         if len(self._snapshot_key) != 32:
             raise VaultIntegrityError('自动快照密钥损坏')
-
-    @staticmethod
-    def _entry_metadata_payload(entry, *, include_enc_hash: bool = True) -> bytes:
-        data = {
-            'crypto_id': entry.crypto_id,
-            'title': entry.title,
-            'url': entry.url,
-            'category_id': entry.category_id,
-            'tags': entry.tags,
-            'is_favorite': bool(entry.is_favorite),
-            'is_deleted': bool(entry.is_deleted),
-            'password_strength': entry.password_strength,
-            'entry_type': entry.entry_type,
-            'created_at': entry.created_at,
-            'updated_at': entry.updated_at,
-            'deleted_at': entry.deleted_at,
-            'password_changed_at': entry.password_changed_at,
-        }
-        if include_enc_hash:
-            # SEC-05: 绑定加密字段密文到签名，防止密文置换/回滚攻击
-            enc_concat = '|'.join([
-                entry.username, entry.password, entry.notes,
-                entry.totp_secret, entry.custom_fields_db_value,
-            ])
-            data['_enc_hash'] = hashlib.sha256(enc_concat.encode('utf-8')).hexdigest()
-        return json.dumps(
-            data,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(',', ':'),
-        ).encode('utf-8')
-
-    def _sign_entry_metadata(self, entry, key: bytes | None = None) -> str:
-        signing_key = key or self._key
-        if signing_key is None:
-            raise VaultLockedError('保险库未解锁，无法签名条目元数据')
-        # 使用预计算的域密钥（L1 优化），仅在 _re_encrypt_all 传入显式 key 时
-        # 临时计算。
-        if key is None and self._metadata_domain_key is not None:
-            domain_key = self._metadata_domain_key
-        else:
-            domain_key = self._compute_domain_key(signing_key)
-        return hmac.new(
-            domain_key,
-            self._entry_metadata_payload(entry),
-            hashlib.sha256,
-        ).hexdigest()
-
-    def _verify_entry_metadata(self, entry):
-        if not entry.metadata_mac:
-            raise VaultIntegrityError(f'条目 {entry.id} 缺少元数据完整性签名')
-        # SEC-05: 先尝试新格式（含加密字段哈希），失败后回退旧格式（自迁移策略）
-        expected_new = self._sign_entry_metadata(entry)
-        if hmac.compare_digest(entry.metadata_mac, expected_new):
-            return
-        # 回退旧格式（不含 _enc_hash）——兼容已有条目
-        domain_key = self._metadata_domain_key
-        if domain_key is None:
-            if self._key is None:
-                raise VaultLockedError('保险库未解锁')
-            domain_key = self._compute_domain_key(self._key)
-        expected_old = hmac.new(
-            domain_key,
-            self._entry_metadata_payload(entry, include_enc_hash=False),
-            hashlib.sha256,
-        ).hexdigest()
-        if hmac.compare_digest(entry.metadata_mac, expected_old):
-            logger.debug("条目 %s 签名使用旧格式，下次写入时自动升级", entry.id)
-            return
-        raise VaultIntegrityError(f'条目 {entry.id} 元数据完整性校验失败')
 
     def close(self):
         """关闭保险库"""

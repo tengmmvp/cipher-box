@@ -4,10 +4,11 @@ import csv
 import json
 import logging
 import os
-from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
+
+from ..utils.format import utc_now_iso
 
 if TYPE_CHECKING:
     from .entry_manager import EntryManager
@@ -29,7 +30,7 @@ MAX_IMPORT_FILE_SIZE = 25 * 1024 * 1024
 MAX_IMPORT_ENTRIES = 50_000
 MAX_IMPORT_ENTRY_SIZE = 2 * 1024 * 1024
 
-# CSV 导入列名别名映射：每个字段对应一组可能的列名（不区分大小写）。
+# CSV 导入列名别名映射：每个字段对应一组可能的列名，匹配时不区分大小写。
 # 用于 import_from_csv 的 _get_val 调用和密码列检测。
 _CSV_COLUMN_ALIASES = {
     'title':       ('title', 'Title', '名称', 'name'),
@@ -42,10 +43,10 @@ _CSV_COLUMN_ALIASES = {
     'category':    ('category', 'Category', '分类', 'folder'),
 }
 
-# 密码列的别名集合（小写），用于检测 CSV 是否包含密码列。
+# 密码列的别名集合，均为小写形式，用于检测 CSV 是否包含密码列。
 _PASSWORD_COLUMN_NAMES = {'password', '密码', 'login_password', 'pass'}
 
-# KeePass CSV 列名别名映射：键为内部字段名，值为 CSV 中可能的列名（小写）。
+# KeePass CSV 列名别名映射：键为内部字段名，值为 CSV 中可能的列名，均为小写用于匹配。
 _KEE_PASS_COLUMN_ALIASES = {
     'title':    ['title'],
     'username': ['username'],
@@ -59,13 +60,27 @@ _KEE_PASS_COLUMN_ALIASES = {
 def _transactional_import(method):
     """确保一次导入要么全部成功，要么完全回滚。
 
-    约定：filepath 为被装饰方法的第二个位置参数（self 之后第一个）。
+    约定：filepath 为被装饰方法的第二个位置参数，即 self 之后的第一个参数。
+
+    在事务开始前捕获当前 key_epoch，事务开始后验证未变化，
+    防止导入期间并发改密导致数据用旧密钥加密但 epoch 已更新。
     """
     @wraps(method)
     def wrapper(self, filepath, *args, **kwargs):
         self._validate_import_path(filepath)
-        with self._entry_mgr.db.transaction():
-            return method(self, filepath, *args, **kwargs)
+        try:
+            # 事务前快照 epoch，防止并发改密导致密钥不一致
+            pre_epoch = self._entry_mgr._vault.key_epoch
+            with self._entry_mgr.db.transaction():
+                current_epoch = self._entry_mgr._vault.key_epoch
+                if pre_epoch != current_epoch:
+                    raise RuntimeError('导入期间检测到密钥变更，已中止导入')
+                return method(self, filepath, *args, **kwargs)
+        except UnicodeDecodeError:
+            raise ValueError(
+                '文件编码不支持：请确保 CSV 文件使用 UTF-8 编码保存。'
+                '若文件来自其他密码管理器，请先以 UTF-8 编码重新保存。'
+            ) from None
     return wrapper
 
 
@@ -102,63 +117,83 @@ class ImportExportManager:
     def _csv_safe(value):
         """防护 CSV 注入：转义危险前缀，替换内部控制字符"""
         text = str(value) if value is not None else ''
-        # 替换嵌入的换行符为空格（防止 CSV 行断裂）
+        # 替换嵌入的换行符为空格，防止 CSV 行断裂
         text = text.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
         if text.startswith(('=', '+', '-', '@', '\t')):
             return "'" + text
         return text
 
     @staticmethod
+    def _retain_password_custom_fields(
+        entry: Entry,
+        existing: Entry,
+        *,
+        replace_all: bool = True,
+    ) -> None:
+        """合并密码型自定义字段：从 existing 中保留 entry 缺失的密码型字段。
+
+        Args:
+            entry: 导入条目，就地修改。
+            existing: 已有条目，用于读取敏感字段。
+            replace_all: True 时用 existing 的全部密码型字段替换 entry 的
+                适用于 CSV/非导出场景，源格式无法表达密码型字段。
+                False 时按名称增量补充，适用于 Bitwarden JSON 等源格式可表达
+                但可能不包含已有字段的场景。
+        """
+        if not isinstance(entry.custom_fields, list):
+            return
+        existing_pwd = [
+            f for f in (existing.custom_fields if isinstance(existing.custom_fields, list) else [])
+            if f.field_type == 'password'
+        ]
+        if replace_all:
+            # CSV / 非导出：源无法表达密码型字段，完全替换
+            entry.custom_fields = [
+                f for f in entry.custom_fields if f.field_type != 'password'
+            ] + existing_pwd
+        else:
+            # Bitwarden JSON：按名称增量补充已有但导入中不存在的
+            import_pwd_names = {f.name for f in entry.custom_fields if f.field_type == 'password'}
+            missing = [f for f in existing_pwd if f.name not in import_pwd_names]
+            entry.custom_fields = entry.custom_fields + missing
+
+    @staticmethod
     def _merge_bitwarden_secrets(entry: Entry, existing: Entry):
         """Bitwarden JSON 覆盖导入的敏感字段合并。
 
-        与 _merge_csv_secrets 不同，Bitwarden JSON 可完整表达 password、
-        totp_secret 和密码型自定义字段，因此信任导入数据。仅当导入值
-        为空时保留已有值（空字段视为缺失而非"格式无法表达"）。
+        Bitwarden JSON 可完整表达 password、totp_secret 和密码型自定义字段，
+        因此信任导入数据。仅当导入值为空时保留已有值。
         """
         if not entry.password:
             entry.password = existing.password
         if not entry.totp_secret:
             entry.totp_secret = existing.totp_secret
-        # 密码型 custom_fields：Bitwarden JSON fields[type=1] 可表达，
-        # 但导入可能不包含已有的密码型字段——补充已有但不在导入中的
-        import_pwd_names = {
-            f.name for f in entry.custom_fields if f.field_type == 'password'
-        } if isinstance(entry.custom_fields, list) else set()
-        existing_pwd = [
-            f for f in (existing.custom_fields if isinstance(existing.custom_fields, list) else [])
-            if f.field_type == 'password' and f.name not in import_pwd_names
-        ]
-        if isinstance(entry.custom_fields, list):
-            entry.custom_fields = entry.custom_fields + existing_pwd
+        ImportExportManager._retain_password_custom_fields(
+            entry, existing, replace_all=False,
+        )
 
     @staticmethod
     def _merge_non_exported_secrets(entry: Entry, existing: Entry):
         entry.password = existing.password
         entry.totp_secret = existing.totp_secret
-        sensitive = [field for field in existing.custom_fields if field.field_type == 'password']
-        entry.custom_fields = [
-            field for field in entry.custom_fields if field.field_type != 'password'
-        ] + sensitive
+        ImportExportManager._retain_password_custom_fields(
+            entry, existing, replace_all=True,
+        )
 
     @staticmethod
     def _merge_csv_secrets(entry: Entry, existing: Entry, source_has_password: bool):
-        """H2：CSV 覆盖导入的敏感字段合并。
+        """CSV 覆盖导入的敏感字段合并。
 
-        CSV 是不可靠的往返格式（密码型自定义字段无法可靠映射），因此对源文件
-        未携带的敏感字段始终保留 existing 的值，避免覆盖导入时静默丢失：
-        - password：源无密码列时保留 existing；有密码列且导入值非空时用导入值。
-        - totp_secret：源未提供（空）时保留 existing（CSV 常无 TOTP 列）。
-        - 密码型 custom_fields：始终保留 existing（CSV 无法表达）。
+        CSV 是不可靠的往返格式，密码型自定义字段无法可靠映射，因此对源文件
+        未携带的敏感字段始终保留 existing 的值。
         """
         if not source_has_password or not entry.password:
             entry.password = existing.password
         if not entry.totp_secret:
             entry.totp_secret = existing.totp_secret
-        sensitive = [field for field in existing.custom_fields if field.field_type == 'password']
-        entry.custom_fields = [
-            field for field in entry.custom_fields if field.field_type != 'password'
-        ] + sensitive
+        ImportExportManager._retain_password_custom_fields(
+            entry, existing, replace_all=True,
+        )
 
     def _duplicate_plan(
         self,
@@ -194,14 +229,23 @@ class ImportExportManager:
         return set(), matched
 
     def _prepare_overwrite_map(self, overwrite: dict[int, Entry]) -> dict[int, Entry]:
-        """批量加载待覆盖条目的完整解密数据，避免 N+1 查询"""
-        result = {}
+        """批量加载待覆盖条目的完整解密数据，使用单次 SQL 查询替代 N+1 模式。"""
+        # 收集所有需要加载的 summary ID
+        ids_by_idx: dict[int, int] = {}
         for idx, summary in overwrite.items():
-            if summary.id is None:
-                continue
-            entry = self._entry_mgr.get_entry(summary.id)
-            if entry is None:
-                raise EntryError(f'待覆盖条目 {summary.id} 已不存在')
+            if summary.id is not None:
+                ids_by_idx[idx] = summary.id
+        if not ids_by_idx:
+            return {}
+        # 批量查询 + 批量解密
+        raw_entries = self._entry_mgr.db.get_entries_by_ids(list(ids_by_idx.values()))
+        entries_by_id = {e.id: e for e in raw_entries}
+        result: dict[int, Entry] = {}
+        for idx, entry_id in ids_by_idx.items():
+            raw = entries_by_id.get(entry_id)
+            if raw is None:
+                raise EntryError(f'待覆盖条目 {entry_id} 已不存在')
+            entry = self._entry_mgr.decrypt_entry(raw)
             result[idx] = entry
         return result
 
@@ -223,7 +267,7 @@ class ImportExportManager:
         categories[key] = category
         return category.id
 
-    # ========== 导出 ==========
+    # ======== 导出 ========
 
     def export_to_json(
         self,
@@ -273,11 +317,14 @@ class ImportExportManager:
                     if not entry.is_decrypted:
                         continue
                     row = entry.to_dict(include_password=include_password)
+                    cf = entry.custom_fields
+                    if not isinstance(cf, list):
+                        continue
                     exported_fields = [
-                        field for field in entry.custom_fields
+                        field for field in cf
                         if include_password or field.field_type != 'password'
                     ]
-                    cf_str = '; '.join(f"{cf.name}={cf.value}" for cf in exported_fields)
+                    cf_str = '; '.join(f"{f.name}={f.value}" for f in exported_fields)
                     if row.get('notes'):
                         if cf_str:
                             row['notes'] += f'\n[自定义字段] {cf_str}'
@@ -292,7 +339,7 @@ class ImportExportManager:
         finally:
             temp.unlink(missing_ok=True)
 
-    # ========== 导入辅助 ==========
+    # ======== 导入辅助 ========
 
     def _import_entries(
         self,
@@ -308,12 +355,12 @@ class ImportExportManager:
         """统一的导入循环：去重、分类解析、覆盖/新增、进度回调。
 
         Args:
-            entries: 已解析好的 Entry 对象列表（与 entries_data 一一对应）
-            entries_data: 用于去重检测的摘要列表（每项含 title/username）
+            entries: 已解析好的 Entry 对象列表，与 entries_data 一一对应
+            entries_data: 用于去重检测的摘要列表，每项含 title/username
             categories: 已有分类的 casefold 名称映射
             default_category_id: 默认分类 ID
             duplicate_action: 重复处理策略 ('import_all' / 'skip' / 'overwrite')
-            source_label: 日志中标识来源（如 'JSON 导入'）
+            source_label: 日志中标识来源，例如 'JSON 导入'
             progress_callback: 进度回调
             overwrite_merger: 可选的覆盖合并回调 ``(new_entry, existing_entry) -> None``，
                 在设置 id/created_at 之后、写入数据库之前调用。
@@ -349,7 +396,7 @@ class ImportExportManager:
                 else:
                     self._entry_mgr.add_entry(entry)
             except ValueError as exc:
-                # IE-01：字段长度违规等校验错误，跳过该条目而非回滚整个导入
+                # 字段长度违规等校验错误，跳过该条目而非回滚整个导入
                 skipped += 1
                 logger.warning(
                     "跳过条目 '%s': %s",
@@ -367,7 +414,7 @@ class ImportExportManager:
 
         return count
 
-    # ========== 导入 ==========
+    # ======== 导入 ========
 
     @staticmethod
     def check_duplicates(
@@ -379,7 +426,7 @@ class ImportExportManager:
         以 (title, username) 为匹配键。
 
         Args:
-            entries_data: 待导入的条目列表（每个有 title/username 等字段）
+            entries_data: 待导入的条目列表，每个元素含 title/username 等字段
             existing_entries: 现有已解密条目
 
         Returns:
@@ -424,14 +471,14 @@ class ImportExportManager:
             duplicate_action: 重复处理策略
                 - 'skip': 跳过重复项
                 - 'overwrite': 覆盖匹配的已有条目
-                - 'import_all': 全部导入（默认）
+                - 'import_all': 全部导入，默认行为
         """
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
         if not isinstance(data, dict) or data.get('app') != 'CipherBox':
             raise ValueError('不是 CipherBox JSON 导出文件')
-        # NOTE: app 字段检查仅防止误导入错误格式的文件，不防恶意伪造。
+        # 注意：app 字段检查仅防止误导入错误格式的文件，不防恶意伪造。
         # 真实安全保护在于：导入数据会被重新加密到当前 vault 密钥下，
         # 恶意注入的数据仅能产生垃圾条目，无法获取已有密码。
         if type(data.get('secrets_included')) is not bool:
@@ -442,7 +489,7 @@ class ImportExportManager:
         self._validate_items(items)
         if not items:
             return 0
-        # C3：校验每个元素是否为 dict，防止非 dict 类型触发难以定位的 AttributeError。
+        # 校验每个元素是否为 dict，防止非 dict 类型触发难以定位的 AttributeError。
         non_dict = [i for i, item in enumerate(items) if not isinstance(item, dict)]
         if non_dict:
             raise ValueError(
@@ -472,7 +519,7 @@ class ImportExportManager:
         progress_callback: Optional[Callable[[int, int], None]] = None,
         duplicate_action: str = 'import_all',
     ) -> int:
-        """从 CSV 文件导入（支持多种列名格式）
+        """从 CSV 文件导入，支持多种列名格式
 
         Args:
             filepath: 文件路径
@@ -481,7 +528,7 @@ class ImportExportManager:
             duplicate_action: 重复处理策略
                 - 'skip': 跳过重复项
                 - 'overwrite': 覆盖匹配的已有条目
-                - 'import_all': 全部导入（默认）
+                - 'import_all': 全部导入，默认行为
         """
         with open(filepath, 'r', encoding='utf-8-sig', newline='') as f:
             reader = csv.DictReader(f)
@@ -528,7 +575,7 @@ class ImportExportManager:
             overwrite_merger=_merge,
         )
 
-    # 注意：Chrome/Edge CSV 与 CipherBox CSV 共享相同的列名格式（name/url/username/password 等），
+    # 注意：Chrome/Edge CSV 与 CipherBox CSV 共享相同的列名格式，即 name/url/username/password 等，
     # 因此直接委托给 import_from_csv。不添加 @_transactional_import 装饰器，
     # 因为事务由 import_from_csv 内部处理。
     def import_from_chrome_csv(
@@ -547,7 +594,7 @@ class ImportExportManager:
             duplicate_action: 重复处理策略
                 - 'skip': 跳过重复项
                 - 'overwrite': 覆盖匹配的已有条目
-                - 'import_all': 全部导入（默认）
+                - 'import_all': 全部导入，默认行为
         """
         return self.import_from_csv(filepath, default_category_id, progress_callback, duplicate_action)
 
@@ -570,7 +617,7 @@ class ImportExportManager:
             duplicate_action: 重复处理策略
                 - 'skip': 跳过重复项
                 - 'overwrite': 覆盖匹配的已有条目
-                - 'import_all': 全部导入（默认）
+                - 'import_all': 全部导入，默认行为
         """
         with open(filepath, 'r', encoding='utf-8-sig', newline='') as f:
             reader = csv.DictReader(f)
@@ -585,7 +632,7 @@ class ImportExportManager:
         # KeePass 常见列: Title, UserName, Password, URL, Notes, Group
         field_aliases = _KEE_PASS_COLUMN_ALIASES
 
-        # 获取 CSV 实际列名（原样保留）
+        # 获取 CSV 实际列名，原样保留
         actual_headers = list(rows[0].keys())
 
         # 为每个内部字段名找到 CSV 中匹配的列名
@@ -645,7 +692,7 @@ class ImportExportManager:
             duplicate_action: 重复处理策略
                 - 'skip': 跳过重复项
                 - 'overwrite': 覆盖匹配的已有条目
-                - 'import_all': 全部导入（默认）
+                - 'import_all': 全部导入，默认行为
         """
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -747,7 +794,7 @@ class ImportExportManager:
 
     @staticmethod
     def _get_val(row: dict, *keys: str, _row_lower: dict | None = None) -> str:
-        """从行数据中按多个候选键名获取值（精确匹配优先，大小写不敏感回退）。
+        """从行数据中按多个候选键名获取值，精确匹配优先，大小写不敏感回退。
 
         Args:
             row: CSV 行数据。
@@ -756,6 +803,9 @@ class ImportExportManager:
         """
         for key in keys:
             val = row.get(key, '')
+            # 注意：空字符串被视为"未提供"而非"有意清空"。这是 CSV 导入的设计
+            # 决策——CSV 空单元格通常意味着列不存在或源不包含该数据，而非用户
+            # 主动清除字段值。若需支持"有意清空"语义，需引入显式空值标记。
             if val:
                 return val
         # 大小写不敏感回退
@@ -768,4 +818,4 @@ class ImportExportManager:
 
     @staticmethod
     def _now() -> str:
-        return datetime.now(timezone.utc).isoformat()
+        return utc_now_iso()

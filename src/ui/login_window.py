@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ..crypto.password_generator import PasswordGenerator
+from ..business.password_service import PasswordService
 from ..ui.resources.constants import LOGIN_HEIGHT_FIRST, LOGIN_HEIGHT_LOGIN, WORKER_WAIT_TIMEOUT_MS
 from ..ui.resources.icons import EYE, LOCK, SHIELD, icon_pixmap, set_icon
 from ..ui.resources.theme_colors import c
@@ -38,11 +38,11 @@ class LoginWindow(QDialog):
         self._vault = vault_manager
         self._is_first_time = not vault_manager.is_initialized
         self._rate_limiter = RateLimiter()
-        self._worker = None  # H4：后台 KDF worker
+        self._worker = None  # 后台 KDF worker
         self._setup_ui()
 
     def reject(self):
-        """关闭前等待后台认证 worker 完成（H4），避免窗口销毁后发信号。"""
+        """关闭前等待后台认证 worker 完成，避免窗口销毁后发信号。"""
         if self._worker and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(WORKER_WAIT_TIMEOUT_MS)
@@ -202,7 +202,7 @@ class LoginWindow(QDialog):
     def _on_confirm(self):
         """确认按钮"""
 
-        # L13：速率限制委托给 RateLimiter
+        # 速率限制委托给 RateLimiter
         msg = self._rate_limiter.check()
         if msg:
             self._show_error(msg)
@@ -223,7 +223,7 @@ class LoginWindow(QDialog):
             if password != confirm_pwd:
                 self._show_error('两次输入的密码不一致')
                 return
-            valid, error = PasswordGenerator.validate_master_password(password)
+            valid, error = PasswordService.validate_master_password(password)
             if not valid:
                 self._show_error(error)
                 return
@@ -233,7 +233,7 @@ class LoginWindow(QDialog):
             action = self._vault.unlock
             error_default = '主密码错误'
 
-        # H4：KDF（PBKDF2 600k 迭代）在后台线程执行，避免冻结 UI。
+        # KDF 使用 PBKDF2 算法，迭代次数 600k，在后台线程执行以避免冻结 UI。
         self._start_auth(action, password, error_default)
 
     def _start_auth(self, action, password: str, error_default: str):
@@ -246,22 +246,22 @@ class LoginWindow(QDialog):
         self._worker.error.connect(lambda _msg: self._on_auth_error(error_default))
         self._worker.start()
 
-    def _on_auth_done(self, success: bool):
-        """后台认证完成（主线程回调）。"""
+    def _on_auth_done(self, result: tuple[bool, str]):
+        """后台认证完成，在主线程中回调。
+
+        Args:
+            result: (success, error_message) — 来自 VaultManager.initialize/unlock
+        """
         release_worker(self)
         self._reset_confirm_btn()
-        self._on_auth_result(
-            success,
-            '' if success else getattr(self._vault, 'last_error', ''),
-        )
+        success, error_msg = result
+        self._on_auth_result(success, error_msg)
 
     def _on_auth_error(self, error_default: str):
-        """后台认证异常（主线程回调）。"""
+        """后台认证异常，在主线程中回调。"""
         release_worker(self)
         self._reset_confirm_btn()
-        self._on_auth_result(
-            False, getattr(self._vault, 'last_error', '') or error_default
-        )
+        self._on_auth_result(False, error_default)
 
     def _reset_confirm_btn(self):
         self._confirm_btn.setEnabled(True)

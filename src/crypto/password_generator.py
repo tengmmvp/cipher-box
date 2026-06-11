@@ -1,4 +1,8 @@
-"""密码生成器与强度检测"""
+"""密码生成器与强度检测。
+
+生成时可排除模糊字符，强度检测基于长度、字符种类、常见密码模式
+和重复字符比例综合评分（0-4 分），并给出具体改进建议。
+"""
 
 import logging
 import re
@@ -50,7 +54,7 @@ def _build_charset(base_chars: str, exclude_ambiguous: bool) -> str:
 
     Args:
         base_chars: 基础字符集
-        exclude_ambiguous: 是否排除模糊字符（Il1O0o）
+        exclude_ambiguous: 是否排除模糊字符，即 Il1O0o
 
     Returns:
         处理后的字符集字符串
@@ -129,12 +133,10 @@ class PasswordGenerator:
         for req_chars in required:
             password_chars.append(_RNG.choice(req_chars))
 
-        # 填充剩余长度
         remaining = length - len(password_chars)
         for _ in range(max(0, remaining)):
             password_chars.append(_RNG.choice(charset))
 
-        # 随机打乱顺序
         _RNG.shuffle(password_chars)
         return ''.join(password_chars)
 
@@ -162,7 +164,6 @@ class PasswordGenerator:
         has_digit = bool(_RE_DIGIT.search(password))
         has_symbol = bool(_RE_SYMBOL.search(password))
 
-        # 检查是否为常见密码
         is_common = False
         pwd_lower = password.lower()
         for pattern in COMMON_PATTERNS:
@@ -171,7 +172,6 @@ class PasswordGenerator:
                 logger.debug("检测到常见密码模式")
                 break
 
-        # 计算分数
         # 评分体系：0=非常弱, 1=弱, 2=一般, 3=强, 4=非常强
         # 理论最大原始分 6（len>=8 + len>=12 + upper + lower + digit + symbol），
         # 通过 is_common 惩罚和 unique_ratio 惩罚降低后，最终 clamp 到 [0, 4]。
@@ -219,7 +219,7 @@ class PasswordGenerator:
             score = max(0, score - 1)
             feedback.append('密码中重复字符过多')
 
-        # 最终 clamp：确保分数在 [0, 4] 范围内（labels 数组仅有 5 个元素）
+        # 最终 clamp：确保分数在 [0, 4] 范围内，labels 数组仅有 5 个元素
         score = min(4, max(0, score))
 
         labels = ['非常弱', '弱', '一般', '强', '非常强']

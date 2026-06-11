@@ -1,4 +1,10 @@
-"""主密码管理 - PBKDF2 密钥派生与验证"""
+"""主密码管理 - PBKDF2-HMAC-SHA256 密钥派生与验证。
+
+使用 PBKDF2 从主密码派生 256 位 AES 密钥，迭代次数默认 600k（OWASP 2023 推荐）。
+密码验证不存储哈希，而是加密一段已知明文（验证令牌）来确认密码正确性，
+验证令牌和 AAD 硬编码于源码中——伪造需要先完成 PBKDF2 派生，暴力破解成本远高于
+利用此常量的成本。更改验证令牌值会破坏所有已存在的保险库。
+"""
 
 import hmac
 import logging
@@ -19,10 +25,10 @@ MAX_PBKDF2_ITERATIONS = 2_000_000
 SALT_SIZE = 32
 KEY_SIZE = 32  # AES-256
 
-# 验证令牌 - 用于验证主密码是否正确。
-# SECURITY NOTE: 验证明文和 AAD 硬编码于源码中。攻击者若获取了数据库文件，
-# 可从此常量构造伪造的 verify_token。但伪造需要先完成 PBKDF2 密钥派生
-# （600k 迭代），因此在实践中，暴力破解密码的成本远高于利用此常量的成本。
+# 验证令牌：用于验证主密码是否正确。
+# 验证明文和 AAD 硬编码于源码中。攻击者若获取了数据库文件，
+# 可从此常量构造伪造的 verify_token，但伪造需要先完成 PBKDF2 密钥派生，
+# 因此在实践中，暴力破解密码的成本远高于利用此常量的成本。
 # 更改此值会破坏所有已存在的保险库，不可接受。
 VERIFY_PLAINTEXT = "CipherBox::MasterKey::Verification"
 VERIFY_AAD = "vault:master-verification"

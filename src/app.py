@@ -66,7 +66,7 @@ class CipherBoxApp:
             assert self._main_window is not None
             self._main_window.refresh_after_unlock()
             self._main_window.show()
-            # L6：配置完整性校验失败时提示用户（首次显示时检查一次）
+            # 配置完整性校验失败时提示用户，首次显示时检查一次
             if first_show and not self._config.check_integrity():
                 QMessageBox.warning(
                     self._main_window, '配置完整性警告',

@@ -30,12 +30,10 @@ class CipherBoxError(Exception):
     """CipherBox 所有自定义异常的基类。"""
 
 
-# ---------------------------------------------------------------------------
-# Vault
-# ---------------------------------------------------------------------------
+# ==================== Vault ====================
 
 class VaultError(CipherBoxError, RuntimeError):
-    """保险库操作异常（兼容 ``except RuntimeError``）。"""
+    """保险库操作异常，兼容 ``except RuntimeError``。"""
 
 
 class VaultLockedError(VaultError):
@@ -47,19 +45,17 @@ class VaultIntegrityError(VaultError):
 
 
 class VaultKeyEpochMismatchError(VaultError):
-    """主密钥版本不匹配（可能被其他进程更新）。"""
+    """主密钥版本不匹配，可能被其他进程更新。"""
 
 
 class VaultAlreadyInitializedError(VaultError):
     """保险库已初始化，不能重复设置主密码。"""
 
 
-# ---------------------------------------------------------------------------
-# Crypto
-# ---------------------------------------------------------------------------
+# ==================== Crypto ====================
 
 class CryptoError(CipherBoxError, ValueError):
-    """加密/解密操作异常（兼容 ``except ValueError``）。"""
+    """加密/解密操作异常，兼容 ``except ValueError``。"""
 
 
 class DecryptionError(CryptoError):
@@ -68,19 +64,17 @@ class DecryptionError(CryptoError):
 
 # ---------------------------------------------------------------------------
 # Entry
-# ---------------------------------------------------------------------------
+# ==================== Entry ====================
 
 class EntryError(CipherBoxError):
     """条目操作异常。"""
 
 
 class EntryIntegrityError(EntryError):
-    """条目完整性异常（字段解密失败或元数据签名校验不通过）。"""
+    """条目完整性异常，字段解密失败或元数据签名校验不通过。"""
 
 
-# ---------------------------------------------------------------------------
-# Backup
-# ---------------------------------------------------------------------------
+# ==================== Backup ====================
 
 class BackupError(CipherBoxError):
     """备份/恢复操作异常。"""
@@ -90,12 +84,10 @@ class BackupCorruptionError(BackupError):
     """备份数据损坏或格式无效。"""
 
 
-# ---------------------------------------------------------------------------
-# Database
-# ---------------------------------------------------------------------------
+# ==================== Database ====================
 
 class DatabaseError(CipherBoxError, RuntimeError):
-    """数据库操作异常（兼容 ``except RuntimeError``）。"""
+    """数据库操作异常，兼容 ``except RuntimeError``。"""
 
 
 class TransactionError(DatabaseError):
