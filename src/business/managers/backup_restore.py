@@ -312,7 +312,9 @@ class BackupRestoreManager:
         else:
             if not self._vault.is_unlocked:
                 return False, '恢复快照备份需要先解锁保险库'
-            backup_key = self._vault.snapshot_key
+            # 与 create_backup 一致：复制为独立 bytes，避免借用 KeyManager 内部对象，
+            # 防止后续若在锁外使用时与主线程清零 snapshot_key 产生竞态
+            backup_key = bytes(self._vault.snapshot_key)
 
         # 持 vault 锁串行化恢复与改密/备份：从解密全量明文到写库全程持锁，
         # 与 create_backup 的「持锁才接触全量明文」契约统一。

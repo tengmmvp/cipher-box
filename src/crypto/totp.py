@@ -174,14 +174,19 @@ class TOTPGenerator:
 
     @staticmethod
     def _extract_period(secret: str, default: int = DEFAULT_PERIOD) -> int:
-        """从 otpauth URI 中提取 period，避免完整 _parse_config 的开销。"""
+        """从 otpauth URI 中提取 period，避免完整 _parse_config 的开销。
+
+        对解析结果做正数校验，与 _parse_config 对齐，防止 period<=0 让
+        get_remaining_seconds 取模抛 ZeroDivisionError 或返回负倒计时。
+        """
         value = secret.strip()
         if value.lower().startswith('otpauth://'):
             try:
                 query = parse_qs(urlparse(value).query)
-                return int(query.get('period', [str(default)])[0])
+                period = int(query.get('period', [str(default)])[0])
             except (ValueError, TypeError):
                 return default
+            return period if period > 0 else default
         return default
 
     @staticmethod

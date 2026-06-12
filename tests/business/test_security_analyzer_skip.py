@@ -89,3 +89,33 @@ class TestSecurityAnalyzerSkipCorrupt:
         assert 'old_entries' in result
         assert result['total'] == 0
         assert result['weak_count'] == 0
+
+    def test_naive_password_changed_at_does_not_crash(self):
+        """naive 时间戳（无时区偏移）应视为 UTC，不抛 TypeError。
+
+        回归守护：cutoff 为 aware UTC，naive 的 password_changed_at 与之比较
+        会抛 TypeError 使整个分析崩溃。修复后 naive 视为 UTC，旧时间戳正确
+        归入过期条目。
+        """
+        vault = MagicMock()
+        vault.key = b'\x00' * 32
+        vault.is_unlocked = True
+
+        entry = Entry(
+            id=1,
+            crypto_id='naive_crypto',
+            title='旧条目',
+            username='',
+            password='',
+            custom_fields_enc='',
+            # naive ISO 字符串，无 +00:00 偏移（模拟旧版或外部导入数据）
+            password_changed_at='2020-01-01T00:00:00',
+        )
+        vault.db.get_entries.return_value = [entry]
+
+        analyzer = SecurityAnalyzer(vault)
+        result = analyzer.full_analysis(90)
+
+        assert isinstance(result, dict)
+        # 2020 远早于 now-90d，naive 视为 UTC 后应归入过期
+        assert result['old'] == 1

@@ -275,8 +275,8 @@ class DatabaseManager:
         """打开数据库连接"""
         try:
             secure_directory(self._db_path.parent)
-            # check_same_thread=False 仅允许同一线程的 RLock 重入和事务内操作，
-            # 所有 DB 操作仍须通过 @_db_operation 或在已持有 _lock 的上下文中调用。
+            # check_same_thread=False 允许跨线程共享连接；真正的并发保护由 _lock
+            # （RLock）提供，所有 DB 操作须通过 @_db_operation 或在已持锁上下文中调用。
             self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA journal_mode=WAL")

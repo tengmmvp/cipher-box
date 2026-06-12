@@ -126,23 +126,14 @@ class _StatCard(QFrame):
 
     def _setup_ui(self, title: str, count: int, color: str, button_text: str):
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setStyleSheet(
-            f"QFrame {{"
-            f"  background-color: {c('bg_card')};"
-            f"  border: 1px solid {c('border_light')};"
-            f"  border-radius: 8px;"
-            f"  padding: 12px;"
-            f"}}"
-        )
+        self.setObjectName('statCard')
 
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
 
         # 标题
         title_label = QLabel(title)
-        title_label.setStyleSheet(
-            f"font-size: 12px; color: {c('text_secondary')};"
-        )
+        title_label.setObjectName('statCardTitle')
         layout.addWidget(title_label)
 
         # 数字
@@ -157,19 +148,6 @@ class _StatCard(QFrame):
         action_btn = QPushButton(button_text)
         action_btn.setObjectName('statActionBtn')
         action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        action_btn.setStyleSheet(
-            f"QPushButton {{"
-            f"  border: none;"
-            f"  background: transparent;"
-            f"  color: {c('accent_text')};"
-            f"  font-size: 12px;"
-            f"  padding: 2px 0;"
-            f"  text-align: left;"
-            f"}}"
-            f"QPushButton:hover {{"
-            f"  color: {c('accent_hover')};"
-            f"}}"
-        )
         self.action_button = action_btn
         layout.addWidget(action_btn)
 
@@ -198,11 +176,16 @@ class SecurityDashboard(QDialog):
         self._load_data()
 
     def reject(self):
-        """关闭前等待后台分析 worker 完成，避免对已销毁部件发信号。"""
+        """关闭前等待后台 worker 完成，并清空已解密的明文条目引用。"""
         if self._worker and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(WORKER_WAIT_TIMEOUT_MS)
         release_worker(self)
+        # 清空含明文密码的条目列表，与 DetailPanel/EntryDialog 主动清理策略一致，
+        # 缩短敏感数据在对话框关闭后的驻留时间
+        self._weak_entries = []
+        self._duplicate_groups = []
+        self._old_entries = []
         super().reject()
 
     def _setup_ui(self):
@@ -246,7 +229,7 @@ class SecurityDashboard(QDialog):
         # 分隔线
         separator = QFrame()
         separator.setFixedHeight(1)
-        separator.setStyleSheet(f"background-color: {c('divider')}; border: none;")
+        separator.setObjectName('detailDivider')
         main_layout.addWidget(separator)
 
         # ===== 详细列表区域 =====
@@ -308,7 +291,7 @@ class SecurityDashboard(QDialog):
         self._health_widget.set_score(0)
         self._status_hint = QLabel('正在分析安全数据...')
         self._status_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._status_hint.setStyleSheet(f"color: {c('text_muted')}; font-size: 14px; padding: 16px;")
+        self._status_hint.setObjectName('secStatusHint')
         self._weak_layout.addWidget(self._status_hint)
 
         self._worker = BackgroundWorker(
@@ -416,22 +399,13 @@ class SecurityDashboard(QDialog):
 
         for group in self._duplicate_groups:
             group_widget = QFrame()
-            group_widget.setStyleSheet(
-                f"QFrame {{"
-                f"  background-color: {c('bg_card')};"
-                f"  border: 1px solid {c('border_light')};"
-                f"  border-radius: 6px;"
-                f"  padding: 8px;"
-                f"}}"
-            )
+            group_widget.setObjectName('dupGroup')
             group_layout = QVBoxLayout(group_widget)
             group_layout.setSpacing(4)
 
             # 组标题
             group_label = QLabel(f'同一密码被 {len(group)} 个条目使用')
-            group_label.setStyleSheet(
-                f"font-weight: bold; font-size: 13px; color: {c('warning_orange')};"
-            )
+            group_label.setObjectName('dupGroupLabel')
             group_layout.addWidget(group_label)
 
             # 组内条目
@@ -482,16 +456,9 @@ class SecurityDashboard(QDialog):
     ) -> QWidget:
         """创建一条包含标题、副标题、徽章与修复按钮的条目行。"""
         row_widget = QWidget()
-        row_widget.setStyleSheet(
-            f"QWidget {{"
-            f"  background-color: {c('bg_card')};"
-            f"  border: 1px solid {c('border_light')};"
-            f"  border-radius: 6px;"
-            f"}}"
-            f"QWidget:hover {{"
-            f"  background-color: {c('bg_card_hover')};"
-            f"}}"
-        )
+        row_widget.setObjectName('secEntryRow')
+        # 启用 hover 属性，使 QSS 的 QWidget#secEntryRow:hover 生效
+        row_widget.setAttribute(Qt.WidgetAttribute.WA_Hover)
         row_layout = QHBoxLayout(row_widget)
         row_layout.setContentsMargins(12, 8, 12, 8)
 
@@ -500,16 +467,12 @@ class SecurityDashboard(QDialog):
         info_layout.setSpacing(2)
 
         title_label = QLabel(title)
-        title_label.setStyleSheet(
-            f"font-size: 13px; font-weight: bold; color: {c('text_primary')};"
-        )
+        title_label.setObjectName('secRowTitle')
         info_layout.addWidget(title_label)
 
         if subtitle:
             sub_label = QLabel(subtitle)
-            sub_label.setStyleSheet(
-                f"font-size: 11px; color: {c('text_secondary')};"
-            )
+            sub_label.setObjectName('secRowSub')
             info_layout.addWidget(sub_label)
 
         row_layout.addLayout(info_layout, stretch=1)
@@ -533,18 +496,7 @@ class SecurityDashboard(QDialog):
         fix_btn = QPushButton('修复')
         fix_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         fix_btn.setFixedSize(*BTN_FIX)
-        fix_btn.setStyleSheet(
-            f"QPushButton {{"
-            f"  background-color: {c('accent')};"
-            f"  color: {c('text_on_accent')};"
-            f"  border: none;"
-            f"  border-radius: 4px;"
-            f"  font-size: 12px;"
-            f"}}"
-            f"QPushButton:hover {{"
-            f"  background-color: {c('accent_hover')};"
-            f"}}"
-        )
+        fix_btn.setObjectName('secFixBtn')
         fix_btn.clicked.connect(lambda checked, eid=entry_id: self._request_fix(eid))
         row_layout.addWidget(fix_btn)
 
@@ -554,11 +506,7 @@ class SecurityDashboard(QDialog):
         """创建居中显示的空状态提示标签。"""
         label = QLabel(text)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setStyleSheet(
-            f"color: {c('text_muted')};"
-            f"font-size: 14px;"
-            f"padding: 32px;"
-        )
+        label.setObjectName('secEmptyHint')
         return label
 
     @staticmethod

@@ -214,8 +214,12 @@ class ChangeMasterDialog(QDialog):
             QMessageBox.information(self, '成功', message)
             self.accept()
         else:
-            lock_seconds = self._rate_limiter.record_failure()
             display_msg = error_msg or '当前主密码错误'
+            # 仅明确的认证失败计入速率限制；新密码校验问题或系统错误不惩罚用户
+            if error_msg == '当前主密码错误':
+                lock_seconds = self._rate_limiter.record_failure()
+            else:
+                lock_seconds = 0
             if lock_seconds > 0:
                 self._msg_label.setText(
                     f'{display_msg}。尝试次数过多，请等待 {lock_seconds} 秒后重试'

@@ -226,7 +226,8 @@ class SecurityAnalyzer:
                 skipped_count += 1
                 continue
 
-            # 解析 changed_at 为 UTC datetime，统一处理 naive 和 aware 两种格式
+            # 解析 changed_at 为 UTC datetime：naive 视为 UTC、aware 归一化到 UTC，
+            # 避免 naive 与 aware cutoff 比较抛 TypeError 使整个分析崩溃
             changed_at_str = (
                 raw.password_changed_at or raw.updated_at or raw.created_at
             )
@@ -234,7 +235,9 @@ class SecurityAnalyzer:
             if changed_at_str:
                 try:
                     changed_utc = datetime.fromisoformat(changed_at_str)
-                    if changed_utc.tzinfo is not None:
+                    if changed_utc.tzinfo is None:
+                        changed_utc = changed_utc.replace(tzinfo=timezone.utc)
+                    else:
                         changed_utc = changed_utc.astimezone(timezone.utc)
                 except (ValueError, TypeError):
                     logger.debug('条目 %s 日期解析失败: %s', raw.id, changed_at_str)

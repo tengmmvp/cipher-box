@@ -463,6 +463,10 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         """按设置创建当前保险库的本地快速快照，后台执行以避免阻塞 UI。"""
         if not self._vault.is_unlocked:
             return
+        # 未启用自动备份时直接返回，避免每 10 分钟空转一个 worker 线程。
+        # force=True 表示设置变更后立即触发，绕过开关以兑现用户意图。
+        if not force and not self._config.get_safe('auto_backup_enabled', False):
+            return
         self._run_backup_async(force=force)
 
     def _run_backup_async(self, force: bool = False):

@@ -25,13 +25,14 @@ def _make_entry(**kwargs) -> Entry:
 # --- TestTOTP ---
 
 
-def test_generate_valid_secret():
-    """已知密钥生成验证码。"""
-    # RFC 6238 测试向量：SHA1 加时间戳 59 对应 287082。
-    secret = 'GEZDGNBVGY3TQOJQ'  # "12345678901234567890" 的 Base32 编码
+def test_generate_valid_secret(monkeypatch):
+    """RFC 6238 测试向量：固定 T=59 断言 6 位验证码 287082。"""
+    # 完整 20 字节密钥 "12345678901234567890" 的 Base32 编码。
+    # 截断的 10 字节密钥无法匹配 RFC 向量，此前仅断言长度的测试无效。
+    secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'
+    monkeypatch.setattr('src.crypto.totp.time.time', lambda: 59)
     code = TOTPGenerator.generate(secret)
-    assert len(code) == 6
-    assert code.isdigit()
+    assert code == '287082'
 
 
 def test_generate_empty_secret():

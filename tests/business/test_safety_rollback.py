@@ -160,6 +160,47 @@ class TestChangePasswordRollbackConsistency:
         assert entry is not None
         assert entry.password == original.password
 
+    def test_change_password_cancel_event_rolls_back(self):
+        """改密重加密期间通过 cancel_event 取消时，抛 VaultError 并事务回滚。
+
+        安全属性：区别于 RuntimeError 触发的失败，cancel_event 由 request_cancel
+        或 close 设置，KeyRotationService 检测后抛 VaultError。该路径同样必须
+        回滚事务、清除新密钥，原主密码与数据保持匹配，不出现损坏窗口。
+        """
+        from src.business.services.key_rotation import KeyRotationService
+        from src.exceptions import VaultError
+
+        original = self._original
+        assert original is not None
+        epoch_before = self._vault.db.get_meta('key_epoch')
+        real_re_encrypt = KeyRotationService.re_encrypt_entries
+
+        def _cancel_then_re_encrypt(rotator, old_key, new_key, *, cancel_event=None):
+            # 模拟改密已开始、重加密循环运行时收到取消请求：设置取消事件后
+            # 调用真实实现，首批循环即检测到 cancel_event 已设置而抛 VaultError。
+            if cancel_event is not None:
+                cancel_event.set()
+            return real_re_encrypt(rotator, old_key, new_key, cancel_event=cancel_event)
+
+        with patch(
+            'src.business.managers.vault_manager.KeyRotationService.re_encrypt_entries',
+            new=_cancel_then_re_encrypt,
+        ):
+            with pytest.raises(VaultError):
+                self._vault.change_master_password(
+                    self._master_pwd, 'CancelTest!2026'
+                )
+
+        # 原密码仍可用，epoch 未被推进，事务回滚生效
+        self._vault.lock()
+        assert self._vault.unlock(self._master_pwd)[0]
+        assert self._vault.db.get_meta('key_epoch') == epoch_before
+
+        entry_mgr = EntryManager(self._vault)
+        entry = entry_mgr.get_entry(self._entry_id)
+        assert entry is not None
+        assert entry.password == original.password
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. 备份恢复中途失败回滚 + 恢复点清理

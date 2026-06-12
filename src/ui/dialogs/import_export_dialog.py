@@ -76,6 +76,7 @@ class ImportExportDialog(QDialog):
     def closeEvent(self, a0):
         # 导入 worker 运行时拒绝关闭，避免 QThread 销毁警告与数据不一致
         if a0 is not None and self._worker and self._worker.isRunning() and not self._worker_is_export:
+            self._status_label.setText('导入进行中，请等待完成后再关闭')
             a0.ignore()
             return
         super().closeEvent(a0)

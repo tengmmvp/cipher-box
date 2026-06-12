@@ -62,7 +62,7 @@ from ..resources.constants import (
     PWD_TOGGLE_AUTO_HIDE_SECONDS,
     PWD_VISIBLE_SECONDS_DEFAULT,
 )
-from ..resources.icons import GENERATE, LOCK, set_icon
+from ..resources.icons import GENERATE, set_icon
 from ..resources.theme_colors import c
 
 logger = logging.getLogger(__name__)
@@ -643,15 +643,11 @@ class EntryDialog(QDialog):
             exclude_ambiguous=self._config.get('default_exclude_ambiguous', False) if self._config else False,
         )
         self._password_edit.setText(password)
-        self._password_edit.setEchoMode(QLineEdit.EchoMode.Normal)
-        set_icon(self._toggle_pwd_btn, LOCK)
-        # 按钮内置自动隐藏定时器通过 Qt 动态属性暴露，此处取出并按配置启动
-        timer = self._toggle_pwd_btn.property('autoHideTimer')
-        if timer is not None:
-            visible_seconds = PWD_VISIBLE_SECONDS_DEFAULT
-            if self._config:
-                visible_seconds = self._config.get_safe('password_visible_seconds', PWD_VISIBLE_SECONDS_DEFAULT)
-            timer.start(visible_seconds * 1000)
+        # 通过按钮公共方法显示密码并按配置启动自动隐藏，替代反射式属性访问
+        visible_seconds = PWD_VISIBLE_SECONDS_DEFAULT
+        if self._config:
+            visible_seconds = self._config.get_safe('password_visible_seconds', PWD_VISIBLE_SECONDS_DEFAULT)
+        self._toggle_pwd_btn.show_password(seconds=visible_seconds)
 
     def _on_password_changed(self, text: str):
         update_strength_label(self._strength_label, text, font_size='11px')

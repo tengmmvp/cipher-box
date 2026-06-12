@@ -403,7 +403,8 @@ class _MainWindowFiltersMixin(QMainWindow):
         用于数据发生重大变更的场景，如导入、备份恢复、修改主密码。
         """
         self._invalidate_security_cache()
-        # 失效滚动位置恢复标记：数据整体替换后不应恢复旧滚动位置
+        # 失效空态总数缓存与滚动位置恢复标记：数据整体替换后应重算
+        self._cached_total_entries = -1
         self._last_refresh_filter = None
         self._refresh_categories()
         self._refresh_tag_filter()

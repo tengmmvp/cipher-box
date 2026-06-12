@@ -12,22 +12,21 @@ def utc_now_iso() -> str:
 
 
 def format_datetime(iso_str: str) -> str:
-    """将 ISO 8601 日期字符串格式化为 'YYYY-MM-DD HH:MM:SS'。
+    """将 ISO 8601 日期字符串格式化为本地时区的 'YYYY-MM-DD HH:MM:SS'。
 
-    优先使用 ``datetime.fromisoformat`` 进行严格解析，
-    解析失败时原样返回。
+    优先使用 ``datetime.fromisoformat`` 严格解析，解析失败时原样返回。
 
-    注意：使用 ``fromisoformat`` 解析，带时区偏移的字符串会保留为
-    aware datetime，但 strftime 输出不含时区标识。当前数据库存储的
-    时间戳均为 UTC 且无时区偏移，因此不存在歧义。若未来存储格式
-    变更，需在此处统一时区转换。
+    数据库时间戳由 ``utc_now_iso`` 生成，带 ``+00:00`` 偏移（aware UTC），
+    此处转为本地时区显示。naive 输入（如旧版或外部导入数据）按 UTC 解释，
+    避免与 aware 混用，与 ``security_analyzer`` 对时间戳的认知保持一致。
     """
     if not iso_str:
         return ''
     try:
         dt = datetime.fromisoformat(iso_str)
-        if dt.tzinfo is not None:
-            dt = dt.astimezone()
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone()
         return dt.strftime('%Y-%m-%d %H:%M:%S')
     except (ValueError, TypeError):
         return iso_str

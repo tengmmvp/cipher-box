@@ -62,3 +62,23 @@ class TestTOTPErrorHandling:
         assert TOTPGenerator._normalize_base32('  abc def  ') == 'ABCDEF=='
         assert TOTPGenerator._normalize_base32('jbswy3dpehpk3pxp') == 'JBSWY3DPEHPK3PXP'
         assert TOTPGenerator._normalize_base32('') == ''
+
+    # --- period<=0 边界：辅助方法须与 _parse_config 一致，避免崩溃 ---
+
+    def test_extract_period_non_positive_returns_default(self):
+        """_extract_period 对 period<=0 回退默认值，与 _parse_config 对齐。"""
+        uri_zero = 'otpauth://totp/Test?secret=JBSWY3DPEHPK3PXP&period=0'
+        uri_neg = 'otpauth://totp/Test?secret=JBSWY3DPEHPK3PXP&period=-5'
+        assert TOTPGenerator._extract_period(uri_zero, 30) == 30
+        assert TOTPGenerator._extract_period(uri_neg, 30) == 30
+
+    def test_get_remaining_seconds_zero_period_uri_no_crash(self):
+        """period=0 的 URI 调用 get_remaining_seconds 不抛 ZeroDivisionError。"""
+        uri = 'otpauth://totp/Test?secret=JBSWY3DPEHPK3PXP&period=0'
+        remaining = TOTPGenerator.get_remaining_seconds(secret=uri)
+        assert 1 <= remaining <= 30
+
+    def test_get_period_zero_period_uri_returns_default(self):
+        """period=0 的 URI 的 get_period 回退默认 30。"""
+        uri = 'otpauth://totp/Test?secret=JBSWY3DPEHPK3PXP&period=0'
+        assert TOTPGenerator.get_period(uri) == 30

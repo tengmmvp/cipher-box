@@ -30,7 +30,6 @@ from ...utils.memory import secure_zero_str
 from ..resources.constants import (
     BTN_COPY,
     BTN_ICON,
-    FONT_FAMILY_MONOSPACE,
     MAX_TAG_DISPLAY,
     MS_FEEDBACK,
     PWD_VISIBLE_SECONDS_DEFAULT,
@@ -152,10 +151,7 @@ class DetailPanel(QWidget):
         toolbar.setContentsMargins(16, 12, 16, 8)
 
         self._title_label = QLabel('选择一个条目查看详情')
-        self._title_label.setObjectName('sectionLabel')
-        self._title_label.setStyleSheet(
-            f'font-size: 16px; font-weight: bold; color: {c("text_primary")};'
-        )
+        self._title_label.setObjectName('detailTitle')
         self._title_label.setWordWrap(True)
         toolbar.addWidget(self._title_label)
 
@@ -190,7 +186,7 @@ class DetailPanel(QWidget):
         # 分隔线
         self._divider = QFrame()
         self._divider.setFixedHeight(1)
-        self._divider.setStyleSheet(f'background: {c("divider")};')
+        self._divider.setObjectName('detailDivider')
         layout.addWidget(self._divider)
 
         # 滚动内容
@@ -206,7 +202,7 @@ class DetailPanel(QWidget):
         # 空状态
         self._empty_label = QLabel('请从列表中选择一个条目\n以查看详细信息')
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty_label.setStyleSheet(f'color: {c("text_muted")}; font-size: 14px;')
+        self._empty_label.setObjectName('detailEmpty')
         self._content_layout.addWidget(self._empty_label)
 
         scroll.setWidget(self._content)
@@ -268,10 +264,7 @@ class DetailPanel(QWidget):
                 f'部分数据无法解密：{entry.integrity_message}。为保护原始数据，已禁用编辑。'
             )
             warning.setWordWrap(True)
-            warning.setStyleSheet(
-                f'background: {c("danger_light")}; color: {c("danger")}; '
-                f'border: 1px solid {c("danger")}; border-radius: 6px; padding: 10px;'
-            )
+            warning.setObjectName('detailWarning')
             self._content_layout.addWidget(warning)
             self._edit_btn.hide()
 
@@ -326,7 +319,7 @@ class DetailPanel(QWidget):
             notes_layout = QVBoxLayout(notes_group)
             notes_label = QLabel(entry.notes)
             notes_label.setWordWrap(True)
-            notes_label.setStyleSheet(f'color: {c("text_primary")}; font-size: 13px;')
+            notes_label.setObjectName('notesValue')
             notes_layout.addWidget(notes_label)
             self._content_layout.addWidget(notes_group)
 
@@ -344,28 +337,17 @@ class DetailPanel(QWidget):
 
         if entry.category_name:
             cat_tag = QLabel(f'  {entry.category_name}  ')
-            cat_tag.setStyleSheet(
-                f'background: {c("tag_bg")}; color: {c("tag_text")}; '
-                f'border: 1px solid {c("tag_border")}; border-radius: 10px; '
-                f'font-size: 11px; padding: 2px 8px;'
-            )
+            cat_tag.setObjectName('tag')
             header_info.addWidget(cat_tag)
 
         if entry.entry_type and entry.entry_type != 'login':
             type_tag = QLabel(f'  {entry.type_label}  ')
-            type_tag.setStyleSheet(
-                f'background: {c("accent_light")}; color: {c("accent_text")}; '
-                f'border-radius: 10px; font-size: 11px; padding: 2px 8px;'
-            )
+            type_tag.setObjectName('typeTag')
             header_info.addWidget(type_tag)
 
         for tag in entry.get_tag_list()[:MAX_TAG_DISPLAY]:
             tag_label = QLabel(f'  {tag}  ')
-            tag_label.setStyleSheet(
-                f'background: {c("tag_bg")}; color: {c("tag_text")}; '
-                f'border: 1px solid {c("tag_border")}; border-radius: 10px; '
-                f'font-size: 11px; padding: 2px 6px;'
-            )
+            tag_label.setObjectName('tag')
             header_info.addWidget(tag_label)
 
         header_info.addStretch()
@@ -380,7 +362,7 @@ class DetailPanel(QWidget):
         strength_row.setSpacing(8)
 
         strength_label_title = QLabel('强度：')
-        strength_label_title.setStyleSheet(f'font-weight: bold; color: {c("text_secondary")};')
+        strength_label_title.setObjectName('fieldLabel')
         strength_row.addWidget(strength_label_title)
 
         bar = QProgressBar()
@@ -404,7 +386,6 @@ class DetailPanel(QWidget):
         """构建时间元数据区域"""
         meta_form = QFormLayout()
         meta_form.setSpacing(4)
-        meta_form_label_style = f'color: {c("text_muted")}; font-size: 12px;'
         if entry.created_at:
             meta_form.addRow(
                 QLabel('创建：'),
@@ -425,7 +406,7 @@ class DetailPanel(QWidget):
             if item:
                 w = item.widget()
                 if w:
-                    w.setStyleSheet(meta_form_label_style)
+                    w.setObjectName('metaLabel')
         if meta_form.count() > 0:
             self._content_layout.addLayout(meta_form)
 
@@ -452,7 +433,7 @@ class DetailPanel(QWidget):
     ) -> tuple[QLabel, QWidget]:
         """创建普通字段行，明文显示并可选附带复制按钮。"""
         name_label = QLabel(f'{label}：')
-        name_label.setStyleSheet(f'font-weight: bold; color: {c("text_secondary")};')
+        name_label.setObjectName('fieldLabel')
 
         row_widget = QWidget()
         row_layout = QHBoxLayout(row_widget)
@@ -460,7 +441,7 @@ class DetailPanel(QWidget):
 
         val_label = QLabel(value)
         val_label.setWordWrap(True)
-        val_label.setStyleSheet(f'color: {c("text_primary")};')
+        val_label.setObjectName('fieldValue')
         row_layout.addWidget(val_label, 1)
 
         if copyable and value:
@@ -490,16 +471,14 @@ class DetailPanel(QWidget):
             main_password: 仅用于主密码字段，追踪引用并使用全局自动隐藏定时器
         """
         name_label = QLabel(f'{label}：')
-        name_label.setStyleSheet(f'font-weight: bold; color: {c("text_secondary")};')
+        name_label.setObjectName('fieldLabel')
 
         row_widget = QWidget()
         row_layout = QHBoxLayout(row_widget)
         row_layout.setContentsMargins(0, 0, 0, 0)
 
         val_label = QLabel('••••••••')
-        val_label.setStyleSheet(
-            f'font-family: {FONT_FAMILY_MONOSPACE}; font-size: 13px; color: {c("text_primary")};'
-        )
+        val_label.setObjectName('secretValue')
         row_layout.addWidget(val_label, 1)
 
         show_btn = QPushButton()
@@ -643,7 +622,7 @@ class DetailPanel(QWidget):
         self._fav_btn.hide()
         self._empty_label = QLabel('请从列表中选择一个条目\n以查看详细信息')
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty_label.setStyleSheet(f'color: {c("text_muted")}; font-size: 14px;')
+        self._empty_label.setObjectName('detailEmpty')
         self._content_layout.addWidget(self._empty_label)
 
     def secure_clear(self):
@@ -657,12 +636,10 @@ class DetailPanel(QWidget):
         self.show_empty()
 
     def refresh_theme(self):
-        """刷新在构造时写入的主题相关内联样式。"""
-        self._title_label.setStyleSheet(
-            f'font-size: 16px; font-weight: bold; color: {c("text_primary")};'
-        )
-        self._divider.setStyleSheet(f'background: {c("divider")};')
-        # _empty_label 在 _clear_content 后置为 None，
-        # 仅在控件仍存在时刷新。
-        if self._empty_label is not None:
-            self._empty_label.setStyleSheet(f'color: {c("text_muted")}; font-size: 14px;')
+        """主题刷新钩子。
+
+        本面板的静态主题样式已迁移至 QSS 选择器（detailTitle/detailDivider/
+        detailEmpty 等），主题切换时由 app.setStyleSheet 统一刷新，无需手动重设。
+        保留方法以兼容 _apply_theme 的调用约定；数据驱动的动态内联样式
+        （强度条颜色）由 show_entry(force=True) 重建刷新。
+        """

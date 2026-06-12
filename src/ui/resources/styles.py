@@ -293,6 +293,130 @@ QWidget#sidebar {{
 QWidget#listPane, QWidget#detailPanel {{
     background: {bg_primary};
 }}
+QLabel#detailTitle {{
+    font-size: 16px;
+    font-weight: bold;
+    color: {text_primary};
+}}
+QFrame#detailDivider {{
+    background: {divider};
+    border: none;
+}}
+QLabel#detailEmpty {{
+    color: {text_muted};
+    font-size: 14px;
+}}
+QLabel#fieldLabel {{
+    font-weight: bold;
+    color: {text_secondary};
+}}
+QLabel#fieldValue {{
+    color: {text_primary};
+}}
+QLabel#secretValue {{
+    font-family: {font_mono};
+    font-size: 13px;
+    color: {text_primary};
+}}
+QLabel#notesValue {{
+    color: {text_primary};
+    font-size: 13px;
+}}
+QLabel#metaLabel {{
+    color: {text_muted};
+    font-size: 12px;
+}}
+QLabel#detailWarning {{
+    background: {danger_light};
+    color: {danger};
+    border: 1px solid {danger};
+    border-radius: 6px;
+    padding: 10px;
+}}
+QLabel#tag {{
+    background: {tag_bg};
+    color: {tag_text};
+    border: 1px solid {tag_border};
+    border-radius: 10px;
+    font-size: 11px;
+    padding: 2px 8px;
+}}
+QLabel#typeTag {{
+    background: {accent_light};
+    color: {accent_text};
+    border-radius: 10px;
+    font-size: 11px;
+    padding: 2px 8px;
+}}
+QFrame#statCard {{
+    background: {bg_card};
+    border: 1px solid {border_light};
+    border-radius: 8px;
+    padding: 12px;
+}}
+QLabel#statCardTitle {{
+    font-size: 12px;
+    color: {text_secondary};
+}}
+QPushButton#statActionBtn {{
+    border: none;
+    background: transparent;
+    color: {accent_text};
+    font-size: 12px;
+    padding: 2px 0;
+    text-align: left;
+}}
+QPushButton#statActionBtn:hover {{
+    color: {accent_hover};
+}}
+QFrame#dupGroup {{
+    background: {bg_card};
+    border: 1px solid {border_light};
+    border-radius: 6px;
+    padding: 8px;
+}}
+QLabel#dupGroupLabel {{
+    font-weight: bold;
+    font-size: 13px;
+    color: {warning_orange};
+}}
+QWidget#secEntryRow {{
+    background: {bg_card};
+    border: 1px solid {border_light};
+    border-radius: 6px;
+}}
+QWidget#secEntryRow:hover {{
+    background: {bg_card_hover};
+}}
+QLabel#secRowTitle {{
+    font-size: 13px;
+    font-weight: bold;
+    color: {text_primary};
+}}
+QLabel#secRowSub {{
+    font-size: 11px;
+    color: {text_secondary};
+}}
+QPushButton#secFixBtn {{
+    background-color: {accent};
+    color: {text_on_accent};
+    border: none;
+    border-radius: 4px;
+    font-size: 12px;
+}}
+QPushButton#secFixBtn:hover {{
+    background-color: {accent_hover};
+}}
+QLabel#secEmptyHint {{
+    color: {text_muted};
+    font-size: 14px;
+    padding: 32px;
+}}
+QLabel#secStatusHint {{
+    color: {text_muted};
+    font-size: 14px;
+    padding: 16px;
+}}
 """
 
 
@@ -303,9 +427,13 @@ def get_style(theme: str) -> str:
         会调用 set_theme(theme) 设置全局活跃主题作为副作用。
         这是设计上的有意耦合，样式表生成与主题激活必须同步。
     """
-    from .constants import FONT_FAMILY_CSS
+    from .constants import FONT_FAMILY_CSS, FONT_FAMILY_MONOSPACE
     from .theme_colors import get_colors, set_theme
     colors = get_colors(theme)
     set_theme(theme)
-    return STYLE_TEMPLATE.format(font_family=FONT_FAMILY_CSS, **colors)
+    return STYLE_TEMPLATE.format(
+        font_family=FONT_FAMILY_CSS,
+        font_mono=FONT_FAMILY_MONOSPACE,
+        **colors,
+    )
 

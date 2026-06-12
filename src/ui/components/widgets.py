@@ -38,8 +38,11 @@ def create_password_toggle_btn(
     lock_icon: str = LOCK,
     *,
     auto_hide_seconds: int | None = None,
-) -> QPushButton:
+) -> 'PasswordToggleBtn':
     """创建密码显示/隐藏切换按钮。
+
+    返回 :class:`PasswordToggleBtn`，调用方可通过其 ``show_password`` /
+    ``hide_password`` 公共方法显式控制，无需反射读取动态属性。
 
     Args:
         target_edit: 需要切换 echoMode 的密码输入框。
@@ -47,43 +50,75 @@ def create_password_toggle_btn(
         auto_hide_seconds: 若提供，密码显示指定秒数后自动重新隐藏并恢复图标。
 
     Returns:
-        已连接 clicked 信号的切换按钮。
+        已连接 clicked 信号的 :class:`PasswordToggleBtn` 实例。
     """
-    btn = QPushButton()
-    btn.setObjectName('iconBtn')
-    btn.setFixedSize(*BTN_ICON)
-    set_icon(btn, eye_icon)
-    btn.setToolTip('显示/隐藏密码')
+    return PasswordToggleBtn(
+        target_edit, eye_icon, lock_icon, auto_hide_seconds=auto_hide_seconds,
+    )
 
-    # 可选的自动隐藏定时器
-    auto_timer: QTimer | None = None
-    if auto_hide_seconds is not None:
-        auto_timer = QTimer(btn)
-        auto_timer.setSingleShot(True)
 
-        def _on_auto_hide():
-            target_edit.setEchoMode(QLineEdit.EchoMode.Password)
-            set_icon(btn, eye_icon)
+class PasswordToggleBtn(QPushButton):
+    """密码显示/隐藏切换按钮，封装 echoMode 切换与可选自动隐藏定时器。
 
-        auto_timer.timeout.connect(_on_auto_hide)
-        # 使用 Qt 属性系统存储，防止 GC 回收，同时提供公共访问接口
-        btn.setProperty('autoHideTimer', auto_timer)
+    暴露 ``show_password`` / ``hide_password`` 公共方法，替代此前通过 Qt
+    动态属性 ``autoHideTimer`` 反射取回定时器的脆弱契约：属性名拼写错误或
+    改用其他可见时长来源时旧实现会静默失效（定时器不启动 → 密码长时间明文）。
+    """
 
-    def _toggle():
-        if target_edit.echoMode() == QLineEdit.EchoMode.Password:
-            target_edit.setEchoMode(QLineEdit.EchoMode.Normal)
-            set_icon(btn, lock_icon)
-            if auto_timer is not None:
-                assert auto_hide_seconds is not None
-                auto_timer.start(auto_hide_seconds * 1000)
+    def __init__(
+        self,
+        target_edit: QLineEdit,
+        eye_icon: str = EYE,
+        lock_icon: str = LOCK,
+        *,
+        auto_hide_seconds: int | None = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._target = target_edit
+        self._eye_icon = eye_icon
+        self._lock_icon = lock_icon
+        self.setObjectName('iconBtn')
+        self.setFixedSize(*BTN_ICON)
+        set_icon(self, eye_icon)
+        self.setToolTip('显示/隐藏密码')
+
+        # 可选自动隐藏定时器；parent 为 self，随按钮一并回收
+        self._auto_hide_seconds = auto_hide_seconds
+        self._auto_timer: QTimer | None = None
+        if auto_hide_seconds is not None:
+            self._auto_timer = QTimer(self)
+            self._auto_timer.setSingleShot(True)
+            self._auto_timer.timeout.connect(self.hide_password)
+
+        self.clicked.connect(self._toggle)
+
+    def _toggle(self):
+        if self._target.echoMode() == QLineEdit.EchoMode.Password:
+            self.show_password()
         else:
-            target_edit.setEchoMode(QLineEdit.EchoMode.Password)
-            set_icon(btn, eye_icon)
-            if auto_timer is not None:
-                auto_timer.stop()
+            self.hide_password()
 
-    btn.clicked.connect(_toggle)
-    return btn
+    def show_password(self, *, seconds: int | None = None):
+        """显示密码明文，并按指定秒数启动自动隐藏定时器。
+
+        Args:
+            seconds: 自动隐藏秒数；为 None 时回退到构造时的 ``auto_hide_seconds``，
+                两者均无则仅切换显示不启动定时器。
+        """
+        self._target.setEchoMode(QLineEdit.EchoMode.Normal)
+        set_icon(self, self._lock_icon)
+        if self._auto_timer is not None:
+            delay = seconds if seconds is not None else self._auto_hide_seconds
+            if delay is not None:
+                self._auto_timer.start(delay * 1000)
+
+    def hide_password(self):
+        """隐藏密码并恢复 eye 图标，停止自动隐藏定时器。"""
+        self._target.setEchoMode(QLineEdit.EchoMode.Password)
+        set_icon(self, self._eye_icon)
+        if self._auto_timer is not None:
+            self._auto_timer.stop()
 
 
 # ======== 密码强度标签更新 ========
