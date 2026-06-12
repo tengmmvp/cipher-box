@@ -1,4 +1,8 @@
-"""file_security 模块测试 — 文件/目录权限控制"""
+"""file_security 模块测试。
+
+覆盖文件与目录的权限加固、Windows ACL 限制、路径遍历防护，以及多次调用的
+幂等性，验证跨平台权限设置不抛异常且符合安全下限。
+"""
 
 import os
 import stat

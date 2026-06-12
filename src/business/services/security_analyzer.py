@@ -1,4 +1,4 @@
-"""安全分析器 - 弱密码检测、重复密码检测、过期提醒"""
+"""安全分析器，提供弱密码检测、重复密码检测与过期提醒。"""
 
 import hmac
 import logging
@@ -26,8 +26,8 @@ class SecurityAnalyzer:
     3. **过期密码检测**：按 ``password_changed_at`` 等时间字段，筛选超过指定
        天数未修改的条目。
 
-    缓存策略：分析结果默认缓存 120 秒，采用分层设计——基础分析（弱密码、
-    重复密码）不依赖 days 参数，days 变化时仅重新过滤过期条目，避免重复
+    缓存策略：分析结果默认缓存 120 秒，采用分层设计。基础分析覆盖弱密码与
+    重复密码，不依赖 days 参数；days 变化时仅重新过滤过期条目，避免重复
     解密全部密码。缓存同时校验条目计数与主密钥版本，确保数据一致性。
     """
 
@@ -76,7 +76,7 @@ class SecurityAnalyzer:
         return self._cached_analysis()['weak_entries']
 
     def find_duplicate_passwords(self) -> list[list[Entry]]:
-        """查找重复密码（返回分组列表，每组包含使用相同密码的条目）"""
+        """查找重复密码，返回分组列表，每组包含使用相同密码的条目。"""
         return self._cached_analysis()['duplicate_groups']
 
     def find_old_passwords(self, days: int = 90) -> list[Entry]:
@@ -108,9 +108,9 @@ class SecurityAnalyzer:
     def _cached_analysis(self, days: int = 90) -> dict:
         """带缓存的安全分析。采用缓存分层设计，基础分析不依赖 days 参数。
 
-        缓存有效期由 ``_CACHE_TTL_SECONDS`` 控制，默认 120 秒，同时校验条目计数与
+        缓存有效期由 ``_cache_ttl_seconds`` 控制，默认 120 秒，同时校验条目计数与
         主密钥版本 ``key_epoch``：条目增删或改密轮换密钥时立即失效并重新计算。
-        key_epoch 校验作为防御性失效手段——即使某调用点遗漏 invalidate_cache，
+        key_epoch 校验作为防御性失效手段，即使某调用点遗漏 invalidate_cache，
         改密后缓存也会因 epoch 变化而自动失效，因为密码指纹依赖旧主密钥，必须重算。
 
         缓存命中时不再因 days 不同而 miss。基础分析涵盖弱密码和重复密码两项，
@@ -155,13 +155,13 @@ class SecurityAnalyzer:
     def invalidate_cache(self, password_changed: bool = True):
         """清除分析缓存，下次访问时将重新计算。
 
-        password_changed 为 False（非密码字段变更）时直接返回：弱密码/重复/过期
-        三项分析均仅依赖密码相关字段（strength / password / password_changed_at），
+        password_changed 为 False，即非密码字段变更时直接返回：弱密码、重复、过期
+        三项分析均仅依赖密码相关字段 strength、password、password_changed_at，
         非密码变更不改变分析结果，复用缓存可避免无谓的全量 HMAC 重算。
 
-        边界：对「从未改过密码」的条目（password_changed_at 为空，过期检测回退
-        到 updated_at），修改非密码字段会更新 updated_at，其过期归属可能短暂
-        过时，至多延迟一个 TTL（120s）周期后自动修正——对提醒类信息可接受。
+        边界：对「从未改过密码」的条目，password_changed_at 为空，过期检测回退
+        到 updated_at，修改非密码字段会更新 updated_at，其过期归属可能短暂
+        过时，至多延迟一个 TTL 即 120 秒周期后自动修正，对提醒类信息可接受。
         """
         if not password_changed:
             return
@@ -173,8 +173,8 @@ class SecurityAnalyzer:
         """一次性完成所有安全分析，避免重复解密。
 
         设计说明：此方法始终执行全部三种分析，即弱密码、重复密码和过期密码，
-        包括解密所有密码以计算 HMAC 指纹用于重复检测。这是有意为之——
-        结果由 ``_cached_analysis`` 缓存 ``_CACHE_TTL_SECONDS`` 秒，
+        包括解密所有密码以计算 HMAC 指纹用于重复检测。这是有意为之，
+        结果由 ``_cached_analysis`` 缓存 ``_cache_ttl_seconds`` 秒，
         在缓存有效期内只计算一次。缓存分层后，基础分析涵盖弱密码和重复密码，
         不依赖 days 参数；days 变化时仅重新过滤过期条目，避免重新解密全部密码，
         其中重复检测是性能瓶颈。
@@ -185,7 +185,7 @@ class SecurityAnalyzer:
 
         线程安全说明：此方法内部的数据库读取 ``get_entries`` 发生在
         _cache_lock 之外。这意味着在并发场景下，缓存可能在读取期间失效。
-        对于单用户桌面应用，这不是问题——分析操作不会被并发触发。若未来
+        对于单用户桌面应用，这不是问题，分析操作不会被并发触发。若未来
         引入后台线程定期分析，需在调用方加锁或在方法内持有读锁。
         """
         entries = self._vault.db.get_entries(include_deleted=False)

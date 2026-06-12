@@ -1,4 +1,8 @@
-"""apply_rate_limit 工具函数测试"""
+"""apply_rate_limit 工具函数测试。
+
+覆盖登录失败后的速率限制阶梯计算，验证各失败次数阈值对应的锁定时长，
+以及 RATE_LIMITS 阶梯定义的升序不变量。
+"""
 
 from src.ui.components.widgets import RATE_LIMITS, apply_rate_limit
 

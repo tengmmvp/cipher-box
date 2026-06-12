@@ -1,4 +1,9 @@
-"""自定义字段渲染器 — 从 DetailPanel 拆分（纯工具类，非 QWidget）"""
+"""自定义字段渲染器，从 DetailPanel 拆分。
+
+纯工具类，不继承 QWidget，负责将条目的自定义字段渲染到目标布局，
+并管理敏感字段的间接引用与自动掩码定时器。返回的定时器列表由
+DetailPanel 统一持有，以便在清除内容时一并停止。
+"""
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import (
@@ -29,7 +34,7 @@ class CustomFieldsRenderer:
         Args:
             copy_callback: 复制反馈回调，签名 (btn: QPushButton, text: str) -> None
             copy_feedback_callback: 复制反馈通知回调，签名 () -> None
-            hide_timer_callback: 密码可见时长回调，签名 () -> int（毫秒）
+            hide_timer_callback: 密码可见时长回调，签名 () -> int，单位毫秒
         """
         self._copy_callback = copy_callback
         self._copy_feedback_callback = copy_feedback_callback
@@ -45,11 +50,11 @@ class CustomFieldsRenderer:
 
         Args:
             entry: Entry 实例
-            layout: 目标布局（DetailPanel._content_layout）
+            layout: 目标布局，通常为 DetailPanel._content_layout
             parent_widget: 父控件，用于 QTimer 的父对象管理
 
         Returns:
-            需要外部管理的 QTimer 列表（字段自动掩码定时器）。
+            需要外部管理的 QTimer 列表，即字段自动掩码定时器。
         """
         timers: list[QTimer] = []
         cf_group = QGroupBox('自定义字段')
@@ -95,7 +100,7 @@ class CustomFieldsRenderer:
     def _make_plain_field_row(
         self, label: str, value: str, *, copyable: bool = True,
     ) -> tuple[QLabel, QWidget]:
-        """创建普通字段行（明文显示 + 可选复制按钮）。"""
+        """创建普通字段行，明文显示并可选附带复制按钮。"""
         name_label = QLabel(f'{label}：')
         name_label.setStyleSheet(f'font-weight: bold; color: {c("text_secondary")};')
 
@@ -132,7 +137,7 @@ class CustomFieldsRenderer:
     def _make_secret_field_row(
         self, label: str, value: str, timers: list[QTimer], parent_widget,
     ) -> tuple[QLabel, QWidget]:
-        """创建敏感字段行（默认掩码 + 显示/隐藏 + 复制按钮）。"""
+        """创建敏感字段行，默认掩码，附带显示/隐藏与复制按钮。"""
         name_label = QLabel(f'{label}：')
         name_label.setStyleSheet(f'font-weight: bold; color: {c("text_secondary")};')
 
@@ -154,7 +159,7 @@ class CustomFieldsRenderer:
 
         # 敏感字段存入间接引用字典，闭包从字典读取而非直接捕获值
         self._secret_values[label] = value
-        # 持久单次定时器（可取消）
+        # 持久单次定时器，可取消
         field_timer = QTimer(parent_widget)
         field_timer.setSingleShot(True)
         field_timer.timeout.connect(

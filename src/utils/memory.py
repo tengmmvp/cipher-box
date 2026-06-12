@@ -24,11 +24,11 @@ def secure_zero_buffer(data: bytes | bytearray) -> None:
 
 
 def secure_zero_str(value: str) -> None:
-    """尽力零化字符串的 UTF-16 编码副本（纵深防御）。
+    """尽力零化字符串的 UTF-16 编码副本，作为纵深防御措施。
 
     WARNING: CPython 下 ``str`` 不可变，此函数仅零化 ``encode()`` 后的
-    bytearray 副本，**不影响**原始字符串对象。真正的清理依赖置空所有引用
-    触发 GC。方法名如实反映其能力（零化副本，非清除原串）。
+    bytearray 副本，不影响原始字符串对象。真正的清理依赖置空所有引用
+    触发 GC。方法名如实反映其能力，即零化副本而非清除原串。
     """
     if not value:
         return

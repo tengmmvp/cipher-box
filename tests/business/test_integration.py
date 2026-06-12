@@ -1,4 +1,10 @@
-"""集成测试 - 覆盖加密→存储→解密真实流程"""
+"""集成测试，覆盖加密、存储、解密的真实流程。
+
+按业务管理器分组验证端到端行为：EntryManager 的增删改查与密码历史、
+VaultManager 的初始化与改密重加密、BackupRestoreManager 的备份恢复
+完整性、SecurityAnalyzer 的弱密码与重复检测、DatabaseManager 的事务
+提交与回滚，以及 ImportExportManager 的 JSON 与 CSV 往返。
+"""
 
 import os
 import shutil
@@ -111,7 +117,7 @@ def test_update_preserves_password_history(entry_mgr_env):
 def test_search_by_username(entry_mgr_env):
     """搜索用户名能返回结果"""
     entry_mgr, _vault, _tmp_dir = entry_mgr_env
-    # 1. 添加两个条目（不同的 username）
+    # 1. 添加两个 username 不同的条目
     entry_a = Entry(
         title='站点 A',
         username='alice@wonderland.com',
@@ -338,7 +344,7 @@ def backup_restore_env():
 def test_backup_and_restore_preserves_all_fields(backup_restore_env):
     """备份→恢复→验证 entry_type/totp/password_history 完整"""
     entry_mgr, backup_mgr, _vault, tmp_dir = backup_restore_env
-    # 1. 初始化 + 添加条目（含 entry_type, totp_secret）
+    # 1. 初始化并添加条目，包含 entry_type 与 totp_secret
     entry_id = entry_mgr.add_entry(Entry(
         title='备份测试',
         username='backup_user',
@@ -349,7 +355,7 @@ def test_backup_and_restore_preserves_all_fields(backup_restore_env):
         notes='服务器凭据',
     ))
 
-    # 2. 修改密码（产生历史记录）
+    # 2. 修改密码以产生历史记录
     entry = Entry(
         id=entry_id,
         title='备份测试',
@@ -362,12 +368,12 @@ def test_backup_and_restore_preserves_all_fields(backup_restore_env):
     )
     entry_mgr.update_entry(entry)
 
-    # 3. 创建备份（H3：必须指定密码或使用快照密钥，flags=0 已移除）
+    # 3. 创建备份：必须指定密码或使用快照密钥，纯 flags=0 的无密钥格式已移除
     backup_path = str(Path(tmp_dir) / 'test_backup.cbox')
     assert backup_mgr.create_backup(backup_path, use_snapshot_key=True)
     assert os.path.exists(backup_path)
 
-    # 4. 清空条目（通过删除后恢复来验证）
+    # 4. 清空条目，通过恢复备份验证数据是否完整
     entry_mgr.permanent_delete_entry(entry_id)
     assert len(entry_mgr.get_entries()) == 0
 
@@ -448,7 +454,7 @@ def security_analyzer_env():
 def test_find_weak_passwords(security_analyzer_env):
     """检测弱密码"""
     entry_mgr, analyzer, _vault, _tmp_dir = security_analyzer_env
-    # 添加弱密码条目（常见密码 "password" 会被评为 0-1 分）
+    # 添加弱密码条目，常见密码 "password" 会被评为 0-1 分
     entry_mgr.add_entry(Entry(
         title='弱密码条目',
         username='weak_user',
@@ -534,7 +540,8 @@ def test_full_analysis(security_analyzer_env):
 
     assert result['total'] == 3
     assert result['weak_count'] >= 1
-    assert result['duplicate_count'] == 1  # 2 个重复中有 1 个多余
+    # 2 个重复密码中计为 1 个多余项
+    assert result['duplicate_count'] == 1
 
 
 # ── TestDatabaseTransaction ──────────────────────────────────────────────────
@@ -560,7 +567,7 @@ def test_transaction_commit(db_env):
 
     db.begin_transaction()
     try:
-        # 添加两个条目（custom_fields 必须为字符串，不能为 list）
+        # custom_fields 必须为字符串，不能为 list
         e1 = Entry(title='事务条目1', username='tx_user1', password='tx_pwd1',
                     notes='', custom_fields='')
         e2 = Entry(title='事务条目2', username='tx_user2', password='tx_pwd2',
@@ -592,7 +599,7 @@ def test_transaction_rollback(db_env):
 
     db.begin_transaction()
     try:
-        # 添加条目（custom_fields 必须为字符串，不能为 list）
+        # custom_fields 必须为字符串，不能为 list
         e = Entry(title='回滚条目', username='rb_user', password='rb_pwd',
                   notes='', custom_fields='')
         db.add_entry(e)
@@ -614,7 +621,7 @@ def test_transaction_rollback(db_env):
     assert '回滚分类' not in cat_names
 
 
-# ── TestImportExport (integration) ───────────────────────────────────────────
+# ── TestImportExport 集成 ───────────────────────────────────────────
 
 @pytest.fixture()
 def import_export_env():
@@ -703,7 +710,7 @@ def test_csv_roundtrip(import_export_env):
     count = import_export.import_from_csv(csv_path)
     assert count == 1
 
-    # 5. 验证基本字段（title, username, url）
+    # 5. 验证 title、username、url 等基本字段
     restored = entry_mgr.get_entries()
     assert len(restored) == 1
     assert restored[0].title == 'CSV测试条目'
@@ -768,11 +775,11 @@ def test_backup_with_locked_vault():
     vault.lock()
     assert not vault.is_unlocked
 
-    # 创建备份应返回 (False, error_msg)
+    # 锁定状态下创建备份应返回失败及错误信息
     backup_path = str(Path(tmp_dir) / 'locked_backup.cbox')
     result = backup_mgr.create_backup(backup_path)
     assert not result[0]
-    assert len(result[1]) > 0  # 应有错误信息
+    assert len(result[1]) > 0
 
     vault.close()
     shutil.rmtree(tmp_dir)
@@ -809,7 +816,7 @@ def test_is_initialized_returns_false_when_db_cannot_open():
     db_file = Path(tmp_dir) / 'vault.db'
     db_file.touch()
 
-    # Mock: is_open 返回 False, open() 返回 False → 模拟 DB 无法打开
+    # 让 is_open 返回 False、open() 返回 False，模拟数据库无法打开
     with patch.object(type(vault._db), 'is_open', new_callable=PropertyMock, return_value=False):
         with patch.object(vault._db, 'open', return_value=False):
             result = vault.is_initialized

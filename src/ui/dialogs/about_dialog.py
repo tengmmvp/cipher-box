@@ -1,4 +1,4 @@
-"""关于页面"""
+"""关于对话框，展示应用名称、版本与技术栈等静态信息。"""
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -17,7 +17,7 @@ from ..resources.theme_colors import c
 
 
 class AboutDialog(QDialog):
-    """关于 CipherBox"""
+    """展示 CipherBox 版本、加密算法与技术栈的只读对话框。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)

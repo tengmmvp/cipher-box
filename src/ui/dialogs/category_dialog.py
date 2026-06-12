@@ -1,4 +1,8 @@
-"""分类管理对话框 - 新增/编辑分类"""
+"""分类管理对话框，用于新增与编辑条目分类。
+
+提供名称、单字符图标与颜色三项编辑能力，预设一组图标与调色板，
+并允许通过颜色选择器自定义颜色。保存结果交由 EntryManager 写入。
+"""
 
 import logging
 
@@ -15,7 +19,6 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QVBoxLayout,
-    QWidget,
 )
 
 from ...models import Category
@@ -26,7 +29,7 @@ from ..resources.theme_colors import c
 logger = logging.getLogger(__name__)
 
 
-# 图标候选列表，单字符标识用于分类视觉区分
+# 图标候选列表，单字符标识用于分类视觉区分，均取自 QtAwesome 语义化图标常量
 ICON_CANDIDATES = [
     '[CLIP]', '[DIR]', '[LIST]', '[ORG]', '[SOC]', '[CHAT]', '[MAIL]', '[WEB]',
     '[BANK]', '[COIN]', '[CART]', '[BAG]', '[WORK]', '[GOAL]', '[GAME]', '[DICE]',
@@ -42,7 +45,7 @@ PRESET_COLORS = [
 
 
 class _ColorDotButton(QPushButton):
-    """圆形颜色选择按钮"""
+    """圆形颜色选择按钮，点击即选中对应颜色。"""
 
     def __init__(self, color: str, selected: bool = False, parent=None):
         super().__init__(parent)
@@ -88,14 +91,18 @@ class _ColorDotButton(QPushButton):
 
 
 class CategoryDialog(QDialog):
-    """分类编辑对话框"""
+    """分类新增与编辑对话框。
+
+    ``category`` 为 None 时进入新增模式，否则编辑该分类。保存成功后
+    发出 ``saved`` 信号并关闭对话框。
+    """
 
     saved = pyqtSignal()
 
     def __init__(self, entry_manager, category=None, parent=None):
         super().__init__(parent)
         self._entry_mgr = entry_manager
-        self._category = category  # None 为新增模式，否则编辑模式
+        self._category = category  # None 表示新增模式，否则编辑该分类
         self._selected_color = PRESET_COLORS[0]
         self._color_dots: list[_ColorDotButton] = []
         self._setup_ui()
@@ -197,7 +204,7 @@ class CategoryDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def _load_category(self, category: Category):
-        """加载分类数据"""
+        """将已有分类数据回填到表单。"""
         self._name_edit.setText(category.name)
 
         idx = self._icon_combo.findText(category.icon_char)
@@ -212,12 +219,12 @@ class CategoryDialog(QDialog):
             )
 
     def _on_color_dot_clicked(self, index: int):
-        """点击预设颜色圆点"""
+        """点击预设颜色圆点时更新选中色。"""
         self._selected_color = PRESET_COLORS[index]
         self._update_color_selection()
 
     def _update_color_selection(self):
-        """更新颜色圆点的选中状态"""
+        """同步刷新各圆点选中态与预览条颜色。"""
         for dot in self._color_dots:
             dot.selected = (dot.color == self._selected_color)
         self._color_preview.setStyleSheet(
@@ -225,7 +232,7 @@ class CategoryDialog(QDialog):
         )
 
     def _on_custom_color(self):
-        """打开颜色选择器"""
+        """打开系统颜色选择器，允许用户选取调色板外的颜色。"""
         initial = QColor(self._selected_color)
         color = QColorDialog.getColor(initial, self, '选择自定义颜色')
         if color.isValid():
@@ -237,7 +244,7 @@ class CategoryDialog(QDialog):
             )
 
     def _on_save(self):
-        """保存分类"""
+        """校验名称后写入分类，成功则发出信号并关闭。"""
         name = self._name_edit.text().strip()
         if not name:
             QMessageBox.warning(self, '提示', '请输入分类名称')

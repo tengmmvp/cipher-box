@@ -1,4 +1,4 @@
-"""导入导出管理器 - CSV/JSON 导入导出 + 浏览器密码导入"""
+"""导入导出管理器，负责 CSV、JSON 导入导出及浏览器密码导入。"""
 
 import csv
 import json
@@ -136,8 +136,8 @@ class ImportExportManager:
         Args:
             entry: 导入条目，就地修改。
             existing: 已有条目，用于读取敏感字段。
-            replace_all: True 时用 existing 的全部密码型字段替换 entry 的
-                适用于 CSV/非导出场景，源格式无法表达密码型字段。
+            replace_all: True 时用 existing 的全部密码型字段替换 entry 的字段，
+                适用于 CSV 或非导出场景，源格式无法表达密码型字段。
                 False 时按名称增量补充，适用于 Bitwarden JSON 等源格式可表达
                 但可能不包含已有字段的场景。
         """
@@ -356,13 +356,13 @@ class ImportExportManager:
         """统一的导入循环：去重、分类解析、覆盖/新增、进度回调。
 
         Args:
-            entries: 已解析好的 Entry 对象列表，与 entries_data 一一对应
-            entries_data: 用于去重检测的摘要列表，每项含 title/username
-            categories: 已有分类的 casefold 名称映射
-            default_category_id: 默认分类 ID
-            duplicate_action: 重复处理策略 ('import_all' / 'skip' / 'overwrite')
-            source_label: 日志中标识来源，例如 'JSON 导入'
-            progress_callback: 进度回调
+            entries: 已解析好的 Entry 对象列表，与 entries_data 一一对应。
+            entries_data: 用于去重检测的摘要列表，每项含 title/username。
+            categories: 已有分类的 casefold 名称映射。
+            default_category_id: 默认分类 ID。
+            duplicate_action: 重复处理策略，取值 import_all、skip 或 overwrite。
+            source_label: 日志中标识来源，例如 'JSON 导入'。
+            progress_callback: 进度回调。
             overwrite_merger: 可选的覆盖合并回调 ``(new_entry, existing_entry) -> None``，
                 在设置 id/created_at 之后、写入数据库之前调用。
                 若为 None 则直接用 new_entry 覆盖。
@@ -422,16 +422,16 @@ class ImportExportManager:
         entries_data: list[dict],
         existing_entries: list[Entry],
     ) -> list[dict]:
-        """检测待导入条目与已有条目的重复
+        """检测待导入条目与已有条目的重复。
 
         以 (title, username) 为匹配键。
 
         Args:
-            entries_data: 待导入的条目列表，每个元素含 title/username 等字段
-            existing_entries: 现有已解密条目
+            entries_data: 待导入的条目列表，每个元素含 title/username 等字段。
+            existing_entries: 现有已解密条目。
 
         Returns:
-            重复项列表，每项包含 {index, title, username, existing_title}
+            重复项列表，每项包含 {index, title, username, existing_title}。
         """
         existing_keys = {
             (e.title.casefold(), e.username.casefold()): e
@@ -463,13 +463,13 @@ class ImportExportManager:
         progress_callback: Optional[Callable[[int, int], None]] = None,
         duplicate_action: str = 'import_all',
     ) -> int:
-        """从 JSON 文件导入
+        """从 JSON 文件导入。
 
         Args:
-            filepath: 文件路径
-            default_category_id: 默认分类 ID
-            progress_callback: 进度回调
-            duplicate_action: 重复处理策略
+            filepath: 文件路径。
+            default_category_id: 默认分类 ID。
+            progress_callback: 进度回调。
+            duplicate_action: 重复处理策略。
                 - 'skip': 跳过重复项
                 - 'overwrite': 覆盖匹配的已有条目
                 - 'import_all': 全部导入，默认行为
@@ -520,13 +520,13 @@ class ImportExportManager:
         progress_callback: Optional[Callable[[int, int], None]] = None,
         duplicate_action: str = 'import_all',
     ) -> int:
-        """从 CSV 文件导入，支持多种列名格式
+        """从 CSV 文件导入，支持多种列名格式。
 
         Args:
-            filepath: 文件路径
-            default_category_id: 默认分类 ID
-            progress_callback: 进度回调
-            duplicate_action: 重复处理策略
+            filepath: 文件路径。
+            default_category_id: 默认分类 ID。
+            progress_callback: 进度回调。
+            duplicate_action: 重复处理策略。
                 - 'skip': 跳过重复项
                 - 'overwrite': 覆盖匹配的已有条目
                 - 'import_all': 全部导入，默认行为
@@ -586,13 +586,13 @@ class ImportExportManager:
         progress_callback: Optional[Callable[[int, int], None]] = None,
         duplicate_action: str = 'import_all',
     ) -> int:
-        """从 Chrome/Edge 导出的 CSV 导入
+        """从 Chrome/Edge 导出的 CSV 导入。
 
         Args:
-            filepath: 文件路径
-            default_category_id: 默认分类 ID
-            progress_callback: 进度回调
-            duplicate_action: 重复处理策略
+            filepath: 文件路径。
+            default_category_id: 默认分类 ID。
+            progress_callback: 进度回调。
+            duplicate_action: 重复处理策略。
                 - 'skip': 跳过重复项
                 - 'overwrite': 覆盖匹配的已有条目
                 - 'import_all': 全部导入，默认行为
@@ -607,15 +607,15 @@ class ImportExportManager:
         progress_callback: Optional[Callable[[int, int], None]] = None,
         duplicate_action: str = 'import_all',
     ) -> int:
-        """从 KeePass 导出的 CSV 文件导入
+        """从 KeePass 导出的 CSV 文件导入。
 
-        KeePass CSV 常见列名: Title, UserName, Password, URL, Notes, Group
+        KeePass CSV 常见列名: Title, UserName, Password, URL, Notes, Group。
 
         Args:
-            filepath: 文件路径
-            default_category_id: 默认分类 ID
-            progress_callback: 进度回调
-            duplicate_action: 重复处理策略
+            filepath: 文件路径。
+            default_category_id: 默认分类 ID。
+            progress_callback: 进度回调。
+            duplicate_action: 重复处理策略。
                 - 'skip': 跳过重复项
                 - 'overwrite': 覆盖匹配的已有条目
                 - 'import_all': 全部导入，默认行为
@@ -740,13 +740,13 @@ class ImportExportManager:
         progress_callback: Optional[Callable[[int, int], None]] = None,
         duplicate_action: str = 'import_all',
     ) -> int:
-        """从 Bitwarden JSON 导出文件导入
+        """从 Bitwarden JSON 导出文件导入。
 
         Args:
-            filepath: 文件路径
-            default_category_id: 默认分类 ID
-            progress_callback: 进度回调
-            duplicate_action: 重复处理策略
+            filepath: 文件路径。
+            default_category_id: 默认分类 ID。
+            progress_callback: 进度回调。
+            duplicate_action: 重复处理策略。
                 - 'skip': 跳过重复项
                 - 'overwrite': 覆盖匹配的已有条目
                 - 'import_all': 全部导入，默认行为

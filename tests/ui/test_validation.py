@@ -1,4 +1,8 @@
-"""信用卡校验函数测试 — Luhn 算法、有效期格式、CVV 格式"""
+"""信用卡校验函数测试。
+
+覆盖信用卡号的 Luhn 算法校验、MM/YY 有效期格式校验、CVV 格式校验，
+验证合法输入通过、非法输入被拒绝的各类边界。
+"""
 
 from src.ui.dialogs.entry_dialog import (
     validate_card_cvv,
@@ -27,7 +31,7 @@ class TestValidateCardNumber:
         assert validate_card_number('4111111111111112') is False
 
     def test_non_numeric(self):
-        """非数字字符（去除分隔符后）应失败"""
+        """去除分隔符后仍为非数字字符时应失败"""
         assert validate_card_number('abcdefghijklmnop') is False
 
     def test_too_short(self):
@@ -95,7 +99,7 @@ class TestValidateCardCvv:
         assert validate_card_cvv('123') is True
 
     def test_valid_cvv_4(self):
-        """4 位 CVV（Amex）"""
+        """4 位 CVV，对应 Amex 卡"""
         assert validate_card_cvv('1234') is True
 
     def test_invalid_cvv_2(self):

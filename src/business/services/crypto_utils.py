@@ -35,7 +35,7 @@ def encrypt_field(plaintext: str, key: bytes, crypto_id: str, field_name: str) -
     统一入口，替代 EntryManager._encrypt_field、VaultManager._encrypt_entry_field
     以及 backup_restore 中的内联 EncryptionEngine.encrypt 调用。
 
-    空字符串也经过 EncryptionEngine.encrypt（内部使用 _EMPTY_SENTINEL），
+    空字符串也经过 EncryptionEngine.encrypt，内部使用 _EMPTY_SENTINEL，
     确保 AAD 始终参与认证，维持逐字段完整性保护的一致性。
     """
     return EncryptionEngine.encrypt(
@@ -61,7 +61,7 @@ def decrypt_field(
         key: AES-256 密钥。
         crypto_id: 条目加密标识。
         field_name: 字段名称。
-        strict: 为 True 时解密失败抛出 ValueError；否则返回空字符串。
+        strict: 为 True 时解密失败抛出 ValueError，否则返回空字符串。
     """
     if not encrypted:
         return ''
@@ -116,7 +116,7 @@ def copy_entry_fields(raw: Entry, **overrides) -> Entry:
 
     使用 dataclasses.replace 实现，自动复制 Entry 的全部字段，
     仅 overrides 中指定的字段会被替换。运行时字段 password_present
-    和 totp_present 根据 DB 原始值（raw.password / raw.totp_secret）
+    和 totp_present 根据 DB 原始值 raw.password 与 raw.totp_secret
     自动设置，除非调用方已在 overrides 中显式提供。
 
     custom_fields 为 list 时执行深拷贝，避免浅拷贝导致多个 Entry
@@ -152,7 +152,7 @@ def decrypt_entry_to_portable_dict(
     *,
     include_secrets: bool = True,
 ) -> dict | None:
-    """将原始 Entry 解密为明文字典（容错版本）。
+    """将原始 Entry 解密为明文字典，容错处理。
 
     供备份、导出等需要跳过损坏条目继续处理的场景使用。
     单条目解密失败时返回 None。
@@ -161,7 +161,7 @@ def decrypt_entry_to_portable_dict(
     BackupRestoreManager._collect_portable_data() 共享此逻辑。
 
     Args:
-        raw_entry: 数据库层原始 Entry（加密字段为密文字符串）。
+        raw_entry: 数据库层原始 Entry，加密字段为密文字符串。
         key: AES-256 密钥。
         include_secrets: 是否包含密码和 TOTP 密钥等敏感字段。
     """

@@ -1,7 +1,7 @@
-"""主密码管理 - PBKDF2-HMAC-SHA256 密钥派生与验证。
+"""主密码管理 — PBKDF2-HMAC-SHA256 密钥派生与验证。
 
-使用 PBKDF2 从主密码派生 256 位 AES 密钥，迭代次数默认 600k（OWASP 2023 推荐）。
-密码验证不存储哈希，而是加密一段已知明文（验证令牌）来确认密码正确性，
+使用 PBKDF2 从主密码派生 256 位 AES 密钥，迭代次数默认 600k，遵循 OWASP 2023 推荐。
+密码验证不存储哈希，而是加密一段已知明文作为验证令牌来确认密码正确性，
 验证令牌和 AAD 硬编码于源码中——伪造需要先完成 PBKDF2 派生，暴力破解成本远高于
 利用此常量的成本。更改验证令牌值会破坏所有已存在的保险库。
 """
@@ -58,8 +58,9 @@ class MasterKeyManager:
             salt: 随机盐值
 
         Returns:
-            32 字节密钥（bytearray，可被 secure_zero_buffer 真正清零；
-            PBKDF2 内部派生的中间 bytes 由 GC 回收）。
+            32 字节密钥 bytearray。返回 bytearray 而非 bytes，以便
+            secure_zero_buffer 真正清零；PBKDF2 内部派生的中间 bytes
+            依赖 GC 回收。
         """
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),

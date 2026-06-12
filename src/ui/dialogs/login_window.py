@@ -1,4 +1,9 @@
-"""登录窗口 - 首次设置主密码 / 主密码登录"""
+"""登录窗口，负责首次设置主密码与日常主密码解锁。
+
+依据保险库是否已初始化切换首次设置与登录两套流程。主密码相关操作
+涉及 PBKDF2 高强度迭代，在后台线程执行以避免冻结 UI。内置速率限制
+与失败锁定，登录成功后立即清除输入框中的明文。
+"""
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -24,12 +29,12 @@ from ..components.widgets import (
 )
 from ..components.workers import BackgroundWorker
 from ..resources.constants import LOGIN_HEIGHT_FIRST, LOGIN_HEIGHT_LOGIN, WORKER_WAIT_TIMEOUT_MS
-from ..resources.icons import EYE, LOCK, SHIELD, icon_pixmap, set_icon
+from ..resources.icons import EYE, LOCK, SHIELD, icon_pixmap
 from ..resources.theme_colors import c
 
 
 class LoginWindow(QDialog):
-    """登录/首次设置窗口"""
+    """主密码登录或首次设置窗口。"""
 
     login_success = pyqtSignal()
 
@@ -110,7 +115,7 @@ class LoginWindow(QDialog):
         pwd_layout.addWidget(self._toggle_pwd_btn)
         layout.addLayout(pwd_layout)
 
-        # 确认密码（仅首次）
+        # 确认密码区域，仅在首次设置时显示
         self._confirm_container = QWidget()
         self._confirm_container.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
@@ -148,7 +153,7 @@ class LoginWindow(QDialog):
         self._message_label.setStyleSheet(f'color: {c("danger")}; font-size: 12px; min-height: 18px;')
         layout.addWidget(self._message_label)
 
-        # 密码强度提示（首次设置时）
+        # 密码强度提示，仅在首次设置时显示
         self._strength_label = QLabel('')
         self._strength_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._strength_label.setStyleSheet('font-size: 12px;')
@@ -173,7 +178,8 @@ class LoginWindow(QDialog):
 
         layout.addLayout(btn_layout)
 
-        # 不同 DPI 和系统字体下控件高度会变化，不能使用固定高度压缩布局
+        # 不同 DPI 与系统字体下控件高度存在差异，不能使用固定高度压缩布局，
+        # 因此先激活布局再按内容提示高度与预设值取较大者固定窗口高度
         outer.activate()
         preferred_height = LOGIN_HEIGHT_FIRST if self._is_first_time else LOGIN_HEIGHT_LOGIN
         self.setFixedHeight(max(preferred_height, self.minimumSizeHint().height()))
@@ -186,7 +192,7 @@ class LoginWindow(QDialog):
         """处理初始化/解锁的结果。"""
         if success:
             self._rate_limiter.record_success()
-            # 登录成功后立即清除密码输入框，减少明文驻留时间
+            # 登录成功后立即清除密码输入框，缩短明文在内存中的驻留时间
             self._password_edit.clear()
             if hasattr(self, '_confirm_edit'):
                 self._confirm_edit.clear()
@@ -231,7 +237,7 @@ class LoginWindow(QDialog):
             action = self._vault.unlock
             error_default = '主密码错误'
 
-        # PBKDF2 迭代次数 600k，在后台线程执行以避免冻结 UI
+        # 主密码派生使用 PBKDF2 600k 迭代，耗时较高，需在后台线程执行避免冻结 UI
         self._start_auth(action, password, error_default)
 
     def _start_auth(self, action, password: str, error_default: str):

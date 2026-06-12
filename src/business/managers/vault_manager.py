@@ -1,4 +1,4 @@
-"""保险库管理器 - 高层保险库操作"""
+"""保险库管理器，负责保险库的高层操作。"""
 
 import base64
 import gc
@@ -35,11 +35,11 @@ _SNAPSHOT_KEY_AAD = 'vault:snapshot-key'
 _EPOCH_CACHE_TTL_SECONDS = 2.0
 
 # TODO: 进一步拆分 VaultManager 的剩余职责：
-# - 密钥生命周期管理（派生/清零）可提取为独立的 KeyManager
+# - 密钥生命周期管理即派生与清零，可提取为独立的 KeyManager
 # - 初始化/解锁/锁定/改密流程可提取为 VaultLifecycle
 
 class VaultManager:
-    """管理保险库的创建、解锁、锁定等操作"""
+    """管理保险库的创建、解锁、锁定等操作。"""
 
     def __init__(self, config: ConfigManager):
         self._config = config
@@ -67,7 +67,7 @@ class VaultManager:
         self._cancel_event = threading.Event()  # close() 时设置，通知长时间操作提前终止
 
     def register_on_lock(self, callback):
-        """注册锁定时自动调用的回调（用于清除缓存等）。"""
+        """注册锁定时自动调用的回调，用于清除缓存等。"""
         self._on_lock_callbacks.append(callback)
 
     @property
@@ -80,7 +80,7 @@ class VaultManager:
 
     @property
     def is_initialized(self) -> bool:
-        """保险库是否已初始化（是否设置了主密码）"""
+        """保险库是否已初始化，即是否设置了主密码。"""
         if not self._config.db_path.exists():
             return False
         try:
@@ -120,15 +120,15 @@ class VaultManager:
         return self._key_epoch
 
     def update_key_epoch(self, new_epoch: str):
-        """更新 key_epoch 并重置缓存（用于备份恢复后同步状态）。"""
+        """更新 key_epoch 并重置缓存，用于备份恢复后同步状态。"""
         self._key_epoch = new_epoch
         self._epoch_cache_time = 0.0  # 强制下次写入时重新校验
 
     def _enforce_key_epoch(self):
         """拒绝锁定状态或主密钥已轮换的旧会话写入数据库。
 
-        使用时间戳缓存避免每次写入都查询数据库，2 秒内只检查一次 epoch。
-        检测到 epoch 不匹配时使用 _clear_vault_state() 而非 lock()，
+        使用时间戳缓存避免每次写入都查询数据库，TTL 窗口内只检查一次 epoch。
+        检测到 epoch 不匹配时调用 _clear_vault_state 而非 lock，
         避免在持有数据库锁时触发回调导致死锁。
         """
         if self._key_epoch is None:
@@ -253,7 +253,7 @@ class VaultManager:
             return False, msg
 
     def _clear_vault_state(self):
-        """清除密钥材料和加密缓存（不触发回调，不执行 gc）。
+        """清除密钥材料和加密缓存，不触发回调，也不执行 gc。
 
         用于 _enforce_key_epoch 中需要安全清除状态但不能触发回调的场景，
         避免在持有数据库锁时回调中再获取数据库锁导致死锁。
@@ -277,7 +277,7 @@ class VaultManager:
         self._signer.domain_key = None
         self._epoch_cache_time = 0.0
         # 重置初始化标志：下次 _ensure_db_open 将重新验证 schema。
-        # 注意：不关闭数据库连接（_conn 仍可能被后续操作使用），
+        # 注意：不关闭数据库连接，_conn 仍可能被后续操作使用，
         # 但 _db_initialized=False 确保 init_tables 在下次访问时重新运行。
         self._db_initialized = False
         EncryptionEngine.clear_cache()
@@ -365,15 +365,15 @@ class VaultManager:
             return False, str(exc) or '修改主密码失败'
 
     def _re_encrypt_all(self, new_key: bytes, new_salt: bytes, new_verify_token: str):
-        """使用新密钥重新加密所有条目（含已删除），事务保护。
+        """使用新密钥重新加密所有条目，含已删除条目，受事务保护。
 
-        调用方须已持有 self._lock（当前唯一调用方 _change_master_password_locked
-        已在 with self._lock 内调用此方法）。
+        调用方须已持有 self._lock，当前唯一调用方 _change_master_password_locked
+        已在 with self._lock 内调用此方法。
 
         Args:
-            new_key: 由 MasterKeyManager.create 派生的新密钥（复用，避免重复 KDF）。
-            new_salt: 新盐值（用于回写 vault_meta）。
-            new_verify_token: 新验证令牌（用于回写 vault_meta）。
+            new_key: 由 MasterKeyManager.create 派生的新密钥，复用以避免重复 KDF。
+            new_salt: 新盐值，用于回写 vault_meta。
+            new_verify_token: 新验证令牌，用于回写 vault_meta。
         """
         if self._key is None:
             raise VaultLockedError('保险库未解锁，无法执行重加密')
@@ -390,7 +390,7 @@ class VaultManager:
             self._rotator.re_encrypt_entries(old_key, new_key, cancel_event=self._cancel_event)
             self._rotator.re_encrypt_history(old_key, new_key, cancel_event=self._cancel_event)
             # snapshot_key 不轮换：保留用户快照备份的跨改密可用性。改密前自动创建的
-            # 恢复点随后清理以收缩泄漏面（恢复点含改密前全部条目明文）。
+            # 恢复点随后清理以收缩泄漏面，因恢复点含改密前全部条目明文。
             self._update_vault_metadata(
                 new_key, new_salt, new_verify_token, new_epoch,
                 snapshot_key=self._snapshot_key,
@@ -398,18 +398,18 @@ class VaultManager:
 
             # 先提交事务再更新内存密钥
             # 若提交失败回滚，_clear_vault_state 会清除 self._key 保证一致性。
-            # 将密钥赋值放在 commit 之后，避免后台线程在 commit 前读到新密钥
-            # 解密尚未提交的旧数据（解密窗口问题）。
+            # 将密钥赋值放在 commit 之后，避免后台线程在 commit 前读到新密钥，
+            # 解密尚未提交的旧数据，造成解密窗口问题。
             self._db.commit_transaction()
             self._key = new_key
             self._key_epoch = new_epoch
             self._signer.set_domain_key(MetadataSigner.compute_domain_key(new_key))
             EncryptionEngine.clear_cache()  # 旧密钥 cipher 已失效，确保后续用新密钥
             logger.info("重加密完成 (%.1fms)", (time.monotonic() - t0) * 1000)
-            # 清理改密前自动创建的恢复点（含改密前条目明文，收缩泄漏面）
+            # 清理改密前自动创建的恢复点，含改密前条目明文，以收缩泄漏面
             self._purge_restore_points()
             # WAL 截断在事务提交之后执行；此时数据已落盘，截断失败非致命，
-            # 单独捕获避免其异常冒泡导致 UI 显示模糊错误，事务其实已成功。
+            # 单独捕获避免其异常冒泡导致 UI 显示模糊错误，而事务其实已成功。
             try:
                 self._db.secure_checkpoint()
             except Exception:
@@ -434,10 +434,10 @@ class VaultManager:
             raise
 
     def _purge_restore_points(self):
-        """删除所有恢复前安全快照（pre_restore_*.cbox）。
+        """删除所有恢复前安全快照 pre_restore_*.cbox。
 
-        改密时调用：恢复点含改密前的全部条目明文，清除以收缩泄漏面
-        （防止主密码被攻破后经历史恢复点还原已删除条目）。
+        改密时调用：恢复点含改密前的全部条目明文，清除以收缩泄漏面，
+        防止主密码被攻破后经历史恢复点还原已删除条目。
         """
         restore_dir = self.data_dir / 'backups'
         if not restore_dir.is_dir():
@@ -452,7 +452,7 @@ class VaultManager:
         self, *, salt: bytes, verify_token: str,
         snapshot_key: bytes, key: bytes, key_epoch: str,
     ):
-        """将保险库元数据（盐/验证令牌/KDF 参数/快照密钥/epoch）写入 vault_meta。
+        """将保险库元数据写入 vault_meta，包含盐、验证令牌、KDF 参数、快照密钥和 epoch。
 
         initialize 与改密共用此序列，避免两处逐字重复。
         """
@@ -477,7 +477,7 @@ class VaultManager:
     ):
         """更新 vault_meta 表中的验证信息和密钥元数据。
 
-        snapshot_key 由调用方传入（改密时轮换为全新值），不再复用旧值。
+        snapshot_key 由调用方传入，改密时轮换为全新值，不再复用旧值。
         """
         if snapshot_key is None:
             raise VaultIntegrityError('snapshot_key 未加载，无法更新保险库元数据')

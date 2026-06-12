@@ -1,4 +1,9 @@
-"""PasswordService 冒烟测试 — 验证静态方法代理正确性。"""
+"""PasswordService 冒烟测试，验证静态方法代理正确性。
+
+PasswordService 作为代理层将调用转发到底层 PasswordGenerator 与
+TOTPGenerator，本测试覆盖生成、强度检查、主密码校验、TOTP 校验等
+公开静态方法的基本行为。
+"""
 
 from src.business.services.password_service import PasswordService
 
@@ -19,7 +24,7 @@ class TestPasswordServiceProxy:
     def test_validate_master_password_rejects_short(self):
         ok, msg = PasswordService.validate_master_password('abc', '主密码')
         assert not ok
-        assert msg  # 应有错误消息
+        assert msg
 
     def test_validate_master_password_accepts_strong(self):
         ok, msg = PasswordService.validate_master_password('Str0ng!Pass#2024', '主密码')

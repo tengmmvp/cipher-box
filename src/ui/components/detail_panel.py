@@ -1,4 +1,9 @@
-"""详情面板 - 展示密码条目详细信息"""
+"""密码条目详情面板。
+
+负责单条条目的全量展示，包括核心字段、密码强度、TOTP、密码历史、
+自定义字段与元数据。面板内置敏感字段显示/隐藏、复制反馈与自动掩码
+机制，并在锁定前由主窗口调用 secure_clear 安全擦除内存中的明文。
+"""
 
 import logging
 from html import escape
@@ -53,14 +58,14 @@ _STRENGTH_LABELS = {0: '非常弱', 1: '弱', 2: '一般', 3: '强', 4: '非常�
 
 
 class DetailPanel(QWidget):
-    """密码条目详情面板
+    """密码条目详情面板。
 
-    安全说明（CPython 限制）：
-    - 明文密码作为 Python str 存储在 self._current_password 和闭包中。
-    - Python 字符串不可变，_secure_wipe 无法覆写原始对象内存。
-    - _clear_content 通过置空引用和 del 缩短敏感数据驻留时间。
-    - 对于主密码（main_password=True），_toggle 闭包从 self._current_password
-      读取而非直接捕获值，使得 _clear_content 清空后闭包也看到空值。
+    安全说明，受 CPython 运行时限制：
+    - 明文密码以 Python str 形式存储在 self._current_password 及闭包中。
+    - Python 字符串不可变，secure_zero_str 无法覆写原始对象内存。
+    - _clear_content 通过置空引用与 del 缩短敏感数据的驻留时间。
+    - 对主密码字段，_toggle 闭包从 self._current_password 读取而非直接
+      捕获值，使 _clear_content 清空后闭包同样读到空值。
     """
 
     edit_requested = pyqtSignal(int)
@@ -82,13 +87,13 @@ class DetailPanel(QWidget):
         self._pwd_label_ref = None
         self._show_btn_ref = None
         self._current_password = ''
-        # 主条目非主密码敏感字段的间接引用字典（自定义字段由 renderer 管理）
+        # 主条目中非主密码敏感字段的间接引用字典，自定义字段由 renderer 管理
         self._secret_values_main: dict[str, str] = {}
-        # 非主密码敏感字段与历史密码的自动掩码定时器（持久、可取消），
-        # 替代不可取消的 QTimer.singleShot。_clear_content 时统一 stop 并清空。
+        # 非主密码敏感字段与历史密码的自动掩码定时器，持久且可取消，
+        # 替代不可取消的 QTimer.singleShot，便于 _clear_content 统一停止并清空。
         self._field_hide_timers: list[QTimer] = []
-        # 复制反馈定时器（可取消），替代不可取消的 QTimer.singleShot，
-        # 避免控件销毁后回调访问已删对象。上限 20 防止极端情况下泄漏。
+        # 复制反馈定时器，可取消，替代不可取消的 QTimer.singleShot，
+        # 避免控件销毁后回调访问已删对象。设置上限 20 以防止极端情况下的泄漏。
         self._copy_feedback_timers: set[QTimer] = set()
         self._COPY_FEEDBACK_TIMERS_MAX = 20
 
@@ -212,11 +217,11 @@ class DetailPanel(QWidget):
         return self._current_entry
 
     def show_entry(self, entry: Entry, *, force: bool = False):
-        """显示条目详情
+        """显示条目详情。
 
         Args:
             entry: 要显示的条目
-            force: 强制重建（主题切换时需要刷新内联样式）
+            force: 强制重建，主题切换时需要刷新内联样式
         """
         # 同条目无变化时跳过重建
         if (not force
@@ -245,7 +250,7 @@ class DetailPanel(QWidget):
                 pass
         self._signal_connections.clear()
 
-        # 建立新连接（闭包只捕获 entry.id，避免持有 entry 引用）
+        # 建立新连接，闭包仅捕获 entry.id 以避免持有整个 entry 引用
         eid = entry.id
         self._signal_connections = [
             (self._edit_btn.clicked, lambda: self.edit_requested.emit(eid)),
@@ -308,7 +313,7 @@ class DetailPanel(QWidget):
         if entry.has_totp and entry.id:
             self._totp_widget.start(entry.id, self._entry_mgr)
 
-        # ===== 密码历史（延迟加载：仅显示摘要，点击展开才解密） =====
+        # ===== 密码历史，延迟加载：仅显示摘要，点击展开后才解密 =====
         if entry.id and self._entry_mgr:
             self._history_widget.build_stub(entry.id, self._entry_mgr, self._content_layout)
 
@@ -427,13 +432,13 @@ class DetailPanel(QWidget):
         self, label: str, value: str,
         *, secret: bool = False, copyable: bool = False, main_password: bool = False,
     ) -> tuple[QLabel, QWidget]:
-        """创建字段行（统一入口，分发到具体方法）。
+        """创建字段行的统一入口，根据是否敏感分发到具体方法。
 
         Args:
             label: 字段名称
             value: 字段值
             secret: 敏感字段，默认掩码显示，支持显示/隐藏切换
-            copyable: 是否显示复制按钮（secret=True 时隐含可复制）
+            copyable: 是否显示复制按钮，secret=True 时隐含可复制
             main_password: 仅用于主密码字段，追踪引用并使用全局自动隐藏定时器
         """
         # Sensitive 标记值自动以密码框渲染，防止调用方忘传 secret=True
@@ -444,7 +449,7 @@ class DetailPanel(QWidget):
     def _make_plain_field_row(
         self, label: str, value: str, *, copyable: bool = False,
     ) -> tuple[QLabel, QWidget]:
-        """创建普通字段行（明文显示 + 可选复制按钮）。"""
+        """创建普通字段行，明文显示并可选附带复制按钮。"""
         name_label = QLabel(f'{label}：')
         name_label.setStyleSheet(f'font-weight: bold; color: {c("text_secondary")};')
 
@@ -464,7 +469,7 @@ class DetailPanel(QWidget):
             copy_btn.setFixedSize(*BTN_COPY)
             copy_btn.setToolTip('复制')
 
-            # 使用闭包捕获当前值（主条目字段不需要间接引用，生命周期与面板同步）
+            # 使用闭包捕获当前值，主条目字段无需间接引用，其生命周期与面板同步
             def _copy_value(_checked=False, v=value, btn=copy_btn):
                 self._copy_with_feedback(btn, v)
 
@@ -476,7 +481,7 @@ class DetailPanel(QWidget):
     def _make_secret_field_row(
         self, label: str, value: str, *, main_password: bool = False,
     ) -> tuple[QLabel, QWidget]:
-        """创建敏感字段行（默认掩码 + 显示/隐藏 + 复制按钮）。
+        """创建敏感字段行，默认掩码，附带显示/隐藏与复制按钮。
 
         Args:
             label: 字段名称
@@ -508,7 +513,7 @@ class DetailPanel(QWidget):
             self._current_password = value
             field_timer = None
         else:
-            # 非主密码的敏感字段 — 使用独立的间接引用字典
+            # 非主密码敏感字段，使用独立的间接引用字典
             self._secret_values_main[label] = value
             field_timer = QTimer(self)
             field_timer.setSingleShot(True)

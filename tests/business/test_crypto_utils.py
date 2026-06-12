@@ -1,9 +1,17 @@
-"""crypto_utils 公共函数的单元测试。"""
+"""crypto_utils 公共函数单元测试。
+
+覆盖 encrypt_field 与 decrypt_field 的加密解密往返、strict 与容错模式、
+matches_search 与 matches_tag 匹配逻辑、copy_entry_fields 与
+build_entry_summary 字段处理、entry_aad 格式以及 require_vault_key
+锁状态校验。
+"""
 
 import os
+from typing import cast
 
 import pytest
 
+from src.business.managers.vault_manager import VaultManager
 from src.business.services.crypto_utils import (
     build_entry_summary,
     copy_entry_fields,
@@ -14,12 +22,11 @@ from src.business.services.crypto_utils import (
     matches_tag,
     require_vault_key,
 )
-from src.crypto.encryption import EncryptionEngine
 from src.exceptions import VaultLockedError
 from src.models import CustomField, Entry
 
 # ---------------------------------------------------------------------------
-# 固定 fixtures
+# 固定 fixture
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -74,7 +81,7 @@ class TestEncryptDecryptRoundTrip:
         assert pt == plain
 
     def test_different_fields_produce_different_ciphertext(self, aes_key):
-        """同一明文，不同字段名应产生不同密文（AAD 不同）。"""
+        """同一明文，不同字段名应产生不同密文，因 AAD 不同。"""
         crypto_id = 'cid-diff'
         ct1 = encrypt_field('same', aes_key, crypto_id, 'title')
         ct2 = encrypt_field('same', aes_key, crypto_id, 'username')
@@ -93,7 +100,7 @@ class TestDecryptFieldStrict:
 
     def test_empty_ciphertext_strict_raises(self, aes_key):
         """空密文在 strict 模式下由 EncryptionEngine.decrypt 抛出 ValueError。"""
-        # encrypt_field 对空串会加密哨兵值，这里直接传无效字符串
+        # encrypt_field 对空串会加密哨兵值，此处直接传入无效字符串以触发 strict 路径
         with pytest.raises(ValueError):
             decrypt_field('cb:!!!!', aes_key, 'cid-x', 'title', strict=True)
 
@@ -104,7 +111,7 @@ class TestDecryptFieldStrict:
             decrypt_field(ct, wrong_key, 'cid-y', 'password', strict=True)
 
 
-# ==================== decrypt_field 非 strict 模式（默认） ====================
+# ==================== decrypt_field 非 strict 模式，默认为容错 ====================
 
 
 class TestDecryptFieldLenient:
@@ -121,7 +128,7 @@ class TestDecryptFieldLenient:
         assert result == ''
 
     def test_empty_string_returns_empty(self, aes_key):
-        """空密文字符串直接返回空（兼容路径）。"""
+        """空密文字符串直接返回空，走兼容路径不做解密。"""
         result = decrypt_field('', aes_key, 'cid-e', 'title')
         assert result == ''
 
@@ -157,7 +164,7 @@ class TestMatchesSearch:
 
     def test_none_fields_no_crash(self):
         """title/username/url/tags 为 None 时不应崩溃。"""
-        entry = Entry(title=None, username=None, url=None, tags=None)
+        entry = Entry(title=cast(str, None), username=cast(str, None), url=cast(str, None), tags=cast(str, None))
         assert matches_search(entry, 'anything') is False
         assert matches_search(entry, '') is True
 
@@ -215,7 +222,7 @@ class TestMatchesTag:
         assert matches_tag(entry, 'workpersonal') is False
 
     def test_none_tags(self):
-        entry = Entry(tags=None)
+        entry = Entry(tags=cast(str, None))
         assert matches_tag(entry, 'anything') is False
         assert matches_tag(entry, '') is True
 
@@ -274,7 +281,7 @@ class TestCopyEntryFields:
 
     def test_custom_fields_independent_mutation(self, sample_entry):
         copied = copy_entry_fields(sample_entry)
-        copied.custom_fields.append(CustomField(name='new', value='field'))
+        cast(list[CustomField], copied.custom_fields).append(CustomField(name='new', value='field'))
         assert len(sample_entry.custom_fields) == 1
 
 
@@ -342,7 +349,7 @@ class TestRequireVaultKey:
         class FakeVaultManager:
             key = aes_key
 
-        result = require_vault_key(FakeVaultManager())
+        result = require_vault_key(cast(VaultManager, FakeVaultManager()))
         assert result == aes_key
 
     def test_raises_when_locked(self):
@@ -350,4 +357,4 @@ class TestRequireVaultKey:
             key = None
 
         with pytest.raises(VaultLockedError):
-            require_vault_key(FakeVaultManager())
+            require_vault_key(cast(VaultManager, FakeVaultManager()))

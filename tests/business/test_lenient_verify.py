@@ -1,4 +1,9 @@
-"""测试宽松完整性校验 — 列表操作容忍损坏条目"""
+"""宽松完整性校验测试，验证列表操作容忍损坏条目。
+
+覆盖 get_entries 的宽容模式与 get_entry 的严格模式差异：
+列表查询遇到元数据签名校验失败的条目时标记 integrity_error 而非抛异常，
+单条查询仍抛出异常；同时验证宽容模式通过参数传递而非实例状态。
+"""
 import pytest
 
 from src.business.managers.entry_manager import EntryManager
@@ -8,7 +13,7 @@ from src.models import Entry
 
 
 class TestLenientVerify:
-    """验证 get_entries 宽容模式 vs get_entry 严格模式"""
+    """验证 get_entries 宽容模式与 get_entry 严格模式的差异。"""
 
     @pytest.fixture(autouse=True)
     def setup_vault(self, vault_config):
@@ -25,7 +30,7 @@ class TestLenientVerify:
         ))
 
         # 设置一个会抛 VaultIntegrityError 的 verifier
-        def bad_verifier(_entry):
+        def bad_verifier(entry: Entry):
             raise VaultIntegrityError('元数据签名不匹配')
 
         self._vault.db._entry_verifier = bad_verifier
@@ -39,12 +44,12 @@ class TestLenientVerify:
         assert '完整性' in entries[0].integrity_message
 
     def test_get_entry_with_bad_verifier_raises(self):
-        """get_entry（单条）在验证失败时仍抛异常"""
+        """单条 get_entry 在验证失败时仍抛异常"""
         self._entry_mgr.add_entry(Entry(
             title='测试条目', username='user', password='pass', entry_type='login',
         ))
 
-        def bad_verifier(_entry):
+        def bad_verifier(entry: Entry):
             raise VaultIntegrityError('元数据签名不匹配')
 
         self._vault.db._entry_verifier = bad_verifier
@@ -53,7 +58,7 @@ class TestLenientVerify:
         entry_id = entries[0].id
         assert entry_id is not None
 
-        # get_entry 应该抛出异常（严格模式）
+        # 单条 get_entry 为严格模式，应抛出异常
         with pytest.raises(VaultIntegrityError):
             self._vault.db.get_entry(entry_id)
 

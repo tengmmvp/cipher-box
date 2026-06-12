@@ -1,4 +1,9 @@
-"""加密参数验证测试 — 验证 encrypt/decrypt 的参数校验和脱敏错误信息"""
+"""加密参数验证测试。
+
+验证 EncryptionEngine 的 encrypt/decrypt/encrypt_bytes/decrypt_bytes 的参数
+校验逻辑，以及解密失败时错误信息的脱敏行为，确保不向调用方泄露 MAC、tag
+等内部加密术语。
+"""
 
 import pytest
 
@@ -36,13 +41,13 @@ class TestEncryptionValidation:
     # --- decrypt 参数校验 ---
 
     def test_decrypt_rejects_short_key(self):
-        """密钥长度不足 32 字节时拒绝解密（通过 AESGCM 触发）。"""
-        # 短密钥会先触发 base64 解码错误，被包装为 ValueError
+        """密钥长度不足 32 字节时拒绝解密，最终由 AESGCM 校验触发。"""
+        # 短密钥会先触发 base64 解码错误，被包装为 ValueError。
         with pytest.raises(ValueError):
             EncryptionEngine.decrypt("cb:abc", b'short', "aad")
 
     def test_decrypt_rejects_non_bytes_key(self):
-        """密钥非 bytes 类型时拒绝解密（通过 AESGCM 触发 TypeError，包装为 ValueError）。"""
+        """密钥非 bytes 类型时拒绝解密，内部 TypeError 被包装为 ValueError。"""
         with pytest.raises(ValueError):
             EncryptionEngine.decrypt("cb:abc", "not bytes", "aad")  # type: ignore[arg-type]
 
@@ -52,18 +57,18 @@ class TestEncryptionValidation:
             EncryptionEngine.decrypt("", b'\x00' * 32, "aad")
 
     def test_decrypt_generic_error_message(self):
-        """解密失败时不泄露内部异常信息（如 MAC/tag）。"""
+        """解密失败时不泄露内部异常信息，如 MAC、tag 等术语。"""
         with pytest.raises(ValueError) as exc_info:
             EncryptionEngine.decrypt("invalid_ciphertext", b'\x00' * 32, "aad")
         error_msg = str(exc_info.value)
-        # 错误消息不应包含内部加密术语
+        # 错误消息不应包含内部加密术语。
         assert "MAC" not in error_msg
         assert "tag" not in error_msg.lower()
         assert "InvalidTag" not in error_msg
 
     def test_decrypt_rejects_non_string_ciphertext(self):
         """密文非字符串时拒绝解密。"""
-        # 非 str 进入 decrypt 后触发 AttributeError，被 except 捕获并包装为 ValueError
+        # 非 str 进入 decrypt 后触发 AttributeError，被 except 捕获并包装为 ValueError。
         with pytest.raises(ValueError):
             EncryptionEngine.decrypt(123, b'\x00' * 32, "aad")  # type: ignore[arg-type]
 
@@ -90,7 +95,7 @@ class TestEncryptionValidation:
             EncryptionEngine.encrypt_bytes(b"data", b'short', "aad")
 
     def test_decrypt_bytes_rejects_short_key(self):
-        """decrypt_bytes 拒绝短密钥（触发密文格式或长度无效）。"""
+        """decrypt_bytes 拒绝短密钥，最终触发密文格式或长度无效错误。"""
         with pytest.raises(ValueError):
             EncryptionEngine.decrypt_bytes(b"cb:abc", b'short', "aad")
 
@@ -107,7 +112,7 @@ class TestEncryptionValidation:
         """decrypt_bytes 对篡改的密文返回脱敏错误信息。"""
         key = b'\x00' * 32
         encrypted = EncryptionEngine.encrypt_bytes(b"secret", key, "aad")
-        # 篡改密文
+        # 篡改密文。
         tampered = bytearray(encrypted)
         tampered[-1] ^= 0xFF
         with pytest.raises(ValueError):

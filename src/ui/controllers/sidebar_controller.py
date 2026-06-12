@@ -60,11 +60,10 @@ class SidebarController:
     def build_delete_message(self, category_id: int) -> tuple[str, bool, str]:
         """构建删除分类的确认消息。
 
-        Returns
-        -------
-        (message, has_entries, category_name)
-            has_entries 为 True 表示该分类下有条目，需要额外提醒。
-            category_name 为分类名称（用于 UI 反馈），分类不存在时为空串。
+        Returns:
+            (message, has_entries, category_name) 三元组。has_entries 为 True
+            表示该分类下有条目，需要额外提醒；category_name 为分类名称，供
+            UI 反馈使用，分类不存在时为空串。
         """
         category = self._entry_mgr.get_category(category_id)
         if not category:
@@ -78,9 +77,8 @@ class SidebarController:
     def delete_category(self, category_id: int) -> bool:
         """删除指定分类。
 
-        Returns
-        -------
-        True 如果分类存在并成功删除。
+        Returns:
+            分类存在并成功删除时返回 True，分类不存在时返回 False。
         """
         category = self._entry_mgr.get_category(category_id)
         if not category:

@@ -50,7 +50,7 @@ class MetadataSigner:
         """计算条目元数据 HMAC 签名。
 
         Args:
-            entry: 条目对象（Entry dataclass 实例）。
+            entry: 条目对象，Entry dataclass 实例。
             key: 可选的显式密钥。为 None 时使用预计算的域密钥。
 
         Returns:
@@ -74,12 +74,12 @@ class MetadataSigner:
     def sign_with_domain_key(self, entry, domain_key: bytes) -> str:
         """直接使用预计算的域密钥签名，跳过密钥派生步骤。
 
-        用于批量重加密场景（KeyRotationService），避免每条条目
+        用于 KeyRotationService 批量重加密场景，避免每条条目
         重复调用 ``compute_domain_key`` 的 HMAC 开销。
 
         Args:
             entry: 条目对象。
-            domain_key: 预计算的域密钥（由 ``compute_domain_key`` 生成）。
+            domain_key: 预计算的域密钥，由 ``compute_domain_key`` 生成。
         """
         return hmac.new(
             domain_key,

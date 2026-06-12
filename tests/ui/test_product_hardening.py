@@ -1,13 +1,18 @@
-"""正式交付前的关键业务与 UI 回归测试。"""
+"""正式交付前的关键业务与 UI 回归测试。
+
+覆盖保险库生命周期、密码历史、可移植备份、加密与完整性校验、导入导出、
+锁定清理、登录窗口渲染等端到端场景，作为发布前的整体回归防线。
+"""
 
 import json
 import sqlite3
 import tempfile
 from pathlib import Path
+from typing import Callable, cast
 from unittest.mock import patch
 
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QLabel
+from PyQt6.QtWidgets import QApplication, QLabel, QLineEdit, QWidget
 
 from src.business.managers.backup_restore import BackupRestoreManager
 from src.business.managers.entry_manager import EntryManager
@@ -35,6 +40,7 @@ def test_unchanged_password_does_not_create_history():
         manager = EntryManager(vault)
         entry_id = manager.add_entry(Entry(title='Account', password='SamePassword!2026'))
         entry = manager.get_entry(entry_id)
+        assert entry is not None
         manager.update_entry(entry)
         assert manager.get_password_history(entry_id) == []
         vault.close()
@@ -47,6 +53,7 @@ def test_password_history_survives_master_password_change():
         manager = EntryManager(vault)
         entry_id = manager.add_entry(Entry(title='Account', password='FirstPassword!2026'))
         entry = manager.get_entry(entry_id)
+        assert entry is not None
         entry.password = 'SecondPassword!2026'
         manager.update_entry(entry)
 
@@ -71,6 +78,7 @@ def test_portable_backup_restores_into_different_vault():
             custom_fields=[CustomField('_server_host', '10.0.0.8')],
         ))
         edited = source_manager.get_entry(entry_id)
+        assert edited is not None
         edited.password = 'SecondPassword!2026'
         source_manager.update_entry(edited)
         source_manager.delete_entry(entry_id)
@@ -91,9 +99,13 @@ def test_portable_backup_restores_into_different_vault():
         assert len(restored) == 1
         assert restored[0].is_deleted is True
         assert restored[0].password == 'SecondPassword!2026'
-        assert restored[0].custom_fields[0].value == '10.0.0.8'
+        custom_fields = restored[0].custom_fields
+        assert isinstance(custom_fields, list)
+        assert custom_fields[0].value == '10.0.0.8'
+        restored_id = restored[0].id
+        assert restored_id is not None
         history = target_manager.decrypt_password_history(
-            target_manager.get_password_history(restored[0].id)
+            target_manager.get_password_history(restored_id)
         )
         assert [item['password'] for item in history] == ['FirstPassword!2026']
         source.close()
@@ -116,8 +128,8 @@ def test_entry_dialog_restores_type_specific_fields():
         dialog = EntryDialog(manager, manager.get_categories(), entry=entry, config=_config(root))
         assert dialog._type_combo.currentData() == 'card'
         assert not dialog._special_widgets['card_number'].isHidden()
-        assert dialog._special_widgets['card_holder'].text() == 'Test User'
-        assert dialog._special_widgets['card_number'].text() == '4111 1111 1111 1111'
+        assert cast(QLineEdit, dialog._special_widgets['card_holder']).text() == 'Test User'
+        assert cast(QLineEdit, dialog._special_widgets['card_number']).text() == '4111 1111 1111 1111'
         dialog.close()
         vault.close()
 
@@ -139,7 +151,9 @@ def test_lock_preparation_clears_decrypted_ui_and_clipboard():
         assert window._entry_list.count() == 0
         assert window._detail_panel._current_entry is None
         assert window._detail_panel._current_password == ''
-        assert QApplication.clipboard().text() != 'VisibleSecret!2026'
+        clipboard = QApplication.clipboard()
+        assert clipboard is not None
+        assert clipboard.text() != 'VisibleSecret!2026'
         window.close()
 
 
@@ -175,7 +189,7 @@ def test_lock_closes_and_scrubs_open_entry_dialog():
 def test_stale_key_session_cannot_write_after_master_password_change():
     with tempfile.TemporaryDirectory() as root:
         first = VaultManager(_config(root))
-        assert first.initialize('OldMasterPassword!2026')
+        assert first.initialize('OldMasterPassword!2026')[0]
         stale = VaultManager(_config(root))
         assert stale.unlock('OldMasterPassword!2026')[0]
         assert first.change_master_password(
@@ -204,10 +218,13 @@ def test_context_bound_ciphertext_rejects_cross_entry_swap():
         second_id = manager.add_entry(Entry(title='Second', password='SecondSecret!2026'))
         first_raw = vault.db.get_entry(first_id)
         second_raw = vault.db.get_entry(second_id)
+        assert first_raw is not None
+        assert second_raw is not None
         first_raw.password = second_raw.password
         vault.db.update_entry(first_raw, preserve_updated_at=True)
 
         swapped = manager.get_entry(first_id)
+        assert swapped is not None
         assert swapped.password == ''
         assert swapped.integrity_error is True
         assert 'password' in swapped.integrity_message
@@ -221,9 +238,12 @@ def test_vault_persists_kdf_parameters_and_ciphertext_format():
         manager = EntryManager(vault)
         entry_id = manager.add_entry(Entry(title='Account', password='Secret!2026'))
         raw = vault.db.get_entry(entry_id)
+        assert raw is not None
 
         assert vault.db.get_meta('master_kdf') == 'pbkdf2-sha256'
-        assert int(vault.db.get_meta('master_kdf_iterations')) >= 600_000
+        iterations = vault.db.get_meta('master_kdf_iterations')
+        assert iterations is not None
+        assert int(iterations) >= 600_000
         assert vault.db.get_meta('ciphertext_format') == 'aes-256-gcm-aad'
         assert raw.password.startswith('cb:')
         vault.close()
@@ -239,18 +259,24 @@ def test_selecting_first_entry_opens_detail_panel_without_crash():
         entry_id = manager.add_entry(Entry(title='Selectable', password='Strong!2026Password'))
         window = MainWindow(config, vault)
         window._entry_list.setCurrentRow(0)
-        # 等待选择防抖定时器触发（80ms）并处理事件
-        QTest.qWait(150)
+        # 等待 80ms 选择防抖定时器触发并处理事件
+        # PyQt6 QtTest.pyi 将 qWait 误标为实例方法（首个形参为 self），
+        # 导致 pyright 把位置实参绑定到 self 而报 ms 缺失；此处将 qWait
+        # cast 为接受单一 int 的可调用对象，消除类型误差，运行时行为不变。
+        cast(Callable[[int], None], QTest.qWait)(150)
         _APP.processEvents()
-        assert window._detail_panel._current_entry.id == entry_id
+        current_entry = window._detail_panel._current_entry
+        assert current_entry is not None
+        assert current_entry.id == entry_id
         assert window._detail_panel._title_label.text().endswith('Selectable')
         window.close()
         vault.close()
 
 
 def test_first_time_login_password_fields_have_matching_dimensions():
-    previous_style = _APP.styleSheet()
-    _APP.setStyleSheet(get_style('light'))
+    app_widget = cast(QWidget, _APP)
+    previous_style = app_widget.styleSheet()
+    app_widget.setStyleSheet(get_style('light'))
     try:
         vault = type('FirstTimeVault', (), {'is_initialized': False})()
         dialog = LoginWindow(vault)
@@ -267,7 +293,7 @@ def test_first_time_login_password_fields_have_matching_dimensions():
         )
         dialog.close()
     finally:
-        _APP.setStyleSheet(previous_style)
+        app_widget.setStyleSheet(previous_style)
 
 
 def test_visible_branding_uses_single_product_name():
@@ -318,8 +344,10 @@ def test_bitwarden_import_preserves_folder_totp_and_custom_fields():
         assert entry.category_name == 'Work'
         assert entry.totp_secret == 'JBSWY3DPEHPK3PXP'
         assert entry.is_favorite is True
-        assert entry.custom_fields[0].name == 'PIN'
-        assert entry.custom_fields[0].field_type == 'password'
+        bitwarden_fields = entry.custom_fields
+        assert isinstance(bitwarden_fields, list)
+        assert bitwarden_fields[0].name == 'PIN'
+        assert bitwarden_fields[0].field_type == 'password'
         vault.close()
 
 
@@ -410,9 +438,12 @@ def test_passwordless_overwrite_import_preserves_existing_secrets():
         assert exporter.import_from_json(str(path), duplicate_action='overwrite') == 1
 
         restored = manager.get_entry(entry_id)
+        assert restored is not None
         assert restored.password == 'ExistingPassword!2026'
         assert restored.totp_secret == 'JBSWY3DPEHPK3PXP'
-        assert restored.custom_fields[0].value == '1234'
+        restored_fields = restored.custom_fields
+        assert isinstance(restored_fields, list)
+        assert restored_fields[0].value == '1234'
         assert restored.notes == 'updated'
         vault.close()
 
@@ -423,9 +454,13 @@ def test_favorite_change_does_not_reset_password_age():
         assert vault.initialize('MasterPassword!2026')[0]
         manager = EntryManager(vault)
         entry_id = manager.add_entry(Entry(title='Account', password='Password!2026'))
-        before = manager.get_entry(entry_id).password_changed_at
+        before_entry = manager.get_entry(entry_id)
+        assert before_entry is not None
+        before = before_entry.password_changed_at
         manager.toggle_favorite(entry_id)
-        after = manager.get_entry(entry_id).password_changed_at
+        after_entry = manager.get_entry(entry_id)
+        assert after_entry is not None
+        after = after_entry.password_changed_at
         assert after == before
         vault.close()
 
@@ -444,7 +479,9 @@ def test_main_window_filters_entries_by_tag():
         window._tag_combo.setCurrentIndex(index)
         _APP.processEvents()
         assert window._entry_list.count() == 1
-        assert window._entry_list.item(0).data(256).title == 'Work'
+        first_item = window._entry_list.item(0)
+        assert first_item is not None
+        assert first_item.data(256).title == 'Work'
         window.close()
 
 
@@ -460,7 +497,9 @@ def test_existing_vault_cannot_be_initialized_again():
         assert '已经初始化' in msg
         vault.lock()
         assert vault.unlock('OriginalMaster!2026')[0]
-        assert manager.get_entry(entry_id).password == 'KeepSecret!2026'
+        kept_entry = manager.get_entry(entry_id)
+        assert kept_entry is not None
+        assert kept_entry.password == 'KeepSecret!2026'
         vault.close()
 
 
@@ -494,14 +533,19 @@ def test_entry_metadata_is_resigned_after_master_password_change():
         assert vault.initialize('OldMasterPassword!2026')[0]
         manager = EntryManager(vault)
         entry_id = manager.add_entry(Entry(title='Account', password='Secret!2026'))
-        old_mac = vault.db.get_entry(entry_id).metadata_mac
+        old_raw = vault.db.get_entry(entry_id)
+        assert old_raw is not None
+        old_mac = old_raw.metadata_mac
 
         assert vault.change_master_password(
             'OldMasterPassword!2026', 'NewMasterPassword!2026'
         )[0]
         entry = manager.get_entry(entry_id)
+        assert entry is not None
         assert entry.password == 'Secret!2026'
-        assert vault.db.get_entry(entry_id).metadata_mac != old_mac
+        new_raw = vault.db.get_entry(entry_id)
+        assert new_raw is not None
+        assert new_raw.metadata_mac != old_mac
         vault.close()
 
 
@@ -558,7 +602,7 @@ def test_import_all_does_not_decrypt_existing_vault():
 
 
 def test_pre_restore_snapshot_purged_on_master_password_change():
-    """改密后自动恢复点被清理，收缩已删除条目经历史恢复点的明文泄漏面。"""
+    """改密后自动清理恢复点，收缩其中保存的已删除条目明文泄漏面。"""
     with tempfile.TemporaryDirectory() as source_root, tempfile.TemporaryDirectory() as target_root:
         source = VaultManager(_config(source_root))
         assert source.initialize('SourceMaster!2026')[0]
@@ -585,7 +629,7 @@ def test_pre_restore_snapshot_purged_on_master_password_change():
         backup_dir = Path(target_root) / 'backups'
         assert list(backup_dir.glob('pre_restore_*.cbox')), '恢复后应存在恢复点'
 
-        # 改密触发自动恢复点清理（恢复点含改密前条目明文，收缩泄漏面）
+        # 改密触发自动恢复点清理；恢复点含改密前条目明文，需收缩泄漏面
         assert target.change_master_password(
             'OldTargetMaster!2026', 'NewTargetMaster!2026'
         )[0]
@@ -623,7 +667,9 @@ def test_deleted_default_category_does_not_reappear_after_restart():
         vault = VaultManager(_config(root))
         assert vault.initialize('MasterPassword!2026')[0]
         category = next(item for item in vault.db.get_categories() if item.name == '社交')
-        vault.db.delete_category(category.id)
+        category_id = category.id
+        assert category_id is not None
+        vault.db.delete_category(category_id)
         vault.close()
 
         reopened = VaultManager(_config(root))

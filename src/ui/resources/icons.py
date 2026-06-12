@@ -1,8 +1,8 @@
-"""统一图标管理模块 - 基于 QtAwesome 的语义化图标系统
+"""统一图标管理模块 — 基于 QtAwesome 的语义化图标系统
 
 使用方式：
     from .resources.icons import icon, set_icon, EYE, COPY
-    set_icon(btn, EYE)                    # 设置按钮图标（自动清除文字）
+    set_icon(btn, EYE)                    # 设置按钮图标，并自动清除文字
     act.setIcon(icon(COPY, size=SIZE_MENU))  # 菜单项图标
 """
 
@@ -145,8 +145,8 @@ _ICON_MAP: dict[str, tuple[str, str]] = {
 def _make_icon(name: str, color_key: str | None = None) -> QIcon:
     """内部：创建 QIcon 实例。
 
-    颜色在创建时烘焙到 QIcon 中（主题颜色通过 c() 获取）。
-    主题切换时需重建所有图标（通过 _build_filter_list、_update_menu_icons 等），
+    颜色在创建时烘焙到 QIcon 中，主题颜色通过 c() 获取。
+    主题切换时需重建所有图标，重建入口包括 _build_filter_list、_update_menu_icons 等，
     遗漏重建的图标将保留旧主题颜色。
     """
     glyph, default_color_key = _ICON_MAP[name]
@@ -158,8 +158,9 @@ def _make_icon(name: str, color_key: str | None = None) -> QIcon:
 def icon(name: str, color_key: str | None = None, size: int = SIZE_BTN) -> QIcon:  # noqa: ARG001
     """获取着色后的 QIcon。
 
-    Note: ``size`` 参数暂未使用，QIcon 渲染尺寸由目标 widget 的 iconSize 决定。
-    保留此参数以便未来支持固定尺寸输出。
+    Note:
+        ``size`` 参数暂未使用，QIcon 渲染尺寸由目标 widget 的 iconSize 决定。
+        保留此参数以便未来支持固定尺寸输出。
     """
     return _make_icon(name, color_key)
 
@@ -198,7 +199,7 @@ def draw_logo_pixmap(
     """绘制 CipherBox Logo 的 QPixmap。
 
     Args:
-        size: 画布尺寸（正方形）
+        size: 画布尺寸，正方形
         bg_color: 背景色，默认使用主题 brand 色
         text: 显示文字
         text_color: 文字颜色，默认使用 text_on_accent

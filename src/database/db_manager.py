@@ -1,9 +1,9 @@
-"""数据库管理器 - SQLite 数据库操作。
+"""数据库管理器 — SQLite 数据库操作。
 
 本模块定义 ``DatabaseManager``，负责：
 - 数据库连接的打开/关闭和文件安全
 - 事务管理（begin / commit / rollback / savepoint）
-- 元数据（vault_meta 表）读写
+- vault_meta 表的元数据读写
 - ``_db_operation`` 装饰器，提供线程安全锁和连接校验
 
 CRUD 操作已委托给子 Repository：
@@ -49,8 +49,8 @@ class EntryVerifier(Protocol):
 class DatabaseManager:
     """SQLite 数据库管理器
 
-    通过 ``entries`` / ``categories`` / ``schema`` 属性暴露子 Repository
-    （供 Repository 间协作，如 category_repository 经 ``entries`` 复用行转换），
+    通过 ``entries`` / ``categories`` / ``schema`` 属性暴露子 Repository，
+    供 Repository 间协作，如 category_repository 经 ``entries`` 复用行转换；
     并通过自身的委托方法为外部调用方提供统一入口。
     """
 
@@ -93,12 +93,13 @@ class DatabaseManager:
 
     @property
     def connection(self) -> sqlite3.Connection:
-        """数据库连接（供 Repository 使用）。"""
+        """数据库连接，供 Repository 使用。调用方须确保数据库已连接。"""
+        assert self._conn is not None, '数据库未连接'
         return self._conn
 
     @property
     def db_lock(self) -> threading.RLock:
-        """线程安全锁（供 Repository 使用）。"""
+        """线程安全锁，供 Repository 使用。"""
         return self._lock
 
     @property
@@ -115,19 +116,19 @@ class DatabaseManager:
         self._schema_validated = value
 
     def guard_write(self) -> None:
-        """写入前校验（公共接口）。"""
+        """写入前校验，公共接口。"""
         self._guard_write()
 
     def auto_commit(self) -> None:
-        """非事务模式下自动提交（公共接口）。"""
+        """非事务模式下自动提交，公共接口。"""
         self._auto_commit()
 
     def sign_entry(self, entry: Entry) -> str:
-        """条目元数据签名（公共接口）。"""
+        """条目元数据签名，公共接口。"""
         return self._sign_entry(entry)
 
     def assert_encrypted(self, value: str, field_name: str) -> None:
-        """断言加密字段的值格式正确（公共接口）。"""
+        """断言加密字段的值格式正确，公共接口。"""
         self._assert_encrypted(value, field_name)
 
     def set_write_guard(self, guard: Callable[[], None]) -> None:
@@ -165,7 +166,7 @@ class DatabaseManager:
         - 本方法不在整个事务期间持有 _lock。
         - 事务内的单个操作通过 @_db_operation 获取锁，保证操作级原子性。
         - 事务整体不隔离跨线程操作：调用方须确保无并发写同一表。
-        - RLock 保证同一线程可重入（事务内嵌套 @_db_operation 可正常工作）。
+        - RLock 保证同一线程可重入，事务内嵌套 @_db_operation 可正常工作。
         """
         if self._conn is None:
             raise DatabaseError("数据库未连接")
@@ -195,11 +196,11 @@ class DatabaseManager:
             self._transaction_depth -= 1
 
     def begin_transaction(self) -> None:
-        """开始事务（抑制内部 commit）。
+        """开始事务，并抑制内部 commit。
 
         注意：此方法未加 ``@_db_operation`` 锁，必须在已持有锁的
-        上下文（如 ``@_db_operation`` 装饰的方法内、或 ``transaction()``
-        上下文管理器内）调用，不可直接从外部线程调用。
+        上下文内调用，例如 ``@_db_operation`` 装饰的方法内或
+        ``transaction()`` 上下文管理器内，不可直接从外部线程调用。
         """
         if self._conn is None:
             raise DatabaseError("数据库未连接")

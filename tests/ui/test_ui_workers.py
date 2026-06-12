@@ -1,4 +1,8 @@
-"""BackgroundWorker 基础测试 — finished/error 信号和取消行为。"""
+"""BackgroundWorker 基础测试。
+
+覆盖后台工作器的 finished 与 error 信号发射、异常上报、取消后抑制信号，
+以及返回 None 时信号仍正常发射的行为。
+"""
 
 from src.ui.components.workers import BackgroundWorker
 

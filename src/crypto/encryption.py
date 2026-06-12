@@ -1,10 +1,10 @@
-"""加密引擎 - AES-256-GCM 加密/解密。
+"""加密引擎 — AES-256-GCM 加密/解密。
 
 内存安全说明：``_cipher_cache`` 使用密钥的 SHA-256 摘要作为缓存键，
 不再以原始密钥 bytes 作为 dict key，避免缓存字典持有原始密钥材料的额外
 引用。缓存在 ``clear_cache`` 被显式调用前会一直驻留进程内存，
 ``VaultManager.lock`` 与 ``_re_encrypt_all`` 负责调用。
-调用方必须在密钥失效（锁定或改密）时调用 ``clear_cache``。
+调用方必须在密钥失效时调用 ``clear_cache``，例如锁定或改密场景。
 
 CPython 固有限制：``bytes`` 对象不可变，无法从 Python 层面原地清零。
 ``clear_cache`` 仅清除缓存字典的引用，原始 ``bytes`` 对象依赖 GC 回收。

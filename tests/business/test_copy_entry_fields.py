@@ -1,10 +1,14 @@
-"""copy_entry_fields 和 build_entry_summary 工具函数测试"""
+"""copy_entry_fields 与 build_entry_summary 工具函数测试。
+
+验证 copy_entry_fields 的字段复制与覆盖行为，以及
+build_entry_summary 生成的摘要条目不包含敏感字段。
+"""
 
 from src.business.services.crypto_utils import build_entry_summary, copy_entry_fields
 from src.models import Entry
 
 
-# TODO: 迁移到 conftest.py make_entry fixture（本函数设置了更多字段默认值如 id/时间戳）
+# 本辅助函数设置了 id、时间戳等更多字段默认值，与 conftest.py 的 make_entry fixture 略有差异
 def _make_entry(**kwargs) -> Entry:
     kwargs.setdefault('id', 1)
     kwargs.setdefault('crypto_id', 'abc123')
@@ -30,7 +34,7 @@ def _make_entry(**kwargs) -> Entry:
 
 
 class TestCopyEntryFields:
-    """验证 copy_entry_fields 复制和覆盖行为"""
+    """验证 copy_entry_fields 复制和覆盖行为。"""
 
     def test_copies_all_fields_by_default(self):
         raw = _make_entry()
@@ -51,7 +55,7 @@ class TestCopyEntryFields:
         result = copy_entry_fields(raw, title='New', username='new_user')
         assert result.title == 'New'
         assert result.username == 'new_user'
-        # Non-overridden fields remain the same
+        # 未覆盖的字段保持原值
         assert result.id == raw.id
         assert result.password == raw.password
 
@@ -64,7 +68,7 @@ class TestCopyEntryFields:
 
 
 class TestBuildEntrySummary:
-    """验证 build_entry_summary 不包含敏感字段"""
+    """验证 build_entry_summary 不包含敏感字段。"""
 
     def test_summary_has_empty_sensitive_fields(self):
         raw = _make_entry(

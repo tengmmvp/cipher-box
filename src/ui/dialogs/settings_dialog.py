@@ -1,4 +1,8 @@
-"""设置对话框"""
+"""设置对话框，按标签页组织通用、安全、密码生成与备份四类配置。
+
+所有配置项通过 _SETTINGS_MAP 与控件属性建立映射，加载与保存统一遍历
+该映射完成，新增配置只需扩展映射表。保存时执行原子写入。
+"""
 
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -23,7 +27,7 @@ from ..resources.constants import BTN_DIALOG, DIALOG_SETTINGS_MIN_SIZE
 
 
 class SettingsDialog(QDialog):
-    """设置中心"""
+    """应用设置对话框，编辑并持久化用户偏好。"""
 
     def __init__(self, config: ConfigManager, parent=None):
         super().__init__(parent)
@@ -209,8 +213,8 @@ class SettingsDialog(QDialog):
         if path:
             self._backup_path_edit.setText(path)
 
-    # (config_key, widget_attr, accessor_type, default_value)
-    # accessor_type: 'combo' | 'check' | 'spin'
+    # 配置项映射表，元素为 (config_key, widget_attr, accessor_type, default_value) 四元组，
+    # accessor_type 取值为 combo、check 或 spin，决定读写控件的方式
     _SETTINGS_MAP = [
         ('theme', '_theme_combo', 'combo', 'light'),
         ('show_tray_icon', '_show_tray_check', 'check', True),
@@ -263,6 +267,7 @@ class SettingsDialog(QDialog):
         self._backup_retention_spin.setEnabled(enabled)
 
     def _save_settings(self):
+        # 密码生成至少需要一种字符集，否则无法生成密码
         if not any((
             self._default_upper_check.isChecked(),
             self._default_lower_check.isChecked(),
@@ -285,7 +290,7 @@ class SettingsDialog(QDialog):
         self.accept()
 
     def _reset_to_defaults(self):
-        """恢复默认设置"""
+        """将所有配置控件恢复为默认值，不立即保存。"""
         for _key, attr, atype, default in self._SETTINGS_MAP:
             self._set_widget_value(getattr(self, attr), atype, default)
         self._backup_path_edit.setText('')

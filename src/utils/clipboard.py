@@ -1,4 +1,4 @@
-"""剪贴板管理器 - 复制密码后自动清空"""
+"""剪贴板管理器 — 复制密码后自动清空。"""
 
 import hmac
 import os
@@ -14,7 +14,7 @@ _CLIPBOARD_HMAC_KEY: bytes = os.urandom(32)
 class ClipboardManager:
     """管理剪贴板复制与自动清空。
 
-    ClipboardManager 是长生命周期对象（由 MainWindow 持有），因此内部
+    ClipboardManager 是由 MainWindow 持有的长生命周期对象，因此内部
     QTimer 虽未指定 parent，但随 ClipboardManager 一同被 MainWindow
     管理，生命周期安全。
     """
@@ -37,7 +37,7 @@ class ClipboardManager:
     def copy_text(self, text: str):
         """复制文本到剪贴板，并设置自动清空定时器。
 
-        同时设置 X11 Primary Selection（中键粘贴缓冲区），
+        同时设置 X11 Primary Selection 中键粘贴缓冲区，
         确保自动清理时两个缓冲区都被清除。
         """
         if not text:
@@ -53,7 +53,7 @@ class ClipboardManager:
                 self._timer.start(self._clear_seconds * 1000)
 
     def _clear_clipboard(self):
-        """清空剪贴板（仅当内容仍为上次复制的文本时才清空）。"""
+        """清空剪贴板，仅当内容仍为上次复制的文本时才清空。"""
         self._timer.stop()
         clipboard = QApplication.clipboard()
         if clipboard:

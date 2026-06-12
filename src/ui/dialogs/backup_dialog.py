@@ -1,4 +1,11 @@
-"""备份恢复对话框"""
+"""备份与恢复对话框，提供加密备份的创建与还原。
+
+备份采用独立密码派生密钥，可跨主密码恢复。恢复前由业务层自动创建
+安全快照，本对话框另提供手动清理恢复点的入口以收缩泄漏面。耗时的
+备份与恢复在后台线程执行，恢复有写入副作用不可中途取消，备份可安全
+取消。worker 闭包捕获备份或恢复密码，操作结束或对话框关闭后立即释放
+引用以缩短密码驻留时间。
+"""
 
 from pathlib import Path
 
@@ -31,7 +38,7 @@ from ..resources.theme_colors import c
 
 
 class BackupDialog(QDialog):
-    """备份与恢复对话框"""
+    """备份创建与恢复的统一对话框，按模式切换操作与文案。"""
 
     def __init__(self, backup_manager, parent=None, config=None):
         super().__init__(parent)

@@ -1,4 +1,4 @@
-"""TOTP 验证码生成器 - 基于 RFC 6238 实现"""
+"""TOTP 验证码生成器 — 基于 RFC 6238 实现"""
 
 import base64
 import binascii
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class TOTPGenerator:
     """TOTP (Time-based One-Time Password) 生成器"""
 
-    DEFAULT_PERIOD = 30  # 时间步长（秒）
+    DEFAULT_PERIOD = 30  # 时间步长，单位为秒
     DEFAULT_DIGITS = 6   # 验证码位数
 
     # 支持的哈希算法映射
@@ -128,8 +128,8 @@ class TOTPGenerator:
 
         Args:
             secret: Base32 编码的密钥，支持 'SHA256:SECRET' 或 'SHA512:SECRET' 前缀
-            algorithm: 哈希算法 ('SHA1', 'SHA256', 'SHA512')，当前缀存在时被覆盖
-            period: 时间步长（秒）
+            algorithm: 哈希算法，取值 SHA1、SHA256 或 SHA512；当前缀存在时被覆盖
+            period: 时间步长，单位为秒
             digits: 验证码位数
 
         Returns:
@@ -150,7 +150,7 @@ class TOTPGenerator:
         """生成当前 TOTP 验证码，失败时抛出异常而非静默返回空串。
 
         参数和返回值与 generate() 相同，但在密钥解析或解码失败时抛出 ValueError，
-        而非记录警告并返回空字符串。适用于用户交互场景（如密钥验证），
+        而非记录警告并返回空字符串。适用于密钥验证等用户交互场景，
         使调用方能向用户展示具体错误信息。
 
         Raises:
@@ -198,12 +198,12 @@ class TOTPGenerator:
     def validate_secret(secret: str, algorithm: str = 'SHA1') -> bool:
         """验证 Base32 密钥格式是否有效
 
-        支持带算法前缀的密钥格式（如 'SHA256:BASE32SECRET'），
+        支持带算法前缀的密钥格式，例如 'SHA256:BASE32SECRET'。
         前缀存在时自动提取算法并忽略 algorithm 参数。
 
         Args:
             secret: Base32 编码的密钥，可选带算法前缀
-            algorithm: 哈希算法 ('SHA1', 'SHA256', 'SHA512')
+            algorithm: 哈希算法，取值 SHA1、SHA256 或 SHA512
 
         Returns:
             密钥是否有效

@@ -1,4 +1,4 @@
-"""QSS 样式表 - 使用动态颜色模板"""
+"""QSS 样式表 — 使用动态颜色模板"""
 
 STYLE_TEMPLATE = """
 QMainWindow, QDialog {{
@@ -299,8 +299,9 @@ QWidget#listPane, QWidget#detailPanel {{
 def get_style(theme: str) -> str:
     """获取指定主题的样式表。
 
-    Note: 此方法会调用 set_theme(theme) 设置全局活跃主题作为副作用。
-    这是设计上的有意耦合：样式表生成与主题激活必须同步。
+    Note:
+        会调用 set_theme(theme) 设置全局活跃主题作为副作用。
+        这是设计上的有意耦合，样式表生成与主题激活必须同步。
     """
     from .constants import FONT_FAMILY_CSS
     from .theme_colors import get_colors, set_theme

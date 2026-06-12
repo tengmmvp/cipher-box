@@ -1,4 +1,11 @@
-"""密码历史区域组件 — 从 DetailPanel 拆分"""
+"""密码历史区域组件，从 DetailPanel 拆分。
+
+以折叠摘要形式展示密码历史，点击展开后才解密完整记录并渲染每一项的
+时间、显示/隐藏切换与复制按钮。历史密码通过间接引用列表持有，闭包按索引
+读取，清除时统一释放明文。
+"""
+
+from typing import Callable
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -19,8 +26,8 @@ from ..resources.theme_colors import c
 class PasswordHistoryWidget(QWidget):
     """密码历史折叠区组件。
 
-    通过 ``load_for_entry()`` 注入 EntryManager 引用来获取密码历史。
-    延迟加载：先显示摘要，点击展开才解密。
+    通过注入的 EntryManager 引用获取密码历史，采用延迟加载：先显示摘要，
+    点击展开后才解密完整记录。
     """
 
     copy_requested = pyqtSignal(str)
@@ -33,9 +40,9 @@ class PasswordHistoryWidget(QWidget):
         # 外部 _field_hide_timers 引用，通过 set_hide_timers_ref 注入
         self._field_hide_timers: list[QTimer] = []
         # 回调：获取密码可见毫秒数
-        self._get_pwd_visible_ms = None
+        self._get_pwd_visible_ms: Callable[[], int] | None = None
         # 回调：复制并反馈
-        self._copy_with_feedback = None
+        self._copy_with_feedback: Callable[..., None] | None = None
 
     # ---- 公开接口 ----
 
@@ -59,7 +66,7 @@ class PasswordHistoryWidget(QWidget):
         Args:
             entry_id: 条目 ID
             entry_manager: EntryManager 实例
-            content_layout: 目标布局（DetailPanel._content_layout）
+            content_layout: 目标布局，通常为 DetailPanel._content_layout
         """
         self._entry_mgr = entry_manager
         if not entry_manager:
@@ -118,7 +125,7 @@ class PasswordHistoryWidget(QWidget):
             time_label.setStyleSheet(f'color: {c("text_muted")}; font-size: 12px;')
             row.addWidget(time_label)
 
-            # 密码（初始隐藏）
+            # 密码，初始隐藏
             pwd_text = record.get('password', '')
             pwd_label = QLabel('••••••••')
             pwd_label.setStyleSheet(
@@ -138,7 +145,7 @@ class PasswordHistoryWidget(QWidget):
             show_btn.setFixedSize(*BTN_COPY)
             show_btn.setToolTip('显示/隐藏')
 
-            # 历史密码显示超时定时器（持久、可取消）
+            # 历史密码显示超时定时器，持久且可取消
             hist_timer = QTimer(self)
             hist_timer.setSingleShot(True)
             self._field_hide_timers.append(hist_timer)
@@ -156,6 +163,7 @@ class PasswordHistoryWidget(QWidget):
                 if lbl.text() == '••••••••':
                     lbl.setText(pwd)
                     set_icon(btn, LOCK)
+                    assert self._get_pwd_visible_ms is not None
                     timer.start(self._get_pwd_visible_ms())
                 else:
                     lbl.setText('••••••••')
@@ -174,6 +182,7 @@ class PasswordHistoryWidget(QWidget):
 
             def do_copy(_checked=False, idx=hist_idx, btn=copy_btn):
                 pwd = self._history_passwords[idx] if idx < len(self._history_passwords) else ''
+                assert self._copy_with_feedback is not None
                 self._copy_with_feedback(btn, pwd)
 
             copy_btn.clicked.connect(do_copy)

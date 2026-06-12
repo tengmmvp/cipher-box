@@ -1,4 +1,9 @@
-"""备份密钥派生测试 — 验证备份密钥 HMAC 派生"""
+"""备份密钥派生测试。
+
+验证备份密钥基于主密钥与 salt 通过 HMAC-SHA256 派生的确定性、
+salt 与主密钥变更时的差异化输出，并端到端验证非密码备份的
+创建与恢复流程。
+"""
 
 import hashlib
 import hmac
@@ -18,7 +23,7 @@ def _make_config(tmp_dir: str):
 
 @pytest.fixture()
 def vault_and_key():
-    """创建并初始化 VaultManager，返回 (vault, key, tmp_dir)"""
+    """创建并初始化 VaultManager，返回 vault、key、tmp_dir 三元组。"""
     tmp_dir = tempfile.mkdtemp()
     config = _make_config(tmp_dir)
     vault = VaultManager(config)
@@ -78,25 +83,23 @@ def test_create_and_restore_non_password_backup(vault_and_key):
     from src.models import Entry
 
     entry_mgr = EntryManager(vault)
-    # 创建测试条目
     entry = Entry(title='备份测试', username='user', password='secret123')
     entry_id = entry_mgr.add_entry(entry)
 
-    # 创建快照密钥备份
     backup_mgr = BackupRestoreManager(vault)
     backup_path = Path(tmp_dir) / 'test_backup.cbbox'
     success, msg = backup_mgr.create_backup(str(backup_path), use_snapshot_key=True)
     assert success, f'备份创建失败: {msg}'
     assert backup_path.exists()
 
-    # 检查备份
     info = backup_mgr.inspect_backup(str(backup_path))
     assert info is not None
-    assert not info.get('password_required', True)  # 非密码备份
+    # 快照密钥备份不要求用户提供密码
+    assert not info.get('password_required', True)
 
-    # 删除条目后恢复
-    entry_mgr.delete_entry(entry_id)  # 软删除
-    entry_mgr.permanent_delete_entry(entry_id)  # 永久删除
+    # 先软删除再永久删除，使保险库清空
+    entry_mgr.delete_entry(entry_id)
+    entry_mgr.permanent_delete_entry(entry_id)
     assert entry_mgr.get_entry_count(include_deleted=True) == 0
 
     success, msg = backup_mgr.restore_backup(str(backup_path))

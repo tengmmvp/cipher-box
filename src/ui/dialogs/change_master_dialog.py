@@ -1,4 +1,9 @@
-"""修改主密码对话框"""
+"""修改主密码对话框。
+
+修改主密码会触发全量数据重新加密，耗时较高，在后台线程执行以避免
+冻结 UI。内置速率限制与失败锁定，校验旧密码、新密码强度与两次一致性
+后才提交，完成或失败后立即清除旧密码输入以缩短明文驻留时间。
+"""
 
 import logging
 
@@ -33,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 class ChangeMasterDialog(QDialog):
-    """修改主密码对话框"""
+    """主密码修改对话框，含旧密码校验与新密码强度校验。"""
 
     def __init__(self, vault_manager, parent=None):
         super().__init__(parent)
@@ -171,7 +176,7 @@ class ChangeMasterDialog(QDialog):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        # 后台线程执行重新加密，避免冻结 UI
+        # 全量重新加密耗时较高，置于后台线程执行避免冻结 UI
         self._change_btn.setEnabled(False)
         self._msg_label.setStyleSheet(f'color: {c("accent")}; font-size: 12px; min-height: 18px;')
         self._msg_label.setText('正在重新加密所有数据...')
@@ -188,7 +193,7 @@ class ChangeMasterDialog(QDialog):
         release_worker(self)
         self._change_btn.setEnabled(True)
         self._msg_label.setStyleSheet(f'color: {c("danger")}; font-size: 12px; min-height: 18px;')
-        # 减少明文密码驻留内存时间
+        # 缩短旧密码明文在内存中的驻留时间
         self._old_pwd.clear()
         success, error_msg = result
         if success:

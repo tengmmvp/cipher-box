@@ -1,4 +1,9 @@
-"""轻量级 Toast 通知组件 - 支持多类型、堆叠显示、淡入淡出动画"""
+"""轻量级 Toast 通知组件。
+
+支持成功、错误、信息、警告四种类型，多条通知在父窗口右下角从下向上堆叠，
+各自独立的淡入淡出动画，并在鼠标悬停时暂停自动关闭。由 Toast 提供静态调用
+入口，ToastManager 负责按父窗口维度复用与定位。
+"""
 
 import weakref
 
@@ -38,11 +43,11 @@ _TOAST_SHADOW_WIDTH = TOAST_WIDTH + 4
 
 
 class ToastWidget(QFrame):
-    """单个 Toast 通知卡片
+    """单个 Toast 通知卡片。
 
-    使用 QGraphicsOpacityEffect 实现淡入淡出（子控件无法使用 windowOpacity）。
-    阴影通过在 ToastWidget 外层套一个 ShadowContainer 实现，
-    这样 opacity 效果和阴影效果分别作用于不同的 widget，互不冲突。
+    使用 QGraphicsOpacityEffect 实现淡入淡出，因为子控件无法使用 windowOpacity。
+    阴影通过在 ToastWidget 外层套一个 ShadowContainer 实现，使透明度效果与
+    阴影效果分别作用于不同的 widget，互不冲突。
     """
 
     closed = pyqtSignal(object)  # 通知 ToastManager 移除自身
@@ -82,7 +87,7 @@ class ToastWidget(QFrame):
         self._opacity_effect = QGraphicsOpacityEffect(self)
         self._opacity_effect.setOpacity(0.0)
         self.setGraphicsEffect(self._opacity_effect)
-        self._shadow_frame: QFrame | None = None  # 阴影层（由 ToastManager 设置）
+        self._shadow_frame: QFrame | None = None  # 阴影层，由 ToastManager 设置
         self._fade_in_anim = None
         self._fade_out_anim = None
 
@@ -144,7 +149,7 @@ class ToastWidget(QFrame):
 
         content_layout.addLayout(top_row)
 
-        # 第二行：可选操作按钮（右对齐）
+        # 第二行：可选操作按钮，右对齐
         if action_text:
             action_btn = QPushButton(action_text)
             action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -201,7 +206,7 @@ class ToastWidget(QFrame):
 
     # ------------------------------------------------------------- 动画
     def show_toast(self):
-        """显示 Toast（淡入动画 + 启动自动关闭计时器）"""
+        """显示 Toast，播放淡入动画并启动自动关闭计时器。"""
         self.show()
         self.raise_()
 
@@ -209,7 +214,7 @@ class ToastWidget(QFrame):
         if self._fade_out_anim is not None:
             self._fade_out_anim.stop()
 
-        # 淡入动画（使用 QGraphicsOpacityEffect）
+        # 淡入动画，基于 QGraphicsOpacityEffect
         anim = QPropertyAnimation(self._opacity_effect, b'opacity')
         anim.setDuration(250)
         anim.setStartValue(0.0)
@@ -256,7 +261,7 @@ class ToastWidget(QFrame):
         super().enterEvent(event)
 
     def leaveEvent(self, a0):
-        """鼠标离开时重启自动关闭（缩短但不超过原 duration）"""
+        """鼠标离开时重启自动关闭，等待时长缩短但不超过原 duration。"""
         if self._duration > 0:
             self._auto_close_timer.start(min(self._duration, TOAST_HOVER_RESTART_MS))
         super().leaveEvent(a0)
@@ -265,11 +270,10 @@ class ToastWidget(QFrame):
 # ================================================================ ToastManager
 
 class ToastManager:
-    """管理多个 Toast 的位置堆叠
+    """管理多个 Toast 的位置堆叠。
 
-    每个 parent 窗口对应一个 ToastManager 实例。
-    Toast 以子控件的形式定位在 parent 的右下角，从下往上堆叠。
-    同时为每个 Toast 创建一层 QGraphicsDropShadowEffect 包装。
+    每个 parent 窗口对应一个 ToastManager 实例。Toast 以子控件形式定位在
+    parent 的右下角，从下向上堆叠，同时为每个 Toast 创建一层独立的阴影包装。
     """
 
     _instances: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
@@ -291,7 +295,7 @@ class ToastManager:
     def add_toast(self, toast: ToastWidget):
         """添加一个 Toast 并更新所有位置"""
         # 阴影效果：QGraphicsDropShadowEffect 无法叠加在 QGraphicsOpacityEffect 上，
-        # 因此使用同位的 QFrame 作为阴影层（见下方 shadow_frame）。
+        # 因此使用同位的 QFrame 作为阴影层，详见下方 shadow_frame。
         shadow_color = c('toast_shadow')
 
         toast.closed.connect(self._remove_toast)
@@ -315,16 +319,16 @@ class ToastManager:
         toast.show_toast()
 
     def cancel_all(self):
-        """取消所有活跃 Toast：清空回调并淡出。在锁定前调用此方法。"""
+        """取消所有活跃 Toast，清空回调并淡出，在锁定前调用此方法。"""
         for toast in list(self._toasts):
             toast._action_callback = None
             toast._start_fade_out()
 
     @staticmethod
     def cancel_all_for(parent: QWidget):
-        """取消指定 parent 窗口的所有活跃 Toast（公共 API）。
+        """取消指定 parent 窗口的所有活跃 Toast，作为公共 API 暴露。
 
-        替代直接访问 ``ToastManager._instances`` 的私有属性模式，
+        替代直接访问 ``ToastManager._instances`` 私有属性的模式，
         供 MainWindow.prepare_for_lock 等外部调用方使用。
         """
         mgr = ToastManager._instances.get(parent)
@@ -347,7 +351,7 @@ class ToastManager:
             ToastManager._instances.pop(self._parent, None)
 
     def _reposition_all(self):
-        """重新计算所有 Toast 的位置（从右下角向上堆叠）"""
+        """重新计算所有 Toast 的位置，从右下角向上堆叠。"""
         if not self._parent:
             return
 
@@ -366,7 +370,7 @@ class ToastManager:
                 toast_height = 60
             y -= toast_height
             toast.move(x, y)
-            # 同步阴影位置（偏移 2px 向右下）
+            # 同步阴影位置，向右下偏移 2px
             if hasattr(toast, '_shadow_frame') and toast._shadow_frame:
                 toast._shadow_frame.setFixedHeight(toast_height + 4)
                 toast._shadow_frame.move(x - 2, y + 2)
@@ -376,10 +380,10 @@ class ToastManager:
             y -= self._spacing
 
 
-# ================================================================ Toast（静态入口）
+# ================================================================ Toast 静态入口
 
 class Toast:
-    """轻量级 Toast 通知 - 静态调用入口
+    """轻量级 Toast 通知的静态调用入口。
 
     使用方式::
 
@@ -387,7 +391,7 @@ class Toast:
         Toast.show(parent, "已删除", Toast.INFO, action_text="撤销", action_callback=undo)
     """
 
-    # 类型常量（方便外部使用）— 引用自 ToastWidget 避免重复定义
+    # 类型常量，方便外部使用，引用自 ToastWidget 以避免重复定义
     SUCCESS = ToastWidget.SUCCESS
     ERROR = ToastWidget.ERROR
     INFO = ToastWidget.INFO
@@ -402,20 +406,16 @@ class Toast:
         action_text: str = '',
         action_callback=None,
     ):
-        """
-        显示 Toast 通知
+        """显示 Toast 通知。
 
         Args:
             parent: 父窗口，Toast 将在其右下角显示
             message: 通知消息文本
             toast_type: 通知类型 (success / error / info / warning)
-            duration: 自动关闭时间（毫秒），设为 0 则不自动关闭
-            action_text: 可选操作按钮文字（如「撤销」）
+            duration: 自动关闭时间，单位毫秒，设为 0 则不自动关闭
+            action_text: 可选操作按钮文字，例如「撤销」
             action_callback: 操作按钮点击回调
         """
-        if parent is None:
-            return
-
         manager = ToastManager.get_manager(parent)
         toast = ToastWidget(
             message=message,

@@ -7,6 +7,7 @@
 import json
 import os
 import uuid
+from typing import cast
 
 import pytest
 
@@ -23,7 +24,7 @@ from src.exceptions import DecryptionError
 from src.models import Entry, PasswordHistory
 
 # ---------------------------------------------------------------------------
-# 辅助：生成随机 AES-256 密钥
+# 辅助函数：生成随机 AES-256 密钥
 # ---------------------------------------------------------------------------
 
 def _random_key() -> bytes:
@@ -31,7 +32,7 @@ def _random_key() -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# 辅助：构建 DB-raw 状态的 Entry（加密字段为密文字符串）
+# 辅助函数：构建数据库原始状态的 Entry，加密字段为密文字符串
 # ---------------------------------------------------------------------------
 
 def _make_raw_entry(
@@ -74,11 +75,11 @@ def _make_raw_entry(
 
 
 # ---------------------------------------------------------------------------
-# MockDB：实现 KeyRotationDB Protocol
+# MockDB：内存实现 KeyRotationDB Protocol
 # ---------------------------------------------------------------------------
 
 class MockDB:
-    """内存 mock，实现 KeyRotationDB Protocol 的四个方法。"""
+    """内存 mock，实现 KeyRotationDB Protocol 四个方法。"""
 
     def __init__(self):
         self._entries: list[Entry] = []
@@ -99,7 +100,7 @@ class MockDB:
 
     def get_entries(self, *, include_deleted: bool, limit: int, after_id: int) -> list:
         """按 id 升序分页返回条目。"""
-        filtered = [e for e in self._entries if e.id > after_id]
+        filtered = [e for e in self._entries if cast(int, e.id) > after_id]
         return filtered[:limit]
 
     def update_entries_batch(self, rows: list) -> None:
@@ -117,7 +118,7 @@ class MockDB:
 
 
 # ---------------------------------------------------------------------------
-# 测试：re_encrypt_entries — 旧密钥加密的条目用新密钥重加密后可正确解密
+# 测试：re_encrypt_entries，旧密钥加密的条目用新密钥重加密后可正确解密
 # ---------------------------------------------------------------------------
 
 def test_re_encrypt_entries_round_trip():
@@ -168,14 +169,14 @@ def test_re_encrypt_entries_round_trip():
 
 
 # ---------------------------------------------------------------------------
-# 测试：re_encrypt_entries 批处理 — 多批次正确处理
+# 测试：re_encrypt_entries 批处理，多批次正确处理
 # ---------------------------------------------------------------------------
 
 def test_re_encrypt_entries_batching():
-    """超过批次大小（200条）时正确分批处理，所有条目都被重加密。"""
+    """超过批次大小时正确分批处理，所有条目都被重加密。"""
     old_key = _random_key()
     new_key = _random_key()
-    num_entries = 250  # 超过 _RE_ENCRYPT_BATCH_SIZE=200
+    num_entries = 250  # 超过 _RE_ENCRYPT_BATCH_SIZE 默认上限 200
 
     db = MockDB()
     for i in range(1, num_entries + 1):
@@ -211,7 +212,7 @@ def test_re_encrypt_entries_batching():
 
 
 # ---------------------------------------------------------------------------
-# 测试：re_encrypt_history — 密码历史重加密正确
+# 测试：re_encrypt_history，密码历史重加密正确
 # ---------------------------------------------------------------------------
 
 def test_re_encrypt_history_round_trip():
@@ -253,7 +254,7 @@ def test_re_encrypt_history_round_trip():
 
 
 # ---------------------------------------------------------------------------
-# 测试：re_encrypt_entries 损坏中止 — 解密失败时抛出 DecryptionError
+# 测试：re_encrypt_entries 损坏中止，解密失败时抛出 DecryptionError
 # ---------------------------------------------------------------------------
 
 def test_re_encrypt_entries_corruption_raises_decryption_error():
@@ -294,14 +295,14 @@ def test_re_encrypt_entries_corruption_raises_decryption_error():
             m.setattr(kr_module, '_decrypt_field_impl', strict_decrypt)
             service.re_encrypt_entries(old_key, new_key)
 
-    # 不应有任何更新操作（中止在第一条损坏条目）
+    # 中止在第一条损坏条目，不应有更新操作
     assert len(db.updated_entry_batches) == 0
 
     EncryptionEngine.clear_cache()
 
 
 # ---------------------------------------------------------------------------
-# 测试：re_encrypt_history 损坏中止 — 密码历史解密失败时抛出 DecryptionError
+# 测试：re_encrypt_history 损坏中止，密码历史解密失败时抛出 DecryptionError
 # ---------------------------------------------------------------------------
 
 def test_re_encrypt_history_corruption_raises_decryption_error():

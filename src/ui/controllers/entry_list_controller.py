@@ -41,10 +41,8 @@ class EntryListController:
     def get_sort_config(self, sort_index: int) -> tuple[str, str]:
         """根据排序下拉框索引返回 (field, order)。
 
-        Parameters
-        ----------
-        sort_index:
-            排序下拉框 ``QComboBox.currentIndex()`` 的值。
+        Args:
+            sort_index: 排序下拉框 ``QComboBox.currentIndex()`` 的值。
         """
         if 0 <= sort_index < len(_SORT_OPTIONS):
             _, field, order = _SORT_OPTIONS[sort_index]
@@ -61,12 +59,9 @@ class EntryListController:
     def sort_entries(self, entries: list, sort_index: int) -> list:
         """对条目列表排序。
 
-        Parameters
-        ----------
-        entries:
-            待排序条目列表。
-        sort_index:
-            排序下拉框当前索引。
+        Args:
+            entries: 待排序条目列表。
+            sort_index: 排序下拉框当前索引。
         """
         field, order = self.get_sort_config(sort_index)
 
@@ -83,14 +78,14 @@ class EntryListController:
         reverse = (order == 'desc')
         return sorted(entries, key=sort_key, reverse=reverse)
 
-    # ======== 过滤器数据获取 ========
+    # ========== 过滤器数据获取 ==========
 
     def fetch_all(
         self,
         category_id: int | None,
         search: str,
     ) -> tuple[list, str]:
-        """获取全部条目（可按分类和搜索过滤）。"""
+        """获取全部条目，可按分类和搜索过滤。"""
         return self._entry_mgr.get_entry_summaries(
             category_id=category_id,
             search=search,
@@ -141,7 +136,7 @@ class EntryListController:
         }
         return fetchers.get(filter_key, self.fetch_all)
 
-    # ========== 搜索 / 标签过滤 ==========
+    # ========== 搜索与标签过滤 ==========
 
     @staticmethod
     def filter_by_search(entries: list, search: str) -> list:

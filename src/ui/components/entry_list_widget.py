@@ -1,4 +1,9 @@
-"""条目列表的轻量委托绘制。"""
+"""条目列表的轻量委托绘制。
+
+通过 QStyledItemDelegate 按需绘制条目卡片，避免为每条记录创建常驻 QWidget，
+从而在大量条目下保持低内存占用与流畅滚动。绘制时缓存主题颜色与字体对象，
+并在主题切换时清空颜色缓存以重新解析。
+"""
 
 from urllib.parse import urlparse
 
@@ -11,7 +16,7 @@ from ..resources.constants import FONT_FAMILY_FALLBACKS, FONT_FAMILY_PRIMARY
 from ..resources.theme_colors import c, get_strength_color
 
 # 收藏标记字符
-FAVORITE_MARKER = '★ '  # ★
+FAVORITE_MARKER = '★ '
 
 
 def _resolve_font_family() -> str:

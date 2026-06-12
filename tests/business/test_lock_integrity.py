@@ -1,4 +1,8 @@
-"""测试锁定状态文件的 HMAC 签名验证与篡改检测。"""
+"""锁定状态文件的 HMAC 签名验证与篡改检测测试。
+
+模拟登录窗口对锁定状态文件的签名与解析逻辑，文件记录失败次数与锁定截止时间，
+验证正确签名可被校验、篡改后签名不匹配、缺失签名行视为无效。
+"""
 
 import hashlib
 import hmac
@@ -7,7 +11,7 @@ import time
 
 import pytest
 
-# IMPORTANT: 此密钥必须与 src/ui/login_window.py 中的 _LOCK_KEY 保持同步。
+# 此密钥必须与 src/ui/login_window.py 中的 _LOCK_KEY 保持同步。
 # 若 login_window.py 中的密钥变更，此处必须同步更新，否则测试会因签名不匹配而失败。
 _LOCK_KEY = b'cipherbox:lock-state-v1'
 

@@ -1,4 +1,8 @@
-"""测试 TOTP 错误处理和边界情况（仅含 test_new_features.py 未覆盖的场景）。"""
+"""测试 TOTP 错误处理和边界情况。
+
+仅覆盖 test_new_features.py 中 TestTOTP 未触及的场景，包括无效 otpauth URI、
+损坏密钥的降级行为，以及私有解析方法对非法 period、digits 的校验。
+"""
 
 import pytest
 
@@ -6,7 +10,9 @@ from src.crypto.totp import TOTPGenerator
 
 
 class TestTOTPErrorHandling:
-    # --- 边界情况（test_new_features.py::TestTOTP 未覆盖） ---
+    """验证 TOTP 生成与配置解析的错误处理及边界行为。"""
+
+    # --- 边界情况，test_new_features.py::TestTOTP 未覆盖 ---
 
     def test_generate_invalid_uri(self):
         """无效 otpauth URI 返回空字符串。"""

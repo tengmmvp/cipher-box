@@ -1,6 +1,6 @@
-"""条目管理器 - 密码条目的加密 CRUD 操作。
+"""条目管理器，负责密码条目的加密 CRUD 操作。
 
-架构说明：EntryManager 直接依赖 crypto_utils 的 encrypt_field / decrypt_field，
+架构说明：EntryManager 直接依赖 crypto_utils 的 encrypt_field 与 decrypt_field，
 这属于 Business → Crypto 的同层依赖，符合架构约束。UI 层通过 EntryManager
 间接访问这些加密原语，不直接导入 crypto 模块。
 """
@@ -138,11 +138,11 @@ class EntryManager:
         )
 
     def get_cached_username(self, raw_entry: Entry) -> str:
-        """获取条目的缓存用户名（优先使用缓存，避免重复解密）。"""
+        """获取条目的缓存用户名，优先使用缓存以避免重复解密。"""
         return self._cached_username(raw_entry)
 
     def _cached_username(self, raw_entry: Entry) -> str:
-        """返回解密后的 username，带会话内缓存（key_epoch 失效）。
+        """返回解密后的 username，带会话内缓存，key_epoch 变化时失效。
 
         加密 username 使 SQL 无法下推搜索匹配，每次搜索需解密全部 username。
         本缓存避免重复解密：首次解密后按 crypto_id 缓存，后续命中直接返回。
@@ -150,8 +150,8 @@ class EntryManager:
         生命周期与安全：
         - key_epoch 变化即改密或锁定时，下次访问检测到并清空缓存。
         - 锁定后 key_epoch 为 None，触发清空；MainWindow.prepare_for_lock 亦会
-          显式调用 invalidate_caches() 以立即释放明文，避免锁定到进程退出的残留窗口。
-        - 缓存的是 username 明文（PII，非密码），风险可控。
+          显式调用 invalidate_caches 以立即释放明文，避免锁定到进程退出的残留窗口。
+        - 缓存的是 username 明文，属 PII 而非密码，风险可控。
         - 解密失败的 crypto_id 记入 _username_decrypt_failed，供 _decrypt_summary
           标记 integrity_error。
         """
@@ -175,7 +175,7 @@ class EntryManager:
     def _invalidate_if_epoch_changed(self):
         """检测 vault.key_epoch 变化，变化则清空所有明文缓存。
 
-        当 key_epoch 变为 None（保险库已锁定或 epoch 不匹配强制清除）时，
+        当 key_epoch 变为 None 时，即保险库已锁定或 epoch 不匹配强制清除，
         无论 _cache_epoch 是否也为 None，都应清空缓存。
         """
         current = self._vault.key_epoch
@@ -193,8 +193,8 @@ class EntryManager:
     def _notify_entry_change(self, password_changed: bool = True):
         """通知所有注册的条目变更回调，事件驱动缓存失效。
 
-        password_changed 为 False（如仅修改标题/URL）时，不涉及密码的分析维度
-        （弱密码/重复/过期）结果不变，订阅方可据此跳过昂贵的缓存重算。
+        password_changed 为 False，如仅修改标题或 URL 时，不涉及密码的分析维度，
+        即弱密码、重复、过期结果不变，订阅方可据此跳过昂贵的缓存重算。
         增删条目等结构性变更保持默认 True，因其改变 total 与重复分组。
         """
         for cb in self._on_entry_change_callbacks:
@@ -268,14 +268,14 @@ class EntryManager:
     def decrypt_entry_to_dict(
         self, raw_entry: Entry, include_secrets: bool = True,
     ) -> dict | None:
-        """将原始 Entry 解密为明文字典（容错版本）。
+        """将原始 Entry 解密为明文字典，容错处理。
 
         单条目解密失败时返回 None 而非抛出异常，供备份、导出等需要
         跳过损坏条目继续处理的场景使用。
 
         Args:
-            raw_entry: 数据库层原始 Entry（custom_fields 为密文字符串）
-            include_secrets: 是否包含密码和 TOTP 密钥等敏感字段
+            raw_entry: 数据库层原始 Entry，custom_fields 为密文字符串。
+            include_secrets: 是否包含密码和 TOTP 密钥等敏感字段。
         """
         return decrypt_entry_to_portable_dict(
             raw_entry, self._key, include_secrets=include_secrets,
@@ -331,7 +331,7 @@ class EntryManager:
         return summary
 
     def add_entry(self, entry: Entry) -> int:
-        """添加新条目（自动加密并检测强度）"""
+        """添加新条目，自动加密并检测强度。"""
         self._validate_plain_entry(entry)
         strength = PasswordGenerator.check_strength(entry.password)
         entry.password_strength = strength.score
@@ -351,10 +351,10 @@ class EntryManager:
         return result
 
     def update_entry(self, entry: Entry):
-        """更新条目（自动加密、记录密码历史）
+        """更新条目，自动加密并记录密码历史。
 
-        线程安全说明：此方法采用 read-modify-write 模式（先读取旧密码、
-        比较后再写入），未使用锁保护。在单用户桌面应用中，同一时刻只有
+        线程安全说明：此方法采用 read-modify-write 模式，先读取旧密码，
+        比较后再写入，未使用锁保护。在单用户桌面应用中，同一时刻只有
         一个 UI 操作会修改同一条目，竞态窗口极小，可接受。若未来引入
         并发写入场景，需在此方法外加锁。
         """
@@ -374,7 +374,7 @@ class EntryManager:
         # 安全-性能权衡：此处必须解密旧密码与明文比较来检测变更。
         # AES-256-GCM 每次加密使用随机 nonce，相同明文产生不同密文，
         # 因此密文比较不可行。HMAC 指纹方案需要在数据库中额外存储指纹
-        # 字段（需 schema 变更），当前解密比较是无需迁移的合理选择。
+        # 字段，这会要求 schema 变更，当前解密比较是无需迁移的合理选择。
         old_password = self._decrypt_field(
             old_pwd_enc, raw.crypto_id, 'password', strict=True
         ) if old_pwd_enc else ''
@@ -406,7 +406,7 @@ class EntryManager:
         self._notify_entry_change(password_changed)
 
     def delete_entry(self, entry_id: int):
-        """软删除条目（移入回收站）"""
+        """软删除条目，移入回收站。"""
         self._vault.db.soft_delete_entry(entry_id)
         self._notify_entry_change()
 
@@ -436,8 +436,8 @@ class EntryManager:
         """获取并解密条目列表。
 
         WARNING: 搜索场景下仅解密 username 用于匹配，命中条目再完整解密，
-        减少未命中条目的 password/totp_secret 等敏感数据暴露在内存中。
-        对于列表展示等不需要密码的场景，优先使用 get_entry_summaries()。
+        减少未命中条目的 password、totp_secret 等敏感数据暴露在内存中。
+        对于列表展示等不需要密码的场景，优先使用 get_entry_summaries。
 
         NOTE: search 参数不传递到 SQL 层，因为 username 是加密字段，
         SQL LIKE 无法过滤。所有搜索匹配在 Python 层完成。
@@ -542,7 +542,7 @@ class EntryManager:
         self._vault.db.delete_category(category_id)
 
     def toggle_favorite(self, entry_id: int) -> bool | None:
-        """切换收藏状态，返回新的收藏状态或 None（条目不存在）
+        """切换收藏状态，返回新的收藏状态；条目不存在时返回 None。
 
         在单个事务内完成读-改-写，避免 TOCTOU 竞态。
         update_entry 会自动重签 metadata_mac，保证元数据完整性。
@@ -652,8 +652,8 @@ class EntryManager:
             if len(getattr(entry, field_name)) > max_len:
                 raise ValueError(f'条目字段 {field_name} 过长（最多 {max_len} 字符）')
         # 此方法仅用于 add_entry/update_entry 路径的明文条目校验。
-        # custom_fields 必须为 list[CustomField]（已解密）。
-        # DB 原始条目的 custom_fields 为 str 类型（密文），不经过此校验。
+        # custom_fields 必须为已解密的 list[CustomField]。
+        # DB 原始条目的 custom_fields 为 str 类型的密文，不经过此校验。
         entry.assert_decrypted()
         if not isinstance(entry.custom_fields, list) or not all(
             isinstance(field, CustomField) for field in entry.custom_fields
@@ -662,7 +662,7 @@ class EntryManager:
 
     @staticmethod
     def matches_search(entry, query: str) -> bool:
-        """检查条目是否匹配搜索关键词（大小写不敏感，搜索 title/username/url/tags）。
+        """检查条目是否匹配搜索关键词，大小写不敏感，匹配 title、username、url、tags。
 
         此方法作为 EntryManager 的公共 API 委托给 ``crypto_utils.matches_search``，
         供 UI 层使用，避免 UI 直接依赖 ``business.crypto_utils`` 模块，

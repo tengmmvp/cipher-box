@@ -24,7 +24,7 @@ class TestUsernameCacheEpochInvalidation:
         assert mgr._cache_epoch == 'epoch_v2'
 
     def test_epoch_none_clears_cache(self):
-        """key_epoch 为 None（保险库已锁定）时，缓存被清空。
+        """key_epoch 为 None 表示保险库已锁定，此时缓存被清空。
 
         这是 _clear_vault_state 设置 _key_epoch=None 后的关键行为：
         即使 _cache_epoch 也是 None，也应清空缓存。

@@ -1,4 +1,8 @@
-"""数据库模块测试"""
+"""数据库模块测试。
+
+覆盖 DatabaseManager 的表初始化、元数据读写、分类与条目增删查、软删除与恢复、
+嵌套事务 savepoint 行为，以及 Entry 模型的 to_dict、from_dict 序列化。
+"""
 
 import tempfile
 from pathlib import Path
@@ -46,7 +50,7 @@ def db(_disable_encrypted_assertions):
 # ---------------------------------------------------------------------------
 
 def test_init_tables(db):
-    """测试表初始化"""
+    """测试表初始化。"""
     categories = db.get_categories()
     assert len(categories) > 0
     names = [c.name for c in categories]
@@ -54,7 +58,7 @@ def test_init_tables(db):
 
 
 def test_meta_operations(db):
-    """测试元数据读写"""
+    """测试元数据读写。"""
     db.set_meta('test_key', 'test_value')
     value = db.get_meta('test_key')
     assert value == 'test_value'
@@ -64,7 +68,7 @@ def test_meta_operations(db):
 
 
 def test_add_get_category(db):
-    """测试添加和获取分类"""
+    """测试添加和获取分类。"""
     cat = Category(name='测试分类', icon_char='🧪', color='#FF0000')
     cat_id = db.add_category(cat)
     assert cat_id > 0
@@ -76,7 +80,7 @@ def test_add_get_category(db):
 
 
 def test_add_get_entry(db):
-    """测试添加和获取条目"""
+    """测试添加和获取条目。"""
     entry = _make_entry(
         title='测试条目',
         username='enc_user',
@@ -99,31 +103,31 @@ def test_add_get_entry(db):
 
 
 def test_soft_delete_restore(db):
-    """测试软删除和恢复"""
+    """测试软删除和恢复。"""
     entry = _make_entry(title='待删除')
     entry_id = db.add_entry(entry)
 
-    # 软删除
+    # 软删除。
     db.soft_delete_entry(entry_id)
     deleted = db.get_entry(entry_id)
     assert deleted.is_deleted
 
-    # 正常列表不包含
+    # 正常列表不含已删除条目。
     active = db.get_entries(include_deleted=False)
     assert not any(e.id == entry_id for e in active)
 
-    # 回收站包含
+    # 回收站包含已删除条目。
     trashed = db.get_entries(include_deleted=True)
     assert any(e.id == entry_id for e in trashed)
 
-    # 恢复
+    # 恢复。
     db.restore_entry(entry_id)
     restored = db.get_entry(entry_id)
     assert not restored.is_deleted
 
 
 def test_permanent_delete(db):
-    """测试永久删除"""
+    """测试永久删除。"""
     entry = _make_entry(title='永久删除')
     entry_id = db.add_entry(entry)
 
@@ -133,43 +137,43 @@ def test_permanent_delete(db):
 
 
 def test_search(db):
-    """测试搜索（search 参数已弃用，搜索由 EntryManager 在 Python 端执行）"""
+    """DB 层不再负责关键字搜索，get_entries 仅返回全部条目。"""
     db.add_entry(_make_entry(title='GitHub 账号'))
     db.add_entry(_make_entry(title='Gitee 账号'))
     db.add_entry(_make_entry(title='Google 邮箱'))
 
-    # search 参数已从 DB 层移除，返回全部条目
+    # 关键字搜索已从 DB 层移除，get_entries 返回全部条目。
     results = db.get_entries()
     assert len(results) == 3
 
-    # Python 端搜索由 EntryManager.get_entries 负责
+    # 实际的内存搜索由 EntryManager.get_entries 负责。
     all_entries = db.get_entries()
     assert len(all_entries) == 3
 
 
 def test_entry_count(db):
-    """测试条目计数"""
+    """测试条目计数。"""
     initial = db.get_entry_count()
     db.add_entry(_make_entry(title='新条目'))
     assert db.get_entry_count() == initial + 1
 
 
 def test_nested_transaction_savepoint(db):
-    """嵌套事务使用带引号的 savepoint 标识符"""
+    """嵌套事务使用带引号的 savepoint 标识符。"""
     with db.transaction():
         db.set_meta('test_key', 'outer')
         with db.transaction():
             db.set_meta('test_key', 'inner')
-        # Inner should be committed (released savepoint)
+        # 内层事务通过释放 savepoint 提交。
         assert db.get_meta('test_key') == 'inner'
 
-    # After outer commit, value should still be inner
+    # 外层提交后，值仍为内层写入的值。
     assert db.get_meta('test_key') == 'inner'
 
 
 def test_get_all_tags_returns_only_tags(db):
-    """get_all_tags 轻量查询只返回标签字段"""
-    # Add entries with tags
+    """get_all_tags 轻量查询只返回标签字段。"""
+    # 写入带标签与不带标签的条目。
     entry1 = _make_entry(title='A', tags='work,important')
     entry2 = _make_entry(title='B', tags='personal')
     entry3 = _make_entry(title='C', tags='')
@@ -181,29 +185,29 @@ def test_get_all_tags_returns_only_tags(db):
     assert isinstance(tags_list, list)
     assert all(isinstance(t, str) for t in tags_list)
     assert len(tags_list) == 3
-    # Verify specific tag values are present
+    # 校验具体标签值存在。
     assert 'work,important' in tags_list
     assert 'personal' in tags_list
 
 
 def test_get_entries_with_limit(db):
-    """get_entries limit 参数应限制返回数量"""
+    """get_entries limit 参数应限制返回数量。"""
     for i in range(10):
         db.add_entry(_make_entry(title=f'条目{i}'))
 
-    # 无 limit 返回全部
+    # 不传 limit 时返回全部。
     all_entries = db.get_entries()
     assert len(all_entries) == 10
 
-    # limit=3 只返回 3 条
+    # limit=3 只返回 3 条。
     limited = db.get_entries(limit=3)
     assert len(limited) == 3
 
-    # limit=0 返回空（SQL LIMIT 0）
+    # limit=0 对应 SQL LIMIT 0，返回空列表。
     empty = db.get_entries(limit=0)
     assert len(empty) == 0
 
-    # limit 大于总数时返回全部
+    # limit 大于总数时返回全部。
     over = db.get_entries(limit=100)
     assert len(over) == 10
 

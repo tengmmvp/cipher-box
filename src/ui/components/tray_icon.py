@@ -1,4 +1,8 @@
-"""系统托盘图标"""
+"""系统托盘图标。
+
+提供保险库状态指示、右键菜单与双击唤出主窗口等系统托盘交互。
+图标根据锁定状态切换颜色与文字，无外部图标文件，统一通过代码绘制生成。
+"""
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QIcon
@@ -9,7 +13,7 @@ from ..resources.theme_colors import c
 
 
 class TrayIcon(QSystemTrayIcon):
-    """系统托盘图标管理"""
+    """系统托盘图标管理，提供状态指示、右键菜单与唤出交互。"""
 
     show_window = pyqtSignal()
     lock_vault = pyqtSignal()
@@ -18,7 +22,7 @@ class TrayIcon(QSystemTrayIcon):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # 使用文字作为图标（无外部图标文件）
+        # 使用文字作为图标，不依赖外部图标文件
         self.setIcon(TrayIcon._create_icon(QColor(c('brand')), 'C'))
 
         self.setToolTip('CipherBox')
@@ -69,5 +73,6 @@ class TrayIcon(QSystemTrayIcon):
         self.setContextMenu(menu)
 
     def _on_activated(self, reason):
+        """托盘图标激活事件处理，仅响应双击以唤出主窗口。"""
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self.show_window.emit()

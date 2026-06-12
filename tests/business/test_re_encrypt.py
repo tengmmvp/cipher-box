@@ -1,6 +1,12 @@
-"""_re_encrypt_all 边界条件测试 — 空字段、custom_fields 类型、密码历史、事务回滚"""
+"""_re_encrypt_all 边界条件测试，覆盖空字段、custom_fields 类型、密码历史与事务回滚。
+
+通过 change_master_password 触发全量重加密，验证空字段保持空、
+已删除条目、密码历史、自定义字段在改密后均可正确解密，
+并验证写入失败时事务回滚保障数据完整性。
+"""
 
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -83,8 +89,8 @@ class TestReEncryptEdgeCases:
         assert e.notes == '这些是备注'
         assert e.totp_secret == 'JBSWY3DPEHPK3PXP'
         assert len(e.custom_fields) == 1
-        assert e.custom_fields[0].name == '备注'
-        assert e.custom_fields[0].value == '测试值'
+        assert cast(list[CustomField], e.custom_fields)[0].name == '备注'
+        assert cast(list[CustomField], e.custom_fields)[0].value == '测试值'
 
     # ------------------------------------------------------------------
     # 3. 已删除条目在改密后仍可解密
@@ -206,7 +212,7 @@ class TestReEncryptEdgeCases:
         ))
 
         # 模拟底层 DB 写入失败以触发事务回滚。
-        # P-03：改密现在使用 update_entries_batch，patch 批量方法而非 update_entry。
+        # 改密流程使用 update_entries_batch 批量写入，故 patch 该批量方法。
         def failing_batch(rows):
             raise OSError('模拟写入失败')
 
@@ -215,11 +221,10 @@ class TestReEncryptEdgeCases:
                 'original_pwd_123', 'new_password_456'
             )
 
-        # 改密应失败（OSError 被 except Exception 捕获并返回 False）
+        # 改密应失败，OSError 被 except Exception 捕获并返回 False
         assert not ok
 
-        # 改密失败后旧密钥仍有效，会话保留
-        # 重新解锁后数据应完好（事务回滚保障）
+        # 改密失败后旧密钥仍有效，会话保留；事务回滚保障数据完好
         assert self._vault.unlock('original_pwd_123')[0]
         entry_mgr = EntryManager(self._vault)
         entries = entry_mgr.get_entries()
@@ -228,7 +233,7 @@ class TestReEncryptEdgeCases:
         assert entries[0].password == 'original_pass'
 
     # ------------------------------------------------------------------
-    # 7. 多条目全部字段保留（来自 test_batch_encrypt.py）
+    # 7. 多条目全部字段保留
     # ------------------------------------------------------------------
     def test_re_encrypt_preserves_all_entries(self):
         """重新加密后所有条目数据完整"""
@@ -264,7 +269,7 @@ class TestReEncryptEdgeCases:
             assert rest.notes == orig.notes
 
     # ------------------------------------------------------------------
-    # 8. 超过批次大小的条目也能正确重新加密（来自 test_batch_encrypt.py）
+    # 8. 超过批次大小的条目也能正确重新加密
     # ------------------------------------------------------------------
     def test_re_encrypt_with_more_than_batch_size(self):
         """超过批次大小的条目也能正确重新加密"""
@@ -291,7 +296,7 @@ class TestReEncryptEdgeCases:
             assert restored[title].password == orig.password
 
     # ------------------------------------------------------------------
-    # 9. 自定义字段在改密后完整保留（来自 test_batch_encrypt.py）
+    # 9. 自定义字段在改密后完整保留
     # ------------------------------------------------------------------
     def test_re_encrypt_preserves_custom_fields(self):
         """重新加密保留自定义字段"""

@@ -1,5 +1,7 @@
 """共享测试 fixtures — 消除各测试文件中的重复辅助函数。"""
 
+import dataclasses
+
 import pytest
 
 from src.database.db_manager import DatabaseManager
@@ -12,9 +14,9 @@ def _disable_encrypted_assertions():
     """关闭 db_manager 的密文前缀断言。
 
     通过 monkey-patch DatabaseManager，使本 fixture 活跃期间创建的
-    实例默认 test_mode=True（即 _enforce_encrypted_fields=False）。
-    需要此 fixture 的测试类/方法应使用 @pytest.mark.usefixtures 装饰器。
-    生产环境断言仍生效（默认 _enforce_encrypted_fields=True）。
+    实例默认 test_mode=True，即 _enforce_encrypted_fields=False。
+    需要此 fixture 的测试类或方法应使用 @pytest.mark.usefixtures 装饰器。
+    生产环境断言仍生效，默认 _enforce_encrypted_fields=True。
     """
     original_init = DatabaseManager.__init__
 
@@ -69,7 +71,7 @@ def make_entry():
     提供合理的默认值，调用方通过关键字参数覆盖所需字段。
     """
     def _make_entry(**overrides):
-        defaults = dict(
+        entry = Entry(
             title='Test',
             username='user',
             password='Pass123!@#',
@@ -80,6 +82,5 @@ def make_entry():
             entry_type='login',
             totp_secret='',
         )
-        defaults.update(overrides)
-        return Entry(**defaults)
+        return dataclasses.replace(entry, **overrides)
     return _make_entry

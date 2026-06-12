@@ -1,4 +1,9 @@
-"""加密模块测试"""
+"""加密模块测试。
+
+覆盖 EncryptionEngine 的 AES-256-GCM 加解密、MasterKeyManager 的主密码
+派生与验证、PasswordGenerator 的生成与强度评估，以及 AESGCM 缓存行为、
+常量时间比较等边界场景。
+"""
 
 import os
 
@@ -26,13 +31,13 @@ def test_encrypt_decrypt():
 
 def test_empty_string():
     key = os.urandom(32)
-    # 空字符串走 sentinel 加密路径，确保 AAD 参与认证
+    # 空字符串走 sentinel 加密路径，确保 AAD 参与认证。
     encrypted = EncryptionEngine.encrypt('', key, AAD)
     assert encrypted != ''
     assert encrypted.startswith(EncryptionEngine.TEXT_PREFIX)
     decrypted = EncryptionEngine.decrypt(encrypted, key, AAD)
     assert decrypted == ''
-    # 空密文是非法输入，应抛出 ValueError
+    # 空密文是非法输入，应抛出 ValueError。
     with pytest.raises(ValueError):
         EncryptionEngine.decrypt('', key, AAD)
 
@@ -54,7 +59,7 @@ def test_wrong_key_fails():
 
 
 def test_different_encryptions():
-    """相同明文两次加密结果应不同（因为随机 nonce）"""
+    """相同明文两次加密结果应不同，因为每次使用随机 nonce。"""
     key = os.urandom(32)
     enc1 = EncryptionEngine.encrypt('same text', key, AAD)
     enc2 = EncryptionEngine.encrypt('same text', key, AAD)
@@ -105,15 +110,15 @@ def test_change_password():
     )
     assert result is not None
     new_salt, new_verify, new_key = result
-    # L4：change_password 返回复用 create 已派生的 new_key，
-    # 调用方无需重复一次 PBKDF2 派生（32 字节 AES-256 密钥）
+    # change_password 返回复用 create 已派生的 new_key，调用方无需
+    # 重复一次 PBKDF2 派生即可得到 32 字节 AES-256 密钥。
     assert len(new_key) == 32
 
-    # 新密码应能验证
+    # 新密码应能验证。
     key = MasterKeyManager.verify('new_password', new_salt, new_verify)
     assert key is not None
 
-    # 旧密码不应能验证
+    # 旧密码不应能验证。
     key = MasterKeyManager.verify('old_password', new_salt, new_verify)
     assert key is None
 
@@ -142,7 +147,7 @@ def test_generate_custom_length():
 
 def test_generate_min_length():
     pwd = PasswordGenerator.generate(length=2)
-    assert len(pwd) == 4  # 最小 4
+    assert len(pwd) == 4  # 强制不低于最小长度 4
 
 
 def test_generate_no_uppercase():
@@ -272,11 +277,11 @@ def test_decrypt_bytes_too_short():
 def test_decrypt_generic_no_internal_info():
     """decrypt 失败时不泄露内部异常信息。"""
     key = b'\x00' * 32
-    # 使用正确前缀但无效数据
+    # 使用正确前缀但无效数据。
     with pytest.raises(ValueError) as exc_info:
         EncryptionEngine.decrypt("cb:AAAA", key, "aad")
     msg = str(exc_info.value)
-    # 不应包含 Python 异常类型名
+    # 不应包含 Python 异常类型名。
     assert "binascii" not in msg
     assert "Error" not in msg or "解密失败" in msg
 

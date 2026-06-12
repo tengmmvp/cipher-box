@@ -1,11 +1,13 @@
-"""主窗口 - CipherBox 主界面
+"""CipherBox 主窗口。
 
-集成：快捷键、排序、Toast 通知、分类管理、标签筛选、撤销删除、主题刷新、安全仪表盘
+编排侧边栏、条目列表与详情面板，集成快捷键、排序、Toast 通知、分类管理、
+标签筛选、撤销删除、主题刷新、自动锁定与备份、安全仪表盘等功能。通过
+_MainWindowFiltersMixin 与 _MainWindowMenuMixin 多重继承拆分方法实现职责分离。
 """
 
 import logging
 
-from PyQt6.QtCore import QEvent, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QApplication,

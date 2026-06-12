@@ -1,10 +1,14 @@
-"""CSV 注入防护和反转义测试。"""
+"""CSV 注入防护与读取值提取测试。
+
+验证 ImportExportManager._csv_safe 对公式注入前缀的转义，
+以及 _get_val 在读取路径上保持原值不变的设计意图。
+"""
 
 from src.business.managers.import_export import ImportExportManager
 
 
 class TestCsvSafe:
-    """ImportExportManager._csv_safe 防护测试。"""
+    """ImportExportManager._csv_safe 转义防护测试。"""
 
     def test_formula_prefix_equals(self):
         """以 = 开头的值应被单引号前缀转义。"""
@@ -49,8 +53,8 @@ class TestCsvSafe:
 class TestGetVal:
     """ImportExportManager._get_val 值提取测试。
 
-    H5：_get_val 不再在读取路径上剥离 CSV 注入前缀。
-    CSV 注入防护仅在写入路径（_csv_safe）处理，读取时保持原值不变。
+    _get_val 不在读取路径上剥离 CSV 注入前缀。CSV 注入防护仅在写入路径
+    的 _csv_safe 中处理，读取时保持原值不变。
     """
 
     def test_value_returned_as_is(self):

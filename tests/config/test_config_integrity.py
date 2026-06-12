@@ -1,4 +1,8 @@
-"""测试配置文件 HMAC 完整性签名与篡改检测。"""
+"""测试配置文件 HMAC 完整性签名与篡改检测。
+
+覆盖 save 与 load 的签名往返、JSON 内容被篡改后的完整性告警，以及原子写入
+使用 .json.tmp 中间文件再 os.replace 的落盘行为。
+"""
 
 import pytest
 
@@ -29,7 +33,7 @@ class TestConfigIntegrity:
         """篡改 JSON 内容后 load() 应标记完整性警告。"""
         config.save()
 
-        # 篡改文件内容（修改 JSON 但保留签名行）
+        # 篡改文件内容：修改 JSON 但保留签名行
         raw = config._config_path.read_text(encoding='utf-8')
         lines = raw.rsplit('\n', 1)
         assert len(lines) == 2

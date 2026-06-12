@@ -1,4 +1,9 @@
-"""密码生成器对话框"""
+"""密码生成器独立对话框。
+
+按长度与字符集规则即时生成密码并展示强度，支持复制到剪贴板或通过
+信号回填到条目编辑界面。生成结果视为敏感数据，关闭或使用后清除以
+缩短明文驻留时间。
+"""
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -34,7 +39,7 @@ from ..resources.theme_colors import get_strength_color
 
 
 class PasswordGeneratorDialog(QDialog):
-    """密码生成器独立对话框"""
+    """独立的密码生成器对话框，可选复制或回填生成的密码。"""
 
     password_selected = pyqtSignal(str)
 
@@ -148,6 +153,7 @@ class PasswordGeneratorDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def _generate(self):
+        # 至少需要一种字符集，否则无法生成密码
         if not any((
             self._upper_check.isChecked(), self._lower_check.isChecked(),
             self._digits_check.isChecked(), self._symbols_check.isChecked(),
@@ -181,7 +187,7 @@ class PasswordGeneratorDialog(QDialog):
         if self._clipboard:
             self._clipboard.copy_text(password)
         else:
-            # 剪贴板管理器不可用时直接返回，避免绕过自动清除机制
+            # 剪贴板管理器不可用时直接返回，避免绕过自动清除机制直接写入系统剪贴板
             return
         # 按钮反馈
         self._copy_btn.setText('已复制 ✓')

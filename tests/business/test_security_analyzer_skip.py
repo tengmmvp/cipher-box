@@ -1,4 +1,8 @@
-"""安全分析器跳过损坏条目测试 — 验证部分条目损坏时分析继续"""
+"""安全分析器跳过损坏条目测试，验证部分条目损坏时分析继续。
+
+SecurityAnalyzer 在 full_analysis 中遇到解密失败的条目时应跳过而非抛异常，
+确保单个损坏条目不影响整体分析结果。
+"""
 
 from unittest.mock import MagicMock, patch
 
@@ -10,7 +14,7 @@ class TestSecurityAnalyzerSkipCorrupt:
     """验证 SecurityAnalyzer 遇到损坏条目时跳过并继续分析。"""
 
     def test_corrupt_entry_is_skipped_not_raised(self):
-        """损坏条目（解密失败）应被跳过，分析返回正常结果。"""
+        """解密失败的损坏条目应被跳过，分析返回正常结果。"""
         vault = MagicMock()
         vault.key = b'\x00' * 32
         vault.is_unlocked = True
@@ -31,8 +35,8 @@ class TestSecurityAnalyzerSkipCorrupt:
 
         analyzer = SecurityAnalyzer(vault)
 
-        # _decrypt 对 bad_entry 抛出 ValueError（模拟解密失败），
-        # full_analysis 现在应跳过损坏条目并返回结果而非抛异常
+        # _decrypt 对 bad_entry 抛出 ValueError 以模拟解密失败，
+        # full_analysis 应跳过损坏条目并返回结果而非抛异常
         with patch.object(analyzer, '_decrypt', side_effect=ValueError("字段解密失败")):
             result = analyzer.full_analysis(90)
 
@@ -41,7 +45,7 @@ class TestSecurityAnalyzerSkipCorrupt:
         assert result['weak_count'] == 0  # 损坏条目不参与弱密码统计
 
     def test_all_entries_corrupt_returns_empty_results(self):
-        """所有条目都损坏时，分析仍返回结果（跳过所有条目）。"""
+        """所有条目都损坏时，分析跳过全部条目但仍返回结果。"""
         vault = MagicMock()
         vault.key = b'\x00' * 32
         vault.is_unlocked = True

@@ -1,4 +1,8 @@
-"""TOTP 验证码区域组件 — 从 DetailPanel 拆分"""
+"""TOTP 验证码区域组件，从 DetailPanel 拆分。
+
+按秒刷新并展示当前 TOTP 验证码及剩余有效期进度条，提供一键复制。
+面板隐藏时暂停定时器以节省资源，重新显示时恢复刷新。
+"""
 
 import time as _time
 
@@ -17,15 +21,15 @@ from ..resources.constants import BTN_TOTP_COPY, FONT_FAMILY_MONOSPACE
 from ..resources.icons import COPY, set_icon_with_text
 from ..resources.theme_colors import c
 
-# TOTP 验证码刷新间隔（毫秒）
+# TOTP 验证码刷新间隔，单位毫秒
 MS_TOTP_REFRESH = 1000
 
 
 class TOTPWidget(QWidget):
     """TOTP 验证码显示与刷新组件。
 
-    通过 ``start()`` 注入 EntryManager 引用来获取 TOTP 状态。
-    面板隐藏时自动暂停定时器，显示时恢复。
+    通过注入的 EntryManager 引用获取 TOTP 状态。面板隐藏时自动暂停定时器，
+    重新显示时恢复刷新。
     """
 
     copy_requested = pyqtSignal(str)
@@ -137,11 +141,11 @@ class TOTPWidget(QWidget):
         totp_layout.addLayout(code_row)
         content_layout.addWidget(totp_frame)
 
-        # 启动定时刷新（每秒）
+        # 启动每秒一次的定时刷新
         self._timer.start(MS_TOTP_REFRESH)
 
     def _refresh(self):
-        """刷新 TOTP 验证码（仅调用 generate_totp，复用缓存的 period）。"""
+        """刷新 TOTP 验证码，仅调用 generate_totp，复用缓存的 period。"""
         if not self._entry_id or not self._code_label or not self._entry_mgr:
             self._timer.stop()
             return
@@ -155,6 +159,6 @@ class TOTPWidget(QWidget):
             self._bar.setValue(remaining)
 
     def _copy_code(self):
-        """复制当前 TOTP 验证码（始终取最新值）"""
+        """复制当前 TOTP 验证码，始终取最新值。"""
         if self._code_label:
             self.copy_requested.emit(self._code_label.text())

@@ -1,4 +1,9 @@
-"""条目编辑对话框 - 支持 5 种条目类型、TOTP、标签自动补全"""
+"""条目编辑对话框，支持 5 种条目类型、TOTP 与自定义字段。
+
+承载新增与编辑两套流程，按条目类型动态切换可见字段。专用字段以
+类型前缀存入 custom_fields，与通用自定义字段统一序列化。涉及密码、
+卡号、TOTP 密钥等敏感输入，保存或关闭时统一清除以缩短明文驻留时间。
+"""
 
 import logging
 import re
@@ -55,7 +60,7 @@ from ..resources.theme_colors import c
 logger = logging.getLogger(__name__)
 
 
-# 各类型可见字段映射
+# 各条目类型对应可见字段的映射，用于切换类型时刷新显隐
 _TYPE_FIELDS = {
     'login':    ['title', 'username', 'password', 'url'],
     'card':     ['title', 'card_holder', 'card_number', 'card_expiry', 'card_cvv'],
@@ -64,7 +69,7 @@ _TYPE_FIELDS = {
     'server':   ['title', 'server_host', 'server_port', 'server_protocol', 'username', 'password'],
 }
 
-# 专用字段名前缀 -> 类型映射
+# 专用字段在 custom_fields 中存储时携带的名称前缀，用于加载时区分归属类型
 _SPECIAL_FIELD_PREFIXES = {
     '_card_': 'card',
     '_id_': 'identity',
@@ -73,11 +78,11 @@ _SPECIAL_FIELD_PREFIXES = {
 
 
 # ------------------------------------------------------------------
-# 信用卡校验，作为模块级函数以方便复用与单测
+# 信用卡校验，作为模块级函数以便复用与单元测试
 # ------------------------------------------------------------------
 
 def validate_card_number(number: str) -> bool:
-    """Luhn 算法验证信用卡号"""
+    """使用 Luhn 算法校验信用卡号是否合法。"""
     number = number.replace(' ', '').replace('-', '')
     if not number.isdigit() or len(number) < 13:
         return False
@@ -93,7 +98,7 @@ def validate_card_number(number: str) -> bool:
 
 
 def validate_card_expiry(expiry: str) -> bool:
-    """验证 MM/YY 格式"""
+    """校验有效期是否为 MM/YY 格式且月份在 1 至 12 之间。"""
     if not re.match(r'^\d{2}/\d{2}$', expiry):
         return False
     month = int(expiry[:2])
@@ -101,12 +106,16 @@ def validate_card_expiry(expiry: str) -> bool:
 
 
 def validate_card_cvv(cvv: str) -> bool:
-    """CVV 必须为 3-4 位数字"""
+    """校验 CVV 是否为 3 至 4 位数字。"""
     return cvv.isdigit() and 3 <= len(cvv) <= 4
 
 
 class EntryDialog(QDialog):
-    """密码条目编辑对话框"""
+    """密码条目新增与编辑对话框。
+
+    ``entry`` 为 None 时进入新增模式，否则编辑该条目。保存成功后
+    发出 ``saved`` 信号并关闭对话框。
+    """
 
     saved = pyqtSignal()
 
@@ -259,7 +268,7 @@ class EntryDialog(QDialog):
         cf_group = QGroupBox('自定义字段')
         cf_layout = QVBoxLayout(cf_group)
         self._custom_fields_container = QVBoxLayout()
-        self._custom_field_rows: list[tuple] = []  # (name_edit, type_combo, value_edit, row_layout)
+        self._custom_field_rows: list[tuple] = []  # 各元素为 (name_edit, type_combo, value_edit, row_layout) 四元组
         cf_layout.addLayout(self._custom_fields_container)
 
         add_cf_btn = QPushButton('+ 添加字段')
@@ -370,7 +379,7 @@ class EntryDialog(QDialog):
         self._special_widgets['server_protocol'] = server_protocol
 
     def _add_field_row(self, form: QFormLayout, key: str, label_text: str, widget: QWidget, visible: bool = True):
-        """添加一行表单字段，同时记录到 _field_rows 字典中以便按 key 控制显隐"""
+        """添加一行表单字段，并按 key 记录到 _field_rows 以便后续控制显隐。"""
         label = QLabel(label_text)
         if not visible:
             label.setVisible(False)
@@ -402,7 +411,12 @@ class EntryDialog(QDialog):
 
     @staticmethod
     def _safe_set_formatted(widget, original: str, formatted: str, cursor_at_end: bool = False):
-        """阻塞信号地更新格式化文本，保留光标位置。"""
+        """阻塞信号地写入格式化文本，并尽量保留原光标位置。
+
+        格式化回调本身由 textChanged 触发，若直接 setText 会再次引发回调，
+        因此调用方需先 blockSignals；此处只负责根据光标是否在末尾选择不同
+        的定位策略，避免格式化时光标跳变。
+        """
         if formatted == original:
             return
         if cursor_at_end:
@@ -415,7 +429,7 @@ class EntryDialog(QDialog):
             widget.setCursorPosition(cursor_pos + offset)
 
     def _format_card_number(self, text: str):
-        """卡号输入时自动每 4 位加空格"""
+        """卡号输入时按每 4 位插入空格分组显示。"""
         w = self._special_widgets['card_number']
         w.blockSignals(True)
         digits = text.replace(' ', '')
@@ -424,7 +438,7 @@ class EntryDialog(QDialog):
         w.blockSignals(False)
 
     def _format_card_expiry(self, text: str):
-        """有效期输入时自动插入 / 分隔符"""
+        """有效期输入时自动补入分隔符，整理为 MM/YY 形态。"""
         w = self._special_widgets['card_expiry']
         w.blockSignals(True)
         digits = text.replace('/', '')
@@ -440,13 +454,17 @@ class EntryDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _on_type_changed(self, index: int):
-        """条目类型变更，更新字段可见性"""
+        """条目类型变更，刷新字段可见性。
+
+        若当前类型已有用户输入，先二次确认以免静默丢弃专用字段数据，
+        用户拒绝时回退到原类型选择项。
+        """
         new_type = self._type_combo.currentData() or ENTRY_TYPE_LOGIN
 
         if new_type == self._current_type:
             return
 
-        # 检查当前类型的专用字段是否有用户输入数据，编辑和新建模式均检查
+        # 检查当前类型的专用字段是否有用户输入数据，编辑和新建两种模式均检查
         if self._current_type:
             old_fields = _TYPE_FIELDS.get(self._current_type, [])
             has_data = False
@@ -457,7 +475,7 @@ class EntryDialog(QDialog):
                     if text.strip():
                         has_data = True
                         break
-            # 新建模式下，通用字段即标题、密码、备注有内容时也应确认
+            # 新建模式下，标题、密码、备注等通用字段已有内容时也应确认
             if not has_data and self._entry is None:
                 if (self._title_edit.text().strip()
                         or self._password_edit.text().strip()
@@ -481,7 +499,7 @@ class EntryDialog(QDialog):
         self._apply_type_visibility(new_type)
 
     def _apply_type_visibility(self, entry_type: str):
-        """按条目类型刷新字段显隐，不触发类型切换确认。"""
+        """按条目类型刷新字段显隐，本身不触发类型切换确认。"""
         visible_keys = set(_TYPE_FIELDS.get(entry_type, _TYPE_FIELDS['login']))
 
         for key, (label, widget) in self._field_rows.items():
@@ -507,7 +525,7 @@ class EntryDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _load_entry(self, entry: Entry):
-        """加载条目数据到表单"""
+        """将已有条目数据回填到表单。"""
         self._title_edit.setText(entry.title)
         self._username_edit.setText(entry.username)
         self._password_edit.setText(entry.password)
@@ -543,7 +561,7 @@ class EntryDialog(QDialog):
                 matched = False
                 for prefix in _SPECIAL_FIELD_PREFIXES:
                     if cf.name.startswith(prefix):
-                        field_key = cf.name[1:]  # e.g. '_card_holder' -> 'card_holder'
+                        field_key = cf.name[1:]  # 去掉前导下划线，例如 _card_holder 得到 card_holder
                         w = self._special_widgets.get(field_key)
                         if w:
                             if isinstance(w, QComboBox):
@@ -597,7 +615,7 @@ class EntryDialog(QDialog):
         self._password_edit.setText(password)
         self._password_edit.setEchoMode(QLineEdit.EchoMode.Normal)
         set_icon(self._toggle_pwd_btn, LOCK)
-        # 使用按钮内置的自动隐藏定时器，通过 Qt 属性系统访问
+        # 按钮内置自动隐藏定时器通过 Qt 动态属性暴露，此处取出并按配置启动
         timer = self._toggle_pwd_btn.property('autoHideTimer')
         if timer is not None:
             visible_seconds = PWD_VISIBLE_SECONDS_DEFAULT
@@ -613,7 +631,7 @@ class EntryDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _test_totp(self):
-        """测试 TOTP 密钥有效性"""
+        """校验 TOTP 密钥有效性并尝试生成一次验证码。"""
         secret = self._totp_edit.text().strip()
         if not secret:
             return
@@ -631,7 +649,7 @@ class EntryDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _add_custom_field_row(self, name: str = '', value: str = '', field_type: str = 'text'):
-        """添加自定义字段行"""
+        """新增一行自定义字段，并绑定类型切换时切换回显模式。"""
         row_layout = QHBoxLayout()
         name_edit = QLineEdit(name)
         name_edit.setPlaceholderText('字段名')
@@ -667,8 +685,8 @@ class EntryDialog(QDialog):
         self._custom_field_rows.append((name_edit, type_combo, value_edit, row_layout))
 
     def _remove_custom_field_row(self, layout: QHBoxLayout):
-        """移除自定义字段行"""
-        # 按 layout 引用直接匹配移除
+        """按 layout 引用定位并移除一行自定义字段。"""
+        # 按 layout 引用直接匹配移除，避免依据索引错位
         self._custom_field_rows = [
             row for row in self._custom_field_rows if row[3] is not layout
         ]
@@ -681,7 +699,7 @@ class EntryDialog(QDialog):
         self._custom_fields_container.removeItem(layout)
 
     def _collect_custom_fields(self) -> list[CustomField]:
-        """收集自定义字段"""
+        """收集用户填写的通用自定义字段，忽略名称为空者。"""
         fields = []
         type_map = {0: 'text', 1: 'password', 2: 'url', 3: 'email'}
         for name_edit, type_combo, value_edit, _layout in self._custom_field_rows:
@@ -699,7 +717,7 @@ class EntryDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _collect_type_specific_fields(self) -> list[CustomField]:
-        """将当前类型的专用字段收集为 CustomField，name 带类型前缀"""
+        """将当前类型的专用字段收集为 CustomField，名称带类型前缀。"""
         fields: list[CustomField] = []
         entry_type = self._type_combo.currentData() or ENTRY_TYPE_LOGIN
 
@@ -739,17 +757,17 @@ class EntryDialog(QDialog):
 
         entry_type = self._type_combo.currentData() or ENTRY_TYPE_LOGIN
 
-        # 信用卡类型校验
+        # 信用卡类型需额外校验卡号、有效期与 CVV
         if entry_type == ENTRY_TYPE_CARD:
             if not self._validate_card_fields():
                 return
 
-        # 笔记类型的 password 置空
+        # 笔记类型不使用密码字段，强制置空避免保存无意义数据
         password = self._password_edit.text() if entry_type != ENTRY_TYPE_NOTE else ''
         username = self._username_edit.text().strip()
         url = self._url_edit.text().strip()
 
-        # 服务器类型：用 host+port 构造 url
+        # 服务器类型由 host 与 port 拼接出 url
         if entry_type == ENTRY_TYPE_SERVER:
             host = cast(QLineEdit, self._special_widgets['server_host']).text().strip()
             port = cast(QLineEdit, self._special_widgets['server_port']).text().strip()
@@ -774,8 +792,8 @@ class EntryDialog(QDialog):
             is_favorite=self._favorite_check.isChecked(),
             entry_type=entry_type,
             totp_secret=self._totp_edit.text().strip(),
-            # 传播 integrity_error 以防止覆盖已损坏的加密数据。
-            # 新条目即 self._entry is None 时始终为 False。
+            # 透传 integrity_error 以避免编辑保存时覆盖已损坏的加密数据，
+            # 新建条目场景即 self._entry 为 None 时恒为 False。
             integrity_error=self._entry.integrity_error if self._entry else False,
             integrity_message=self._entry.integrity_message if self._entry else '',
         )
@@ -787,11 +805,11 @@ class EntryDialog(QDialog):
             else:
                 self._entry_mgr.add_entry(entry)
             self.saved.emit()
-            # 保存成功后立即清除敏感输入框，缩短明文在内存中的驻留。
+            # 保存成功后立即清除敏感输入框，缩短明文在内存中的驻留时间。
             self._clear_sensitive_inputs()
             self.accept()
         except ValueError as exc:
-            # 字段校验失败，提示用户修改
+            # 业务层字段校验失败，提示用户修改后重试
             logger.warning("条目校验失败: %s", exc)
             QMessageBox.warning(self, '输入有误', str(exc))
         except Exception as exc:
@@ -802,12 +820,13 @@ class EntryDialog(QDialog):
         """清除所有敏感输入框中的明文。
 
         在保存成功、用户取消或关闭对话框时调用。QLineEdit.clear() 会重置
-        控件文本，主要消除对话结束后的"残留可见密码"风险，包括控件缓存和截图。
-        注意，这并非 CPython 下的密码学清除保证——字符串对象的回收仍依赖 GC。
+        控件文本，主要消除对话结束后的残留可见密码风险，涉及控件缓存与
+        截图等场景。注意这并非 CPython 下的密码学清除保证，字符串对象的
+        回收仍依赖 GC。
         """
         self._password_edit.clear()
         self._totp_edit.clear()
-        # 信用卡敏感字段，包括持卡人、卡号、有效期、CVV
+        # 信用卡敏感字段，覆盖持卡人、卡号、有效期与 CVV
         for key in ('card_holder', 'card_number', 'card_expiry', 'card_cvv'):
             widget = self._special_widgets.get(key)
             if isinstance(widget, QLineEdit):
@@ -817,7 +836,7 @@ class EntryDialog(QDialog):
             widget = self._special_widgets.get(key)
             if isinstance(widget, QLineEdit):
                 widget.clear()
-        # 自定义字段中密码型即 echoMode==Password 的值
+        # 自定义字段中回显模式为 Password 的值视为敏感数据一并清除
         for _name_edit, _type_combo, value_edit, _layout in self._custom_field_rows:
             if value_edit.echoMode() == QLineEdit.EchoMode.Password:
                 value_edit.clear()

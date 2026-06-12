@@ -1,7 +1,10 @@
-"""数据库线程安全测试 — 验证 RLock 保护下的并发访问"""
+"""数据库线程安全测试。
+
+验证 DatabaseManager 与 VaultManager 在 RLock 保护下的并发访问行为，
+覆盖多线程并发读、并发写、读写混合三类场景，确保不出现崩溃或数据丢失。
+"""
 
 import threading
-from pathlib import Path
 
 import pytest
 
@@ -129,7 +132,7 @@ class TestVaultThreadSafety:
     """测试 VaultManager 在并发访问下的行为。"""
 
     def test_concurrent_vault_reads(self, vault):
-        """多线程同时通过 VaultManager.db 读取条目"""
+        """多线程同时通过 VaultManager.db 读取条目。"""
         errors: list[Exception] = []
 
         def read_entries():

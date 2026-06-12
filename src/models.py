@@ -1,6 +1,6 @@
 """数据模型定义 — 全局共享层。
 
-模型类（Entry、Category 等）和字段常量是纯数据结构，不依赖任何
+Entry、Category 等模型类与字段常量是纯数据结构，不依赖任何
 数据库或加密实现。放在 src 顶层使 UI、Business、Database 三层
 均可安全引用，无需跨层依赖。
 
@@ -68,7 +68,7 @@ class CustomField:
 class Sensitive(str):
     """敏感字符串标记类型。
 
-    透明继承 ``str``（序列化、加密、比较等行为完全一致），仅供 UI 渲染层通过
+    透明继承 ``str``，序列化、加密、比较等行为与普通字符串完全一致，仅供 UI 渲染层通过
     ``isinstance`` 检测，使敏感字段自动以密码框渲染，避免调用方遗忘
     ``secret=True`` 导致明文 QLabel 渲染。仅由 EntryManager.decrypt_entry 在
     解密输出时包装，不影响持久化与加密。
@@ -140,7 +140,7 @@ class Entry:
     """密码条目
 
     custom_fields 双重类型状态机：
-    - DB-raw 状态：从数据库读取后为 str（加密密文），custom_fields_enc 与之相同
+    - DB-raw 状态：从数据库读取后为 str 即加密密文，custom_fields_enc 与之相同
     - Decrypted 状态：经 EntryManager.decrypt_entry() 解密后为 list[CustomField]
     - 消费者可通过 is_decrypted 属性检查当前状态
     - 使用 custom_fields_db_value 属性可安全获取用于 DB 存储的密文值
@@ -179,7 +179,7 @@ class Entry:
 
     @property
     def is_decrypted(self) -> bool:
-        """custom_fields 是否已解密（为 list[CustomField]）。"""
+        """custom_fields 是否已解密为 list[CustomField]。"""
         return isinstance(self.custom_fields, list)
 
     def assert_decrypted(self) -> None:
@@ -198,8 +198,8 @@ class Entry:
     def custom_fields_db_value(self) -> str:
         """返回用于数据库存储的加密字符串。
 
-        当 custom_fields 为 str（原始密文）时直接返回；
-        当 custom_fields 为 list（已解密）时回退到 custom_fields_enc。
+        当 custom_fields 为 str 即原始密文时直接返回；
+        当 custom_fields 为 list 即已解密时回退到 custom_fields_enc。
         """
         return self.custom_fields if isinstance(self.custom_fields, str) else self.custom_fields_enc
 
@@ -225,7 +225,7 @@ class Entry:
         return [t.strip() for t in self.tags.split(',') if t.strip()]
 
     def to_dict(self, include_password: bool = False) -> dict:
-        """转换为字典（用于导出）。
+        """转换为字典，供导出流程使用。
 
         非持久化字段（id、crypto_id、is_deleted、deleted_at、
         integrity_error、integrity_message、
@@ -263,7 +263,7 @@ class Entry:
 
     @classmethod
     def from_dict(cls, d: dict) -> 'Entry':
-        """从字典创建（用于导入）。
+        """从字典创建，供导入流程使用。
 
         仅恢复用户可见字段；数据库元数据（id、crypto_id、时间戳、
         is_deleted 等）在导入流程中由 EntryManager 或 BackupRestoreManager

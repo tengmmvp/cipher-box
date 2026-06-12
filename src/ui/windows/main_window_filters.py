@@ -20,15 +20,12 @@ from ..components.empty_state_widget import EmptyStateWidget
 from ..components.entry_list_widget import EntryItemDelegate
 from ..components.toast import Toast
 from ..components.workers import BackgroundWorker
-from ..controllers.entry_list_controller import EntryListController
-from ..controllers.sidebar_controller import SidebarController
 from ..dialogs.category_dialog import CategoryDialog
 from ..dialogs.entry_dialog import EntryDialog
 from ..resources.constants import (
     MS_TOAST_DEFAULT,
     MS_TOAST_LONG,
     MS_TOAST_SHORT,
-    RECENT_ENTRY_LIMIT,
     SORT_OPTIONS,
 )
 from ..resources.icons import (

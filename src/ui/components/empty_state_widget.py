@@ -1,4 +1,8 @@
-"""空状态组件 - 友好的空列表/无结果提示"""
+"""空状态提示组件。
+
+在列表为空或无搜索结果时展示图标、标题、副标题与可选操作按钮，
+为空数据场景提供友好的视觉占位与引导。
+"""
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -14,7 +18,7 @@ from ..resources.theme_colors import c
 
 
 class EmptyStateWidget(QWidget):
-    """空状态提示组件"""
+    """空状态提示组件，展示图标、标题、副标题与可选操作按钮。"""
 
     action_clicked = pyqtSignal()
 

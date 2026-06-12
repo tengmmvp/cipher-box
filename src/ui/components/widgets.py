@@ -1,4 +1,9 @@
-"""可复用 UI 组件 - 提取自多个对话框/面板的重复模式"""
+"""可复用 UI 组件与工具函数。
+
+提取自多个对话框与面板的重复模式，涵盖状态标签格式化、密码显示切换、
+强度标签更新、对话框标志位清理、布局清空、速率限制与后台线程释放等
+无状态工具，供 UI 各层共享。
+"""
 
 from __future__ import annotations
 
@@ -186,7 +191,7 @@ class RateLimiter:
         limiter = RateLimiter()
         msg = limiter.check()          # None = 可继续，str = 锁定提示
         limiter.record_success()       # 重置计数
-        secs = limiter.record_failure()  # 返回锁定秒数（0 = 不锁定）
+        secs = limiter.record_failure()  # 返回锁定秒数，0 表示不锁定
     """
 
     def __init__(self) -> None:

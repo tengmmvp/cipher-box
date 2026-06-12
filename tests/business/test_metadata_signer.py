@@ -1,4 +1,10 @@
-"""MetadataSigner 单元测试。"""
+"""MetadataSigner 单元测试。
+
+覆盖签名生成、未篡改条目验证、篡改检测、域密钥派生与预置、
+缺密钥与缺签名的异常路径，以及不同条目产生不同签名。
+"""
+
+import dataclasses
 
 import pytest
 
@@ -9,7 +15,7 @@ from src.models import Entry
 
 def _make_entry(**overrides) -> Entry:
     """构造用于测试的 Entry，提供合理默认值。"""
-    defaults = dict(
+    entry = Entry(
         crypto_id='test-crypto-id-001',
         title='示例条目',
         username='',
@@ -31,12 +37,11 @@ def _make_entry(**overrides) -> Entry:
         password_changed_at='',
         metadata_mac='',
     )
-    defaults.update(overrides)
-    return Entry(**defaults)
+    return dataclasses.replace(entry, **overrides)
 
 
 def test_sign_basic():
-    """sign() 基本签名 — 签名后条目的 metadata_mac 非空。"""
+    """sign() 基本签名，签名后条目的 metadata_mac 非空。"""
     master_key = b'test-master-key-for-signing'
     signer = MetadataSigner()
     entry = _make_entry()
@@ -48,7 +53,7 @@ def test_sign_basic():
 
 
 def test_verify_passes_on_untampered_entry():
-    """verify() 正常验证 — 未篡改条目验证通过。"""
+    """verify() 正常验证，未篡改条目验证通过。"""
     master_key = b'test-master-key-for-verify'
     signer = MetadataSigner()
     entry = _make_entry()
@@ -60,7 +65,7 @@ def test_verify_passes_on_untampered_entry():
 
 
 def test_verify_detects_tampered_title():
-    """verify() 篡改检测 — 修改 title 后验证失败。"""
+    """verify() 篡改检测，修改 title 后验证失败。"""
     master_key = b'test-master-key-for-tamper'
     signer = MetadataSigner()
     entry = _make_entry(title='原始标题')
@@ -74,7 +79,7 @@ def test_verify_detects_tampered_title():
 
 
 def test_verify_raises_when_no_key():
-    """verify() 无密钥时抛异常 — _domain_key 为 None 且未传 key 时抛 VaultLockedError。"""
+    """verify() 无密钥时抛异常，_domain_key 为 None 且未传 key 时抛 VaultLockedError。"""
     signer = MetadataSigner()  # domain_key 为 None
     entry = _make_entry()
     entry.metadata_mac = 'some-mac-value'
@@ -84,7 +89,7 @@ def test_verify_raises_when_no_key():
 
 
 def test_sign_with_domain_key():
-    """sign_with_domain_key() — 使用预计算域密钥签名，结果与 sign() 一致。"""
+    """sign_with_domain_key() 使用预计算域密钥签名，结果与 sign() 一致。"""
     master_key = b'test-master-key-for-dk'
     signer = MetadataSigner()
     entry = _make_entry()
@@ -97,7 +102,7 @@ def test_sign_with_domain_key():
 
 
 def test_compute_domain_key_returns_nonempty_bytes():
-    """compute_domain_key() — 返回非空的 bytes。"""
+    """compute_domain_key() 返回非空的 bytes。"""
     master_key = b'any-key-material'
     dk = MetadataSigner.compute_domain_key(master_key)
 

@@ -1,9 +1,12 @@
-"""ClipboardManager 单元测试"""
+"""ClipboardManager 单元测试。
+
+覆盖剪贴板复制与读取、自动清空计时器启停、取消清空、仅清空匹配内容以避免
+误清用户后续复制，以及空字符串不触发清空等核心行为。
+"""
 
 import hmac
 
 import pytest
-from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
 
 from src.utils.clipboard import _CLIPBOARD_HMAC_KEY, ClipboardManager
@@ -28,6 +31,7 @@ class TestClipboardManager:
         self.mgr.copy_text(text)
 
         clipboard = QApplication.clipboard()
+        assert clipboard is not None
         assert clipboard.text() == text
         expected_hash = hmac.digest(_CLIPBOARD_HMAC_KEY, text.encode('utf-8'), 'sha256')
         assert self.mgr._last_copied_hash == expected_hash
@@ -62,6 +66,7 @@ class TestClipboardManager:
 
         # 模拟用户在自动清空之前手动复制了其他内容
         clipboard = QApplication.clipboard()
+        assert clipboard is not None
         clipboard.setText("user_typed_something_else")
 
         # 手动触发清空回调
@@ -76,7 +81,6 @@ class TestClipboardManager:
         """复制空字符串不触发清空定时器"""
         self.mgr.copy_text("")
 
-        clipboard = QApplication.clipboard()
         # _last_copied_hash 应保持初始空值，未被设置
         assert self.mgr._last_copied_hash == b''
         assert not self.mgr._timer.isActive()

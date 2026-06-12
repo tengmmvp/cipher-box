@@ -1,10 +1,10 @@
-"""业务层密码服务 — 封装密码生成、强度检测与 TOTP 操作。
+"""业务层密码服务，封装密码生成、强度检测与 TOTP 操作。
 
 消除 UI 层对 crypto 层的直接依赖，确保依赖方向为 UI → Business → Crypto。
 所有方法为纯静态方法，不持有状态，不依赖 VaultManager。
 
-架构说明：EntryManager 同层直接导入 PasswordGenerator/TOTPGenerator
-（Business → Crypto 的同层依赖），这是可接受的——PasswordService 的存在
+架构说明：EntryManager 同层直接导入 PasswordGenerator/TOTPGenerator，
+属 Business → Crypto 的同层依赖，这是可接受的。PasswordService 的存在
 是为了切断 UI → Crypto 的跨层依赖，而非在 Business 内部再增加一层间接。
 """
 

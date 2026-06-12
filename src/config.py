@@ -1,4 +1,4 @@
-"""配置管理模块 - 管理 CipherBox 应用的所有配置项"""
+"""配置管理模块 — 管理 CipherBox 应用的所有配置项"""
 
 import hashlib
 import hmac
@@ -81,7 +81,7 @@ RATE_LIMITS: list[tuple[int, int]] = [(3, 10), (5, 30), (8, 60), (10, 120)]
 
 
 class ConfigManager:
-    """配置管理器 - 读写 JSON 配置文件"""
+    """配置管理器 — 读写 JSON 配置文件"""
 
     def __init__(self):
         self._data_dir = get_data_dir()
@@ -123,7 +123,7 @@ class ConfigManager:
         if self._config_path.exists():
             try:
                 raw_text = self._config_path.read_text(encoding='utf-8')
-                # 分离签名行（如果存在）
+                # 分离签名行，若存在
                 json_text = raw_text
                 stored_sig = ''
                 lines = raw_text.rstrip().rsplit('\n', 1)

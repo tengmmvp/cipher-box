@@ -19,7 +19,7 @@ def format_datetime(iso_str: str) -> str:
 
     注意：使用 ``fromisoformat`` 解析，带时区偏移的字符串会保留为
     aware datetime，但 strftime 输出不含时区标识。当前数据库存储的
-    时间戳均为 UTC（无时区偏移），因此不存在歧义。若未来存储格式
+    时间戳均为 UTC 且无时区偏移，因此不存在歧义。若未来存储格式
     变更，需在此处统一时区转换。
     """
     if not iso_str:

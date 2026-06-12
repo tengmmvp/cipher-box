@@ -1,4 +1,8 @@
-"""测试 ConfigManager.get_safe() 的安全下限强制执行。"""
+"""测试 ConfigManager.get_safe() 的安全下限强制执行。
+
+覆盖剪贴板清空秒数与自动锁定分钟两项安全关键配置的运行时下限钳制，
+验证低于下限的值被修正、合法值原样通过，以及非安全关键项与缺失键不受影响。
+"""
 
 from src.config import ConfigManager
 

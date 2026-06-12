@@ -1,7 +1,11 @@
-"""备份恢复边界场景测试 — 损坏文件、截断数据、超大备份等"""
+"""备份恢复边界场景测试。
+
+覆盖损坏文件、截断数据、超大备份、错误密码等异常输入下
+BackupRestoreManager 的拒绝行为，以及快照密钥备份、已删除条目
+保留等正确性场景。
+"""
 
 import os
-import shutil
 import struct
 import tempfile
 from pathlib import Path
@@ -9,20 +13,17 @@ from pathlib import Path
 import pytest
 
 from src.business.managers.backup_restore import (
-    BACKUP_FORMAT,
     BACKUP_MAGIC,
     MAX_BACKUP_FILE_SIZE,
-    MAX_BACKUP_PAYLOAD_SIZE,
     BackupRestoreManager,
 )
 from src.business.managers.entry_manager import EntryManager
 from src.business.managers.vault_manager import VaultManager
-from src.crypto.encryption import EncryptionEngine
 from src.models import Entry
 
 
 class TestBackupCorruption:
-    """备份文件损坏边界场景"""
+    """备份文件损坏与恢复边界场景测试集合。"""
 
     @pytest.fixture(autouse=True)
     def setup_vault(self, tmp_path, vault_config):
@@ -31,7 +32,6 @@ class TestBackupCorruption:
         self._vault.initialize("test_password_12345")
         self._entry_mgr = EntryManager(self._vault)
         self._backup_mgr = BackupRestoreManager(self._vault)
-        # 添加一些测试数据
         self._entry_mgr.add_entry(Entry(
             title='测试条目', username='user1', password='pass123',
             url='https://example.com', notes='备注', entry_type='login',
@@ -40,7 +40,7 @@ class TestBackupCorruption:
         self._vault.close()
 
     def _create_valid_backup(self, filepath: str, password: str = 'backup_pwd'):
-        """创建一个有效的密码保护备份"""
+        """创建一个有效的密码保护备份。"""
         success, error = self._backup_mgr.create_backup(filepath, password)
         assert success, f'创建备份失败: {error}'
         return filepath
@@ -49,9 +49,9 @@ class TestBackupCorruption:
         """截断的备份文件应被拒绝"""
         path = os.path.join(self._tmp_dir, 'truncated.cbox')
         self._create_valid_backup(path)
-        # 截断文件到一半
         full_size = os.path.getsize(path)
         with open(path, 'r+b') as f:
+            # 截断到原文件一半长度，破坏 GCM 认证标签
             f.truncate(full_size // 2)
         success, error = self._backup_mgr.restore_backup(path, 'backup_pwd')
         assert not success
@@ -113,18 +113,14 @@ class TestBackupCorruption:
 
     def test_restore_and_verify_data_integrity(self):
         """恢复后数据应与原始数据一致"""
-        # 创建备份
         path = os.path.join(self._tmp_dir, 'verify.cbox')
         self._create_valid_backup(path, 'verify_pwd')
 
-        # 获取原始数据
         original = self._entry_mgr.get_entries()[0]
 
-        # 恢复备份
         success, error = self._backup_mgr.restore_backup(path, 'verify_pwd')
         assert success, f'恢复失败: {error}'
 
-        # 验证恢复后的数据
         restored = self._entry_mgr.get_entries()[0]
         assert restored.title == original.title
         assert restored.username == original.username
@@ -137,7 +133,7 @@ class TestBackupCorruption:
         path = os.path.join(self._tmp_dir, 'bad_flags.cbox')
         with open(path, 'wb') as f:
             f.write(BACKUP_MAGIC)
-            f.write(struct.pack('<B', 0xFF))  # 无效标志
+            f.write(struct.pack('<B', 0xFF))
         with pytest.raises(ValueError):
             BackupRestoreManager.inspect_backup(path)
 
@@ -176,7 +172,7 @@ class TestBackupSizeLimits:
         """过大的备份文件应被拒绝"""
         path = os.path.join(tempfile.mkdtemp(), 'huge.cbox')
         try:
-            # 创建一个超过限制的假文件（仅头部正确）
+            # 仅写入正确的文件头，body 部分填充超过上限的随机字节
             with open(path, 'wb') as f:
                 f.write(BACKUP_MAGIC)
                 f.write(b'\x00' * (MAX_BACKUP_FILE_SIZE + 1))
@@ -188,7 +184,7 @@ class TestBackupSizeLimits:
 
 
 class TestAADCentralization:
-    """验证 AAD 集中化 — crypto_utils.entry_aad 是唯一来源"""
+    """验证 AAD 集中化，确认 crypto_utils.entry_aad 是唯一来源。"""
 
     def test_entry_aad_format(self):
         from src.business.services.crypto_utils import entry_aad

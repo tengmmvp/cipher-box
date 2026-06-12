@@ -27,7 +27,7 @@ _ENTRY_COLUMNS = [
     'totp_secret_enc', 'created_at', 'updated_at', 'deleted_at',
     'password_changed_at', 'metadata_mac',
 ]
-# 预计算签名查询 SQL，使用 LEFT JOIN 提供与其他查询一致的列（含 category_name），
+# 预计算签名查询 SQL，使用 LEFT JOIN 提供与其他查询一致的列，包括 category_name，
 # 避免在 _row_to_entry 中对缺失列做特殊处理。
 _SELECT_ENTRY_SIGN_SQL = (
     f"SELECT {', '.join(['e.id'] + [f'e.{c}' for c in _ENTRY_COLUMNS])}, "
@@ -261,12 +261,13 @@ class EntryRepository:
 
     @_db_operation
     def update_entries_batch(self, rows: list) -> None:
-        """批量更新条目（改密重加密专用）。
+        """批量更新条目，改密重加密专用。
 
         Args:
-            rows: ``ReEncryptedEntry`` NamedTuple 列表（推荐）或
-                与 ``_RE_ENCRYPT_BATCH_UPDATE_SQL`` 列顺序一致的 tuple 列表。
-                NamedTuple 自动适配 executemany 的位置参数绑定。
+            rows: ``ReEncryptedEntry`` NamedTuple 列表，或与
+                ``_RE_ENCRYPT_BATCH_UPDATE_SQL`` 列顺序一致的 tuple 列表，
+                推荐使用 NamedTuple。NamedTuple 自动适配 executemany
+                的位置参数绑定。
         """
         if not rows:
             return
@@ -490,8 +491,8 @@ class EntryRepository:
         改密重加密时将逐条 UPDATE 合并为单次 executemany，减少数据库往返次数。
 
         Args:
-            rows: ``ReEncryptedHistory`` NamedTuple 列表（推荐）或
-                (new_password_enc, id) tuple 列表。
+            rows: ``ReEncryptedHistory`` NamedTuple 列表，推荐使用；
+                或 (new_password_enc, id) tuple 列表。
         """
         if not rows:
             return
@@ -523,8 +524,9 @@ class EntryRepository:
 
         Args:
             row: 数据库查询返回的行，需包含所有条目列。
-            verify: 完整性校验模式——STRICT（校验失败抛异常）、
-                LENIENT（设置 integrity_error 标志但继续）、SKIP（完全跳过）。
+            verify: 完整性校验模式，取 STRICT、LENIENT 或 SKIP。
+                STRICT 在校验失败时抛出异常；LENIENT 仅设置
+                integrity_error 标志并继续；SKIP 完全跳过校验。
         """
         entry = Entry(
             id=row['id'],

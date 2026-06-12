@@ -1,4 +1,10 @@
-"""导入导出对话框"""
+"""导入导出对话框，支持多格式数据的导入与导出。
+
+导入支持 CipherBox JSON、CSV 以及 Chrome、Bitwarden、KeePass 等外部格式，
+导出支持 JSON 与 CSV。耗时的导入导出在后台线程执行，避免阻塞 UI。
+导入涉及数据库写入且不可中途取消，导出无副作用可安全取消。导出文件
+统一加做权限收紧处理。
+"""
 
 import logging
 from pathlib import Path
@@ -31,7 +37,7 @@ from ..resources.theme_colors import c
 
 logger = logging.getLogger(__name__)
 
-# 格式定义
+# 支持的导入导出格式定义
 _EXPORT_FORMATS = ['JSON', 'CSV']
 _IMPORT_FILTERS = {
     'JSON (CipherBox)':  ('JSON 文件 (*.json)', 'cipherbox_import.json'),
@@ -44,7 +50,7 @@ _IMPORT_FORMATS = list(_IMPORT_FILTERS.keys())
 
 
 class ImportExportDialog(QDialog):
-    """导入导出对话框"""
+    """导入与导出统一对话框，按模式切换可见选项与可用格式。"""
 
     import_completed = pyqtSignal()
 
@@ -62,7 +68,8 @@ class ImportExportDialog(QDialog):
         self._entry_mgr = entry_manager
         self._is_export = True
         self._worker = None
-        self._worker_is_export: bool = True  # 记录 worker 启动时的模式，避免 reject 时读取已切换的按钮状态
+        # 记录 worker 启动时的模式，避免 reject 时读取已被切换的按钮状态
+        self._worker_is_export: bool = True
         self._selected_path: str | None = None
         self._setup_ui()
 
@@ -114,7 +121,7 @@ class ImportExportDialog(QDialog):
         format_layout.addStretch()
         layout.addLayout(format_layout)
 
-        # 密码选项（仅导出）
+        # 密码选项仅在导出模式下可见
         self._password_container = QWidget()
         pwd_layout = QHBoxLayout(self._password_container)
         pwd_layout.setContentsMargins(0, 0, 0, 0)
@@ -285,9 +292,9 @@ class ImportExportDialog(QDialog):
     def _on_export_done(self, count):
         release_worker(self)
         self._set_busy(False)
-        # 防御性加保：即使 export_to_json/csv 已调用 secure_file，
-        # 在 UI 层再次确认导出文件的权限限制。用 _selected_path 而非
-        # 文本框内容判空，避免用户编辑文本框导致路径不可靠。
+        # 防御性加保：即使业务层已对导出文件调用 secure_file，UI 层仍
+        # 再次收紧权限。使用 _selected_path 而非文本框内容判空，避免
+        # 用户编辑文本框导致路径不可靠。
         path = self._selected_path
         if path:
             try:
@@ -327,8 +334,8 @@ class ImportExportDialog(QDialog):
         self._progress.show()
 
         def _import_task():
-            # self._worker 在 worker 线程执行时已由主线程赋值（start 前），
-            # 局部取出并判空以安抚类型检查器。
+            # self._worker 在 worker 线程执行前已由主线程赋值，
+            # 此处局部取出并判空以兼顾类型检查与线程安全访问。
             worker = self._worker
             progress_cb = worker.emit_progress if worker is not None else None
             fmt_name = _IMPORT_FORMATS[fmt_index] if 0 <= fmt_index < len(_IMPORT_FORMATS) else ''

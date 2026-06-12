@@ -124,9 +124,9 @@ class BackupRestoreManager:
                     raw.crypto_id,
                 )
                 continue
-            # 基于字段原始长度的粗略估算，每条目约 512 字节固定开销
-            # 估算覆盖全部将进入 JSON payload 的字段（用密文长度作上界，
-            # base64 密文 ≥ 明文），避免大 notes/custom_fields 场景下
+            # 基于字段原始长度的粗略估算，每条目约 512 字节固定开销。
+            # 估算覆盖全部将进入 JSON payload 的字段，以密文长度作上界，
+            # 因 base64 密文大于等于明文，避免大 notes 或 custom_fields 场景下
             # 粗估漏判、直至序列化才产生内存峰值。
             estimated_size += (
                 len(raw.title.encode('utf-8'))
@@ -294,9 +294,9 @@ class BackupRestoreManager:
             backup_key = self._vault.snapshot_key
 
         try:
-            # 内存特征：峰值约 3 倍载荷大小
-            # (encrypted ≤ 64MB + plaintext ≤ 32MB + JSON parse tree)
-            # 桌面应用可接受；GCM 认证加密要求完整密文可用，无法流式解密。
+            # 内存特征：峰值约 3 倍载荷大小。
+            # encrypted 不超过 64MB，plaintext 不超过 32MB，外加 JSON 解析树，
+            # 桌面应用可接受。GCM 认证加密要求完整密文可用，无法流式解密。
             encrypted = file.read(MAX_BACKUP_FILE_SIZE + 1)
             if len(encrypted) > MAX_BACKUP_FILE_SIZE:
                 return False, '备份文件过大'
@@ -428,9 +428,9 @@ class BackupRestoreManager:
 
     @staticmethod
     def _validate_entry_custom_fields(fields: list):
-        """验证自定义字段列表结构（数量、键完整性、类型）。
+        """验证自定义字段列表结构，包含数量、键完整性与类型。
 
-        数量上限与 ``Entry.from_dict`` 保持一致（100），确保恢复后
+        数量上限与 ``Entry.from_dict`` 保持一致，为 100，确保恢复后
         条目能通过 ``from_dict`` 的校验。
         """
         if not isinstance(fields, list) or len(fields) > MAX_CUSTOM_FIELDS_PER_ENTRY:
@@ -497,7 +497,7 @@ class BackupRestoreManager:
     @staticmethod
     def _require_keys(item: dict, expected: set[str], label: str):
         """验证 item 是否包含所有必需键。使用 issubset 而非严格相等，
-        允许备份格式前向兼容（新增字段不会导致校验失败）。"""
+        允许备份格式前向兼容，新增字段不会导致校验失败。"""
         if not expected.issubset(set(item)):
             raise ValueError(f'{label}字段不完整')
 
@@ -536,7 +536,7 @@ class BackupRestoreManager:
         return target_path
 
     def clear_restore_points(self) -> int:
-        """删除所有恢复前安全快照（pre_restore_*.cbox），返回删除数量。
+        """删除所有恢复前安全快照 pre_restore_*.cbox，返回删除数量。
 
         供 UI 手动清理；改密时由 VaultManager 自动清理。恢复点含恢复前全部
         条目明文，定期清理可收缩泄漏面。
@@ -569,10 +569,10 @@ class BackupRestoreManager:
                     category_map[item['id']] = new_id
 
             entry_map = {}
-            crypto_id_map = {}  # old_id -> crypto_id
+            crypto_id_map = {}  # 旧 entry_id 到 crypto_id 的映射
             for item in data.get('entries', []):
                 old_category = item.get('category_id')
-                crypto_id = item['crypto_id']  # validated by _validate_entries
+                crypto_id = item['crypto_id']  # 已由 _validate_entries 校验
                 custom_fields = item.get('custom_fields', [])
                 custom_json = json.dumps(custom_fields, ensure_ascii=False) if custom_fields else ''
                 username = encrypt_field(item.get('username', ''), key, crypto_id, 'username')
@@ -641,7 +641,7 @@ class BackupRestoreManager:
 
         Args:
             config: ConfigManager 实例，用于读取备份设置。
-            force: 是否强制创建（忽略时间间隔检查）。
+            force: 是否强制创建，忽略时间间隔检查。
 
         Returns:
             (success, error_message) — 成功时 error_message 为空字符串。
