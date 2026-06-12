@@ -184,21 +184,24 @@ class BackupRestoreManager:
         try:
             t0 = time.monotonic()
             filepath = str(validate_file_path(filepath))
+            salt = os.urandom(BACKUP_SALT_SIZE)
             # 持 vault 锁与改密重加密串行：避免后台备份读全量明文期间密钥被
             # 轮换，导致解密失败被静默跳过而产出残缺备份。
+            # 备份密钥也在锁内解析：snapshot_key 从 KeyManager 读取后立即复制
+            # 为 bytes，避免释放锁后、加密前主线程 lock() 清零 snapshot_key
+            # 的竞态窗口（锁定与自动备份后台线程竞态）。
             with self._vault._lock:
                 data = self._collect_portable_data()
-            salt = os.urandom(BACKUP_SALT_SIZE)
-            if backup_password:
-                flags = BackupFlag.PASSWORD
-                iterations = BACKUP_KDF_ITERATIONS
-                backup_key = self._derive_backup_key(backup_password, salt, iterations)
-            elif use_snapshot_key:
-                flags = BackupFlag.SNAPSHOT
-                iterations = 0
-                backup_key = self._vault.snapshot_key
-            else:
-                raise ValueError('必须指定备份密码或使用快照密钥')
+                if backup_password:
+                    flags = BackupFlag.PASSWORD
+                    iterations = BACKUP_KDF_ITERATIONS
+                    backup_key = self._derive_backup_key(backup_password, salt, iterations)
+                elif use_snapshot_key:
+                    flags = BackupFlag.SNAPSHOT
+                    iterations = 0
+                    backup_key = bytes(self._vault.snapshot_key)
+                else:
+                    raise ValueError('必须指定备份密码或使用快照密钥')
 
             payload = json.dumps(data, ensure_ascii=False).encode('utf-8')
             del data  # 序列化后立即释放明文引用
@@ -565,6 +568,13 @@ class BackupRestoreManager:
             except OSError:
                 logger.warning('清理恢复点失败：%s', f, exc_info=True)
         return count
+
+    def count_restore_points(self) -> int:
+        """统计恢复前安全快照数量，供 UI 决定清理按钮的可用性。"""
+        directory = self._vault.data_dir / 'backups'
+        if not directory.is_dir():
+            return 0
+        return sum(1 for _ in directory.glob('pre_restore_*.cbox'))
 
     def _restore_data(self, data: dict):
         db = self._vault.db

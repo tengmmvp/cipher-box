@@ -39,18 +39,33 @@ class KeyManager:
 
     def activate(self, key, snapshot_key, epoch) -> None:
         """解锁或改密成功后，一次性设置全部密钥材料与版本。"""
-        self._key = key
-        self._snapshot_key = snapshot_key
+        self._key = self._to_bytearray(key)
+        self._snapshot_key = self._to_bytearray(snapshot_key)
         self._key_epoch = epoch
 
     def update_key(self, key) -> None:
-        self._key = key
+        self._key = self._to_bytearray(key)
 
     def update_snapshot_key(self, snapshot_key) -> None:
-        self._snapshot_key = snapshot_key
+        self._snapshot_key = self._to_bytearray(snapshot_key)
 
     def update_epoch(self, epoch) -> None:
         self._key_epoch = epoch
+
+    @staticmethod
+    def _to_bytearray(value):
+        """确保密钥以 bytearray 持有，使 secure_zero_buffer 能真正原地清零。
+
+        bytearray 可变，直接持有，clear() 的 memset 可原地擦除；
+        bytes 不可变，转为 bytearray 副本持有，清零作用于该副本。
+        AESGCM 构造时仍会复制密钥到 OpenSSL C 层，该副本由
+        EncryptionEngine.clear_cache 间接管理。
+        """
+        if value is None:
+            return None
+        if isinstance(value, bytearray):
+            return value
+        return bytearray(value)
 
     def clear(self) -> None:
         """尽力清零密钥材料并释放引用。

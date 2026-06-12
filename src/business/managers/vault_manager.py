@@ -399,24 +399,23 @@ class VaultManager:
         # 彻底收缩历史明文泄漏面，使主密码一旦被攻破也无法解密历史快照。
         new_snapshot_key = os.urandom(32)
 
-        # 使用真实事务：begin_transaction 抑制内部 commit
-        # 数据读取在事务内完成，防止 TOCTOU 竞态
-        self._db.begin_transaction()
-
         try:
             t0 = time.monotonic()
-            self._rotator.re_encrypt_entries(old_key, new_key, cancel_event=self._cancel_event)
-            self._rotator.re_encrypt_history(old_key, new_key, cancel_event=self._cancel_event)
-            self._update_vault_metadata(
-                new_key, new_salt, new_verify_token, new_epoch,
-                snapshot_key=new_snapshot_key,
-            )
+            # 通过 transaction() 上下文持有 db_lock 并包裹真实事务：
+            # 数据读取在事务内完成，防止 TOCTOU 竞态；db_lock 持有期间阻止
+            # 其他线程在此连接上插队写入导致跨线程部分回滚。异常时由
+            # transaction() 自动回滚所有数据库变更。
+            with self._db.transaction():
+                self._rotator.re_encrypt_entries(old_key, new_key, cancel_event=self._cancel_event)
+                self._rotator.re_encrypt_history(old_key, new_key, cancel_event=self._cancel_event)
+                self._update_vault_metadata(
+                    new_key, new_salt, new_verify_token, new_epoch,
+                    snapshot_key=new_snapshot_key,
+                )
 
-            # 先提交事务再更新内存密钥
-            # 若提交失败回滚，_clear_vault_state 会清除 self._key 保证一致性。
-            # 将密钥赋值放在 commit 之后，避免后台线程在 commit 前读到新密钥，
-            # 解密尚未提交的旧数据，造成解密窗口问题。
-            self._db.commit_transaction()
+            # 事务已提交。密钥赋值放在 commit 之后，避免后台线程在 commit 前
+            # 读到新密钥、解密尚未提交的旧数据，造成解密窗口问题。
+            # 若提交失败 transaction() 已回滚，下方 except 会清除密钥保证一致性。
             self._key_mgr.activate(new_key, new_snapshot_key, new_epoch)
             self._signer.set_domain_key(MetadataSigner.compute_domain_key(new_key))
             EncryptionEngine.clear_cache()  # 旧密钥 cipher 已失效，确保后续用新密钥
@@ -440,19 +439,12 @@ class VaultManager:
                 logger.warning("改密后 WAL 安全截断失败（非致命）", exc_info=True)
 
         except Exception:
-            # 回滚所有变更，保护数据一致性
-            rollback_ok = False
+            # transaction() 上下文已回滚所有数据库变更。
+            # 即使 lock() 异常也必须确保密钥被清除，防止内存状态不一致。
             try:
-                self._db.rollback_transaction()
-                rollback_ok = True
+                self.lock()
             except Exception:
-                logger.error("改密回滚失败，数据库可能不一致", exc_info=True)
-            # 即使 lock() 异常也必须确保密钥被清除，防止内存状态不一致
-            try:
-                if rollback_ok:
-                    self.lock()
-            except Exception:
-                logger.error("改密后锁定失败", exc_info=True)
+                logger.error("改密后锁定失败，强制清除状态", exc_info=True)
                 self._clear_vault_state()
             logger.error("重加密失败: 回滚所有变更", exc_info=True)
             raise

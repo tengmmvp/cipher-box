@@ -46,13 +46,13 @@ from ...models import (
     CustomField,
     Entry,
 )
+from ..components.custom_fields_editor import CustomFieldsEditor
 from ..components.widgets import (
     create_password_toggle_btn,
     setup_dialog_flags,
     update_strength_label,
 )
 from ..resources.constants import (
-    BTN_COPY,
     BTN_DIALOG,
     BTN_ICON,
     BTN_SMALL_ACTION,
@@ -61,7 +61,7 @@ from ..resources.constants import (
     PWD_TOGGLE_AUTO_HIDE_SECONDS,
     PWD_VISIBLE_SECONDS_DEFAULT,
 )
-from ..resources.icons import CLOSE, GENERATE, LOCK, set_icon
+from ..resources.icons import GENERATE, LOCK, set_icon
 from ..resources.theme_colors import c
 
 logger = logging.getLogger(__name__)
@@ -142,7 +142,6 @@ class EntryDialog(QDialog):
         self._entry = entry
         self._config = config
         self._current_type = entry.entry_type if entry else ENTRY_TYPE_LOGIN
-        self._custom_fields: list[CustomField] = []
         self._field_rows: dict[str, tuple[QLabel, QWidget]] = {}
         self._special_widgets: dict[str, QWidget] = {}
 
@@ -281,13 +280,13 @@ class EntryDialog(QDialog):
         cf_group = QGroupBox('自定义字段')
         cf_layout = QVBoxLayout(cf_group)
         self._custom_fields_container = QVBoxLayout()
-        self._custom_field_rows: list[tuple] = []  # 各元素依次为字段名、类型、值编辑框与所在行的四元组
         cf_layout.addLayout(self._custom_fields_container)
+        self._cf_editor = CustomFieldsEditor(self._custom_fields_container)
 
         add_cf_btn = QPushButton('+ 添加字段')
         add_cf_btn.setObjectName('iconBtn')
         add_cf_btn.setStyleSheet(f'text-align: left; color: {c("accent")};')
-        add_cf_btn.clicked.connect(self._add_custom_field_row)
+        add_cf_btn.clicked.connect(self._cf_editor.add_row)
         cf_layout.addWidget(add_cf_btn)
         layout.addWidget(cf_group)
 
@@ -620,26 +619,10 @@ class EntryDialog(QDialog):
                 if not matched:
                     type_specific.append(cf)
 
-            # 清空旧的自定义字段行
-            while self._custom_fields_container.count():
-                item = self._custom_fields_container.takeAt(0)
-                if item is None:
-                    continue
-                sub = item.layout()
-                if sub is not None:
-                    while sub.count():
-                        w = sub.takeAt(0)
-                        if w is not None:
-                            widget = w.widget()
-                            if widget is not None:
-                                widget.deleteLater()
-                    self._custom_fields_container.removeItem(sub)
-                    sub.deleteLater()
-            self._custom_field_rows.clear()
-
-            # 剩余的作为通用自定义字段
+            # 清空旧的自定义字段行后回填通用自定义字段
+            self._cf_editor.clear_rows()
             for cf in type_specific:
-                self._add_custom_field_row(cf.name, cf.value, cf.field_type)
+                self._cf_editor.add_row(cf.name, cf.value, cf.field_type)
 
     # ------------------------------------------------------------------
     # 密码辅助
@@ -688,74 +671,6 @@ class EntryDialog(QDialog):
                 QMessageBox.warning(self, '验证失败', f'密钥验证出错：{exc}')
         else:
             QMessageBox.warning(self, '验证失败', '无效的 TOTP 密钥或 URI，请检查后重试。')
-
-    # ------------------------------------------------------------------
-    # 自定义字段
-    # ------------------------------------------------------------------
-
-    def _add_custom_field_row(self, name: str = '', value: str = '', field_type: str = 'text'):
-        """新增一行自定义字段，并绑定类型切换时切换回显模式。"""
-        row_layout = QHBoxLayout()
-        name_edit = QLineEdit(name)
-        name_edit.setPlaceholderText('字段名')
-        name_edit.setFixedWidth(120)
-        row_layout.addWidget(name_edit)
-
-        type_combo = QComboBox()
-        type_combo.addItems(['文本', '密码', '网址', '邮箱'])
-        type_combo.setCurrentIndex({'text': 0, 'password': 1, 'url': 2, 'email': 3}.get(field_type, 0))
-        type_combo.setFixedWidth(64)
-        type_combo.setToolTip('字段类型')
-        row_layout.addWidget(type_combo)
-
-        value_edit = QLineEdit(value)
-        value_edit.setPlaceholderText('字段值')
-        if field_type == 'password':
-            value_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        type_combo.currentIndexChanged.connect(
-            lambda idx, ve=value_edit: ve.setEchoMode(
-                QLineEdit.EchoMode.Password if idx == 1 else QLineEdit.EchoMode.Normal
-            )
-        )
-        row_layout.addWidget(value_edit)
-
-        del_btn = QPushButton()
-        del_btn.setObjectName('iconBtn')
-        del_btn.setFixedSize(*BTN_COPY)
-        set_icon(del_btn, CLOSE, 'danger')
-        del_btn.clicked.connect(lambda: self._remove_custom_field_row(row_layout))
-        row_layout.addWidget(del_btn)
-
-        self._custom_fields_container.addLayout(row_layout)
-        self._custom_field_rows.append((name_edit, type_combo, value_edit, row_layout))
-
-    def _remove_custom_field_row(self, layout: QHBoxLayout):
-        """按 layout 引用定位并移除一行自定义字段。"""
-        # 按 layout 引用直接匹配移除，避免依据索引错位
-        self._custom_field_rows = [
-            row for row in self._custom_field_rows if row[3] is not layout
-        ]
-        while layout.count():
-            item = layout.takeAt(0)
-            if item is not None:
-                w = item.widget()
-                if w is not None:
-                    w.deleteLater()
-        self._custom_fields_container.removeItem(layout)
-
-    def _collect_custom_fields(self) -> list[CustomField]:
-        """收集用户填写的通用自定义字段，忽略名称为空者。"""
-        fields = []
-        type_map = {0: 'text', 1: 'password', 2: 'url', 3: 'email'}
-        for name_edit, type_combo, value_edit, _layout in self._custom_field_rows:
-            if name_edit.text().strip():
-                ft = type_map.get(type_combo.currentIndex(), 'text')
-                fields.append(CustomField(
-                    name=name_edit.text().strip(),
-                    value=value_edit.text(),
-                    field_type=ft,
-                ))
-        return fields
 
     # ------------------------------------------------------------------
     # 专用字段收集
@@ -829,7 +744,7 @@ class EntryDialog(QDialog):
             password = self._password_edit.text()
 
         # 合并专用字段 + 通用自定义字段
-        all_custom = self._collect_type_specific_fields() + self._collect_custom_fields()
+        all_custom = self._collect_type_specific_fields() + self._cf_editor.collect()
 
         entry = Entry(
             title=title,
@@ -888,9 +803,7 @@ class EntryDialog(QDialog):
             if isinstance(widget, QLineEdit):
                 widget.clear()
         # 自定义字段中回显模式为 Password 的值视为敏感数据一并清除
-        for _name_edit, _type_combo, value_edit, _layout in self._custom_field_rows:
-            if value_edit.echoMode() == QLineEdit.EchoMode.Password:
-                value_edit.clear()
+        self._cf_editor.clear_sensitive_values()
 
     def reject(self):
         """取消/关闭前清除敏感输入框。"""

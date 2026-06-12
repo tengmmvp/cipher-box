@@ -102,17 +102,8 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         super().__init__()
         self._config = config
         self._vault = vault
-        self._entry_mgr = EntryManager(vault)
-        self._security = SecurityAnalyzer(vault, entry_manager=self._entry_mgr)
-        self._entry_list_ctrl = EntryListController(self._entry_mgr, self._security, config)
-        self._sidebar_ctrl = SidebarController(self._entry_mgr, config)
-        self._import_export = ImportExportManager(self._entry_mgr)
-        self._backup = BackupRestoreManager(vault)
-        self._clipboard = ClipboardManager(config.get_safe('clipboard_clear_seconds', CLIPBOARD_CLEAR_SECONDS_DEFAULT))
-        # 注册锁定回调，确保 lock() 时自动清除 entry 缓存
-        self._vault.register_on_lock(self._entry_mgr.invalidate_caches)
-        # 条目变更时自动失效安全分析缓存，通过事件驱动取代手动调用
-        self._entry_mgr.register_on_change(self._security.invalidate_cache)
+        self._create_managers()
+        self._register_callbacks()
         self._current_filter = 'all'
         self._current_category_id = None
         self._current_search = ''
@@ -153,6 +144,31 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         if app:
             app.installEventFilter(self)
         self._refresh_entries()
+
+    def _create_managers(self):
+        """组装业务层管理器与控制器。
+
+        将依赖组装从 __init__ 提取，使构造函数聚焦于初始化顺序编排，
+        管理器的创建与连线集中于此便于审计与调整。
+        """
+        self._entry_mgr = EntryManager(self._vault)
+        self._security = SecurityAnalyzer(self._vault, entry_manager=self._entry_mgr)
+        self._entry_list_ctrl = EntryListController(
+            self._entry_mgr, self._security, self._config,
+        )
+        self._sidebar_ctrl = SidebarController(self._entry_mgr, self._config)
+        self._import_export = ImportExportManager(self._entry_mgr)
+        self._backup = BackupRestoreManager(self._vault)
+        self._clipboard = ClipboardManager(
+            self._config.get_safe('clipboard_clear_seconds', CLIPBOARD_CLEAR_SECONDS_DEFAULT)
+        )
+
+    def _register_callbacks(self):
+        """注册锁定与条目变更回调，事件驱动地失效相关缓存。"""
+        # 注册锁定回调，确保 lock() 时自动清除 entry 缓存
+        self._vault.register_on_lock(self._entry_mgr.invalidate_caches)
+        # 条目变更时自动失效安全分析缓存，通过事件驱动取代手动调用
+        self._entry_mgr.register_on_change(self._security.invalidate_cache)
 
     def _setup_ui(self):
         self.setWindowTitle('CipherBox')
@@ -477,7 +493,9 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         """捕获整个应用的用户活动，重置自动锁定计时器。
 
         排除修饰键即 Shift/Ctrl/Alt/Meta，仅有意义的按键才重置。
-        包含鼠标移动，确保用户仅通过滚动/移动浏览条目时不会触发自动锁定。
+        仅对按键、鼠标点击、滚轮与触摸开始重置；不包含 MouseMove，
+        因为鼠标静止悬停时系统仍会持续产生移动事件，纳入它会使
+        超时锁定被无限推迟，违背密码管理器的安全预期。
         此过滤器替代了 keyPressEvent/mousePressEvent 的双重功能。
         """
         if event.type() == QEvent.Type.KeyPress:
@@ -488,7 +506,6 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
                 self._reset_lock_timer()
         elif event.type() in (
             QEvent.Type.MouseButtonPress,
-            QEvent.Type.MouseMove,
             QEvent.Type.Wheel,
             QEvent.Type.TouchBegin,
         ):
@@ -608,6 +625,8 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._refresh_entries()
         self._detail_panel.show_empty()
         self._reset_lock_timer()
+        # 解锁后刷新状态栏安全摘要，避免停留在锁定前的陈旧或空白状态
+        self._status_timer.start()
         if self._tray:
             self._tray.set_locked(False)
 
@@ -649,6 +668,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         if self._status_worker and self._status_worker.isRunning():
             self._status_worker.cancel()
             self._status_worker.wait(WORKER_WAIT_TIMEOUT_MS)
+        self._status_worker = None
         # 取消异步备份 worker，防止锁定后继续解密条目
         if self._backup_worker and self._backup_worker.isRunning():
             self._backup_worker.cancel()

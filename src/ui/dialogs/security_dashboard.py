@@ -362,7 +362,7 @@ class SecurityDashboard(QDialog):
         if hasattr(self, '_status_hint') and self._status_hint:
             self._status_hint.deleteLater()
             self._status_hint = None
-        logger.error("加载安全数据失败", exc_info=True)
+        logger.error("加载安全数据失败: %s", error_msg)
         QMessageBox.critical(self, '错误', '加载安全数据失败，请重试')
 
     @staticmethod

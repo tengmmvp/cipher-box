@@ -193,9 +193,11 @@ class ChangeMasterDialog(QDialog):
         release_worker(self)
         self._change_btn.setEnabled(True)
         self._msg_label.setStyleSheet(f'color: {c("danger")}; font-size: 12px; min-height: 18px;')
-        # 缩短旧密码明文在内存中的驻留时间
-        self._old_pwd.clear()
         success, error_msg = result
+        # 无论成功与否都清除全部密码输入，缩短明文在控件中的驻留时间
+        self._old_pwd.clear()
+        self._new_pwd.clear()
+        self._confirm_pwd.clear()
         if success:
             self._rate_limiter.record_success()
             QMessageBox.information(self, '成功', '主密码已修改成功！')
@@ -216,5 +218,8 @@ class ChangeMasterDialog(QDialog):
         self._msg_label.setStyleSheet(f'color: {c("danger")}; font-size: 12px; min-height: 18px;')
         self._msg_label.setText('')
         self._old_pwd.clear()
-        logger.error("主密码修改失败", exc_info=True)
+        self._new_pwd.clear()
+        self._confirm_pwd.clear()
+        # error 信号已脱离异常上下文，exc_info 无堆栈；记录消息文本即可
+        logger.error("主密码修改失败: %s", error_msg)
         QMessageBox.critical(self, '错误', error_msg)

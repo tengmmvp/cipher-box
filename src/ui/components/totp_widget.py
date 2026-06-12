@@ -42,6 +42,7 @@ class TOTPWidget(QWidget):
         self._timer.timeout.connect(self._refresh)
         self._code_label: QLabel | None = None
         self._bar: QProgressBar | None = None
+        self._totp_frame: QFrame | None = None
         self._entry_id: int | None = None
         self._period: int = 30
 
@@ -62,12 +63,17 @@ class TOTPWidget(QWidget):
         self._timer.stop()
 
     def clear(self):
-        """清除所有状态。"""
+        """清除所有状态并销毁已构建的 TOTP 区域。"""
         self._timer.stop()
         self._entry_id = None
         self._period = 30
         self._code_label = None
         self._bar = None
+        # 主动销毁已加入父级布局的 TOTP 区域，避免组件复用时累积泄漏。
+        # 上层 DetailPanel._clear_layout 也会兜底清理，重复 deleteLater 安全。
+        if self._totp_frame is not None:
+            self._totp_frame.deleteLater()
+            self._totp_frame = None
 
     def resume_if_active(self):
         """面板显示时若当前有条目含 TOTP 则重启定时器。"""
@@ -93,6 +99,7 @@ class TOTPWidget(QWidget):
             return
 
         totp_frame = QFrame()
+        self._totp_frame = totp_frame
         totp_frame.setStyleSheet(f"""
             QFrame {{
                 background: {c("accent_light")};

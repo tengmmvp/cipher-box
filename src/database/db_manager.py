@@ -156,37 +156,38 @@ class DatabaseManager:
         """事务上下文；嵌套事务使用 SAVEPOINT 独立回滚。
 
         线程安全契约：
-        - 本方法不在整个事务期间持有 _lock。
-        - 事务内的单个操作通过 @_db_operation 获取锁，保证操作级原子性。
-        - 事务整体不隔离跨线程操作：调用方须确保无并发写同一表。
-        - RLock 保证同一线程可重入，事务内嵌套 @_db_operation 可正常工作。
+        - 整个事务期间持有 db_lock，阻止其他线程在此共享连接上插队写入，
+          避免 check_same_thread=False 下跨线程事务的部分回滚。
+        - RLock 可重入，事务内嵌套的 @_db_operation 可正常重入获取锁。
+        - 调用方无需再保证无并发写同一表，本方法通过持锁强制写串行化。
         """
         if self._conn is None:
             raise DatabaseError("数据库未连接")
-        if not self.in_transaction:
-            self.begin_transaction()
+        with self._lock:
+            if not self.in_transaction:
+                self.begin_transaction()
+                try:
+                    yield
+                    self.commit_transaction()
+                except Exception:
+                    self.rollback_transaction()
+                    raise
+                return
+
+            self._guard_write()
+            self._savepoint_counter += 1
+            savepoint = f'"cipherbox_sp_{self._savepoint_counter}"'
+            self._conn.execute(f'SAVEPOINT {savepoint}')
+            self._transaction_depth += 1
             try:
                 yield
-                self.commit_transaction()
+                self._conn.execute(f'RELEASE SAVEPOINT {savepoint}')
             except Exception:
-                self.rollback_transaction()
+                self._conn.execute(f'ROLLBACK TO SAVEPOINT {savepoint}')
+                self._conn.execute(f'RELEASE SAVEPOINT {savepoint}')
                 raise
-            return
-
-        self._guard_write()
-        self._savepoint_counter += 1
-        savepoint = f'"cipherbox_sp_{self._savepoint_counter}"'
-        self._conn.execute(f'SAVEPOINT {savepoint}')
-        self._transaction_depth += 1
-        try:
-            yield
-            self._conn.execute(f'RELEASE SAVEPOINT {savepoint}')
-        except Exception:
-            self._conn.execute(f'ROLLBACK TO SAVEPOINT {savepoint}')
-            self._conn.execute(f'RELEASE SAVEPOINT {savepoint}')
-            raise
-        finally:
-            self._transaction_depth -= 1
+            finally:
+                self._transaction_depth -= 1
 
     def begin_transaction(self) -> None:
         """开始事务，并抑制内部 commit。
@@ -228,8 +229,16 @@ class DatabaseManager:
             raise DatabaseError("数据库未连接")
         try:
             self._conn.execute("ROLLBACK")
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as exc:
+            # 仅吞无活动事务这类良性错误（重复回滚或事务已结束）；
+            # 其余 OperationalError（磁盘满、I/O 错误、数据库锁定）意味着
+            # 回滚未生效，事务可能仍开着，必须升级处理而非静默通过。
+            message = str(exc).lower()
+            if 'no transaction' in message or 'no active' in message:
+                logger.debug("回滚时无活动事务（良性）：%s", exc)
+            else:
+                logger.error("回滚事务失败，数据库可能不一致", exc_info=True)
+                raise
         self._transaction_depth = 0
         self._savepoint_counter = 0
 

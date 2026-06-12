@@ -10,7 +10,7 @@ import uuid
 from typing import Optional
 
 from ..exceptions import VaultError
-from ..models import MAX_PASSWORD_HISTORY, Entry, PasswordHistory
+from ..models import MAX_PASSWORD_HISTORY, Entry, PasswordHistory, RawEntry
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation
 from .types import VerifyMode
@@ -18,8 +18,9 @@ from .types import VerifyMode
 logger = logging.getLogger(__name__)
 
 # _ENTRY_COLUMNS 是 entries 表非 id 列名的单一事实来源。
-# 重要：新增 entries 表列时必须在此列表追加，否则 HMAC 签名将缺少该列，
-# 导致已有数据签名验证失败。此列表须与 _row_to_entry 读取的字段保持一致。
+# 重要：新增 entries 表列时必须在此列表追加，INSERT/UPDATE/SELECT 等派生 SQL
+# 会自动跟随；同时须同步纳入 MetadataSigner._payload 的签名载荷
+# （由 test_entry_signature_coverage 断言守护，防止漏签）。
 _ENTRY_COLUMNS = [
     'crypto_id', 'title', 'username_enc', 'password_enc', 'url',
     'category_id', 'tags', 'notes_enc', 'custom_fields_enc',
@@ -27,6 +28,38 @@ _ENTRY_COLUMNS = [
     'totp_secret_enc', 'created_at', 'updated_at', 'deleted_at',
     'password_changed_at', 'metadata_mac',
 ]
+
+# 写入用 INSERT：add_entry 写入全部列，列序与 _ENTRY_COLUMNS 一致。
+_INSERT_ENTRY_SQL = (
+    f"INSERT INTO entries ({', '.join(_ENTRY_COLUMNS)}) "
+    f"VALUES ({', '.join('?' for _ in _ENTRY_COLUMNS)})"
+)
+
+# update_entry 不写 is_deleted/deleted_at/created_at：删除状态仅由
+# soft_delete_entry/restore_entry 管理，created_at 创建后不可变。
+_UPDATE_EXCLUDED_COLUMNS = {'is_deleted', 'deleted_at', 'created_at'}
+_UPDATE_ENTRY_COLUMNS = [
+    column for column in _ENTRY_COLUMNS
+    if column not in _UPDATE_EXCLUDED_COLUMNS
+]
+_UPDATE_ENTRY_SQL = (
+    f"UPDATE entries SET {', '.join(f'{column}=?' for column in _UPDATE_ENTRY_COLUMNS)} "
+    f"WHERE id=?"
+)
+
+# 重加密批量更新列：改密只重写密文与签名，不改删除状态、创建时间、收藏等。
+# 为 _ENTRY_COLUMNS 的子集；新增加密列时须同步追加到此处与 ReEncryptedEntry。
+_RE_ENCRYPT_COLUMNS = [
+    'crypto_id', 'title', 'username_enc', 'password_enc', 'url', 'category_id',
+    'tags', 'notes_enc', 'custom_fields_enc', 'is_favorite',
+    'password_strength', 'entry_type', 'totp_secret_enc', 'updated_at',
+    'password_changed_at', 'metadata_mac',
+]
+_RE_ENCRYPT_BATCH_UPDATE_SQL = (
+    f"UPDATE entries SET {', '.join(f'{column}=?' for column in _RE_ENCRYPT_COLUMNS)} "
+    f"WHERE id=?"
+)
+
 # 预计算签名查询 SQL，使用 LEFT JOIN 提供与其他查询一致的列，包括 category_name，
 # 避免在 _row_to_entry 中对缺失列做特殊处理。
 _SELECT_ENTRY_SIGN_SQL = (
@@ -34,14 +67,6 @@ _SELECT_ENTRY_SIGN_SQL = (
     "c.name as category_name "
     "FROM entries e LEFT JOIN categories c ON e.category_id = c.id WHERE e.id=?"
 )
-
-# 批量更新 SQL，列顺序与 update_entry 的 SET 子句完全一致。
-_RE_ENCRYPT_BATCH_UPDATE_SQL = """UPDATE entries SET
-    crypto_id=?, title=?, username_enc=?, password_enc=?, url=?, category_id=?,
-    tags=?, notes_enc=?, custom_fields_enc=?, is_favorite=?,
-    password_strength=?, entry_type=?, totp_secret_enc=?, updated_at=?,
-    password_changed_at=?, metadata_mac=?
-    WHERE id=?"""
 
 
 class EntryRepository:
@@ -172,13 +197,9 @@ class EntryRepository:
             entry.password_changed_at or entry.updated_at or entry.created_at or now
         )
         entry.metadata_mac = self._sign_entry(entry)
+        # 参数顺序须与 _ENTRY_COLUMNS 一致；加密列存 entry 的密文属性。
         cursor = self._conn.execute(
-            """INSERT INTO entries
-               (crypto_id, title, username_enc, password_enc, url, category_id, tags,
-                notes_enc, custom_fields_enc, is_favorite, is_deleted,
-                 password_strength, entry_type, totp_secret_enc, created_at, updated_at,
-                 deleted_at, password_changed_at, metadata_mac)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            _INSERT_ENTRY_SQL,
             (
                 entry.crypto_id,
                 entry.title,
@@ -230,13 +251,9 @@ class EntryRepository:
             else utc_now_iso()
         )
         entry.metadata_mac = metadata_mac or self._sign_entry(entry)
+        # 参数顺序须与 _UPDATE_ENTRY_COLUMNS 一致（不含 is_deleted/deleted_at/created_at）。
         self._conn.execute(
-            """UPDATE entries SET
-               crypto_id=?, title=?, username_enc=?, password_enc=?, url=?, category_id=?,
-               tags=?, notes_enc=?, custom_fields_enc=?, is_favorite=?,
-               password_strength=?, entry_type=?, totp_secret_enc=?, updated_at=?,
-               password_changed_at=?, metadata_mac=?
-               WHERE id=?""",
+            _UPDATE_ENTRY_SQL,
             (
                 entry.crypto_id,
                 entry.title,
@@ -352,25 +369,36 @@ class EntryRepository:
 
     @_db_operation
     def get_entries_by_ids(self, entry_ids: list[int]) -> list[Entry]:
-        """按 ID 列表批量获取条目，单次 SQL 查询。
+        """按 ID 列表批量获取条目。
 
         用于导入覆盖等需要一次性获取多个条目的场景，
         替代逐条 get_entry 的 N+1 查询模式。
+
+        ID 数量超过 SQLite 主机变量数限制（默认 999）时分批查询，
+        避免 too many SQL variables 错误。
 
         Args:
             entry_ids: 要获取的条目 ID 列表。
         """
         if not entry_ids:
             return []
-        placeholders = ','.join('?' for _ in entry_ids)
-        rows = self._conn.execute(
-            f"""SELECT e.*, c.name as category_name
-                FROM entries e
-                LEFT JOIN categories c ON e.category_id = c.id
-                WHERE e.id IN ({placeholders})""",
-            entry_ids,
-        ).fetchall()
-        return [self._row_to_entry(r, verify=VerifyMode.LENIENT) for r in rows]
+        results = []
+        # SQLite 默认限制 999 个变量；取 500 为分批阈值留出余量
+        batch_size = 500
+        for start in range(0, len(entry_ids), batch_size):
+            batch = entry_ids[start:start + batch_size]
+            placeholders = ','.join('?' for _ in batch)
+            rows = self._conn.execute(
+                f"""SELECT e.*, c.name as category_name
+                    FROM entries e
+                    LEFT JOIN categories c ON e.category_id = c.id
+                    WHERE e.id IN ({placeholders})""",
+                batch,
+            ).fetchall()
+            results.extend(
+                self._row_to_entry(r, verify=VerifyMode.LENIENT) for r in rows
+            )
+        return results
 
     # ==================== 密码历史 ====================
 
@@ -392,7 +420,7 @@ class EntryRepository:
         self._conn.execute(
             "DELETE FROM password_history WHERE entry_id = ? AND id NOT IN ("
             "  SELECT id FROM password_history WHERE entry_id = ?"
-            "  ORDER BY changed_at DESC LIMIT ?"
+            "  ORDER BY changed_at DESC, id DESC LIMIT ?"
             ")",
             (entry_id, entry_id, MAX_PASSWORD_HISTORY),
         )
@@ -430,7 +458,7 @@ class EntryRepository:
         self._conn.execute(
             "DELETE FROM password_history WHERE entry_id = ? AND id NOT IN ("
             "  SELECT id FROM password_history WHERE entry_id = ?"
-            "  ORDER BY changed_at DESC LIMIT ?"
+            "  ORDER BY changed_at DESC, id DESC LIMIT ?"
             ")",
             (entry_id, entry_id, MAX_PASSWORD_HISTORY),
         )
@@ -548,7 +576,7 @@ class EntryRepository:
             )
 
     def _row_to_entry(self, row: sqlite3.Row,
-                       verify: VerifyMode = VerifyMode.STRICT) -> Entry:
+                       verify: VerifyMode = VerifyMode.STRICT) -> RawEntry:
         """从数据库行构建 Entry 对象。
 
         Args:

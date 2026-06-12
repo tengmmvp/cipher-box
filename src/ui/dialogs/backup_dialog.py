@@ -107,10 +107,10 @@ class BackupDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        purge_btn = QPushButton('清理恢复点')
-        purge_btn.setFixedSize(*BTN_DIALOG)
-        purge_btn.clicked.connect(self._purge_restore_points)
-        btn_layout.addWidget(purge_btn)
+        self._purge_btn = QPushButton('清理恢复点')
+        self._purge_btn.setFixedSize(*BTN_DIALOG)
+        self._purge_btn.clicked.connect(self._purge_restore_points)
+        btn_layout.addWidget(self._purge_btn)
 
         cancel_btn = QPushButton('取消')
         cancel_btn.setFixedSize(*BTN_DIALOG)
@@ -126,6 +126,19 @@ class BackupDialog(QDialog):
         layout.addLayout(btn_layout)
 
         self._btn_group.buttonClicked.connect(self._on_mode_changed)
+
+    def showEvent(self, a0):
+        """对话框显示时按是否存在恢复点更新清理按钮可用性。"""
+        super().showEvent(a0)
+        self._update_purge_button()
+
+    def _update_purge_button(self):
+        """根据是否存在恢复前快照启用或禁用清理按钮。"""
+        try:
+            has_points = self._backup_mgr.count_restore_points() > 0
+        except Exception:
+            has_points = True  # 统计出错时保持可点，避免误锁功能
+        self._purge_btn.setEnabled(has_points)
 
     def reject(self):
         """关闭对话框前等待后台 worker 完成。
@@ -325,4 +338,8 @@ class BackupDialog(QDialog):
         if reply != QMessageBox.StandardButton.Yes:
             return
         count = self._backup_mgr.clear_restore_points()
-        QMessageBox.information(self, '完成', f'已清理 {count} 个恢复点。')
+        self._update_purge_button()
+        if count:
+            QMessageBox.information(self, '完成', f'已清理 {count} 个恢复点。')
+        else:
+            QMessageBox.information(self, '完成', '当前没有可清理的恢复点。')

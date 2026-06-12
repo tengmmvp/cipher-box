@@ -33,6 +33,7 @@ from ...models import (
     CustomField,
     Entry,
     PasswordHistory,
+    RawEntry,
     Sensitive,
 )
 from ...utils.format import format_datetime
@@ -249,7 +250,7 @@ class EntryManager:
             raise ValueError('自定义字段结构无效')
         return [CustomField.from_dict(item) for item in items]
 
-    def decrypt_entry(self, raw_entry: Entry) -> Entry:
+    def decrypt_entry(self, raw_entry: RawEntry) -> Entry:
         """解密条目的所有敏感字段，返回新的 Entry 对象"""
         integrity_errors = []
 
@@ -334,7 +335,7 @@ class EntryManager:
                 f'条目 {raw_entry.id} 导出失败，数据可能已损坏'
             ) from exc
 
-    def _decrypt_summary(self, raw_entry: Entry) -> Entry:
+    def _decrypt_summary(self, raw_entry: RawEntry) -> Entry:
         """仅解密列表展示所需字段，不让密码等明文进入列表模型。
 
         username 经 _cached_username 复用会话内缓存，避免列表/搜索路径

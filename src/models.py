@@ -7,7 +7,10 @@ Entry、Category 等模型类与字段常量是纯数据结构，不依赖任何
 与 src/exceptions.py 类似，此模块是零依赖的共享基础设施。
 """
 
+import logging
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 # 字段最大长度常量，作为单一事实来源
 MAX_FIELD_TITLE = 1024
@@ -18,6 +21,9 @@ MAX_FIELD_NOTES = 65536
 MAX_FIELD_TAGS = 4096
 MAX_FIELD_TOTP_SECRET = 2048
 MAX_CUSTOM_FIELDS_PER_ENTRY = 100
+MAX_CUSTOM_FIELD_NAME = 1024
+MAX_CUSTOM_FIELD_VALUE = 65536
+MAX_CATEGORY_NAME = 256
 MAX_PASSWORD_HISTORY = 10
 
 # 条目类型常量
@@ -54,13 +60,31 @@ class CustomField:
     _VALID_FIELD_TYPES = frozenset({'text', 'password', 'url', 'email'})
 
     @classmethod
-    def from_dict(cls, d: dict) -> 'CustomField':
+    def from_dict(cls, d: dict, *, strict: bool = False) -> 'CustomField':
+        """从字典创建 CustomField。
+
+        Args:
+            d: 字典数据。
+            strict: True 时为导入路径做严格校验，非法 field_type 或超长
+                name/value 抛出 ValueError；False（默认）容错，用于解密
+                读取已有数据，非法类型降级为 text 并记日志，避免崩溃。
+        """
+        name = d.get('name', '')
+        value = d.get('value', '')
+        if strict:
+            if not isinstance(name, str) or len(name) > MAX_CUSTOM_FIELD_NAME:
+                raise ValueError('自定义字段名称无效或过长')
+            if not isinstance(value, str) or len(value) > MAX_CUSTOM_FIELD_VALUE:
+                raise ValueError('自定义字段值无效或过长')
         field_type = d.get('field_type', 'text')
         if field_type not in cls._VALID_FIELD_TYPES:
+            if strict:
+                raise ValueError(f'无效的自定义字段类型: {field_type}')
+            logger.debug("自定义字段类型 %r 非法，降级为 text", field_type)
             field_type = 'text'
         return cls(
-            name=d.get('name', ''),
-            value=d.get('value', ''),
+            name=name,
+            value=value,
             field_type=field_type,
         )
 
@@ -99,12 +123,25 @@ class Category:
 
     @classmethod
     def from_dict(cls, data: dict) -> 'Category':
-        """从字典创建 Category，与 to_dict 对称。"""
+        """从字典创建 Category，与 to_dict 对称。
+
+        对文本字段做长度校验，作为导入/恢复路径的纵深防御；
+        上游备份恢复的 _validate_categories 已做更严格的结构校验。
+        """
+        name = data.get('name', '').strip()
+        if len(name) > MAX_CATEGORY_NAME:
+            raise ValueError(f'分类名称过长（最多 {MAX_CATEGORY_NAME} 字符）')
+        icon_char = data.get('icon_char', '[DIR]')
+        if len(icon_char) > 32:
+            raise ValueError('分类图标过长')
+        color = data.get('color', '#666666')
+        if len(color) > 32:
+            raise ValueError('分类颜色过长')
         return cls(
             id=data.get('id'),
-            name=data.get('name', '').strip(),
-            icon_char=data.get('icon_char', '[DIR]'),
-            color=data.get('color', '#666666'),
+            name=name,
+            icon_char=icon_char,
+            color=color,
             sort_order=data.get('sort_order', 0),
             created_at=data.get('created_at', ''),
         )
@@ -272,32 +309,34 @@ class Entry:
         if entry_type not in ENTRY_TYPES:
             raise ValueError(f'无效的条目类型: {entry_type}')
 
-        title = d.get('title', '')
-        if len(title) > MAX_FIELD_TITLE:
-            raise ValueError(f'标题过长（最多 {MAX_FIELD_TITLE} 字符）')
-        url = d.get('url', '')
-        if len(url) > MAX_FIELD_URL:
-            raise ValueError(f'URL 过长（最多 {MAX_FIELD_URL} 字符）')
-        notes = d.get('notes', '')
-        if len(notes) > MAX_FIELD_NOTES:
-            raise ValueError(f'备注过长（最多 {MAX_FIELD_NOTES} 字符）')
-
-        username = d.get('username', '')
-        if len(username) > MAX_FIELD_USERNAME:
-            raise ValueError(f'用户名过长（最多 {MAX_FIELD_USERNAME} 字符）')
-        password = d.get('password', '')
-        if len(password) > MAX_FIELD_PASSWORD:
-            raise ValueError(f'密码过长（最多 {MAX_FIELD_PASSWORD} 字符）')
-        tags = d.get('tags', '')
-        if len(tags) > MAX_FIELD_TAGS:
-            raise ValueError(f'标签过长（最多 {MAX_FIELD_TAGS} 字符）')
-        totp_secret = d.get('totp_secret', '')
-        if len(totp_secret) > MAX_FIELD_TOTP_SECRET:
-            raise ValueError(f'TOTP 密钥过长（最多 {MAX_FIELD_TOTP_SECRET} 字符）')
+        # 表驱动长度校验，单一循环替代 7 段重复的 if len > MAX 模板
+        field_limits = [
+            ('title', '标题', MAX_FIELD_TITLE),
+            ('url', 'URL', MAX_FIELD_URL),
+            ('notes', '备注', MAX_FIELD_NOTES),
+            ('username', '用户名', MAX_FIELD_USERNAME),
+            ('password', '密码', MAX_FIELD_PASSWORD),
+            ('tags', '标签', MAX_FIELD_TAGS),
+            ('totp_secret', 'TOTP 密钥', MAX_FIELD_TOTP_SECRET),
+        ]
+        values = {}
+        for key, label, max_len in field_limits:
+            value = d.get(key, '')
+            if len(value) > max_len:
+                raise ValueError(f'{label}过长（最多 {max_len} 字符）')
+            values[key] = value
+        title = values['title']
+        url = values['url']
+        notes = values['notes']
+        username = values['username']
+        password = values['password']
+        tags = values['tags']
+        totp_secret = values['totp_secret']
 
         custom_fields = []
         if 'custom_fields' in d and isinstance(d['custom_fields'], list):
-            custom_fields = [CustomField.from_dict(f) for f in d['custom_fields']]
+            # strict=True：导入路径拒绝非法类型与超长字段，避免静默降级掩盖损坏数据
+            custom_fields = [CustomField.from_dict(f, strict=True) for f in d['custom_fields']]
         # 限制单条目自定义字段数量，防御恶意或异常导入数据。
         # 与 backup _validate_entries 的结构校验保持一致的防御意图。
         if len(custom_fields) > MAX_CUSTOM_FIELDS_PER_ENTRY:
@@ -319,3 +358,18 @@ class Entry:
             updated_at=d.get('updated_at', ''),
             password_changed_at=d.get('password_changed_at', ''),
         )
+
+
+# RawEntry 是从数据库读取、尚未解密的 Entry 的类型别名。
+#
+# 数据层 EntryRepository._row_to_entry 等返回 RawEntry，其加密字段
+# （username/password/notes/totp_secret/custom_fields）为密文字符串，
+# custom_fields 此时为 str 即密文；业务层 EntryManager.decrypt_entry
+# 将 RawEntry 解密为明文 Entry，custom_fields 变为 list[CustomField]。
+#
+# 运行时 RawEntry 与 Entry 同为 Entry 类（custom_fields 的双类型 +
+# is_decrypted 属性区分状态），此别名用于类型标注与文档，使数据层的
+# 密文返回值与业务层的明文返回值在类型层面可分辨，降低误用风险。
+# 未采用两个独立 dataclass 的完整运行时分离，因会触及全链路加解密、
+# 签名与序列化逻辑，对密码管理器的数据损坏风险高于可维护性收益。
+RawEntry = Entry

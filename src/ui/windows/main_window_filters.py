@@ -72,6 +72,9 @@ logger = logging.getLogger(__name__)
 # 排序选项来自共享常量，作为单一事实来源
 _SORT_OPTIONS = SORT_OPTIONS
 
+# 搜索结果渲染上限：超大库下避免一次性渲染过多条目卡死 UI
+_MAX_SEARCH_RESULTS_DISPLAY = 1000
+
 
 class _MainWindowFiltersMixin(QMainWindow):
     """排序、筛选、数据刷新、条目 CRUD 及相关事件处理方法。
@@ -199,38 +202,28 @@ class _MainWindowFiltersMixin(QMainWindow):
 
     # ======== 过滤器数据获取：委托给 EntryListController ========
 
-    def _fetch_all(self) -> tuple[list, str]:
-        return self._entry_list_ctrl.fetch_all(
-            category_id=self._current_category_id,
-            search=self._current_search,
-        )
+    def _fetch_for_filter(self, filter_key: str) -> tuple[list, str]:
+        """按过滤器键获取数据，参数绑定基于当前 UI 状态。
 
-    def _fetch_favorite(self) -> tuple[list, str]:
-        return self._entry_list_ctrl.fetch_favorite(self._current_search)
+        过滤器→方法的映射复用 EntryListController.get_fetcher，避免在控制器
+        与本 Mixin 两处维护相同的键集合。各 fetcher 所需的当前分类、搜索等
+        参数在此按 filter_key 统一绑定。
+        """
+        fetcher = self._entry_list_ctrl.get_fetcher(filter_key)
+        if filter_key == 'all':
+            return fetcher(self._current_category_id, self._current_search)
+        if filter_key in ('favorite', 'recent', 'trash'):
+            return fetcher(self._current_search)
+        return fetcher()  # weak、duplicate 无参数
 
-    def _fetch_weak(self) -> tuple[list, str]:
-        return self._entry_list_ctrl.fetch_weak()
-
-    def _fetch_duplicate(self) -> tuple[list, str]:
-        return self._entry_list_ctrl.fetch_duplicate()
-
-    def _fetch_recent(self) -> tuple[list, str]:
-        return self._entry_list_ctrl.fetch_recent(self._current_search)
-
-    def _fetch_trash(self) -> tuple[list, str]:
-        return self._entry_list_ctrl.fetch_trash(self._current_search)
-
-    def _get_fetcher(self, filter_key: str):
-        """获取过滤器对应的数据获取方法"""
-        fetchers = {
-            'all': self._fetch_all,
-            'favorite': self._fetch_favorite,
-            'weak': self._fetch_weak,
-            'duplicate': self._fetch_duplicate,
-            'recent': self._fetch_recent,
-            'trash': self._fetch_trash,
-        }
-        return fetchers.get(filter_key, self._fetch_all)
+    def _current_category_name(self) -> str:
+        """返回当前选中分类的名称，无选中分类时返回空字符串。"""
+        if self._current_category_id is None:
+            return ''
+        for category in self._cached_categories:
+            if category.id == self._current_category_id:
+                return category.name
+        return ''
 
     def _refresh_entries(self):
         # 重建列表前取消待执行的选中防抖，避免对已失效的 pending_selection
@@ -247,7 +240,10 @@ class _MainWindowFiltersMixin(QMainWindow):
         saved_row = self._entry_list.currentRow() if should_restore_position else -1
         self._entry_list.clear()
 
-        entries, title = self._get_fetcher(self._current_filter)()
+        entries, title = self._fetch_for_filter(self._current_filter)
+        # 分类筛选下显示分类名作为标题，而非 fetcher 默认的「全部条目」
+        if self._current_category_id is not None:
+            title = self._current_category_name() or title
         self._list_title.setText(title)
 
         if self._current_search and self._current_filter in ('weak', 'duplicate'):
@@ -260,6 +256,15 @@ class _MainWindowFiltersMixin(QMainWindow):
         if self._current_filter in ('all', 'favorite', 'trash'):
             entries = self._sort_entries(entries)
 
+        # 搜索结果防御性上限：超大库下避免渲染过多条目卡死 UI
+        original_count = len(entries)
+        truncated = (
+            bool(self._current_search)
+            and original_count > _MAX_SEARCH_RESULTS_DISPLAY
+        )
+        if truncated:
+            entries = entries[:_MAX_SEARCH_RESULTS_DISPLAY]
+
         for entry in entries:
             item = QListWidgetItem(self._entry_list)
             item.setSizeHint(QSize(0, EntryItemDelegate.ROW_HEIGHT))
@@ -271,7 +276,10 @@ class _MainWindowFiltersMixin(QMainWindow):
         if should_restore_position:
             self._entry_list.verticalScrollBar().setValue(saved_scroll)  # pyright: ignore[reportOptionalMemberAccess]
 
-        self._count_label.setText(f'{len(entries)} 项')
+        if truncated:
+            self._count_label.setText(f'前 {len(entries)} 项（共 {original_count} 项）')
+        else:
+            self._count_label.setText(f'{len(entries)} 项')
 
         if entries:
             self._list_stack.setCurrentWidget(self._entry_list)
@@ -466,9 +474,8 @@ class _MainWindowFiltersMixin(QMainWindow):
             self._filter_list.blockSignals(True)
             self._filter_list.setCurrentRow(0)
             self._filter_list.blockSignals(False)
-
-            cat_name = current.text()
-            self._list_title.setText(cat_name)
+            # 列表标题由 _refresh_entries 根据 _current_category_id 统一设置，
+            # 避免此处设置的分类名随后被 fetcher 返回的标题覆盖
             self._refresh_entries()
 
     def _on_entry_selected(self, current, _previous):
@@ -477,16 +484,25 @@ class _MainWindowFiltersMixin(QMainWindow):
             self._select_timer.start()
 
     def _do_select_entry(self):
-        """防抖后的条目选择：执行解密并显示"""
+        """防抖后的条目选择：执行解密并显示。
+
+        校验 pending_selection 仍是列表当前选中项：后台刷新可能在防抖窗口内
+        重建列表，使该条目被删除或替换，此时不应再用其 id 解密显示，避免
+        详情面板与列表当前选中不一致。
+        """
         current = self._pending_selection
         # 取值后立即重置，避免 timer 再次触发时复用过期引用
         self._pending_selection = None
-        if current:
-            summary = current.data(Qt.ItemDataRole.UserRole)
-            if summary:
-                entry = self._entry_mgr.get_entry(summary.id)
-                if entry:
-                    self._detail_panel.show_entry(entry)
+        if current is None:
+            return
+        # 后台刷新可能已重建列表，确认 pending 项仍是当前选中项
+        if self._entry_list.currentItem() is not current:
+            return
+        summary = current.data(Qt.ItemDataRole.UserRole)
+        if summary:
+            entry = self._entry_mgr.get_entry(summary.id)
+            if entry:
+                self._detail_panel.show_entry(entry)
 
     # ======== 条目右键菜单 ========
 
@@ -681,6 +697,11 @@ class _MainWindowFiltersMixin(QMainWindow):
             entry_title = entry.title
 
             def undo():
+                # 校验条目仍在回收站：撤销 Toast 存活期间条目可能已被永久删除
+                current = self._entry_mgr.get_entry(entry_id)
+                if current is None or not current.is_deleted:
+                    Toast.show(self, '该条目已被永久删除，无法撤销', Toast.ERROR)
+                    return
                 self._entry_mgr.restore_entry(entry_id)
                 self._refresh_after_entry_change()
                 Toast.show(self, f'已恢复「{entry_title}」', Toast.SUCCESS)

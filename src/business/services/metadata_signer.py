@@ -46,27 +46,35 @@ class MetadataSigner:
         """从主密钥派生 metadata 签名域密钥。"""
         return hmac.new(key, b'cipherbox:entry-metadata-key', hashlib.sha256).digest()
 
-    def sign(self, entry, key: bytes | None = None) -> str:
-        """计算条目元数据 HMAC 签名。
-
-        Args:
-            entry: 条目对象，Entry dataclass 实例。
-            key: 可选的显式密钥。为 None 时使用预计算的域密钥。
+    def sign(self, entry) -> str:
+        """计算条目元数据 HMAC 签名，使用预计算的域密钥。
 
         Returns:
             HMAC-SHA256 十六进制摘要字符串。
 
         Raises:
-            VaultLockedError: 未提供密钥且域密钥不可用。
+            VaultLockedError: 域密钥未设置（保险库未解锁）。
         """
-        signing_key = key or self._domain_key
-        if signing_key is None:
+        if self._domain_key is None:
             raise VaultLockedError('保险库未解锁，无法签名条目元数据')
-        # 当 key=None 时复用预计算域密钥，否则临时计算。
-        domain_key = self._domain_key if key is None else self.compute_domain_key(signing_key)
-        assert domain_key is not None  # signing_key 非空检查保证
         return hmac.new(
-            domain_key,
+            self._domain_key,
+            self._payload(entry),
+            hashlib.sha256,
+        ).hexdigest()
+
+    def sign_with_master_key(self, entry, master_key: bytes) -> str:
+        """使用主密钥临时派生域密钥签名，不依赖预计算的域密钥。
+
+        供解锁流程在设置域密钥之前需要签名的场景；正常路径优先用 sign()，
+        避免每条条目重复 compute_domain_key 的 HMAC 开销。
+
+        Args:
+            entry: 条目对象。
+            master_key: 主密钥，从中派生域密钥。
+        """
+        return hmac.new(
+            self.compute_domain_key(master_key),
             self._payload(entry),
             hashlib.sha256,
         ).hexdigest()
@@ -87,12 +95,8 @@ class MetadataSigner:
             hashlib.sha256,
         ).hexdigest()
 
-    def verify(self, entry, key: bytes | None = None) -> None:
+    def verify(self, entry) -> None:
         """验证条目元数据完整性签名。
-
-        Args:
-            entry: 条目对象。
-            key: 可选的显式密钥。
 
         Raises:
             VaultIntegrityError: 签名验证失败。
@@ -100,7 +104,7 @@ class MetadataSigner:
         """
         if not entry.metadata_mac:
             raise VaultIntegrityError(f'条目 {entry.id} 缺少元数据完整性签名')
-        expected = self.sign(entry, key=key)
+        expected = self.sign(entry)
         if not hmac.compare_digest(entry.metadata_mac, expected):
             raise VaultIntegrityError(f'条目 {entry.id} 元数据完整性校验失败')
 

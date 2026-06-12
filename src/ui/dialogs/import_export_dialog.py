@@ -296,18 +296,24 @@ class ImportExportDialog(QDialog):
         # 再次收紧权限。使用 _selected_path 而非文本框内容判空，避免
         # 用户编辑文本框导致路径不可靠。
         path = self._selected_path
+        perm_warning = False
         if path:
             try:
                 secure_file(Path(path))
             except OSError:
                 logger.warning("导出文件权限设置失败: %s", path)
-        self._status_label.setText(format_status(True, f'成功导出 {count} 条记录'))
+                perm_warning = True
+        message = f'成功导出 {count} 条记录'
+        if perm_warning:
+            # 导出文件（可能含明文密码）权限未能收紧，明确提示用户手动限制访问
+            message += '（警告：文件权限未能收紧，建议手动限制该文件访问）'
+        self._status_label.setText(format_status(True, message))
         self._status_label.setStyleSheet(f'color: {c("success")};')
 
     def _on_export_error(self, error_msg: str):
         release_worker(self)
         self._set_busy(False)
-        logger.error("导出失败", exc_info=True)
+        logger.error("导出失败: %s", error_msg)
         self._status_label.setText(format_status(False, f'导出失败：{error_msg}'))
         self._status_label.setStyleSheet(f'color: {c("danger")};')
 
@@ -373,6 +379,6 @@ class ImportExportDialog(QDialog):
         release_worker(self)
         self._set_busy(False)
         self._progress.hide()
-        logger.error("导入失败", exc_info=True)
+        logger.error("导入失败: %s", error_msg)
         self._status_label.setText(format_status(False, f'导入失败：{error_msg}'))
         self._status_label.setStyleSheet(f'color: {c("danger")};')
