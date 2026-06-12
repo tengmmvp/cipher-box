@@ -32,9 +32,9 @@ class CustomFieldsRenderer:
         """初始化渲染器。
 
         Args:
-            copy_callback: 复制反馈回调，签名 (btn: QPushButton, text: str) -> None
-            copy_feedback_callback: 复制反馈通知回调，签名 () -> None
-            hide_timer_callback: 密码可见时长回调，签名 () -> int，单位毫秒
+            copy_callback: 复制反馈回调，接收按钮与文本两个参数，无返回值。
+            copy_feedback_callback: 复制反馈通知回调，无参数无返回值。
+            hide_timer_callback: 密码可见时长回调，无参数返回毫秒数。
         """
         self._copy_callback = copy_callback
         self._copy_feedback_callback = copy_feedback_callback

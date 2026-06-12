@@ -39,7 +39,7 @@ class EntryListController:
     # ========== 排序 ==========
 
     def get_sort_config(self, sort_index: int) -> tuple[str, str]:
-        """根据排序下拉框索引返回 (field, order)。
+        """根据排序下拉框索引返回排序字段与方向。
 
         Args:
             sort_index: 排序下拉框 ``QComboBox.currentIndex()`` 的值。
@@ -113,9 +113,9 @@ class EntryListController:
         """获取近期更新条目。
 
         search 为空时，limit 直接在 SQL 层截断，高效取最近 N 条。
-        search 非空时，必须先全量查询（get_entry_summaries 已不下推 limit），
-        再按 updated_at 排序后截断，否则「先 SQL 截断再内存过滤」会使
-        近期+搜索的命中数远少于实际匹配数。
+        search 非空时必须先全量查询，因 get_entry_summaries 已不下推 limit，
+        需再按 updated_at 排序后截断；否则先 SQL 截断再内存过滤会使近期叠加
+        搜索的命中数远少于实际匹配数。
         """
         entries = self._entry_mgr.get_entry_summaries(
             search=search, limit=RECENT_ENTRY_LIMIT,

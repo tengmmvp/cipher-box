@@ -411,7 +411,7 @@ class EntryRepository:
 
         Args:
             entry_id: 条目 ID。
-            items: [(old_password_enc, changed_at), ...] 列表。
+            items: 由旧密码密文与变更时间组成的二元组列表。
         """
         if not items:
             return
@@ -491,8 +491,8 @@ class EntryRepository:
         改密重加密时将逐条 UPDATE 合并为单次 executemany，减少数据库往返次数。
 
         Args:
-            rows: ``ReEncryptedHistory`` NamedTuple 列表，推荐使用；
-                或 (new_password_enc, id) tuple 列表。
+            rows: 推荐使用 ``ReEncryptedHistory`` NamedTuple 列表，
+                也可传入由新密码密文与记录 id 组成的二元组列表。
         """
         if not rows:
             return

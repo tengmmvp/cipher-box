@@ -316,9 +316,10 @@ class _MainWindowFiltersMixin(QMainWindow):
         self._list_stack.setCurrentWidget(empty)
 
     def _resolve_empty_state(self, total_entries: int):
-        """按优先级解析当前空状态配置，返回 (icon, title, subtitle, action_text, slot)。
+        """按优先级解析当前空状态配置。
 
-        将 7 种空态场景的文案/图标配置集中于此；EmptyStateWidget 的构造与信号
+        返回由图标、标题、副标题、操作按钮文案、操作回调槽位组成的五元组。
+        将 7 种空态场景的文案与图标配置集中于此；EmptyStateWidget 的构造与信号
         连接统一在 _show_empty_state 一处完成，新增或修改空态文案只需调整本表。
         """
         if self._current_search:

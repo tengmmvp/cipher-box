@@ -260,7 +260,7 @@ def test_selecting_first_entry_opens_detail_panel_without_crash():
         window = MainWindow(config, vault)
         window._entry_list.setCurrentRow(0)
         # 等待 80ms 选择防抖定时器触发并处理事件
-        # PyQt6 QtTest.pyi 将 qWait 误标为实例方法（首个形参为 self），
+        # PyQt6 QtTest.pyi 将 qWait 误标为实例方法，首个形参为 self，
         # 导致 pyright 把位置实参绑定到 self 而报 ms 缺失；此处将 qWait
         # cast 为接受单一 int 的可调用对象，消除类型误差，运行时行为不变。
         cast(Callable[[int], None], QTest.qWait)(150)

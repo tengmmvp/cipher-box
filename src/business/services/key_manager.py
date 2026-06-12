@@ -1,13 +1,13 @@
 """主密钥与快照密钥的持有与安全清零。
 
 从 VaultManager 提取的密钥生命周期管理职责，集中密钥材料的持有与清零，
-便于审计密钥访问路径，并为未来引入更安全的密钥托管机制（如 C 扩展级
-密钥对象）提供单一改造点。
+便于审计密钥访问路径，并为未来引入更安全的密钥托管机制提供单一改造点，
+例如 C 扩展级的密钥对象。
 
-注：曾评估以匿名 mmap 持有主密钥以求更可靠清零，但 Python 标准库
-hmac.new 不接受 mmap（需复制，反而扩大明文暴露面），且 cryptography 的
+注：曾评估以匿名 mmap 持有主密钥以求更可靠清零，但 Python 标准库的
+hmac.new 不接受 mmap，需先复制反而扩大明文暴露面；且 cryptography 的
 AESGCM 构造时仍会将密钥复制到 OpenSSL C 层，mmap 无法清零该副本。
-故当前仍以 bytearray + secure_zero_buffer 持有，这是 CPython 下的最佳实践。
+故当前仍以 bytearray 配合 secure_zero_buffer 持有，这是 CPython 下的最佳实践。
 """
 
 import logging

@@ -172,9 +172,10 @@ class PasswordGenerator:
                 logger.debug("检测到常见密码模式")
                 break
 
-        # 评分体系：0=非常弱, 1=弱, 2=一般, 3=强, 4=非常强
-        # 理论最大原始分 6（len>=8 + len>=12 + upper + lower + digit + symbol），
-        # 通过 is_common 惩罚和 unique_ratio 惩罚降低后，最终 clamp 到 [0, 4]。
+        # 评分体系共 5 档：0 非常弱、1 弱、2 一般、3 强、4 非常强。
+        # 理论原始满分 6 分，分别来自长度达 8、长度达 12、含大写、含小写、
+        # 含数字、含特殊字符六项；再经常见密码惩罚与重复字符惩罚下调，
+        # 最终限制在 0 到 4 区间。
         score = 0
         feedback = []
 

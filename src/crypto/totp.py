@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class TOTPGenerator:
-    """TOTP (Time-based One-Time Password) 生成器"""
+    """基于时间的一次性密码 TOTP 生成器。"""
 
     DEFAULT_PERIOD = 30  # 时间步长，单位为秒
     DEFAULT_DIGITS = 6   # 验证码位数
@@ -41,7 +41,7 @@ class TOTPGenerator:
             secret: 可能带算法前缀的密钥字符串
 
         Returns:
-            (algorithm, raw_secret) 元组
+            由算法名和去除前缀后的密钥组成的元组
         """
         secret = secret.strip()
         for prefix, algo in TOTPGenerator._PREFIX_MAP.items():
@@ -101,7 +101,7 @@ class TOTPGenerator:
         """TOTP 生成的共享实现。
 
         Returns:
-            (code, error) 元组：成功时 error 为 None，失败时 code 为空字符串。
+            由验证码和错误对象组成的元组。成功时错误对象为 None，失败时验证码为空字符串。
         """
         if not secret:
             return '', ValueError('TOTP 密钥不能为空')

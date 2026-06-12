@@ -35,10 +35,10 @@ from .schema_manager import SchemaManager
 logger = logging.getLogger(__name__)
 
 
-# 提交后文件权限刷新（secure_file）的防抖间隔（秒）。批量写入时每行操作都
-# 会触发 commit，若每次都重新设置文件权限开销过大；仅在距上次刷新达到此间隔
-# 后才再次执行。跨层时序常量未集中到 UI 层以避免数据层反向依赖 UI 模块；
-# 本常量作为数据层时序参数的命名事实来源。
+# 提交后刷新文件权限的防抖间隔，单位为秒。批量写入时每行操作都会触发 commit，
+# 若每次都重新设置文件权限开销过大，因此仅在距上次刷新达到此间隔后才再次执行。
+# 跨层时序常量未集中到 UI 层，以避免数据层反向依赖 UI 模块；本常量作为数据层
+# 时序参数的命名事实来源。
 SECURE_FILES_DEBOUNCE_SECONDS = 1.0
 
 
@@ -236,8 +236,8 @@ class DatabaseManager:
     def _auto_commit(self) -> None:
         """内部提交：仅在非事务模式下执行 commit。
 
-        文件权限操作（secure_file）添加 ``SECURE_FILES_DEBOUNCE_SECONDS`` 秒防抖，
-        避免批量写入时每行操作都触发三次文件权限设置，仅在距上次达到该间隔后才执行。
+        文件权限刷新附加 ``SECURE_FILES_DEBOUNCE_SECONDS`` 秒防抖，避免批量写入时
+        每行操作都触发三次文件权限设置，仅在距上次刷新达到该间隔后才执行。
         """
         if not self.in_transaction and self._conn:
             try:
@@ -402,15 +402,15 @@ class DatabaseManager:
     def get_category_entry_counts(self) -> dict[int, int]:
         return self._category_repo.get_category_entry_counts()
 
-    # ======== 跨表编排（非委托透传） ========
+    # ======== 跨表编排，非委托透传 ========
     # 以下方法含显式事务与多 Repository 协调，锁与事务由本编排层统一管理，
     # 与上方「委托透传」类方法区分。新增编排逻辑请保持此注释边界。
 
     def delete_category(self, category_id: int) -> None:
         """删除分类：事务内先解关联条目并重算签名，再删除分类行。
 
-        跨表编排（entries 解关联 + categories 删除）由本编排层协调，
-        各 Repository 仅负责单表操作，消除跨 Repository 的私有访问越权。
+        解关联条目与删除分类两步跨表编排由本层协调，各 Repository 仅负责
+        单表操作，从而消除跨 Repository 的私有访问越权。
         """
         with self._lock:
             self._guard_write()

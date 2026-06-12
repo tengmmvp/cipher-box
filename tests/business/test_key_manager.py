@@ -15,7 +15,7 @@ from src.business.services import key_manager as key_manager_module
 from src.business.services.key_manager import KeyManager
 
 # ---------------------------------------------------------------------------
-# 辅助函数：生成 32 字节 bytearray 测试密钥（AES-256 宽度，便于真实清零验证）
+# 辅助函数：生成 32 字节 bytearray 测试密钥，对应 AES-256 宽度，便于真实清零验证
 # ---------------------------------------------------------------------------
 
 def _make_bytearray_key(value: int = 0xAB) -> bytearray:
@@ -106,7 +106,7 @@ def test_clear_sets_all_fields_none():
 
 
 # ---------------------------------------------------------------------------
-# 4. clear 真正清零 bytearray 密钥（验证 secure_zero_buffer 被调用 + 内容归零）
+# 4. clear 真正清零 bytearray 密钥，验证 secure_zero_buffer 被调用且内容归零
 # ---------------------------------------------------------------------------
 
 def test_clear_zeroes_bytearray_key_content():
@@ -179,7 +179,7 @@ def test_repeated_activate_clear_cycle():
 
 
 # ---------------------------------------------------------------------------
-# 6. 单字段置空（传入 None）
+# 6. 单字段置空，传入 None
 # ---------------------------------------------------------------------------
 
 def test_update_key_none():

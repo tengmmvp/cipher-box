@@ -55,7 +55,7 @@ class PasswordHistoryWidget(QWidget):
 
         Args:
             get_pwd_visible_ms: 无参函数，返回密码可见毫秒数
-            copy_with_feedback: 接受 (btn, text) 参数的复制反馈函数
+            copy_with_feedback: 复制反馈函数，接受按钮与文本两个参数
         """
         self._get_pwd_visible_ms = get_pwd_visible_ms
         self._copy_with_feedback = copy_with_feedback

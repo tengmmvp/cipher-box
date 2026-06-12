@@ -90,14 +90,16 @@ class EncryptionEngine:
         key: bytes,
         associated_data: str | bytes,
     ) -> str:
-        """加密明文，返回 base64 编码的密文
+        """加密明文，返回带前缀的 base64 密文。
 
         Args:
             plaintext: 待加密的明文字符串
             key: 32 字节 AES-256 密钥
+            associated_data: 参与认证的附加数据，解密时需原样提供
 
         Returns:
-            base64 编码的 (nonce + ciphertext + tag) 字节串
+            形如 ``cb:`` 前缀加 base64 的密文字符串。密文内部由随机 nonce、
+            密文与 GCM 认证标签拼接后编码得到。
         """
         # 空字符串替换为哨兵值走正常加密流程，确保 AAD 始终参与认证。
         if not plaintext:
@@ -117,17 +119,18 @@ class EncryptionEngine:
         key: bytes,
         associated_data: str | bytes,
     ) -> str:
-        """解密 base64 编码的密文
+        """解密由 encrypt 产生的密文，返回明文字符串。
 
         Args:
-            encrypted_b64: base64 编码的 (nonce + ciphertext + tag)
+            encrypted_b64: encrypt 返回的密文字符串
             key: 32 字节 AES-256 密钥
+            associated_data: 加密时使用的附加数据，须与加密时完全一致
 
         Returns:
             解密后的明文字符串
 
         Raises:
-            ValueError: 解密失败或密文为空时抛出
+            ValueError: 密文为空、格式不符或认证失败时抛出
         """
         if not encrypted_b64:
             raise ValueError('收到空密文')
@@ -158,7 +161,11 @@ class EncryptionEngine:
         key: bytes,
         associated_data: str | bytes,
     ) -> bytes:
-        """加密字节数据"""
+        """加密字节数据，返回带 ``CBX`` 字节前缀的密文。
+
+        与 encrypt 对称，区别在于处理 bytes 并以字节前缀返回；空数据同样
+        替换为哨兵值走正常加密流程，保证附加数据始终参与认证。
+        """
         if not data:
             # 与字符串路径对称：空数据替换为哨兵值走正常加密流程
             data = cls._EMPTY_BYTES_SENTINEL
@@ -176,10 +183,18 @@ class EncryptionEngine:
         key: bytes,
         associated_data: str | bytes,
     ) -> bytes:
-        """解密字节数据
+        """解密由 encrypt_bytes 产生的字节密文。
+
+        Args:
+            data: encrypt_bytes 返回的密文字节
+            key: 32 字节 AES-256 密钥
+            associated_data: 加密时使用的附加数据，须与加密时完全一致
+
+        Returns:
+            解密后的原始字节数据
 
         Raises:
-            ValueError: 解密失败或密文无效时抛出
+            ValueError: 密文格式不符、长度不足或认证失败时抛出
         """
         if not data.startswith(cls.BYTES_PREFIX):
             raise ValueError('不支持的密文字节格式')

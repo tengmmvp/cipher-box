@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 from ...models import Entry
 from .crypto_utils import build_entry_summary, decrypt_field, require_vault_key
 
-# 分析缓存存活时间（秒）。命中期内复用基础分析与密码指纹结果，
+# 分析缓存存活时间，单位为秒。命中期内复用基础分析与密码指纹结果，
 # 避免重复执行 O(n) 解密与 HMAC 计算。条目增删或改密会立即失效缓存，
-# 此 TTL 仅控制时间维度的淘汰。跨层时序常量未集中到 UI 层以避免
+# 此 TTL 仅控制时间维度的淘汰。跨层时序常量未集中到 UI 层，以避免
 # 业务层反向依赖 UI 模块；本常量作为业务层时序参数的命名事实来源。
 SECURITY_ANALYSIS_CACHE_TTL_SECONDS = 120
 
@@ -100,7 +100,7 @@ class SecurityAnalyzer:
 
         返回的每个 Entry 均通过 ``dataclasses.replace`` 创建为独立副本，调用方
         修改其属性不会污染缓存。duplicate_groups 中的每个分组列表与组内 Entry
-        同样复制。summary Entry 不含可变容器字段（custom_fields 为空列表），
+        同样复制。summary Entry 不含可变容器字段，其 custom_fields 为空列表，
         故浅层 replace 已足够。
         """
         if days != self._analysis_cache_days:

@@ -61,7 +61,7 @@ class SidebarController:
         """构建删除分类的确认消息。
 
         Returns:
-            (message, has_entries, category_name) 三元组。has_entries 为 True
+            由确认消息、是否含条目、分类名称组成的三元组。has_entries 为 True
             表示该分类下有条目，需要额外提醒；category_name 为分类名称，供
             UI 反馈使用，分类不存在时为空串。
         """

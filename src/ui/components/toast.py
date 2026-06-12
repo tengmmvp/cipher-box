@@ -411,7 +411,7 @@ class Toast:
         Args:
             parent: 父窗口，Toast 将在其右下角显示
             message: 通知消息文本
-            toast_type: 通知类型 (success / error / info / warning)
+            toast_type: 通知类型，取值 success、error、info 或 warning
             duration: 自动关闭时间，单位毫秒，设为 0 则不自动关闭
             action_text: 可选操作按钮文字，例如「撤销」
             action_callback: 操作按钮点击回调

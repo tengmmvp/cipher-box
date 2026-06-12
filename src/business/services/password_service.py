@@ -36,7 +36,7 @@ class PasswordService:
 
     @staticmethod
     def validate_master_password(password: str, label: str = '主密码'):
-        """验证主密码强度要求。返回 (valid, error_message)。"""
+        """验证主密码强度要求，返回由是否有效与错误信息组成的二元组。"""
         return PasswordGenerator.validate_master_password(password, label)
 
     @staticmethod

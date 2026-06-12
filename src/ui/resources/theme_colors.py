@@ -1,8 +1,8 @@
 """主题颜色系统 — 统一管理所有颜色常量
 
-单例契约：本模块使用模块级可变状态（_current_theme、_current_colors）追踪
-当前主题。set_theme() 必须在任何 c() 调用之前执行，通常由 styles.get_style()
-或 MainWindow._apply_theme() 触发。
+单例契约：本模块使用模块级可变状态追踪当前主题，相关变量为 _current_theme
+与 _current_colors。set_theme() 必须在任何 c() 调用之前执行，通常由
+styles.get_style() 或 MainWindow._apply_theme() 触发。
 
 线程安全：PyQt6 采用单线程 UI 模型，所有 c() 调用均在主线程上发生，
 无需额外同步。后台线程不应直接调用 c()。

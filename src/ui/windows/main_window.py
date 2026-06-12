@@ -441,7 +441,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         QTimer.singleShot(MS_INITIAL_BACKUP_DELAY, self._maybe_auto_backup)
 
     def _maybe_auto_backup(self, force: bool = False):
-        """按设置创建当前保险库的本地快速快照（后台执行，避免阻塞 UI）。"""
+        """按设置创建当前保险库的本地快速快照，后台执行以避免阻塞 UI。"""
         if not self._vault.is_unlocked:
             return
         self._run_backup_async(force=force)

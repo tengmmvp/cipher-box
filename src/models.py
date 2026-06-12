@@ -227,9 +227,8 @@ class Entry:
     def to_dict(self, include_password: bool = False) -> dict:
         """转换为字典，供导出流程使用。
 
-        非持久化字段（id、crypto_id、is_deleted、deleted_at、
-        integrity_error、integrity_message、
-        password_present、totp_present）不参与导出，
+        非持久化字段不参与导出，包括 id、crypto_id、is_deleted、deleted_at、
+        integrity_error、integrity_message、password_present 与 totp_present，
         导入时由 from_dict 重新生成或使用默认值。
 
         Raises:
@@ -265,9 +264,9 @@ class Entry:
     def from_dict(cls, d: dict) -> 'Entry':
         """从字典创建，供导入流程使用。
 
-        仅恢复用户可见字段；数据库元数据（id、crypto_id、时间戳、
-        is_deleted 等）在导入流程中由 EntryManager 或 BackupRestoreManager
-        单独处理，不从此字典读取。
+        仅恢复用户可见字段；数据库元数据如 id、crypto_id、时间戳、is_deleted 等
+        在导入流程中由 EntryManager 或 BackupRestoreManager 单独处理，
+        不从此字典读取。
         """
         entry_type = d.get('entry_type', ENTRY_TYPE_LOGIN)
         if entry_type not in ENTRY_TYPES:

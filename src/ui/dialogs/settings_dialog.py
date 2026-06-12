@@ -213,8 +213,8 @@ class SettingsDialog(QDialog):
         if path:
             self._backup_path_edit.setText(path)
 
-    # 配置项映射表，元素为 (config_key, widget_attr, accessor_type, default_value) 四元组，
-    # accessor_type 取值为 combo、check 或 spin，决定读写控件的方式
+    # 配置项映射表，每个元素为四元组，依次是配置键、控件属性、访问类型与默认值。
+    # 访问类型取值为 combo、check 或 spin，决定读写控件的方式
     _SETTINGS_MAP = [
         ('theme', '_theme_combo', 'combo', 'light'),
         ('show_tray_icon', '_show_tray_check', 'check', True),

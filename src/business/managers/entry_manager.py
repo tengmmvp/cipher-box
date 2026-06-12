@@ -65,14 +65,14 @@ class EntryManager:
         self._cache_epoch: str | None = None
         # TOTP secret 明文缓存，entry_id → 解密 totp_secret。
         # 仅供 generate_totp_cached 复用，避免定时器每秒查 DB + AESGCM 解密。
-        # 生命周期与 username 缓存一致：key_epoch 变化（改密/锁定）即清空，
-        # 条目更新修改 totp_secret 时按 entry_id 失效（见 update_entry）。
+        # 生命周期与 username 缓存一致：key_epoch 因改密或锁定而变化时即清空，
+        # 条目更新修改 totp_secret 时按 entry_id 失效，详见 update_entry。
         # TOTP secret 用于生成验证码，属敏感凭据，但与 username 同属会话内
         # 必需明文，缓存窗口与 username 缓存等价。
         self._totp_secret_cache: dict[int, str] = {}
         # 标签计数缓存，避免侧边栏每次刷新都全表扫描 tags 列并内存聚合。
-        # tags 为明文字段（非加密），缓存仅含 tag 计数，无敏感数据。
-        # 失效条件：条目增删改（_notify_entry_change）、锁定/改密（epoch 变化）。
+        # tags 为明文字段、非加密，缓存仅含 tag 计数，无敏感数据。
+        # 失效条件：条目增删改经 _notify_entry_change 触发，锁定或改密使 epoch 变化。
         self._tags_cache: list[tuple[str, int]] | None = None
         # 条目变更回调列表，用于事件驱动的缓存失效，如 SecurityAnalyzer。
         self._on_entry_change_callbacks: list = []
@@ -611,7 +611,7 @@ class EntryManager:
         return self.db.get_password_history_count(entry_id)
 
     def decrypt_password_history(self, history: list[PasswordHistory]) -> list[dict]:
-        """解密密码历史，返回 [{changed_at, password}]"""
+        """解密密码历史，返回字典列表，每个字典含变更时间 changed_at 与密码 password。"""
         result = []
         for h in history:
             pwd = self._decrypt_field(
@@ -703,7 +703,7 @@ class EntryManager:
         generate_totp_cached 命中缓存，避免定时器每秒重复解密。
 
         Returns:
-            ``{'code': str, 'remaining': int, 'period': int}``，
+            包含验证码 code、剩余秒数 remaining、周期 period 三个键的字典；
             条目不存在或无 TOTP 密钥时返回 None。
         """
         self._invalidate_if_epoch_changed()

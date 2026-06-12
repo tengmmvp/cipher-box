@@ -1,7 +1,7 @@
 """关键安全路径的事务回滚与一致性回归测试。
 
 补充近期重构后的安全不变量：
-- snapshot_key 随主密钥 epoch 轮换（改密时旧 snapshot 备份失效并清理）
+- snapshot_key 随主密钥 epoch 轮换，改密时旧 snapshot 备份失效并清理
 - VaultManager 拆出 KeyManager 后改密重加密的回滚仍保证密钥与数据匹配
 - epoch 写守卫去掉 TTL 缓存后，导入期间并发改密仍能被守卫拦截
 
@@ -68,13 +68,12 @@ class TestChangePasswordRollbackConsistency:
     def test_change_password_rollback_preserves_vault(self):
         """重加密中途抛异常时，改密失败且回滚到原始状态。
 
-        安全属性：改密流程包裹在事务中；当 KeyRotationService 的任一步
-        （重加密条目或重加密历史）抛出异常时，_re_encrypt_all 必须回滚
-        所有数据库变更并清除内存中的新密钥，保证：
-        (a) 原主密码仍可重新解锁保险库；
-        (b) 原条目的全部敏感字段（含密码历史、TOTP、自定义字段）仍可用
-            原密钥正确解密——即密钥与数据始终匹配，不会出现“新密钥已落盘
-            但数据仍是旧密钥加密”或反之的损坏窗口。
+        安全属性：改密流程包裹在事务中；当 KeyRotationService 的重加密条目
+        或重加密历史任一步骤抛出异常时，_re_encrypt_all 必须回滚所有数据库
+        变更并清除内存中的新密钥，保证两点：其一，原主密码仍可重新解锁
+        保险库；其二，原条目的全部敏感字段含密码历史、TOTP、自定义字段，
+        仍可用原密钥正确解密。即密钥与数据始终匹配，不会出现新密钥已落盘
+        但数据仍是旧密钥加密、或反之的损坏窗口。
         """
         original = self._original
         assert original is not None
@@ -83,8 +82,8 @@ class TestChangePasswordRollbackConsistency:
         epoch_before = self._vault.db.get_meta('key_epoch')
 
         # 在 re_encrypt_entries 第一步即抛异常，模拟重加密中途失败。
-        # 使用 RuntimeError（非 CipherBoxError），确保被 _change_master_password_locked
-        # 的 except Exception 捕获并返回 (False, ...)，而非向上传播。
+        # 使用 RuntimeError 而非 CipherBoxError，确保被 _change_master_password_locked
+        # 的 except Exception 捕获并返回失败元组，而非向上传播。
         def _failing_re_encrypt_entries(self_rotator, old_key, new_key, *,
                                         cancel_event=None):
             raise RuntimeError('模拟重加密中途失败')
@@ -101,12 +100,12 @@ class TestChangePasswordRollbackConsistency:
         # 改密应失败
         assert not ok
 
-        # 关键一致性验证：原主密码仍可解锁（密钥与数据匹配，未损坏）
+        # 关键一致性验证：原主密码仍可解锁，密钥与数据匹配且未损坏
         self._vault.lock()
         unlock_ok, _ = self._vault.unlock(self._master_pwd)
         assert unlock_ok, '改密回滚后原主密码应仍能解锁保险库'
 
-        # epoch 不应被推进（事务回滚生效）
+        # epoch 不应被推进，事务回滚生效
         epoch_after = self._vault.db.get_meta('key_epoch')
         assert epoch_after == epoch_before, '回滚后数据库 epoch 不应变化'
 
@@ -127,8 +126,8 @@ class TestChangePasswordRollbackConsistency:
         """重加密历史步骤失败时同样回滚并保持一致。
 
         安全属性：re_encrypt_entries 成功但 re_encrypt_history 抛异常时，
-        事务必须整体回滚（条目重加密、历史重加密、元数据更新一并撤销），
-        不出现“条目已用新密钥落盘但历史仍为旧密钥”的部分推进状态。
+        事务必须整体回滚，条目重加密、历史重加密、元数据更新一并撤销，
+        不出现"条目已用新密钥落盘但历史仍为旧密钥"的部分推进状态。
         """
         original = self._original
         assert original is not None
@@ -213,7 +212,7 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
         with open(valid_path, 'rb') as f:
             raw = f.read()
 
-        # 备份布局：MAGIC(16) + flags(1) + salt(32) + iterations(4) + ciphertext
+        # 备份布局：MAGIC 占 16 字节、flags 占 1 字节、salt 占 32 字节、iterations 占 4 字节，其后为 ciphertext
         header_len = len(BACKUP_MAGIC) + 1 + BACKUP_SALT_SIZE + 4
         assert len(raw) > header_len + 16, '备份密文区过短，无法构造篡改'
 
@@ -231,13 +230,12 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
     def test_restore_corrupted_backup_rolls_back_and_leaves_no_restore_point(self):
         """恢复密文损坏的备份应失败，数据库回滚，且不残留恢复点。
 
-        安全属性：
-        (a) 当备份密文被篡改（GCM 认证失败）时，restore_backup 必须返回失败，
-            不应用任何备份数据；
-        (b) 失败必须发生在创建恢复点之前（解密在 _create_restore_point 之前），
-            因此本次失败不应残留新的 pre_restore_*.cbox 恢复点；
-        (c) 当前数据库的存量条目必须完好，未被 clear_vault_data 清空——
-            即使恢复流程开始执行，事务回滚也保障了数据完整性。
+        安全属性有三点。其一，当备份密文被篡改导致 GCM 认证失败时，
+        restore_backup 必须返回失败，不应用任何备份数据。其二，失败必须
+        发生在创建恢复点之前，因为解密在 _create_restore_point 之前完成，
+        因此本次失败不应残留新的 pre_restore_*.cbox 恢复点。其三，当前
+        数据库的存量条目必须完好，未被 clear_vault_data 清空，即使恢复
+        流程开始执行，事务回滚也保障了数据完整性。
         """
         # 失败前不应存在任何恢复点
         restore_points_before = self._count_restore_points()
@@ -249,7 +247,7 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
         assert not success, '损坏密文的备份不应恢复成功'
         assert '损坏' in error or '密码错误' in error
 
-        # 数据库存量条目未被清空（回滚生效 / 未到达数据清理步骤）
+        # 数据库存量条目未被清空，回滚生效或未到达数据清理步骤
         entries = self._entry_mgr.get_entries()
         assert len(entries) == 2, '恢复失败后存量条目不应丢失'
         titles = {e.title for e in entries}
@@ -262,10 +260,10 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
         )
 
     def test_restore_structurally_invalid_backup_leaves_no_restore_point(self):
-        """恢复结构无效（解密通过但格式错误）的备份应失败且不残留恢复点。
+        """恢复解密通过但格式错误的无效备份应失败且不残留恢复点。
 
-        安全属性：解密通过但备份 JSON 结构校验失败（_validate_restore_data
-        抛出）时，失败同样发生在 _create_restore_point 之前，不应残留恢复点，
+        安全属性：解密通过但备份 JSON 结构校验失败、由 _validate_restore_data
+        抛出异常时，失败同样发生在 _create_restore_point 之前，不应残留恢复点，
         且数据库存量数据完好。
         """
         restore_points_before = self._count_restore_points()
@@ -337,7 +335,6 @@ class TestImportEpochGuard:
         self._import_export.export_to_json(
             self._json_path, entries, include_password=True
         )
-        # 清空以便导入后便于断言条目数
         self._entry_mgr.get_entries()
         yield
         self._vault.close()
@@ -346,7 +343,7 @@ class TestImportEpochGuard:
         """导入事务内 key_epoch 被并发改密轮换时，导入被守卫中止。
 
         安全属性：_transactional_import 在事务开始前快照 key_epoch，
-        事务内二次校验；若导入期间主密码被改（epoch 轮换），二次校验
+        事务内二次校验；若导入期间主密码被改导致 epoch 轮换，二次校验
         检测到 epoch 不匹配，必须抛出 VaultKeyEpochMismatchError 并
         回滚事务，避免数据用旧密钥加密但 epoch 已更新到新会话的损坏状态。
         本测试通过 monkeypatch 模拟 epoch 在事务内变化，验证守卫触发。
@@ -357,7 +354,7 @@ class TestImportEpochGuard:
         entry_count_before = len(self._entry_mgr.get_entries())
 
         # 模拟并发改密：_transactional_import 第二次读取 key_epoch 时返回
-        # 不同的值。pre_epoch（第一次读取，在事务前）保持真实值，
+        # 不同的值。pre_epoch 为事务前的第一次读取，保持真实值；
         # 进入 with transaction() 后第二次读取返回伪造的新 epoch。
         original_key_epoch_property = type(self._vault).key_epoch
 
@@ -382,7 +379,7 @@ class TestImportEpochGuard:
             with pytest.raises(VaultKeyEpochMismatchError):
                 self._import_export.import_from_json(self._json_path)
 
-        # 恢复原始 property（patch 上下文管理器已自动恢复，此处仅防御）
+        # 恢复原始 property；patch 上下文管理器已自动恢复，此处仅作防御
         _ = original_key_epoch_property
 
         # 导入被中止，数据保持一致：条目数不变

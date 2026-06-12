@@ -207,8 +207,8 @@ class BackupRestoreManager:
             encrypted = EncryptionEngine.encrypt_bytes(
                 payload, backup_key, BACKUP_AAD
             )
-            # 仅清零本次派生的密码备份密钥；SNAPSHOT 路径的 backup_key 是借用的
-            # snapshot_key（生命周期由 KeyManager 管理），清零它会破坏同会话后续快照。
+            # 仅清零本次派生的密码备份密钥；SNAPSHOT 路径的 backup_key 借用 snapshot_key，
+            # 其生命周期由 KeyManager 管理，清零它会破坏同会话的后续快照。
             if flags == BackupFlag.PASSWORD:
                 secure_zero_buffer(backup_key)
             target = Path(filepath)
@@ -657,7 +657,7 @@ class BackupRestoreManager:
             force: 是否强制创建，忽略时间间隔检查。
 
         Returns:
-            (success, error_message) — 成功时 error_message 为空字符串。
+            由是否成功与错误信息组成的二元组，成功时错误信息为空字符串。
         """
         if not config.get('auto_backup_enabled', False):
             return True, ''

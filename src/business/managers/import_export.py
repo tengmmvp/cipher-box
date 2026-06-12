@@ -52,7 +52,7 @@ _CSV_COLUMN_ALIASES = {
 }
 
 # KeePass CSV 列名别名映射：键为内部字段名，值为 CSV 中可能的列名，均为小写用于匹配。
-# 值统一为 tuple，与 _CSV_COLUMN_ALIASES 保持一致（不可变，避免误改）。
+# 值统一为 tuple，与 _CSV_COLUMN_ALIASES 保持一致，利用不可变性避免误改。
 _KEE_PASS_COLUMN_ALIASES = {
     'title':    ('title',),
     'username': ('username',),
@@ -370,9 +370,9 @@ class ImportExportManager:
             duplicate_action: 重复处理策略，取值 import_all、skip 或 overwrite。
             source_label: 日志中标识来源，例如 'JSON 导入'。
             progress_callback: 进度回调。
-            overwrite_merger: 可选的覆盖合并回调 ``(new_entry, existing_entry) -> None``，
-                在设置 id/created_at 之后、写入数据库之前调用。
-                若为 None 则直接用 new_entry 覆盖。
+            overwrite_merger: 可选的覆盖合并回调，接收新条目与已有条目两个参数，
+                无返回值。在设置 id 与 created_at 之后、写入数据库之前调用；
+                若为 None 则直接用新条目覆盖。
         """
         if not entries:
             return 0
@@ -431,14 +431,15 @@ class ImportExportManager:
     ) -> list[dict]:
         """检测待导入条目与已有条目的重复。
 
-        以 (title, username) 为匹配键。
+        匹配键为标题与用户名的组合。
 
         Args:
             entries_data: 待导入的条目列表，每个元素含 title/username 等字段。
             existing_entries: 现有已解密条目。
 
         Returns:
-            重复项列表，每项包含 {index, title, username, existing_title}。
+            重复项列表，每项为字典，含序号 index、标题 title、用户名 username
+            以及匹配到的已有条目标题 existing_title。
         """
         existing_keys = {
             (e.title.casefold(), e.username.casefold()): e
@@ -799,13 +800,13 @@ class ImportExportManager:
                 与 KeePass 的 group。
 
         Returns:
-            (entries, entries_data, password_present) 三元组。
+            由条目列表、去重摘要列表、是否存在密码列标志组成的三元组。
         """
         headers = list(rows[0].keys())
         col_map = self._build_col_map(headers, aliases)
         password_present = 'password' in col_map
         # 内部字段名到最大长度的映射，与 Entry.from_dict 的 MAX_FIELD_* 校验一致。
-        # category_name（CSV 的 category / KeePass 的 group）非长度受限字段，不在此校验。
+        # category_name 非长度受限字段，不在此校验；它对应 CSV 的 category 或 KeePass 的 group。
         field_limits = {
             'title': MAX_FIELD_TITLE,
             'username': MAX_FIELD_USERNAME,

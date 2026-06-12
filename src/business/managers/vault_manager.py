@@ -142,9 +142,9 @@ class VaultManager:
     def update_key_epoch(self, new_epoch: str):
         """更新 key_epoch，用于备份恢复后同步状态。
 
-        恢复会整体替换数据，触发缓存失效回调清除恢复前的明文缓存（如
-        username 缓存按 crypto_id 索引，恢复保留 crypto_id 会命中旧明文），
-        避免与新数据不一致。复用 on_lock 回调列表，其当前仅注册缓存清除。
+        恢复会整体替换数据，触发缓存失效回调清除恢复前的明文缓存。例如
+        username 缓存按 crypto_id 索引，而恢复保留 crypto_id，若不清除会
+        命中旧明文而与新数据不一致。复用 on_lock 回调列表，其当前仅注册缓存清除。
         """
         self._key_epoch = new_epoch
         for cb in self._on_lock_callbacks:
@@ -167,8 +167,6 @@ class VaultManager:
             return
         if not self.is_unlocked:
             raise VaultLockedError("保险库已锁定，不能写入数据")
-        # 每次写入都比对 epoch，不做时间缓存：避免改密后旧会话在 TTL 窗口内
-        # 用旧密钥写入，导致数据按旧密钥落盘、新会话解密失败的损坏窗口。
         current_epoch = self._db.get_meta('key_epoch')
         if current_epoch and current_epoch != self._key_epoch:
             self._clear_vault_state()
@@ -181,7 +179,7 @@ class VaultManager:
             master_password: 主密码
 
         Returns:
-            (success, error_message) — 成功时 error_message 为空字符串
+            由是否成功与错误信息组成的二元组，成功时错误信息为空字符串。
         """
         try:
             valid, error = PasswordGenerator.validate_master_password(master_password)
@@ -225,7 +223,7 @@ class VaultManager:
             master_password: 主密码
 
         Returns:
-            (success, error_message) — 成功时 error_message 为空字符串
+            由是否成功与错误信息组成的二元组，成功时错误信息为空字符串。
         """
         try:
             t0 = time.monotonic()
@@ -284,7 +282,7 @@ class VaultManager:
         用于 _enforce_key_epoch 中需要安全清除状态但不能触发回调的场景，
         避免在持有数据库锁时回调中再获取数据库锁导致死锁。
         """
-        # 密钥材料由 KeyManager 集中清零（含主密钥、快照密钥、epoch）
+        # 密钥材料由 KeyManager 集中清零，含主密钥、快照密钥与 epoch
         self._key_mgr.clear()
         # 清零 MetadataSigner 中的域密钥
         dk = self._signer.domain_key
@@ -309,10 +307,10 @@ class VaultManager:
         """
         self._clear_vault_state()
         gc.collect()
-        # 恢复 gc.collect() 以缩短密钥材料在内存中的驻留时间。
-        # lock() 属于低频操作，用户手动锁定或自动超时，10-50ms 的 GC 暂停
-        # 完全可接受，换来的是更短的生命周期，减少密钥残留风险。
-        # 自动通知依赖方清除缓存，不依赖调用方纪律。
+        # 调用 gc.collect() 缩短密钥材料在内存中的驻留时间。lock 属低频操作，
+        # 通常由用户手动锁定或自动超时触发，10 到 50 毫秒的 GC 暂停完全可接受，
+        # 换来更短的密钥生命周期与更低的残留风险。随后自动通知依赖方清除缓存，
+        # 不依赖调用方纪律。
         for cb in self._on_lock_callbacks:
             try:
                 cb()
@@ -329,9 +327,9 @@ class VaultManager:
             new_password: 新主密码
 
         Returns:
-            (success, error_message) — 成功时 error_message 为空字符串
+            由是否成功与错误信息组成的二元组，成功时错误信息为空字符串。
 
-        获取可重入锁，与 _re_encrypt_all 的写操作串行化。
+        方法获取可重入锁，与 _re_encrypt_all 的写操作串行化。
         """
         with self._lock:
             return self._change_master_password_locked(old_password, new_password)
@@ -424,8 +422,8 @@ class VaultManager:
             EncryptionEngine.clear_cache()  # 旧密钥 cipher 已失效，确保后续用新密钥
             logger.info("重加密完成 (%.1fms)", (time.monotonic() - t0) * 1000)
             # 清理旧 snapshot_key 加密的全部快照与恢复点，收缩泄漏面。
-            # purge 失败（文件占用/只读目录）不使改密失败，但必须明确记录，
-            # 避免用户误以为泄漏面已收缩而旧明文快照实际仍残留磁盘。
+            # purge 失败不使改密失败，但必须明确记录，避免用户误以为泄漏面
+            # 已收缩而旧明文快照实际仍因文件占用或只读目录残留磁盘。
             failed_purges = self._purge_snapshot_backups()
             if failed_purges:
                 logger.warning(

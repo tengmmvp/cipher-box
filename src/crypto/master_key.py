@@ -82,7 +82,7 @@ class MasterKeyManager:
             password: 主密码
 
         Returns:
-            (salt, encrypted_verify_token, derived_key) 元组
+            由盐值、加密后的验证令牌、派生密钥构成的元组
         """
         salt = os.urandom(SALT_SIZE)
         cls._validate_iterations(iterations)
@@ -139,9 +139,9 @@ class MasterKeyManager:
             old_verify_token: 旧验证令牌
 
         Returns:
-            成功返回 (new_salt, new_verify_token, new_key) 三元组，失败返回 None。
-            返回 new_key 以便 VaultManager 复用 create 内部已派生的新密钥，
-            避免在重加密流程中重复执行 PBKDF2 600k 迭代。
+            成功时返回由新盐值、新验证令牌、新派生密钥构成的三元组，失败返回 None。
+            其中新密钥直接复用 create 内部派生结果，避免重加密流程再次执行
+            PBKDF2 的 60 万次迭代。
         """
         old_key = cls.verify(
             old_password, old_salt, old_verify_token, old_iterations

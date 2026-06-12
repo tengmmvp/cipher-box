@@ -281,7 +281,7 @@ class EntryDialog(QDialog):
         cf_group = QGroupBox('自定义字段')
         cf_layout = QVBoxLayout(cf_group)
         self._custom_fields_container = QVBoxLayout()
-        self._custom_field_rows: list[tuple] = []  # 各元素为 (name_edit, type_combo, value_edit, row_layout) 四元组
+        self._custom_field_rows: list[tuple] = []  # 各元素依次为字段名、类型、值编辑框与所在行的四元组
         cf_layout.addLayout(self._custom_fields_container)
 
         add_cf_btn = QPushButton('+ 添加字段')
@@ -427,8 +427,8 @@ class EntryDialog(QDialog):
 
         多数单行字段已通过 ``setMaxLength`` 在输入时截断，无需在此重复检查。
         此处只覆盖两类控件层无法限制的字段：
-        - 备注（QTextEdit，无 setMaxLength），上限 ``MAX_FIELD_NOTES``；
-        - 服务器类型由 host/port/protocol 拼接得到的 url，上限 ``MAX_FIELD_URL``。
+        - 备注使用 QTextEdit，无 setMaxLength，上限为 ``MAX_FIELD_NOTES``；
+        - 服务器类型由 host、port、protocol 拼接得到的 url，上限为 ``MAX_FIELD_URL``。
         校验上限与 ``src/models.py`` 的 ``Entry.from_dict`` 保持一致，使 UI
         反馈与导入校验共用同一组常量作为单一事实来源。
         """
