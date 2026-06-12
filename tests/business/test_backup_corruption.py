@@ -57,6 +57,15 @@ class TestBackupCorruption:
         assert not success
         assert '损坏' in error
 
+    def test_rejects_oversized_backup_payload(self, monkeypatch):
+        """备份数据载荷超过上限时应拒绝并返回友好的过大提示。"""
+        import src.business.managers.backup_restore as br
+        monkeypatch.setattr(br, 'MAX_BACKUP_PAYLOAD_SIZE', 10)
+        path = os.path.join(self._tmp_dir, 'oversized.cbox')
+        success, error = self._backup_mgr.create_backup(path, 'backup_pwd')
+        assert not success
+        assert '过大' in error
+
     def test_rejects_corrupted_magic_bytes(self):
         """损坏的 magic bytes 应被拒绝"""
         path = os.path.join(self._tmp_dir, 'bad_magic.cbox')

@@ -29,6 +29,7 @@ from ...utils.file_security import secure_directory, secure_file, validate_file_
 from ...utils.format import utc_now_iso
 from ...utils.memory import secure_zero_buffer
 from ..services.crypto_utils import (
+    build_encrypted_entry_fields,
     decrypt_entry_to_portable_dict,
     decrypt_field,
     encrypt_field,
@@ -59,6 +60,9 @@ def _user_friendly_error(exc: Exception) -> str:
         return '文件读写失败，请检查路径和磁盘'
     if isinstance(exc, json.JSONDecodeError):
         return '备份文件格式无效或已损坏'
+    if isinstance(exc, ValueError) and '过大' in str(exc):
+        # _collect_portable_data 预估算或 payload 精确检查抛出，保留具体提示
+        return str(exc)
     return f'操作失败（{type(exc).__name__}），请检查文件和磁盘空间'
 
 BACKUP_MAGIC = b'CipherBoxBackup\x00'
@@ -210,17 +214,20 @@ class BackupRestoreManager:
                 else:
                     raise ValueError('必须指定备份密码或使用快照密钥')
 
-            payload = json.dumps(data, ensure_ascii=False).encode('utf-8')
-            del data  # 序列化后立即释放明文引用
-            if len(payload) > MAX_BACKUP_PAYLOAD_SIZE:
-                raise ValueError('备份数据过大')
-            encrypted = EncryptionEngine.encrypt_bytes(
-                payload, backup_key, BACKUP_AAD
-            )
-            # 仅清零本次派生的密码备份密钥；SNAPSHOT 路径的 backup_key 借用 snapshot_key，
-            # 其生命周期由 KeyManager 管理，清零它会破坏同会话的后续快照。
-            if flags == BackupFlag.PASSWORD:
-                secure_zero_buffer(backup_key)
+            try:
+                payload = json.dumps(data, ensure_ascii=False).encode('utf-8')
+                del data  # 序列化后立即释放明文引用
+                if len(payload) > MAX_BACKUP_PAYLOAD_SIZE:
+                    raise ValueError('备份数据过大')
+                encrypted = EncryptionEngine.encrypt_bytes(
+                    payload, backup_key, BACKUP_AAD
+                )
+            finally:
+                # 仅清零本次派生的密码备份密钥；SNAPSHOT 路径的 backup_key 借用 snapshot_key，
+                # 其生命周期由 KeyManager 管理，清零它会破坏同会话的后续快照。
+                # finally 确保即使 payload 超限 raise 也清零。
+                if flags == BackupFlag.PASSWORD:
+                    secure_zero_buffer(backup_key)
             target = Path(filepath)
             # 创建并收紧目录权限，避免快照全量明文以继承的宽松 ACL 落盘
             secure_directory(target.parent)
@@ -316,51 +323,64 @@ class BackupRestoreManager:
             # 防止后续若在锁外使用时与主线程清零 snapshot_key 产生竞态
             backup_key = bytes(self._vault.snapshot_key)
 
-        # 持 vault 锁串行化恢复与改密/备份：从解密全量明文到写库全程持锁，
-        # 与 create_backup 的「持锁才接触全量明文」契约统一。
-        with self._vault._lock:
-            try:
-                # 内存特征：峰值约 3 倍载荷大小。
-                # encrypted 不超过 64MB，plaintext 不超过 32MB，外加 JSON 解析树，
-                # 桌面应用可接受。GCM 认证加密要求完整密文可用，无法流式解密。
-                encrypted = file.read(MAX_BACKUP_FILE_SIZE + 1)
-                if len(encrypted) > MAX_BACKUP_FILE_SIZE:
-                    return False, '备份文件过大'
-                plaintext = EncryptionEngine.decrypt_bytes(
-                    encrypted, backup_key, BACKUP_AAD
+        try:
+            # 持 vault 锁串行化恢复与改密/备份：从解密全量明文到写库全程持锁，
+            # 与 create_backup 的「持锁才接触全量明文」契约统一。
+            with self._vault._lock:
+                try:
+                    # 内存特征：峰值约 3 倍载荷大小。
+                    # encrypted 不超过 64MB，plaintext 不超过 32MB，外加 JSON 解析树，
+                    # 桌面应用可接受。GCM 认证加密要求完整密文可用，无法流式解密。
+                    encrypted = file.read(MAX_BACKUP_FILE_SIZE + 1)
+                    if len(encrypted) > MAX_BACKUP_FILE_SIZE:
+                        return False, '备份文件过大'
+                    plaintext = EncryptionEngine.decrypt_bytes(
+                        encrypted, backup_key, BACKUP_AAD
+                    )
+                    if len(plaintext) > MAX_BACKUP_PAYLOAD_SIZE:
+                        return False, '备份解密数据过大'
+                    data = json.loads(plaintext.decode('utf-8'))
+                except Exception:
+                    logger.debug("备份读取或解密失败", exc_info=True)
+                    return False, '备份密码错误或文件已损坏'
+                if not isinstance(data, dict) or not isinstance(data.get('entries'), list):
+                    return False, '备份数据结构无效'
+                self._validate_restore_data(data)
+                restore_path = self._create_restore_point()
+                try:
+                    new_epoch = self._restore_data(data)
+                except Exception:
+                    # 恢复失败时清理刚创建的恢复点，避免反复尝试时占用磁盘空间。
+                    if restore_path is not None:
+                        try:
+                            restore_path.unlink(missing_ok=True)
+                        except OSError:
+                            logger.debug("清理恢复点失败", exc_info=True)
+                    raise
+                finally:
+                    if 'plaintext' in locals():
+                        del plaintext
+                    if 'data' in locals():
+                        del data
+            # 事务已提交。同步内存中的 key_epoch，使当前会话的写入守卫识别新 epoch。
+            if new_epoch:
+                self._vault.update_key_epoch(new_epoch)
+            # 轮换 snapshot_key 收缩泄漏面（与改密一致）：恢复整体替换数据后，
+            # 旧 snapshot_key 加密的快照含恢复前明文，轮换并清理使其失效。
+            new_snapshot_key = os.urandom(32)
+            self._vault.set_snapshot_key(new_snapshot_key)
+            failed_purges = self._vault.purge_snapshot_backups()
+            if failed_purges:
+                return True, (
+                    f'恢复完成，但 {len(failed_purges)} 个旧快照未能删除'
+                    '（可能被占用），建议在备份对话框手动清理以收缩泄漏面。'
                 )
-                # 仅清零本次派生的密码备份密钥；SNAPSHOT 路径借用 snapshot_key 不应清零
-                if flags == BackupFlag.PASSWORD:
-                    secure_zero_buffer(backup_key)
-                if len(plaintext) > MAX_BACKUP_PAYLOAD_SIZE:
-                    return False, '备份解密数据过大'
-                data = json.loads(plaintext.decode('utf-8'))
-            except Exception:
-                logger.debug("备份读取或解密失败", exc_info=True)
-                return False, '备份密码错误或文件已损坏'
-            if not isinstance(data, dict) or not isinstance(data.get('entries'), list):
-                return False, '备份数据结构无效'
-            self._validate_restore_data(data)
-            restore_path = self._create_restore_point()
-            try:
-                new_epoch = self._restore_data(data)
-            except Exception:
-                # 恢复失败时清理刚创建的恢复点，避免反复尝试时占用磁盘空间。
-                if restore_path is not None:
-                    try:
-                        restore_path.unlink(missing_ok=True)
-                    except OSError:
-                        logger.debug("清理恢复点失败", exc_info=True)
-                raise
-            finally:
-                if 'plaintext' in locals():
-                    del plaintext
-                if 'data' in locals():
-                    del data
-        # 同步内存中的 key_epoch，使当前会话的写入守卫识别新 epoch
-        if new_epoch:
-            self._vault.update_key_epoch(new_epoch)
-        return True, ''
+            return True, ''
+        finally:
+            # 确保 PASSWORD 派生的 backup_key 在所有退出路径（含文件过大、解密异常）都清零；
+            # SNAPSHOT 路径借用 snapshot_key 不清零。
+            if flags == BackupFlag.PASSWORD:
+                secure_zero_buffer(backup_key)
 
     @staticmethod
     def _validate_restore_data(data: dict):
@@ -598,79 +618,80 @@ class BackupRestoreManager:
             if self._vault.key_epoch != pre_epoch:
                 raise VaultKeyEpochMismatchError('恢复期间检测到密钥变更，已中止恢复')
             db.clear_vault_data()
-
-            category_map = {}
-            for item in data.get('categories', []):
-                category = Category.from_dict(item)
-                if not category.name:
-                    continue
-                new_id = db.add_category(category)
-                if item.get('id') is not None:
-                    category_map[item['id']] = new_id
-
-            entry_map = {}
-            crypto_id_map = {}  # 旧 entry_id 到 crypto_id 的映射
-            for item in data.get('entries', []):
-                old_category = item.get('category_id')
-                crypto_id = item['crypto_id']  # 已由 _validate_entries 校验
-                custom_fields = item.get('custom_fields', [])
-                custom_json = json.dumps(custom_fields, ensure_ascii=False) if custom_fields else ''
-                username = encrypt_field(item.get('username', ''), key, crypto_id, 'username')
-                password = encrypt_field(item.get('password', ''), key, crypto_id, 'password')
-                notes = encrypt_field(item.get('notes', ''), key, crypto_id, 'notes')
-                custom = encrypt_field(custom_json, key, crypto_id, 'custom_fields')
-                totp = encrypt_field(item.get('totp_secret', ''), key, crypto_id, 'totp_secret')
-                entry = Entry(
-                    crypto_id=crypto_id,
-                    title=item.get('title', ''),
-                    username=username,
-                    password=password,
-                    url=item.get('url', ''),
-                    category_id=category_map.get(old_category),
-                    tags=item.get('tags', ''),
-                    notes=notes,
-                    custom_fields=custom,
-                    is_favorite=bool(item.get('is_favorite', False)),
-                    is_deleted=bool(item.get('is_deleted', False)),
-                    password_strength=int(item.get('password_strength', 0)),
-                    entry_type=item.get('entry_type', 'login'),
-                    totp_secret=totp,
-                    created_at=item.get('created_at', '') or '',
-                    updated_at=item.get('updated_at', '') or '',
-                    deleted_at=item.get('deleted_at', '') or '',
-                    password_changed_at=item.get('password_changed_at', '') or '',
-                )
-                new_id = db.add_entry(entry, preserve_metadata=True)
-                if item.get('id') is not None:
-                    entry_map[item['id']] = new_id
-                    crypto_id_map[item['id']] = crypto_id
-
-            # 密码历史按 entry_id 分组，批量写入并统一截断，
-            # 替代逐条 add_password_history 触发的 N 次截断 DELETE。
-            history_by_entry: dict[int, list[tuple[str, str]]] = {}
-            for item in data.get('password_history', []):
-                new_entry_id = entry_map.get(item.get('entry_id'))
-                if not new_entry_id:
-                    continue
-                crypto_id = crypto_id_map.get(item['entry_id'], '')
-                ciphertext = encrypt_field(
-                    item.get('password', ''),
-                    key,
-                    crypto_id,
-                    'password',
-                )
-                if ciphertext:
-                    history_by_entry.setdefault(new_entry_id, []).append(
-                        (ciphertext, item.get('changed_at', ''))
-                    )
-            for entry_id, items in history_by_entry.items():
-                db.add_password_history_batch(entry_id, items)
-
+            category_map = self._restore_categories(db, data)
+            entry_map, crypto_id_map = self._restore_entries(db, data, key, category_map)
+            self._restore_history(db, data, key, entry_map, crypto_id_map)
             # 轮换 key_epoch 防止旧会话写入恢复后的数据
             new_epoch = uuid.uuid4().hex
             db.set_meta('key_epoch', new_epoch)
-
         return new_epoch
+
+    @staticmethod
+    def _restore_categories(db, data: dict) -> dict:
+        """重建分类，返回旧 ID 到新 ID 的映射。"""
+        category_map = {}
+        for item in data.get('categories', []):
+            category = Category.from_dict(item)
+            if not category.name:
+                continue
+            new_id = db.add_category(category)
+            if item.get('id') is not None:
+                category_map[item['id']] = new_id
+        return category_map
+
+    @staticmethod
+    def _restore_entries(db, data: dict, key: bytes, category_map: dict):
+        """重建条目，加密敏感字段，返回 (entry_map, crypto_id_map)。"""
+        entry_map = {}
+        crypto_id_map = {}  # 旧 entry_id 到 crypto_id 的映射
+        for item in data.get('entries', []):
+            old_category = item.get('category_id')
+            crypto_id = item['crypto_id']  # 已由 _validate_entries 校验
+            enc = build_encrypted_entry_fields(item, key, crypto_id)
+            entry = Entry(
+                crypto_id=crypto_id,
+                title=item.get('title', ''),
+                username=enc['username'],
+                password=enc['password'],
+                url=item.get('url', ''),
+                category_id=category_map.get(old_category),
+                tags=item.get('tags', ''),
+                notes=enc['notes'],
+                custom_fields=enc['custom_fields'],
+                is_favorite=bool(item.get('is_favorite', False)),
+                is_deleted=bool(item.get('is_deleted', False)),
+                password_strength=int(item.get('password_strength', 0)),
+                entry_type=item.get('entry_type', 'login'),
+                totp_secret=enc['totp_secret'],
+                created_at=item.get('created_at', '') or '',
+                updated_at=item.get('updated_at', '') or '',
+                deleted_at=item.get('deleted_at', '') or '',
+                password_changed_at=item.get('password_changed_at', '') or '',
+            )
+            new_id = db.add_entry(entry, preserve_metadata=True)
+            if item.get('id') is not None:
+                entry_map[item['id']] = new_id
+                crypto_id_map[item['id']] = crypto_id
+        return entry_map, crypto_id_map
+
+    @staticmethod
+    def _restore_history(db, data: dict, key: bytes, entry_map: dict, crypto_id_map: dict) -> None:
+        """重建密码历史，按 entry_id 分组批量写入并统一截断。"""
+        history_by_entry: dict[int, list[tuple[str, str]]] = {}
+        for item in data.get('password_history', []):
+            new_entry_id = entry_map.get(item.get('entry_id'))
+            if not new_entry_id:
+                continue
+            crypto_id = crypto_id_map.get(item['entry_id'], '')
+            ciphertext = encrypt_field(
+                item.get('password', ''), key, crypto_id, 'password',
+            )
+            if ciphertext:
+                history_by_entry.setdefault(new_entry_id, []).append(
+                    (ciphertext, item.get('changed_at', ''))
+                )
+        for entry_id, items in history_by_entry.items():
+            db.add_password_history_batch(entry_id, items)
 
     def maybe_auto_backup(
         self,

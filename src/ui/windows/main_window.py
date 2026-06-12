@@ -38,7 +38,7 @@ from ...utils.clipboard import ClipboardManager
 from ..components.detail_panel import DetailPanel
 from ..components.entry_list_widget import EntryItemDelegate
 from ..components.tray_icon import TrayIcon
-from ..components.workers import BackgroundWorker
+from ..components.workers import BackgroundWorker, wait_worker_shutdown
 from ..controllers.entry_list_controller import EntryListController
 from ..controllers.sidebar_controller import SidebarController
 from ..resources.constants import (
@@ -77,7 +77,6 @@ logger = logging.getLogger(__name__)
 _SORT_OPTIONS = SORT_OPTIONS
 
 _SIDEBAR_INLINE_STYLES = [
-    ('_sidebar',        'background: {sidebar_bg}'),
     ('_filter_label',   'font-weight: bold; color: {text_secondary}; font-size: 12px; margin-top: 4px'),
     ('_separator1',     'background: {divider}; margin: 6px 0px'),
     ('_cat_label',      'font-weight: bold; color: {text_secondary}; font-size: 12px; margin-top: 4px'),
@@ -675,15 +674,11 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._backup_timer.stop()
         self._status_timer.stop()
         # 取消后台状态分析 worker，避免锁定后仍运行或对已锁定 vault 发信号
-        if self._status_worker and self._status_worker.isRunning():
-            self._status_worker.cancel()
-            self._status_worker.wait(WORKER_WAIT_TIMEOUT_MS)
+        wait_worker_shutdown(self._status_worker)
         self._status_worker = None
         # 取消异步备份 worker，防止锁定后继续解密条目
-        if self._backup_worker and self._backup_worker.isRunning():
-            self._backup_worker.cancel()
-            self._backup_worker.wait(WORKER_WAIT_TIMEOUT_MS)
-            self._backup_worker = None
+        wait_worker_shutdown(self._backup_worker)
+        self._backup_worker = None
         # 清除缓存
         self._invalidate_security_cache()
         # 清空 username 明文缓存。epoch 失效会在下次访问时触发，

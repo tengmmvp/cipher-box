@@ -26,13 +26,12 @@ from PyQt6.QtWidgets import (
 )
 
 from ...business.services.password_service import PasswordService
-from ..components.widgets import format_status, setup_dialog_flags
-from ..components.workers import BackgroundWorker
+from ..components.widgets import format_status, release_worker, set_label_severity, setup_dialog_flags
+from ..components.workers import BackgroundWorker, wait_worker_shutdown
 from ..resources.constants import (
     BTN_DIALOG,
     BTN_DIALOG_WIDE,
     DIALOG_BACKUP_MIN_SIZE,
-    WORKER_WAIT_TIMEOUT_MS,
 )
 from ..resources.theme_colors import c
 
@@ -70,7 +69,7 @@ class BackupDialog(QDialog):
         mode_layout.addWidget(self._backup_radio)
 
         info1 = QLabel('  将保险库的全部数据加密保存到一个文件中')
-        info1.setStyleSheet(f'color: {c("text_muted")}; font-size: 12px;')
+        info1.setObjectName('formMuted')
         mode_layout.addWidget(info1)
 
         self._restore_radio = QRadioButton('从备份恢复')
@@ -99,6 +98,7 @@ class BackupDialog(QDialog):
         # 状态
         self._status_label = QLabel('')
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status_label.setObjectName('formStatus')
         layout.addWidget(self._status_label)
 
         layout.addStretch()
@@ -155,30 +155,10 @@ class BackupDialog(QDialog):
         备份创建无副作用，可安全取消。
         完成后释放 worker 引用，缩短密码闭包驻留时间。
         """
-        if self._worker and self._worker.isRunning():
-            if self._worker_is_backup:
-                self._worker.cancel()
-            self._worker.wait(WORKER_WAIT_TIMEOUT_MS)
-        self._release_worker()
+        # 备份可安全取消，恢复有写入副作用仅等待完成
+        wait_worker_shutdown(self._worker, cancel=self._worker_is_backup)
+        release_worker(self)
         super().reject()
-
-    def _release_worker(self):
-        """断开 worker 信号并释放引用，缩短密码闭包驻留时间。
-
-        worker 的可调用对象闭包捕获了备份/恢复密码，
-        操作完成或对话框关闭后立即断开信号并删除 self._worker 引用，
-        使闭包随 worker 对象回收而释放。
-        worker 的 parent 为 self，控件销毁时 worker 一并销毁。
-        """
-        worker = self._worker
-        if worker is None:
-            return
-        try:
-            worker.finished.disconnect()
-            worker.error.disconnect()
-        except (TypeError, RuntimeError):
-            pass
-        self._worker = None
 
     def _on_mode_changed(self):
         is_backup = self._btn_group.checkedId() == 0
@@ -223,7 +203,7 @@ class BackupDialog(QDialog):
         self._exec_btn.setEnabled(not busy)
         if busy:
             self._status_label.setText('处理中...')
-            self._status_label.setStyleSheet(f'color: {c("accent")};')
+            set_label_severity(self._status_label, 'accent')
         else:
             self._status_label.setText('')
 
@@ -258,22 +238,22 @@ class BackupDialog(QDialog):
 
     def _on_backup_done(self, result):
         self._set_busy(False)
-        self._release_worker()
+        release_worker(self)
         success, error_msg = result
         if success:
             self.data_changed = True
             self._status_label.setText(format_status(True, '备份创建成功'))
-            self._status_label.setStyleSheet(f'color: {c("success")};')
+            set_label_severity(self._status_label, 'success')
             QMessageBox.information(self, '成功', f'备份已保存到：\n{self._path_label.text()}')
         else:
             self._status_label.setText(format_status(False, '备份失败'))
-            self._status_label.setStyleSheet(f'color: {c("danger")};')
+            set_label_severity(self._status_label, 'error')
             msg = f'备份创建失败：{error_msg}' if error_msg else '备份创建失败，请检查文件路径和磁盘空间。'
             QMessageBox.critical(self, '错误', msg)
 
     def _on_backup_error(self, error_msg: str):
         self._set_busy(False)
-        self._release_worker()
+        release_worker(self)
         self._status_label.setText(format_status(False, '备份失败'))
         self._status_label.setStyleSheet(f'color: {c("danger")};')
         QMessageBox.critical(self, '错误', f'备份创建失败：{error_msg}')
@@ -314,22 +294,22 @@ class BackupDialog(QDialog):
 
     def _on_restore_done(self, result):
         self._set_busy(False)
-        self._release_worker()
+        release_worker(self)
         success, error_msg = result
         if success:
             self.data_changed = True
             self._status_label.setText(format_status(True, '恢复成功'))
-            self._status_label.setStyleSheet(f'color: {c("success")};')
+            set_label_severity(self._status_label, 'success')
             QMessageBox.information(self, '成功', '备份恢复成功！')
         else:
             self._status_label.setText(format_status(False, '恢复失败'))
-            self._status_label.setStyleSheet(f'color: {c("danger")};')
+            set_label_severity(self._status_label, 'error')
             detail = f'\n\n错误信息：{error_msg}' if error_msg else ''
             QMessageBox.critical(self, '错误', f'恢复失败，请确认备份文件有效且主密码正确。{detail}')
 
     def _on_restore_error(self, error_msg: str):
         self._set_busy(False)
-        self._release_worker()
+        release_worker(self)
         self._status_label.setText(format_status(False, '恢复失败'))
         self._status_label.setStyleSheet(f'color: {c("danger")};')
         QMessageBox.critical(self, '错误', f'恢复失败：{error_msg}')

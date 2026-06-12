@@ -24,11 +24,12 @@ from ..components.widgets import (
     RateLimiter,
     create_password_toggle_btn,
     release_worker,
+    set_label_severity,
     setup_dialog_flags,
     update_strength_label,
 )
-from ..components.workers import BackgroundWorker
-from ..resources.constants import LOGIN_HEIGHT_FIRST, LOGIN_HEIGHT_LOGIN, WORKER_WAIT_TIMEOUT_MS
+from ..components.workers import BackgroundWorker, wait_worker_shutdown
+from ..resources.constants import LOGIN_HEIGHT_FIRST, LOGIN_HEIGHT_LOGIN
 from ..resources.icons import EYE, LOCK, SHIELD, icon_pixmap
 from ..resources.theme_colors import c
 
@@ -48,9 +49,7 @@ class LoginWindow(QDialog):
 
     def reject(self):
         """关闭前等待后台 worker 完成，避免窗口销毁后 worker 发信号。"""
-        if self._worker and self._worker.isRunning():
-            self._worker.cancel()
-            self._worker.wait(WORKER_WAIT_TIMEOUT_MS)
+        wait_worker_shutdown(self._worker)
         release_worker(self)
         super().reject()
 
@@ -68,7 +67,22 @@ class LoginWindow(QDialog):
         layout.setSpacing(14)
         layout.setContentsMargins(36, 28, 36, 28)
 
-        # 标题
+        self._build_header(layout)
+        layout.addSpacing(10)
+        self._build_password_row(layout)
+        self._build_confirm_section(layout)
+        self._build_message_labels(layout)
+        layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
+        layout.addLayout(self._build_action_button())
+
+        # 不同 DPI 与系统字体下控件高度存在差异，不能使用固定高度压缩布局，
+        # 因此先激活布局再按内容提示高度与预设值取较大者固定窗口高度
+        outer.activate()
+        preferred_height = LOGIN_HEIGHT_FIRST if self._is_first_time else LOGIN_HEIGHT_LOGIN
+        self.setFixedHeight(max(preferred_height, self.minimumSizeHint().height()))
+
+    def _build_header(self, layout: QVBoxLayout) -> None:
+        """构建 logo、标题、产品说明与副标题。"""
         logo = QLabel()
         logo.setPixmap(icon_pixmap(SHIELD, 'accent', 44))
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -82,21 +96,19 @@ class LoginWindow(QDialog):
 
         product_note = QLabel('本地优先 · 端到端加密 · 数据不离开设备')
         product_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        product_note.setStyleSheet(f'color: {c("text_muted")}; font-size: 11px;')
+        product_note.setObjectName('formMutedSmall')
         layout.addWidget(product_note)
 
-        # 副标题
         if self._is_first_time:
             subtitle = QLabel('首次使用，请设置主密码')
         else:
             subtitle = QLabel('请输入主密码以解锁保险库')
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setStyleSheet(f'color: {c("text_muted")}; font-size: 13px;')
+        subtitle.setObjectName('formMutedPlain')
         layout.addWidget(subtitle)
 
-        layout.addSpacing(10)
-
-        # 主密码输入行
+    def _build_password_row(self, layout: QVBoxLayout) -> None:
+        """构建主密码输入行。"""
         pwd_label = QLabel('主密码：')
         pwd_label.setStyleSheet('font-weight: bold;')
         layout.addWidget(pwd_label)
@@ -115,7 +127,8 @@ class LoginWindow(QDialog):
         pwd_layout.addWidget(self._toggle_pwd_btn)
         layout.addLayout(pwd_layout)
 
-        # 确认密码区域，仅在首次设置时显示
+    def _build_confirm_section(self, layout: QVBoxLayout) -> None:
+        """构建确认密码区域，仅在首次设置时显示。"""
         self._confirm_container = QWidget()
         self._confirm_container.setSizePolicy(
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
@@ -147,13 +160,14 @@ class LoginWindow(QDialog):
         else:
             self._confirm_container.hide()
 
-        # 提示信息
+    def _build_message_labels(self, layout: QVBoxLayout) -> None:
+        """构建错误消息与密码强度提示（强度仅首设显示）。"""
         self._message_label = QLabel('')
         self._message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._message_label.setStyleSheet(f'color: {c("danger")}; font-size: 12px; min-height: 18px;')
+        self._message_label.setObjectName('formMessage')
+        set_label_severity(self._message_label, 'error')
         layout.addWidget(self._message_label)
 
-        # 密码强度提示，仅在首次设置时显示
         self._strength_label = QLabel('')
         self._strength_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._strength_label.setStyleSheet('font-size: 12px;')
@@ -163,9 +177,8 @@ class LoginWindow(QDialog):
         else:
             self._strength_label.hide()
 
-        layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
-
-        # 按钮
+    def _build_action_button(self) -> QHBoxLayout:
+        """构建确认按钮行。"""
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
@@ -175,14 +188,7 @@ class LoginWindow(QDialog):
         self._confirm_btn.clicked.connect(self._on_confirm)
         btn_layout.addWidget(self._confirm_btn)
         btn_layout.addStretch()
-
-        layout.addLayout(btn_layout)
-
-        # 不同 DPI 与系统字体下控件高度存在差异，不能使用固定高度压缩布局，
-        # 因此先激活布局再按内容提示高度与预设值取较大者固定窗口高度
-        outer.activate()
-        preferred_height = LOGIN_HEIGHT_FIRST if self._is_first_time else LOGIN_HEIGHT_LOGIN
-        self.setFixedHeight(max(preferred_height, self.minimumSizeHint().height()))
+        return btn_layout
 
     def _on_password_changed(self, text: str):
         """密码输入变化时更新强度提示。"""
@@ -269,4 +275,4 @@ class LoginWindow(QDialog):
 
     def _show_error(self, msg: str):
         self._message_label.setText(msg)
-        self._message_label.setStyleSheet(f'color: {c("danger")}; font-size: 12px; min-height: 18px;')
+        set_label_severity(self._message_label, 'error')

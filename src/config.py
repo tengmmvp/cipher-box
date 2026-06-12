@@ -5,6 +5,7 @@ import hmac
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +89,7 @@ class ConfigManager:
         self._config_path = self._data_dir / 'config.json'
         self._config: dict = dict(DEFAULT_CONFIG)
         self._integrity_warning = False
+        self._lock = threading.RLock()
         self.load()
 
     @classmethod
@@ -102,6 +104,7 @@ class ConfigManager:
         cfg._config = dict(DEFAULT_CONFIG)
         cfg._config['show_tray_icon'] = False
         cfg._integrity_warning = False
+        cfg._lock = threading.RLock()
         return cfg
 
     @property
@@ -118,44 +121,45 @@ class ConfigManager:
 
     def load(self):
         """从文件加载配置"""
-        self._integrity_warning = False
-        self._config = dict(DEFAULT_CONFIG)
-        if self._config_path.exists():
-            try:
-                raw_text = self._config_path.read_text(encoding='utf-8')
-                # 分离签名行，若存在
-                json_text = raw_text
-                stored_sig = ''
-                lines = raw_text.rstrip().rsplit('\n', 1)
-                if len(lines) == 2 and lines[1].startswith(_CONFIG_SIG_PREFIX):
-                    json_text = lines[0]
-                    stored_sig = lines[1][len(_CONFIG_SIG_PREFIX):]
-                # 验证完整性签名
-                expected_sig = hmac.new(
-                    _CONFIG_INTEGRITY_KEY,
-                    json_text.encode('utf-8'),
-                    hashlib.sha256,
-                ).hexdigest()
-                if stored_sig:
-                    if not hmac.compare_digest(stored_sig, expected_sig):
-                        logger.warning(
-                            '配置文件完整性校验失败，可能已被篡改。'
-                            '将使用默认配置覆盖异常值。'
-                        )
-                        self._integrity_warning = True
-                saved = json.loads(json_text)
-                if not isinstance(saved, dict):
-                    raise ValueError('配置文件根节点必须是对象')
-                for key, value in saved.items():
-                    if key in DEFAULT_CONFIG:
-                        if self._is_valid(key, value):
-                            self._config[key] = value
+        with self._lock:
+            self._integrity_warning = False
+            self._config = dict(DEFAULT_CONFIG)
+            if self._config_path.exists():
+                try:
+                    raw_text = self._config_path.read_text(encoding='utf-8')
+                    # 分离签名行，若存在
+                    json_text = raw_text
+                    stored_sig = ''
+                    lines = raw_text.rstrip().rsplit('\n', 1)
+                    if len(lines) == 2 and lines[1].startswith(_CONFIG_SIG_PREFIX):
+                        json_text = lines[0]
+                        stored_sig = lines[1][len(_CONFIG_SIG_PREFIX):]
+                    # 验证完整性签名
+                    expected_sig = hmac.new(
+                        _CONFIG_INTEGRITY_KEY,
+                        json_text.encode('utf-8'),
+                        hashlib.sha256,
+                    ).hexdigest()
+                    if stored_sig:
+                        if not hmac.compare_digest(stored_sig, expected_sig):
+                            logger.warning(
+                                '配置文件完整性校验失败，可能已被篡改。'
+                                '将使用默认配置覆盖异常值。'
+                            )
+                            self._integrity_warning = True
+                    saved = json.loads(json_text)
+                    if not isinstance(saved, dict):
+                        raise ValueError('配置文件根节点必须是对象')
+                    for key, value in saved.items():
+                        if key in DEFAULT_CONFIG:
+                            if self._is_valid(key, value):
+                                self._config[key] = value
+                            else:
+                                logger.warning('配置项 %s 值无效，已使用默认值', key)
                         else:
-                            logger.warning('配置项 %s 值无效，已使用默认值', key)
-                    else:
-                        logger.debug('忽略未知配置项：%s', key)
-            except (json.JSONDecodeError, OSError, ValueError):
-                logger.warning('配置文件无效，已使用默认配置', exc_info=True)
+                            logger.debug('忽略未知配置项：%s', key)
+                except (json.JSONDecodeError, OSError, ValueError):
+                    logger.warning('配置文件无效，已使用默认配置', exc_info=True)
 
     def check_integrity(self) -> bool:
         """检查配置文件完整性是否通过。返回 False 表示可能被篡改。"""
@@ -163,26 +167,28 @@ class ConfigManager:
 
     def save(self):
         """原子保存配置，避免异常退出留下半个 JSON 文件。"""
-        self._config_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self._config_path.with_suffix('.json.tmp')
-        content = json.dumps(self._config, indent=2, ensure_ascii=False)
-        sig = hmac.new(
-            _CONFIG_INTEGRITY_KEY,
-            content.encode('utf-8'),
-            hashlib.sha256,
-        ).hexdigest()
-        with open(temp_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-            f.write(f'\n{_CONFIG_SIG_PREFIX}{sig}')
-            f.flush()
-            os.fsync(f.fileno())
-        secure_file(temp_path)
-        os.replace(temp_path, self._config_path)
-        secure_file(self._config_path)
+        with self._lock:
+            self._config_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = self._config_path.with_suffix('.json.tmp')
+            content = json.dumps(self._config, indent=2, ensure_ascii=False)
+            sig = hmac.new(
+                _CONFIG_INTEGRITY_KEY,
+                content.encode('utf-8'),
+                hashlib.sha256,
+            ).hexdigest()
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+                f.write(f'\n{_CONFIG_SIG_PREFIX}{sig}')
+                f.flush()
+                os.fsync(f.fileno())
+            secure_file(temp_path)
+            os.replace(temp_path, self._config_path)
+            secure_file(self._config_path)
 
     def get(self, key: str, default: Any = None) -> Any:
         """获取配置项"""
-        return self._config.get(key, default)
+        with self._lock:
+            return self._config.get(key, default)
 
     # 安全关键配置项的运行时下限，即使配置文件被篡改也不接受低于阈值的值
     _SECURITY_MINIMUMS: dict[str, int] = {
@@ -214,11 +220,12 @@ class ConfigManager:
 
     def set(self, key: str, value: Any):
         """设置配置项"""
-        if key not in DEFAULT_CONFIG:
-            raise KeyError(f'未知配置项：{key}')
-        if not self._is_valid(key, value):
-            raise ValueError(f'配置项值无效：{key}')
-        self._config[key] = value
+        with self._lock:
+            if key not in DEFAULT_CONFIG:
+                raise KeyError(f'未知配置项：{key}')
+            if not self._is_valid(key, value):
+                raise ValueError(f'配置项值无效：{key}')
+            self._config[key] = value
 
     @staticmethod
     def _is_valid(key: str, value: Any) -> bool:
@@ -256,4 +263,5 @@ class ConfigManager:
 
     def get_all(self) -> dict:
         """获取所有配置"""
-        return dict(self._config)
+        with self._lock:
+            return dict(self._config)

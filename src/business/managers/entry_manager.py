@@ -578,7 +578,9 @@ class EntryManager:
             raw.is_favorite = not raw.is_favorite
             self._vault.db.update_entry(raw)
             result = raw.is_favorite
-        self._notify_entry_change()
+        # 收藏切换不影响密码相关分析维度，传 False 避免 SecurityAnalyzer 缓存
+        # 无谓失效触发整库重算
+        self._notify_entry_change(password_changed=False)
         return result
 
     # DELEGATE: see DatabaseManager.get_entry_count

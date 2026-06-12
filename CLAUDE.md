@@ -58,4 +58,4 @@ PyQt6 桌面 GUI。`MainWindow` 是中心编排器，创建所有 Business 层�
 - **软删除**：条目支持移入回收站和恢复，不直接物理删除
 - **条目类型**：5 种模板（login/card/identity/note/server），由 `src/models.py` 中的常量定义
 - **数据目录**：Windows 下为 `%APPDATA%\CipherBox\`，包含 `vault.db`、`config.json`、`backups/`、`logs/`
-- **备份与恢复点**：恢复备份前自动创建恢复前快照（`pre_restore_*.cbox`，含恢复前全部条目明文，用保险库快照密钥加密）；改密时自动清理以收缩泄漏面，亦可在备份对话框手动清理。`snapshot_key` 不随改密轮换，以保留用户快照备份的跨改密可用性
+- **备份与恢复点**：恢复备份前自动创建恢复前快照（`pre_restore_*.cbox`，含恢复前全部条目明文，用保险库快照密钥加密）。改密与恢复均会轮换 `snapshot_key` 并自动清理旧快照与恢复点以收缩泄漏面，亦可在备份对话框手动清理

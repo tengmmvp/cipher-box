@@ -201,6 +201,18 @@ class TestChangePasswordRollbackConsistency:
         assert entry is not None
         assert entry.password == original.password
 
+    def test_change_password_reports_purge_failure(self):
+        """改密成功但旧快照清理失败时返回 True 并附带 warning 提示手动清理。"""
+        with patch(
+            'src.business.managers.vault_manager.VaultManager._purge_snapshot_backups',
+            return_value=[Path(self._tmp_dir) / 'occupied.cbox'],
+        ):
+            ok, msg = self._vault.change_master_password(
+                self._master_pwd, 'PurgeFail!2026'
+            )
+        assert ok  # 改密本身成功
+        assert '未能删除' in msg  # 附带 purge 失败 warning
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2. 备份恢复中途失败回滚 + 恢复点清理
@@ -443,3 +455,38 @@ class TestImportEpochGuard:
         assert count == 1
         entry_count_after = len(self._entry_mgr.get_entries())
         assert entry_count_after == entry_count_before + 1
+
+
+def test_restore_rotates_snapshot_key(tmp_path):
+    """恢复成功后轮换 snapshot_key，使旧 snapshot 加密的快照失效以收缩泄漏面。
+
+    与改密路径一致：恢复整体替换数据后，旧 snapshot_key 加密的快照含恢复前
+    明文，轮换并清理使其失效。验证 snapshot_key 实际变化且恢复点被清理。
+    """
+    source_dir = str(tmp_path / 'source')
+    target_dir = str(tmp_path / 'target')
+    Path(source_dir).mkdir()
+    Path(target_dir).mkdir()
+
+    source = VaultManager(make_test_config(source_dir))
+    source.initialize('SourceMaster!2026')
+    EntryManager(source).add_entry(
+        Entry(title='Incoming', password='IncomingSecret!2026')
+    )
+    portable = str(Path(source_dir) / 'portable.cbox')
+    assert BackupRestoreManager(source).create_backup(portable, 'PortableBackup!2026')[0]
+
+    target = VaultManager(make_test_config(target_dir))
+    target.initialize('TargetMaster!2026')
+    old_snapshot_key = bytes(target.snapshot_key)
+    backup_mgr = BackupRestoreManager(target)
+    assert backup_mgr.restore_backup(portable, 'PortableBackup!2026')[0]
+
+    # 恢复后 snapshot_key 应轮换为全新值
+    assert bytes(target.snapshot_key) != old_snapshot_key
+    # 旧恢复点被清理（snapshot_key 轮换使其失效并 purge）
+    backup_dir = Path(target_dir) / 'backups'
+    assert list(backup_dir.glob('pre_restore_*.cbox')) == []
+
+    source.close()
+    target.close()

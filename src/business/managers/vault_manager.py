@@ -310,12 +310,18 @@ class VaultManager:
         以缩短密钥数据在内存中的生命周期。但原始 bytes 对象仍依赖 GC 回收，
         在 GC 回收前可能仍驻留在进程内存中。这是 CPython 的固有局限。
         """
-        # 持 vault 锁串行化与 create_backup（持同一锁做全量解密）：确保清零密钥前，
-        # 进行中的备份已完成，避免备份用密钥副本在 lock 后继续解密。回调在锁外执行，
-        # 避免回调获取锁导致死锁。
-        with self._lock:
-            self._clear_vault_state()
-            gc.collect()
+        # 主动通知任何进行中的改密/重加密取消，缩短 lock 获取 self._lock 的阻塞窗口：
+        # 改密循环检测 cancel_event 后抛异常回滚，尽快释放 self._lock，避免 UI 长时间冻结。
+        self._cancel_event.set()
+        try:
+            # 持 vault 锁串行化与 create_backup：确保清零密钥前，进行中的备份已完成，
+            # 避免备份用密钥副本在 lock 后继续解密。回调在锁外执行，避免回调获取锁导致死锁。
+            with self._lock:
+                self._clear_vault_state()
+                gc.collect()
+        finally:
+            # 复位取消事件，避免残留影响后续改密
+            self._cancel_event.clear()
         # gc.collect() 缩短密钥材料驻留时间；lock 属低频操作，GC 暂停可接受。
         # 随后通知依赖方清除缓存，不依赖调用方纪律。
         for cb in self._on_lock_callbacks:
@@ -377,7 +383,9 @@ class VaultManager:
             new_salt, new_verify_token, new_key = result
 
             # 复用 MasterKeyManager.create 已派生的 new_key，省一次 PBKDF2 派生
-            failed_purges = self._re_encrypt_all(new_key, new_salt, new_verify_token)
+            failed_purges = self._re_encrypt_all(
+                new_key, new_salt, new_verify_token, new_iterations=PBKDF2_ITERATIONS,
+            )
             if failed_purges:
                 # 改密成功但旧明文快照未能清理：明确反馈用户，避免误以为泄漏面已收缩
                 return True, (
@@ -391,7 +399,8 @@ class VaultManager:
             logger.warning("修改主密码失败", exc_info=True)
             return False, str(exc) or '修改主密码失败'
 
-    def _re_encrypt_all(self, new_key: bytes, new_salt: bytes, new_verify_token: str):
+    def _re_encrypt_all(self, new_key: bytes, new_salt: bytes, new_verify_token: str,
+                        new_iterations: int = PBKDF2_ITERATIONS):
         """使用新密钥重新加密所有条目，含已删除条目，受事务保护。
 
         调用方须已持有 self._lock，当前唯一调用方 _change_master_password_locked
@@ -424,7 +433,7 @@ class VaultManager:
                 self._rotator.re_encrypt_history(old_key, new_key, cancel_event=self._cancel_event)
                 self._update_vault_metadata(
                     new_key, new_salt, new_verify_token, new_epoch,
-                    snapshot_key=new_snapshot_key,
+                    snapshot_key=new_snapshot_key, iterations=new_iterations,
                 )
 
             # 事务已提交。密钥赋值放在 commit 之后，避免后台线程在 commit 前
@@ -491,18 +500,45 @@ class VaultManager:
                         failed.append(f)
         return failed
 
+    def set_snapshot_key(self, snapshot_key: bytes) -> None:
+        """轮换 snapshot_key：用当前主密钥加密回写 snapshot_key_enc 并更新内存 KeyManager。
+
+        供恢复流程在事务提交后调用，使旧 snapshot_key 加密的快照失效以收缩泄漏面，
+        与改密路径的 snapshot_key 轮换语义一致。
+        """
+        if self._key is None:
+            raise VaultLockedError('保险库未解锁')
+        self._db.set_meta(
+            'snapshot_key_enc',
+            EncryptionEngine.encrypt(
+                base64.b64encode(snapshot_key).decode('ascii'),
+                self._key,
+                _SNAPSHOT_KEY_AAD,
+            ),
+        )
+        self._key_mgr.update_snapshot_key(snapshot_key)
+
+    def purge_snapshot_backups(self) -> list:
+        """删除所有 snapshot_key 加密的快照与恢复前安全快照，返回未能删除的文件。
+
+        供改密/恢复流程在轮换 snapshot_key 后清理旧明文快照以收缩泄漏面。
+        """
+        return self._purge_snapshot_backups()
+
     def _write_vault_metadata(
         self, *, salt: bytes, verify_token: str,
         snapshot_key: bytes, key: bytes, key_epoch: str,
+        iterations: int = PBKDF2_ITERATIONS,
     ):
         """将保险库元数据写入 vault_meta，包含盐、验证令牌、KDF 参数、快照密钥和 epoch。
 
-        initialize 与改密共用此序列，避免两处逐字重复。
+        initialize 与改密共用此序列，避免两处逐字重复。iterations 为实际派生所用的
+        PBKDF2 迭代次数，写入数据库而非硬编码常量，为未来提升迭代次数保留正确性。
         """
         self._db.set_meta('master_salt', base64.b64encode(salt).decode('ascii'))
         self._db.set_meta('master_verify', verify_token)
         self._db.set_meta('master_kdf', 'pbkdf2-sha256')
-        self._db.set_meta('master_kdf_iterations', str(PBKDF2_ITERATIONS))
+        self._db.set_meta('master_kdf_iterations', str(iterations))
         self._db.set_meta('ciphertext_format', EncryptionEngine.FORMAT_ID)
         self._db.set_meta(
             'snapshot_key_enc',
@@ -517,16 +553,19 @@ class VaultManager:
     def _update_vault_metadata(
         self, new_key: bytes, new_salt: bytes, new_verify_token: str,
         new_epoch: str, *, snapshot_key: bytes | None,
+        iterations: int = PBKDF2_ITERATIONS,
     ):
         """更新 vault_meta 表中的验证信息和密钥元数据。
 
         snapshot_key 由调用方传入，改密时轮换为全新值，不再复用旧值。
+        iterations 透传给 _write_vault_metadata，写入实际派生所用的迭代次数。
         """
         if snapshot_key is None:
             raise VaultIntegrityError('snapshot_key 未加载，无法更新保险库元数据')
         self._write_vault_metadata(
             salt=new_salt, verify_token=new_verify_token,
             snapshot_key=snapshot_key, key=new_key, key_epoch=new_epoch,
+            iterations=iterations,
         )
 
     def _load_snapshot_key(self, encrypted: str | None = None):

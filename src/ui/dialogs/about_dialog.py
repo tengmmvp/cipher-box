@@ -47,7 +47,7 @@ class AboutDialog(QDialog):
 
         version = QLabel(f'版本 {__version__}')
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        version.setStyleSheet(f'color: {c("text_muted")};')
+        version.setObjectName('formMutedPlain')
         layout.addWidget(version)
 
         desc = QLabel(
@@ -66,7 +66,7 @@ class AboutDialog(QDialog):
             '数据存储：SQLite'
         )
         tech.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tech.setStyleSheet(f'color: {c("text_muted")}; font-size: 11px;')
+        tech.setObjectName('formMutedSmall')
         tech.setWordWrap(True)
         layout.addWidget(tech)
 

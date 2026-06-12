@@ -212,3 +212,29 @@ def decrypt_entry_to_portable_dict(
             raw_entry.crypto_id, exc_info=True,
         )
         return None
+
+
+def build_encrypted_entry_fields(item: dict, key: bytes, crypto_id: str) -> dict:
+    """加密条目的敏感字段，与 decrypt_entry_to_portable_dict 对称。
+
+    供备份恢复等需要从明文字典重建加密条目的场景使用，统一 5 个敏感字段
+    （username/password/notes/custom_fields/totp_secret）的加密序列，消除
+    恢复路径内联加密与解密辅助的双向映射漂移风险。
+
+    Args:
+        item: 含明文字段的字典（来自备份 JSON）。
+        key: AES-256 密钥。
+        crypto_id: 条目加密标识，参与 AAD。
+
+    Returns:
+        由字段名到加密密文的字典。
+    """
+    custom_fields = item.get('custom_fields', [])
+    custom_json = json.dumps(custom_fields, ensure_ascii=False) if custom_fields else ''
+    return {
+        'username': encrypt_field(item.get('username', ''), key, crypto_id, 'username'),
+        'password': encrypt_field(item.get('password', ''), key, crypto_id, 'password'),
+        'notes': encrypt_field(item.get('notes', ''), key, crypto_id, 'notes'),
+        'custom_fields': encrypt_field(custom_json, key, crypto_id, 'custom_fields'),
+        'totp_secret': encrypt_field(item.get('totp_secret', ''), key, crypto_id, 'totp_secret'),
+    }

@@ -52,14 +52,6 @@ QPushButton#primaryBtn {{
 QPushButton#primaryBtn:hover {{
     background: {accent_hover};
 }}
-QPushButton#dangerBtn {{
-    background: {danger};
-    color: {bg_primary};
-    border: none;
-}}
-QPushButton#dangerBtn:hover {{
-    background: {danger_hover};
-}}
 QPushButton#iconBtn {{
     border: none;
     background: transparent;
@@ -200,10 +192,6 @@ QSpinBox {{
     min-height: 24px;
     background: {bg_input};
     color: {text_primary};
-}}
-QLabel#strengthBar {{
-    border-radius: 3px;
-    min-height: 8px;
 }}
 QLabel#sectionLabel {{
     font-size: 14px;
@@ -416,6 +404,27 @@ QLabel#secStatusHint {{
     color: {text_muted};
     font-size: 14px;
     padding: 16px;
+}}
+QLabel#formMessage {{
+    font-size: 12px;
+    min-height: 18px;
+}}
+QLabel#formMessage[severity="error"] {{ color: {danger}; }}
+QLabel#formMessage[severity="accent"] {{ color: {accent}; }}
+QLabel#formMessage[severity="success"] {{ color: {success}; }}
+QLabel#formStatus[severity="error"] {{ color: {danger}; }}
+QLabel#formStatus[severity="accent"] {{ color: {accent}; }}
+QLabel#formStatus[severity="success"] {{ color: {success}; }}
+QLabel#formMuted {{
+    color: {text_muted};
+    font-size: 12px;
+}}
+QLabel#formMutedSmall {{
+    color: {text_muted};
+    font-size: 11px;
+}}
+QLabel#formMutedPlain {{
+    color: {text_muted};
 }}
 """
 

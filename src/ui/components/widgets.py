@@ -286,3 +286,20 @@ def release_worker(dialog) -> None:
         except (TypeError, RuntimeError):
             pass
     dialog._worker = None
+
+
+def set_label_severity(label, severity):
+    """设置消息/状态标签的 severity 动态属性并刷新 QSS。
+
+    severity 取 'error'/'accent'/'success'，对应 QSS 的
+    QLabel#formMessage[severity=...] / QLabel#formStatus[severity=...] 颜色。
+    setProperty 后需 unpolish+polish 触发 QSS 属性选择器重算，主题切换时由
+    app.setStyleSheet 全局刷新，运行时改 severity 由本函数局部刷新。
+
+    供 change_master/login 的消息标签与 backup/import_export 的状态标签复用，
+    消除重复的 setStyleSheet 颜色字符串。
+    """
+    label.setProperty('severity', severity)
+    style = label.style()
+    style.unpolish(label)
+    style.polish(label)

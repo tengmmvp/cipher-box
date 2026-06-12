@@ -6,7 +6,6 @@
 """
 
 import logging
-from datetime import datetime
 
 from PyQt6.QtCore import QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
@@ -24,7 +23,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..components.widgets import clear_layout, release_worker, setup_dialog_flags
-from ..components.workers import BackgroundWorker
+from ..components.workers import BackgroundWorker, wait_worker_shutdown
 from ..resources.constants import (
     BTN_DIALOG,
     BTN_FIX,
@@ -33,9 +32,9 @@ from ..resources.constants import (
     HEALTH_PENALTY_DUPLICATE,
     HEALTH_PENALTY_OLD,
     HEALTH_PENALTY_WEAK,
-    WORKER_WAIT_TIMEOUT_MS,
 )
 from ..resources.theme_colors import c, get_strength_color
+from ...utils.format import format_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -177,9 +176,7 @@ class SecurityDashboard(QDialog):
 
     def reject(self):
         """关闭前等待后台 worker 完成，并清空已解密的明文条目引用。"""
-        if self._worker and self._worker.isRunning():
-            self._worker.cancel()
-            self._worker.wait(WORKER_WAIT_TIMEOUT_MS)
+        wait_worker_shutdown(self._worker)
         release_worker(self)
         # 清空含明文密码的条目列表，与 DetailPanel/EntryDialog 主动清理策略一致，
         # 缩短敏感数据在对话框关闭后的驻留时间
@@ -432,11 +429,8 @@ class SecurityDashboard(QDialog):
         days = self._config.get('old_password_warning_days', 90)
         for entry in self._old_entries:
             updated = entry.password_changed_at or entry.updated_at or entry.created_at or '未知'
-            try:
-                dt = datetime.fromisoformat(updated)
-                formatted = dt.strftime('%Y-%m-%d')
-            except (ValueError, TypeError):
-                formatted = updated[:10] if updated else ''
+            # format_datetime 统一处理 naive/aware 时间戳，[:10] 取日期部分
+            formatted = format_datetime(updated)[:10]
             row = self._create_entry_row(
                 title=entry.title or '未命名',
                 subtitle=f'上次更新: {formatted}',

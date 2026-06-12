@@ -26,12 +26,11 @@ from PyQt6.QtWidgets import (
 )
 
 from ...utils.file_security import secure_file
-from ..components.widgets import format_status, release_worker, setup_dialog_flags
-from ..components.workers import BackgroundWorker
+from ..components.widgets import format_status, release_worker, set_label_severity, setup_dialog_flags
+from ..components.workers import BackgroundWorker, wait_worker_shutdown
 from ..resources.constants import (
     BTN_DIALOG,
     DIALOG_IMPORT_EXPORT_MIN_SIZE,
-    WORKER_WAIT_TIMEOUT_MS,
 )
 from ..resources.theme_colors import c
 
@@ -87,10 +86,8 @@ class ImportExportDialog(QDialog):
         导入操作有数据库写入副作用，不取消 worker 以确保数据一致性；
         导出操作无副作用，可安全取消。
         """
-        if self._worker and self._worker.isRunning():
-            if self._worker_is_export:  # 基于 worker 启动时的模式，非当前按钮状态
-                self._worker.cancel()
-            self._worker.wait(WORKER_WAIT_TIMEOUT_MS)
+        # 导出可安全取消，导入有写入副作用仅等待完成
+        wait_worker_shutdown(self._worker, cancel=self._worker_is_export)
         release_worker(self)
         super().reject()
 
@@ -176,6 +173,7 @@ class ImportExportDialog(QDialog):
         # 状态
         self._status_label = QLabel('')
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status_label.setObjectName('formStatus')
         layout.addWidget(self._status_label)
 
         layout.addStretch()
@@ -251,7 +249,7 @@ class ImportExportDialog(QDialog):
         self._action_btn.setEnabled(not busy)
         if busy:
             self._status_label.setText('处理中...')
-            self._status_label.setStyleSheet(f'color: {c("accent")};')
+            set_label_severity(self._status_label, 'accent')
         else:
             self._status_label.setText('')
 
@@ -316,14 +314,14 @@ class ImportExportDialog(QDialog):
             # 导出文件（可能含明文密码）权限未能收紧，明确提示用户手动限制访问
             message += '（警告：文件权限未能收紧，建议手动限制该文件访问）'
         self._status_label.setText(format_status(True, message))
-        self._status_label.setStyleSheet(f'color: {c("success")};')
+        set_label_severity(self._status_label, 'success')
 
     def _on_export_error(self, error_msg: str):
         release_worker(self)
         self._set_busy(False)
         logger.error("导出失败: %s", error_msg)
         self._status_label.setText(format_status(False, f'导出失败：{error_msg}'))
-        self._status_label.setStyleSheet(f'color: {c("danger")};')
+        set_label_severity(self._status_label, 'error')
 
     def _do_import(self, path: str):
         fmt_index = self._format_combo.currentIndex()
@@ -380,7 +378,7 @@ class ImportExportDialog(QDialog):
         self._set_busy(False)
         self._progress.hide()
         self._status_label.setText(format_status(True, f'成功导入 {count} 条记录'))
-        self._status_label.setStyleSheet(f'color: {c("success")};')
+        set_label_severity(self._status_label, 'success')
         if count > 0:
             self.import_completed.emit()
 
@@ -390,4 +388,4 @@ class ImportExportDialog(QDialog):
         self._progress.hide()
         logger.error("导入失败: %s", error_msg)
         self._status_label.setText(format_status(False, f'导入失败：{error_msg}'))
-        self._status_label.setStyleSheet(f'color: {c("danger")};')
+        set_label_severity(self._status_label, 'error')

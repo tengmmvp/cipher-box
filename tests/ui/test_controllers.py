@@ -105,3 +105,31 @@ class TestBuildDeleteMessage:
         assert '3' in msg
         assert has_entries is True
         assert name == '金融'
+
+
+class TestFetchRecent:
+    def test_returns_most_recent_by_updated_at(self):
+        """fetch_recent 按 updated_at 降序返回最近 N 条，不被收藏置顶污染。"""
+        ctrl = _entry_list_controller()
+        entries = [
+            SimpleNamespace(title='旧条目', updated_at='2020-01-01'),
+            SimpleNamespace(title='较新', updated_at='2025-01-01'),
+            SimpleNamespace(title='最新', updated_at='2026-01-01'),
+        ]
+        ctrl._entry_mgr.get_entry_summaries.return_value = entries
+        result, label = ctrl.fetch_recent('')
+        assert label == '近期更新'
+        # 按 updated_at 降序，最新在前
+        assert [e.title for e in result] == ['最新', '较新', '旧条目']
+
+    def test_truncates_to_recent_limit(self):
+        """条目数超过 RECENT_ENTRY_LIMIT 时截断到上限。"""
+        from src.ui.controllers.entry_list_controller import RECENT_ENTRY_LIMIT
+        ctrl = _entry_list_controller()
+        entries = [
+            SimpleNamespace(title=f'e{i:03d}', updated_at=f'2020-01-{(i % 28) + 1:02d}')
+            for i in range(RECENT_ENTRY_LIMIT + 5)
+        ]
+        ctrl._entry_mgr.get_entry_summaries.return_value = entries
+        result, _ = ctrl.fetch_recent('')
+        assert len(result) == RECENT_ENTRY_LIMIT

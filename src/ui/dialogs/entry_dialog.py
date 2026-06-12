@@ -167,7 +167,29 @@ class EntryDialog(QDialog):
         layout = QVBoxLayout(container)
         layout.setSpacing(12)
 
-        # ===== 类型选择 =====
+        self._build_type_selector(layout)
+        layout.addLayout(self._build_form())
+        layout.addWidget(self._build_totp_group())
+        layout.addWidget(self._build_notes_group())
+        layout.addWidget(self._build_custom_fields_group())
+        layout.addLayout(self._build_buttons())
+
+        scroll.setWidget(container)
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(scroll)
+
+        initial_type = self._entry.entry_type if self._entry else ENTRY_TYPE_LOGIN
+        initial_index = self._type_combo.findData(initial_type)
+        self._type_combo.blockSignals(True)
+        self._type_combo.setCurrentIndex(max(0, initial_index))
+        self._type_combo.blockSignals(False)
+        self._current_type = initial_type
+        self._apply_type_visibility(initial_type)
+
+    def _build_type_selector(self, layout: QVBoxLayout) -> None:
+        """构建类型选择行。"""
         type_row = QHBoxLayout()
         type_label = QLabel('类型：')
         type_label.setStyleSheet(f'font-weight: bold; color: {c("text_secondary")};')
@@ -180,7 +202,8 @@ class EntryDialog(QDialog):
         type_row.addWidget(self._type_combo, 1)
         layout.addLayout(type_row)
 
-        # ===== 表单区域 =====
+    def _build_form(self) -> QFormLayout:
+        """构建通用字段、类型专用字段与公共尾部字段的表单。"""
         form = QFormLayout()
         form.setSpacing(10)
 
@@ -222,7 +245,7 @@ class EntryDialog(QDialog):
 
         # 密码强度
         self._strength_label = QLabel('')
-        self._strength_label.setStyleSheet(f'font-size: 11px; color: {c("text_muted")};')
+        self._strength_label.setObjectName('formMutedSmall')
         self._add_field_row(form, '_strength', '', self._strength_label)
         self._password_edit.textChanged.connect(self._on_password_changed)
 
@@ -252,9 +275,10 @@ class EntryDialog(QDialog):
         self._favorite_check = QCheckBox('添加到收藏')
         self._add_field_row(form, 'favorite', '', self._favorite_check)
 
-        layout.addLayout(form)
+        return form
 
-        # ===== TOTP 区域 =====
+    def _build_totp_group(self) -> QGroupBox:
+        """构建两步验证 (TOTP) 区域。"""
         self._totp_group = QGroupBox('两步验证 (TOTP)')
         totp_layout = QHBoxLayout(self._totp_group)
         self._totp_edit = QLineEdit()
@@ -266,18 +290,20 @@ class EntryDialog(QDialog):
         self._totp_test_btn.setFixedSize(*BTN_SMALL_ACTION)
         self._totp_test_btn.clicked.connect(self._test_totp)
         totp_layout.addWidget(self._totp_test_btn)
-        layout.addWidget(self._totp_group)
+        return self._totp_group
 
-        # ===== 备注 =====
+    def _build_notes_group(self) -> QGroupBox:
+        """构建备注区域。"""
         notes_group = QGroupBox('备注')
         notes_layout = QVBoxLayout(notes_group)
         self._notes_edit = QTextEdit()
         self._notes_edit.setMaximumHeight(100)
         self._notes_edit.setPlaceholderText('添加备注信息...')
         notes_layout.addWidget(self._notes_edit)
-        layout.addWidget(notes_group)
+        return notes_group
 
-        # ===== 自定义字段 =====
+    def _build_custom_fields_group(self) -> QGroupBox:
+        """构建自定义字段区域。"""
         cf_group = QGroupBox('自定义字段')
         cf_layout = QVBoxLayout(cf_group)
         self._custom_fields_container = QVBoxLayout()
@@ -289,9 +315,10 @@ class EntryDialog(QDialog):
         add_cf_btn.setStyleSheet(f'text-align: left; color: {c("accent")};')
         add_cf_btn.clicked.connect(self._cf_editor.add_row)
         cf_layout.addWidget(add_cf_btn)
-        layout.addWidget(cf_group)
+        return cf_group
 
-        # ===== 按钮 =====
+    def _build_buttons(self) -> QHBoxLayout:
+        """构建取消/保存按钮行。"""
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
@@ -306,21 +333,7 @@ class EntryDialog(QDialog):
         save_btn.clicked.connect(self._on_save)
         btn_layout.addWidget(save_btn)
 
-        layout.addLayout(btn_layout)
-
-        scroll.setWidget(container)
-
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.addWidget(scroll)
-
-        initial_type = self._entry.entry_type if self._entry else ENTRY_TYPE_LOGIN
-        initial_index = self._type_combo.findData(initial_type)
-        self._type_combo.blockSignals(True)
-        self._type_combo.setCurrentIndex(max(0, initial_index))
-        self._type_combo.blockSignals(False)
-        self._current_type = initial_type
-        self._apply_type_visibility(initial_type)
+        return btn_layout
 
     def _build_type_fields(self, form: QFormLayout):
         """创建各条目类型的专用字段并注册到 _special_widgets。

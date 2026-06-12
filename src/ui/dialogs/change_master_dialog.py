@@ -23,16 +23,15 @@ from ..components.widgets import (
     RateLimiter,
     create_password_toggle_btn,
     release_worker,
+    set_label_severity,
     setup_dialog_flags,
     update_strength_label,
 )
-from ..components.workers import BackgroundWorker
+from ..components.workers import BackgroundWorker, wait_worker_shutdown
 from ..resources.constants import (
     BTN_DIALOG,
     DIALOG_CHANGE_MASTER_MIN_SIZE,
-    WORKER_WAIT_TIMEOUT_MS,
 )
-from ..resources.theme_colors import c
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +52,7 @@ class ChangeMasterDialog(QDialog):
             # 桥接取消：设 vault 取消事件以中断重加密循环（worker.cancel 仅设
             # worker 自身标志，重加密不检查它）。重加密检测后抛异常回滚。
             self._vault.request_cancel()
-            self._worker.cancel()
-            self._worker.wait(WORKER_WAIT_TIMEOUT_MS)
+        wait_worker_shutdown(self._worker)
         release_worker(self)
         # 取消时同样清除全部密码输入，与成功/失败路径一致，缩短明文驻留
         self._old_pwd.clear()
@@ -77,7 +75,7 @@ class ChangeMasterDialog(QDialog):
         layout.addWidget(title)
 
         info = QLabel('修改主密码后，所有数据将使用新密码重新加密。\n请确保牢记新密码。')
-        info.setStyleSheet(f'color: {c("text_muted")}; font-size: 12px;')
+        info.setObjectName('formMuted')
         info.setWordWrap(True)
         layout.addWidget(info)
 
@@ -125,7 +123,8 @@ class ChangeMasterDialog(QDialog):
         # 提示
         self._msg_label = QLabel('')
         self._msg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._msg_label.setStyleSheet(f'color: {c("danger")}; font-size: 12px; min-height: 18px;')
+        self._msg_label.setObjectName('formMessage')
+        set_label_severity(self._msg_label, 'error')
         layout.addWidget(self._msg_label)
 
         # 按钮
@@ -185,7 +184,7 @@ class ChangeMasterDialog(QDialog):
 
         # 全量重新加密耗时较高，置于后台线程执行避免冻结 UI
         self._change_btn.setEnabled(False)
-        self._msg_label.setStyleSheet(f'color: {c("accent")}; font-size: 12px; min-height: 18px;')
+        set_label_severity(self._msg_label, 'accent')
         self._msg_label.setText('正在重新加密所有数据...')
 
         self._worker = BackgroundWorker(
@@ -199,7 +198,7 @@ class ChangeMasterDialog(QDialog):
     def _on_change_done(self, result: tuple[bool, str]):
         release_worker(self)
         self._change_btn.setEnabled(True)
-        self._msg_label.setStyleSheet(f'color: {c("danger")}; font-size: 12px; min-height: 18px;')
+        set_label_severity(self._msg_label, 'error')
         success, error_msg = result
         # 无论成功与否都清除全部密码输入，缩短明文在控件中的驻留时间
         self._old_pwd.clear()
@@ -230,7 +229,7 @@ class ChangeMasterDialog(QDialog):
     def _on_change_error(self, error_msg: str):
         release_worker(self)
         self._change_btn.setEnabled(True)
-        self._msg_label.setStyleSheet(f'color: {c("danger")}; font-size: 12px; min-height: 18px;')
+        set_label_severity(self._msg_label, 'error')
         self._msg_label.setText('')
         self._old_pwd.clear()
         self._new_pwd.clear()

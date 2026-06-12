@@ -94,3 +94,24 @@ class BackgroundWorker(QThread):
         finally:
             # 释放闭包引用，可能捕获密码等敏感数据
             self._func = None
+
+
+def wait_worker_shutdown(worker, *, cancel=True, timeout=None):
+    """取消并等待后台 worker 结束，统一关闭时的取消-等待模式。
+
+    Args:
+        worker: BackgroundWorker 实例，为 None 或未运行时直接返回。
+        cancel: 是否先请求协作取消。恢复/导入等有写入副作用的操作传 False，
+            仅等待其自然完成以确保数据一致性。
+        timeout: 等待超时毫秒，默认 WORKER_WAIT_TIMEOUT_MS。
+
+    供对话框 reject 与主窗口锁定/关闭时复用，消除重复的 cancel()+wait() 模式。
+    """
+    if worker is None or not worker.isRunning():
+        return
+    if timeout is None:
+        from ..resources.constants import WORKER_WAIT_TIMEOUT_MS
+        timeout = WORKER_WAIT_TIMEOUT_MS
+    if cancel:
+        worker.cancel()
+    worker.wait(timeout)

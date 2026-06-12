@@ -627,13 +627,14 @@ def test_pre_restore_snapshot_purged_on_master_password_change():
         )
         assert success, error
         backup_dir = Path(target_root) / 'backups'
-        assert list(backup_dir.glob('pre_restore_*.cbox')), '恢复后应存在恢复点'
+        # 恢复轮换 snapshot_key 并清理恢复点（含恢复前明文），收缩泄漏面
+        assert list(backup_dir.glob('pre_restore_*.cbox')) == [], '恢复后恢复点应被清理'
 
-        # 改密触发自动恢复点清理；恢复点含改密前条目明文，需收缩泄漏面
+        # 改密同样触发 snapshot_key 轮换与清理，验证改密路径不残留
         assert target.change_master_password(
             'OldTargetMaster!2026', 'NewTargetMaster!2026'
         )[0]
-        assert list(backup_dir.glob('pre_restore_*.cbox')) == [], '改密后恢复点应被清理'
+        assert list(backup_dir.glob('pre_restore_*.cbox')) == []
         source.close()
         target.close()
 
