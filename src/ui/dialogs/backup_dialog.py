@@ -26,7 +26,12 @@ from PyQt6.QtWidgets import (
 )
 
 from ...business.services.password_service import PasswordService
-from ..components.widgets import format_status, release_worker, set_label_severity, setup_dialog_flags
+from ..components.widgets import (
+    format_status,
+    release_worker,
+    set_label_severity,
+    setup_dialog_flags,
+)
 from ..components.workers import BackgroundWorker, wait_worker_shutdown
 from ..resources.constants import (
     BTN_DIALOG,

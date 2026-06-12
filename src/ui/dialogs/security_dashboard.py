@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ...utils.format import format_datetime
 from ..components.widgets import clear_layout, release_worker, setup_dialog_flags
 from ..components.workers import BackgroundWorker, wait_worker_shutdown
 from ..resources.constants import (
@@ -34,7 +35,6 @@ from ..resources.constants import (
     HEALTH_PENALTY_WEAK,
 )
 from ..resources.theme_colors import c, get_strength_color
-from ...utils.format import format_datetime
 
 logger = logging.getLogger(__name__)
 
