@@ -35,6 +35,13 @@ from .schema_manager import SchemaManager
 logger = logging.getLogger(__name__)
 
 
+# 提交后文件权限刷新（secure_file）的防抖间隔（秒）。批量写入时每行操作都
+# 会触发 commit，若每次都重新设置文件权限开销过大；仅在距上次刷新达到此间隔
+# 后才再次执行。跨层时序常量未集中到 UI 层以避免数据层反向依赖 UI 模块；
+# 本常量作为数据层时序参数的命名事实来源。
+SECURE_FILES_DEBOUNCE_SECONDS = 1.0
+
+
 # 签名/验证函数的类型协议，替代弱类型 Callable
 @runtime_checkable
 class EntrySigner(Protocol):
@@ -49,9 +56,9 @@ class EntryVerifier(Protocol):
 class DatabaseManager:
     """SQLite 数据库管理器
 
-    通过 ``entries`` / ``categories`` / ``schema`` 属性暴露子 Repository，
-    供 Repository 间协作，如 category_repository 经 ``entries`` 复用行转换；
-    并通过自身的委托方法为外部调用方提供统一入口。
+    作为统一数据访问入口，所有公共 CRUD 方法委托给子 Repository
+    （entries / categories / schema）。跨表编排（如删除分类时解关联条目
+    并重算签名）由本层协调，各 Repository 仅负责单表操作。
     """
 
     def __init__(self, db_path: Path, *, test_mode: bool = False):
@@ -73,20 +80,6 @@ class DatabaseManager:
         self._entry_repo = EntryRepository(self)
         self._category_repo = CategoryRepository(self)
         self._schema_mgr = SchemaManager(self)
-
-    # ==================== Repository 属性 ====================
-
-    @property
-    def entries(self) -> EntryRepository:
-        return self._entry_repo
-
-    @property
-    def categories(self) -> CategoryRepository:
-        return self._category_repo
-
-    @property
-    def schema(self) -> SchemaManager:
-        return self._schema_mgr
 
     # ==================== 子 Repository 公共访问接口 ====================
     # 替代 Repository 中的 _mgr._conn / _mgr._lock 等私有属性访问。
@@ -243,14 +236,14 @@ class DatabaseManager:
     def _auto_commit(self) -> None:
         """内部提交：仅在非事务模式下执行 commit。
 
-        文件权限操作（secure_file）添加 1 秒防抖，避免批量写入时
-        每行操作都触发三次文件权限设置，仅在距上次 ≥1 秒后才执行。
+        文件权限操作（secure_file）添加 ``SECURE_FILES_DEBOUNCE_SECONDS`` 秒防抖，
+        避免批量写入时每行操作都触发三次文件权限设置，仅在距上次达到该间隔后才执行。
         """
         if not self.in_transaction and self._conn:
             try:
                 self._conn.commit()
                 now = _time.monotonic()
-                if now - self._last_secure_ts >= 1.0:
+                if now - self._last_secure_ts >= SECURE_FILES_DEBOUNCE_SECONDS:
                     self._secure_database_files()
                     self._last_secure_ts = now
             except Exception:
@@ -375,13 +368,21 @@ class DatabaseManager:
 
     # ==================== 委托方法 ====================
     # DatabaseManager 作为统一数据访问入口，将所有公共方法委托给子 Repository。
+    #
+    # 下方委托方法分两类，便于阅读与维护：
+    # 1. 委托透传：方法体仅 ``return self._xxx_repo.method(...)``，无任何额外
+    #    编排逻辑，锁与事务由子 Repository 的 ``@_db_operation`` 各自管理。
+    #    这类方法占绝大多数，仅为 UI/Business 层提供单一入口点。
+    # 2. 跨表编排：方法体含显式事务与多 Repository 协调逻辑，因单表 Repository
+    #    不应跨表访问彼此私有方法。当前仅 delete_category 属此类，已以醒目
+    #    注释块标出，便于读者快速定位非透传逻辑。
 
-    # -- Schema --
+    # -- 委托透传：Schema --
 
     def init_tables(self) -> None:
         return self._schema_mgr.init_tables()
 
-    # -- Categories --
+    # -- 委托透传：Categories --
 
     def get_categories(self) -> list[Category]:
         return self._category_repo.get_categories()
@@ -395,16 +396,29 @@ class DatabaseManager:
     def update_category(self, category: Category) -> None:
         return self._category_repo.update_category(category)
 
-    def delete_category(self, category_id: int) -> None:
-        return self._category_repo.delete_category(category_id)
-
     def get_category_entry_count(self, category_id: int) -> int:
         return self._category_repo.get_category_entry_count(category_id)
 
     def get_category_entry_counts(self) -> dict[int, int]:
         return self._category_repo.get_category_entry_counts()
 
-    # -- Entries --
+    # ======== 跨表编排（非委托透传） ========
+    # 以下方法含显式事务与多 Repository 协调，锁与事务由本编排层统一管理，
+    # 与上方「委托透传」类方法区分。新增编排逻辑请保持此注释边界。
+
+    def delete_category(self, category_id: int) -> None:
+        """删除分类：事务内先解关联条目并重算签名，再删除分类行。
+
+        跨表编排（entries 解关联 + categories 删除）由本编排层协调，
+        各 Repository 仅负责单表操作，消除跨 Repository 的私有访问越权。
+        """
+        with self._lock:
+            self._guard_write()
+            with self.transaction():
+                self._entry_repo.clear_category_signatures(category_id)
+                self._category_repo.delete_category(category_id)
+
+    # -- 委托透传：Entries --
 
     def get_entries(
         self,
@@ -469,7 +483,7 @@ class DatabaseManager:
     def get_entries_by_ids(self, entry_ids: list[int]) -> list[Entry]:
         return self._entry_repo.get_entries_by_ids(entry_ids)
 
-    # -- Password History --
+    # -- 委托透传：Password History --
 
     def add_password_history(
         self,

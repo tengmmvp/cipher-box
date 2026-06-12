@@ -27,6 +27,7 @@ from ...models import (
 )
 from ...utils.file_security import secure_directory, secure_file, validate_file_path
 from ...utils.format import utc_now_iso
+from ...utils.memory import secure_zero_buffer
 from ..services.crypto_utils import (
     decrypt_entry_to_portable_dict,
     decrypt_field,
@@ -182,8 +183,11 @@ class BackupRestoreManager:
         """创建加密备份；密码备份可跨安装恢复，快照使用稳定快照密钥。"""
         try:
             t0 = time.monotonic()
-            validate_file_path(filepath)
-            data = self._collect_portable_data()
+            filepath = str(validate_file_path(filepath))
+            # 持 vault 锁与改密重加密串行：避免后台备份读全量明文期间密钥被
+            # 轮换，导致解密失败被静默跳过而产出残缺备份。
+            with self._vault._lock:
+                data = self._collect_portable_data()
             salt = os.urandom(BACKUP_SALT_SIZE)
             if backup_password:
                 flags = BackupFlag.PASSWORD
@@ -203,8 +207,13 @@ class BackupRestoreManager:
             encrypted = EncryptionEngine.encrypt_bytes(
                 payload, backup_key, BACKUP_AAD
             )
+            # 仅清零本次派生的密码备份密钥；SNAPSHOT 路径的 backup_key 是借用的
+            # snapshot_key（生命周期由 KeyManager 管理），清零它会破坏同会话后续快照。
+            if flags == BackupFlag.PASSWORD:
+                secure_zero_buffer(backup_key)
             target = Path(filepath)
-            target.parent.mkdir(parents=True, exist_ok=True)
+            # 创建并收紧目录权限，避免快照全量明文以继承的宽松 ACL 落盘
+            secure_directory(target.parent)
             temp_path = target.with_name(target.name + '.tmp')
             try:
                 with open(temp_path, 'wb') as file:
@@ -224,13 +233,13 @@ class BackupRestoreManager:
             logger.info("备份创建完成 (%.1fms)", (time.monotonic() - t0) * 1000)
             return True, ''
         except Exception as exc:
-            logger.error("备份失败: %s", exc)
+            logger.error("备份失败: %s", exc, exc_info=True)
             return False, _user_friendly_error(exc)
 
     @staticmethod
     def inspect_backup(filepath: str) -> dict:
         """读取备份头，不解密内容。"""
-        validate_file_path(filepath)
+        filepath = str(validate_file_path(filepath))
         if Path(filepath).stat().st_size > MAX_BACKUP_FILE_SIZE:
             raise ValueError('备份文件过大')
         with open(filepath, 'rb') as file:
@@ -256,7 +265,7 @@ class BackupRestoreManager:
         """恢复备份；任何步骤失败都会回滚当前数据库。"""
         try:
             t0 = time.monotonic()
-            validate_file_path(filepath)
+            filepath = str(validate_file_path(filepath))
             if Path(filepath).stat().st_size > MAX_BACKUP_FILE_SIZE:
                 return False, '备份文件过大'
             with open(filepath, 'rb') as file:
@@ -268,10 +277,10 @@ class BackupRestoreManager:
                 return result
         except ValueError as exc:
             # _restore_current 中精心编写的错误消息直接传递给用户
-            logger.error("恢复失败: %s", exc)
+            logger.error("恢复失败: %s", exc, exc_info=True)
             return False, str(exc)
         except Exception as exc:
-            logger.error("恢复失败: %s", exc)
+            logger.error("恢复失败: %s", exc, exc_info=True)
             return False, _user_friendly_error(exc)
 
     def _restore_current(self, file, backup_password: str | None) -> tuple[bool, str]:
@@ -291,6 +300,8 @@ class BackupRestoreManager:
                 return False, '备份密钥派生参数无效'
             backup_key = self._derive_backup_key(backup_password, salt, iterations)
         else:
+            if not self._vault.is_unlocked:
+                return False, '恢复快照备份需要先解锁保险库'
             backup_key = self._vault.snapshot_key
 
         try:
@@ -303,6 +314,9 @@ class BackupRestoreManager:
             plaintext = EncryptionEngine.decrypt_bytes(
                 encrypted, backup_key, BACKUP_AAD
             )
+            # 仅清零本次派生的密码备份密钥；SNAPSHOT 路径借用 snapshot_key 不应清零
+            if flags == BackupFlag.PASSWORD:
+                secure_zero_buffer(backup_key)
             if len(plaintext) > MAX_BACKUP_PAYLOAD_SIZE:
                 return False, '备份解密数据过大'
             data = json.loads(plaintext.decode('utf-8'))
@@ -496,9 +510,8 @@ class BackupRestoreManager:
 
     @staticmethod
     def _require_keys(item: dict, expected: set[str], label: str):
-        """验证 item 是否包含所有必需键。使用 issubset 而非严格相等，
-        允许备份格式前向兼容，新增字段不会导致校验失败。"""
-        if not expected.issubset(set(item)):
+        """验证 item 是否恰好包含所需的键集合，拒绝多余或缺失的键。"""
+        if set(item) != expected:
             raise ValueError(f'{label}字段不完整')
 
     @staticmethod
@@ -667,7 +680,8 @@ class BackupRestoreManager:
                 return False, f'备份目录路径无效: {backup_dir}'
 
         directory = Path(backup_dir) if backup_dir else config.data_dir / 'backups'
-        directory.mkdir(parents=True, exist_ok=True)
+        # 创建并收紧权限，含用户自定义目录，避免快照全量明文以宽松 ACL 落盘
+        secure_directory(directory)
         filename = f'cipherbox_snapshot_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}.cbox'
         success, error = self.create_backup(
             str(directory / filename), use_snapshot_key=True

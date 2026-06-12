@@ -110,11 +110,19 @@ class EntryListController:
         return [e for group in groups for e in group], '重复密码（全部分类）'
 
     def fetch_recent(self, search: str) -> tuple[list, str]:
-        """获取近期更新条目。"""
+        """获取近期更新条目。
+
+        search 为空时，limit 直接在 SQL 层截断，高效取最近 N 条。
+        search 非空时，必须先全量查询（get_entry_summaries 已不下推 limit），
+        再按 updated_at 排序后截断，否则「先 SQL 截断再内存过滤」会使
+        近期+搜索的命中数远少于实际匹配数。
+        """
         entries = self._entry_mgr.get_entry_summaries(
             search=search, limit=RECENT_ENTRY_LIMIT,
         )
         entries.sort(key=lambda e: e.updated_at or '', reverse=True)
+        if search:
+            entries = entries[:RECENT_ENTRY_LIMIT]
         return entries, '近期更新'
 
     def fetch_trash(self, search: str) -> tuple[list, str]:

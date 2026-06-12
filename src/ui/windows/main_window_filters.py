@@ -616,10 +616,12 @@ class _MainWindowFiltersMixin(QMainWindow):
 
         menu = QMenu(self)
         edit_act = menu.addAction('编辑分类')
-        if edit_act is None: return
+        if edit_act is None:
+            return
         edit_act.setIcon(icon(EDIT, size=SIZE_MENU))
         delete_act = menu.addAction('删除分类')
-        if delete_act is None: return
+        if delete_act is None:
+            return
         delete_act.setIcon(icon(DELETE, size=SIZE_MENU))
         action = menu.exec(self._category_list.mapToGlobal(pos))
 

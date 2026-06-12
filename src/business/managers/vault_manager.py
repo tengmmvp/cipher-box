@@ -25,18 +25,15 @@ from ...exceptions import (
     VaultLockedError,
 )
 from ...utils.memory import secure_zero_buffer
+from ..services.key_manager import KeyManager
 from ..services.key_rotation import KeyRotationService
 from ..services.metadata_signer import MetadataSigner
 
 _SNAPSHOT_KEY_AAD = 'vault:snapshot-key'
 
 
-# key_epoch 缓存 TTL 秒数，避免每次写入都查询数据库
-_EPOCH_CACHE_TTL_SECONDS = 2.0
-
-# TODO: 进一步拆分 VaultManager 的剩余职责：
-# - 密钥生命周期管理即派生与清零，可提取为独立的 KeyManager
-# - 初始化/解锁/锁定/改密流程可提取为 VaultLifecycle
+# TODO: 初始化/解锁/锁定/改密流程可进一步提取为独立的 VaultLifecycle。
+# 密钥持有与清零职责已拆出至 src/business/services/key_manager.py。
 
 class VaultManager:
     """管理保险库的创建、解锁、锁定等操作。"""
@@ -56,15 +53,38 @@ class VaultManager:
         # 密钥轮换服务，仅负责纯加解密计算，事务仍由 VaultManager 管理
         self._rotator = KeyRotationService(self._db, self._signer)
 
-        self._key: bytes | None = None
         self._is_unlocked = False
-        self._key_epoch: str | None = None
-        self._snapshot_key: bytes | None = None
-        self._epoch_cache_time: float = 0.0
+        self._key_mgr = KeyManager()
         self._lock = threading.RLock()  # 保护改密和重加密等关键写操作串行化
         self._db_initialized = False  # 缓存标志，避免 is_initialized 重复打开数据库
         self._on_lock_callbacks: list = []
         self._cancel_event = threading.Event()  # close() 时设置，通知长时间操作提前终止
+
+    # 密钥材料由 KeyManager 持有，此处通过 property 代理，保持 VaultManager
+    # 内部 self._key / self._snapshot_key / self._key_epoch 访问接口不变。
+    @property
+    def _key(self):
+        return self._key_mgr.key
+
+    @_key.setter
+    def _key(self, value):
+        self._key_mgr.update_key(value)
+
+    @property
+    def _snapshot_key(self):
+        return self._key_mgr.snapshot_key
+
+    @_snapshot_key.setter
+    def _snapshot_key(self, value):
+        self._key_mgr.update_snapshot_key(value)
+
+    @property
+    def _key_epoch(self):
+        return self._key_mgr.key_epoch
+
+    @_key_epoch.setter
+    def _key_epoch(self, value):
+        self._key_mgr.update_epoch(value)
 
     def register_on_lock(self, callback):
         """注册锁定时自动调用的回调，用于清除缓存等。"""
@@ -120,14 +140,24 @@ class VaultManager:
         return self._key_epoch
 
     def update_key_epoch(self, new_epoch: str):
-        """更新 key_epoch 并重置缓存，用于备份恢复后同步状态。"""
+        """更新 key_epoch，用于备份恢复后同步状态。
+
+        恢复会整体替换数据，触发缓存失效回调清除恢复前的明文缓存（如
+        username 缓存按 crypto_id 索引，恢复保留 crypto_id 会命中旧明文），
+        避免与新数据不一致。复用 on_lock 回调列表，其当前仅注册缓存清除。
+        """
         self._key_epoch = new_epoch
-        self._epoch_cache_time = 0.0  # 强制下次写入时重新校验
+        for cb in self._on_lock_callbacks:
+            try:
+                cb()
+            except Exception:
+                logger.debug("恢复后缓存失效回调失败", exc_info=True)
 
     def _enforce_key_epoch(self):
         """拒绝锁定状态或主密钥已轮换的旧会话写入数据库。
 
-        使用时间戳缓存避免每次写入都查询数据库，TTL 窗口内只检查一次 epoch。
+        每次写入都比对 key_epoch，不做时间缓存，避免改密后旧会话在窗口内
+        用旧密钥写入导致数据按旧密钥落盘、新会话解密失败的损坏窗口。
         检测到 epoch 不匹配时调用 _clear_vault_state 而非 lock，
         避免在持有数据库锁时触发回调导致死锁。
         """
@@ -137,14 +167,12 @@ class VaultManager:
             return
         if not self.is_unlocked:
             raise VaultLockedError("保险库已锁定，不能写入数据")
-        now = time.monotonic()
-        if now - self._epoch_cache_time < _EPOCH_CACHE_TTL_SECONDS:
-            return
+        # 每次写入都比对 epoch，不做时间缓存：避免改密后旧会话在 TTL 窗口内
+        # 用旧密钥写入，导致数据按旧密钥落盘、新会话解密失败的损坏窗口。
         current_epoch = self._db.get_meta('key_epoch')
         if current_epoch and current_epoch != self._key_epoch:
             self._clear_vault_state()
             raise VaultKeyEpochMismatchError("保险库密钥已被其他进程更新，请重新启动并解锁")
-        self._epoch_cache_time = now
 
     def initialize(self, master_password: str) -> tuple[bool, str]:
         """首次初始化保险库，设置主密码
@@ -177,9 +205,7 @@ class VaultManager:
             except Exception:
                 self._db.rollback_transaction()
                 raise
-            self._key = derived_key
-            self._snapshot_key = snapshot_key
-            self._key_epoch = key_epoch
+            self._key_mgr.activate(derived_key, snapshot_key, key_epoch)
             self._signer.set_domain_key(MetadataSigner.compute_domain_key(derived_key))
             self._is_unlocked = True
             return True, ''
@@ -258,24 +284,14 @@ class VaultManager:
         用于 _enforce_key_epoch 中需要安全清除状态但不能触发回调的场景，
         避免在持有数据库锁时回调中再获取数据库锁导致死锁。
         """
-        # 尽力清零密钥内存
-        try:
-            for attr in ('_key', '_snapshot_key'):
-                secret = getattr(self, attr, None)
-                if secret is not None:
-                    secure_zero_buffer(secret)
-            # 清零 MetadataSigner 中的域密钥
-            dk = self._signer.domain_key
-            if dk is not None:
-                secure_zero_buffer(dk)
-        except Exception:
-            logger.warning("密钥清零初始化失败", exc_info=True)
-        self._key = None
-        self._snapshot_key = None
-        self._is_unlocked = False
-        self._key_epoch = None
+        # 密钥材料由 KeyManager 集中清零（含主密钥、快照密钥、epoch）
+        self._key_mgr.clear()
+        # 清零 MetadataSigner 中的域密钥
+        dk = self._signer.domain_key
+        if dk is not None:
+            secure_zero_buffer(dk)
         self._signer.domain_key = None
-        self._epoch_cache_time = 0.0
+        self._is_unlocked = False
         # 重置初始化标志：下次 _ensure_db_open 将重新验证 schema。
         # 注意：不关闭数据库连接，_conn 仍可能被后续操作使用，
         # 但 _db_initialized=False 确保 init_tables 在下次访问时重新运行。
@@ -362,6 +378,7 @@ class VaultManager:
         except CipherBoxError:
             raise  # 所有 CipherBox 自定义异常向上传播
         except Exception as exc:
+            logger.warning("修改主密码失败", exc_info=True)
             return False, str(exc) or '修改主密码失败'
 
     def _re_encrypt_all(self, new_key: bytes, new_salt: bytes, new_verify_token: str):
@@ -380,6 +397,9 @@ class VaultManager:
 
         old_key = self._key
         new_epoch = uuid.uuid4().hex
+        # snapshot_key 随主密钥一同轮换：旧 snapshot_key 加密的快照与恢复点随后清理，
+        # 彻底收缩历史明文泄漏面，使主密码一旦被攻破也无法解密历史快照。
+        new_snapshot_key = os.urandom(32)
 
         # 使用真实事务：begin_transaction 抑制内部 commit
         # 数据读取在事务内完成，防止 TOCTOU 竞态
@@ -389,11 +409,9 @@ class VaultManager:
             t0 = time.monotonic()
             self._rotator.re_encrypt_entries(old_key, new_key, cancel_event=self._cancel_event)
             self._rotator.re_encrypt_history(old_key, new_key, cancel_event=self._cancel_event)
-            # snapshot_key 不轮换：保留用户快照备份的跨改密可用性。改密前自动创建的
-            # 恢复点随后清理以收缩泄漏面，因恢复点含改密前全部条目明文。
             self._update_vault_metadata(
                 new_key, new_salt, new_verify_token, new_epoch,
-                snapshot_key=self._snapshot_key,
+                snapshot_key=new_snapshot_key,
             )
 
             # 先提交事务再更新内存密钥
@@ -401,13 +419,21 @@ class VaultManager:
             # 将密钥赋值放在 commit 之后，避免后台线程在 commit 前读到新密钥，
             # 解密尚未提交的旧数据，造成解密窗口问题。
             self._db.commit_transaction()
-            self._key = new_key
-            self._key_epoch = new_epoch
+            self._key_mgr.activate(new_key, new_snapshot_key, new_epoch)
             self._signer.set_domain_key(MetadataSigner.compute_domain_key(new_key))
             EncryptionEngine.clear_cache()  # 旧密钥 cipher 已失效，确保后续用新密钥
             logger.info("重加密完成 (%.1fms)", (time.monotonic() - t0) * 1000)
-            # 清理改密前自动创建的恢复点，含改密前条目明文，以收缩泄漏面
-            self._purge_restore_points()
+            # 清理旧 snapshot_key 加密的全部快照与恢复点，收缩泄漏面。
+            # purge 失败（文件占用/只读目录）不使改密失败，但必须明确记录，
+            # 避免用户误以为泄漏面已收缩而旧明文快照实际仍残留磁盘。
+            failed_purges = self._purge_snapshot_backups()
+            if failed_purges:
+                logger.warning(
+                    "改密后未能删除 %d 个旧快照/恢复点（可能被占用或目录只读），"
+                    "建议手动清理以收缩历史明文泄漏面：%s",
+                    len(failed_purges),
+                    ', '.join(str(p) for p in failed_purges),
+                )
             # WAL 截断在事务提交之后执行；此时数据已落盘，截断失败非致命，
             # 单独捕获避免其异常冒泡导致 UI 显示模糊错误，而事务其实已成功。
             try:
@@ -433,20 +459,28 @@ class VaultManager:
             logger.error("重加密失败: 回滚所有变更", exc_info=True)
             raise
 
-    def _purge_restore_points(self):
-        """删除所有恢复前安全快照 pre_restore_*.cbox。
+    def _purge_snapshot_backups(self) -> list:
+        """删除所有 snapshot_key 加密的快照与恢复前安全快照，返回未能删除的文件。
 
-        改密时调用：恢复点含改密前的全部条目明文，清除以收缩泄漏面，
-        防止主密码被攻破后经历史恢复点还原已删除条目。
+        改密时 snapshot_key 随主密钥轮换，旧 snapshot_key 加密的文件无法用新密钥
+        解密，且含历史明文，清理以收缩泄漏面。同时覆盖默认目录与用户自定义目录。
+        返回因占用或权限等原因未能删除的文件清单，供调用方明确上报而非静默丢失。
         """
-        restore_dir = self.data_dir / 'backups'
-        if not restore_dir.is_dir():
-            return
-        for f in restore_dir.glob('pre_restore_*.cbox'):
-            try:
-                f.unlink()
-            except OSError:
-                logger.warning("清理恢复点失败：%s", f, exc_info=True)
+        directories = [self.data_dir / 'backups']
+        backup_dir = self._config.get('backup_directory', '')
+        if backup_dir:
+            directories.append(Path(backup_dir))
+        failed = []
+        for directory in directories:
+            if not directory.is_dir():
+                continue
+            for pattern in ('pre_restore_*.cbox', 'cipherbox_snapshot_*.cbox'):
+                for f in directory.glob(pattern):
+                    try:
+                        f.unlink()
+                    except OSError:
+                        failed.append(f)
+        return failed
 
     def _write_vault_metadata(
         self, *, salt: bytes, verify_token: str,

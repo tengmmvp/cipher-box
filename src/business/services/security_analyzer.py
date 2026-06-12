@@ -1,5 +1,6 @@
 """安全分析器，提供弱密码检测、重复密码检测与过期提醒。"""
 
+import dataclasses
 import hmac
 import logging
 import threading
@@ -16,6 +17,12 @@ logger = logging.getLogger(__name__)
 from ...models import Entry
 from .crypto_utils import build_entry_summary, decrypt_field, require_vault_key
 
+# 分析缓存存活时间（秒）。命中期内复用基础分析与密码指纹结果，
+# 避免重复执行 O(n) 解密与 HMAC 计算。条目增删或改密会立即失效缓存，
+# 此 TTL 仅控制时间维度的淘汰。跨层时序常量未集中到 UI 层以避免
+# 业务层反向依赖 UI 模块；本常量作为业务层时序参数的命名事实来源。
+SECURITY_ANALYSIS_CACHE_TTL_SECONDS = 120
+
 
 class SecurityAnalyzer:
     """密码安全分析器，提供三项分析维度：
@@ -26,12 +33,13 @@ class SecurityAnalyzer:
     3. **过期密码检测**：按 ``password_changed_at`` 等时间字段，筛选超过指定
        天数未修改的条目。
 
-    缓存策略：分析结果默认缓存 120 秒，采用分层设计。基础分析覆盖弱密码与
-    重复密码，不依赖 days 参数；days 变化时仅重新过滤过期条目，避免重复
-    解密全部密码。缓存同时校验条目计数与主密钥版本，确保数据一致性。
+    缓存策略：分析结果默认缓存 ``SECURITY_ANALYSIS_CACHE_TTL_SECONDS`` 秒，
+    采用分层设计。基础分析覆盖弱密码与重复密码，不依赖 days 参数；days 变化
+    时仅重新过滤过期条目，避免重复解密全部密码。缓存同时校验条目计数与
+    主密钥版本，确保数据一致性。
     """
 
-    def __init__(self, vault_manager: 'VaultManager', entry_manager: 'EntryManager | None' = None, cache_ttl_seconds: int = 120):
+    def __init__(self, vault_manager: 'VaultManager', entry_manager: 'EntryManager | None' = None, cache_ttl_seconds: int = SECURITY_ANALYSIS_CACHE_TTL_SECONDS):
         self._vault = vault_manager
         self._entry_mgr = entry_manager
         self._cache_ttl_seconds = cache_ttl_seconds
@@ -65,8 +73,9 @@ class SecurityAnalyzer:
     def _password_fingerprint(self, password: str) -> bytes:
         """使用主密钥生成密码指纹，用于去重检测。
 
-        权衡说明：使用主密钥意味着主密码变更后指纹失效，但缓存会在 120 秒 TTL
-        内自然淘汰。优点是无需额外存储独立 HMAC 密钥；指纹不出本进程，安全性
+        权衡说明：使用主密钥意味着主密码变更后指纹失效，但缓存会在
+        ``SECURITY_ANALYSIS_CACHE_TTL_SECONDS`` 秒 TTL 内自然淘汰。
+        优点是无需额外存储独立 HMAC 密钥；指纹不出本进程，安全性
         依赖主密钥保护。
         """
         return hmac.digest(self._key, password.encode('utf-8'), 'sha256')
@@ -89,9 +98,10 @@ class SecurityAnalyzer:
         提取公共逻辑以消除 _cached_analysis 与 get_cached_report 的 DRY 违规。
         调用方须在持有 _cache_lock 的上下文中调用，且 cache 须为通过 ``dict(cache)`` 创建的浅拷贝。
 
-        返回的 Entry 对象为缓存中的共享引用，属于不含敏感字段的 summary Entry。
-        调用方应将返回的 Entry 视为只读，不应修改其属性，否则会污染缓存。
-        若未来需要可变返回值，应在此处改用 dataclasses.replace 创建深拷贝。
+        返回的每个 Entry 均通过 ``dataclasses.replace`` 创建为独立副本，调用方
+        修改其属性不会污染缓存。duplicate_groups 中的每个分组列表与组内 Entry
+        同样复制。summary Entry 不含可变容器字段（custom_fields 为空列表），
+        故浅层 replace 已足够。
         """
         if days != self._analysis_cache_days:
             cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -100,15 +110,24 @@ class SecurityAnalyzer:
                 if dt is not None and dt < cutoff
             ]
             cache['old'] = len(cache['old_entries'])
-        for key in ('weak_entries', 'duplicate_groups', 'old_entries'):
-            if key in cache:
-                cache[key] = list(cache[key])
+        # 出口复制：列表新建，Entry 用 dataclasses.replace 创建独立实例，
+        # 防止调用方修改返回对象污染缓存中的共享 Entry。
+        if 'weak_entries' in cache:
+            cache['weak_entries'] = [dataclasses.replace(e) for e in cache['weak_entries']]
+        if 'old_entries' in cache:
+            cache['old_entries'] = [dataclasses.replace(e) for e in cache['old_entries']]
+        if 'duplicate_groups' in cache:
+            cache['duplicate_groups'] = [
+                [dataclasses.replace(e) for e in group]
+                for group in cache['duplicate_groups']
+            ]
         return cache
 
     def _cached_analysis(self, days: int = 90) -> dict:
         """带缓存的安全分析。采用缓存分层设计，基础分析不依赖 days 参数。
 
-        缓存有效期由 ``_cache_ttl_seconds`` 控制，默认 120 秒，同时校验条目计数与
+        缓存有效期由 ``_cache_ttl_seconds`` 控制，默认为
+        ``SECURITY_ANALYSIS_CACHE_TTL_SECONDS`` 秒，同时校验条目计数与
         主密钥版本 ``key_epoch``：条目增删或改密轮换密钥时立即失效并重新计算。
         key_epoch 校验作为防御性失效手段，即使某调用点遗漏 invalidate_cache，
         改密后缓存也会因 epoch 变化而自动失效，因为密码指纹依赖旧主密钥，必须重算。
@@ -161,7 +180,8 @@ class SecurityAnalyzer:
 
         边界：对「从未改过密码」的条目，password_changed_at 为空，过期检测回退
         到 updated_at，修改非密码字段会更新 updated_at，其过期归属可能短暂
-        过时，至多延迟一个 TTL 即 120 秒周期后自动修正，对提醒类信息可接受。
+        过时，至多延迟一个 TTL 即 ``SECURITY_ANALYSIS_CACHE_TTL_SECONDS`` 秒
+        周期后自动修正，对提醒类信息可接受。
         """
         if not password_changed:
             return

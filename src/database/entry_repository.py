@@ -518,6 +518,35 @@ class EntryRepository:
         ).fetchone()
         return self._row_to_entry(row, verify=VerifyMode.SKIP) if row else None
 
+    def clear_category_signatures(self, category_id: int) -> None:
+        """将指定分类下所有条目的 category_id 置空并重算元数据签名。
+
+        供删除分类时由 DatabaseManager 编排调用，保持条目元数据完整性。
+        批量执行，将 N+1 模式降为 2 次操作。不校验旧签名，因签名将被覆盖。
+
+        锁与事务契约：本方法未使用 ``@_db_operation`` 装饰器，不自行获取
+        ``db_lock``。调用方（DatabaseManager.delete_category）须已持有
+        ``db_lock`` 并处于活动事务内，以保证 SELECT 与 executemany UPDATE
+        的原子性及跨表一致性。
+        """
+        rows = self._conn.execute(
+            "SELECT e.*, c.name as category_name "
+            "FROM entries e LEFT JOIN categories c ON e.category_id = c.id "
+            "WHERE e.category_id=?",
+            (category_id,),
+        ).fetchall()
+        update_data = []
+        for row in rows:
+            entry = self._row_to_entry(row, verify=VerifyMode.SKIP)
+            entry.category_id = None
+            entry.metadata_mac = self._sign_entry(entry)
+            update_data.append((entry.metadata_mac, entry.id))
+        if update_data:
+            self._conn.executemany(
+                "UPDATE entries SET category_id=NULL, metadata_mac=? WHERE id=?",
+                update_data,
+            )
+
     def _row_to_entry(self, row: sqlite3.Row,
                        verify: VerifyMode = VerifyMode.STRICT) -> Entry:
         """从数据库行构建 Entry 对象。

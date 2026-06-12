@@ -63,6 +63,17 @@ class EntryManager:
         self._username_cache: dict[str, str] = {}
         self._username_decrypt_failed: set[str] = set()
         self._cache_epoch: str | None = None
+        # TOTP secret 明文缓存，entry_id → 解密 totp_secret。
+        # 仅供 generate_totp_cached 复用，避免定时器每秒查 DB + AESGCM 解密。
+        # 生命周期与 username 缓存一致：key_epoch 变化（改密/锁定）即清空，
+        # 条目更新修改 totp_secret 时按 entry_id 失效（见 update_entry）。
+        # TOTP secret 用于生成验证码，属敏感凭据，但与 username 同属会话内
+        # 必需明文，缓存窗口与 username 缓存等价。
+        self._totp_secret_cache: dict[int, str] = {}
+        # 标签计数缓存，避免侧边栏每次刷新都全表扫描 tags 列并内存聚合。
+        # tags 为明文字段（非加密），缓存仅含 tag 计数，无敏感数据。
+        # 失效条件：条目增删改（_notify_entry_change）、锁定/改密（epoch 变化）。
+        self._tags_cache: list[tuple[str, int]] | None = None
         # 条目变更回调列表，用于事件驱动的缓存失效，如 SecurityAnalyzer。
         self._on_entry_change_callbacks: list = []
 
@@ -182,12 +193,16 @@ class EntryManager:
         if current is None or current != self._cache_epoch:
             self._username_cache.clear()
             self._username_decrypt_failed.clear()
+            self._totp_secret_cache.clear()
+            self._tags_cache = None
             self._cache_epoch = current
 
     def invalidate_caches(self):
         """外部调用：锁定或改密后显式清空明文缓存。"""
         self._username_cache.clear()
         self._username_decrypt_failed.clear()
+        self._totp_secret_cache.clear()
+        self._tags_cache = None
         self._cache_epoch = None
 
     def _notify_entry_change(self, password_changed: bool = True):
@@ -197,6 +212,8 @@ class EntryManager:
         即弱密码、重复、过期结果不变，订阅方可据此跳过昂贵的缓存重算。
         增删条目等结构性变更保持默认 True，因其改变 total 与重复分组。
         """
+        # 条目增删改可能改变 tags 分布，失效标签计数缓存，下次 get_all_tags 重算。
+        self._tags_cache = None
         for cb in self._on_entry_change_callbacks:
             try:
                 cb(password_changed)
@@ -369,6 +386,10 @@ class EntryManager:
         if raw is None:
             return
 
+        # 条目更新可能修改 totp_secret，失效该条目的 TOTP secret 缓存，
+        # 下次 get_totp_state / generate_totp_cached 重新解密。
+        self._totp_secret_cache.pop(entry.id, None)
+
         # 检测密码变更，归档旧密码
         old_pwd_enc = raw.password
         # 安全-性能权衡：此处必须解密旧密码与明文比较来检测变更。
@@ -408,6 +429,7 @@ class EntryManager:
     def delete_entry(self, entry_id: int):
         """软删除条目，移入回收站。"""
         self._vault.db.soft_delete_entry(entry_id)
+        self._totp_secret_cache.pop(entry_id, None)
         self._notify_entry_change()
 
     def restore_entry(self, entry_id: int):
@@ -418,11 +440,13 @@ class EntryManager:
     def permanent_delete_entry(self, entry_id: int):
         """永久删除条目"""
         self._vault.db.permanent_delete_entry(entry_id)
+        self._totp_secret_cache.pop(entry_id, None)
         self._notify_entry_change()
 
     def empty_trash(self):
         """清空回收站"""
         self._vault.db.empty_trash()
+        self._totp_secret_cache.clear()
         self._notify_entry_change()
 
     def get_entries(
@@ -441,6 +465,12 @@ class EntryManager:
 
         NOTE: search 参数不传递到 SQL 层，因为 username 是加密字段，
         SQL LIKE 无法过滤。所有搜索匹配在 Python 层完成。
+
+        PERF: 生产代码中列表展示统一走轻量的 get_entry_summaries（仅解密
+        username），本方法的 search 分支「命中后完整解密」仅在测试中使用，
+        不构成生产路径的性能热点。导出等需要全字段的场景走
+        get_entries_for_export。如未来需要列表展示调用此方法，应改用
+        get_entry_summaries 以避免过度解密。
         """
         raw_entries = self._vault.db.get_entries(
             deleted_only=deleted_only,
@@ -486,16 +516,20 @@ class EntryManager:
         """获取不含密码等敏感明文的列表摘要。
 
         Note:
-            当 ``limit`` 非空且 ``search`` 为空时，``limit`` 在 SQL 层生效，即 LIMIT 子句。
-            但当 ``search`` 非空时，因加密字段无法在数据库层面搜索，
-            必须先全量解密 username 再在内存中过滤，此时 SQL LIMIT 无法正确下推，
-            可能返回少于 ``limit`` 条结果。这是加密数据库的根本限制。
+            ``limit`` 的生效方式取决于 ``search``：
+            - ``search`` 为空时，``limit`` 在 SQL 层生效（LIMIT 子句），高效截断。
+            - ``search`` 非空时，因加密字段无法在数据库层面搜索，必须先全量
+              解密 username 再在内存中过滤。此时 ``limit`` 不下推到 SQL（否则会先
+              截断再过滤，导致搜索命中远少于实际），由调用方在内存过滤后自行截断。
+              即当 search 非空时本方法忽略 limit，返回全部命中结果。
         """
+        # search 非空时不向 SQL 下推 limit，避免「先截断后过滤」导致命中失真。
+        sql_limit = limit if not search else None
         raw_entries = self.db.get_entries(
             deleted_only=deleted_only,
             category_id=category_id,
             favorite_only=favorite_only,
-            limit=limit,
+            limit=sql_limit,
         )
         summaries = [self._decrypt_summary(entry) for entry in raw_entries]
         if search:
@@ -531,15 +565,22 @@ class EntryManager:
 
     # DELEGATE: see DatabaseManager.add_category
     def add_category(self, category: Category) -> int:
-        return self._vault.db.add_category(category)
+        result = self._vault.db.add_category(category)
+        # 分类变更不改变条目密码相关维度，仅失效 _tags_cache 等结构缓存。
+        self._notify_entry_change(password_changed=False)
+        return result
 
     # DELEGATE: see DatabaseManager.update_category
     def update_category(self, category: Category) -> None:
         self._vault.db.update_category(category)
+        # 分类变更不改变条目密码相关维度，仅失效 _tags_cache 等结构缓存。
+        self._notify_entry_change(password_changed=False)
 
     # DELEGATE: see DatabaseManager.delete_category
     def delete_category(self, category_id: int) -> None:
         self._vault.db.delete_category(category_id)
+        # 分类变更不改变条目密码相关维度，仅失效 _tags_cache 等结构缓存。
+        self._notify_entry_change(password_changed=False)
 
     def toggle_favorite(self, entry_id: int) -> bool | None:
         """切换收藏状态，返回新的收藏状态；条目不存在时返回 None。
@@ -592,32 +633,88 @@ class EntryManager:
         仅解密 totp_secret 字段，避免触发 password/notes/custom_fields
         等其他敏感字段的不必要解密。
 
+        解密逻辑复用 generate_totp_cached 的单一解密路径，避免两份独立的
+        解密与空值判断逻辑漂移。与 generate_totp_cached 的区别：本方法
+        不写入会话内 totp_secret 缓存（调用方按需自行预热）。
+
         Returns:
             6 位验证码字符串，条目不存在或无 TOTP 密钥时返回 None。
         """
-        raw = self.db.get_entry(entry_id)
-        if raw is None or not raw.totp_secret:
-            return None
-        secret = self._decrypt_field(raw.totp_secret, raw.crypto_id, 'totp_secret')
+        secret = self._resolve_totp_secret(entry_id)
         if not secret:
             return None
         return TOTPGenerator.generate(secret)
+
+    def generate_totp_cached(self, entry_id: int) -> str | None:
+        """生成指定条目的 TOTP 验证码，复用会话内缓存的 totp_secret。
+
+        与 generate_totp 的区别：缓存命中时跳过 DB 查询与 AESGCM 解密，
+        仅做纯 HOTP 计算，供 TOTP 定时器每秒刷新调用。缓存以 entry_id 为键，
+        由以下途径失效：
+        - key_epoch 变化（改密/锁定）：整体清空（_invalidate_if_epoch_changed）。
+        - 条目更新修改 totp_secret：按 entry_id 失效（update_entry）。
+        - 条目删除：按 entry_id 失效（delete_entry / permanent_delete_entry）。
+        get_totp_state 在条目首次展示时预热缓存，此后定时器全程命中缓存。
+
+        解密逻辑复用 _resolve_totp_secret 的单一解密路径，避免与 generate_totp
+        两份独立的解密与空值判断逻辑漂移。
+
+        Returns:
+            6 位验证码字符串，条目不存在或无 TOTP 密钥时返回 None。
+        """
+        self._invalidate_if_epoch_changed()
+        secret = self._resolve_totp_secret(entry_id, use_cache=True)
+        if not secret:
+            return None
+        return TOTPGenerator.generate(secret)
+
+    def _resolve_totp_secret(
+        self, entry_id: int, *, use_cache: bool = False,
+    ) -> str | None:
+        """解析条目的 totp_secret 明文，单一解密路径供 TOTP 方法复用。
+
+        Args:
+            entry_id: 条目 ID。
+            use_cache: 是否读写会话内 totp_secret 缓存。generate_totp_cached
+                传 True 复用缓存；generate_totp 传 False 仅解密不落缓存，
+                保持其「不写缓存」语义。
+        """
+        if use_cache:
+            secret = self._totp_secret_cache.get(entry_id)
+            if secret is not None:
+                return secret
+        raw = self.db.get_entry(entry_id)
+        if raw is None or not raw.totp_secret:
+            return None
+        secret = self._decrypt_field(
+            raw.totp_secret, raw.crypto_id, 'totp_secret',
+        )
+        if not secret:
+            return None
+        if use_cache:
+            self._totp_secret_cache[entry_id] = secret
+        return secret
 
     def get_totp_state(self, entry_id: int) -> dict | None:
         """获取指定条目的 TOTP 完整状态，含验证码、倒计时和周期。
 
         仅解密 totp_secret 字段，供 detail_panel 的 TOTP 显示和刷新定时器使用。
+        首次调用时将解密后的 secret 写入 _totp_secret_cache，使后续
+        generate_totp_cached 命中缓存，避免定时器每秒重复解密。
 
         Returns:
             ``{'code': str, 'remaining': int, 'period': int}``，
             条目不存在或无 TOTP 密钥时返回 None。
         """
+        self._invalidate_if_epoch_changed()
         raw = self.db.get_entry(entry_id)
         if raw is None or not raw.totp_secret:
             return None
         secret = self._decrypt_field(raw.totp_secret, raw.crypto_id, 'totp_secret')
         if not secret:
             return None
+        # 预热缓存，供 generate_totp_cached 复用。
+        self._totp_secret_cache[entry_id] = secret
         return {
             'code': TOTPGenerator.generate(secret),
             'remaining': TOTPGenerator.get_remaining_seconds(secret=secret),
@@ -625,13 +722,22 @@ class EntryManager:
         }
 
     def get_all_tags(self) -> list[tuple[str, int]]:
-        """获取所有标签及其使用频率"""
+        """获取所有标签及其使用频率。
+
+        结果在会话内缓存，避免侧边栏每次刷新（含搜索防抖）都全表扫描 tags
+        列并内存聚合。缓存于条目增删改（_notify_entry_change）与锁定/改密
+        （key_epoch 变化）时失效。tags 为明文字段，缓存无敏感数据。
+        """
+        self._invalidate_if_epoch_changed()
+        if self._tags_cache is not None:
+            return self._tags_cache
         tag_rows = self.db.get_all_tags()
         tag_count: dict[str, int] = {}
         for tags_str in tag_rows:
             for tag in (t.strip() for t in tags_str.split(',') if t.strip()):
                 tag_count[tag] = tag_count.get(tag, 0) + 1
-        return sorted(tag_count.items(), key=lambda x: -x[1])
+        self._tags_cache = sorted(tag_count.items(), key=lambda x: -x[1])
+        return self._tags_cache
 
     @staticmethod
     def _validate_plain_entry(entry: Entry):

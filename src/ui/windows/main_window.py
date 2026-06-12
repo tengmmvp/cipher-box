@@ -441,24 +441,25 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         QTimer.singleShot(MS_INITIAL_BACKUP_DELAY, self._maybe_auto_backup)
 
     def _maybe_auto_backup(self, force: bool = False):
-        """按设置创建当前保险库的本地快速快照。"""
+        """按设置创建当前保险库的本地快速快照（后台执行，避免阻塞 UI）。"""
         if not self._vault.is_unlocked:
             return
-        success, error = self._backup.maybe_auto_backup(self._config, force=force)
-        if not success:
-            Toast.show(self, f'自动快照失败：{error}', Toast.ERROR, duration=MS_TOAST_LONG)
+        self._run_backup_async(force=force)
 
     def _run_backup_async(self, force: bool = False):
-        """异步执行自动备份，force=True 时在 BackgroundWorker 中运行。"""
+        """异步执行自动备份。
+
+        始终在 BackgroundWorker 中运行：maybe_auto_backup 在间隔到期时会执行
+        全量解密 + PBKDF2 + 加密，同步执行会阻塞 UI 主线程数秒。
+        """
         if not self._vault.is_unlocked:
             return
-        if not force:
-            # 非 force 路径：仅检查配置，几乎无 I/O，可同步执行
-            self._backup.maybe_auto_backup(self._config, force=False)
+        # 上一个备份仍在运行则跳过，避免覆盖引用导致孤儿线程在锁定后访问已清零密钥
+        if self._backup_worker is not None and self._backup_worker.isRunning():
             return
 
         def _task():
-            return self._backup.maybe_auto_backup(self._config, force=True)
+            return self._backup.maybe_auto_backup(self._config, force=force)
 
         worker = BackgroundWorker(_task, parent=self)
         worker.error.connect(lambda msg: logger.warning("自动快照失败: %s", msg))

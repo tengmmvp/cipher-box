@@ -145,11 +145,16 @@ class TOTPWidget(QWidget):
         self._timer.start(MS_TOTP_REFRESH)
 
     def _refresh(self):
-        """刷新 TOTP 验证码，仅调用 generate_totp，复用缓存的 period。"""
+        """刷新 TOTP 验证码，调用 generate_totp_cached 复用缓存的 period。
+
+        _build 启动时已通过 get_totp_state 预热 EntryManager 的 secret 缓存，
+        此处仅做纯 HOTP 计算，不再每秒查 DB 与 AESGCM 解密。key_epoch 变化
+        （改密/锁定）或条目更新/删除时缓存自动失效，下次刷新重新解密。
+        """
         if not self._entry_id or not self._code_label or not self._entry_mgr:
             self._timer.stop()
             return
-        code = self._entry_mgr.generate_totp(self._entry_id)
+        code = self._entry_mgr.generate_totp_cached(self._entry_id)
         if not code:
             self._timer.stop()
             return

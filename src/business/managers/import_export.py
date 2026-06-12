@@ -6,7 +6,7 @@ import logging
 import os
 from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from ...utils.format import utc_now_iso
 
@@ -19,6 +19,13 @@ from ...models import (
     ENTRY_TYPE_IDENTITY,
     ENTRY_TYPE_LOGIN,
     ENTRY_TYPE_NOTE,
+    MAX_FIELD_NOTES,
+    MAX_FIELD_PASSWORD,
+    MAX_FIELD_TAGS,
+    MAX_FIELD_TITLE,
+    MAX_FIELD_TOTP_SECRET,
+    MAX_FIELD_URL,
+    MAX_FIELD_USERNAME,
     Category,
     CustomField,
     Entry,
@@ -32,7 +39,7 @@ MAX_IMPORT_ENTRIES = 50_000
 MAX_IMPORT_ENTRY_SIZE = 2 * 1024 * 1024
 
 # CSV 导入列名别名映射：每个字段对应一组可能的列名，匹配时不区分大小写。
-# 用于 import_from_csv 的 _get_val 调用和密码列检测。
+# 由 _parse_csv_like 经 _build_col_map 用于 import_from_csv。
 _CSV_COLUMN_ALIASES = {
     'title':       ('title', 'Title', '名称', 'name'),
     'username':    ('username', 'Username', '用户名', 'login', 'user'),
@@ -44,17 +51,15 @@ _CSV_COLUMN_ALIASES = {
     'category':    ('category', 'Category', '分类', 'folder'),
 }
 
-# 密码列的别名集合，均为小写形式，用于检测 CSV 是否包含密码列。
-_PASSWORD_COLUMN_NAMES = {'password', '密码', 'login_password', 'pass'}
-
 # KeePass CSV 列名别名映射：键为内部字段名，值为 CSV 中可能的列名，均为小写用于匹配。
+# 值统一为 tuple，与 _CSV_COLUMN_ALIASES 保持一致（不可变，避免误改）。
 _KEE_PASS_COLUMN_ALIASES = {
-    'title':    ['title'],
-    'username': ['username'],
-    'password': ['password'],
-    'url':      ['url'],
-    'notes':    ['notes'],
-    'group':    ['group'],
+    'title':    ('title',),
+    'username': ('username',),
+    'password': ('password',),
+    'url':      ('url',),
+    'notes':    ('notes',),
+    'group':    ('group',),
 }
 
 
@@ -68,7 +73,7 @@ def _transactional_import(method):
     """
     @wraps(method)
     def wrapper(self, filepath, *args, **kwargs):
-        self._validate_import_path(filepath)
+        resolved = self._validate_import_path(filepath)
         try:
             # 事务前快照 epoch，防止并发改密导致密钥不一致
             pre_epoch = self._entry_mgr._vault.key_epoch
@@ -76,7 +81,8 @@ def _transactional_import(method):
                 current_epoch = self._entry_mgr._vault.key_epoch
                 if pre_epoch != current_epoch:
                     raise VaultKeyEpochMismatchError('导入期间检测到密钥变更，已中止导入')
-                return method(self, filepath, *args, **kwargs)
+                # 用 resolved 路径打开，避免校验后原始路径被替换为符号链接的 TOCTOU 窗口
+                return method(self, resolved, *args, **kwargs)
         except UnicodeDecodeError:
             raise ValueError(
                 '文件编码不支持：请确保 CSV 文件使用 UTF-8 编码保存。'
@@ -92,11 +98,12 @@ class ImportExportManager:
         self._entry_mgr = entry_manager
 
     @staticmethod
-    def _validate_import_path(filepath: str):
-        validate_file_path(filepath)
-        size = Path(filepath).stat().st_size
+    def _validate_import_path(filepath: str) -> str:
+        resolved = str(validate_file_path(filepath))
+        size = Path(resolved).stat().st_size
         if size > MAX_IMPORT_FILE_SIZE:
             raise ValueError('导入文件过大，最大允许 25 MB')
+        return resolved
 
     @staticmethod
     def _validate_items(items: list):
@@ -534,38 +541,23 @@ class ImportExportManager:
         with open(filepath, 'r', encoding='utf-8-sig', newline='') as f:
             reader = csv.DictReader(f)
             rows = list(reader)
-            headers = reader.fieldnames or []
 
         self._validate_items(rows)
-        password_present = any(
-            header.lower().strip() in _PASSWORD_COLUMN_NAMES
-            for header in headers
-        )
 
         if not rows:
             return 0
 
         categories = {c.name.casefold(): c for c in self._entry_mgr.get_categories()}
 
-        # 将 rows 转换为统一格式用于去重检测，同时构建 Entry 对象
-        entries = []
-        entries_data = []
-        for row in rows:
-            rl = {k.lower(): v for k, v in row.items()}
-            title = self._get_val(row, *_CSV_COLUMN_ALIASES['title'], _row_lower=rl)
-            username = self._get_val(row, *_CSV_COLUMN_ALIASES['username'], _row_lower=rl)
-            entry = Entry(
-                title=title,
-                username=username,
-                password=self._get_val(row, *_CSV_COLUMN_ALIASES['password'], _row_lower=rl),
-                url=self._get_val(row, *_CSV_COLUMN_ALIASES['url'], _row_lower=rl),
-                tags=self._get_val(row, *_CSV_COLUMN_ALIASES['tags'], _row_lower=rl),
-                notes=self._get_val(row, *_CSV_COLUMN_ALIASES['notes'], _row_lower=rl),
-                totp_secret=self._get_val(row, *_CSV_COLUMN_ALIASES['totp_secret'], _row_lower=rl),
-                category_name=self._get_val(row, *_CSV_COLUMN_ALIASES['category'], _row_lower=rl),
-            )
-            entries.append(entry)
-            entries_data.append({'title': title, 'username': username})
+        entries, entries_data, password_present = self._parse_csv_like(
+            rows,
+            _CSV_COLUMN_ALIASES,
+            {
+                'title': 'title', 'username': 'username', 'password': 'password',
+                'url': 'url', 'tags': 'tags', 'notes': 'notes',
+                'totp_secret': 'totp_secret', 'category': 'category_name',
+            },
+        )
 
         def _merge(entry: Entry, existing: Entry):
             self._merge_csv_secrets(entry, existing, password_present)
@@ -629,43 +621,16 @@ class ImportExportManager:
         if not rows:
             return 0
 
-        # 自动检测列名大小写：构建实际列名映射
-        # KeePass 常见列: Title, UserName, Password, URL, Notes, Group
-        field_aliases = _KEE_PASS_COLUMN_ALIASES
-
-        # 获取 CSV 实际列名，原样保留
-        actual_headers = list(rows[0].keys())
-
-        # 为每个内部字段名找到 CSV 中匹配的列名
-        col_map: dict[str, str] = {}
-        for internal, aliases in field_aliases.items():
-            for alias in aliases:
-                for header in actual_headers:
-                    if header.lower().strip() == alias.lower():
-                        col_map[internal] = header
-                        break
-                if internal in col_map:
-                    break
-        password_present = 'password' in col_map
-
         categories = {c.name.casefold(): c for c in self._entry_mgr.get_categories()}
 
-        # 构建 Entry 对象和去重检测数据
-        entries = []
-        entries_data = []
-        for row in rows:
-            title = row.get(col_map.get('title', ''), '').strip()
-            username = row.get(col_map.get('username', ''), '').strip()
-            entry = Entry(
-                title=title,
-                username=username,
-                password=row.get(col_map.get('password', ''), '').strip(),
-                url=row.get(col_map.get('url', ''), '').strip(),
-                notes=row.get(col_map.get('notes', ''), '').strip(),
-                category_name=row.get(col_map.get('group', ''), '').strip(),
-            )
-            entries.append(entry)
-            entries_data.append({'title': title, 'username': username})
+        entries, entries_data, password_present = self._parse_csv_like(
+            rows,
+            _KEE_PASS_COLUMN_ALIASES,
+            {
+                'title': 'title', 'username': 'username', 'password': 'password',
+                'url': 'url', 'notes': 'notes', 'group': 'category_name',
+            },
+        )
 
         def _merge(entry: Entry, existing: Entry):
             self._merge_csv_secrets(entry, existing, password_present)
@@ -802,28 +767,76 @@ class ImportExportManager:
         )
 
     @staticmethod
-    def _get_val(row: dict, *keys: str, _row_lower: dict | None = None) -> str:
-        """从行数据中按多个候选键名获取值，精确匹配优先，大小写不敏感回退。
+    def _build_col_map(headers: list, aliases: dict) -> dict[str, str]:
+        """构建内部字段名到 CSV 实际列名的映射，大小写不敏感匹配。
+
+        aliases 的值为候选列名可迭代对象，按声明顺序匹配，首个命中即确定。
+        供 CSV 与 KeePass 等表格类导入共享，消除两套并列的列名匹配机制。
+        """
+        normalized = {str(h).lower().strip(): h for h in headers}
+        col_map: dict[str, str] = {}
+        for internal, alias_list in aliases.items():
+            for alias in alias_list:
+                actual = normalized.get(alias.lower())
+                if actual is not None:
+                    col_map[internal] = actual
+                    break
+        return col_map
+
+    def _parse_csv_like(
+        self,
+        rows: list,
+        aliases: dict,
+        entry_key_map: dict[str, str],
+    ) -> tuple[list, list, bool]:
+        """统一的 CSV 类行解析：列名别名匹配后构建 Entry 与去重数据。
 
         Args:
-            row: CSV 行数据。
-            *keys: 候选键名，按优先级排序。
-            _row_lower: 可选的预计算小写键字典，避免同一行多次调用时重复构建。
+            rows: csv.DictReader 的行列表。
+            aliases: 内部字段名到候选列名列表的映射。
+            entry_key_map: 内部字段名到 Entry 构造关键字的映射，允许同一
+                Entry 字段接收不同来源列，例如分类字段对应 CSV 的 category
+                与 KeePass 的 group。
+
+        Returns:
+            (entries, entries_data, password_present) 三元组。
         """
-        for key in keys:
-            val = row.get(key, '')
-            # 注意：空字符串被视为"未提供"而非"有意清空"。这是 CSV 导入的设计
-            # 决策——CSV 空单元格通常意味着列不存在或源不包含该数据，而非用户
-            # 主动清除字段值。若需支持"有意清空"语义，需引入显式空值标记。
-            if val:
-                return val
-        # 大小写不敏感回退
-        rl = _row_lower or {k.lower(): v for k, v in row.items()}
-        for key in keys:
-            val = rl.get(key.lower(), '')
-            if val:
-                return val
-        return ''
+        headers = list(rows[0].keys())
+        col_map = self._build_col_map(headers, aliases)
+        password_present = 'password' in col_map
+        # 内部字段名到最大长度的映射，与 Entry.from_dict 的 MAX_FIELD_* 校验一致。
+        # category_name（CSV 的 category / KeePass 的 group）非长度受限字段，不在此校验。
+        field_limits = {
+            'title': MAX_FIELD_TITLE,
+            'username': MAX_FIELD_USERNAME,
+            'password': MAX_FIELD_PASSWORD,
+            'url': MAX_FIELD_URL,
+            'tags': MAX_FIELD_TAGS,
+            'notes': MAX_FIELD_NOTES,
+            'totp_secret': MAX_FIELD_TOTP_SECRET,
+        }
+        entries: list = []
+        entries_data: list = []
+        for row in rows:
+            kwargs: dict[str, Any] = {
+                entry_key_map[field]: (row.get(col_map[field], '') or '').strip()
+                for field in col_map
+            }
+            # 对长度受限字段做 MAX_FIELD_* 校验，与 Entry.from_dict 一致，
+            # 避免 Entry(**kwargs) 绕过 from_dict 的校验逻辑导致超长字段入库。
+            for internal_field, max_len in field_limits.items():
+                if internal_field in col_map:
+                    value = kwargs.get(entry_key_map[internal_field], '')
+                    if len(value) > max_len:
+                        raise ValueError(
+                            f'导入条目字段 {internal_field} 过长（最多 {max_len} 字符）'
+                        )
+            entries.append(Entry(**kwargs))
+            entries_data.append({
+                'title': kwargs.get('title', ''),
+                'username': kwargs.get('username', ''),
+            })
+        return entries, entries_data, password_present
 
     @staticmethod
     def _now() -> str:

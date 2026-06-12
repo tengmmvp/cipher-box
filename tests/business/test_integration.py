@@ -413,26 +413,40 @@ def test_rejects_unknown_format(backup_restore_env):
     assert '无效的备份文件格式' in error
 
 
-def test_snapshot_survives_master_password_change(backup_restore_env):
+def test_snapshot_key_rotates_on_master_password_change(backup_restore_env):
+    """改密时 snapshot_key 随主密钥轮换。
+
+    旧 snapshot_key 加密的快照无法用轮换后的新 snapshot_key 恢复，以收缩
+    历史明文泄漏面；改密后用新 snapshot_key 创建的快照仍可正常恢复。
+    """
     entry_mgr, backup_mgr, vault, tmp_dir = backup_restore_env
-    entry_id = entry_mgr.add_entry(Entry(
+    entry_mgr.add_entry(Entry(
         title='快照条目', password='SnapshotSecret!2026'
     ))
-    backup_path = str(Path(tmp_dir) / 'snapshot.cbox')
+    old_backup_path = str(Path(tmp_dir) / 'old_snapshot.cbox')
     success, error = backup_mgr.create_backup(
-        backup_path, use_snapshot_key=True
+        old_backup_path, use_snapshot_key=True
     )
     assert success, error
 
     assert vault.change_master_password(
         'test_password_123', 'NewMasterPassword!2026'
     )[0]
-    entry_mgr.permanent_delete_entry(entry_id)
-    success, error = backup_mgr.restore_backup(backup_path)
+
+    # 旧 snapshot_key 加密的快照无法用新 snapshot_key 恢复
+    success, error = backup_mgr.restore_backup(old_backup_path)
+    assert not success
+    assert '已损坏' in error or '密码错误' in error
+
+    # 改密后用新 snapshot_key 创建的快照可正常恢复
+    entry_mgr.add_entry(Entry(title='新条目', password='NewSecret!2026'))
+    new_backup_path = str(Path(tmp_dir) / 'new_snapshot.cbox')
+    success, error = backup_mgr.create_backup(
+        new_backup_path, use_snapshot_key=True
+    )
     assert success, error
-    restored = entry_mgr.get_entries()
-    assert len(restored) == 1
-    assert restored[0].password == 'SnapshotSecret!2026'
+    success, error = backup_mgr.restore_backup(new_backup_path)
+    assert success, error
 
 
 # ── TestSecurityAnalyzer ─────────────────────────────────────────────────────

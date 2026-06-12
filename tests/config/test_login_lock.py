@@ -12,7 +12,6 @@ import json
 import time
 
 
-
 class TestLoginLockPersistence:
     """验证锁定状态使用 time.time() 墙上时钟，而非 time.monotonic()。"""
 

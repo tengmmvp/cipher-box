@@ -88,37 +88,18 @@ class CategoryRepository:
         self._auto_commit()
 
     def delete_category(self, category_id: int) -> None:
-        """删除分类，将关联条目的 category_id 置空并重算签名。
+        """删除分类行。
 
-        优化：批量获取全部条目行，构造 Entry 对象用于签名，
-        然后用 executemany 批量更新，将 N+1 模式降为 2+1 次操作。
+        仅删除 categories 表的行；关联条目的解关联与元数据重签由
+        DatabaseManager.delete_category 编排 EntryRepository.clear_category_signatures
+        完成，避免本 Repository 跨表访问 EntryRepository 的私有方法。
 
-        注意：不使用 @_db_operation，而是显式组合 _lock + transaction()，
-        使事务边界和锁持有关系更清晰。
+        锁与事务契约：本方法未使用 ``@_db_operation`` 装饰器，不自行获取
+        ``db_lock``。调用方（DatabaseManager.delete_category）须已持有
+        ``db_lock`` 并处于活动事务内，使本 DELETE 与条目解关联在同事务内
+        原子提交或回滚。
         """
-        with self._lock:
-            self._guard_write()
-            with self.transaction():
-                rows = self._conn.execute(
-                    "SELECT e.*, c.name as category_name "
-                    "FROM entries e LEFT JOIN categories c ON e.category_id = c.id "
-                    "WHERE e.category_id=?",
-                    (category_id,),
-                ).fetchall()
-                # 批量计算签名
-                update_data = []
-                for row in rows:
-                    entry = self._mgr.entries._row_to_entry(row)
-                    entry.category_id = None
-                    entry.metadata_mac = self._sign_entry(entry)
-                    update_data.append((entry.metadata_mac, entry.id))
-                # 批量更新
-                if update_data:
-                    self._conn.executemany(
-                        "UPDATE entries SET category_id=NULL, metadata_mac=? WHERE id=?",
-                        update_data,
-                    )
-                self._conn.execute("DELETE FROM categories WHERE id=?", (category_id,))
+        self._conn.execute("DELETE FROM categories WHERE id=?", (category_id,))
 
     @_db_operation
     def get_category_entry_count(self, category_id: int) -> int:

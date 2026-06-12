@@ -35,6 +35,13 @@ from ...models import (
     ENTRY_TYPE_NOTE,
     ENTRY_TYPE_SERVER,
     ENTRY_TYPES,
+    MAX_FIELD_NOTES,
+    MAX_FIELD_PASSWORD,
+    MAX_FIELD_TAGS,
+    MAX_FIELD_TITLE,
+    MAX_FIELD_TOTP_SECRET,
+    MAX_FIELD_URL,
+    MAX_FIELD_USERNAME,
     Category,
     CustomField,
     Entry,
@@ -180,10 +187,12 @@ class EntryDialog(QDialog):
         # --- 通用字段 ---
         self._title_edit = QLineEdit()
         self._title_edit.setPlaceholderText('例如：GitHub 账号')
+        self._title_edit.setMaxLength(MAX_FIELD_TITLE)
         self._add_field_row(form, 'title', '标题 *：', self._title_edit)
 
         self._username_edit = QLineEdit()
         self._username_edit.setPlaceholderText('用户名或邮箱')
+        self._username_edit.setMaxLength(MAX_FIELD_USERNAME)
         self._add_field_row(form, 'username', '账号：', self._username_edit)
 
         # 密码行
@@ -191,6 +200,7 @@ class EntryDialog(QDialog):
         self._password_edit = QLineEdit()
         self._password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self._password_edit.setPlaceholderText('密码')
+        self._password_edit.setMaxLength(MAX_FIELD_PASSWORD)
         pwd_layout.addWidget(self._password_edit)
 
         self._toggle_pwd_btn = create_password_toggle_btn(
@@ -218,6 +228,7 @@ class EntryDialog(QDialog):
 
         self._url_edit = QLineEdit()
         self._url_edit.setPlaceholderText('https://')
+        self._url_edit.setMaxLength(MAX_FIELD_URL)
         self._add_field_row(form, 'url', '网址：', self._url_edit)
 
         # 类型专用字段，按 entry_type 显示或隐藏
@@ -232,6 +243,7 @@ class EntryDialog(QDialog):
 
         self._tags_edit = QLineEdit()
         self._tags_edit.setPlaceholderText('用逗号分隔多个标签')
+        self._tags_edit.setMaxLength(MAX_FIELD_TAGS)
         if self._all_tags:
             hint = ', '.join(self._all_tags[:5])
             self._tags_edit.setPlaceholderText(f'常用：{hint}' if hint else '用逗号分隔多个标签')
@@ -248,6 +260,7 @@ class EntryDialog(QDialog):
         self._totp_edit = QLineEdit()
         self._totp_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self._totp_edit.setPlaceholderText('输入 Base32 密钥或 otpauth:// URI（可选）')
+        self._totp_edit.setMaxLength(MAX_FIELD_TOTP_SECRET)
         totp_layout.addWidget(self._totp_edit, 1)
         self._totp_test_btn = QPushButton('验证')
         self._totp_test_btn.setFixedSize(*BTN_SMALL_ACTION)
@@ -407,6 +420,38 @@ class EntryDialog(QDialog):
         if card_cvv and not validate_card_cvv(card_cvv):
             QMessageBox.warning(self, '校验失败', 'CVV 应为 3-4 位数字。')
             return False
+        return True
+
+    def _validate_field_lengths(self, entry_type: str) -> bool:
+        """校验无法在控件层硬限制的字段长度，失败时弹出警告并返回 False。
+
+        多数单行字段已通过 ``setMaxLength`` 在输入时截断，无需在此重复检查。
+        此处只覆盖两类控件层无法限制的字段：
+        - 备注（QTextEdit，无 setMaxLength），上限 ``MAX_FIELD_NOTES``；
+        - 服务器类型由 host/port/protocol 拼接得到的 url，上限 ``MAX_FIELD_URL``。
+        校验上限与 ``src/models.py`` 的 ``Entry.from_dict`` 保持一致，使 UI
+        反馈与导入校验共用同一组常量作为单一事实来源。
+        """
+        notes = self._notes_edit.toPlainText().strip()
+        if len(notes) > MAX_FIELD_NOTES:
+            QMessageBox.warning(
+                self, '输入有误',
+                f'备注过长（最多 {MAX_FIELD_NOTES} 字符）。',
+            )
+            return False
+
+        if entry_type == ENTRY_TYPE_SERVER:
+            host = cast(QLineEdit, self._special_widgets['server_host']).text().strip()
+            port = cast(QLineEdit, self._special_widgets['server_port']).text().strip()
+            protocol = cast(QComboBox, self._special_widgets['server_protocol']).currentText().lower()
+            if host:
+                composed_url = f'{protocol}://{host}' + (f':{port}' if port else '')
+                if len(composed_url) > MAX_FIELD_URL:
+                    QMessageBox.warning(
+                        self, '输入有误',
+                        f'网址过长（最多 {MAX_FIELD_URL} 字符）。',
+                    )
+                    return False
         return True
 
     @staticmethod
@@ -761,6 +806,12 @@ class EntryDialog(QDialog):
         if entry_type == ENTRY_TYPE_CARD:
             if not self._validate_card_fields():
                 return
+
+        # 字段长度前置校验。QLineEdit 已通过 setMaxLength 限制多数字段，
+        # 此处补充对 QTextEdit 备注、服务器拼接 url 等无法在控件层硬限制
+        # 的字段做即时提示，避免到达业务层后才以 ValueError 形式暴露。
+        if not self._validate_field_lengths(entry_type):
+            return
 
         # 笔记类型不使用密码字段，强制置空避免保存无意义数据
         password = self._password_edit.text() if entry_type != ENTRY_TYPE_NOTE else ''
