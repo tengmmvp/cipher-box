@@ -63,11 +63,11 @@ class SecurityAnalyzer:
         Summary Entry 不含 password/notes/totp_secret/custom_fields 明文，
         仅包含 username，用于重复密码分组的展示。缓存中的 duplicate_groups
         因此不会暴露完整密码明文，仅有 username 和条目元数据。
+
+        后台线程直接解密 username 而非读 EntryManager 的无锁 _username_cache，
+        避免与 UI 线程并发读写该 dict 导致数据竞争。
         """
-        if self._entry_mgr is not None:
-            username = self._entry_mgr.get_cached_username(raw)
-        else:
-            username = self._decrypt(raw, 'username', raw.username)
+        username = self._decrypt(raw, 'username', raw.username)
         return build_entry_summary(raw, username)
 
     def _password_fingerprint(self, password: str) -> bytes:

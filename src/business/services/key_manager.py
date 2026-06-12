@@ -26,12 +26,19 @@ class KeyManager:
         self._key_epoch = None
 
     @property
-    def key(self):
-        return self._key
+    def key(self) -> bytes | None:
+        """返回主密钥的 bytes 副本。
+
+        返回副本而非内部 bytearray 引用，使调用方持有的密钥不受 lock() 时
+        secure_zero_buffer 原地清零内部对象的影响，消除密钥身份暴露导致的
+        并发清零风险。KeyManager 内部仍以 bytearray 持有，clear() 真正清零。
+        """
+        return bytes(self._key) if self._key is not None else None
 
     @property
-    def snapshot_key(self):
-        return self._snapshot_key
+    def snapshot_key(self) -> bytes | None:
+        """返回快照密钥的 bytes 副本，理由同 key。"""
+        return bytes(self._snapshot_key) if self._snapshot_key is not None else None
 
     @property
     def key_epoch(self):
@@ -56,7 +63,9 @@ class KeyManager:
     def _to_bytearray(value):
         """确保密钥以 bytearray 持有，使 secure_zero_buffer 能真正原地清零。
 
-        bytearray 可变，直接持有，clear() 的 memset 可原地擦除；
+        bytearray 可变，直接返回原对象（有意为之：clear() 的 memset 原地擦除
+        该对象，test_clear_zeroes_bytearray_key_content 据此验证传入对象被清零；
+        读取方经 key/snapshot_key property 获得 bytes 副本，不受清零影响）；
         bytes 不可变，转为 bytearray 副本持有，清零作用于该副本。
         AESGCM 构造时仍会复制密钥到 OpenSSL C 层，该副本由
         EncryptionEngine.clear_cache 间接管理。
@@ -70,8 +79,9 @@ class KeyManager:
     def clear(self) -> None:
         """尽力清零密钥材料并释放引用。
 
-        CPython 下 bytes 不可变，secure_zero_buffer 仅清零可变副本，原始对象
-        依赖 GC 回收，这是 CPython 固有限制。snapshot_key 与主密钥同理。
+        仅对 _key 与 _snapshot_key 调用 secure_zero_buffer 原地清零（二者以
+        bytearray 持有）；_key_epoch 不是密钥材料，仅置 None 释放引用。
+        CPython 下加密库内部仍持有密钥副本，依赖 GC 回收，此为固有限制。
         """
         try:
             for attr in ('_key', '_snapshot_key'):

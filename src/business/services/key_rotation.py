@@ -8,7 +8,7 @@
 import logging
 from typing import TYPE_CHECKING, NamedTuple, Protocol, runtime_checkable
 
-from ...exceptions import DecryptionError
+from ...exceptions import DecryptionError, VaultError
 from .crypto_utils import decrypt_field as _decrypt_field_impl
 from .crypto_utils import encrypt_field as _encrypt_field_impl
 
@@ -104,7 +104,7 @@ class KeyRotationService:
         last_id = 0
         while True:
             if cancel_event is not None and cancel_event.is_set():
-                return
+                raise VaultError('重加密已被取消，事务回滚以保持数据一致')
             batch = self._db.get_entries(
                 include_deleted=True, limit=_RE_ENCRYPT_BATCH_SIZE,
                 after_id=last_id,
@@ -116,7 +116,13 @@ class KeyRotationService:
             for raw_entry in batch:
                 try:
                     for field in _ENCRYPTED_ENTRY_FIELDS:
-                        value = getattr(raw_entry, field)
+                        # custom_fields 在 RawEntry 态为密文字符串，显式取 db_value
+                        # 与 _row_to_entry 的状态机解耦，避免误读解密后的 list
+                        value = (
+                            raw_entry.custom_fields_db_value
+                            if field == 'custom_fields'
+                            else getattr(raw_entry, field)
+                        )
                         if value:
                             plain = _decrypt_field_impl(
                                 value, old_key, raw_entry.crypto_id, field,
@@ -169,7 +175,7 @@ class KeyRotationService:
         last_history_id = 0
         while True:
             if cancel_event is not None and cancel_event.is_set():
-                return
+                raise VaultError('重加密已被取消，事务回滚以保持数据一致')
             history_batch = self._db.get_all_password_history_batch(
                 last_history_id, _RE_ENCRYPT_BATCH_SIZE
             )

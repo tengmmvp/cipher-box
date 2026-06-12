@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 from typing import Optional
 
-from ..exceptions import VaultError
+from ..exceptions import VaultIntegrityError, VaultLockedError
 from ..models import MAX_PASSWORD_HISTORY, Entry, PasswordHistory, RawEntry
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation
@@ -613,11 +613,15 @@ class EntryRepository:
         if verifier and verify != VerifyMode.SKIP:
             try:
                 verifier(entry)
-            except VaultError:
+            except VaultIntegrityError:
                 if verify == VerifyMode.STRICT:
                     raise
                 entry.integrity_error = True
                 entry.integrity_message = '元数据完整性校验失败'
+            except VaultLockedError:
+                # 未解锁状态（如锁定期间后台分析线程读到已清零的域密钥）
+                # 不是完整性错误，向上传播让调用方处理
+                raise
         return entry
 
     @staticmethod

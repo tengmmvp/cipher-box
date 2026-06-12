@@ -201,7 +201,7 @@ def test_stale_key_session_cannot_write_after_master_password_change():
                 Entry(title='Stale write', password='OldKeyPassword!2026')
             )
         except RuntimeError as exc:
-            assert '密钥已被其他进程更新' in str(exc)
+            assert '密钥已变更' in str(exc)
         else:
             raise AssertionError('过期密钥会话不应继续写入')
         assert not stale.is_unlocked
@@ -554,7 +554,7 @@ def test_vault_api_rejects_weak_master_passwords():
         vault = VaultManager(_config(root))
         ok, msg = vault.initialize('aaaaaaaaaaaa')
         assert ok is False
-        assert '强度不足' in msg
+        assert '字符类型' in msg
         assert not (Path(root) / 'vault.db').exists()
 
 

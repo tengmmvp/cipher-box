@@ -45,17 +45,20 @@ class TOTPWidget(QWidget):
         self._totp_frame: QFrame | None = None
         self._entry_id: int | None = None
         self._period: int = 30
+        self._content_layout = None
 
     # ---- 公开接口 ----
 
-    def start(self, entry_id: int, entry_manager):
+    def start(self, entry_id: int, entry_manager, content_layout):
         """启动 TOTP 刷新。
 
         Args:
             entry_id: 条目 ID
             entry_manager: EntryManager 实例，用于获取 TOTP 状态
+            content_layout: TOTP 区域加入的目标布局（DetailPanel._content_layout）
         """
         self._entry_mgr = entry_manager
+        self._content_layout = content_layout
         self._build(entry_id)
 
     def stop(self):
@@ -92,9 +95,8 @@ class TOTPWidget(QWidget):
         self._entry_id = entry_id
         self._period = state['period']
 
-        # 查找父级 DetailPanel 的 content_layout
-        parent = self.parent()
-        content_layout = getattr(parent, '_content_layout', None)
+        # 使用 start 注入的 content_layout（显式依赖，不再反射访问父组件私有属性）
+        content_layout = self._content_layout
         if content_layout is None:
             return
 

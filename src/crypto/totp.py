@@ -141,7 +141,7 @@ class TOTPGenerator:
         """
         code, error = TOTPGenerator._generate_impl(secret, algorithm, period, digits)
         if error is not None:
-            logger.warning("TOTP 生成失败")
+            logger.warning("TOTP 生成失败: %s", error)
             return ''
         return code
 

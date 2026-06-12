@@ -26,6 +26,8 @@ def format_datetime(iso_str: str) -> str:
         return ''
     try:
         dt = datetime.fromisoformat(iso_str)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone()
         return dt.strftime('%Y-%m-%d %H:%M:%S')
     except (ValueError, TypeError):
         return iso_str

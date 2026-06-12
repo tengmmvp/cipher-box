@@ -285,10 +285,10 @@ class TestReEncryptEdgeCases:
         assert len(originals) == 10
 
         ok, _ = self._vault.change_master_password(
-            'original_pwd_123', 'another_password'
+            'original_pwd_123', 'AnotherPassword!2026'
         )
         assert ok
-        assert self._vault.unlock('another_password')[0]
+        assert self._vault.unlock('AnotherPassword!2026')[0]
 
         restored = {e.title: e for e in self._entry_mgr.get_entries()}
         assert len(restored) == 10

@@ -61,7 +61,7 @@ class EncryptionEngine:
             cipher = _cipher_cache.get(ck)
             if cipher is None:
                 # 安全上限：防止异常场景下缓存无限增长
-                if len(_cipher_cache) > _MAX_CACHE_SIZE:
+                if len(_cipher_cache) >= _MAX_CACHE_SIZE:
                     logger.warning("加密缓存超过上限 (%d > %d)，执行全量清除",
                                    len(_cipher_cache), _MAX_CACHE_SIZE)
                     _cipher_cache.clear()

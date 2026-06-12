@@ -153,7 +153,7 @@ class EntryManager:
         """获取条目的缓存用户名，优先使用缓存以避免重复解密。"""
         return self._cached_username(raw_entry)
 
-    def _cached_username(self, raw_entry: Entry) -> str:
+    def _cached_username(self, raw_entry: RawEntry) -> str:
         """返回解密后的 username，带会话内缓存，key_epoch 变化时失效。
 
         加密 username 使 SQL 无法下推搜索匹配，每次搜索需解密全部 username。
@@ -284,7 +284,7 @@ class EntryManager:
         )
 
     def decrypt_entry_to_dict(
-        self, raw_entry: Entry, include_secrets: bool = True,
+        self, raw_entry: RawEntry, include_secrets: bool = True,
     ) -> dict | None:
         """将原始 Entry 解密为明文字典，容错处理。
 
@@ -301,7 +301,7 @@ class EntryManager:
 
     def decrypt_entry_for_export(
         self,
-        raw_entry: Entry,
+        raw_entry: RawEntry,
         include_secrets: bool = False,
     ) -> Entry:
         """仅解密导出所需字段，默认不让密码与 TOTP 进入内存结果。"""
@@ -535,6 +535,9 @@ class EntryManager:
         summaries = [self._decrypt_summary(entry) for entry in raw_entries]
         if search:
             summaries = [e for e in summaries if matches_search(e, search)]
+            # search 时 limit 未下推 SQL，此处截断以兑现 limit 契约
+            if limit:
+                summaries = summaries[:limit]
         return summaries
 
     def get_entries_for_export(self, include_secrets: bool = False) -> list[Entry]:

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut
-from PyQt6.QtWidgets import QDialog, QMainWindow, QMessageBox
+from PyQt6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
 from ..dialogs.about_dialog import AboutDialog
 from ..dialogs.backup_dialog import BackupDialog
@@ -283,11 +283,11 @@ class _MainWindowMenuMixin(QMainWindow):
 
     def _show_security_dashboard(self):
         dialog = SecurityDashboard(self._security, self._entry_mgr, self._config, self)
+        # fix_requested 经仪表盘 singleShot(0) 延迟 emit 触发 _edit_entry；
+        # 实际刷新由 _edit_entry 内部连接的 EntryDialog.saved 信号驱动，
+        # 此处不再依赖仪表盘 Accepted 状态刷新，消除时序耦合。
         dialog.fix_requested.connect(self._edit_entry)
-        result = dialog.exec()
-        # 仅在用户实际执行了修复操作时刷新，即 Accepted 且 fix_requested 至少触发一次
-        if result == QDialog.DialogCode.Accepted:
-            self._refresh_after_entry_change()
+        dialog.exec()
 
     def _show_shortcuts(self):
         rows = ''.join(
@@ -303,6 +303,14 @@ class _MainWindowMenuMixin(QMainWindow):
 
     def _show_from_tray(self):
         if not self._vault.is_unlocked or self._locked_ui:
+            # 锁定时主窗口已隐藏，激活登录窗（由 app 创建并显示）供用户解锁
+            from ..dialogs.login_window import LoginWindow
+            for widget in QApplication.topLevelWidgets():
+                if isinstance(widget, LoginWindow):
+                    widget.showNormal()
+                    widget.activateWindow()
+                    widget.raise_()
+                    return
             return
         self.showNormal()
         self.activateWindow()

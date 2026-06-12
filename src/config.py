@@ -188,6 +188,7 @@ class ConfigManager:
     _SECURITY_MINIMUMS: dict[str, int] = {
         'clipboard_clear_seconds': 10,
         'auto_lock_minutes': 1,
+        'password_visible_seconds': 3,
     }
 
     def get_safe(self, key: str, default=None):

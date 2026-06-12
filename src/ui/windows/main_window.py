@@ -37,7 +37,6 @@ from ...config import ConfigManager
 from ...utils.clipboard import ClipboardManager
 from ..components.detail_panel import DetailPanel
 from ..components.entry_list_widget import EntryItemDelegate
-from ..components.toast import Toast
 from ..components.tray_icon import TrayIcon
 from ..components.workers import BackgroundWorker
 from ..controllers.entry_list_controller import EntryListController
@@ -51,7 +50,6 @@ from ..resources.constants import (
     MS_INITIAL_BACKUP_DELAY,
     MS_SEARCH_DEBOUNCE,
     MS_STATUS_BAR_DEBOUNCE,
-    MS_TOAST_LONG,
     SIDEBAR_WIDTH,
     SORT_OPTIONS,
     SPLITTER_SIZES,
@@ -212,7 +210,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         if saved_geo:
             try:
                 geo_bytes = bytes.fromhex(saved_geo)
-                if len(geo_bytes) <= 256:
+                if len(geo_bytes) <= 64:
                     self.restoreGeometry(geo_bytes)
             except (ValueError, RuntimeError):
                 pass
@@ -436,6 +434,11 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
     def _setup_tray(self):
         if not self._config.get('show_tray_icon', True):
             return
+        # 先断开旧连接，避免禁用→重启用托盘时 _on_lock_tray 重复连接
+        try:
+            self.lock_requested.disconnect(self._on_lock_tray)
+        except TypeError:
+            pass
         self._tray = TrayIcon(self)
         self._tray.show_window.connect(self._show_from_tray)
         self._tray.lock_vault.connect(lambda: self.lock_requested.emit())
@@ -557,6 +560,9 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             self._entry_delegate.clear_color_cache()
             self._entry_list.update()
             self._category_list.update()
+            # 空状态 EmptyStateWidget 的颜色在创建时烘焙，主题切换时需重建刷新
+            if self._list_stack.currentWidget() is not self._entry_list:
+                self._show_empty_state()
             # 刷新详情面板：force=True 强制重建以刷新内联样式
             # 仅在详情面板已有内容时刷新，避免主题切换意外恢复用户已取消选择的条目
             current_entry = self._detail_panel.current_entry

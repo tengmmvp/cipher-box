@@ -13,7 +13,7 @@ from ...utils.format import utc_now_iso
 if TYPE_CHECKING:
     from .entry_manager import EntryManager
 
-from ...exceptions import EntryError, VaultKeyEpochMismatchError
+from ...exceptions import EntryError, EntryIntegrityError, VaultKeyEpochMismatchError
 from ...models import (
     ENTRY_TYPE_CARD,
     ENTRY_TYPE_IDENTITY,
@@ -403,8 +403,8 @@ class ImportExportManager:
                     self._entry_mgr.update_entry(entry)
                 else:
                     self._entry_mgr.add_entry(entry)
-            except ValueError as exc:
-                # 字段长度违规等校验错误，跳过该条目而非回滚整个导入
+            except (ValueError, EntryIntegrityError) as exc:
+                # 字段长度违规或完整性错误，跳过该条目而非回滚整个导入
                 skipped += 1
                 logger.warning(
                     "跳过条目 '%s': %s",

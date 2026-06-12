@@ -42,9 +42,13 @@ class MetadataSigner:
         self._domain_key = value
 
     @staticmethod
-    def compute_domain_key(key: bytes) -> bytes:
-        """从主密钥派生 metadata 签名域密钥。"""
-        return hmac.new(key, b'cipherbox:entry-metadata-key', hashlib.sha256).digest()
+    def compute_domain_key(key: bytes) -> bytearray:
+        """从主密钥派生 metadata 签名域密钥，返回 bytearray 以便真正清零。
+
+        返回 bytearray（而非 bytes）使 _clear_vault_state 的 secure_zero_buffer
+        能原地清零，与 KeyManager 的清零策略一致；bytes 不可变只能清零副本。
+        """
+        return bytearray(hmac.new(key, b'cipherbox:entry-metadata-key', hashlib.sha256).digest())
 
     def sign(self, entry) -> str:
         """计算条目元数据 HMAC 签名，使用预计算的域密钥。

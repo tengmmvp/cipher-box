@@ -73,6 +73,13 @@ class ImportExportDialog(QDialog):
         self._selected_path: str | None = None
         self._setup_ui()
 
+    def closeEvent(self, a0):
+        # 导入 worker 运行时拒绝关闭，避免 QThread 销毁警告与数据不一致
+        if a0 is not None and self._worker and self._worker.isRunning() and not self._worker_is_export:
+            a0.ignore()
+            return
+        super().closeEvent(a0)
+
     def reject(self):
         """关闭对话框前等待后台 worker 完成。
 
@@ -340,8 +347,9 @@ class ImportExportDialog(QDialog):
         self._progress.show()
 
         def _import_task():
-            # self._worker 在 worker 线程执行前已由主线程赋值，
-            # 此处局部取出并判空以兼顾类型检查与线程安全访问。
+            # 时序契约：下方 self._worker 赋值先于 worker.start()，而 task 在
+            # worker 线程内执行（start 之后），故读取时引用必然已就绪。
+            # 局部取出并判空以兼顾类型检查与线程安全访问。
             worker = self._worker
             progress_cb = worker.emit_progress if worker is not None else None
             fmt_name = _IMPORT_FORMATS[fmt_index] if 0 <= fmt_index < len(_IMPORT_FORMATS) else ''

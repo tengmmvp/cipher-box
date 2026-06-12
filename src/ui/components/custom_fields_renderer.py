@@ -39,9 +39,10 @@ class CustomFieldsRenderer:
         self._copy_callback = copy_callback
         self._copy_feedback_callback = copy_feedback_callback
         self._get_pwd_visible_ms = hide_timer_callback
-        self._secret_values: dict[str, str] = {}
+        self._secret_values: dict[int, str] = {}
         self._plain_values: dict[int, str] = {}
         self._plain_row_counter: int = 0
+        self._secret_row_counter: int = 0
 
     # ---- 公开接口 ----
 
@@ -94,6 +95,7 @@ class CustomFieldsRenderer:
         for k in list(self._secret_values):
             secure_zero_str(self._secret_values[k])
         self._secret_values.clear()
+        self._secret_row_counter = 0
 
     # ---- 内部方法 ----
 
@@ -157,8 +159,10 @@ class CustomFieldsRenderer:
         show_btn.setFixedSize(*BTN_COPY)
         show_btn.setToolTip('显示/隐藏')
 
-        # 敏感字段存入间接引用字典，闭包从字典读取而非直接捕获值
-        self._secret_values[label] = value
+        # 敏感字段以行索引为键存入间接引用字典，避免重名字段键覆盖
+        row_id = self._secret_row_counter
+        self._secret_row_counter += 1
+        self._secret_values[row_id] = value
         # 持久单次定时器，可取消
         field_timer = QTimer(parent_widget)
         field_timer.setSingleShot(True)
@@ -169,8 +173,8 @@ class CustomFieldsRenderer:
         )
         timers.append(field_timer)
 
-        def _toggle(_checked=False, lbl=val_label, btn=show_btn, key=label, timer=field_timer):
-            pwd = self._secret_values.get(key, '')
+        def _toggle(_checked=False, lbl=val_label, btn=show_btn, rid=row_id, timer=field_timer):
+            pwd = self._secret_values.get(rid, '')
             if lbl.text() == '••••••••':
                 lbl.setText(pwd)
                 set_icon(btn, LOCK)
@@ -191,8 +195,8 @@ class CustomFieldsRenderer:
         copy_btn.setFixedSize(*BTN_COPY)
         copy_btn.setToolTip('复制密码')
 
-        def _copy_secret(_checked=False, key=label, btn=copy_btn):
-            pwd = self._secret_values.get(key, '')
+        def _copy_secret(_checked=False, rid=row_id, btn=copy_btn):
+            pwd = self._secret_values.get(rid, '')
             self._copy_callback(btn, pwd)
 
         copy_btn.clicked.connect(_copy_secret)

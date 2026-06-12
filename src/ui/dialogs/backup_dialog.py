@@ -140,6 +140,13 @@ class BackupDialog(QDialog):
             has_points = True  # 统计出错时保持可点，避免误锁功能
         self._purge_btn.setEnabled(has_points)
 
+    def closeEvent(self, a0):
+        # 恢复 worker 运行时拒绝关闭，避免 QThread 销毁警告与数据不一致
+        if a0 is not None and self._worker and self._worker.isRunning() and not self._worker_is_backup:
+            a0.ignore()
+            return
+        super().closeEvent(a0)
+
     def reject(self):
         """关闭对话框前等待后台 worker 完成。
 

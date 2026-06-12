@@ -243,11 +243,20 @@ class PasswordGenerator:
 
     @staticmethod
     def validate_master_password(password: str, label: str = '主密码') -> tuple[bool, str]:
-        """密码策略：至少 12 字符，并达到最低强度要求。"""
+        """密码策略：至少 12 字符、至少 3 种字符类型，并达到最低强度要求。"""
         if not password:
             return False, f'{label}不能为空'
         if len(password) < 12:
             return False, f'{label}长度不能少于 12 个字符'
+        # 主密码须覆盖至少 3 类字符，防止仅靠长度通过的组成性弱密码
+        char_classes = sum([
+            bool(_RE_UPPER.search(password)),
+            bool(_RE_LOWER.search(password)),
+            bool(_RE_DIGIT.search(password)),
+            bool(_RE_SYMBOL.search(password)),
+        ])
+        if char_classes < 3:
+            return False, f'{label}须包含至少 3 种字符类型（大写、小写、数字、特殊符号）'
         strength = PasswordGenerator.check_strength(password)
         if strength.is_common:
             return False, f'不能使用常见弱密码作为{label}'

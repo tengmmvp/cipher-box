@@ -128,13 +128,20 @@ class Category:
         对文本字段做长度校验，作为导入/恢复路径的纵深防御；
         上游备份恢复的 _validate_categories 已做更严格的结构校验。
         """
-        name = data.get('name', '').strip()
+        name = data.get('name', '')
+        if not isinstance(name, str):
+            raise ValueError('分类名称类型无效，必须为字符串')
+        name = name.strip()
         if len(name) > MAX_CATEGORY_NAME:
             raise ValueError(f'分类名称过长（最多 {MAX_CATEGORY_NAME} 字符）')
         icon_char = data.get('icon_char', '[DIR]')
+        if not isinstance(icon_char, str):
+            raise ValueError('分类图标类型无效')
         if len(icon_char) > 32:
             raise ValueError('分类图标过长')
         color = data.get('color', '#666666')
+        if not isinstance(color, str):
+            raise ValueError('分类颜色类型无效')
         if len(color) > 32:
             raise ValueError('分类颜色过长')
         return cls(
@@ -322,6 +329,8 @@ class Entry:
         values = {}
         for key, label, max_len in field_limits:
             value = d.get(key, '')
+            if not isinstance(value, str):
+                raise ValueError(f'{label}类型无效，必须为字符串')
             if len(value) > max_len:
                 raise ValueError(f'{label}过长（最多 {max_len} 字符）')
             values[key] = value

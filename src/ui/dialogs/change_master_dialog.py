@@ -48,11 +48,18 @@ class ChangeMasterDialog(QDialog):
         self._setup_ui()
 
     def reject(self):
-        """关闭对话框前取消并等待后台 worker 完成。"""
+        """关闭对话框前取消并等待后台 worker 完成，并清除密码输入。"""
         if self._worker and self._worker.isRunning():
+            # 桥接取消：设 vault 取消事件以中断重加密循环（worker.cancel 仅设
+            # worker 自身标志，重加密不检查它）。重加密检测后抛异常回滚。
+            self._vault.request_cancel()
             self._worker.cancel()
             self._worker.wait(WORKER_WAIT_TIMEOUT_MS)
         release_worker(self)
+        # 取消时同样清除全部密码输入，与成功/失败路径一致，缩短明文驻留
+        self._old_pwd.clear()
+        self._new_pwd.clear()
+        self._confirm_pwd.clear()
         super().reject()
 
     def _setup_ui(self):
@@ -200,7 +207,11 @@ class ChangeMasterDialog(QDialog):
         self._confirm_pwd.clear()
         if success:
             self._rate_limiter.record_success()
-            QMessageBox.information(self, '成功', '主密码已修改成功！')
+            message = '主密码已修改成功！'
+            # 改密成功但 purge 失败时，error_msg 携带 warning，附加提示用户手动清理
+            if error_msg:
+                message += f'\n\n{error_msg}'
+            QMessageBox.information(self, '成功', message)
             self.accept()
         else:
             lock_seconds = self._rate_limiter.record_failure()

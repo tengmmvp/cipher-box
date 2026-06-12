@@ -117,7 +117,8 @@ class _MainWindowFiltersMixin(QMainWindow):
     _cached_tag_names: list[str]
     _cached_total_entries: int
     _status_worker: BackgroundWorker | None
-    _last_refresh_filter: str
+    _locked_ui: bool
+    _last_refresh_filter: str | None
 
     if TYPE_CHECKING:
         def _refresh_categories(self) -> None: ...
@@ -286,20 +287,6 @@ class _MainWindowFiltersMixin(QMainWindow):
         else:
             self._show_empty_state()
 
-    def _show_loading_state(self, message: str = '加载中...', subtitle: str = ''):
-        """显示加载状态，用于异步操作进行中"""
-        while self._list_stack.count() > 1:
-            old = self._list_stack.widget(1)  # pyright: ignore[reportOptionalMemberAccess]
-            self._list_stack.removeWidget(old)
-            old.deleteLater()  # pyright: ignore[reportOptionalMemberAccess]
-        loading = EmptyStateWidget(
-            icon_name=EMPTY_GENERIC,
-            title=message,
-            subtitle=subtitle,
-        )
-        self._list_stack.addWidget(loading)
-        self._list_stack.setCurrentWidget(loading)
-
     def _show_empty_state(self):
         """根据当前场景显示不同的空状态提示。"""
         # 清除旧的空状态 widget，即索引 1 及之后的所有 widget
@@ -310,11 +297,7 @@ class _MainWindowFiltersMixin(QMainWindow):
             self._list_stack.removeWidget(old)
             old.deleteLater()
 
-        total_entries = getattr(self, '_cached_total_entries', -1)
-        if total_entries < 0:
-            total_entries = self._entry_mgr.get_entry_count()
-
-        icon, title, subtitle, action_text, slot = self._resolve_empty_state(total_entries)
+        icon, title, subtitle, action_text, slot = self._resolve_empty_state()
         empty = EmptyStateWidget(
             icon_name=icon, title=title, subtitle=subtitle, action_text=action_text,
         )
@@ -323,7 +306,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         self._list_stack.addWidget(empty)
         self._list_stack.setCurrentWidget(empty)
 
-    def _resolve_empty_state(self, total_entries: int):
+    def _resolve_empty_state(self):
         """按优先级解析当前空状态配置。
 
         返回由图标、标题、副标题、操作按钮文案、操作回调槽位组成的五元组。
@@ -342,6 +325,11 @@ class _MainWindowFiltersMixin(QMainWindow):
             return (EMPTY_SUCCESS, '没有近期更新', '最近没有修改过条目', '', None)
         if self._current_category_id is not None:
             return (EMPTY_FOLDER, '该分类下暂无条目', '新增或编辑条目时可选择该分类', '', None)
+        # 仅此分支需要总数，惰性查询避免其他空态场景的无谓 DB 访问
+        total_entries = getattr(self, '_cached_total_entries', -1)
+        if total_entries < 0:
+            total_entries = self._entry_mgr.get_entry_count()
+            self._cached_total_entries = total_entries
         if total_entries == 0:
             return (EMPTY_VAULT, '还没有密码条目', '点击工具栏「新增」按钮开始添加', '新增条目', self._add_entry)
         return (EMPTY_GENERIC, '暂无条目', '', '', None)
@@ -364,10 +352,10 @@ class _MainWindowFiltersMixin(QMainWindow):
         self._status_worker = worker
 
         def _on_finished(summary):
-            # 仅当该 worker 仍是当前活跃 worker 时应用结果，
-            # 避免旧 worker 的延迟回调覆盖更新的状态
-            if self._status_worker is worker:
-                self._apply_status_summary(summary)
+            # 锁定后或非当前 worker 的延迟回调均不应用，避免访问已清零状态
+            if self._locked_ui or self._status_worker is not worker:
+                return
+            self._apply_status_summary(summary)
 
         worker.finished.connect(_on_finished)
         worker.error.connect(lambda _: None)
@@ -415,6 +403,8 @@ class _MainWindowFiltersMixin(QMainWindow):
         用于数据发生重大变更的场景，如导入、备份恢复、修改主密码。
         """
         self._invalidate_security_cache()
+        # 失效滚动位置恢复标记：数据整体替换后不应恢复旧滚动位置
+        self._last_refresh_filter = None
         self._refresh_categories()
         self._refresh_tag_filter()
         self._refresh_entries()
@@ -434,6 +424,8 @@ class _MainWindowFiltersMixin(QMainWindow):
         """
         # 安全缓存失效已通过 EntryManager 回调自动完成，此处无需再调用
         self._cached_total_entries = -1
+        # 失效滚动位置恢复标记：条目增删后列表已变，不应恢复旧滚动位置
+        self._last_refresh_filter = None
         self._refresh_categories()
         self._refresh_tag_filter()
         self._refresh_entries()
@@ -495,8 +487,10 @@ class _MainWindowFiltersMixin(QMainWindow):
         self._pending_selection = None
         if current is None:
             return
-        # 后台刷新可能已重建列表，确认 pending 项仍是当前选中项
+        # 后台刷新可能已重建列表，确认 pending 项仍是当前选中项；
+        # 失败说明选中已改变，清空详情面板避免残留与列表不一致的旧条目
         if self._entry_list.currentItem() is not current:
+            self._detail_panel.show_empty()
             return
         summary = current.data(Qt.ItemDataRole.UserRole)
         if summary:
@@ -513,6 +507,8 @@ class _MainWindowFiltersMixin(QMainWindow):
             return
 
         summary = item.data(Qt.ItemDataRole.UserRole)
+        if not summary:
+            return
         if summary.is_deleted:
             self._show_deleted_entry_menu(summary, pos)
         else:
@@ -594,7 +590,10 @@ class _MainWindowFiltersMixin(QMainWindow):
             e = self._entry_mgr.get_entry(summary.id)
             if e and e.password:
                 self._clipboard.copy_text(e.password)
-                self._detail_panel.copy_feedback.emit()
+                # 仅当右键的是当前详情面板显示的条目时，才触发其复制按钮反馈
+                current = self._detail_panel.current_entry
+                if current is not None and current.id == summary.id:
+                    self._detail_panel.copy_feedback.emit()
                 Toast.show(self, '已复制密码', Toast.SUCCESS, duration=MS_TOAST_SHORT)
 
         def _copy_totp():

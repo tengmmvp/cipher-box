@@ -8,7 +8,7 @@
 import logging
 from datetime import datetime
 
-from PyQt6.QtCore import QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import (
     QDialog,
@@ -321,6 +321,9 @@ class SecurityDashboard(QDialog):
 
     def _on_data_loaded(self, analysis):
         """后台分析完成，更新 UI。"""
+        # 校验回调来源仍是当前 worker，防止 reject 后旧 worker 回调访问已销毁控件
+        if self.sender() is not self._worker:
+            return
         # 移除加载提示
         if hasattr(self, '_status_hint') and self._status_hint:
             self._status_hint.deleteLater()
@@ -332,6 +335,7 @@ class SecurityDashboard(QDialog):
             self._old_entries = analysis['old_entries']
         except Exception as exc:
             logger.error("加载安全报告失败: %s", type(exc).__name__, exc_info=True)
+            release_worker(self)
             QMessageBox.critical(self, '错误', '加载安全数据失败，请重试')
             return
 
@@ -566,5 +570,8 @@ class SecurityDashboard(QDialog):
         self._tabs.setCurrentIndex(0)
 
     def _request_fix(self, entry_id: int):
-        self.fix_requested.emit(entry_id)
+        # 先 accept 关闭仪表盘，再延迟到下一个事件循环 emit，确保仪表盘
+        # 模态事件循环已退出，避免在其内嵌套打开编辑对话框形成双层模态。
+        # emit 由 _show_security_dashboard 连接到 _edit_entry，在仪表盘关闭后打开。
         self.accept()
+        QTimer.singleShot(0, lambda: self.fix_requested.emit(entry_id))

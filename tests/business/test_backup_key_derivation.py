@@ -27,7 +27,7 @@ def vault_and_key():
     tmp_dir = tempfile.mkdtemp()
     config = _make_config(tmp_dir)
     vault = VaultManager(config)
-    vault.initialize('test_backup_key')
+    vault.initialize('TestBackupKey!2026')
     key = vault.key
     assert key is not None
     yield vault, key, tmp_dir

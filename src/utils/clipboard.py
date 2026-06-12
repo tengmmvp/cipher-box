@@ -1,6 +1,7 @@
 """剪贴板管理器 — 复制密码后自动清空。"""
 
 import hmac
+import logging
 import os
 
 from PyQt6.QtCore import QTimer
@@ -9,6 +10,8 @@ from PyQt6.QtWidgets import QApplication
 
 # 每次会话随机生成 HMAC 密钥，避免硬编码可被预测
 _CLIPBOARD_HMAC_KEY: bytes = os.urandom(32)
+
+logger = logging.getLogger(__name__)
 
 
 class ClipboardManager:
@@ -61,10 +64,15 @@ class ClipboardManager:
             if self._last_copied_hash:
                 current_hash = hmac.digest(_CLIPBOARD_HMAC_KEY, current_text.encode('utf-8'), 'sha256')
                 if hmac.compare_digest(current_hash, self._last_copied_hash):
-                    clipboard.clear()
-                    # 同步清除 X11 Primary Selection
-                    if clipboard.supportsSelection():
-                        clipboard.clear(QClipboard.Mode.Selection)
+                    # clipboard.clear 在剪贴板被其它进程占用或模式不支持时
+                    # 可能抛 RuntimeError；捕获以免中断锁定等后续清理流程
+                    try:
+                        clipboard.clear()
+                        # 同步清除 X11 Primary Selection
+                        if clipboard.supportsSelection():
+                            clipboard.clear(QClipboard.Mode.Selection)
+                    except RuntimeError:
+                        logger.warning("剪贴板清空失败（可能被占用）", exc_info=True)
                     self._last_copied_hash = b''
                 else:
                     # 用户已复制其他内容，原始内容已不在剪贴板中

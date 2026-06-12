@@ -6,6 +6,7 @@
 """
 
 import logging
+from collections import OrderedDict
 from html import escape
 from urllib.parse import urlparse
 
@@ -94,7 +95,7 @@ class DetailPanel(QWidget):
         self._field_hide_timers: list[QTimer] = []
         # 复制反馈定时器，可取消，替代不可取消的 QTimer.singleShot，
         # 避免控件销毁后回调访问已删对象。设置上限 20 以防止极端情况下的泄漏。
-        self._copy_feedback_timers: set[QTimer] = set()
+        self._copy_feedback_timers: OrderedDict[QTimer, None] = OrderedDict()
         self._COPY_FEEDBACK_TIMERS_MAX = 20
 
         # ---- 子组件 ----
@@ -119,12 +120,12 @@ class DetailPanel(QWidget):
         self._setup_ui()
 
     def _add_copy_feedback_timer(self, timer: QTimer):
-        """注册复制反馈定时器，超出上限时回收最旧的。"""
+        """注册复制反馈定时器，超出上限时回收最旧的（FIFO）。"""
         if len(self._copy_feedback_timers) >= self._COPY_FEEDBACK_TIMERS_MAX:
-            oldest = next(iter(self._copy_feedback_timers))
+            # OrderedDict popitem(last=False) 移除最旧（首个），实现真正 FIFO
+            oldest, _ = self._copy_feedback_timers.popitem(last=False)
             oldest.stop()
-            self._copy_feedback_timers.discard(oldest)
-        self._copy_feedback_timers.add(timer)
+        self._copy_feedback_timers[timer] = None
 
     def _copy_with_feedback(self, btn: QPushButton, text: str):
         """复制文本到剪贴板并显示图标反馈，定时恢复为复制图标。"""
@@ -136,7 +137,7 @@ class DetailPanel(QWidget):
 
         def _restore(btn=btn, t=timer):
             set_icon(btn, COPY)
-            self._copy_feedback_timers.discard(t)
+            self._copy_feedback_timers.pop(t, None)
 
         timer.timeout.connect(_restore)
         timer.start(MS_FEEDBACK)
@@ -311,7 +312,7 @@ class DetailPanel(QWidget):
 
         # ===== TOTP 区域 =====
         if entry.has_totp and entry.id:
-            self._totp_widget.start(entry.id, self._entry_mgr)
+            self._totp_widget.start(entry.id, self._entry_mgr, self._content_layout)
 
         # ===== 密码历史，延迟加载：仅显示摘要，点击展开后才解密 =====
         if entry.id and self._entry_mgr:
@@ -513,7 +514,10 @@ class DetailPanel(QWidget):
             self._current_password = value
             field_timer = None
         else:
-            # 非主密码敏感字段，使用独立的间接引用字典
+            # 非主密码敏感字段，使用独立的间接引用字典。
+            # 明文需保留至条目显示周期结束，以支持显示→隐藏→再显示的反复切换；
+            # 切换条目或锁定时由 _clear_content 调 secure_zero_str 统一清零，
+            # 与主密码字段 _current_password 的驻留策略一致。
             self._secret_values_main[label] = value
             field_timer = QTimer(self)
             field_timer.setSingleShot(True)
@@ -565,7 +569,7 @@ class DetailPanel(QWidget):
         """获取密码显示自动隐藏的毫秒数"""
         seconds = PWD_VISIBLE_SECONDS_DEFAULT
         if self._config:
-            seconds = self._config.get('password_visible_seconds', PWD_VISIBLE_SECONDS_DEFAULT)
+            seconds = self._config.get_safe('password_visible_seconds', PWD_VISIBLE_SECONDS_DEFAULT)
         return seconds * 1000
 
     def _auto_hide_password(self):

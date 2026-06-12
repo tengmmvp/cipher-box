@@ -10,6 +10,7 @@ import re
 from typing import cast
 
 from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtGui import QIntValidator
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -382,6 +383,7 @@ class EntryDialog(QDialog):
 
         server_port = QLineEdit()
         server_port.setPlaceholderText('22')
+        server_port.setValidator(QIntValidator(1, 65535, self))
         self._add_field_row(form, 'server_port', '端口：', server_port, visible=False)
         self._special_widgets['server_port'] = server_port
 
@@ -648,7 +650,7 @@ class EntryDialog(QDialog):
         if timer is not None:
             visible_seconds = PWD_VISIBLE_SECONDS_DEFAULT
             if self._config:
-                visible_seconds = self._config.get('password_visible_seconds', PWD_VISIBLE_SECONDS_DEFAULT)
+                visible_seconds = self._config.get_safe('password_visible_seconds', PWD_VISIBLE_SECONDS_DEFAULT)
             timer.start(visible_seconds * 1000)
 
     def _on_password_changed(self, text: str):

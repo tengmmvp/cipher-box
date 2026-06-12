@@ -49,13 +49,6 @@ class EntryListController:
             return field, order
         return 'updated_at', 'desc'
 
-    def get_sort_config_from_config(self) -> tuple[str, str]:
-        """直接从配置中读取排序字段和方向。"""
-        return (
-            self._config.get('sort_field', 'updated_at'),
-            self._config.get('sort_order', 'desc'),
-        )
-
     def sort_entries(self, entries: list, sort_index: int) -> list:
         """对条目列表排序。
 
@@ -110,19 +103,15 @@ class EntryListController:
         return [e for group in groups for e in group], '重复密码（全部分类）'
 
     def fetch_recent(self, search: str) -> tuple[list, str]:
-        """获取近期更新条目。
+        """获取近期更新条目，按 updated_at 降序取最近 N 条。
 
-        search 为空时，limit 直接在 SQL 层截断，高效取最近 N 条。
-        search 非空时必须先全量查询，因 get_entry_summaries 已不下推 limit，
-        需再按 updated_at 排序后截断；否则先 SQL 截断再内存过滤会使近期叠加
-        搜索的命中数远少于实际匹配数。
+        不下推 limit 到 SQL：DB 层默认 ORDER BY is_favorite DESC 会把收藏的
+        旧条目排到前面，污染「近期更新」语义。此处拉全量后按 updated_at 排序
+        再截断，确保返回的是真正最近 N 条。
         """
-        entries = self._entry_mgr.get_entry_summaries(
-            search=search, limit=RECENT_ENTRY_LIMIT,
-        )
+        entries = self._entry_mgr.get_entry_summaries(search=search)
         entries.sort(key=lambda e: e.updated_at or '', reverse=True)
-        if search:
-            entries = entries[:RECENT_ENTRY_LIMIT]
+        entries = entries[:RECENT_ENTRY_LIMIT]
         return entries, '近期更新'
 
     def fetch_trash(self, search: str) -> tuple[list, str]:

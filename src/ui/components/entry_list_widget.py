@@ -5,8 +5,6 @@
 并在主题切换时清空颜色缓存以重新解析。
 """
 
-from urllib.parse import urlparse
-
 from PyQt6.QtCore import QModelIndex, QRectF, QSize, Qt
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import QStyle, QStyledItemDelegate, QStyleOptionViewItem
@@ -38,7 +36,7 @@ def _resolve_font_family() -> str:
             return fallback
     return available[0] if available else 'sans-serif'
 
-_RESOLVED_FONT_FAMILY = FONT_FAMILY_PRIMARY  # 延迟解析，首次 paint 时确定
+_RESOLVED_FONT_FAMILY: str | None = None  # 延迟解析，首次 paint 时确定
 
 
 class EntryItemDelegate(QStyledItemDelegate):
@@ -68,10 +66,13 @@ class EntryItemDelegate(QStyledItemDelegate):
     def _get_font(self, family: str, size: int, weight: int = -1) -> QFont:
         """获取 QFont，带缓存避免 paint() 重复创建。"""
         global _RESOLVED_FONT_FAMILY
-        # 首次调用时解析可用字体
-        if _RESOLVED_FONT_FAMILY == FONT_FAMILY_PRIMARY and family == FONT_FAMILY_PRIMARY:
-            _RESOLVED_FONT_FAMILY = _resolve_font_family()
-        actual_family = _RESOLVED_FONT_FAMILY if family == FONT_FAMILY_PRIMARY else family
+        # 首次需要主字体时解析；用 None 标志避免解析结果恰为初始值时重复解析
+        if family == FONT_FAMILY_PRIMARY:
+            if _RESOLVED_FONT_FAMILY is None:
+                _RESOLVED_FONT_FAMILY = _resolve_font_family()
+            actual_family = _RESOLVED_FONT_FAMILY
+        else:
+            actual_family = family
         key = (actual_family, size, weight)
         font = self._font_cache.get(key)
         if font is None:
@@ -149,10 +150,8 @@ class EntryItemDelegate(QStyledItemDelegate):
             if entry.category_name and entry.category_name != '未分类':
                 subtitle_parts.append(entry.category_name)
             if entry.url:
-                try:
-                    netloc = urlparse(entry.url).netloc
-                except Exception:
-                    netloc = entry.url.split('://', 1)[-1].split('/', 1)[0] if entry.url else ''
+                # 提取 netloc 并剥离 userinfo（user:pass@），避免凭据泄露到列表副标题
+                netloc = entry.url.split('://', 1)[-1].split('/', 1)[0].split('@')[-1]
                 subtitle_parts.append(netloc)
             subtitle = ' · '.join(subtitle_parts) if subtitle_parts else '无额外信息'
             painter.setFont(get_font(FONT_FAMILY_PRIMARY, 8))
@@ -167,7 +166,7 @@ class EntryItemDelegate(QStyledItemDelegate):
             )
 
             marker_x = rect.right() - self.MARKER_RIGHT_MARGIN
-            if entry.password_present or entry.password:
+            if entry.password_present:
                 painter.setPen(QColor(get_strength_color(entry.password_strength)))
                 painter.setFont(get_font(FONT_FAMILY_PRIMARY, 8))
                 painter.drawText(

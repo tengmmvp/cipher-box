@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 from ...crypto.encryption import EncryptionEngine
 from ...crypto.master_key import MasterKeyManager
-from ...exceptions import BackupError
+from ...exceptions import BackupError, VaultKeyEpochMismatchError
 from ...models import (
     ENTRY_TYPES,
     MAX_CUSTOM_FIELDS_PER_ENTRY,
@@ -50,6 +50,8 @@ def _user_friendly_error(exc: Exception) -> str:
         return '没有文件访问权限'
     if isinstance(exc, IsADirectoryError):
         return '所选路径是目录，请选择文件'
+    if isinstance(exc, VaultKeyEpochMismatchError):
+        return '操作期间检测到主密码已被修改，已中止并回滚，请重试'
     if isinstance(exc, OSError):
         # ENOSPC 表示磁盘满，其余 OSError 统一提示读写失败
         if exc.errno == errno.ENOSPC:
@@ -96,7 +98,7 @@ class BackupRestoreManager:
         return require_vault_key(self._vault)
 
     @staticmethod
-    def _derive_backup_key(password: str, salt: bytes, iterations: int) -> bytes:
+    def _derive_backup_key(password: str, salt: bytes, iterations: int) -> bytearray:
         return MasterKeyManager.derive_backup_key(password, salt, iterations)
 
     def _collect_portable_data(self) -> dict:
@@ -148,12 +150,17 @@ class BackupRestoreManager:
         if len(history_rows) > len(raw_entries) * MAX_HISTORY_PER_ENTRY:
             raise ValueError('密码历史数量超出限制')
         for item in history_rows:
+            try:
+                pwd = decrypt_field(
+                    item.old_password_enc, key,
+                    item.entry_crypto_id, 'password', strict=True,
+                )
+            except ValueError:
+                logger.warning("备份跳过损坏的密码历史 entry_id=%s", item.entry_id)
+                continue
             history_item = {
                 'entry_id': item.entry_id,
-                'password': decrypt_field(
-                    item.old_password_enc, key,
-                    item.entry_crypto_id, 'password',
-                ),
+                'password': pwd,
                 'changed_at': item.changed_at,
             }
             estimated_size += (
@@ -307,44 +314,47 @@ class BackupRestoreManager:
                 return False, '恢复快照备份需要先解锁保险库'
             backup_key = self._vault.snapshot_key
 
-        try:
-            # 内存特征：峰值约 3 倍载荷大小。
-            # encrypted 不超过 64MB，plaintext 不超过 32MB，外加 JSON 解析树，
-            # 桌面应用可接受。GCM 认证加密要求完整密文可用，无法流式解密。
-            encrypted = file.read(MAX_BACKUP_FILE_SIZE + 1)
-            if len(encrypted) > MAX_BACKUP_FILE_SIZE:
-                return False, '备份文件过大'
-            plaintext = EncryptionEngine.decrypt_bytes(
-                encrypted, backup_key, BACKUP_AAD
-            )
-            # 仅清零本次派生的密码备份密钥；SNAPSHOT 路径借用 snapshot_key 不应清零
-            if flags == BackupFlag.PASSWORD:
-                secure_zero_buffer(backup_key)
-            if len(plaintext) > MAX_BACKUP_PAYLOAD_SIZE:
-                return False, '备份解密数据过大'
-            data = json.loads(plaintext.decode('utf-8'))
-        except Exception:
-            logger.debug("备份读取或解密失败", exc_info=True)
-            return False, '备份密码错误或文件已损坏'
-        if not isinstance(data, dict) or not isinstance(data.get('entries'), list):
-            return False, '备份数据结构无效'
-        self._validate_restore_data(data)
-        restore_path = self._create_restore_point()
-        try:
-            new_epoch = self._restore_data(data)
-        except Exception:
-            # 恢复失败时清理刚创建的恢复点，避免反复尝试时占用磁盘空间。
-            if restore_path is not None:
-                try:
-                    restore_path.unlink(missing_ok=True)
-                except OSError:
-                    logger.debug("清理恢复点失败", exc_info=True)
-            raise
-        finally:
-            if 'plaintext' in locals():
-                del plaintext
-            if 'data' in locals():
-                del data
+        # 持 vault 锁串行化恢复与改密/备份：从解密全量明文到写库全程持锁，
+        # 与 create_backup 的「持锁才接触全量明文」契约统一。
+        with self._vault._lock:
+            try:
+                # 内存特征：峰值约 3 倍载荷大小。
+                # encrypted 不超过 64MB，plaintext 不超过 32MB，外加 JSON 解析树，
+                # 桌面应用可接受。GCM 认证加密要求完整密文可用，无法流式解密。
+                encrypted = file.read(MAX_BACKUP_FILE_SIZE + 1)
+                if len(encrypted) > MAX_BACKUP_FILE_SIZE:
+                    return False, '备份文件过大'
+                plaintext = EncryptionEngine.decrypt_bytes(
+                    encrypted, backup_key, BACKUP_AAD
+                )
+                # 仅清零本次派生的密码备份密钥；SNAPSHOT 路径借用 snapshot_key 不应清零
+                if flags == BackupFlag.PASSWORD:
+                    secure_zero_buffer(backup_key)
+                if len(plaintext) > MAX_BACKUP_PAYLOAD_SIZE:
+                    return False, '备份解密数据过大'
+                data = json.loads(plaintext.decode('utf-8'))
+            except Exception:
+                logger.debug("备份读取或解密失败", exc_info=True)
+                return False, '备份密码错误或文件已损坏'
+            if not isinstance(data, dict) or not isinstance(data.get('entries'), list):
+                return False, '备份数据结构无效'
+            self._validate_restore_data(data)
+            restore_path = self._create_restore_point()
+            try:
+                new_epoch = self._restore_data(data)
+            except Exception:
+                # 恢复失败时清理刚创建的恢复点，避免反复尝试时占用磁盘空间。
+                if restore_path is not None:
+                    try:
+                        restore_path.unlink(missing_ok=True)
+                    except OSError:
+                        logger.debug("清理恢复点失败", exc_info=True)
+                raise
+            finally:
+                if 'plaintext' in locals():
+                    del plaintext
+                if 'data' in locals():
+                    del data
         # 同步内存中的 key_epoch，使当前会话的写入守卫识别新 epoch
         if new_epoch:
             self._vault.update_key_epoch(new_epoch)
@@ -355,7 +365,7 @@ class BackupRestoreManager:
         if data.get('format') != BACKUP_FORMAT:
             raise ValueError('备份格式标识无效')
         # 版本检查：仅支持 v1 格式。
-        version = data['version']
+        version = data.get('version')
         if version != 1:
             raise ValueError(f'不支持的备份格式版本：{version}（当前支持 v1）')
         entries = data.get('entries', [])
@@ -579,7 +589,12 @@ class BackupRestoreManager:
     def _restore_data(self, data: dict):
         db = self._vault.db
         key = self._key
+        pre_epoch = self._vault.key_epoch
         with db.transaction():
+            # 事务边界二次校验 epoch，防止恢复期间并发改密导致密钥不一致，
+            # 兑现 _enforce_key_epoch 的事务化写路径契约
+            if self._vault.key_epoch != pre_epoch:
+                raise VaultKeyEpochMismatchError('恢复期间检测到密钥变更，已中止恢复')
             db.clear_vault_data()
 
             category_map = {}

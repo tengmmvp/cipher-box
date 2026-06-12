@@ -103,12 +103,12 @@ def test_sign_with_domain_key_matches_master_key_path():
     assert mac_via_domain_key == mac_via_master_key
 
 
-def test_compute_domain_key_returns_nonempty_bytes():
-    """compute_domain_key() 返回非空的 bytes。"""
+def test_compute_domain_key_returns_bytearray():
+    """compute_domain_key() 返回 32 字节 bytearray，以便 secure_zero 真正清零。"""
     master_key = b'any-key-material'
     dk = MetadataSigner.compute_domain_key(master_key)
 
-    assert isinstance(dk, bytes)
+    assert isinstance(dk, bytearray)
     assert len(dk) == 32  # SHA-256 output
     assert dk != master_key  # 派生结果应不同于输入
 

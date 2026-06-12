@@ -150,11 +150,11 @@ class PasswordHistoryWidget(QWidget):
             hist_timer.setSingleShot(True)
             self._field_hide_timers.append(hist_timer)
 
-            def _on_hist_timeout(lbl=pwd_label, btn=show_btn, idx=hist_idx):
+            def _on_hist_timeout(lbl=pwd_label, btn=show_btn):
+                # 仅重置显示，不清空槽位：历史密码需支持显示→隐藏→再显示，
+                # 与主密码字段一致；明文释放统一交给 clear() 的 secure_zero_str。
                 lbl.setText('••••••••')
                 set_icon(btn, EYE)
-                if idx < len(self._history_passwords):
-                    self._history_passwords[idx] = ''
 
             hist_timer.timeout.connect(_on_hist_timeout)
 

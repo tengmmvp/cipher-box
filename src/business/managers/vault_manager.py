@@ -164,13 +164,17 @@ class VaultManager:
         if self._key_epoch is None:
             return
         if self._db.in_transaction:
+            # 事务进行中跳过：写路径已在事务边界校验过 epoch，事务内重复比对
+            # 无意义（get_meta 经 @_db_operation 重入 RLock 不会死锁，但属冗余）。
+            # 代价是整个事务期间的写入不受此守卫保护，故每个事务化写路径
+            # 必须在事务开始时自行比对 epoch（见 _transactional_import 二次校验）。
             return
         if not self.is_unlocked:
             raise VaultLockedError("保险库已锁定，不能写入数据")
         current_epoch = self._db.get_meta('key_epoch')
         if current_epoch and current_epoch != self._key_epoch:
             self._clear_vault_state()
-            raise VaultKeyEpochMismatchError("保险库密钥已被其他进程更新，请重新启动并解锁")
+            raise VaultKeyEpochMismatchError("保险库密钥已变更，请重新启动并解锁")
 
     def initialize(self, master_password: str) -> tuple[bool, str]:
         """首次初始化保险库，设置主密码
@@ -193,16 +197,11 @@ class VaultManager:
             )
             snapshot_key = os.urandom(32)
             key_epoch = uuid.uuid4().hex
-            self._db.begin_transaction()
-            try:
+            with self._db.transaction():
                 self._write_vault_metadata(
                     salt=salt, verify_token=verify_token, snapshot_key=snapshot_key,
                     key=derived_key, key_epoch=key_epoch,
                 )
-                self._db.commit_transaction()
-            except Exception:
-                self._db.rollback_transaction()
-                raise
             self._key_mgr.activate(derived_key, snapshot_key, key_epoch)
             self._signer.set_domain_key(MetadataSigner.compute_domain_key(derived_key))
             self._is_unlocked = True
@@ -254,11 +253,13 @@ class VaultManager:
             if key is None:
                 return False, '主密码错误'
 
-            self._key = key
+            # 先完成全部元数据格式校验，再持有密钥，遵循最小暴露原则：
+            # 校验失败时 key 仅作局部变量，不写入 KeyManager 也不触发加密缓存
             if meta['master_kdf'] != 'pbkdf2-sha256':
                 raise VaultLockedError('不支持的主密钥派生格式')
             if meta['ciphertext_format'] != EncryptionEngine.FORMAT_ID:
                 raise VaultLockedError('不支持的密文格式')
+            self._key = key
             self._key_epoch = meta['key_epoch']
             if not self._key_epoch:
                 raise VaultLockedError('保险库缺少当前格式的密钥版本')
@@ -268,6 +269,10 @@ class VaultManager:
             logger.info("解锁完成 (%.1fms)", (time.monotonic() - t0) * 1000)
             return True, ''
         except CipherBoxError:
+            # 格式校验失败时 key 是未写入 KeyManager 的局部 bytearray，主动清零
+            key_local = locals().get('key')
+            if key_local is not None:
+                secure_zero_buffer(key_local)
             self.lock()
             raise
         except Exception as exc:
@@ -305,12 +310,14 @@ class VaultManager:
         以缩短密钥数据在内存中的生命周期。但原始 bytes 对象仍依赖 GC 回收，
         在 GC 回收前可能仍驻留在进程内存中。这是 CPython 的固有局限。
         """
-        self._clear_vault_state()
-        gc.collect()
-        # 调用 gc.collect() 缩短密钥材料在内存中的驻留时间。lock 属低频操作，
-        # 通常由用户手动锁定或自动超时触发，10 到 50 毫秒的 GC 暂停完全可接受，
-        # 换来更短的密钥生命周期与更低的残留风险。随后自动通知依赖方清除缓存，
-        # 不依赖调用方纪律。
+        # 持 vault 锁串行化与 create_backup（持同一锁做全量解密）：确保清零密钥前，
+        # 进行中的备份已完成，避免备份用密钥副本在 lock 后继续解密。回调在锁外执行，
+        # 避免回调获取锁导致死锁。
+        with self._lock:
+            self._clear_vault_state()
+            gc.collect()
+        # gc.collect() 缩短密钥材料驻留时间；lock 属低频操作，GC 暂停可接受。
+        # 随后通知依赖方清除缓存，不依赖调用方纪律。
         for cb in self._on_lock_callbacks:
             try:
                 cb()
@@ -370,8 +377,13 @@ class VaultManager:
             new_salt, new_verify_token, new_key = result
 
             # 复用 MasterKeyManager.create 已派生的 new_key，省一次 PBKDF2 派生
-            self._re_encrypt_all(new_key, new_salt, new_verify_token)
-
+            failed_purges = self._re_encrypt_all(new_key, new_salt, new_verify_token)
+            if failed_purges:
+                # 改密成功但旧明文快照未能清理：明确反馈用户，避免误以为泄漏面已收缩
+                return True, (
+                    f'主密码已修改，但 {len(failed_purges)} 个历史明文快照未能删除'
+                    '（可能被占用），建议在备份对话框手动清理以收缩泄漏面。'
+                )
             return True, ''
         except CipherBoxError:
             raise  # 所有 CipherBox 自定义异常向上传播
@@ -393,6 +405,8 @@ class VaultManager:
         if self._key is None:
             raise VaultLockedError('保险库未解锁，无法执行重加密')
 
+        # 重置取消事件，避免上一次 reject/close 的残留导致本次改密被误取消
+        self._cancel_event.clear()
         old_key = self._key
         new_epoch = uuid.uuid4().hex
         # snapshot_key 随主密钥一同轮换：旧 snapshot_key 加密的快照与恢复点随后清理，
@@ -438,6 +452,8 @@ class VaultManager:
             except Exception:
                 logger.warning("改密后 WAL 安全截断失败（非致命）", exc_info=True)
 
+            return failed_purges
+
         except Exception:
             # transaction() 上下文已回滚所有数据库变更。
             # 即使 lock() 异常也必须确保密钥被清除，防止内存状态不一致。
@@ -448,6 +464,9 @@ class VaultManager:
                 self._clear_vault_state()
             logger.error("重加密失败: 回滚所有变更", exc_info=True)
             raise
+        finally:
+            # 清理取消事件，避免残留影响后续改密
+            self._cancel_event.clear()
 
     def _purge_snapshot_backups(self) -> list:
         """删除所有 snapshot_key 加密的快照与恢复前安全快照，返回未能删除的文件。
@@ -524,6 +543,15 @@ class VaultManager:
         self._snapshot_key = base64.b64decode(encoded)
         if len(self._snapshot_key) != 32:
             raise VaultIntegrityError('自动快照密钥损坏')
+
+    def request_cancel(self):
+        """请求中止进行中的重加密（改密取消或关闭应用时调用）。
+
+        设置取消事件，重加密循环检测后抛出异常并回滚事务，避免提交
+        半成品。_re_encrypt_all 在开始与结束时清理该事件，使取消请求
+        不残留影响后续改密。
+        """
+        self._cancel_event.set()
 
     def close(self):
         """关闭保险库。

@@ -158,6 +158,9 @@ class DatabaseManager:
         线程安全契约：
         - 整个事务期间持有 db_lock，阻止其他线程在此共享连接上插队写入，
           避免 check_same_thread=False 下跨线程事务的部分回滚。
+        - 持锁还保证改密重加密、备份恢复等长事务期间，其他线程不会读到
+          半完成的中间状态密文（部分新密钥、部分旧密钥），避免解密失败。
+          此为有意设计：数据一致性优先于改密/导入期间的 UI 读响应性。
         - RLock 可重入，事务内嵌套的 @_db_operation 可正常重入获取锁。
         - 调用方无需再保证无并发写同一表，本方法通过持锁强制写串行化。
         """
@@ -183,8 +186,13 @@ class DatabaseManager:
                 yield
                 self._conn.execute(f'RELEASE SAVEPOINT {savepoint}')
             except Exception:
-                self._conn.execute(f'ROLLBACK TO SAVEPOINT {savepoint}')
-                self._conn.execute(f'RELEASE SAVEPOINT {savepoint}')
+                # savepoint 回滚失败不应掩盖原始异常；记录后交由外层事务的
+                # rollback_transaction 统一处理，原始异常照常向上抛出。
+                try:
+                    self._conn.execute(f'ROLLBACK TO SAVEPOINT {savepoint}')
+                    self._conn.execute(f'RELEASE SAVEPOINT {savepoint}')
+                except sqlite3.Error:
+                    logger.warning("savepoint 回滚失败，交由外层事务处理", exc_info=True)
                 raise
             finally:
                 self._transaction_depth -= 1
@@ -289,17 +297,23 @@ class DatabaseManager:
         secure_file(Path(f'{self._db_path}-shm'))
 
     def close(self) -> None:
-        """关闭数据库连接"""
-        if self._conn:
-            if self._transaction_depth > 0:
-                logger.warning(
-                    "数据库关闭时存在未提交事务 (depth=%d)，将回滚",
-                    self._transaction_depth,
-                )
-            self._conn.close()
-            self._conn = None
-        self._transaction_depth = 0
-        self._savepoint_counter = 0
+        """关闭数据库连接。
+
+        持有 db_lock 以避免与活动事务并发关闭连接：若改密等长事务正在进行，
+        close 会等其提交或回滚（释放 db_lock）后再关闭，防止连接在事务中途
+        被关闭导致损坏。
+        """
+        with self._lock:
+            if self._conn:
+                if self._transaction_depth > 0:
+                    logger.warning(
+                        "数据库关闭时存在未提交事务 (depth=%d)，将回滚",
+                        self._transaction_depth,
+                    )
+                self._conn.close()
+                self._conn = None
+            self._transaction_depth = 0
+            self._savepoint_counter = 0
 
     # ==================== 元数据 ====================
 
@@ -322,6 +336,8 @@ class DatabaseManager:
         Returns:
             字典，键为请求的键名，值为对应的元数据值，不存在则为 None。
         """
+        if not keys:
+            return {}
         placeholders = ','.join('?' for _ in keys)
         assert self._conn is not None
         rows = self._conn.execute(
