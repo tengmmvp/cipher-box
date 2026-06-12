@@ -465,60 +465,6 @@ def security_analyzer_env():
     shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def test_find_weak_passwords(security_analyzer_env):
-    """检测弱密码"""
-    entry_mgr, analyzer, _vault, _tmp_dir = security_analyzer_env
-    # 添加弱密码条目，常见密码 "password" 会被评为 0-1 分
-    entry_mgr.add_entry(Entry(
-        title='弱密码条目',
-        username='weak_user',
-        password='password',
-    ))
-    # 添加强密码条目
-    entry_mgr.add_entry(Entry(
-        title='强密码条目',
-        username='strong_user',
-        password='S#r0ng!P@ssw0rd2025',
-    ))
-
-    weak = analyzer.find_weak_passwords()
-    assert len(weak) == 1
-    assert weak[0].title == '弱密码条目'
-    assert weak[0].username == 'weak_user'
-    assert weak[0].password == ''
-    assert weak[0].password_present
-
-
-def test_find_duplicate_passwords(security_analyzer_env):
-    """检测重复密码分组"""
-    entry_mgr, analyzer, _vault, _tmp_dir = security_analyzer_env
-    shared_pwd = 'DuplicateP@ss123!'
-    # 添加两个相同密码的条目
-    entry_mgr.add_entry(Entry(
-        title='重复条目 A',
-        username='dup_user_a',
-        password=shared_pwd,
-    ))
-    entry_mgr.add_entry(Entry(
-        title='重复条目 B',
-        username='dup_user_b',
-        password=shared_pwd,
-    ))
-    # 添加一个不同密码的条目
-    entry_mgr.add_entry(Entry(
-        title='唯一条目',
-        username='unique_user',
-        password='UniqueP@ss456!',
-    ))
-
-    groups = analyzer.find_duplicate_passwords()
-    assert len(groups) == 1
-    assert len(groups[0]) == 2
-    titles = {e.title for e in groups[0]}
-    assert '重复条目 A' in titles
-    assert '重复条目 B' in titles
-
-
 def test_full_analysis(security_analyzer_env):
     """full_analysis 一次性返回所有指标"""
     entry_mgr, analyzer, _vault, _tmp_dir = security_analyzer_env
@@ -730,35 +676,6 @@ def test_csv_roundtrip(import_export_env):
     assert restored[0].title == 'CSV测试条目'
     assert restored[0].username == 'csv_user@example.com'
     assert restored[0].url == 'https://csv.example.com'
-
-
-def test_duplicate_detection(import_export_env):
-    """导入去重检测"""
-    entry_mgr, _import_export, _vault, _tmpdir = import_export_env
-    # 1. 添加条目
-    entry = Entry(
-        title='重复测试',
-        username='dup_user@example.com',
-        password='DupP@ss789!',
-    )
-    entry_mgr.add_entry(entry)
-
-    # 2. 构造重复数据
-    duplicate_data = [
-        {
-            'title': '重复测试',
-            'username': 'dup_user@example.com',
-            'password': 'AnotherP@ss!',
-        },
-    ]
-    existing = entry_mgr.get_entries()
-
-    # 3. check_duplicates 应返回匹配
-    duplicates = ImportExportManager.check_duplicates(duplicate_data, existing)
-    assert len(duplicates) == 1
-    assert duplicates[0]['title'] == '重复测试'
-    assert duplicates[0]['username'] == 'dup_user@example.com'
-    assert duplicates[0]['existing_title'] == '重复测试'
 
 
 # ── TestErrorPaths ───────────────────────────────────────────────────────────

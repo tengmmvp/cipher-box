@@ -40,18 +40,6 @@ def _make_entry(**overrides) -> Entry:
     return dataclasses.replace(entry, **overrides)
 
 
-def test_sign_with_master_key_basic():
-    """sign_with_master_key() 基本签名，返回非空 SHA-256 摘要。"""
-    master_key = b'test-master-key-for-signing'
-    signer = MetadataSigner()
-    entry = _make_entry()
-
-    mac = signer.sign_with_master_key(entry, master_key)
-
-    assert isinstance(mac, str)
-    assert len(mac) == 64  # SHA-256 hex digest
-
-
 def test_verify_passes_on_untampered_entry():
     """verify() 正常验证，未篡改条目验证通过。"""
     master_key = b'test-master-key-for-verify'
@@ -90,17 +78,17 @@ def test_verify_raises_when_no_key():
         signer.verify(entry)
 
 
-def test_sign_with_domain_key_matches_master_key_path():
-    """sign_with_domain_key() 与 sign_with_master_key() 结果一致。"""
+def test_sign_with_domain_key_matches_sign():
+    """sign_with_domain_key() 与预设同一域密钥的 sign() 结果一致。"""
     master_key = b'test-master-key-for-dk'
-    signer = MetadataSigner()
+    domain_key = MetadataSigner.compute_domain_key(master_key)
+    signer = MetadataSigner(domain_key=domain_key)
     entry = _make_entry()
 
-    domain_key = MetadataSigner.compute_domain_key(master_key)
     mac_via_domain_key = signer.sign_with_domain_key(entry, domain_key)
-    mac_via_master_key = signer.sign_with_master_key(entry, master_key)
+    mac_via_sign = signer.sign(entry)
 
-    assert mac_via_domain_key == mac_via_master_key
+    assert mac_via_domain_key == mac_via_sign
 
 
 def test_compute_domain_key_returns_bytearray():
@@ -152,11 +140,12 @@ def test_sign_without_domain_key_raises():
 def test_different_entries_produce_different_macs():
     """不同条目应产生不同签名。"""
     master_key = b'test-key-for-diff'
-    signer = MetadataSigner()
+    domain_key = MetadataSigner.compute_domain_key(master_key)
+    signer = MetadataSigner(domain_key=domain_key)
     entry_a = _make_entry(title='条目 A')
     entry_b = _make_entry(title='条目 B')
 
-    mac_a = signer.sign_with_master_key(entry_a, master_key)
-    mac_b = signer.sign_with_master_key(entry_b, master_key)
+    mac_a = signer.sign(entry_a)
+    mac_b = signer.sign(entry_b)
 
     assert mac_a != mac_b

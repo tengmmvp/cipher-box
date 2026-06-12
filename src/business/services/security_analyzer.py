@@ -80,18 +80,6 @@ class SecurityAnalyzer:
         """
         return hmac.digest(self._key, password.encode('utf-8'), 'sha256')
 
-    def find_weak_passwords(self) -> list[Entry]:
-        """查找弱密码条目，即强度评分不大于 1 的条目。"""
-        return self._cached_analysis()['weak_entries']
-
-    def find_duplicate_passwords(self) -> list[list[Entry]]:
-        """查找重复密码，返回分组列表，每组包含使用相同密码的条目。"""
-        return self._cached_analysis()['duplicate_groups']
-
-    def find_old_passwords(self, days: int = 90) -> list[Entry]:
-        """查找超过指定天数未修改的条目"""
-        return self._cached_analysis(days)['old_entries']
-
     def _refilter_cache(self, cache: dict, days: int) -> dict:
         """从缓存副本中按 days 重新过滤过期条目，并返回列表副本。
 

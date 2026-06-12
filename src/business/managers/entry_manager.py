@@ -40,7 +40,6 @@ from ...utils.format import format_datetime
 from ..services.crypto_utils import (
     build_entry_summary,
     copy_entry_fields,
-    decrypt_entry_to_portable_dict,
     matches_search,
     require_vault_key,
 )
@@ -148,10 +147,6 @@ class EntryManager:
         return _decrypt_field_impl(
             encrypted, self._key, crypto_id, field_name, strict=strict,
         )
-
-    def get_cached_username(self, raw_entry: Entry) -> str:
-        """获取条目的缓存用户名，优先使用缓存以避免重复解密。"""
-        return self._cached_username(raw_entry)
 
     def _cached_username(self, raw_entry: RawEntry) -> str:
         """返回解密后的 username，带会话内缓存，key_epoch 变化时失效。
@@ -281,22 +276,6 @@ class EntryManager:
             totp_secret=Sensitive(decrypt('totp_secret', raw_entry.totp_secret)),
             integrity_error=bool(integrity_errors),
             integrity_message='、'.join(integrity_errors),
-        )
-
-    def decrypt_entry_to_dict(
-        self, raw_entry: RawEntry, include_secrets: bool = True,
-    ) -> dict | None:
-        """将原始 Entry 解密为明文字典，容错处理。
-
-        单条目解密失败时返回 None 而非抛出异常，供备份、导出等需要
-        跳过损坏条目继续处理的场景使用。
-
-        Args:
-            raw_entry: 数据库层原始 Entry，custom_fields 为密文字符串。
-            include_secrets: 是否包含密码和 TOTP 密钥等敏感字段。
-        """
-        return decrypt_entry_to_portable_dict(
-            raw_entry, self._key, include_secrets=include_secrets,
         )
 
     def decrypt_entry_for_export(

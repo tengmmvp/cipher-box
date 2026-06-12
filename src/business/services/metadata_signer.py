@@ -67,22 +67,6 @@ class MetadataSigner:
             hashlib.sha256,
         ).hexdigest()
 
-    def sign_with_master_key(self, entry, master_key: bytes) -> str:
-        """使用主密钥临时派生域密钥签名，不依赖预计算的域密钥。
-
-        供解锁流程在设置域密钥之前需要签名的场景；正常路径优先用 sign()，
-        避免每条条目重复 compute_domain_key 的 HMAC 开销。
-
-        Args:
-            entry: 条目对象。
-            master_key: 主密钥，从中派生域密钥。
-        """
-        return hmac.new(
-            self.compute_domain_key(master_key),
-            self._payload(entry),
-            hashlib.sha256,
-        ).hexdigest()
-
     def sign_with_domain_key(self, entry, domain_key: bytes) -> str:
         """直接使用预计算的域密钥签名，跳过密钥派生步骤。
 

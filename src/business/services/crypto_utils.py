@@ -157,8 +157,7 @@ def decrypt_entry_to_portable_dict(
     供备份、导出等需要跳过损坏条目继续处理的场景使用。
     单条目解密失败时返回 None。
 
-    EntryManager.decrypt_entry_to_dict() 和
-    BackupRestoreManager._collect_portable_data() 共享此逻辑。
+    BackupRestoreManager._collect_portable_data() 共享此解密逻辑。
 
     Args:
         raw_entry: 数据库层原始 Entry，加密字段为密文字符串。

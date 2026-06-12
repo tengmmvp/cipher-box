@@ -424,45 +424,6 @@ class ImportExportManager:
 
     # ======== 导入 ========
 
-    @staticmethod
-    def check_duplicates(
-        entries_data: list[dict],
-        existing_entries: list[Entry],
-    ) -> list[dict]:
-        """检测待导入条目与已有条目的重复。
-
-        匹配键为标题与用户名的组合。
-
-        Args:
-            entries_data: 待导入的条目列表，每个元素含 title/username 等字段。
-            existing_entries: 现有已解密条目。
-
-        Returns:
-            重复项列表，每项为字典，含序号 index、标题 title、用户名 username
-            以及匹配到的已有条目标题 existing_title。
-        """
-        existing_keys = {
-            (e.title.casefold(), e.username.casefold()): e
-            for e in existing_entries
-            if e.title
-        }
-
-        duplicates = []
-        for i, item in enumerate(entries_data):
-            title = (item.get('title') or '').strip()
-            username = (item.get('username') or '').strip()
-            key = (title.casefold(), username.casefold())
-            if key in existing_keys:
-                existing = existing_keys[key]
-                duplicates.append({
-                    'index': i,
-                    'title': title,
-                    'username': username,
-                    'existing_title': existing.title,
-                })
-
-        return duplicates
-
     @_transactional_import
     def import_from_json(
         self,
