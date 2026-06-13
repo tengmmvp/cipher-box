@@ -772,6 +772,13 @@ class EntryDialog(QDialog):
         """
         self._password_edit.clear()
         self._totp_edit.clear()
+        # 通用字段：username/url 对 login/server 类型是核心凭据，notes 可能含敏感
+        # 备注，tags 可能含敏感标识。关闭对话框时一并清除，使清理范围与威胁模型一致
+        # （避免清了 CVV 却残留同等敏感的 username）。
+        self._username_edit.clear()
+        self._url_edit.clear()
+        self._tags_edit.clear()
+        self._notes_edit.clear()
         # 信用卡敏感字段，覆盖持卡人、卡号、有效期与 CVV
         for key in ('card_holder', 'card_number', 'card_expiry', 'card_cvv'):
             widget = self._special_widgets.get(key)

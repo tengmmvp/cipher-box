@@ -105,13 +105,16 @@ class EntryListController:
     def fetch_recent(self, search: str) -> tuple[list, str]:
         """获取近期更新条目，按 updated_at 降序取最近 N 条。
 
-        不下推 limit 到 SQL：DB 层默认 ORDER BY is_favorite DESC 会把收藏的
-        旧条目排到前面，污染「近期更新」语义。此处拉全量后按 updated_at 排序
-        再截断，确保返回的是真正最近 N 条。
+        无搜索时下推 ORDER BY updated_at DESC LIMIT 到 SQL（经
+        ``get_recent_summaries``），避免拉全量内存排序再截断的全量解密开销；
+        有搜索时因加密字段无法 SQL 过滤，仍需全量解密后内存过滤、排序再截断。
         """
-        entries = self._entry_mgr.get_entry_summaries(search=search)
-        entries.sort(key=lambda e: e.updated_at or '', reverse=True)
-        entries = entries[:RECENT_ENTRY_LIMIT]
+        if search:
+            entries = self._entry_mgr.get_entry_summaries(search=search)
+            entries.sort(key=lambda e: e.updated_at or '', reverse=True)
+            entries = entries[:RECENT_ENTRY_LIMIT]
+        else:
+            entries = self._entry_mgr.get_recent_summaries(limit=RECENT_ENTRY_LIMIT)
         return entries, '近期更新'
 
     def fetch_trash(self, search: str) -> tuple[list, str]:

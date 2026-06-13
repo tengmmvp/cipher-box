@@ -471,17 +471,30 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         if self._backup_worker is not None and self._backup_worker.isRunning():
             return
 
+        # cancel_check 经显式容器引用 worker，避免闭包延迟绑定局部变量 worker：
+        # _task 在 worker 构造前定义，若直接引用 worker 则依赖「start 后 worker 已
+        # 赋值」的隐式执行顺序，未来把 start 内联进构造会触发 NameError。容器在
+        # start 前赋值，使依赖显式且与执行顺序解耦。
+        worker_holder: list[BackgroundWorker] = []
+
         def _task():
             # 接入 worker 的协作取消探针：锁定/隐藏到托盘时 wait_worker_shutdown
             # 设置取消标志，maybe_auto_backup 的全量解密循环据此及时退出，
-            # 避免锁定后继续持密钥解密并推迟密钥清零。worker 为下方局部变量，
-            # _task 闭包延迟绑定，调用时（worker.start 后）worker 已就绪。
+            # 避免锁定后继续持密钥解密并推迟密钥清零。
             return self._backup.maybe_auto_backup(
-                self._config, force=force, cancel_check=lambda: worker.is_cancelled,
+                self._config, force=force,
+                cancel_check=lambda: worker_holder[0].is_cancelled,
             )
 
+        def _on_backup_error(msg):
+            # 守卫：仅当当前备份 worker 仍是本 worker 时记录，避免被后续备份替换后
+            # 旧 worker 的延迟错误信号触发误导性日志（与 _status_worker 守卫对齐）。
+            if self._backup_worker is worker_holder[0]:
+                logger.warning("自动快照失败: %s", msg)
+
         worker = BackgroundWorker(_task, parent=self)
-        worker.error.connect(lambda msg: logger.warning("自动快照失败: %s", msg))
+        worker_holder.append(worker)
+        worker.error.connect(_on_backup_error)
         self._backup_worker = worker
         worker.start()
 
@@ -659,6 +672,19 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         QTimer.singleShot(MS_INITIAL_BACKUP_DELAY, self._maybe_auto_backup)
         if self._tray:
             self._tray.set_locked(False)
+
+    def emergency_clear_clipboard(self) -> None:
+        """紧急清空剪贴板，供 app 层崩溃/退出兜底经公共 API 调用。
+
+        避免崩溃兜底路径直接 getattr 访问 ``_clipboard`` 私有属性——重命名该属性时
+        getattr 返回 None 会无声错过清理，而崩溃兜底恰是最不应静默失效的安全路径。
+        """
+        clipboard = getattr(self, '_clipboard', None)
+        if clipboard is not None:
+            try:
+                clipboard.clear_now()
+            except Exception:
+                logger.debug("紧急剪贴板清理失败", exc_info=True)
 
     def prepare_for_lock(self):
         """在清除主密钥前销毁界面和剪贴板中的明文副本。"""
