@@ -1,5 +1,6 @@
 """应用主控 — 管理应用生命周期、登录流程和窗口切换"""
 
+import logging
 import sys
 
 from PyQt6.QtCore import QLockFile, Qt
@@ -13,6 +14,26 @@ from .ui.dialogs.login_window import LoginWindow
 from .ui.resources.styles import get_style
 from .ui.windows.main_window import MainWindow
 
+logger = logging.getLogger(__name__)
+
+
+class CipherBoxApplication(QApplication):
+    """自定义 QApplication，捕获信号槽（slot）回调内的未捕获异常。
+
+    PyQt6 默认捕获并打印 slot 内异常、不传播到 ``sys.excepthook``，应用继续运行。
+    重写 ``notify`` 在 slot 异常时记录完整 traceback（默认仅打印摘要），使 slot
+    异常不再静默，便于诊断 UI 不一致根因。不在此自动锁定/清理：单个 slot 异常
+    触发锁定会过度反应，明文清理仍依赖 ``closeEvent`` / ``aboutToQuit`` 正常退出
+    路径（见 ``_install_crash_handlers``）。
+    """
+
+    def notify(self, receiver, event):  # pyright: ignore[reportIncompatibleMethodOverride]
+        try:
+            return super().notify(receiver, event)
+        except Exception:
+            logger.error("PyQt 信号槽回调内未捕获异常", exc_info=True)
+            return False
+
 
 class CipherBoxApp:
     """CipherBox 应用主控"""
@@ -20,7 +41,7 @@ class CipherBoxApp:
     def __init__(self):
         # sys.argv 传递给 QApplication 以支持 Qt 平台参数如 -style 和 -platform，
         # CipherBox 自身不处理命令行参数。
-        self._app = QApplication.instance() or QApplication(sys.argv)
+        self._app = QApplication.instance() or CipherBoxApplication(sys.argv)
         self._config = ConfigManager()
         configure_logging(self._config.data_dir)
         self._vault = VaultManager(self._config)
@@ -78,10 +99,11 @@ class CipherBoxApp:
                 self._main_window.prepare_for_lock()
             except Exception:
                 pass
-        clipboard = getattr(self._main_window, '_clipboard', None)
-        if clipboard is not None:
+        if self._main_window is not None:
             try:
-                clipboard.clear_now()
+                # 经公共方法而非 getattr 访问 _clipboard 私有属性：崩溃兜底路径
+                # 最不应静默失效，私有属性重命名时 getattr 返回 None 会无声错过清理。
+                self._main_window.emergency_clear_clipboard()
             except Exception:
                 pass
         try:
@@ -132,12 +154,14 @@ class CipherBoxApp:
             if first_show and not self._config.check_integrity():
                 reason = self._config.integrity_reason
                 if reason == 'missing':
-                    detail = '配置文件的完整性签名缺失（可能被主动删除以绕过校验）。'
+                    detail = '配置文件的完整性签名缺失。这可能是文件损坏，也可能是外部修改后删除了签名。'
                 else:
-                    detail = '配置文件完整性校验失败，可能已被篡改。'
+                    detail = '配置文件完整性校验失败，文件可能已损坏或被外部修改。'
+                # 措辞刻意弱化「篡改」：完整性 HMAC 密钥硬编码于源码，不防护有意篡改
+                # （能改配置者通常也能重算签名），故对用户不暗示这是防篡改保证。
                 QMessageBox.warning(
-                    self._main_window, '配置完整性警告',
-                    f'{detail}\n异常或可疑的安全配置值已回退为安全默认值，'
+                    self._main_window, '配置完整性提示',
+                    f'{detail}\n安全相关的配置值已回退为安全默认值，'
                     '建议检查数据目录安全性。',
                 )
 

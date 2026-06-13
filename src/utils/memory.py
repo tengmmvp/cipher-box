@@ -10,13 +10,17 @@ def secure_zero_buffer(data: bytes | bytearray) -> None:
     """尽力将字节缓冲区的内存内容清零。
 
     CPython 的 bytes 对象不可变：传入 bytes 时只能清零其 bytearray 副本，
-    原 bytes 内容不变（假清零）。调用方应传入 bytearray（如 MasterKeyManager
-    派生密钥）以实现原地清零；传入 bytes 仅释放临时副本。
+    原 bytes 内容不变（假清零，无实际安全收益）。调用方**必须**传入 bytearray
+    （如 MasterKeyManager 派生密钥）以实现原地清零；误传 bytes 会触发 warning，
+    使「安全清零实际空转」的隐患可见而非静默。
     """
     if not data:
         return
     if isinstance(data, bytes):
-        logger.debug("secure_zero_buffer 收到不可变 bytes，仅清零副本，原对象未变")
+        logger.warning(
+            "secure_zero_buffer 收到不可变 bytes，仅清零副本，原对象未变"
+            "（应传入 bytearray 以原地清零）"
+        )
     try:
         mutable = bytearray(data) if isinstance(data, bytes) else data
         ctypes.memset(

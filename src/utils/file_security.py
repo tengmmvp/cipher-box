@@ -155,17 +155,27 @@ def validate_file_path(path, base_dir: Path | None = None) -> Path:
     parts = Path(path).parts
     if '..' in parts:
         raise ValueError('文件路径包含非法遍历组件')
-    # 当未指定 base_dir 时，检测符号链接作为纵深防御。该检测基于 is_symlink()
-    # 存在 TOCTOU 性质（检测与后续 open 之间可被替换），仅在本地威胁模型下有效；
+    # 当未指定 base_dir 时，检测路径本身及各级父目录的符号链接作为纵深防御。
+    # Windows 上 is_symlink 不识别 junction/reparse point，补充检测
+    # FILE_ATTRIBUTE_REPARSE_POINT (0x400)，覆盖 junction 与挂载点重定向——
+    # 本项目主平台为 Windows（数据目录 %APPDATA%），此补充关闭 is_symlink 的盲区。
+    # 该检测具 TOCTOU 性质（检测与后续 open 间可被替换），仅在本地威胁模型下有效；
     # 高安全场景应显式提供 base_dir，由 resolve()+is_relative_to 提供更强保证。
-    if base_dir is None and Path(path).is_symlink():
-        raise ValueError(f'检测到符号链接，拒绝访问: {path}')
-    # 检查父目录中的符号链接
     if base_dir is None:
-        current = Path(path).parent
+        current = Path(path)
         while current != current.parent:  # 未到根目录
             if current.is_symlink():
-                raise ValueError(f'父目录包含符号链接，拒绝访问: {current}')
+                raise ValueError(f'路径组件包含符号链接，拒绝访问: {current}')
+            if sys.platform == 'win32':
+                try:
+                    # st_file_attributes 为 Windows 专有属性，getattr 兜底跨平台访问
+                    attrs = getattr(current.lstat(), 'st_file_attributes', 0)
+                    if attrs & 0x400:
+                        raise ValueError(
+                            f'路径组件包含 reparse point/junction，拒绝访问: {current}'
+                        )
+                except OSError:
+                    pass
             current = current.parent
     if base_dir is not None:
         base_resolved = Path(base_dir).resolve()

@@ -173,6 +173,16 @@ class ConfigManager:
                     for key, value in saved.items():
                         if key in DEFAULT_CONFIG:
                             if self._is_valid(key, value):
+                                # 完整性校验失败（签名不符或缺失）时，安全关键键强制
+                                # 使用默认值——HMAC 密钥硬编码不防有意篡改，此时文件中
+                                # 的安全配置值不可信，回退默认以收缩篡改面（如攻击者
+                                # 删除签名后将 auto_lock_minutes 改为 0 禁用自动锁定）。
+                                # 与 get_safe 的运行时钳制叠加，构成 load + 读取双层防御。
+                                if self._integrity_warning and key in _SECURITY_MINIMUMS:
+                                    logger.warning(
+                                        '配置完整性失败，安全键 %s 回退默认值', key,
+                                    )
+                                    continue
                                 self._config[key] = value
                             else:
                                 logger.warning('配置项 %s 值无效，已使用默认值', key)

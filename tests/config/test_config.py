@@ -24,15 +24,33 @@ def test_load_drops_unknown_and_invalid_values():
         path.write_text(json.dumps({
             'theme': 'invalid',
             'auto_lock_minutes': 999,
-            'clipboard_clear_seconds': 45,
+            'default_password_length': 20,  # 合法非安全键，无签名时仍加载
             'unknown': True,
         }), encoding='utf-8')
         manager = _manager(root)
         manager.load()
         assert manager.get('theme') == DEFAULT_CONFIG['theme']
         assert manager.get('auto_lock_minutes') == DEFAULT_CONFIG['auto_lock_minutes']
-        assert manager.get('clipboard_clear_seconds') == 45
+        assert manager.get('default_password_length') == 20
         assert 'unknown' not in manager.get_all()
+
+
+def test_load_unsigned_drops_security_keys():
+    """无签名配置的安全关键键回退默认（P2-S4）：HMAC 密钥硬编码不防有意篡改，
+    攻击者删除签名即可绕过校验，此时文件中的安全配置值不可信，强制回退默认
+    收缩篡改面（如删除签名后将 auto_lock_minutes 改为 0 禁用自动锁定）。"""
+    with tempfile.TemporaryDirectory() as root:
+        path = Path(root) / 'config.json'
+        path.write_text(json.dumps({
+            'clipboard_clear_seconds': 0,
+            'auto_lock_minutes': 0,
+        }), encoding='utf-8')
+        manager = _manager(root)
+        manager.load()
+        assert manager.get('clipboard_clear_seconds') == DEFAULT_CONFIG['clipboard_clear_seconds']
+        assert manager.get('auto_lock_minutes') == DEFAULT_CONFIG['auto_lock_minutes']
+        assert not manager.check_integrity()
+        assert manager.integrity_reason == 'missing'
 
 
 def test_set_rejects_unknown_or_invalid_values():
