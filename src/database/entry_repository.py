@@ -31,7 +31,7 @@ _ENTRY_COLUMNS = [
 
 # 写入用 INSERT：add_entry 写入全部列，列序与 _ENTRY_COLUMNS 一致。
 _INSERT_ENTRY_SQL = (
-    f"INSERT INTO entries ({', '.join(_ENTRY_COLUMNS)}) "
+    f"INSERT INTO entries ({', '.join(_ENTRY_COLUMNS)}) "  # nosec B608 - 列名硬编码
     f"VALUES ({', '.join('?' for _ in _ENTRY_COLUMNS)})"
 )
 
@@ -43,7 +43,7 @@ _UPDATE_ENTRY_COLUMNS = [
     if column not in _UPDATE_EXCLUDED_COLUMNS
 ]
 _UPDATE_ENTRY_SQL = (
-    f"UPDATE entries SET {', '.join(f'{column}=?' for column in _UPDATE_ENTRY_COLUMNS)} "
+    f"UPDATE entries SET {', '.join(f'{column}=?' for column in _UPDATE_ENTRY_COLUMNS)} "  # nosec B608 - 参数绑定
     f"WHERE id=?"
 )
 
@@ -62,14 +62,14 @@ assert all(
 ), '加密列未被纳入改密重写集合，将导致改密后数据损坏'
 
 _RE_ENCRYPT_BATCH_UPDATE_SQL = (
-    f"UPDATE entries SET {', '.join(f'{column}=?' for column in _RE_ENCRYPT_COLUMNS)} "
+    f"UPDATE entries SET {', '.join(f'{column}=?' for column in _RE_ENCRYPT_COLUMNS)} "  # nosec B608 - 参数绑定
     f"WHERE id=?"
 )
 
 # 预计算签名查询 SQL，使用 LEFT JOIN 提供与其他查询一致的列，包括 category_name，
 # 避免在 _row_to_entry 中对缺失列做特殊处理。
 _SELECT_ENTRY_SIGN_SQL = (
-    f"SELECT {', '.join(['e.id'] + [f'e.{c}' for c in _ENTRY_COLUMNS])}, "
+    f"SELECT {', '.join(['e.id'] + [f'e.{c}' for c in _ENTRY_COLUMNS])}, "  # nosec B608 - 列名硬编码
     "c.name as category_name "
     "FROM entries e LEFT JOIN categories c ON e.category_id = c.id WHERE e.id=?"
 )
@@ -411,7 +411,7 @@ class EntryRepository:
                 f"""SELECT e.*, c.name as category_name
                     FROM entries e
                     LEFT JOIN categories c ON e.category_id = c.id
-                    WHERE e.id IN ({placeholders})""",
+                    WHERE e.id IN ({placeholders})""",  # nosec B608 - 参数化占位符
                 batch,
             ).fetchall()
             results.extend(

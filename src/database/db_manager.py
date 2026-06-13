@@ -341,7 +341,7 @@ class DatabaseManager:
         placeholders = ','.join('?' for _ in keys)
         assert self._conn is not None
         rows = self._conn.execute(
-            f"SELECT key, value FROM vault_meta WHERE key IN ({placeholders})",
+            f"SELECT key, value FROM vault_meta WHERE key IN ({placeholders})",  # nosec B608 - 参数化占位符
             keys,
         ).fetchall()
         result: dict[str, Optional[str]] = {k: None for k in keys}

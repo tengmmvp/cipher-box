@@ -121,13 +121,13 @@ class ToastWidget(QFrame):
         top_row = QHBoxLayout()
         top_row.setSpacing(8)
 
-        # 类型图标
-        icon_name = self._ICONS.get(toast_type, ICON_INFO)
-        icon_label = QLabel()
-        icon_label.setPixmap(icon_pixmap(icon_name, size=SIZE_TOAST))
-        icon_label.setFixedSize(SIZE_TOAST, SIZE_TOAST)
-        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        top_row.addWidget(icon_label)
+        # 类型图标（存为属性 + 名称，主题切换时 refresh_theme 刷新烘焙色）
+        self._icon_name = self._ICONS.get(toast_type, ICON_INFO)
+        self._icon_label = QLabel()
+        self._icon_label.setPixmap(icon_pixmap(self._icon_name, size=SIZE_TOAST))
+        self._icon_label.setFixedSize(SIZE_TOAST, SIZE_TOAST)
+        self._icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        top_row.addWidget(self._icon_label)
 
         # 消息文本（存为属性以便主题切换时刷新烘焙的 text_primary 颜色）
         self._msg_label = QLabel(message)
@@ -206,7 +206,7 @@ class ToastWidget(QFrame):
         """)
 
     def refresh_theme(self):
-        """主题切换后重新烘焙配色：刷新背景、强调条、消息文本与操作按钮。"""
+        """主题切换后重新烘焙配色：刷新背景、强调条、消息文本、操作按钮与类型图标。"""
         self._apply_style(self._toast_type)
         if getattr(self, '_msg_label', None) is not None:
             self._msg_label.setStyleSheet(
@@ -227,6 +227,9 @@ class ToastWidget(QFrame):
                     background: {c("accent_light")};
                 }}
             """)
+        # 类型图标颜色烘焙进 QPixmap，主题切换时需重建刷新
+        if getattr(self, '_icon_label', None) is not None:
+            self._icon_label.setPixmap(icon_pixmap(self._icon_name, size=SIZE_TOAST))
 
     # ------------------------------------------------------------- 动画
     def show_toast(self):
