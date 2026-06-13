@@ -36,8 +36,9 @@ class SecurityAnalyzer:
 
     缓存策略：分析结果默认缓存 ``SECURITY_ANALYSIS_CACHE_TTL_SECONDS`` 秒，
     采用分层设计。基础分析覆盖弱密码与重复密码，不依赖 days 参数；days 变化
-    时仅重新过滤过期条目，避免重复解密全部密码。缓存同时校验条目计数与
-    主密钥版本，确保数据一致性。
+    时仅重新过滤过期条目，避免重复解密全部密码。缓存命中仅校验主密钥版本
+    ``key_epoch`` 与 TTL；条目增删由 ``EntryManager`` 主动调用
+    ``invalidate_cache`` 失效，TTL 作为最终兜底，避免每次命中都查 DB 计数。
     """
 
     def __init__(self, vault_manager: 'VaultManager', entry_manager: 'EntryManager | None' = None, cache_ttl_seconds: int = SECURITY_ANALYSIS_CACHE_TTL_SECONDS):
@@ -128,21 +129,19 @@ class SecurityAnalyzer:
         """带缓存的安全分析。采用缓存分层设计，基础分析不依赖 days 参数。
 
         缓存有效期由 ``_cache_ttl_seconds`` 控制，默认为
-        ``SECURITY_ANALYSIS_CACHE_TTL_SECONDS`` 秒，同时校验条目计数与
-        主密钥版本 ``key_epoch``：条目增删或改密轮换密钥时立即失效并重新计算。
-        key_epoch 校验作为防御性失效手段，即使某调用点遗漏 invalidate_cache，
-        改密后缓存也会因 epoch 变化而自动失效，因为密码指纹依赖旧主密钥，必须重算。
+        ``SECURITY_ANALYSIS_CACHE_TTL_SECONDS`` 秒，命中时仅校验主密钥版本
+        ``key_epoch`` 与 TTL，不再执行条目计数的 DB 查询。条目增删改由
+        ``EntryManager`` 主动调用 ``invalidate_cache`` 失效，TTL 作为最终兜底；
+        key_epoch 校验保证改密轮换密钥后缓存自动失效——密码指纹依赖旧主密钥，必须重算。
 
         缓存命中时不再因 days 不同而 miss。基础分析涵盖弱密码和重复密码两项，
         均不依赖 days；days 变化时仅从缓存的 ``_summaries_with_dates`` 重新过滤
         过期条目，避免重新解密全部密码，其中重复检测的 HMAC 计算是性能瓶颈。
         """
         with self._cache_lock:
-            current_count = self._vault.db.get_entry_count(include_deleted=True)
             current_epoch = self._vault.key_epoch
             if (self._analysis_cache is not None
                     and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds
-                    and self._analysis_cache.get('_entry_count') == current_count
                     and self._analysis_cache.get('_key_epoch') == current_epoch):
                 result = dict(self._analysis_cache)
                 return self._refilter_cache(result, days)
@@ -158,7 +157,6 @@ class SecurityAnalyzer:
                 'old_entries': [], 'old': 0, '_summaries_with_dates': [],
             }
         with self._cache_lock:
-            result['_entry_count'] = current_count
             result['_key_epoch'] = current_epoch
             self._analysis_cache = result
             self._analysis_cache_time = time.monotonic()

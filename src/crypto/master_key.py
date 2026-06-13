@@ -57,8 +57,14 @@ class MasterKeyManager:
 
     @classmethod
     def derive_backup_key(cls, password: str, salt: bytes, iterations: int) -> bytearray:
-        """从备份密码派生独立的备份加密密钥，与主密钥域分离。"""
+        """从备份密码派生独立的备份加密密钥，与主密钥域分离。
+
+        先独立校验原始盐长度再拼接域前缀派生。若直接把 ``b'backup:' + salt``
+        交给 derive_key，其内部 _validate_salt 校验的是拼接后的 7+len(salt)，
+        调用方传 9 字节盐即可绕过 MIN_SALT_SIZE 下限，实际熵不足。
+        """
         cls._validate_iterations(iterations)
+        cls._validate_salt(salt)
         return cls.derive_key(password, b'backup:' + salt, iterations)
 
     @classmethod
