@@ -528,17 +528,6 @@ class VaultManager:
         """
         self._key_mgr.update_snapshot_key(snapshot_key)
 
-    def set_snapshot_key(self, snapshot_key: bytes) -> None:
-        """轮换 snapshot_key：用当前主密钥加密回写 snapshot_key_enc 并更新内存 KeyManager。
-
-        事务外一站式轮换（写库 + 内存）。恢复流程应改用 encrypt_snapshot_key
-        （事务内写库）+ apply_snapshot_key（内存），保证 snapshot_key_enc 与
-        key_epoch 原子写入，使旧 snapshot_key 加密的快照失效以收缩泄漏面，
-        与改密路径的 snapshot_key 轮换语义一致。
-        """
-        self._db.set_meta('snapshot_key_enc', self.encrypt_snapshot_key(snapshot_key))
-        self._key_mgr.update_snapshot_key(snapshot_key)
-
     def purge_snapshot_backups(self) -> list:
         """删除所有 snapshot_key 加密的快照与恢复前安全快照，返回未能删除的文件。
 

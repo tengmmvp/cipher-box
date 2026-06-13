@@ -336,6 +336,11 @@ class EntryManager:
 
         username 经 _cached_username 复用会话内缓存，避免列表/搜索路径
         重复解密。解密失败由 _username_decrypt_failed 记录并据此标记完整性。
+
+        设计权衡：username 是列表摘要的必需展示字段（PII，非密码），用于区分
+        同站多账号，故无法对非搜索路径省略解密。本方法已将解密范围收敛到
+        username 单字段（不含 password/totp_secret 等高敏字段），并经会话内
+        缓存降低重复解密与明文驻留；epoch 变化或锁定时缓存即失效。
         """
         username = self._cached_username(raw_entry)
         integrity_error = raw_entry.crypto_id in self._username_decrypt_failed
@@ -419,6 +424,21 @@ class EntryManager:
         )
         enc_entry.password_changed_at = password_changed_at
         with self.db.transaction():
+            # 乐观锁观测：事务内复查密码密文是否与读取时一致。单用户桌面应用
+            # 竞态窗口极小（TOTP 后台只读，无并发写），若检测到读取后密码被并发
+            # 修改则记录告警，便于未来引入并发写时定位丢失归档问题。归档读取
+            # 时刻的 old_pwd_enc 仍正确（它是读取时的真实密码）。
+            if entry.id is not None:
+                fresh = self.db.get_entry(entry.id)
+                if (
+                    fresh is not None
+                    and old_pwd_enc
+                    and fresh.password != old_pwd_enc
+                ):
+                    logger.warning(
+                        "条目 %d 更新期间密码被并发修改（读取与提交密文不一致）",
+                        entry.id,
+                    )
             if old_pwd_enc and password_changed and entry.id is not None:
                 self.db.add_password_history(entry.id, old_pwd_enc)
             self.db.update_entry(enc_entry)

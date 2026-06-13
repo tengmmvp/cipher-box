@@ -364,12 +364,18 @@ class DatabaseManager:
 
     @_db_operation
     def secure_checkpoint(self) -> None:
-        """截断 WAL，降低已删除或重加密数据残留。"""
+        """截断 WAL，降低已删除或重加密数据残留。
+
+        截断后立即刷新 WAL/SHM 文件权限：checkpoint 会改写这些文件，
+        需重新收紧 ACL，而非依赖后续提交的防抖刷新或目录继承 ACL。
+        """
         if self._conn is not None and not self.in_transaction:
             try:
                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except sqlite3.Error:
                 logger.warning("WAL 安全截断失败", exc_info=True)
+                return
+            self._secure_database_files()
 
     # ==================== 内部方法 ====================
 

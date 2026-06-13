@@ -88,6 +88,7 @@ class ToastWidget(QFrame):
         self._opacity_effect.setOpacity(0.0)
         self.setGraphicsEffect(self._opacity_effect)
         self._shadow_frame: QFrame | None = None  # 阴影层，由 ToastManager 设置
+        self._action_btn: QPushButton | None = None  # 可选操作按钮，主题切换时刷新
         self._fade_in_anim = None
         self._fade_out_anim = None
 
@@ -128,14 +129,14 @@ class ToastWidget(QFrame):
         icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         top_row.addWidget(icon_label)
 
-        # 消息文本
-        msg_label = QLabel(message)
-        msg_label.setWordWrap(True)
-        msg_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        msg_label.setStyleSheet(
+        # 消息文本（存为属性以便主题切换时刷新烘焙的 text_primary 颜色）
+        self._msg_label = QLabel(message)
+        self._msg_label.setWordWrap(True)
+        self._msg_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._msg_label.setStyleSheet(
             f'font-size: 13px; color: {c("text_primary")}; background: transparent; border: none;'
         )
-        top_row.addWidget(msg_label, 1)
+        top_row.addWidget(self._msg_label, 1)
 
         # 关闭按钮
         close_btn = QPushButton()
@@ -151,10 +152,10 @@ class ToastWidget(QFrame):
 
         # 第二行：可选操作按钮，右对齐
         if action_text:
-            action_btn = QPushButton(action_text)
-            action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            action_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            action_btn.setStyleSheet(f"""
+            self._action_btn = QPushButton(action_text)
+            self._action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._action_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self._action_btn.setStyleSheet(f"""
                 QPushButton {{
                     border: none;
                     background: transparent;
@@ -168,10 +169,10 @@ class ToastWidget(QFrame):
                     background: {c("accent_light")};
                 }}
             """)
-            action_btn.clicked.connect(self._on_action_clicked)
+            self._action_btn.clicked.connect(self._on_action_clicked)
             action_row = QHBoxLayout()
             action_row.addStretch()
-            action_row.addWidget(action_btn)
+            action_row.addWidget(self._action_btn)
             content_layout.addLayout(action_row)
 
         root_layout.addWidget(content_widget, 1)
@@ -203,6 +204,29 @@ class ToastWidget(QFrame):
                 border-bottom-left-radius: 8px;
             }}
         """)
+
+    def refresh_theme(self):
+        """主题切换后重新烘焙配色：刷新背景、强调条、消息文本与操作按钮。"""
+        self._apply_style(self._toast_type)
+        if getattr(self, '_msg_label', None) is not None:
+            self._msg_label.setStyleSheet(
+                f'font-size: 13px; color: {c("text_primary")}; background: transparent; border: none;'
+            )
+        if self._action_btn is not None:
+            self._action_btn.setStyleSheet(f"""
+                QPushButton {{
+                    border: none;
+                    background: transparent;
+                    color: {c("accent")};
+                    font-size: 12px;
+                    font-weight: bold;
+                    padding: 2px 4px;
+                    border-radius: 3px;
+                }}
+                QPushButton:hover {{
+                    background: {c("accent_light")};
+                }}
+            """)
 
     # ------------------------------------------------------------- 动画
     def show_toast(self):
@@ -317,6 +341,9 @@ class ToastManager:
 
         self._reposition_all()
         toast.show_toast()
+        # 布局完成后二次校正位置：show_toast 触发布局，首次 _reposition_all 时
+        # sizeHint 可能尚未稳定，延迟到事件循环空闲时重算消除堆叠跳变。
+        QTimer.singleShot(0, self._reposition_all)
 
     def cancel_all(self):
         """取消所有活跃 Toast，清空回调并淡出，在锁定前调用此方法。"""
@@ -334,6 +361,28 @@ class ToastManager:
         mgr = ToastManager._instances.get(parent)
         if mgr:
             mgr.cancel_all()
+
+    @staticmethod
+    def refresh_for(parent: QWidget):
+        """主题切换后刷新指定 parent 窗口所有活跃 Toast 的烘焙配色。"""
+        mgr = ToastManager._instances.get(parent)
+        if mgr:
+            mgr.refresh_active_themes()
+
+    def refresh_active_themes(self):
+        """重新烘焙所有活跃 Toast 的配色并重定位（阴影颜色随主题变化）。"""
+        for toast in list(self._toasts):
+            toast.refresh_theme()
+            shadow = getattr(toast, '_shadow_frame', None)
+            if shadow is not None:
+                shadow.setStyleSheet(f"""
+                    QFrame {{
+                        background-color: {c('toast_shadow')};
+                        border: none;
+                        border-radius: 10px;
+                    }}
+                """)
+        self._reposition_all()
 
     def _remove_toast(self, toast: ToastWidget):
         """移除一个 Toast 并更新所有位置"""

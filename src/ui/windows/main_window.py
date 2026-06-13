@@ -75,19 +75,6 @@ logger = logging.getLogger(__name__)
 # 排序选项来自共享常量，作为单一事实来源
 _SORT_OPTIONS = SORT_OPTIONS
 
-_SIDEBAR_INLINE_STYLES = [
-    ('_filter_label',   'font-weight: bold; color: {text_secondary}; font-size: 12px; margin-top: 4px'),
-    ('_separator1',     'background: {divider}; margin: 6px 0px'),
-    ('_cat_label',      'font-weight: bold; color: {text_secondary}; font-size: 12px; margin-top: 4px'),
-    ('_separator2',     'background: {divider}; margin: 6px 0px'),
-    ('_sort_label',     'font-weight: bold; color: {text_secondary}; font-size: 12px; margin-top: 4px'),
-    ('_stats_label',    'color: {text_secondary}; font-size: 11px; margin-top: 4px'),
-    ('_list_title',     'font-weight: bold; font-size: 14px; color: {text_primary}'),
-    ('_count_label',    'color: {text_secondary}; font-size: 12px'),
-    ('_brand_title',    'font-size: 15px; font-weight: 700; color: {text_primary}'),
-    ('_brand_subtitle', 'font-size: 10px; color: {text_muted}'),
-]
-
 
 class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
     """CipherBox 主窗口"""
@@ -226,17 +213,6 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self.setStatusBar(self._status_bar)
         self._update_status_bar()
 
-    def _apply_sidebar_inline_styles(self):
-        """统一刷新侧边栏控件的内联样式，主题切换时调用。"""
-        for attr, tmpl in _SIDEBAR_INLINE_STYLES:
-            widget = getattr(self, attr, None)
-            if widget is not None:
-                widget.setStyleSheet(tmpl.format(
-                    sidebar_bg=c('sidebar_bg'), text_secondary=c('text_secondary'),
-                    divider=c('divider'), text_primary=c('text_primary'),
-                    text_muted=c('text_muted'),
-                ))
-
     def _build_sidebar(self):
         self._sidebar = QWidget()
         self._sidebar.setObjectName('sidebar')
@@ -253,7 +229,9 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         brand_text = QVBoxLayout()
         brand_text.setSpacing(0)
         self._brand_title = QLabel('CipherBox')
+        self._brand_title.setObjectName('sidebarBrandTitle')
         self._brand_subtitle = QLabel('本地加密保险库')
+        self._brand_subtitle.setObjectName('sidebarBrandSubtitle')
         brand_text.addWidget(self._brand_title)
         brand_text.addWidget(self._brand_subtitle)
         brand_row.addLayout(brand_text, 1)
@@ -280,6 +258,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
 
         # 筛选标签
         self._filter_label = QLabel('筛选')
+        self._filter_label.setObjectName('sidebarSectionLabel')
         sidebar_layout.addWidget(self._filter_label)
 
         # 筛选项列表
@@ -292,11 +271,13 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         # 筛选区域分割线
         self._separator1 = QLabel()
         self._separator1.setFixedHeight(1)
+        self._separator1.setObjectName('sidebarSeparator')
         sidebar_layout.addWidget(self._separator1)
 
         # 分类标签
         cat_header = QHBoxLayout()
         self._cat_label = QLabel('分类')
+        self._cat_label.setObjectName('sidebarSectionLabel')
         cat_header.addWidget(self._cat_label)
         cat_header.addStretch()
         add_cat_btn = QPushButton('+')
@@ -319,12 +300,14 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         # 分类区域分割线
         self._separator2 = QLabel()
         self._separator2.setFixedHeight(1)
+        self._separator2.setObjectName('sidebarSeparator')
         sidebar_layout.addWidget(self._separator2)
 
         sidebar_layout.addStretch()
 
         # 排序控件
         self._sort_label = QLabel('排序')
+        self._sort_label.setObjectName('sidebarSectionLabel')
         sidebar_layout.addWidget(self._sort_label)
 
         self._sort_combo = QComboBox()
@@ -343,10 +326,10 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         # 统计
         self._stats_label = QLabel('')
         self._stats_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._stats_label.setObjectName('sidebarStatsLabel')
         sidebar_layout.addWidget(self._stats_label)
 
         self._splitter.addWidget(self._sidebar)
-        self._apply_sidebar_inline_styles()
 
     def _build_filter_list(self):
         """重建侧边栏筛选项列表，主题切换时需要重建图标"""
@@ -393,11 +376,13 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         list_header.setContentsMargins(12, 8, 12, 4)
 
         self._list_title = QLabel('全部条目')
+        self._list_title.setObjectName('sidebarListTitle')
         list_header.addWidget(self._list_title)
 
         list_header.addStretch()
 
         self._count_label = QLabel('0 项')
+        self._count_label.setObjectName('sidebarCountLabel')
         list_header.addWidget(self._count_label)
 
         list_layout.addLayout(list_header)
@@ -557,8 +542,6 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             self._build_filter_list()
             # 刷新菜单栏图标
             self._update_menu_icons()
-            # 刷新侧边栏内联样式，颜色值已烘焙因此需要重设
-            self._apply_sidebar_inline_styles()
             self._warning_label.setStyleSheet(f'color: {c("warning")}; font-size: 12px;')
             self._brand_icon.setPixmap(icon_pixmap(SHIELD, 'accent', 24))
             if self._tray:
@@ -577,6 +560,9 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
                 self._detail_panel.show_entry(current_entry, force=True)
             else:
                 self._detail_panel.show_empty()
+            # 刷新活跃 Toast 的烘焙配色（背景/文本/按钮颜色随主题变化）
+            from ..components.toast import ToastManager
+            ToastManager.refresh_for(self)
 
     # ========== 窗口事件 ==========
 
@@ -595,23 +581,28 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         except (OSError, ValueError, TypeError):
             logger.debug("保存窗口状态失败", exc_info=True)
 
-        # 移除事件过滤器，防止已销毁对象仍被 QApplication 引用。
-        app = QApplication.instance()
-        if app:
-            app.removeEventFilter(self)
-
         if self._config.get('close_to_tray', False) and self._tray:
+            # 隐藏到托盘（非退出、非锁定）：清理详情面板瞬时明文并停选择定时器，
+            # 等待后台 worker 退出避免隐藏后继续持密钥解密（业务层已支持协作取消，
+            # wait 通常短暂）。保持 vault 解锁、列表模型与备份/状态定时器，
+            # 从托盘恢复时窗口立即可用；详情面板已清空，恢复后由用户重新选择条目。
+            self._detail_panel.show_empty()
             self._clipboard.clear_now()
-            # 隐藏到托盘（非退出）也请求取消后台 worker，避免托盘隐藏后备份 worker
-            # 仍持有密钥解密。仅 cancel 不 wait，保持 UI 隐藏即时响应。
-            if self._status_worker and self._status_worker.isRunning():
-                self._status_worker.cancel()
-            if self._backup_worker and self._backup_worker.isRunning():
-                self._backup_worker.cancel()
+            self._select_timer.stop()
+            from ..components.toast import ToastManager
+            ToastManager.cancel_all_for(self)
+            wait_worker_shutdown(self._status_worker)
+            self._status_worker = None
+            wait_worker_shutdown(self._backup_worker)
+            self._backup_worker = None
             a0.ignore()
             self.hide()
         else:
-            # 完全退出：统一用 wait_worker_shutdown 取消并等待后台 worker 结束，
+            # 完全退出：移除事件过滤器，防止已销毁对象仍被 QApplication 引用。
+            app = QApplication.instance()
+            if app:
+                app.removeEventFilter(self)
+            # 统一用 wait_worker_shutdown 取消并等待后台 worker 结束，
             # 与 prepare_for_lock 的关闭模式一致，确保退出前 worker 不再持有密钥。
             wait_worker_shutdown(self._status_worker)
             self._status_worker = None
@@ -643,6 +634,9 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._reset_lock_timer()
         # 解锁后刷新状态栏安全摘要，避免停留在锁定前的陈旧或空白状态
         self._status_timer.start()
+        # 重启自动备份定时器：prepare_for_lock 已停止它，解锁后须恢复，
+        # 否则任意一次锁定→解锁后本地自动快照将永久失效。
+        self._backup_timer.start()
         if self._tray:
             self._tray.set_locked(False)
 

@@ -105,6 +105,11 @@ class MetadataSigner:
 
         Returns:
             UTF-8 编码的 JSON 字节串。
+
+        Note:
+            载荷不含 ``key_epoch``：跨 epoch 的签名隔离已由域密钥本身提供——
+            域密钥从主密钥派生，改密/恢复轮换主密钥即产生新域密钥，旧签名在新
+            域密钥下验证必然失败。故无需将 epoch 显式纳入载荷。
         """
         data = {
             'crypto_id': entry.crypto_id,

@@ -113,7 +113,11 @@ class TOTPGenerator:
         except (TypeError, ValueError) as exc:
             return '', ValueError(f'TOTP 密钥格式无效: {exc}')
 
-        algo_name = TOTPGenerator.ALGO_MAP[algorithm]
+        algo_name = TOTPGenerator.ALGO_MAP.get(algorithm)
+        if algo_name is None:
+            # _parse_config 已校验 algorithm，此分支为纵深防御，防止未来校验
+            # 逻辑改动或绕过 _parse_config 直接调用时 KeyError 冒泡至调用方。
+            return '', ValueError('不支持的 TOTP 算法')
 
         try:
             key = base64.b32decode(TOTPGenerator._normalize_base32(raw_secret), casefold=True)

@@ -64,3 +64,24 @@ def test_maybe_auto_backup_retention(vault, vault_config):
     assert ok
     # force 新建一份当前时间戳快照后，retention 清理使总数收敛到 2
     assert len(_snapshots(vault_config)) == 2
+
+
+def test_maybe_auto_backup_cancelled(vault, vault_config):
+    """cancel_check 返回真时中止备份，不产出快照。
+
+    覆盖 close_to_tray / 锁定场景下后台备份的协作取消：业务层在全量解密循环
+    中检查 cancel_check，及时退出避免隐藏/锁定后继续持密钥解密。
+    """
+    from src.business.managers.entry_manager import EntryManager
+    from src.models import Entry
+
+    mgr = BackupRestoreManager(vault)
+    vault_config.set('auto_backup_enabled', True)
+    # 添加条目使全量解密循环执行，cancel_check 才有机会被检查触发
+    EntryManager(vault).add_entry(Entry(title='t', username='u', password='p'))
+
+    ok, err = mgr.maybe_auto_backup(vault_config, force=True, cancel_check=lambda: True)
+
+    assert not ok
+    assert '取消' in err
+    assert _snapshots(vault_config) == []

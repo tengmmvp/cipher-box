@@ -47,14 +47,20 @@ _UPDATE_ENTRY_SQL = (
     f"WHERE id=?"
 )
 
-# 重加密批量更新列：改密只重写密文与签名，不改删除状态、创建时间、收藏等。
-# 为 _ENTRY_COLUMNS 的子集；新增加密列时须同步追加到此处与 ReEncryptedEntry。
-_RE_ENCRYPT_COLUMNS = [
-    'crypto_id', 'title', 'username_enc', 'password_enc', 'url', 'category_id',
-    'tags', 'notes_enc', 'custom_fields_enc', 'is_favorite',
-    'password_strength', 'entry_type', 'totp_secret_enc', 'updated_at',
-    'password_changed_at', 'metadata_mac',
-]
+# 重加密批量更新列：改密重写除删除状态与创建时间外的全部列（含全部密文列）。
+# 直接从 _UPDATE_ENTRY_COLUMNS 派生（同样排除 is_deleted/deleted_at/created_at），
+# 使新增加密列只需加入 _ENTRY_COLUMNS 即自动被改密重写——消除手工维护
+# _RE_ENCRYPT_COLUMNS 漏列导致该列保留旧密钥密文、新密钥无法解密的数据损坏风险。
+_RE_ENCRYPT_COLUMNS = list(_UPDATE_ENTRY_COLUMNS)
+
+# 运行时断言：所有加密列（_enc 后缀）必须被改密重写，否则该列保留旧密钥密文
+# 将导致改密后无法解密。模块加载时执行，捕获未来 _ENTRY_COLUMNS 扩展漏配。
+assert all(
+    col in _RE_ENCRYPT_COLUMNS
+    for col in _ENTRY_COLUMNS
+    if col.endswith('_enc')
+), '加密列未被纳入改密重写集合，将导致改密后数据损坏'
+
 _RE_ENCRYPT_BATCH_UPDATE_SQL = (
     f"UPDATE entries SET {', '.join(f'{column}=?' for column in _RE_ENCRYPT_COLUMNS)} "
     f"WHERE id=?"

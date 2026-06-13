@@ -305,10 +305,9 @@ class SecurityDashboard(QDialog):
         # 校验回调来源仍是当前 worker，防止 reject 后旧 worker 回调访问已销毁控件
         if self.sender() is not self._worker:
             return
-        # 移除加载提示
-        if hasattr(self, '_status_hint') and self._status_hint:
-            self._status_hint.deleteLater()
-            self._status_hint = None
+        # 加载提示 _status_hint 位于 _weak_layout 中，由随后 _populate_weak_tab 的
+        # _clear_layout 统一回收，此处仅清除属性引用，避免手动 deleteLater 造成双重回收。
+        self._status_hint = None
 
         try:
             self._weak_entries = analysis['weak_entries']

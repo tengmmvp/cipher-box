@@ -65,15 +65,16 @@ _KEE_PASS_COLUMN_ALIASES = {
 
 
 def _transactional_import(method):
-    """确保一次导入要么全部成功，要么完全回滚。
+    """导入路径校验装饰器。
 
     通过 inspect 绑定被装饰方法的签名，从任意调用方式（位置或关键字）稳健
-    提取 filepath 参数，不依赖「filepath 必为 self 后第一个位置参数」的隐式
-    契约——未来在 filepath 前插入参数或改用关键字调用都不会让 epoch 守卫
-    与路径校验静默错位。
+    提取 filepath 参数，校验并替换为 resolved 路径（避免校验后原始路径被
+    替换为符号链接的 TOCTOU 窗口）。
 
-    在事务开始前捕获当前 key_epoch，事务开始后验证未变化，防止导入期间并发
-    改密导致数据用旧密钥加密但 epoch 已更新。
+    文件读取与解析在方法体内、事务之外完成；事务与 epoch 守卫由
+    ``_run_import_transaction`` 在写入阶段开启。这样大文件导入的 I/O 与解析
+    不持有 db_lock，避免阻塞 TOTP 定时器等其他数据库访问。UnicodeDecodeError
+    仅可能发生在事务外的读取阶段，此处统一替换为友好提示。
     """
     method_sig = inspect.signature(method)
 
@@ -84,16 +85,9 @@ def _transactional_import(method):
         bound.apply_defaults()
         filepath = bound.arguments['filepath']
         resolved = self._validate_import_path(filepath)
+        bound.arguments['filepath'] = resolved
         try:
-            # 事务前快照 epoch，防止并发改密导致密钥不一致
-            pre_epoch = self._entry_mgr._vault.key_epoch
-            with self._entry_mgr.db.transaction():
-                current_epoch = self._entry_mgr._vault.key_epoch
-                if pre_epoch != current_epoch:
-                    raise VaultKeyEpochMismatchError('导入期间检测到密钥变更，已中止导入')
-                # 用 resolved 路径打开，避免校验后原始路径被替换为符号链接的 TOCTOU 窗口
-                bound.arguments['filepath'] = resolved
-                return method(*bound.args, **bound.kwargs)
+            return method(*bound.args, **bound.kwargs)
         except UnicodeDecodeError:
             raise ValueError(
                 '文件编码不支持：请确保 CSV 文件使用 UTF-8 编码保存。'
@@ -433,6 +427,24 @@ class ImportExportManager:
 
         return count
 
+    def _run_import_transaction(self, importer: Callable[[], int]) -> int:
+        """在事务内执行导入写入，含 epoch 守卫。
+
+        文件读取与解析须在调用本方法之前完成（事务外）。本方法在事务开始前
+        快照 key_epoch，事务开始后验证未变化，防止导入期间并发改密导致数据
+        用旧密钥加密但 epoch 已更新。
+
+        Args:
+            importer: 在事务内调用的写入回调，通常为 ``_import_entries`` 的
+                部分应用。返回导入条目数。
+        """
+        pre_epoch = self._entry_mgr._vault.key_epoch
+        with self._entry_mgr.db.transaction():
+            current_epoch = self._entry_mgr._vault.key_epoch
+            if pre_epoch != current_epoch:
+                raise VaultKeyEpochMismatchError('导入期间检测到密钥变更，已中止导入')
+            return importer()
+
     # ======== 导入 ========
 
     @_transactional_import
@@ -486,11 +498,11 @@ class ImportExportManager:
             if not secrets_included:
                 self._merge_non_exported_secrets(entry, existing)
 
-        return self._import_entries(
+        return self._run_import_transaction(lambda: self._import_entries(
             entries, entries_data, categories, default_category_id,
             duplicate_action, 'JSON 导入', progress_callback,
             overwrite_merger=_merge,
-        )
+        ))
 
     @_transactional_import
     def import_from_csv(
@@ -535,11 +547,11 @@ class ImportExportManager:
         def _merge(entry: Entry, existing: Entry):
             self._merge_csv_secrets(entry, existing, password_present)
 
-        return self._import_entries(
+        return self._run_import_transaction(lambda: self._import_entries(
             entries, entries_data, categories, default_category_id,
             duplicate_action, 'CSV 导入', progress_callback,
             overwrite_merger=_merge,
-        )
+        ))
 
     # 注意：Chrome/Edge CSV 与 CipherBox CSV 共享相同的列名格式，即 name/url/username/password 等，
     # 因此直接委托给 import_from_csv。不添加 @_transactional_import 装饰器，
@@ -608,11 +620,11 @@ class ImportExportManager:
         def _merge(entry: Entry, existing: Entry):
             self._merge_csv_secrets(entry, existing, password_present)
 
-        return self._import_entries(
+        return self._run_import_transaction(lambda: self._import_entries(
             entries, entries_data, categories, default_category_id,
             duplicate_action, 'KeePass CSV 导入', progress_callback,
             overwrite_merger=_merge,
-        )
+        ))
 
     @staticmethod
     def _bitwarden_entry_fields(item: dict) -> 'tuple[str, list[CustomField]]':
@@ -733,11 +745,11 @@ class ImportExportManager:
                 'username': login.get('username', ''),
             })
 
-        return self._import_entries(
+        return self._run_import_transaction(lambda: self._import_entries(
             entries, entries_data, categories, default_category_id,
             duplicate_action, 'Bitwarden 导入', progress_callback,
             overwrite_merger=self._merge_bitwarden_secrets,
-        )
+        ))
 
     @staticmethod
     def _build_col_map(headers: list, aliases: dict) -> dict[str, str]:

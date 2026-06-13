@@ -25,7 +25,6 @@ from ..resources.constants import (
     MS_TOAST_DEFAULT,
     MS_TOAST_LONG,
     MS_TOAST_SHORT,
-    SORT_OPTIONS,
 )
 from ..resources.icons import (
     CLOSE,
@@ -67,9 +66,6 @@ if TYPE_CHECKING:
     from ..controllers.sidebar_controller import SidebarController as _SidebarController
 
 logger = logging.getLogger(__name__)
-
-# 排序选项来自共享常量，作为单一事实来源
-_SORT_OPTIONS = SORT_OPTIONS
 
 # 搜索结果渲染上限：超大库下避免一次性渲染过多条目卡死 UI
 _MAX_SEARCH_RESULTS_DISPLAY = 1000

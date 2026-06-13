@@ -22,6 +22,9 @@ PBKDF2_ITERATIONS = 600_000
 MIN_PBKDF2_ITERATIONS = 100_000
 MAX_PBKDF2_ITERATIONS = 2_000_000
 SALT_SIZE = 32
+# PBKDF2 盐最小长度。空盐或过短盐会显著降低派生强度（空盐退化为固定盐），
+# 拒绝过短输入避免静默降级。主盐 32 字节，备份盐经 b'backup:' 前缀后 39 字节。
+MIN_SALT_SIZE = 16
 KEY_SIZE = 32  # AES-256
 
 # 验证令牌与 AAD。详细安全分析见模块文档。
@@ -37,6 +40,20 @@ class MasterKeyManager:
         """校验 PBKDF2 迭代次数是否在安全范围内。"""
         if not MIN_PBKDF2_ITERATIONS <= iterations <= MAX_PBKDF2_ITERATIONS:
             raise ValueError('PBKDF2 参数无效')
+
+    @classmethod
+    def _validate_salt(cls, salt: bytes) -> None:
+        """校验盐值的类型与最小长度，防止空盐/过短盐导致派生强度静默降级。
+
+        空盐会使 PBKDF2 退化为无盐派生，丧失针对彩虹表/预计算的防护；
+        过短盐则降低唯一性。主路径盐为 32 字节随机，此处仅作下限守卫。
+        """
+        if not isinstance(salt, (bytes, bytearray)):
+            raise TypeError(f'盐值类型无效：期望 bytes，实际 {type(salt).__name__}')
+        if len(salt) < MIN_SALT_SIZE:
+            raise ValueError(
+                f'盐值过短：期望至少 {MIN_SALT_SIZE} 字节，实际 {len(salt)} 字节'
+            )
 
     @classmethod
     def derive_backup_key(cls, password: str, salt: bytes, iterations: int) -> bytearray:
@@ -62,6 +79,7 @@ class MasterKeyManager:
             secure_zero_buffer 真正清零；PBKDF2 内部派生的中间 bytes
             依赖 GC 回收。
         """
+        cls._validate_salt(salt)
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=KEY_SIZE,
@@ -87,7 +105,13 @@ class MasterKeyManager:
         salt = os.urandom(SALT_SIZE)
         cls._validate_iterations(iterations)
         key = cls.derive_key(password, salt, iterations)
-        verify_token = EncryptionEngine.encrypt(VERIFY_PLAINTEXT, key, VERIFY_AAD)
+        try:
+            verify_token = EncryptionEngine.encrypt(VERIFY_PLAINTEXT, key, VERIFY_AAD)
+        except Exception:
+            # 验证令牌加密失败时 key 不再返回，原地清零已派生密钥，收缩驻留，
+            # 避免异常路径泄漏派生密钥到调用栈帧后依赖 GC 回收。
+            key[:] = b'\x00' * len(key)
+            raise
         logger.info("主密钥凭据已生成")
         return salt, verify_token, key
 

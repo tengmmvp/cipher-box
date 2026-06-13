@@ -116,3 +116,25 @@ def test_create_without_password_or_snapshot_rejected(vault_and_key):
     success, _ = backup_mgr.create_backup(str(backup_path))
     assert not success
     assert not backup_path.exists()
+
+
+def test_derive_key_rejects_short_or_empty_salt():
+    """derive_key 拒绝空盐或过短盐，防止 PBKDF2 退化为弱派生。"""
+    from src.crypto.master_key import MasterKeyManager
+
+    with pytest.raises(ValueError):
+        MasterKeyManager.derive_key('pw', b'', 100_000)
+    with pytest.raises(ValueError):
+        MasterKeyManager.derive_key('pw', b'short', 100_000)  # 5 字节 < MIN_SALT_SIZE
+
+    # 合法长度盐正常派生 32 字节密钥
+    key = MasterKeyManager.derive_key('pw', os.urandom(32), 100_000)
+    assert len(key) == 32
+
+
+def test_derive_backup_key_rejects_empty_salt():
+    """derive_backup_key 对空盐在 b'backup:' 前缀后仍不足最小长度，应拒绝。"""
+    from src.crypto.master_key import MasterKeyManager
+
+    with pytest.raises(ValueError):
+        MasterKeyManager.derive_backup_key('pw', b'', 100_000)

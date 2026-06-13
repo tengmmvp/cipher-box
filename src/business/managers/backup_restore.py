@@ -8,6 +8,7 @@ import os
 import struct
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -105,11 +106,16 @@ class BackupRestoreManager:
     def _derive_backup_key(password: str, salt: bytes, iterations: int) -> bytearray:
         return MasterKeyManager.derive_backup_key(password, salt, iterations)
 
-    def _collect_portable_data(self) -> dict:
+    def _collect_portable_data(
+        self, cancel_check: Callable[[], bool] | None = None,
+    ) -> dict | None:
         """收集备份数据：解密所有字段为明文，构建可移植字典。
 
         使用 crypto_utils.decrypt_entry_to_portable_dict 共享解密逻辑，
         本方法保留备份特有的增量大小估算和密码历史收集。
+
+        若提供 ``cancel_check`` 且在解密循环中返回真值，立即返回 None
+        表示备份已被取消，调用方据此中止而不产出残缺备份。
         """
         db = self._vault.db
         key = self._key
@@ -124,6 +130,8 @@ class BackupRestoreManager:
             for c in categories
         )
         for raw in raw_entries:
+            if cancel_check and cancel_check():
+                return None
             item = decrypt_entry_to_portable_dict(raw, key, include_secrets=True)
             if item is None:
                 logger.warning(
@@ -154,6 +162,8 @@ class BackupRestoreManager:
         if len(history_rows) > len(raw_entries) * MAX_HISTORY_PER_ENTRY:
             raise ValueError('密码历史数量超出限制')
         for item in history_rows:
+            if cancel_check and cancel_check():
+                return None
             try:
                 pwd = decrypt_field(
                     item.old_password_enc, key,
@@ -190,8 +200,14 @@ class BackupRestoreManager:
         filepath: str,
         backup_password: str | None = None,
         use_snapshot_key: bool = False,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[bool, str]:
-        """创建加密备份；密码备份可跨安装恢复，快照使用稳定快照密钥。"""
+        """创建加密备份；密码备份可跨安装恢复，快照使用稳定快照密钥。
+
+        ``cancel_check`` 可选取消探针，在全量解密循环中周期性调用，返回真值
+        时中止备份并返回 (False, '备份已取消')，避免后台备份在隐藏/锁定后
+        继续持有密钥解密。
+        """
         try:
             t0 = time.monotonic()
             filepath = str(validate_file_path(filepath))
@@ -202,7 +218,9 @@ class BackupRestoreManager:
             # 为 bytes，避免释放锁后、加密前主线程 lock() 清零 snapshot_key
             # 的竞态窗口（锁定与自动备份后台线程竞态）。
             with self._vault._lock:
-                data = self._collect_portable_data()
+                data = self._collect_portable_data(cancel_check=cancel_check)
+                if data is None:
+                    return False, '备份已取消'
                 if backup_password:
                     flags = BackupFlag.PASSWORD
                     iterations = BACKUP_KDF_ITERATIONS
@@ -363,7 +381,7 @@ class BackupRestoreManager:
                     if 'data' in locals():
                         del data
             # 事务已提交，key_epoch 与 snapshot_key_enc 均已在同一事务内原子写入。
-            # 此处仅同步内存状态（不写库），消除原事务外 set_snapshot_key 的崩溃窗口。
+            # 此处仅同步内存状态（不写库），消除事务外写库的崩溃窗口。
             if new_epoch:
                 self._vault.update_key_epoch(new_epoch)
             self._vault.apply_snapshot_key(new_snapshot_key)
@@ -613,7 +631,7 @@ class BackupRestoreManager:
         pre_epoch = self._vault.key_epoch
         # snapshot_key 与 key_epoch 在同一事务内轮换：恢复整体替换数据后，旧 snapshot_key
         # 加密的快照含恢复前明文，轮换使其失效以收缩泄漏面，与改密路径语义一致。
-        # 同事务写入消除原事务外 set_snapshot_key 在崩溃时 epoch 已提交而
+        # 同事务写入消除事务外写库在崩溃时 epoch 已提交而
         # snapshot_key_enc 未写入的不一致窗口。
         new_snapshot_key = os.urandom(32)
         with db.transaction():
@@ -671,7 +689,12 @@ class BackupRestoreManager:
                 created_at=item.get('created_at', '') or '',
                 updated_at=item.get('updated_at', '') or '',
                 deleted_at=item.get('deleted_at', '') or '',
-                password_changed_at=item.get('password_changed_at', '') or '',
+                password_changed_at=(
+                    item.get('password_changed_at', '')
+                    or item.get('updated_at', '')
+                    or item.get('created_at', '')
+                    or utc_now_iso()
+                ),
             )
             new_id = db.add_entry(entry, preserve_metadata=True)
             if item.get('id') is not None:
@@ -687,7 +710,9 @@ class BackupRestoreManager:
             new_entry_id = entry_map.get(item.get('entry_id'))
             if not new_entry_id:
                 continue
-            crypto_id = crypto_id_map.get(item['entry_id'], '')
+            # entry_map 命中则 crypto_id_map 必同步存在（_restore_entries 同填充），
+            # 直接取而非 get 默认 ''，避免空 crypto_id 产生 AAD 不一致的密文。
+            crypto_id = crypto_id_map[item['entry_id']]
             ciphertext = encrypt_field(
                 item.get('password', ''), key, crypto_id, 'password',
             )
@@ -702,12 +727,15 @@ class BackupRestoreManager:
         self,
         config,
         force: bool = False,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[bool, str]:
         """按配置创建当前保险库的本地快速快照。
 
         Args:
             config: ConfigManager 实例，用于读取备份设置。
             force: 是否强制创建，忽略时间间隔检查。
+            cancel_check: 可选取消探针，透传给 create_backup，使后台快照
+                在隐藏到托盘或锁定时能尽快退出。
 
         Returns:
             由是否成功与错误信息组成的二元组，成功时错误信息为空字符串。
@@ -737,7 +765,8 @@ class BackupRestoreManager:
         secure_directory(directory)
         filename = f'cipherbox_snapshot_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}.cbox'
         success, error = self.create_backup(
-            str(directory / filename), use_snapshot_key=True
+            str(directory / filename), use_snapshot_key=True,
+            cancel_check=cancel_check,
         )
         if not success:
             return False, error

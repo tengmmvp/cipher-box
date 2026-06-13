@@ -204,6 +204,39 @@ QLabel#sectionLabel {{
     font-weight: bold;
     color: {accent_text};
 }}
+QLabel#sidebarSectionLabel {{
+    font-weight: bold;
+    color: {text_secondary};
+    font-size: 12px;
+    margin-top: 4px;
+}}
+QLabel#sidebarSeparator {{
+    background: {divider};
+    margin: 6px 0px;
+}}
+QLabel#sidebarStatsLabel {{
+    color: {text_secondary};
+    font-size: 11px;
+    margin-top: 4px;
+}}
+QLabel#sidebarListTitle {{
+    font-weight: bold;
+    font-size: 14px;
+    color: {text_primary};
+}}
+QLabel#sidebarCountLabel {{
+    color: {text_secondary};
+    font-size: 12px;
+}}
+QLabel#sidebarBrandTitle {{
+    font-size: 15px;
+    font-weight: 700;
+    color: {text_primary};
+}}
+QLabel#sidebarBrandSubtitle {{
+    font-size: 10px;
+    color: {text_muted};
+}}
 QMenuBar {{
     background: {bg_secondary};
     border-bottom: 1px solid {border_light};
