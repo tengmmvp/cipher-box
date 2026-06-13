@@ -519,10 +519,29 @@ class VaultManager:
             for pattern in ('pre_restore_*.cbox', 'cipherbox_snapshot_*.cbox'):
                 for f in directory.glob(pattern):
                     try:
-                        f.unlink()
+                        self._secure_delete_file(f)
                     except OSError:
                         failed.append(f)
         return failed
+
+    @staticmethod
+    def _secure_delete_file(path: Path) -> None:
+        """覆盖删除文件：先以随机字节覆写内容再 unlink，收缩旧 snapshot_key
+        加密的明文快照在支持数据恢复的文件系统（NTFS/ext4）上的取证还原面。
+
+        注意：SSD 的磨损均衡与写入放大使覆写并非密码学保证，但比单纯 unlink
+        （仅释放 inode 引用、明文扇区可被取证工具还原）显著更强。覆写或 unlink
+        失败均抛 OSError，由调用方计入 failed 清单上报而非静默丢失。
+        """
+        try:
+            size = path.stat().st_size
+            if size > 0:
+                with open(path, 'r+b') as fp:
+                    fp.write(os.urandom(size))
+                    fp.flush()
+                    os.fsync(fp.fileno())
+        finally:
+            path.unlink()
 
     def encrypt_snapshot_key(self, snapshot_key: bytes) -> str:
         """加密 snapshot_key 以写入 vault_meta，供恢复流程在事务内复用。

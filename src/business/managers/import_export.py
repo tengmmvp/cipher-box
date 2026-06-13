@@ -428,7 +428,7 @@ class ImportExportManager:
                 progress_callback(i + 1, total)
 
         # 批量导入统一通知一次（add/update 已传 notify=False 避免逐条回调）
-        self._entry_mgr._notify_entry_change()
+        self._entry_mgr.notify_batch_change()
 
         if skipped:
             logger.info("%s: 跳过 %d 条无效条目", source_label, skipped)

@@ -234,6 +234,15 @@ class EntryManager:
             except Exception:
                 logger.debug("条目变更回调执行失败", exc_info=True)
 
+    def notify_batch_change(self, password_changed: bool = True):
+        """批量变更后的统一通知入口，供导入等批量操作在全部完成后触发一次。
+
+        与单条 ``_notify_entry_change`` 一致地失效缓存并通知回调，但作为公共 API
+        暴露，避免跨管理器（如 ImportExportManager）直接访问带下划线的私有方法
+        ``_notify_entry_change``，使内部缓存失效机制不致成为跨模块契约的一部分。
+        """
+        self._notify_entry_change(password_changed)
+
     def _encrypt_custom_fields(
         self,
         fields: list[CustomField] | str,
@@ -573,6 +582,21 @@ class EntryManager:
             if limit:
                 summaries = summaries[:limit]
         return summaries
+
+    def get_recent_summaries(self, limit: int = 20) -> list[Entry]:
+        """获取最近更新的条目摘要，供「近期更新」视图。
+
+        相较 ``get_entry_summaries``（按 is_favorite DESC, updated_at DESC 排序），
+        本方法仅按 updated_at DESC 排序并下推 LIMIT 到 SQL，避免拉全量内存排序
+        再截断，消除大库下「近期更新」切换的全量解密与内存驻留开销。
+
+        Args:
+            limit: 返回条目数上限。
+        """
+        if limit <= 0:
+            return []
+        raw_entries = self.db.get_entries(sort_by_updated=True, limit=limit)
+        return [self._decrypt_summary(entry) for entry in raw_entries]
 
     def get_entries_for_export(self, include_secrets: bool = False) -> list[Entry]:
         raw_entries = self.db.get_entries(include_deleted=False)

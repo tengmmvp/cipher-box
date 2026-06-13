@@ -244,8 +244,7 @@ class BackupRestoreManager:
                 # 仅清零本次派生的密码备份密钥；SNAPSHOT 路径的 backup_key 借用 snapshot_key，
                 # 其生命周期由 KeyManager 管理，清零它会破坏同会话的后续快照。
                 # finally 确保即使 payload 超限 raise 也清零。
-                if flags == BackupFlag.PASSWORD:
-                    secure_zero_buffer(backup_key)
+                self._zero_backup_key_if_owned(flags, backup_key)
             target = Path(filepath)
             # 创建并收紧目录权限，避免快照全量明文以继承的宽松 ACL 落盘
             secure_directory(target.parent)
@@ -400,10 +399,18 @@ class BackupRestoreManager:
             # 确保 PASSWORD 派生的 backup_key 在所有退出路径（含密钥派生失败、文件
             # 过大、解密异常）都清零；SNAPSHOT 路径借用 snapshot_key 不清零。
             # backup_key 在 with 块内赋值，派生阶段异常时可能未定义，用 locals 兜底。
-            if flags == BackupFlag.PASSWORD:
-                key = locals().get('backup_key')
-                if key is not None:
-                    secure_zero_buffer(key)
+            self._zero_backup_key_if_owned(flags, locals().get('backup_key'))
+
+    @staticmethod
+    def _zero_backup_key_if_owned(flags, key) -> None:
+        """清零 PASSWORD 路径派生的 backup_key；SNAPSHOT 路径借用 snapshot_key 不清零。
+
+        集中「是否应清零」判定，使 create_backup 与 _restore_current 的清零逻辑共用
+        单一来源，避免未来新增备份加密 flag 时漏改其中一处。key 为 None 时跳过
+        （派生阶段异常致 backup_key 未定义的兜底）。
+        """
+        if flags == BackupFlag.PASSWORD and key is not None:
+            secure_zero_buffer(key)
 
     @staticmethod
     def _validate_restore_data(data: dict):
