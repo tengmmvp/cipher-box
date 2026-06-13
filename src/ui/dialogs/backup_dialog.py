@@ -272,7 +272,7 @@ class BackupDialog(QDialog):
 
     def _do_restore(self, path: str):
         reply = QMessageBox.warning(
-            self, '[!] 危险操作',
+            self, '危险操作',
             '恢复备份将覆盖当前保险库中的所有数据！\n\n'
             '此操作不可撤销！\n\n'
             '确定要继续吗？',

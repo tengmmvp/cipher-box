@@ -265,7 +265,7 @@ class ImportExportDialog(QDialog):
         if include_pwd:
             reply = QMessageBox.warning(
                 self, '安全警告',
-                '[!] 您选择导出包含密码的文件！\n\n'
+                '您选择导出包含密码的文件！\n\n'
                 '导出的文件将以明文形式保存所有密码，存在严重的安全风险。\n'
                 '请确保妥善保管导出文件，使用后立即删除。\n\n'
                 '确定要继续吗？',

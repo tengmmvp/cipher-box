@@ -382,7 +382,7 @@ class _MainWindowFiltersMixin(QMainWindow):
             # 密码过期警告：复用实例属性，避免 findChild
             if summary.get('old', 0) > 0:
                 old_count = summary['old']
-                self._warning_label.setText(f'  [!] {old_count} 个密码已过期  ')
+                self._warning_label.setText(f'  {old_count} 个密码已过期  ')
                 self._warning_label.show()
                 if self._warning_label.parent() is not self._status_bar:
                     self._status_bar.addPermanentWidget(self._warning_label)

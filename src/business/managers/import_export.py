@@ -664,29 +664,29 @@ class ImportExportManager:
             if len(exp_year) == 4:
                 exp_year = exp_year[-2:]
             custom_fields.extend([
-                CustomField('_card_holder', card.get('cardholderName', '')),
-                CustomField('_card_number', card.get('number', ''), 'password'),
+                CustomField('_card_holder', str(card.get('cardholderName') or '')),
+                CustomField('_card_number', str(card.get('number') or ''), 'password'),
                 CustomField(
                     '_card_expiry',
                     '/'.join(filter(None, [exp_month, exp_year])),
                 ),
-                CustomField('_card_cvv', card.get('code', ''), 'password'),
+                CustomField('_card_cvv', str(card.get('code') or ''), 'password'),
             ])
             return ENTRY_TYPE_CARD, custom_fields
         if item_type == 4:
             identity = item.get('identity', {})
             fullname = ' '.join(filter(None, [
-                identity.get('firstName', ''), identity.get('middleName', ''),
-                identity.get('lastName', ''),
+                str(identity.get('firstName') or ''), str(identity.get('middleName') or ''),
+                str(identity.get('lastName') or ''),
             ]))
             custom_fields.extend([
                 CustomField('_id_fullname', fullname),
-                CustomField('_id_email', identity.get('email', '')),
-                CustomField('_id_phone', identity.get('phone', '')),
+                CustomField('_id_email', str(identity.get('email') or '')),
+                CustomField('_id_phone', str(identity.get('phone') or '')),
                 CustomField('_id_address', ' '.join(filter(None, [
-                    identity.get('address1', ''), identity.get('address2', ''),
-                    identity.get('city', ''), identity.get('state', ''),
-                    identity.get('postalCode', ''), identity.get('country', ''),
+                    str(identity.get('address1') or ''), str(identity.get('address2') or ''),
+                    str(identity.get('city') or ''), str(identity.get('state') or ''),
+                    str(identity.get('postalCode') or ''), str(identity.get('country') or ''),
                 ]))),
             ])
             return ENTRY_TYPE_IDENTITY, custom_fields

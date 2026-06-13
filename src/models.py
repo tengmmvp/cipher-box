@@ -363,7 +363,7 @@ class Entry:
             tags=tags,
             notes=notes,
             custom_fields=custom_fields,
-            is_favorite=d.get('is_favorite', False),
+            is_favorite=d.get('is_favorite') is True,
             entry_type=entry_type,
             totp_secret=totp_secret,
             created_at=d.get('created_at', ''),
