@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 from typing import Optional
 
-from ..exceptions import VaultIntegrityError, VaultLockedError
+from ..exceptions import DatabaseError, VaultIntegrityError, VaultLockedError
 from ..models import MAX_PASSWORD_HISTORY, Entry, PasswordHistory, RawEntry
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation
@@ -206,30 +206,35 @@ class EntryRepository:
         )
         entry.metadata_mac = self._sign_entry(entry)
         # 参数顺序须与 _ENTRY_COLUMNS 一致；加密列存 entry 的密文属性。
-        cursor = self._conn.execute(
-            _INSERT_ENTRY_SQL,
-            (
-                entry.crypto_id,
-                entry.title,
-                entry.username,
-                entry.password,
-                entry.url,
-                entry.category_id,
-                entry.tags,
-                entry.notes,
-                entry.custom_fields_db_value,
-                1 if entry.is_favorite else 0,
-                1 if entry.is_deleted else 0,
-                entry.password_strength,
-                entry.entry_type,
-                entry.totp_secret,
-                entry.created_at,
-                entry.updated_at,
-                entry.deleted_at,
-                entry.password_changed_at,
-                entry.metadata_mac,
-            ),
-        )
+        try:
+            cursor = self._conn.execute(
+                _INSERT_ENTRY_SQL,
+                (
+                    entry.crypto_id,
+                    entry.title,
+                    entry.username,
+                    entry.password,
+                    entry.url,
+                    entry.category_id,
+                    entry.tags,
+                    entry.notes,
+                    entry.custom_fields_db_value,
+                    1 if entry.is_favorite else 0,
+                    1 if entry.is_deleted else 0,
+                    entry.password_strength,
+                    entry.entry_type,
+                    entry.totp_secret,
+                    entry.created_at,
+                    entry.updated_at,
+                    entry.deleted_at,
+                    entry.password_changed_at,
+                    entry.metadata_mac,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            # crypto_id 有 UNIQUE 约束；冲突时归一化为领域异常，避免裸驱动异常
+            # 泄漏给上层（其余路径经 DatabaseError/ValueError 传递）。
+            raise DatabaseError(f'条目写入违反唯一约束（crypto_id 冲突）：{exc}') from exc
         self._auto_commit()
         return cursor.lastrowid or 0
 
@@ -351,12 +356,18 @@ class EntryRepository:
 
     @_db_operation
     def clear_vault_data(self) -> None:
-        """清空领域数据，供事务化恢复使用。"""
+        """清空领域数据，供事务化恢复使用。
+
+        删除后截断 WAL 以清除旧密文残留，与 permanent_delete_entry/empty_trash
+        一致。事务内调用时 secure_checkpoint 静默跳过，调用方须在事务提交后
+        显式 checkpoint 以保证旧密文被清除（见 restore_backup）。
+        """
         self._guard_write()
         self._conn.execute("DELETE FROM password_history")
         self._conn.execute("DELETE FROM entries")
         self._conn.execute("DELETE FROM categories")
         self._auto_commit()
+        self.secure_checkpoint()
 
     @_db_operation
     def get_entry_count(self, include_deleted: bool = False) -> int:

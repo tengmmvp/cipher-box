@@ -189,16 +189,16 @@ class PasswordGeneratorDialog(QDialog):
         else:
             # 剪贴板管理器不可用时直接返回，避免绕过自动清除机制直接写入系统剪贴板
             return
-        # 按钮反馈
+        # 按钮反馈：复用单个 QTimer（首次创建并连接，后续仅 restart），
+        # 避免快速连续点击累积多个已 stop 但未释放的 QTimer 对象
         self._copy_btn.setText('已复制 ✓')
-        if self._copy_feedback_timer is not None:
-            self._copy_feedback_timer.stop()
-        self._copy_feedback_timer = QTimer(self)
-        self._copy_feedback_timer.setSingleShot(True)
-        self._copy_feedback_timer.setInterval(MS_FEEDBACK)
-        self._copy_feedback_timer.timeout.connect(
-            lambda: set_icon_with_text(self._copy_btn, '复制', COPY),
-        )
+        if self._copy_feedback_timer is None:
+            self._copy_feedback_timer = QTimer(self)
+            self._copy_feedback_timer.setSingleShot(True)
+            self._copy_feedback_timer.setInterval(MS_FEEDBACK)
+            self._copy_feedback_timer.timeout.connect(
+                lambda: set_icon_with_text(self._copy_btn, '复制', COPY),
+            )
         self._copy_feedback_timer.start()
 
     def _use_password(self):

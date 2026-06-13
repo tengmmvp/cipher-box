@@ -553,7 +553,11 @@ class BackupRestoreManager:
             BackupRestoreManager._require_keys(
                 item, {'entry_id', 'password', 'changed_at'}, '备份密码历史'
             )
-            if item['entry_id'] not in entry_ids:
+            entry_id = item['entry_id']
+            # 与 _validate_entries 的 ID 校验对齐：拒绝 bool/float 等伪装成 int 的类型
+            if not isinstance(entry_id, int) or isinstance(entry_id, bool):
+                raise ValueError('备份密码历史 entry_id 必须为整数')
+            if entry_id not in entry_ids:
                 raise ValueError('备份密码历史引用了不存在的条目')
             BackupRestoreManager._require_text(
                 item['password'], '密码历史密码', MAX_TEXT_FIELD_SIZE
@@ -647,6 +651,9 @@ class BackupRestoreManager:
             new_epoch = uuid.uuid4().hex
             db.set_meta('key_epoch', new_epoch)
             db.set_meta('snapshot_key_enc', self._vault.encrypt_snapshot_key(new_snapshot_key))
+        # 事务提交后截断 WAL：clear_vault_data 删除的旧主密码密文残留在 WAL，
+        # 事务内 secure_checkpoint 会跳过，须在事务外显式截断以收缩泄漏面。
+        db.secure_checkpoint()
         return new_epoch, new_snapshot_key
 
     @staticmethod
@@ -763,7 +770,7 @@ class BackupRestoreManager:
         directory = Path(backup_dir) if backup_dir else config.data_dir / 'backups'
         # 创建并收紧权限，含用户自定义目录，避免快照全量明文以宽松 ACL 落盘
         secure_directory(directory)
-        filename = f'cipherbox_snapshot_{datetime.now(timezone.utc):%Y%m%d_%H%M%S}.cbox'
+        filename = f'cipherbox_snapshot_{datetime.now(timezone.utc):%Y%m%d_%H%M%S_%f}.cbox'
         success, error = self.create_backup(
             str(directory / filename), use_snapshot_key=True,
             cancel_check=cancel_check,

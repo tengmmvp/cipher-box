@@ -7,10 +7,11 @@ import os
 import subprocess
 import sys
 import threading
+from collections import OrderedDict
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-_SECURED_WINDOWS_OBJECTS: dict[str, tuple[int, int]] = {}
+_SECURED_WINDOWS_OBJECTS: OrderedDict[str, tuple[int, int]] = OrderedDict()
 _SECURED_LOCK = threading.Lock()
 _MAX_SECURED_CACHE = 256
 
@@ -80,11 +81,14 @@ def _restrict_windows_acl(path: Path, is_directory: bool):
     identity = _windows_object_identity(path)
     with _SECURED_LOCK:
         cached = _SECURED_WINDOWS_OBJECTS.get(cache_key)
-    if identity is not None and cached == identity:
-        return
+        if identity is not None and cached == identity:
+            # LRU：命中时更新为最近使用，避免常用路径被淘汰
+            _SECURED_WINDOWS_OBJECTS.move_to_end(cache_key)
+            return
     with _SECURED_LOCK:
-        if len(_SECURED_WINDOWS_OBJECTS) > _MAX_SECURED_CACHE:
-            _SECURED_WINDOWS_OBJECTS.clear()
+        # LRU 淘汰最旧条目，而非全量清空，避免频繁重建反复调用 icacls
+        while len(_SECURED_WINDOWS_OBJECTS) > _MAX_SECURED_CACHE:
+            _SECURED_WINDOWS_OBJECTS.popitem(last=False)
     permission = '(OI)(CI)F' if is_directory else 'F'
     common = {
         'capture_output': True,

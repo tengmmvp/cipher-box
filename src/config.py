@@ -190,14 +190,19 @@ class ConfigManager:
                 content.encode('utf-8'),
                 hashlib.sha256,
             ).hexdigest()
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-                f.write(f'\n{_CONFIG_SIG_PREFIX}{sig}')
-                f.flush()
-                os.fsync(f.fileno())
-            secure_file(temp_path)
-            os.replace(temp_path, self._config_path)
-            secure_file(self._config_path)
+            try:
+                with open(temp_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                    f.write(f'\n{_CONFIG_SIG_PREFIX}{sig}')
+                    f.flush()
+                    os.fsync(f.fileno())
+                secure_file(temp_path)
+                os.replace(temp_path, self._config_path)
+                secure_file(self._config_path)
+            except Exception:
+                # 异常时清理临时文件，避免残留含明文配置的 .tmp 孤儿文件
+                temp_path.unlink(missing_ok=True)
+                raise
 
     def get(self, key: str, default: Any = None) -> Any:
         """获取配置项"""
@@ -263,7 +268,7 @@ class ConfigManager:
             return value is None or (
                 isinstance(value, list)
                 and len(value) == 3
-                and all(type(item) is int and 0 <= item <= 10000 for item in value)
+                and all(type(item) is int and 1 <= item <= 10000 for item in value)
             )
         logger.debug("配置键 %s 无验证规则，已拒绝", key)
         return False

@@ -315,6 +315,10 @@ class SecurityDashboard(QDialog):
             self._old_entries = analysis['old_entries']
         except Exception as exc:
             logger.error("加载安全报告失败: %s", type(exc).__name__, exc_info=True)
+            # 异常出口也用 _clear_layout 回收 _status_hint，与成功路径一致，
+            # 避免"正在分析..."提示残留
+            self._clear_layout(self._weak_layout)
+            self._status_hint = None
             release_worker(self)
             QMessageBox.critical(self, '错误', '加载安全数据失败，请重试')
             return
@@ -343,9 +347,9 @@ class SecurityDashboard(QDialog):
     def _on_data_error(self, error_msg: str):
         """后台分析失败。"""
         release_worker(self)
-        if hasattr(self, '_status_hint') and self._status_hint:
-            self._status_hint.deleteLater()
-            self._status_hint = None
+        # 统一用 _clear_layout 回收 _status_hint，与 _on_data_loaded 出口一致
+        self._clear_layout(self._weak_layout)
+        self._status_hint = None
         logger.error("加载安全数据失败: %s", error_msg)
         QMessageBox.critical(self, '错误', '加载安全数据失败，请重试')
 

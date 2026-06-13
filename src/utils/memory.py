@@ -9,11 +9,14 @@ logger = logging.getLogger(__name__)
 def secure_zero_buffer(data: bytes | bytearray) -> None:
     """尽力将字节缓冲区的内存内容清零。
 
-    CPython 的 bytes/string 对象不可变，此函数只能清零 bytearray 副本。
-    调用方应先创建 bytearray 副本再调用本函数，随后 del 副本。
+    CPython 的 bytes 对象不可变：传入 bytes 时只能清零其 bytearray 副本，
+    原 bytes 内容不变（假清零）。调用方应传入 bytearray（如 MasterKeyManager
+    派生密钥）以实现原地清零；传入 bytes 仅释放临时副本。
     """
     if not data:
         return
+    if isinstance(data, bytes):
+        logger.debug("secure_zero_buffer 收到不可变 bytes，仅清零副本，原对象未变")
     try:
         mutable = bytearray(data) if isinstance(data, bytes) else data
         ctypes.memset(

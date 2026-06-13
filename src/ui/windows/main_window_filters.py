@@ -134,11 +134,11 @@ class _MainWindowFiltersMixin(QMainWindow):
         return self._entry_list_ctrl.get_sort_config(self._sort_combo.currentIndex())
 
     def _on_sort_changed(self):
-        """排序选项变更"""
+        """排序选项变更。仅更新内存配置，持久化由 closeEvent 统一完成，
+        避免快速翻动排序选项时每次触发 fsync 阻塞主线程。"""
         field, order = self._get_sort_config()
         self._config.set('sort_field', field)
         self._config.set('sort_order', order)
-        self._config.save()
         self._refresh_entries()
 
     def _sort_entries(self, entries: list) -> list:
@@ -312,8 +312,17 @@ class _MainWindowFiltersMixin(QMainWindow):
         if self._current_filter == 'trash':
             return (EMPTY_TRASH, '回收站是空的', '删除的条目会出现在这里', '', None)
         if self._current_filter == 'weak':
+            # 缓存未就绪时显示"分析中"，避免空列表被误读为"无弱密码"
+            if self._security.get_cached_report(
+                self._config.get('old_password_warning_days', 90)
+            ) is None:
+                return (EMPTY_GENERIC, '正在分析密码强度...', '请稍候', '', None)
             return (EMPTY_SUCCESS, '没有发现弱密码', '所有密码强度良好', '', None)
         if self._current_filter == 'duplicate':
+            if self._security.get_cached_report(
+                self._config.get('old_password_warning_days', 90)
+            ) is None:
+                return (EMPTY_GENERIC, '正在分析重复密码...', '请稍候', '', None)
             return (EMPTY_SUCCESS, '没有重复密码', '所有密码都是唯一的', '', None)
         if self._current_filter == 'recent':
             return (EMPTY_SUCCESS, '没有近期更新', '最近没有修改过条目', '', None)
@@ -352,7 +361,12 @@ class _MainWindowFiltersMixin(QMainWindow):
             self._apply_status_summary(summary)
 
         worker.finished.connect(_on_finished)
-        worker.error.connect(lambda _: None)
+        # worker 线程抛异常时更新状态栏，避免永远卡在"安全分析中..."无反馈
+        def _on_error(_msg):
+            if self._locked_ui or self._status_worker is not worker:
+                return
+            self._status_bar.showMessage('安全分析暂时不可用')
+        worker.error.connect(_on_error)
         worker.start()
 
     def _apply_status_summary(self, summary: dict):
@@ -377,14 +391,6 @@ class _MainWindowFiltersMixin(QMainWindow):
         except (ValueError, RuntimeError):
             logger.debug("状态栏安全分析失败", exc_info=True)
             self._status_bar.showMessage('安全分析暂时不可用')
-
-    def _get_security_summary(self) -> dict | None:
-        """返回缓存的安全分析结果，不触发同步计算。
-
-        当缓存未就绪时返回 None，调用方应处理此情况，如显示空列表。
-        首次计算由 _update_status_bar 的定时器在后台触发。
-        """
-        return self._entry_list_ctrl.get_security_summary()
 
     # ========== 事件处理 ==========
 
@@ -483,6 +489,8 @@ class _MainWindowFiltersMixin(QMainWindow):
         current_row = self._pending_selection
         # 取值后立即重置，避免 timer 再次触发时复用过期引用
         self._pending_selection = None
+        if self._locked_ui:
+            return
         if current_row is None:
             return
         # 后台刷新可能已重建列表，确认 pending 行仍是当前选中行；
@@ -578,14 +586,19 @@ class _MainWindowFiltersMixin(QMainWindow):
         if chosen is None:
             return
 
-        # 延迟解密：复制操作按需加载完整条目
+        # 延迟解密：复制操作按需加载完整条目。菜单打开期间可能触发自动锁定，
+        # 闭包内守卫避免锁定态访问已清零密钥
         def _copy_user():
+            if self._locked_ui:
+                return
             e = self._entry_mgr.get_entry(summary.id)
             if e and e.username:
                 self._clipboard.copy_text(e.username)
                 Toast.show(self, '已复制账号', Toast.SUCCESS, duration=MS_TOAST_SHORT)
 
         def _copy_pwd():
+            if self._locked_ui:
+                return
             e = self._entry_mgr.get_entry(summary.id)
             if e and e.password:
                 self._clipboard.copy_text(e.password)
@@ -596,6 +609,8 @@ class _MainWindowFiltersMixin(QMainWindow):
                 Toast.show(self, '已复制密码', Toast.SUCCESS, duration=MS_TOAST_SHORT)
 
         def _copy_totp():
+            if self._locked_ui:
+                return
             # 通过 EntryManager 生成验证码，UI 层不接触明文 TOTP secret
             code = self._entry_mgr.generate_totp(summary.id)
             if code:
@@ -655,6 +670,10 @@ class _MainWindowFiltersMixin(QMainWindow):
         dialog.exec()
 
     def _edit_entry(self, entry_id: int):
+        # 延迟回调（仪表盘 singleShot fix_requested）可能在锁定后触发，
+        # 守卫避免锁定态访问已清零密钥导致崩溃
+        if self._locked_ui:
+            return
         entry = self._entry_mgr.get_entry(entry_id)
         if not entry:
             return
@@ -681,6 +700,8 @@ class _MainWindowFiltersMixin(QMainWindow):
                 self._edit_entry(entry.id)
 
     def _delete_entry(self, entry_id: int):
+        if self._locked_ui:
+            return
         entry = self._entry_mgr.get_entry(entry_id)
         if not entry:
             return
@@ -695,6 +716,9 @@ class _MainWindowFiltersMixin(QMainWindow):
             entry_title = entry.title
 
             def undo():
+                # 撤销 Toast 存活期间可能已锁定，守卫避免锁定态崩溃
+                if self._locked_ui:
+                    return
                 # 校验条目仍在回收站：撤销 Toast 存活期间条目可能已被永久删除
                 current = self._entry_mgr.get_entry(entry_id)
                 if current is None or not current.is_deleted:

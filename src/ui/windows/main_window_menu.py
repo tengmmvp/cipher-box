@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt
@@ -35,6 +36,8 @@ from ..resources.icons import (
     UPLOAD,
     icon,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from PyQt6.QtCore import pyqtSignal
@@ -310,6 +313,9 @@ class _MainWindowMenuMixin(QMainWindow):
                     widget.activateWindow()
                     widget.raise_()
                     return
+            # 找不到登录窗（异常状态：app 应已显示登录窗）：记录告警，
+            # 避免用户点击托盘无反应且无任何反馈
+            logger.warning("托盘请求显示但未找到登录窗口")
             return
         self.showNormal()
         self.activateWindow()

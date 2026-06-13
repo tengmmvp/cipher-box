@@ -19,6 +19,7 @@ from ...crypto.totp import TOTPGenerator
 from ...exceptions import DecryptionError, EntryIntegrityError
 from ...models import (
     ENTRY_TYPES,
+    MAX_CUSTOM_FIELDS_PER_ENTRY,
     MAX_FIELD_NOTES,
     MAX_FIELD_PASSWORD,
     MAX_FIELD_TAGS,
@@ -803,6 +804,10 @@ class EntryManager:
             isinstance(field, CustomField) for field in entry.custom_fields
         ):
             raise ValueError('自定义字段结构无效')
+        if len(entry.custom_fields) > MAX_CUSTOM_FIELDS_PER_ENTRY:
+            raise ValueError(
+                f'自定义字段过多（最多 {MAX_CUSTOM_FIELDS_PER_ENTRY} 个）'
+            )
 
     @staticmethod
     def matches_search(entry, query: str) -> bool:

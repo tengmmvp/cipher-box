@@ -79,6 +79,8 @@ class MasterKeyManager:
             secure_zero_buffer 真正清零；PBKDF2 内部派生的中间 bytes
             依赖 GC 回收。
         """
+        if not isinstance(password, str):
+            raise TypeError(f'密码类型无效：期望 str，实际 {type(password).__name__}')
         cls._validate_salt(salt)
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),

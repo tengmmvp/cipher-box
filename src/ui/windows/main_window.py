@@ -529,6 +529,13 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             self._tray = None
 
     def _quit_app(self):
+        # 托盘退出：等待后台 worker 退出（避免 QThread running 析构崩溃），
+        # 清剪贴板明文，再关闭 vault——与 closeEvent 退出分支的清理对齐
+        wait_worker_shutdown(self._status_worker)
+        self._status_worker = None
+        wait_worker_shutdown(self._backup_worker)
+        self._backup_worker = None
+        self._clipboard.clear_now()
         self._vault.close()
         if self._tray:
             self._tray.hide()
@@ -592,7 +599,8 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         if self._config.get('close_to_tray', False) and self._tray:
             # 隐藏到托盘（非退出、非锁定）：清理详情面板瞬时明文并停选择定时器，
             # 等待后台 worker 退出避免隐藏后继续持密钥解密（业务层已支持协作取消，
-            # wait 通常短暂）。保持 vault 解锁、列表模型与备份/状态定时器，
+            # wait 通常短暂）。保持 vault 解锁、列表模型与备份/状态定时器；
+            # _lock_timer 仍运行，托盘态空闲超时会自动锁定（安全设计）。
             # 从托盘恢复时窗口立即可用；详情面板已清空，恢复后由用户重新选择条目。
             self._detail_panel.show_empty()
             self._clipboard.clear_now()

@@ -126,7 +126,7 @@ class SecurityAnalyzer:
         过期条目，避免重新解密全部密码，其中重复检测的 HMAC 计算是性能瓶颈。
         """
         with self._cache_lock:
-            current_count = self._vault.db.get_entry_count()
+            current_count = self._vault.db.get_entry_count(include_deleted=True)
             current_epoch = self._vault.key_epoch
             if (self._analysis_cache is not None
                     and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds

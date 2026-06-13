@@ -479,16 +479,18 @@ class ImportExportManager:
         items = data.get('entries', [])
         if not isinstance(items, list):
             raise ValueError('JSON 导入结构无效')
-        self._validate_items(items)
-        if not items:
-            return 0
-        # 校验每个元素是否为 dict，防止非 dict 类型触发难以定位的 AttributeError。
+        # 先校验每个元素为 dict，防止非 dict 触发 _validate_items 内 item.values()
+        # 的 AttributeError（绕过下方的友好提示）。
         non_dict = [i for i, item in enumerate(items) if not isinstance(item, dict)]
         if non_dict:
             raise ValueError(
                 f'JSON 条目列表中第 {non_dict[0] + 1} 项不是有效的对象'
             )
-        secrets_included = data.get('secrets_included', True) is not False
+        self._validate_items(items)
+        if not items:
+            return 0
+        # 上方 type(...) is not bool 检查已保证 secrets_included 为 bool
+        secrets_included = data['secrets_included']
 
         entries = [Entry.from_dict(item) for item in items]
         entries_data = [{'title': e.title, 'username': e.username} for e in entries]

@@ -214,14 +214,15 @@ class PasswordGenerator:
             score = min(score, 1)
             feedback.append('这是一个常见密码，极易被破解')
 
+        # 先 clamp 到 [0,4]，再应用重复惩罚：确保强密码（原始分 5-6）的重复
+        # 问题能实际降档，而非被最终 clamp 重新拉回 4。
+        score = min(4, max(0, score))
+
         # 有重复字符惩罚：降低 1 分，但不低于 0
         unique_ratio = len(set(password)) / len(password) if password else 0
         if unique_ratio < 0.4:
             score = max(0, score - 1)
             feedback.append('密码中重复字符过多')
-
-        # 最终 clamp：确保分数在 [0, 4] 范围内，labels 数组仅有 5 个元素
-        score = min(4, max(0, score))
 
         labels = ['非常弱', '弱', '一般', '强', '非常强']
         label = labels[score]
