@@ -33,7 +33,7 @@ def make_secret_field_row(
     """构建一个敏感字段行：掩码标签 + 显示/隐藏按钮 + 复制按钮。
 
     明文经 ``store[store_key]`` 间接引用，闭包不直接捕获 value，便于调用方
-    在切换条目或锁定时统一 ``secure_zero_str`` 清零。自动掩码 QTimer 追加到
+    在切换条目或锁定时统一 ``mark_secret_discarded`` 清零。自动掩码 QTimer 追加到
     ``timers``，由调用方持有以便统一停止。
 
     Args:

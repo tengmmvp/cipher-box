@@ -446,6 +446,10 @@ class ImportExportManager:
             importer: 在事务内调用的写入回调，通常为 ``_import_entries`` 的
                 部分应用。返回导入条目数。
         """
+        # epoch 守卫是冗余的防御层：真正的串行化由 db.transaction() 持有的数据库锁
+        # 保证（改密 _re_encrypt_all 同样经该锁串行），不会与导入并发写库。此处二次
+        # 校验 epoch 是纵深防御，避免未来若移除事务锁时静默引入竞态——切勿据此
+        # 误以为去掉事务锁后仅靠此守卫仍安全。
         pre_epoch = self._entry_mgr._vault.key_epoch
         with self._entry_mgr.db.transaction():
             current_epoch = self._entry_mgr._vault.key_epoch

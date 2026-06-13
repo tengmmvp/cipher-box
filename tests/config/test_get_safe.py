@@ -61,3 +61,13 @@ class TestGetSafeSecurityMinimums:
         """缺失的键返回默认值。"""
         cfg._config = {}
         assert cfg.get_safe('clipboard_clear_seconds', 30) == 30
+
+    def test_auto_lock_minutes_zero_clamped_when_integrity_compromised(self, cfg):
+        """完整性失败（被篡改/签名缺失）时，auto_lock=0 不再豁免，钳制到安全下限。
+
+        防止攻击者篡改配置禁用自动锁定：仅当完整性校验通过时，0 才作为合法的
+        "禁用"语义豁免；完整性可疑时 0 视为篡改，强制回到安全下限。
+        """
+        cfg._config = {'auto_lock_minutes': 0}
+        cfg._integrity_warning = True
+        assert cfg.get_safe('auto_lock_minutes', 5) == 1

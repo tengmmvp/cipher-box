@@ -72,9 +72,9 @@ def decrypt_field(
     except ValueError:
         if strict:
             raise
-        logger.debug(
-            "字段解密失败（容错模式）: crypto_id=%s field=%s",
-            crypto_id, field_name, exc_info=True,
+        logger.warning(
+            "字段解密失败（容错模式）: crypto_id=%s field=%s，密文可能损坏",
+            crypto_id, field_name,
         )
         return ''
 

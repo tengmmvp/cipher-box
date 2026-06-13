@@ -28,17 +28,22 @@ class MetadataSigner:
     def __init__(self, domain_key: bytes | None = None):
         self._domain_key = domain_key
 
-    def set_domain_key(self, key: bytes) -> None:
-        """设置预计算的域密钥，解锁或改密成功后调用。"""
-        self._domain_key = key
+    def set_domain_key(self, key: bytes | bytearray) -> None:
+        """设置预计算的域密钥，解锁或改密成功后调用。
+
+        统一以 bytearray 持有，使 _clear_vault_state 的 secure_zero_buffer 能
+        原地清零；传入不可变 bytes 时转为 bytearray 副本，避免清零失效。
+        compute_domain_key 已返回 bytearray，归一化对其为 no-op。
+        """
+        self._domain_key = key if isinstance(key, bytearray) else bytearray(key)
 
     @property
-    def domain_key(self) -> bytes | None:
+    def domain_key(self) -> bytearray | None:
         """当前域密钥，供 VaultManager 清零密钥时访问。"""
         return self._domain_key
 
     @domain_key.setter
-    def domain_key(self, value: bytes | None) -> None:
+    def domain_key(self, value: bytearray | None) -> None:
         self._domain_key = value
 
     @staticmethod

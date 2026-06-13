@@ -144,12 +144,16 @@ class Category:
             raise ValueError('分类颜色类型无效')
         if len(color) > 32:
             raise ValueError('分类颜色过长')
+        sort_order = data.get('sort_order', 0)
+        # 排除 bool（bool 是 int 子类），与 Entry.from_dict 的严格类型校验风格对齐
+        if not isinstance(sort_order, int) or isinstance(sort_order, bool):
+            raise ValueError('分类排序值类型无效，必须为整数')
         return cls(
             id=data.get('id'),
             name=name,
             icon_char=icon_char,
             color=color,
-            sort_order=data.get('sort_order', 0),
+            sort_order=sort_order,
             created_at=data.get('created_at', ''),
         )
 

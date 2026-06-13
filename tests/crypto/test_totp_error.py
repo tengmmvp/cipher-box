@@ -82,3 +82,19 @@ class TestTOTPErrorHandling:
         """period=0 的 URI 的 get_period 回退默认 30。"""
         uri = 'otpauth://totp/Test?secret=JBSWY3DPEHPK3PXP&period=0'
         assert TOTPGenerator.get_period(uri) == 30
+
+    # --- 算法优先级：secret 前缀 > URI algorithm > 默认值（见 _parse_config 文档）---
+
+    def test_parse_config_secret_prefix_overrides_uri_algorithm(self):
+        """secret 内嵌算法前缀优先于 URI algorithm 参数。"""
+        # URI 声明 SHA1，但 secret 内嵌 SHA256: 前缀 —— 前缀应胜出
+        uri = 'otpauth://totp/Test?secret=SHA256:JBSWY3DPEHPK3PXP&algorithm=SHA1'
+        result = TOTPGenerator._parse_config(uri, 'SHA1', 30, 6)  # type: ignore[arg-type]
+        assert result[0] == 'SHA256'  # algorithm
+        assert result[1] == 'JBSWY3DPEHPK3PXP'  # value
+
+    def test_parse_config_uri_algorithm_overrides_default(self):
+        """URI algorithm 参数优先于调用方传入的默认值。"""
+        uri = 'otpauth://totp/Test?secret=JBSWY3DPEHPK3PXP&algorithm=SHA512'
+        result = TOTPGenerator._parse_config(uri, 'SHA1', 30, 6)  # type: ignore[arg-type]
+        assert result[0] == 'SHA512'  # algorithm

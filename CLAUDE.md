@@ -10,7 +10,7 @@ CipherBox（密匣）是一个本地优先的加密密码管理器，使用 Pyth
 
 ```bash
 # 安装依赖
-pip install -r requirements.txt
+pip install -r requirements.lock
 
 # 启动应用
 python main.py

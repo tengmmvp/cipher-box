@@ -98,6 +98,7 @@ class ConfigManager:
         self._config_path = self._data_dir / 'config.json'
         self._config: dict = dict(DEFAULT_CONFIG)
         self._integrity_warning = False
+        self._integrity_reason: str | None = None
         self._lock = threading.RLock()
         self.load()
 
@@ -113,6 +114,7 @@ class ConfigManager:
         cfg._config = dict(DEFAULT_CONFIG)
         cfg._config['show_tray_icon'] = False
         cfg._integrity_warning = False
+        cfg._integrity_reason = None
         cfg._lock = threading.RLock()
         return cfg
 
@@ -132,6 +134,7 @@ class ConfigManager:
         """从文件加载配置"""
         with self._lock:
             self._integrity_warning = False
+            self._integrity_reason = None
             self._config = dict(DEFAULT_CONFIG)
             if self._config_path.exists():
                 try:
@@ -156,11 +159,14 @@ class ConfigManager:
                                 '将使用默认配置覆盖异常值。'
                             )
                             self._integrity_warning = True
+                            self._integrity_reason = 'mismatch'
                     else:
                         # 无签名行：攻击者删除签名即可绕过 HMAC 校验。容错加载
                         # （避免配置损坏导致无法启动），但 check_integrity 反映此风险，
-                        # 供调用方提示用户或触发重写带签名的配置。
+                        # 供调用方提示用户或触发重写带签名的配置。缺失签名比签名不符
+                        # 更可疑（主动删除篡改痕迹），以独立 reason 区分供调用方分级提示。
                         self._integrity_warning = True
+                        self._integrity_reason = 'missing'
                     saved = json.loads(json_text)
                     if not isinstance(saved, dict):
                         raise ValueError('配置文件根节点必须是对象')
@@ -178,6 +184,14 @@ class ConfigManager:
     def check_integrity(self) -> bool:
         """检查配置文件完整性是否通过。返回 False 表示可能被篡改。"""
         return not self._integrity_warning
+
+    @property
+    def integrity_reason(self) -> str | None:
+        """完整性失败原因：``'mismatch'`` 签名不符、``'missing'`` 签名行缺失，None 表示通过。
+
+        供调用方分级提示——缺失签名行比签名不符更可疑（主动删除篡改痕迹）。
+        """
+        return self._integrity_reason
 
     def save(self):
         """原子保存配置，避免异常退出留下半个 JSON 文件。"""
@@ -203,6 +217,11 @@ class ConfigManager:
                 # 异常时清理临时文件，避免残留含明文配置的 .tmp 孤儿文件
                 temp_path.unlink(missing_ok=True)
                 raise
+            # 成功写出带有效签名的配置，清除会话内的完整性告警状态：避免此前
+            # 检测到的篡改/缺失状态在 save 后仍粘滞，导致 get_safe 的 auto_lock
+            # 豁免被持续钳制而误伤合法用户，以及内存状态与磁盘实际不一致。
+            self._integrity_warning = False
+            self._integrity_reason = None
 
     def get(self, key: str, default: Any = None) -> Any:
         """获取配置项"""
@@ -222,8 +241,10 @@ class ConfigManager:
         value = self.get(key, default)
         if isinstance(value, int) and key in _SECURITY_MINIMUMS:
             minimum = _SECURITY_MINIMUMS[key]
-            # auto_lock_minutes=0 是合法的"禁用"语义，不受安全下限约束
-            if key == 'auto_lock_minutes' and value == 0:
+            # auto_lock_minutes=0 是合法的"禁用"语义，不受安全下限约束。
+            # 但仅在配置完整性通过时豁免：若配置已被篡改或签名缺失，0 视为可疑，
+            # 修正到安全下限，防止攻击者篡改配置文件以禁用自动锁定。
+            if key == 'auto_lock_minutes' and value == 0 and not self._integrity_warning:
                 return value
             if value < minimum:
                 logger.warning("配置 %s=%d 低于安全下限 %d，已修正", key, value, minimum)

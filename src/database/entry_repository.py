@@ -306,13 +306,14 @@ class EntryRepository:
         self._auto_commit()
 
     @_db_operation
-    def soft_delete_entry(self, entry_id: int) -> None:
-        """软删除条目。"""
+    def soft_delete_entry(self, entry_id: int) -> bool:
+        """软删除条目。返回是否实际执行（条目存在）。"""
         self._guard_write()
         now = utc_now_iso()
         entry = self._select_entry_for_sign(entry_id)
         if entry is None:
-            return
+            logger.warning("软删除条目 %d 失败：条目不存在", entry_id)
+            return False
         entry.is_deleted = True
         entry.deleted_at = now
         entry.metadata_mac = self._sign_entry(entry)
@@ -321,14 +322,16 @@ class EntryRepository:
             (now, entry.metadata_mac, entry_id),
         )
         self._auto_commit()
+        return True
 
     @_db_operation
-    def restore_entry(self, entry_id: int) -> None:
-        """恢复条目。"""
+    def restore_entry(self, entry_id: int) -> bool:
+        """恢复条目。返回是否实际执行（条目存在）。"""
         self._guard_write()
         entry = self._select_entry_for_sign(entry_id)
         if entry is None:
-            return
+            logger.warning("恢复条目 %d 失败：条目不存在", entry_id)
+            return False
         entry.is_deleted = False
         entry.deleted_at = ''
         entry.metadata_mac = self._sign_entry(entry)
@@ -337,6 +340,7 @@ class EntryRepository:
             (entry.metadata_mac, entry_id),
         )
         self._auto_commit()
+        return True
 
     @_db_operation
     def permanent_delete_entry(self, entry_id: int) -> None:

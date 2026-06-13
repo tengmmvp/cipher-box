@@ -66,7 +66,7 @@
 
 ```bash
 # 安装依赖
-pip install -r requirements.txt
+pip install -r requirements.lock
 
 # 启动应用
 python main.py

@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...utils.memory import secure_zero_str
+from ...utils.memory import mark_secret_discarded
 from ..resources.constants import BTN_COPY, FONT_FAMILY_MONOSPACE
 from ..resources.icons import COPY, set_icon
 from ..resources.theme_colors import c
@@ -90,11 +90,11 @@ class CustomFieldsRenderer:
     def clear(self):
         """安全清除所有值。"""
         for k in list(self._plain_values):
-            secure_zero_str(self._plain_values[k])
+            mark_secret_discarded(self._plain_values[k])
         self._plain_values.clear()
         self._plain_row_counter = 0
         for k in list(self._secret_values):
-            secure_zero_str(self._secret_values[k])
+            mark_secret_discarded(self._secret_values[k])
         self._secret_values.clear()
         self._secret_row_counter = 0
 

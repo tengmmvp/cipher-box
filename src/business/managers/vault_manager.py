@@ -7,6 +7,7 @@ import os
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -254,22 +255,28 @@ class VaultManager:
                 return False, '主密码错误'
 
             # 先完成全部元数据格式校验，再持有密钥，遵循最小暴露原则：
-            # 校验失败时 key 仅作局部变量，不写入 KeyManager 也不触发加密缓存
+            # 格式校验失败时 key 仅作局部变量，不写入 KeyManager 也不触发加密缓存。
             if meta['master_kdf'] != 'pbkdf2-sha256':
                 raise VaultLockedError('不支持的主密钥派生格式')
             if meta['ciphertext_format'] != EncryptionEngine.FORMAT_ID:
                 raise VaultLockedError('不支持的密文格式')
-            self._key = key
-            self._key_epoch = meta['key_epoch']
-            if not self._key_epoch:
+            key_epoch = meta['key_epoch']
+            if not key_epoch:
                 raise VaultLockedError('保险库缺少当前格式的密钥版本')
+            # snapshot_key_enc 用主密钥加密，_load_snapshot_key 须在主密钥设置后调用，
+            # 故无法进一步前置；其失败由下方 except 经 lock() 清零兜底（此时 key 已写入
+            # KeyManager，但 lock 会一并清零，状态最终一致）。
+            self._key = key
+            self._key_epoch = key_epoch
             self._is_unlocked = True
             self._signer.set_domain_key(MetadataSigner.compute_domain_key(key))
             self._load_snapshot_key(meta.get('snapshot_key_enc'))
             logger.info("解锁完成 (%.1fms)", (time.monotonic() - t0) * 1000)
             return True, ''
         except CipherBoxError:
-            # 格式校验失败时 key 是未写入 KeyManager 的局部 bytearray，主动清零
+            # key 可能已写入 KeyManager（_load_snapshot_key 在 _key 赋值后调用，
+            # snapshot_key 损坏时 key 已就位）。secure_zero_buffer 清零该 bytearray
+            # （KeyManager 持同一对象），随后的 lock() 统一清零全部密钥材料。
             key_local = locals().get('key')
             if key_local is not None:
                 secure_zero_buffer(key_local)
@@ -329,6 +336,19 @@ class VaultManager:
                 cb()
             except Exception:
                 logger.debug("锁定回调执行失败", exc_info=True)
+
+    @contextmanager
+    def vault_write_lock(self):
+        """获取保险库写锁，串行化接触全量明文的长操作（改密/重加密/备份/恢复）。
+
+        外部协作者（如 BackupRestoreManager）须通过此公共上下文访问锁，而非直接
+        访问受保护的 ``_lock``，使「持锁才能接触全量明文」契约显式化，避免重构
+        锁结构时静默破坏串行化保护。持锁期间可安全读取/重写全部条目明文，与
+        ``_change_master_password_locked`` 等内部长事务互斥，避免半完成状态
+        （部分新密钥/部分旧密钥）被并发读取。
+        """
+        with self._lock:
+            yield
 
     def change_master_password(
         self, old_password: str, new_password: str

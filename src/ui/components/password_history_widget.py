@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...utils.memory import secure_zero_str
+from ...utils.memory import mark_secret_discarded
 from ..resources.constants import BTN_COPY, FONT_FAMILY_MONOSPACE, MAX_HISTORY_DISPLAY
 from ..resources.icons import COPY, EYE, LOCK, set_icon
 from ..resources.theme_colors import c
@@ -103,7 +103,7 @@ class PasswordHistoryWidget(QWidget):
     def clear(self):
         """安全清除所有状态和密码。"""
         for p in self._history_passwords:
-            secure_zero_str(p)
+            mark_secret_discarded(p)
         self._history_passwords.clear()
         self._entry_mgr = None
 
@@ -152,7 +152,7 @@ class PasswordHistoryWidget(QWidget):
 
             def _on_hist_timeout(lbl=pwd_label, btn=show_btn):
                 # 仅重置显示，不清空槽位：历史密码需支持显示→隐藏→再显示，
-                # 与主密码字段一致；明文释放统一交给 clear() 的 secure_zero_str。
+                # 与主密码字段一致；明文释放统一交给 clear() 的 mark_secret_discarded。
                 lbl.setText('••••••••')
                 set_icon(btn, EYE)
 

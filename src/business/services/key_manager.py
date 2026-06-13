@@ -63,12 +63,12 @@ class KeyManager:
     def _to_bytearray(value):
         """确保密钥以 bytearray 持有，使 secure_zero_buffer 能真正原地清零。
 
-        bytearray 可变，直接返回原对象（有意为之：clear() 的 memset 原地擦除
-        该对象，test_clear_zeroes_bytearray_key_content 据此验证传入对象被清零；
-        读取方经 key/snapshot_key property 获得 bytes 副本，不受清零影响）；
-        bytes 不可变，转为 bytearray 副本持有，清零作用于该副本。
-        AESGCM 构造时仍会复制密钥到 OpenSSL C 层，该副本由
-        EncryptionEngine.clear_cache 间接管理。
+        所有权契约：传入的 bytearray 直接返回，所有权转移给 KeyManager——后续
+        clear() 会原地清零该对象，调用方此后不得继续使用传入的引用（若需保留
+        密钥应自行复制；key/snapshot_key property 读取始终返回 bytes 副本，不受
+        清零影响，test_clear_zeroes_bytearray_key_content 据此验证传入对象被清零）。
+        bytes 不可变，转为 bytearray 副本持有，清零作用于该副本。AESGCM 构造时
+        仍会复制密钥到 OpenSSL C 层，该副本由 EncryptionEngine.clear_cache 间接管理。
         """
         if value is None:
             return None

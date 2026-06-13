@@ -8,7 +8,7 @@ import logging
 import sqlite3
 from typing import Optional
 
-from ..models import Category, Entry
+from ..models import Category
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation
 
@@ -40,12 +40,6 @@ class CategoryRepository:
 
     def _auto_commit(self):
         return self._mgr.auto_commit()
-
-    def _sign_entry(self, entry: Entry) -> str:
-        return self._mgr.sign_entry(entry)
-
-    def transaction(self):
-        return self._mgr.transaction()
 
     # ==================== 分类 ====================
 

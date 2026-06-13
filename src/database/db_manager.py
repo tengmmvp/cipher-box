@@ -42,6 +42,10 @@ logger = logging.getLogger(__name__)
 SECURE_FILES_DEBOUNCE_SECONDS = 1.0
 
 
+# 加密列密文的格式自检字符集：cb: 前缀后为 base64 字符。
+_B64_CHARS = frozenset('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=')
+
+
 # 签名/验证函数的类型协议，替代弱类型 Callable
 @runtime_checkable
 class EntrySigner(Protocol):
@@ -96,7 +100,7 @@ class DatabaseManager:
         return self._lock
 
     @property
-    def entry_verifier(self):
+    def entry_verifier(self) -> EntryVerifier | None:
         """条目元数据校验函数。"""
         return self._entry_verifier
 
@@ -177,6 +181,10 @@ class DatabaseManager:
                     raise
                 return
 
+            # 与外层事务分支（上方 _conn is None 检查）保持异常契约一致：
+            # 连接已关闭时抛 DatabaseError，而非在下方 execute 处抛 AttributeError。
+            if self._conn is None:
+                raise DatabaseError("数据库未连接")
             self._guard_write()
             self._savepoint_counter += 1
             savepoint = f'"cipherbox_sp_{self._savepoint_counter}"'
@@ -225,7 +233,12 @@ class DatabaseManager:
         self._conn.execute("COMMIT")
         self._transaction_depth = 0
         self._savepoint_counter = 0
-        self._secure_database_files()
+        # 事务已成功提交；文件权限刷新是后续加固，失败不应让调用方误以为事务
+        # 失败而重试写入（WAL/SHM 可能因 checkpoint 暂不存在）。参照 secure_checkpoint 降级。
+        try:
+            self._secure_database_files()
+        except Exception:
+            logger.warning("提交后刷新数据库文件权限失败", exc_info=True)
 
     def rollback_transaction(self) -> None:
         """回滚事务。
@@ -259,15 +272,19 @@ class DatabaseManager:
         if not self.in_transaction and self._conn:
             try:
                 self._conn.commit()
-                now = _time.monotonic()
-                if now - self._last_secure_ts >= SECURE_FILES_DEBOUNCE_SECONDS:
-                    self._secure_database_files()
-                    self._last_secure_ts = now
             except Exception:
                 self._transaction_depth = 0
                 self._savepoint_counter = 0
                 logger.error("数据库提交失败", exc_info=True)
                 raise
+            now = _time.monotonic()
+            if now - self._last_secure_ts >= SECURE_FILES_DEBOUNCE_SECONDS:
+                # 提交已成功；权限刷新失败仅告警，不污染已成功的事务。
+                try:
+                    self._secure_database_files()
+                except Exception:
+                    logger.warning("提交后刷新数据库文件权限失败", exc_info=True)
+                self._last_secure_ts = now
 
     # ========== 连接管理 ==========
 
@@ -385,40 +402,59 @@ class DatabaseManager:
     # ==================== 内部方法 ====================
 
     def _assert_encrypted(self, value: str, field_name: str) -> None:
-        """防御性断言：加密列的值应为密文，以 cb: 前缀，或空字符串。
+        """格式自检（非密码学保证）：加密列须为 ``cb:`` 前缀的 base64 密文，或空。
 
-        防止绕过 EntryManager 直接调用 db.add_entry/update_entry 时
-        明文静默写入加密列。空值允许通过，未填写字段存储为空字符串。
+        仅校验密文形态以拦截明显的明文误写（明文常含 @、空格、下划线等非 base64
+        字符），不验证密文真实性——真正的认证由 GCM 认证标签在解密时完成。纯字母
+        数字的明文理论上能通过此字符集校验，但解密时会被 GCM 拒绝，故此处为防御性
+        编程提示而非安全边界。防止绕过 EntryManager 直接调用 db.add_entry/
+        update_entry 时明文静默落入加密列。空值允许通过，未填写字段存储为空字符串。
         读取实例级 _enforce_encrypted_fields，避免测试覆写泄漏到其他实例。
         """
-        if self._enforce_encrypted_fields and value and not value.startswith('cb:'):
-            raise ValueError(
-                f'数据层收到未加密的 {field_name}（期望 cb: 前缀的密文），'
-                f'请通过 EntryManager 操作条目'
-            )
+        if self._enforce_encrypted_fields and value:
+            tail = value[3:] if value.startswith('cb:') else ''
+            if not tail or not frozenset(tail).issubset(_B64_CHARS):
+                raise ValueError(
+                    f'数据层收到未加密或格式异常的 {field_name}'
+                    f'（期望 cb: 前缀的 base64 密文），请通过 EntryManager 操作条目'
+                )
 
     def _sign_entry(self, entry: Entry) -> str:
         if self._entry_signer:
             return self._entry_signer(entry)
         return entry.metadata_mac
 
-    # ==================== 委托方法 ====================
-    # DatabaseManager 作为统一数据访问入口，将所有公共方法委托给子 Repository。
-    #
-    # 下方委托方法分两类，便于阅读与维护：
-    # 1. 委托透传：方法体仅 ``return self._xxx_repo.method(...)``，无任何额外
-    #    编排逻辑，锁与事务由子 Repository 的 ``@_db_operation`` 各自管理。
-    #    这类方法占绝大多数，仅为 UI/Business 层提供单一入口点。
-    # 2. 跨表编排：方法体含显式事务与多 Repository 协调逻辑，因单表 Repository
-    #    不应跨表访问彼此私有方法。当前仅 delete_category 属此类，已以醒目
-    #    注释块标出，便于读者快速定位非透传逻辑。
+    # ==================== 委托与编排 ====================
+    # DatabaseManager 作为统一数据访问入口。纯透传方法（get_entries、add_category
+    # 等）在下方显式手写委托给子 Repository——保留显式委托而非 __getattr__ 动态
+    # 委托：Pyright 严格模式下动态委托会让调用方丢失返回类型推断。调用方既可
+    # 沿用 db.get_entries()（保留完整返回类型），也可经 db.entries /
+    # db.categories / db.schema 直接访问 Repository。仅当需要跨表事务编排
+    # （如 delete_category）时才在下方显式定义编排方法。
 
-    # -- 委托透传：Schema --
+    @property
+    def entries(self) -> EntryRepository:
+        """条目 Repository 的类型化直接访问入口。"""
+        return self._entry_repo
+
+    @property
+    def categories(self) -> CategoryRepository:
+        """分类 Repository 的类型化直接访问入口。"""
+        return self._category_repo
+
+    @property
+    def schema(self) -> SchemaManager:
+        """Schema 管理器的类型化直接访问入口。"""
+        return self._schema_mgr
+
+    # -- 委托透传：Schema / Categories --
+    # 保留显式类型化委托而非 __getattr__ 动态委托：Pyright 严格模式下动态委托
+    # 会让调用方丢失返回类型推断（reportAttributeAccessIssue / object 退化）。
+    # 上方 entries/categories/schema property 提供更直接的类型化访问路径，
+    # 新代码可优先使用。
 
     def init_tables(self) -> None:
         return self._schema_mgr.init_tables()
-
-    # -- 委托透传：Categories --
 
     def get_categories(self) -> list[Category]:
         return self._category_repo.get_categories()
@@ -438,9 +474,9 @@ class DatabaseManager:
     def get_category_entry_counts(self) -> dict[int, int]:
         return self._category_repo.get_category_entry_counts()
 
-    # ======== 跨表编排，非委托透传 ========
-    # 以下方法含显式事务与多 Repository 协调，锁与事务由本编排层统一管理，
-    # 与上方「委托透传」类方法区分。新增编排逻辑请保持此注释边界。
+    # ======== 跨表编排（非委托透传）========
+    # 以下方法含显式事务与多 Repository 协调，锁与事务由本编排层统一管理。
+    # 新增编排逻辑请保持此注释边界。
 
     def delete_category(self, category_id: int) -> None:
         """删除分类：事务内先解关联条目并重算签名，再删除分类行。
@@ -495,10 +531,10 @@ class DatabaseManager:
     def update_entries_batch(self, rows: list[tuple]) -> None:
         return self._entry_repo.update_entries_batch(rows)
 
-    def soft_delete_entry(self, entry_id: int) -> None:
+    def soft_delete_entry(self, entry_id: int) -> bool:
         return self._entry_repo.soft_delete_entry(entry_id)
 
-    def restore_entry(self, entry_id: int) -> None:
+    def restore_entry(self, entry_id: int) -> bool:
         return self._entry_repo.restore_entry(entry_id)
 
     def permanent_delete_entry(self, entry_id: int) -> None:

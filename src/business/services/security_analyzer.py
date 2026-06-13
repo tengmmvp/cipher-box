@@ -53,33 +53,45 @@ class SecurityAnalyzer:
     def _key(self) -> bytes:
         return require_vault_key(self._vault)
 
-    def _decrypt(self, raw: Entry, field_name: str, value: str) -> str:
+    def _decrypt(
+        self, raw: Entry, field_name: str, value: str, *,
+        strict: bool = False, key: bytes | None = None,
+    ) -> str:
         if not value:
             return ''
-        return decrypt_field(value, self._key, raw.crypto_id, field_name)
+        return decrypt_field(
+            value, key or self._key, raw.crypto_id, field_name, strict=strict
+        )
 
-    def _make_summary(self, raw: Entry) -> Entry:
+    def _make_summary(self, raw: Entry, key: bytes | None = None) -> Entry:
         """只返回分析界面所需字段，避免缓存敏感明文。
 
         Summary Entry 不含 password/notes/totp_secret/custom_fields 明文，
         仅包含 username，用于重复密码分组的展示。缓存中的 duplicate_groups
         因此不会暴露完整密码明文，仅有 username 和条目元数据。
 
-        后台线程直接解密 username 而非读 EntryManager 的无锁 _username_cache，
-        避免与 UI 线程并发读写该 dict 导致数据竞争。
+        后台线程每次 full_analysis 独立解密 username（不读 EntryManager 的
+        _username_cache），避免与 UI 线程并发读写该 dict 导致数据竞争。传入
+        ``key`` 复用调用方快照的主密钥，与 full_analysis 全程一致。username
+        解密用 strict=True：损坏时抛 ValueError 供调用方计入 skipped_count。
         """
-        username = self._decrypt(raw, 'username', raw.username)
+        username = self._decrypt(raw, 'username', raw.username, strict=True, key=key)
         return build_entry_summary(raw, username)
 
-    def _password_fingerprint(self, password: str) -> bytes:
+    def _password_fingerprint(self, password: str, key: bytes | None = None) -> bytes:
         """使用主密钥生成密码指纹，用于去重检测。
 
         权衡说明：使用主密钥意味着主密码变更后指纹失效，但缓存会在
         ``SECURITY_ANALYSIS_CACHE_TTL_SECONDS`` 秒 TTL 内自然淘汰。
         优点是无需额外存储独立 HMAC 密钥；指纹不出本进程，安全性
         依赖主密钥保护。
+
+        传入 ``key`` 复用调用方已获取的密钥副本，避免在批量分析中对每条密码
+        都经 ``self._key`` 触发一次密钥 bytes 复制，缩小主密钥驻留面。
         """
-        return hmac.digest(self._key, password.encode('utf-8'), 'sha256')
+        return hmac.digest(
+            key if key is not None else self._key, password.encode('utf-8'), 'sha256'
+        )
 
     def _refilter_cache(self, cache: dict, days: int) -> dict:
         """从缓存副本中按 days 重新过滤过期条目，并返回列表副本。
@@ -218,9 +230,12 @@ class SecurityAnalyzer:
         _summaries_with_dates: list[tuple] = []  # summary 与 changed_utc 的配对列表
 
         skipped_count = 0
+        # 循环外取一次主密钥副本，供重复检测的 HMAC 指纹复用，避免逐条密码都经
+        # self._key 触发 bytes 复制而累积主密钥驻留面。
+        vault_key = self._key
         for raw in entries:
             try:
-                summary = self._make_summary(raw)
+                summary = self._make_summary(raw, vault_key)
             except ValueError:
                 # 容错：跳过单条损坏条目，继续分析其余条目
                 logger.debug("安全分析跳过损坏条目 id=%s", raw.id, exc_info=True)
@@ -253,7 +268,9 @@ class SecurityAnalyzer:
 
             # 重复检测，需要解密密码以计算 HMAC 指纹
             try:
-                password = self._decrypt(raw, 'password', raw.password)
+                password = self._decrypt(
+                    raw, 'password', raw.password, strict=True, key=vault_key,
+                )
             except ValueError:
                 logger.debug("安全分析跳过损坏条目 id=%s，原因：密码解密失败", raw.id)
                 skipped_count += 1
@@ -261,7 +278,7 @@ class SecurityAnalyzer:
             if not password:
                 continue
 
-            fingerprint = self._password_fingerprint(password)
+            fingerprint = self._password_fingerprint(password, vault_key)
             del password  # 显式释放明文密码，缩短驻留时间
             password_map.setdefault(fingerprint, []).append(summary)
 

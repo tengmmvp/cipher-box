@@ -24,7 +24,9 @@ class TOTPGenerator:
         'SHA512': 'sha512',
     }
 
-    # 密钥前缀 -> 算法
+    # 密钥前缀 -> 算法。SHA1 不入表：它是默认算法，显式 ``SHA1:`` 前缀不被识别
+    # （_parse_secret 对无匹配前缀的密钥返回默认 'SHA1'，由 URI/调用方 algorithm 生效）。
+    # 注意：新增算法须同步 ALGO_MAP（上方）与此处，避免两表漂移。
     _PREFIX_MAP = {
         'SHA256:': 'SHA256',
         'SHA512:': 'SHA512',
@@ -56,7 +58,14 @@ class TOTPGenerator:
         period: int,
         digits: int,
     ) -> tuple[str, str, int, int]:
-        """解析 Base32、算法前缀或标准 otpauth URI。"""
+        """解析 Base32、算法前缀或标准 otpauth URI。
+
+        算法优先级（高 → 低）：secret 内嵌前缀（``SHA256:``/``SHA512:``） >
+        otpauth URI 的 ``algorithm`` 参数 > 调用方传入的 ``algorithm`` 默认值。
+        即当 secret 自带非 SHA1 前缀时，它覆盖 URI 与默认值；URI ``algorithm``
+        覆盖默认值。冲突场景（如 URI ``algorithm=SHA1`` 但 secret 带 ``SHA256:``
+        前缀）下，secret 前缀胜出。
+        """
         value = secret.strip()
         if value.lower().startswith('otpauth://'):
             parsed = urlparse(value)

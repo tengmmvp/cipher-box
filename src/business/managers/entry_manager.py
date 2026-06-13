@@ -454,17 +454,21 @@ class EntryManager:
         if notify:
             self._notify_entry_change(password_changed)
 
-    def delete_entry(self, entry_id: int):
-        """软删除条目，移入回收站。"""
-        self._vault.db.soft_delete_entry(entry_id)
+    def delete_entry(self, entry_id: int) -> bool:
+        """软删除条目，移入回收站。返回是否实际执行（条目存在）。"""
+        if not self._vault.db.soft_delete_entry(entry_id):
+            return False
         with self._cache_lock:
             self._totp_secret_cache.pop(entry_id, None)
         self._notify_entry_change()
+        return True
 
-    def restore_entry(self, entry_id: int):
-        """恢复条目"""
-        self._vault.db.restore_entry(entry_id)
+    def restore_entry(self, entry_id: int) -> bool:
+        """恢复条目。返回是否实际执行（条目存在）。"""
+        if not self._vault.db.restore_entry(entry_id):
+            return False
         self._notify_entry_change()
+        return True
 
     def permanent_delete_entry(self, entry_id: int):
         """永久删除条目"""
@@ -525,7 +529,7 @@ class EntryManager:
         # 检查解密失败的条目并记录警告
         for dec_entry in decrypted:
             if dec_entry.integrity_error:
-                logger.warning("条目 %d (%s) 解密存在异常", dec_entry.id, dec_entry.title)
+                logger.warning("条目 %d 解密存在异常", dec_entry.id)
 
         return decrypted
 

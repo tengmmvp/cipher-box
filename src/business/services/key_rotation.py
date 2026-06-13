@@ -131,17 +131,17 @@ class KeyRotationService:
                                 plain, new_key, raw_entry.crypto_id, field,
                             )
                             setattr(raw_entry, field, new_cipher)
-                            # custom_fields 与 custom_fields_enc 在 DB-raw 态同为密文 str，
-                            # 同步更新两者保持对象自洽，避免后续直接读 custom_fields_enc
-                            # 取到旧密钥密文。
+                            # custom_fields 与 custom_fields_enc 在 DB-raw 态同为密文 str。
+                            # 此赋值保持对象状态自洽（实际 DB 写入经 custom_fields_db_value
+                            # 读取，由上一行 setattr 生效）；冗余赋值便于审计对象一致性。
                             if field == 'custom_fields':
                                 raw_entry.custom_fields_enc = new_cipher
                             del plain
-                except ValueError:
+                except ValueError as exc:
                     logger.error("重加密中止：条目 id=%s 解密失败", raw_entry.id)
                     raise DecryptionError(
                         "某条目解密失败，数据可能已损坏。中止改密以保护数据完整性。"
-                    )
+                    ) from exc
 
                 mac = self._signer.sign_with_domain_key(raw_entry, precomputed_domain_key)
                 rows.append(ReEncryptedEntry(

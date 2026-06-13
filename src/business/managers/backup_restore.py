@@ -214,10 +214,10 @@ class BackupRestoreManager:
             salt = os.urandom(BACKUP_SALT_SIZE)
             # 持 vault 锁与改密重加密串行：避免后台备份读全量明文期间密钥被
             # 轮换，导致解密失败被静默跳过而产出残缺备份。
-            # 备份密钥也在锁内解析：snapshot_key 从 KeyManager 读取后立即复制
-            # 为 bytes，避免释放锁后、加密前主线程 lock() 清零 snapshot_key
-            # 的竞态窗口（锁定与自动备份后台线程竞态）。
-            with self._vault._lock:
+            # 备份密钥也在锁内解析：snapshot_key 在锁内读取（KeyManager.snapshot_key
+            # property 已返回独立 bytes 副本），避免释放锁后、加密前主线程 lock()
+            # 清零 snapshot_key 的竞态窗口（锁定与自动备份后台线程竞态）。
+            with self._vault.vault_write_lock():
                 data = self._collect_portable_data(cancel_check=cancel_check)
                 if data is None:
                     return False, '备份已取消'
@@ -228,7 +228,7 @@ class BackupRestoreManager:
                 elif use_snapshot_key:
                     flags = BackupFlag.SNAPSHOT
                     iterations = 0
-                    backup_key = bytes(self._vault.snapshot_key)
+                    backup_key = self._vault.snapshot_key
                 else:
                     raise ValueError('必须指定备份密码或使用快照密钥')
 
@@ -328,23 +328,24 @@ class BackupRestoreManager:
         if flags not in (BackupFlag.PASSWORD, BackupFlag.SNAPSHOT):
             return False, '备份文件格式无效或已损坏'
         iterations = struct.unpack('<I', iterations_raw)[0]
-        if flags == BackupFlag.PASSWORD:
-            if not backup_password:
-                return False, '请输入创建备份时设置的备份密码'
-            if not BACKUP_MIN_KDF_ITERATIONS <= iterations <= BACKUP_MAX_KDF_ITERATIONS:
-                return False, '备份密钥派生参数无效'
-            backup_key = self._derive_backup_key(backup_password, salt, iterations)
-        else:
-            if not self._vault.is_unlocked:
-                return False, '恢复快照备份需要先解锁保险库'
-            # 与 create_backup 一致：复制为独立 bytes，避免借用 KeyManager 内部对象，
-            # 防止后续若在锁外使用时与主线程清零 snapshot_key 产生竞态
-            backup_key = bytes(self._vault.snapshot_key)
-
         try:
-            # 持 vault 锁串行化恢复与改密/备份：从解密全量明文到写库全程持锁，
-            # 与 create_backup 的「持锁才接触全量明文」契约统一。
-            with self._vault._lock:
+            # 持 vault 写锁串行化恢复与改密/备份：从解密全量明文到写库全程持锁，
+            # 与 create_backup 的「持锁才接触全量明文」契约统一。经公共
+            # vault_write_lock 访问，不直接触碰受保护的 _lock。备份密钥（PASSWORD
+            # 派生 / SNAPSHOT 读取）也在锁内解析，与 create_backup 完全对称，消除
+            # SNAPSHOT 路径 is_unlocked 检查与读取之间主线程 lock() 清零 snapshot_key
+            # 的竞态窗口。
+            with self._vault.vault_write_lock():
+                if flags == BackupFlag.PASSWORD:
+                    if not backup_password:
+                        return False, '请输入创建备份时设置的备份密码'
+                    if not BACKUP_MIN_KDF_ITERATIONS <= iterations <= BACKUP_MAX_KDF_ITERATIONS:
+                        return False, '备份密钥派生参数无效'
+                    backup_key = self._derive_backup_key(backup_password, salt, iterations)
+                else:
+                    if not self._vault.is_unlocked:
+                        return False, '恢复快照备份需要先解锁保险库'
+                    backup_key = self._vault.snapshot_key
                 try:
                     # 内存特征：峰值约 3 倍载荷大小。
                     # encrypted 不超过 64MB，plaintext 不超过 32MB，外加 JSON 解析树，
@@ -380,12 +381,14 @@ class BackupRestoreManager:
                         del plaintext
                     if 'data' in locals():
                         del data
-            # 事务已提交，key_epoch 与 snapshot_key_enc 均已在同一事务内原子写入。
-            # 此处仅同步内存状态（不写库），消除事务外写库的崩溃窗口。
-            if new_epoch:
-                self._vault.update_key_epoch(new_epoch)
-            self._vault.apply_snapshot_key(new_snapshot_key)
-            # 轮换后清理旧 snapshot_key 加密的快照与恢复点以收缩泄漏面。
+                # 事务已提交，key_epoch 与 snapshot_key_enc 均已在同一事务内原子写入。
+                # 在释放 vault 锁前同步内存状态（不写库），既消除事务外写库的崩溃窗口，
+                # 也消除旧 snapshot_key 仍可被并发读取（snapshot_key property）的窗口。
+                if new_epoch:
+                    self._vault.update_key_epoch(new_epoch)
+                self._vault.apply_snapshot_key(new_snapshot_key)
+            # 锁外清理旧 snapshot_key 加密的快照与恢复点：仅 unlink 文件，不读取
+            # snapshot_key property，故无需持锁，减少锁持有时间。
             failed_purges = self._vault.purge_snapshot_backups()
             if failed_purges:
                 return True, (
@@ -394,10 +397,13 @@ class BackupRestoreManager:
                 )
             return True, ''
         finally:
-            # 确保 PASSWORD 派生的 backup_key 在所有退出路径（含文件过大、解密异常）都清零；
-            # SNAPSHOT 路径借用 snapshot_key 不清零。
+            # 确保 PASSWORD 派生的 backup_key 在所有退出路径（含密钥派生失败、文件
+            # 过大、解密异常）都清零；SNAPSHOT 路径借用 snapshot_key 不清零。
+            # backup_key 在 with 块内赋值，派生阶段异常时可能未定义，用 locals 兜底。
             if flags == BackupFlag.PASSWORD:
-                secure_zero_buffer(backup_key)
+                key = locals().get('backup_key')
+                if key is not None:
+                    secure_zero_buffer(key)
 
     @staticmethod
     def _validate_restore_data(data: dict):

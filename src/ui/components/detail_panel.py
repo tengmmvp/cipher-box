@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
 
 from ...models import Entry, Sensitive
 from ...utils.format import format_datetime
-from ...utils.memory import secure_zero_str
+from ...utils.memory import mark_secret_discarded
 from ..resources.constants import (
     BTN_COPY,
     BTN_ICON,
@@ -63,7 +63,7 @@ class DetailPanel(QWidget):
 
     安全说明，受 CPython 运行时限制：
     - 明文密码以 Python str 形式存储在 self._current_password 及闭包中。
-    - Python 字符串不可变，secure_zero_str 无法覆写原始对象内存。
+    - Python 字符串不可变，mark_secret_discarded 无法覆写原始对象内存。
     - _clear_content 通过置空引用与 del 缩短敏感数据的驻留时间。
     - 对主密码字段，_toggle 闭包从 self._current_password 读取而非直接
       捕获值，使 _clear_content 清空后闭包同样读到空值。
@@ -567,13 +567,13 @@ class DetailPanel(QWidget):
         self._copy_feedback_timers.clear()
         # 安全擦除主条目字段间接引用中的敏感值
         for k in list(self._secret_values_main):
-            secure_zero_str(self._secret_values_main[k])
+            mark_secret_discarded(self._secret_values_main[k])
         self._secret_values_main.clear()
         # 清除子组件状态
         self._totp_widget.clear()
         self._history_widget.clear()
         self._fields_renderer.clear()
-        secure_zero_str(self._current_password)
+        mark_secret_discarded(self._current_password)
         self._current_password = ''
         self._pwd_label_ref = None
         self._show_btn_ref = None
