@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
@@ -36,7 +37,7 @@ from ...business.services.security_analyzer import SecurityAnalyzer
 from ...config import ConfigManager
 from ...utils.clipboard import ClipboardManager
 from ..components.detail_panel import DetailPanel
-from ..components.entry_list_widget import EntryItemDelegate
+from ..components.entry_list_widget import EntryItemDelegate, EntryListModel
 from ..components.tray_icon import TrayIcon
 from ..components.workers import BackgroundWorker, wait_worker_shutdown
 from ..controllers.entry_list_controller import EntryListController
@@ -55,13 +56,11 @@ from ..resources.constants import (
     SPLITTER_SIZES,
     WINDOW_DEFAULT_SIZE,
     WINDOW_MIN_SIZE,
-    WORKER_WAIT_TIMEOUT_MS,
 )
 from ..resources.icons import (
     PLUS,
     SEARCH,
     SHIELD,
-    SIZE_SIDEBAR,
     icon,
     icon_pixmap,
     set_icon_with_text,
@@ -129,7 +128,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._select_timer.setSingleShot(True)
         self._select_timer.setInterval(MS_ENTRY_SELECT_DEBOUNCE)
         self._select_timer.timeout.connect(self._do_select_entry)
-        self._pending_selection: QListWidgetItem | None = None
+        self._pending_selection: int | None = None
 
         self._setup_ui()
         self._setup_menubar()
@@ -374,7 +373,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         for text, key, icon_name in filters:
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, key)
-            item.setIcon(icon(icon_name, size=SIZE_SIDEBAR))
+            item.setIcon(icon(icon_name))
             self._filter_list.addItem(item)
         if current_row >= 0:
             self._filter_list.setCurrentRow(current_row)
@@ -406,12 +405,18 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         # 条目列表，使用 QStackedWidget 切换列表和空状态
         self._list_stack = QStackedWidget()
 
-        self._entry_list = QListWidget()
+        # Model/View：QListView + EntryListModel 替代 QListWidget，
+        # set_entries 一次替换数据，视图按需经 delegate 绘制，消除逐项 item 创建。
+        self._entry_list = QListView()
+        self._entry_list.setObjectName('entryList')
+        self._entry_model = EntryListModel(self._entry_list)
+        self._entry_list.setModel(self._entry_model)
         self._entry_delegate = EntryItemDelegate(self._entry_list)
         self._entry_list.setItemDelegate(self._entry_delegate)
         self._entry_list.setUniformItemSizes(True)
         self._entry_list.setAlternatingRowColors(True)
-        self._entry_list.currentItemChanged.connect(self._on_entry_selected)
+        # QListView 无 currentItemChanged，改用 selectionModel 的 currentChanged
+        self._entry_list.selectionModel().currentChanged.connect(self._on_entry_selected)  # pyright: ignore[reportOptionalMemberAccess]
         self._entry_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._entry_list.customContextMenuRequested.connect(self._on_entry_context_menu)
         self._list_stack.addWidget(self._entry_list)
@@ -556,7 +561,6 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             self._apply_sidebar_inline_styles()
             self._warning_label.setStyleSheet(f'color: {c("warning")}; font-size: 12px;')
             self._brand_icon.setPixmap(icon_pixmap(SHIELD, 'accent', 24))
-            self._detail_panel.refresh_theme()
             if self._tray:
                 self._tray.set_locked(False)
             # 主题切换时数据未变，只需强制重绘列表控件
@@ -598,18 +602,21 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
 
         if self._config.get('close_to_tray', False) and self._tray:
             self._clipboard.clear_now()
-            a0.ignore()
-            self.hide()
-        else:
-            # 退出前取消后台 worker，先 cancel 两者再分别 wait 以并行等待
+            # 隐藏到托盘（非退出）也请求取消后台 worker，避免托盘隐藏后备份 worker
+            # 仍持有密钥解密。仅 cancel 不 wait，保持 UI 隐藏即时响应。
             if self._status_worker and self._status_worker.isRunning():
                 self._status_worker.cancel()
             if self._backup_worker and self._backup_worker.isRunning():
                 self._backup_worker.cancel()
-            if self._status_worker and self._status_worker.isRunning():
-                self._status_worker.wait(WORKER_WAIT_TIMEOUT_MS)
-            if self._backup_worker and self._backup_worker.isRunning():
-                self._backup_worker.wait(WORKER_WAIT_TIMEOUT_MS)
+            a0.ignore()
+            self.hide()
+        else:
+            # 完全退出：统一用 wait_worker_shutdown 取消并等待后台 worker 结束，
+            # 与 prepare_for_lock 的关闭模式一致，确保退出前 worker 不再持有密钥。
+            wait_worker_shutdown(self._status_worker)
+            self._status_worker = None
+            wait_worker_shutdown(self._backup_worker)
+            self._backup_worker = None
             # 完全退出时清除剪贴板中的明文密码，防止应用关闭后残留
             self._clipboard.clear_now()
             self._vault.close()
@@ -665,7 +672,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._select_timer.stop()
         self._pending_selection = None
         # 清空条目列表，移除对 Entry 对象的引用
-        self._entry_list.clear()
+        self._entry_model.set_entries([])
         # 安全清除详情面板中的敏感数据和信号连接
         self._detail_panel.secure_clear()
         # 清除剪贴板中的明文

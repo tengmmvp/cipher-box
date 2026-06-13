@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
@@ -201,8 +202,11 @@ class SettingsDialog(QDialog):
         self._auto_backup_check.toggled.connect(self._update_backup_options)
         layout.addWidget(auto_group)
 
-        hint = QPushButton('手动备份可跨安装恢复；自动快照仅用于当前保险库。')
-        hint.setEnabled(False)
+        # 用 QLabel 而非禁用的 QPushButton 承载提示文本：语义正确，避免屏幕阅读器
+        # 将其识别为禁用按钮。objectName 供 QSS 控制为弱化提示色。
+        hint = QLabel('手动备份可跨安装恢复；自动快照仅用于当前保险库。')
+        hint.setObjectName('hintLabel')
+        hint.setWordWrap(True)
         layout.addWidget(hint)
 
         layout.addStretch()

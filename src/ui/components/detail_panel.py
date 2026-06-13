@@ -48,6 +48,7 @@ from ..resources.icons import (
 from ..resources.theme_colors import c, get_strength_color
 from .custom_fields_renderer import CustomFieldsRenderer
 from .password_history_widget import PasswordHistoryWidget
+from .secret_field import make_secret_field_row
 from .totp_widget import TOTPWidget
 from .widgets import clear_layout
 
@@ -470,6 +471,21 @@ class DetailPanel(QWidget):
             value: 字段值
             main_password: 仅用于主密码字段，追踪引用并使用全局自动隐藏定时器
         """
+        if not main_password:
+            # 非主密码敏感字段复用共享构建逻辑（与 CustomFieldsRenderer 一致），
+            # 明文按 label 键存入 _secret_values_main，切换/锁定时统一清零。
+            return make_secret_field_row(
+                label, value,
+                store=self._secret_values_main,
+                store_key=label,
+                timers=self._field_hide_timers,
+                parent_widget=self,
+                get_pwd_visible_ms=self._get_pwd_visible_ms,
+                on_copy=self._copy_with_feedback,
+                on_copy_feedback=self.copy_feedback.emit,
+            )
+        # 主密码字段：使用全局 _pwd_hide_timer 与 _current_password 独立引用，
+        # 不复用共享逻辑（共享逻辑为每行使用独立 QTimer）。
         name_label = QLabel(f'{label}：')
         name_label.setObjectName('fieldLabel')
 
@@ -487,43 +503,20 @@ class DetailPanel(QWidget):
         show_btn.setFixedSize(*BTN_COPY)
         show_btn.setToolTip('显示/隐藏')
 
-        if main_password:
-            self._pwd_label_ref = val_label
-            self._show_btn_ref = show_btn
-            self._current_password = value
-            field_timer = None
-        else:
-            # 非主密码敏感字段，使用独立的间接引用字典。
-            # 明文需保留至条目显示周期结束，以支持显示→隐藏→再显示的反复切换；
-            # 切换条目或锁定时由 _clear_content 调 secure_zero_str 统一清零，
-            # 与主密码字段 _current_password 的驻留策略一致。
-            self._secret_values_main[label] = value
-            field_timer = QTimer(self)
-            field_timer.setSingleShot(True)
-            field_timer.timeout.connect(
-                lambda lbl=val_label, btn=show_btn: (
-                    lbl.setText('••••••••'), set_icon(btn, EYE),
-                )
-            )
-            self._field_hide_timers.append(field_timer)
+        self._pwd_label_ref = val_label
+        self._show_btn_ref = show_btn
+        self._current_password = value
 
-        def _toggle(_checked=False, lbl=val_label, btn=show_btn,
-                    is_main=main_password, key=label, timer=field_timer):
-            pwd = self._current_password if is_main else self._secret_values_main.get(key, '')
+        def _toggle(_checked=False, lbl=val_label, btn=show_btn):
+            pwd = self._current_password
             if lbl.text() == '••••••••':
                 lbl.setText(pwd)
                 set_icon(btn, LOCK)
-                if is_main:
-                    self._pwd_hide_timer.start(self._get_pwd_visible_ms())
-                elif timer is not None:
-                    timer.start(self._get_pwd_visible_ms())
+                self._pwd_hide_timer.start(self._get_pwd_visible_ms())
             else:
                 lbl.setText('••••••••')
                 set_icon(btn, EYE)
-                if is_main:
-                    self._pwd_hide_timer.stop()
-                elif timer is not None:
-                    timer.stop()
+                self._pwd_hide_timer.stop()
 
         show_btn.clicked.connect(_toggle)
         row_layout.addWidget(show_btn)
@@ -534,9 +527,8 @@ class DetailPanel(QWidget):
         copy_btn.setFixedSize(*BTN_COPY)
         copy_btn.setToolTip('复制密码')
 
-        def _copy_secret(_checked=False, is_main=main_password, key=label, btn=copy_btn):
-            pwd = self._current_password if is_main else self._secret_values_main.get(key, '')
-            self._copy_with_feedback(btn, pwd)
+        def _copy_secret(_checked=False, btn=copy_btn):
+            self._copy_with_feedback(btn, self._current_password)
 
         copy_btn.clicked.connect(_copy_secret)
         copy_btn.clicked.connect(self.copy_feedback.emit)
@@ -588,7 +580,7 @@ class DetailPanel(QWidget):
         self._clear_layout(self._content_layout)
         logger.debug("详情面板内容已清除")
         # _clear_layout 通过 deleteLater 销毁所有子控件，将引用置空
-        # 以便 refresh_theme 用 is not None 检查控件存活状态。
+        # 以避免对已销毁控件留下悬空引用。
         self._empty_label = None
 
     @staticmethod
@@ -634,12 +626,3 @@ class DetailPanel(QWidget):
                 pass
         self._signal_connections.clear()
         self.show_empty()
-
-    def refresh_theme(self):
-        """主题刷新钩子。
-
-        本面板的静态主题样式已迁移至 QSS 选择器（detailTitle/detailDivider/
-        detailEmpty 等），主题切换时由 app.setStyleSheet 统一刷新，无需手动重设。
-        保留方法以兼容 _apply_theme 的调用约定；数据驱动的动态内联样式
-        （强度条颜色）由 show_entry(force=True) 重建刷新。
-        """

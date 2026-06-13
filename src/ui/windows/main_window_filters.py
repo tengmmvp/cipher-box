@@ -12,12 +12,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QModelIndex, Qt
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QListWidgetItem, QMainWindow, QMenu, QMessageBox
 
 from ..components.empty_state_widget import EmptyStateWidget
-from ..components.entry_list_widget import EntryItemDelegate
 from ..components.toast import Toast
 from ..components.workers import BackgroundWorker
 from ..dialogs.category_dialog import CategoryDialog
@@ -41,8 +40,6 @@ from ..resources.icons import (
     EMPTY_VAULT,
     FOLDER,
     REFRESH,
-    SIZE_MENU,
-    SIZE_SIDEBAR,
     STAR,
     STAR_OUTLINE,
     icon,
@@ -54,6 +51,7 @@ if TYPE_CHECKING:
         QComboBox,
         QLabel,
         QLineEdit,
+        QListView,
         QListWidget,
         QStackedWidget,
         QStatusBar,
@@ -64,6 +62,7 @@ if TYPE_CHECKING:
     from ...config import ConfigManager
     from ...utils.clipboard import ClipboardManager
     from ..components.detail_panel import DetailPanel
+    from ..components.entry_list_widget import EntryListModel
     from ..controllers.entry_list_controller import EntryListController as _EntryListController
     from ..controllers.sidebar_controller import SidebarController as _SidebarController
 
@@ -100,7 +99,8 @@ class _MainWindowFiltersMixin(QMainWindow):
     _search_timer: QTimer
     _select_timer: QTimer
     _search_edit: QLineEdit
-    _entry_list: QListWidget
+    _entry_list: QListView
+    _entry_model: EntryListModel
     _category_list: QListWidget
     _tag_combo: QComboBox
     _sort_combo: QComboBox
@@ -112,7 +112,7 @@ class _MainWindowFiltersMixin(QMainWindow):
     _current_category_id: int | None
     _current_search: str
     _current_tag: str
-    _pending_selection: QListWidgetItem | None
+    _pending_selection: int | None
     _cached_categories: list
     _cached_tag_names: list[str]
     _cached_total_entries: int
@@ -158,7 +158,7 @@ class _MainWindowFiltersMixin(QMainWindow):
 
         all_item = QListWidgetItem('全部分类')
         all_item.setData(Qt.ItemDataRole.UserRole, None)
-        all_item.setIcon(icon(FOLDER, size=SIZE_SIDEBAR))
+        all_item.setIcon(icon(FOLDER))
         self._category_list.addItem(all_item)
 
         categories = self._sidebar_ctrl.get_categories()
@@ -238,8 +238,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         should_restore_position = (saved_filter == current_filter)
         self._last_refresh_filter = current_filter
         saved_scroll = self._entry_list.verticalScrollBar().value() if should_restore_position else 0  # pyright: ignore[reportOptionalMemberAccess]
-        saved_row = self._entry_list.currentRow() if should_restore_position else -1
-        self._entry_list.clear()
+        saved_row = self._entry_list.currentIndex().row() if should_restore_position else -1
 
         entries, title = self._fetch_for_filter(self._current_filter)
         # 分类筛选下显示分类名作为标题，而非 fetcher 默认的「全部条目」
@@ -266,14 +265,13 @@ class _MainWindowFiltersMixin(QMainWindow):
         if truncated:
             entries = entries[:_MAX_SEARCH_RESULTS_DISPLAY]
 
-        for entry in entries:
-            item = QListWidgetItem(self._entry_list)
-            item.setSizeHint(QSize(0, EntryItemDelegate.ROW_HEIGHT))
-            item.setData(Qt.ItemDataRole.UserRole, entry)
+        # Model/View：一次替换全部数据，QListView 按需经 delegate 绘制，
+        # 不再为每条创建常驻 QListWidgetItem，降低大库刷新开销与内存占用。
+        self._entry_model.set_entries(entries)
 
         # 恢复滚动位置和选中行，仅在过滤器未变时恢复，避免切换后跳到旧位置
-        if should_restore_position and not self._current_search and 0 <= saved_row < self._entry_list.count():
-            self._entry_list.setCurrentRow(saved_row)
+        if should_restore_position and not self._current_search and 0 <= saved_row < self._entry_model.rowCount():
+            self._entry_list.setCurrentIndex(self._entry_model.index(saved_row))
         if should_restore_position:
             self._entry_list.verticalScrollBar().setValue(saved_scroll)  # pyright: ignore[reportOptionalMemberAccess]
 
@@ -472,8 +470,8 @@ class _MainWindowFiltersMixin(QMainWindow):
             self._refresh_entries()
 
     def _on_entry_selected(self, current, _previous):
-        if current:
-            self._pending_selection = current
+        if current.isValid():
+            self._pending_selection = current.row()
             self._select_timer.start()
 
     def _do_select_entry(self):
@@ -483,17 +481,18 @@ class _MainWindowFiltersMixin(QMainWindow):
         重建列表，使该条目被删除或替换，此时不应再用其 id 解密显示，避免
         详情面板与列表当前选中不一致。
         """
-        current = self._pending_selection
+        current_row = self._pending_selection
         # 取值后立即重置，避免 timer 再次触发时复用过期引用
         self._pending_selection = None
-        if current is None:
+        if current_row is None:
             return
-        # 后台刷新可能已重建列表，确认 pending 项仍是当前选中项；
+        # 后台刷新可能已重建列表，确认 pending 行仍是当前选中行；
         # 失败说明选中已改变，清空详情面板避免残留与列表不一致的旧条目
-        if self._entry_list.currentItem() is not current:
+        idx = self._entry_list.currentIndex()
+        if idx.row() != current_row:
             self._detail_panel.show_empty()
             return
-        summary = current.data(Qt.ItemDataRole.UserRole)
+        summary = idx.data(Qt.ItemDataRole.UserRole)
         if summary:
             entry = self._entry_mgr.get_entry(summary.id)
             if entry:
@@ -503,11 +502,11 @@ class _MainWindowFiltersMixin(QMainWindow):
 
     def _on_entry_context_menu(self, pos):
         """条目右键菜单 — 路由到已删除/活跃条目子菜单"""
-        item = self._entry_list.itemAt(pos)
-        if not item:
+        index = self._entry_list.indexAt(pos)
+        if not index.isValid():
             return
 
-        summary = item.data(Qt.ItemDataRole.UserRole)
+        summary = index.data(Qt.ItemDataRole.UserRole)
         if not summary:
             return
         if summary.is_deleted:
@@ -519,10 +518,10 @@ class _MainWindowFiltersMixin(QMainWindow):
         """回收站条目右键菜单"""
         menu = QMenu(self)
         restore_act = QAction('恢复', self)
-        restore_act.setIcon(icon(REFRESH, size=SIZE_MENU))
+        restore_act.setIcon(icon(REFRESH))
         menu.addAction(restore_act)
         delete_act = QAction('永久删除', self)
-        delete_act.setIcon(icon(CLOSE, 'danger', size=SIZE_MENU))
+        delete_act.setIcon(icon(CLOSE, 'danger'))
         menu.addAction(delete_act)
 
         chosen = menu.exec(self._entry_list.mapToGlobal(pos))
@@ -546,34 +545,34 @@ class _MainWindowFiltersMixin(QMainWindow):
         menu = QMenu(self)
 
         copy_user_act = QAction('复制账号', self)
-        copy_user_act.setIcon(icon(COPY, size=SIZE_MENU))
+        copy_user_act.setIcon(icon(COPY))
         menu.addAction(copy_user_act)
         copy_pwd_act = QAction('复制密码', self)
-        copy_pwd_act.setIcon(icon(COPY, size=SIZE_MENU))
+        copy_pwd_act.setIcon(icon(COPY))
         menu.addAction(copy_pwd_act)
 
         # TOTP 验证码：仅当条目配置了 TOTP 密钥时显示
         copy_totp_act: QAction | None = None
         if summary.has_totp:
             copy_totp_act = QAction('复制验证码', self)
-            copy_totp_act.setIcon(icon(COPY, size=SIZE_MENU))
+            copy_totp_act.setIcon(icon(COPY))
             menu.addAction(copy_totp_act)
 
         menu.addSeparator()
         edit_act = QAction('编辑', self)
-        edit_act.setIcon(icon(EDIT, size=SIZE_MENU))
+        edit_act.setIcon(icon(EDIT))
         menu.addAction(edit_act)
         if summary.is_favorite:
             fav_act = QAction('取消收藏', self)
-            fav_act.setIcon(icon(STAR_OUTLINE, size=SIZE_MENU))
+            fav_act.setIcon(icon(STAR_OUTLINE))
             menu.addAction(fav_act)
         else:
             fav_act = QAction('收藏', self)
-            fav_act.setIcon(icon(STAR, size=SIZE_MENU))
+            fav_act.setIcon(icon(STAR))
             menu.addAction(fav_act)
         menu.addSeparator()
         del_act = QAction('删除', self)
-        del_act.setIcon(icon(DELETE, size=SIZE_MENU))
+        del_act.setIcon(icon(DELETE))
         menu.addAction(del_act)
 
         chosen = menu.exec(self._entry_list.mapToGlobal(pos))
@@ -635,11 +634,11 @@ class _MainWindowFiltersMixin(QMainWindow):
         edit_act = menu.addAction('编辑分类')
         if edit_act is None:
             return
-        edit_act.setIcon(icon(EDIT, size=SIZE_MENU))
+        edit_act.setIcon(icon(EDIT))
         delete_act = menu.addAction('删除分类')
         if delete_act is None:
             return
-        delete_act.setIcon(icon(DELETE, size=SIZE_MENU))
+        delete_act.setIcon(icon(DELETE))
         action = menu.exec(self._category_list.mapToGlobal(pos))
 
         if action == edit_act:
@@ -676,9 +675,9 @@ class _MainWindowFiltersMixin(QMainWindow):
 
     def _edit_selected_entry(self):
         """快捷键：编辑当前选中条目"""
-        current = self._entry_list.currentItem()
-        if current:
-            entry = current.data(Qt.ItemDataRole.UserRole)
+        idx = self._entry_list.currentIndex()
+        if idx.isValid():
+            entry = idx.data(Qt.ItemDataRole.UserRole)
             if entry:
                 self._edit_entry(entry.id)
 
@@ -712,9 +711,9 @@ class _MainWindowFiltersMixin(QMainWindow):
 
     def _delete_selected_entry(self):
         """快捷键：删除当前选中条目"""
-        current = self._entry_list.currentItem()
-        if current:
-            entry = current.data(Qt.ItemDataRole.UserRole)
+        idx = self._entry_list.currentIndex()
+        if idx.isValid():
+            entry = idx.data(Qt.ItemDataRole.UserRole)
             if entry and not entry.is_deleted:
                 self._delete_entry(entry.id)
 
@@ -730,7 +729,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         if self._search_edit.text():
             self._search_edit.clear()
         else:
-            self._entry_list.setCurrentRow(-1)
+            self._entry_list.setCurrentIndex(QModelIndex())
             self._detail_panel.show_empty()
 
     # ========== 分类管理 ==========

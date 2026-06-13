@@ -49,15 +49,15 @@ class CustomField:
     value: str
     field_type: str = 'text'  # text, password, url, email
 
+    # 允许的自定义字段类型
+    _VALID_FIELD_TYPES = frozenset({'text', 'password', 'url', 'email'})
+
     def to_dict(self) -> dict:
         return {
             'name': self.name,
             'value': self.value,
             'field_type': self.field_type,
         }
-
-    # 允许的自定义字段类型
-    _VALID_FIELD_TYPES = frozenset({'text', 'password', 'url', 'email'})
 
     @classmethod
     def from_dict(cls, d: dict, *, strict: bool = False) -> 'CustomField':
@@ -280,7 +280,10 @@ class Entry:
         """
         self.assert_decrypted()
         custom_fields = self.custom_fields
-        assert isinstance(custom_fields, list)
+        # assert_decrypted 已保证已解密；isinstance 兼作类型收窄（供静态分析）
+        # 与运行时防御（不受 python -O 影响，替代原 assert）。
+        if not isinstance(custom_fields, list):
+            raise TypeError('custom_fields 必须为已解密的列表')
         d = {
             'title': self.title,
             'username': self.username,

@@ -5,7 +5,7 @@
 并在主题切换时清空颜色缓存以重新解析。
 """
 
-from PyQt6.QtCore import QModelIndex, QRectF, QSize, Qt
+from PyQt6.QtCore import QAbstractItemModel, QModelIndex, QRectF, QSize, Qt
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
@@ -39,6 +39,48 @@ def _resolve_font_family() -> str:
 _RESOLVED_FONT_FAMILY: str | None = None  # 延迟解析，首次 paint 时确定
 
 
+class EntryListModel(QAbstractItemModel):
+    """条目列表数据模型，按需向 delegate 提供 Entry 摘要。
+
+    替代 QListWidget + 逐项 QListWidgetItem：``set_entries`` 一次替换全部数据，
+    QListView 仅对可见行调用 ``data()``/``paint``，避免为每条目创建常驻 item
+    对象，降低大库下的内存占用与刷新开销。Entry 摘要仍整体存于模型（加密字段
+    无法 SQL 过滤，需内存匹配），但 item 对象开销与逐项 setData 消除。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._entries: list = []
+
+    def set_entries(self, entries: list) -> None:
+        """整体替换条目数据，触发视图按需重绘。"""
+        self.beginResetModel()
+        self._entries = list(entries)
+        self.endResetModel()
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self._entries)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: ARG002
+        return 1
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or role != Qt.ItemDataRole.UserRole:
+            return None
+        row = index.row()
+        if 0 <= row < len(self._entries):
+            return self._entries[row]
+        return None
+
+    def index(self, row: int, column: int = 0, parent: QModelIndex = QModelIndex()) -> QModelIndex:
+        if not self.hasIndex(row, column, parent):
+            return QModelIndex()
+        return self.createIndex(row, column)
+
+    def parent(self, child: QModelIndex) -> QModelIndex:  # noqa: ARG002  # pyright: ignore[reportIncompatibleMethodOverride]
+        return QModelIndex()
+
+
 class EntryItemDelegate(QStyledItemDelegate):
     """按需绘制条目卡片，避免为每条记录创建常驻 QWidget。"""
 
@@ -62,6 +104,11 @@ class EntryItemDelegate(QStyledItemDelegate):
         super().__init__(parent)
         self._color_cache: dict[str, str] = {}
         self._font_cache: dict[tuple, QFont] = {}
+        # 构造时即解析主字体族，避免 paint 路径惰性初始化在并发绘制时竞态
+        # （_RESOLVED_FONT_FAMILY 为模块级可变状态）。
+        global _RESOLVED_FONT_FAMILY
+        if _RESOLVED_FONT_FAMILY is None:
+            _RESOLVED_FONT_FAMILY = _resolve_font_family()
 
     def _get_font(self, family: str, size: int, weight: int = -1) -> QFont:
         """获取 QFont，带缓存避免 paint() 重复创建。"""

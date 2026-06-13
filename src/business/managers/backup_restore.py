@@ -348,7 +348,7 @@ class BackupRestoreManager:
                 self._validate_restore_data(data)
                 restore_path = self._create_restore_point()
                 try:
-                    new_epoch = self._restore_data(data)
+                    new_epoch, new_snapshot_key = self._restore_data(data)
                 except Exception:
                     # 恢复失败时清理刚创建的恢复点，避免反复尝试时占用磁盘空间。
                     if restore_path is not None:
@@ -362,13 +362,12 @@ class BackupRestoreManager:
                         del plaintext
                     if 'data' in locals():
                         del data
-            # 事务已提交。同步内存中的 key_epoch，使当前会话的写入守卫识别新 epoch。
+            # 事务已提交，key_epoch 与 snapshot_key_enc 均已在同一事务内原子写入。
+            # 此处仅同步内存状态（不写库），消除原事务外 set_snapshot_key 的崩溃窗口。
             if new_epoch:
                 self._vault.update_key_epoch(new_epoch)
-            # 轮换 snapshot_key 收缩泄漏面（与改密一致）：恢复整体替换数据后，
-            # 旧 snapshot_key 加密的快照含恢复前明文，轮换并清理使其失效。
-            new_snapshot_key = os.urandom(32)
-            self._vault.set_snapshot_key(new_snapshot_key)
+            self._vault.apply_snapshot_key(new_snapshot_key)
+            # 轮换后清理旧 snapshot_key 加密的快照与恢复点以收缩泄漏面。
             failed_purges = self._vault.purge_snapshot_backups()
             if failed_purges:
                 return True, (
@@ -608,10 +607,15 @@ class BackupRestoreManager:
             return 0
         return sum(1 for _ in directory.glob('pre_restore_*.cbox'))
 
-    def _restore_data(self, data: dict):
+    def _restore_data(self, data: dict) -> tuple[str, bytes]:
         db = self._vault.db
         key = self._key
         pre_epoch = self._vault.key_epoch
+        # snapshot_key 与 key_epoch 在同一事务内轮换：恢复整体替换数据后，旧 snapshot_key
+        # 加密的快照含恢复前明文，轮换使其失效以收缩泄漏面，与改密路径语义一致。
+        # 同事务写入消除原事务外 set_snapshot_key 在崩溃时 epoch 已提交而
+        # snapshot_key_enc 未写入的不一致窗口。
+        new_snapshot_key = os.urandom(32)
         with db.transaction():
             # 事务边界二次校验 epoch，防止恢复期间并发改密导致密钥不一致，
             # 兑现 _enforce_key_epoch 的事务化写路径契约
@@ -624,7 +628,8 @@ class BackupRestoreManager:
             # 轮换 key_epoch 防止旧会话写入恢复后的数据
             new_epoch = uuid.uuid4().hex
             db.set_meta('key_epoch', new_epoch)
-        return new_epoch
+            db.set_meta('snapshot_key_enc', self._vault.encrypt_snapshot_key(new_snapshot_key))
+        return new_epoch, new_snapshot_key
 
     @staticmethod
     def _restore_categories(db, data: dict) -> dict:

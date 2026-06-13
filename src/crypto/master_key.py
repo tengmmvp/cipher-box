@@ -148,7 +148,14 @@ class MasterKeyManager:
         )
         if old_key is None:
             return None
-        new_salt, new_verify_token, new_key = cls.create(
-            new_password, new_iterations
-        )
-        return new_salt, new_verify_token, new_key
+        try:
+            new_salt, new_verify_token, new_key = cls.create(
+                new_password, new_iterations
+            )
+            return new_salt, new_verify_token, new_key
+        finally:
+            # old_key 为 verify 返回的 bytearray（旧密钥派生结果），仅用于验证旧密码，
+            # 验证通过后不再需要。原地清零收缩其在内存/swap 的驻留，与 _re_encrypt_all
+            # 的旧密钥清理一致。bytearray 切片赋值实现原地擦除，不引入 utils.memory
+            # 依赖以保持 crypto 层纯净（此处清零的是局部副本，不影响 KeyManager 内部对象）。
+            old_key[:] = b'\x00' * len(old_key)

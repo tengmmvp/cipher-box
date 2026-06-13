@@ -6,7 +6,7 @@
 """
 
 import logging
-import re
+from dataclasses import dataclass
 from typing import cast
 
 from PyQt6.QtCore import pyqtSignal
@@ -28,10 +28,14 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ...business.services.card_validation import (
+    validate_card_cvv,
+    validate_card_expiry,
+    validate_card_number,
+)
 from ...business.services.password_service import PasswordService
 from ...models import (
     ENTRY_TYPE_CARD,
-    ENTRY_TYPE_IDENTITY,
     ENTRY_TYPE_LOGIN,
     ENTRY_TYPE_NOTE,
     ENTRY_TYPE_SERVER,
@@ -68,54 +72,66 @@ from ..resources.theme_colors import c
 logger = logging.getLogger(__name__)
 
 
-# 各条目类型对应可见字段的映射，用于切换类型时刷新显隐
-_TYPE_FIELDS = {
+@dataclass(frozen=True)
+class _SpecialFieldSpec:
+    """专用字段的 schema 定义，驱动构建/收集/加载/显隐。
+
+    storage_name 沿用 ``_`` 前缀作为专用字段命名空间，将其与用户自定义字段
+    隔离以避免字段名碰撞。加载时按 storage_name 精确匹配归属，而非按前缀
+    ``startswith`` 推断，消除用户自定义字段名以 ``_card_``/``_id_``/
+    ``_server_`` 开头时被误判为专用字段的风险。
+    """
+
+    field_key: str           # widget 标识与 _special_widgets 的键，如 'card_holder'
+    storage_name: str        # custom_fields 中的存储名，如 '_card_holder'
+    label: str               # 表单标签文案
+    placeholder: str = ''
+    sensitive: bool = False  # 密码型字段（EchoMode.Password + field_type='password'）
+    max_length: int = 0      # 0 表示不设置 maxLength
+    kind: str = 'line'       # 'line' 或 'combo'
+    combo_items: tuple = ()
+
+
+# 各条目类型的专用字段 schema（按显示顺序）。schema 是字段配置的单一事实来源，
+# 驱动 _build_type_fields / _collect_type_specific_fields / _load_entry，
+# 消除分散的前缀约定与重复的 if/elif 收集逻辑。新增类型或字段只需扩展此表。
+_SPECIAL_SCHEMA: dict[str, list[_SpecialFieldSpec]] = {
+    'card': [
+        _SpecialFieldSpec('card_holder', '_card_holder', '持卡人', '持卡人姓名'),
+        _SpecialFieldSpec('card_number', '_card_number', '卡号', '卡号', sensitive=True),
+        _SpecialFieldSpec('card_expiry', '_card_expiry', '有效期', 'MM/YY', max_length=5),
+        _SpecialFieldSpec('card_cvv', '_card_cvv', 'CVV', 'CVV', sensitive=True, max_length=4),
+    ],
+    'identity': [
+        _SpecialFieldSpec('id_fullname', '_id_fullname', '姓名', '姓名'),
+        _SpecialFieldSpec('id_email', '_id_email', '邮箱', '邮箱'),
+        _SpecialFieldSpec('id_phone', '_id_phone', '电话', '电话'),
+        _SpecialFieldSpec('id_address', '_id_address', '地址', '地址'),
+    ],
+    'server': [
+        _SpecialFieldSpec('server_host', '_server_host', '主机', '主机地址'),
+        _SpecialFieldSpec('server_port', '_server_port', '端口', '22'),
+        _SpecialFieldSpec('server_protocol', '_server_protocol', '协议',
+                          kind='combo', combo_items=('SSH', 'FTP', 'HTTP', 'HTTPS', '其他')),
+    ],
+}
+
+# 各类型可见字段（通用 + 专用），用于切换类型时刷新显隐
+_TYPE_FIELDS: dict[str, list[str]] = {
     'login':    ['title', 'username', 'password', 'url'],
-    'card':     ['title', 'card_holder', 'card_number', 'card_expiry', 'card_cvv'],
-    'identity': ['title', 'id_fullname', 'id_email', 'id_phone', 'id_address'],
+    'card':     ['title', *[s.field_key for s in _SPECIAL_SCHEMA['card']]],
+    'identity': ['title', *[s.field_key for s in _SPECIAL_SCHEMA['identity']]],
     'note':     ['title'],
-    'server':   ['title', 'server_host', 'server_port', 'server_protocol', 'username', 'password'],
+    'server':   ['title', *[s.field_key for s in _SPECIAL_SCHEMA['server']], 'username', 'password'],
 }
 
-# 专用字段在 custom_fields 中存储时携带的名称前缀，用于加载时区分归属类型
-_SPECIAL_FIELD_PREFIXES = {
-    '_card_': 'card',
-    '_id_': 'identity',
-    '_server_': 'server',
+# 全部专用字段的 storage_name → spec 映射，加载时按 storage_name 精确匹配，
+# 替代原先的前缀 startswith 推断
+_ALL_SPECIAL_BY_STORAGE: dict[str, _SpecialFieldSpec] = {
+    spec.storage_name: spec
+    for specs in _SPECIAL_SCHEMA.values()
+    for spec in specs
 }
-
-
-# ------------------------------------------------------------------
-# 信用卡校验，作为模块级函数以便复用与单元测试
-# ------------------------------------------------------------------
-
-def validate_card_number(number: str) -> bool:
-    """使用 Luhn 算法校验信用卡号是否合法。"""
-    number = number.replace(' ', '').replace('-', '')
-    if not number.isdigit() or len(number) < 13:
-        return False
-    total = 0
-    for i, ch in enumerate(reversed(number)):
-        n = int(ch)
-        if i % 2 == 1:
-            n *= 2
-            if n > 9:
-                n -= 9
-        total += n
-    return total % 10 == 0
-
-
-def validate_card_expiry(expiry: str) -> bool:
-    """校验有效期是否为 MM/YY 格式且月份在 1 至 12 之间。"""
-    if not re.match(r'^\d{2}/\d{2}$', expiry):
-        return False
-    month = int(expiry[:2])
-    return 1 <= month <= 12
-
-
-def validate_card_cvv(cvv: str) -> bool:
-    """校验 CVV 是否为 3 至 4 位数字。"""
-    return cvv.isdigit() and 3 <= len(cvv) <= 4
 
 
 class EntryDialog(QDialog):
@@ -192,7 +208,7 @@ class EntryDialog(QDialog):
         """构建类型选择行。"""
         type_row = QHBoxLayout()
         type_label = QLabel('类型：')
-        type_label.setStyleSheet(f'font-weight: bold; color: {c("text_secondary")};')
+        type_label.setObjectName('fieldLabel')
         type_row.addWidget(type_label)
 
         self._type_combo = QComboBox()
@@ -336,74 +352,42 @@ class EntryDialog(QDialog):
         return btn_layout
 
     def _build_type_fields(self, form: QFormLayout):
-        """创建各条目类型的专用字段并注册到 _special_widgets。
+        """按 schema 创建各条目类型的专用字段并注册到 _special_widgets。
 
-        所有字段初始为隐藏，由 _apply_type_visibility 按当前类型切换显隐。
+        所有字段初始隐藏，由 _apply_type_visibility 按当前类型切换显隐。
+        schema 驱动通用创建逻辑；卡号/有效期格式化与端口校验等类型特有行为
+        在控件创建后按 field_key 连接，保持 schema 的纯粹性。
         """
-        # --- 卡片专用字段 ---
-        card_holder = QLineEdit()
-        card_holder.setPlaceholderText('持卡人姓名')
-        self._add_field_row(form, 'card_holder', '持卡人：', card_holder, visible=False)
-        self._special_widgets['card_holder'] = card_holder
+        for specs in _SPECIAL_SCHEMA.values():
+            for spec in specs:
+                widget = self._create_special_widget(spec)
+                self._add_field_row(form, spec.field_key, f'{spec.label}：', widget, visible=False)
+                self._special_widgets[spec.field_key] = widget
+        # 卡号/有效期格式化与端口校验：类型特有行为，schema 之外的特殊连接
+        cast(QLineEdit, self._special_widgets['card_number']).textChanged.connect(
+            self._format_card_number
+        )
+        cast(QLineEdit, self._special_widgets['card_expiry']).textChanged.connect(
+            self._format_card_expiry
+        )
+        cast(QLineEdit, self._special_widgets['server_port']).setValidator(
+            QIntValidator(1, 65535, self)
+        )
 
-        card_number = QLineEdit()
-        card_number.setEchoMode(QLineEdit.EchoMode.Password)
-        card_number.setPlaceholderText('卡号')
-        self._add_field_row(form, 'card_number', '卡号：', card_number, visible=False)
-        self._special_widgets['card_number'] = card_number
-        card_number.textChanged.connect(self._format_card_number)
-
-        card_expiry = QLineEdit()
-        card_expiry.setPlaceholderText('MM/YY')
-        card_expiry.setMaxLength(5)
-        self._add_field_row(form, 'card_expiry', '有效期：', card_expiry, visible=False)
-        self._special_widgets['card_expiry'] = card_expiry
-        card_expiry.textChanged.connect(self._format_card_expiry)
-
-        card_cvv = QLineEdit()
-        card_cvv.setEchoMode(QLineEdit.EchoMode.Password)
-        card_cvv.setPlaceholderText('CVV')
-        card_cvv.setMaxLength(4)
-        self._add_field_row(form, 'card_cvv', 'CVV：', card_cvv, visible=False)
-        self._special_widgets['card_cvv'] = card_cvv
-
-        # --- 身份专用字段 ---
-        id_fullname = QLineEdit()
-        id_fullname.setPlaceholderText('姓名')
-        self._add_field_row(form, 'id_fullname', '姓名：', id_fullname, visible=False)
-        self._special_widgets['id_fullname'] = id_fullname
-
-        id_email = QLineEdit()
-        id_email.setPlaceholderText('邮箱')
-        self._add_field_row(form, 'id_email', '邮箱：', id_email, visible=False)
-        self._special_widgets['id_email'] = id_email
-
-        id_phone = QLineEdit()
-        id_phone.setPlaceholderText('电话')
-        self._add_field_row(form, 'id_phone', '电话：', id_phone, visible=False)
-        self._special_widgets['id_phone'] = id_phone
-
-        id_address = QLineEdit()
-        id_address.setPlaceholderText('地址')
-        self._add_field_row(form, 'id_address', '地址：', id_address, visible=False)
-        self._special_widgets['id_address'] = id_address
-
-        # --- 服务器专用字段 ---
-        server_host = QLineEdit()
-        server_host.setPlaceholderText('主机地址')
-        self._add_field_row(form, 'server_host', '主机：', server_host, visible=False)
-        self._special_widgets['server_host'] = server_host
-
-        server_port = QLineEdit()
-        server_port.setPlaceholderText('22')
-        server_port.setValidator(QIntValidator(1, 65535, self))
-        self._add_field_row(form, 'server_port', '端口：', server_port, visible=False)
-        self._special_widgets['server_port'] = server_port
-
-        server_protocol = QComboBox()
-        server_protocol.addItems(['SSH', 'FTP', 'HTTP', 'HTTPS', '其他'])
-        self._add_field_row(form, 'server_protocol', '协议：', server_protocol, visible=False)
-        self._special_widgets['server_protocol'] = server_protocol
+    @staticmethod
+    def _create_special_widget(spec: '_SpecialFieldSpec') -> QWidget:
+        """按 schema 创建单个专用字段控件。"""
+        if spec.kind == 'combo':
+            combo = QComboBox()
+            combo.addItems(spec.combo_items)
+            return combo
+        edit = QLineEdit()
+        edit.setPlaceholderText(spec.placeholder)
+        if spec.sensitive:
+            edit.setEchoMode(QLineEdit.EchoMode.Password)
+        if spec.max_length:
+            edit.setMaxLength(spec.max_length)
+        return edit
 
     def _add_field_row(self, form: QFormLayout, key: str, label_text: str, widget: QWidget, visible: bool = True):
         """添加一行表单字段，并按 key 记录到 _field_rows 以便后续控制显隐。"""
@@ -612,26 +596,23 @@ class EntryDialog(QDialog):
         if entry.totp_secret:
             self._totp_edit.setText(entry.totp_secret)
 
-        # 从 custom_fields 恢复专用字段值
+        # 从 custom_fields 恢复专用字段值：按 storage_name 精确匹配（替代前缀 startswith），
+        # 消除用户自定义字段名以 _card_/_id_/_server_ 开头时被误判为专用字段的碰撞风险。
         cf_raw = entry.custom_fields
         if isinstance(cf_raw, list) and cf_raw:
             type_specific = []
             for cf in cf_raw:
-                matched = False
-                for prefix in _SPECIAL_FIELD_PREFIXES:
-                    if cf.name.startswith(prefix):
-                        field_key = cf.name[1:]  # 去掉前导下划线，例如 _card_holder 得到 card_holder
-                        w = self._special_widgets.get(field_key)
-                        if w:
-                            if isinstance(w, QComboBox):
-                                idx = w.findText(cf.value)
-                                if idx >= 0:
-                                    w.setCurrentIndex(idx)
-                            else:
-                                cast(QLineEdit, w).setText(cf.value)
-                        matched = True
-                        break
-                if not matched:
+                spec = _ALL_SPECIAL_BY_STORAGE.get(cf.name)
+                if spec is not None:
+                    widget = self._special_widgets.get(spec.field_key)
+                    if widget is not None:
+                        if isinstance(widget, QComboBox):
+                            idx = widget.findText(cf.value)
+                            if idx >= 0:
+                                widget.setCurrentIndex(idx)
+                        else:
+                            cast(QLineEdit, widget).setText(cf.value)
+                else:
                     type_specific.append(cf)
 
             # 清空旧的自定义字段行后回填通用自定义字段
@@ -688,32 +669,20 @@ class EntryDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _collect_type_specific_fields(self) -> list[CustomField]:
-        """将当前类型的专用字段收集为 CustomField，名称带类型前缀。"""
-        fields: list[CustomField] = []
+        """按当前类型的 schema 收集专用字段为 CustomField，存储名沿用 _ 前缀。"""
         entry_type = self._type_combo.currentData() or ENTRY_TYPE_LOGIN
-
-        if entry_type == ENTRY_TYPE_CARD:
-            w = self._special_widgets
-            fields.append(CustomField(name='_card_holder', value=cast(QLineEdit, w['card_holder']).text()))
-            raw_number = cast(QLineEdit, w['card_number']).text().replace(' ', '')
-            fields.append(CustomField(name='_card_number', value=raw_number, field_type='password'))
-            fields.append(CustomField(name='_card_expiry', value=cast(QLineEdit, w['card_expiry']).text()))
-            fields.append(CustomField(name='_card_cvv', value=cast(QLineEdit, w['card_cvv']).text(), field_type='password'))
-
-        elif entry_type == ENTRY_TYPE_IDENTITY:
-            w = self._special_widgets
-            fields.append(CustomField(name='_id_fullname', value=cast(QLineEdit, w['id_fullname']).text()))
-            fields.append(CustomField(name='_id_email', value=cast(QLineEdit, w['id_email']).text()))
-            fields.append(CustomField(name='_id_phone', value=cast(QLineEdit, w['id_phone']).text()))
-            fields.append(CustomField(name='_id_address', value=cast(QLineEdit, w['id_address']).text()))
-
-        elif entry_type == ENTRY_TYPE_SERVER:
-            w = self._special_widgets
-            fields.append(CustomField(name='_server_host', value=cast(QLineEdit, w['server_host']).text()))
-            fields.append(CustomField(name='_server_port', value=cast(QLineEdit, w['server_port']).text()))
-            protocol = cast(QComboBox, w['server_protocol']).currentText()
-            fields.append(CustomField(name='_server_protocol', value=protocol))
-
+        fields: list[CustomField] = []
+        for spec in _SPECIAL_SCHEMA.get(entry_type, []):
+            widget = self._special_widgets[spec.field_key]
+            if isinstance(widget, QComboBox):
+                value = widget.currentText()
+            else:
+                value = cast(QLineEdit, widget).text()
+                # 卡号去除分组空格后存储
+                if spec.field_key == 'card_number':
+                    value = value.replace(' ', '')
+            field_type = 'password' if spec.sensitive else 'text'
+            fields.append(CustomField(name=spec.storage_name, value=value, field_type=field_type))
         return fields
 
     # ------------------------------------------------------------------

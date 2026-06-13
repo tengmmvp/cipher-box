@@ -4,7 +4,7 @@
 验证合法输入通过、非法输入被拒绝的各类边界。
 """
 
-from src.ui.dialogs.entry_dialog import (
+from src.business.services.card_validation import (
     validate_card_cvv,
     validate_card_expiry,
     validate_card_number,

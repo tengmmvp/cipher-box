@@ -82,15 +82,17 @@ class BackgroundWorker(QThread):
             return
         try:
             result = func()
+        except Exception as e:
+            # 异常意味着操作真正失败，即使此刻被取消也必须上报错误；
+            # 否则用户会误以为操作成功（如导出失败时静默关闭对话框）。
+            # cancelled 信号只在 func 正常返回但检测到取消请求时发出，
+            # 以区分「干净取消」与「取消途中真正出错」。
+            self.error.emit(str(e))
+        else:
             if self._cancel_event.is_set():
                 self.cancelled.emit()
             else:
                 self.finished.emit(result)
-        except Exception as e:
-            if self._cancel_event.is_set():
-                logger.debug('已取消的工作器异常：%s', e)
-                return
-            self.error.emit(str(e))
         finally:
             # 释放闭包引用，可能捕获密码等敏感数据
             self._func = None

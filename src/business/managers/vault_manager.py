@@ -476,6 +476,10 @@ class VaultManager:
         finally:
             # 清理取消事件，避免残留影响后续改密
             self._cancel_event.clear()
+            # 旧主密钥副本（self._key 返回的 bytes，不可原地清零）在新密钥生效后立即
+            # 释放引用，缩短旧密钥在内存/swap 的驻留，收敛改密的「撤销泄漏」语义。
+            # CPython 下 bytes 不可变，del 后仍依赖 GC 回收，此为固有限制下的尽力而为。
+            del old_key
 
     def _purge_snapshot_backups(self) -> list:
         """删除所有 snapshot_key 加密的快照与恢复前安全快照，返回未能删除的文件。
@@ -500,22 +504,39 @@ class VaultManager:
                         failed.append(f)
         return failed
 
-    def set_snapshot_key(self, snapshot_key: bytes) -> None:
-        """轮换 snapshot_key：用当前主密钥加密回写 snapshot_key_enc 并更新内存 KeyManager。
+    def encrypt_snapshot_key(self, snapshot_key: bytes) -> str:
+        """加密 snapshot_key 以写入 vault_meta，供恢复流程在事务内复用。
 
-        供恢复流程在事务提交后调用，使旧 snapshot_key 加密的快照失效以收缩泄漏面，
-        与改密路径的 snapshot_key 轮换语义一致。
+        恢复流程不改主密钥，故用当前 self._key 加密（与 initialize/改密路径传入
+        特定 key 不同）。将加密与 set_meta 解耦，使 snapshot_key_enc 能与 key_epoch
+        在同一数据库事务内写入，消除事务外崩溃导致 epoch 已提交而 snapshot_key_enc
+        未写入的不一致窗口。
         """
         if self._key is None:
             raise VaultLockedError('保险库未解锁')
-        self._db.set_meta(
-            'snapshot_key_enc',
-            EncryptionEngine.encrypt(
-                base64.b64encode(snapshot_key).decode('ascii'),
-                self._key,
-                _SNAPSHOT_KEY_AAD,
-            ),
+        return EncryptionEngine.encrypt(
+            base64.b64encode(snapshot_key).decode('ascii'),
+            self._key,
+            _SNAPSHOT_KEY_AAD,
         )
+
+    def apply_snapshot_key(self, snapshot_key: bytes) -> None:
+        """仅同步内存中的 snapshot_key，不写库。
+
+        供恢复流程在事务提交后同步内存状态——库内 snapshot_key_enc 已在事务内
+        由调用方经 encrypt_snapshot_key + set_meta 写入，此处只更新 KeyManager。
+        """
+        self._key_mgr.update_snapshot_key(snapshot_key)
+
+    def set_snapshot_key(self, snapshot_key: bytes) -> None:
+        """轮换 snapshot_key：用当前主密钥加密回写 snapshot_key_enc 并更新内存 KeyManager。
+
+        事务外一站式轮换（写库 + 内存）。恢复流程应改用 encrypt_snapshot_key
+        （事务内写库）+ apply_snapshot_key（内存），保证 snapshot_key_enc 与
+        key_epoch 原子写入，使旧 snapshot_key 加密的快照失效以收缩泄漏面，
+        与改密路径的 snapshot_key 轮换语义一致。
+        """
+        self._db.set_meta('snapshot_key_enc', self.encrypt_snapshot_key(snapshot_key))
         self._key_mgr.update_snapshot_key(snapshot_key)
 
     def purge_snapshot_backups(self) -> list:

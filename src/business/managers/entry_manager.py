@@ -7,15 +7,12 @@
 
 import json
 import logging
+import threading
 import uuid
 from typing import TYPE_CHECKING, Optional
 
-from ...utils.format import utc_now_iso
-
 if TYPE_CHECKING:
     from .vault_manager import VaultManager
-
-logger = logging.getLogger(__name__)
 
 from ...crypto.password_generator import PasswordGenerator
 from ...crypto.totp import TOTPGenerator
@@ -36,7 +33,7 @@ from ...models import (
     RawEntry,
     Sensitive,
 )
-from ...utils.format import format_datetime
+from ...utils.format import format_datetime, utc_now_iso
 from ..services.crypto_utils import (
     build_entry_summary,
     copy_entry_fields,
@@ -49,7 +46,11 @@ from ..services.crypto_utils import (
 from ..services.crypto_utils import (
     encrypt_field as _encrypt_field_impl,
 )
-from ..services.crypto_utils import matches_tag as _matches_tag_impl
+from ..services.crypto_utils import (
+    matches_tag as _matches_tag_impl,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class EntryManager:
@@ -74,6 +75,10 @@ class EntryManager:
         # tags 为明文字段、非加密，缓存仅含 tag 计数，无敏感数据。
         # 失效条件：条目增删改经 _notify_entry_change 触发，锁定或改密使 epoch 变化。
         self._tags_cache: list[tuple[str, int]] | None = None
+        # 缓存锁：保护 _username_cache / _totp_secret_cache / _tags_cache / _cache_epoch
+        # 的结构性读写，消除 TOTP 定时器线程与锁定 invalidate_caches 并发时的竞态。
+        # 约定：锁内不调用数据库方法或变更回调，避免与 db 事务锁构成顺序反转死锁。
+        self._cache_lock = threading.RLock()
         # 条目变更回调列表，用于事件驱动的缓存失效，如 SecurityAnalyzer。
         self._on_entry_change_callbacks: list = []
 
@@ -164,8 +169,11 @@ class EntryManager:
         """
         self._invalidate_if_epoch_changed()
         cid = raw_entry.crypto_id
-        if cid in self._username_cache:
-            return self._username_cache[cid]
+        with self._cache_lock:
+            if cid in self._username_cache:
+                return self._username_cache[cid]
+        # 解密在锁外执行，避免长时间持锁阻塞 TOTP 定时器等其他缓存访问；
+        # 并发首访可能重复解密，属可接受的性能折衷（非正确性问题）。
         try:
             username = self._decrypt_field(
                 raw_entry.username, cid, 'username', strict=True
@@ -175,8 +183,10 @@ class EntryManager:
                 "username 解密失败 (crypto_id=%s)，缓存为空串", cid,
             )
             username = ''
-            self._username_decrypt_failed.add(cid)
-        self._username_cache[cid] = username
+            with self._cache_lock:
+                self._username_decrypt_failed.add(cid)
+        with self._cache_lock:
+            self._username_cache[cid] = username
         return username
 
     def _invalidate_if_epoch_changed(self):
@@ -187,19 +197,24 @@ class EntryManager:
         """
         current = self._vault.key_epoch
         if current is None or current != self._cache_epoch:
+            with self._cache_lock:
+                # 持锁后再次确认，避免与并发 invalidate 重复执行清空序列
+                current = self._vault.key_epoch
+                if current is None or current != self._cache_epoch:
+                    self._username_cache.clear()
+                    self._username_decrypt_failed.clear()
+                    self._totp_secret_cache.clear()
+                    self._tags_cache = None
+                    self._cache_epoch = current
+
+    def invalidate_caches(self):
+        """外部调用：锁定或改密后显式清空明文缓存。"""
+        with self._cache_lock:
             self._username_cache.clear()
             self._username_decrypt_failed.clear()
             self._totp_secret_cache.clear()
             self._tags_cache = None
-            self._cache_epoch = current
-
-    def invalidate_caches(self):
-        """外部调用：锁定或改密后显式清空明文缓存。"""
-        self._username_cache.clear()
-        self._username_decrypt_failed.clear()
-        self._totp_secret_cache.clear()
-        self._tags_cache = None
-        self._cache_epoch = None
+            self._cache_epoch = None
 
     def _notify_entry_change(self, password_changed: bool = True):
         """通知所有注册的条目变更回调，事件驱动缓存失效。
@@ -209,7 +224,9 @@ class EntryManager:
         增删条目等结构性变更保持默认 True，因其改变 total 与重复分组。
         """
         # 条目增删改可能改变 tags 分布，失效标签计数缓存，下次 get_all_tags 重算。
-        self._tags_cache = None
+        with self._cache_lock:
+            self._tags_cache = None
+        # 回调在锁外执行，避免回调重入 EntryManager 缓存方法时与持锁线程竞争
         for cb in self._on_entry_change_callbacks:
             try:
                 cb(password_changed)
@@ -368,7 +385,8 @@ class EntryManager:
 
         # 条目更新可能修改 totp_secret，失效该条目的 TOTP secret 缓存，
         # 下次 get_totp_state / generate_totp_cached 重新解密。
-        self._totp_secret_cache.pop(entry.id, None)
+        with self._cache_lock:
+            self._totp_secret_cache.pop(entry.id, None)
 
         # 检测密码变更，归档旧密码
         old_pwd_enc = raw.password
@@ -409,7 +427,8 @@ class EntryManager:
     def delete_entry(self, entry_id: int):
         """软删除条目，移入回收站。"""
         self._vault.db.soft_delete_entry(entry_id)
-        self._totp_secret_cache.pop(entry_id, None)
+        with self._cache_lock:
+            self._totp_secret_cache.pop(entry_id, None)
         self._notify_entry_change()
 
     def restore_entry(self, entry_id: int):
@@ -420,13 +439,15 @@ class EntryManager:
     def permanent_delete_entry(self, entry_id: int):
         """永久删除条目"""
         self._vault.db.permanent_delete_entry(entry_id)
-        self._totp_secret_cache.pop(entry_id, None)
+        with self._cache_lock:
+            self._totp_secret_cache.pop(entry_id, None)
         self._notify_entry_change()
 
     def empty_trash(self):
         """清空回收站"""
         self._vault.db.empty_trash()
-        self._totp_secret_cache.clear()
+        with self._cache_lock:
+            self._totp_secret_cache.clear()
         self._notify_entry_change()
 
     def get_entries(
@@ -665,9 +686,11 @@ class EntryManager:
                 保持其「不写缓存」语义。
         """
         if use_cache:
-            secret = self._totp_secret_cache.get(entry_id)
+            with self._cache_lock:
+                secret = self._totp_secret_cache.get(entry_id)
             if secret is not None:
                 return secret
+        # DB 查询与解密在锁外，避免持锁阻塞并发缓存访问
         raw = self.db.get_entry(entry_id)
         if raw is None or not raw.totp_secret:
             return None
@@ -677,7 +700,8 @@ class EntryManager:
         if not secret:
             return None
         if use_cache:
-            self._totp_secret_cache[entry_id] = secret
+            with self._cache_lock:
+                self._totp_secret_cache[entry_id] = secret
         return secret
 
     def get_totp_state(self, entry_id: int) -> dict | None:
@@ -699,7 +723,8 @@ class EntryManager:
         if not secret:
             return None
         # 预热缓存，供 generate_totp_cached 复用。
-        self._totp_secret_cache[entry_id] = secret
+        with self._cache_lock:
+            self._totp_secret_cache[entry_id] = secret
         return {
             'code': TOTPGenerator.generate(secret),
             'remaining': TOTPGenerator.get_remaining_seconds(secret=secret),
@@ -714,15 +739,23 @@ class EntryManager:
         （key_epoch 变化）时失效。tags 为明文字段，缓存无敏感数据。
         """
         self._invalidate_if_epoch_changed()
-        if self._tags_cache is not None:
-            return self._tags_cache
+        with self._cache_lock:
+            cached = self._tags_cache
+        if cached is not None:
+            return cached
+        # DB 扫描与聚合在锁外，避免持锁阻塞并发缓存访问
         tag_rows = self.db.get_all_tags()
         tag_count: dict[str, int] = {}
         for tags_str in tag_rows:
             for tag in (t.strip() for t in tags_str.split(',') if t.strip()):
                 tag_count[tag] = tag_count.get(tag, 0) + 1
-        self._tags_cache = sorted(tag_count.items(), key=lambda x: -x[1])
-        return self._tags_cache
+        result = sorted(tag_count.items(), key=lambda x: -x[1])
+        with self._cache_lock:
+            # 双重检查：期间可能已被并发填充，优先用已存在的缓存保证一致性
+            if self._tags_cache is not None:
+                return self._tags_cache
+            self._tags_cache = result
+            return result
 
     @staticmethod
     def _validate_plain_entry(entry: Entry):

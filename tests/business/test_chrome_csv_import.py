@@ -1,0 +1,44 @@
+"""Chrome/Edge CSV 导入测试。
+
+验证 ``import_from_chrome_csv`` 正确映射 name/url/username/password 列。
+该路径直接委托 ``import_from_csv``，列映射此前无测试覆盖，仅靠人工核对，
+新增测试以固化 Chrome 导出列名到内部字段的映射关系。
+"""
+
+from src.business.managers.import_export import ImportExportManager
+
+
+def test_import_from_chrome_csv_maps_columns(entry_mgr, tmp_path):
+    """Chrome CSV 的 name/url/username/password 列应正确映射到条目字段。"""
+    mgr = ImportExportManager(entry_mgr)
+    csv_path = tmp_path / 'chrome.csv'
+    csv_path.write_text(
+        'name,url,username,password\n'
+        'GitHub,https://github.com,alice,Pass123!\n'
+        'Gmail,https://gmail.com,bob,Secret456@\n',
+        encoding='utf-8',
+    )
+
+    count = mgr.import_from_chrome_csv(str(csv_path))
+
+    assert count == 2
+    entries = entry_mgr.get_entries()
+    by_title = {e.title: e for e in entries}
+    assert set(by_title) == {'GitHub', 'Gmail'}
+    gh = by_title['GitHub']
+    assert gh.username == 'alice'
+    assert gh.url == 'https://github.com'
+    assert gh.password == 'Pass123!'
+    gm = by_title['Gmail']
+    assert gm.username == 'bob'
+    assert gm.password == 'Secret456@'
+
+
+def test_import_from_chrome_csv_empty(entry_mgr, tmp_path):
+    """仅含表头的空 CSV 导入返回 0，不产生条目。"""
+    mgr = ImportExportManager(entry_mgr)
+    csv_path = tmp_path / 'empty.csv'
+    csv_path.write_text('name,url,username,password\n', encoding='utf-8')
+
+    assert mgr.import_from_chrome_csv(str(csv_path)) == 0
+    assert entry_mgr.get_entries() == []

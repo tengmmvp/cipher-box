@@ -1,6 +1,7 @@
 """导入导出管理器，负责 CSV、JSON 导入导出及浏览器密码导入。"""
 
 import csv
+import inspect
 import json
 import logging
 import os
@@ -66,13 +67,22 @@ _KEE_PASS_COLUMN_ALIASES = {
 def _transactional_import(method):
     """确保一次导入要么全部成功，要么完全回滚。
 
-    约定：filepath 为被装饰方法的第二个位置参数，即 self 之后的第一个参数。
+    通过 inspect 绑定被装饰方法的签名，从任意调用方式（位置或关键字）稳健
+    提取 filepath 参数，不依赖「filepath 必为 self 后第一个位置参数」的隐式
+    契约——未来在 filepath 前插入参数或改用关键字调用都不会让 epoch 守卫
+    与路径校验静默错位。
 
-    在事务开始前捕获当前 key_epoch，事务开始后验证未变化，
-    防止导入期间并发改密导致数据用旧密钥加密但 epoch 已更新。
+    在事务开始前捕获当前 key_epoch，事务开始后验证未变化，防止导入期间并发
+    改密导致数据用旧密钥加密但 epoch 已更新。
     """
+    method_sig = inspect.signature(method)
+
     @wraps(method)
-    def wrapper(self, filepath, *args, **kwargs):
+    def wrapper(self, *args, **kwargs):
+        # 按方法签名绑定参数，无论位置或关键字调用都能正确定位 filepath
+        bound = method_sig.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        filepath = bound.arguments['filepath']
         resolved = self._validate_import_path(filepath)
         try:
             # 事务前快照 epoch，防止并发改密导致密钥不一致
@@ -82,7 +92,8 @@ def _transactional_import(method):
                 if pre_epoch != current_epoch:
                     raise VaultKeyEpochMismatchError('导入期间检测到密钥变更，已中止导入')
                 # 用 resolved 路径打开，避免校验后原始路径被替换为符号链接的 TOCTOU 窗口
-                return method(self, resolved, *args, **kwargs)
+                bound.arguments['filepath'] = resolved
+                return method(*bound.args, **bound.kwargs)
         except UnicodeDecodeError:
             raise ValueError(
                 '文件编码不支持：请确保 CSV 文件使用 UTF-8 编码保存。'

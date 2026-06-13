@@ -81,7 +81,10 @@ class BackupDialog(QDialog):
         self._btn_group.addButton(self._restore_radio, 1)
         mode_layout.addWidget(self._restore_radio)
 
-        info2 = QLabel('  [!] 恢复将覆盖当前所有数据！请谨慎操作')
+        # 警告文本：去掉 ASCII [!]（屏幕阅读器会朗读该符号），改用语义化 objectName
+        # 供 QSS 控制颜色；内联色下沉到 QSS 的工作并入主题重构。
+        info2 = QLabel('恢复将覆盖当前所有数据！请谨慎操作')
+        info2.setObjectName('warningText')
         info2.setStyleSheet(f'color: {c("danger")}; font-size: 12px;')
         mode_layout.addWidget(info2)
 

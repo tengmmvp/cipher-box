@@ -90,6 +90,12 @@ QListWidget, QTreeWidget {{
     background: {bg_primary};
     outline: none;
 }}
+QListView#entryList {{
+    border: none;
+    border-radius: 8px;
+    background: {bg_primary};
+    outline: none;
+}}
 QListWidget::item, QTreeWidget::item {{
     padding: 7px 8px;
     border-bottom: 1px solid {border_light};
@@ -425,6 +431,10 @@ QLabel#formMutedSmall {{
 }}
 QLabel#formMutedPlain {{
     color: {text_muted};
+}}
+QLabel#hintLabel {{
+    color: {text_muted};
+    font-size: 12px;
 }}
 """
 

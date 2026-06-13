@@ -142,13 +142,13 @@ def test_lock_preparation_clears_decrypted_ui_and_clipboard():
         manager = EntryManager(vault)
         manager.add_entry(Entry(title='Secret', password='VisibleSecret!2026'))
         window = MainWindow(config, vault)
-        assert window._entry_list.count() == 1
+        assert window._entry_model.rowCount() == 1
         window._clipboard.copy_text('VisibleSecret!2026')
 
         window.prepare_for_lock()
         vault.lock()
 
-        assert window._entry_list.count() == 0
+        assert window._entry_model.rowCount() == 0
         assert window._detail_panel._current_entry is None
         assert window._detail_panel._current_password == ''
         clipboard = QApplication.clipboard()
@@ -258,7 +258,7 @@ def test_selecting_first_entry_opens_detail_panel_without_crash():
         manager = EntryManager(vault)
         entry_id = manager.add_entry(Entry(title='Selectable', password='Strong!2026Password'))
         window = MainWindow(config, vault)
-        window._entry_list.setCurrentRow(0)
+        window._entry_list.setCurrentIndex(window._entry_model.index(0))
         # 等待 80ms 选择防抖定时器触发并处理事件
         # PyQt6 QtTest.pyi 将 qWait 误标为实例方法，首个形参为 self，
         # 导致 pyright 把位置实参绑定到 self 而报 ms 缺失；此处将 qWait
@@ -478,10 +478,10 @@ def test_main_window_filters_entries_by_tag():
         assert index >= 0
         window._tag_combo.setCurrentIndex(index)
         _APP.processEvents()
-        assert window._entry_list.count() == 1
-        first_item = window._entry_list.item(0)
-        assert first_item is not None
-        assert first_item.data(256).title == 'Work'
+        assert window._entry_model.rowCount() == 1
+        first_entry = window._entry_model.data(window._entry_model.index(0), 256)
+        assert first_entry is not None
+        assert first_entry.title == 'Work'
         window.close()
 
 

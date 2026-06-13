@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+from ...exceptions import VaultLockedError
 from ...models import Entry
 from .crypto_utils import build_entry_summary, decrypt_field, require_vault_key
 
@@ -133,7 +134,17 @@ class SecurityAnalyzer:
                     and self._analysis_cache.get('_key_epoch') == current_epoch):
                 result = dict(self._analysis_cache)
                 return self._refilter_cache(result, days)
-        result = self.full_analysis(days)
+        try:
+            result = self.full_analysis(days)
+        except VaultLockedError:
+            # 分析期间保险库被锁定（并发改密/自动锁），密钥不可用无法完成解密。
+            # 返回空报告且不缓存，避免后台线程崩溃；下次解锁后重新计算填充。
+            logger.debug("安全分析期间保险库被锁定，返回空报告")
+            return {
+                'total': 0, 'weak_count': 0, 'weak_entries': [],
+                'duplicate_groups': [], 'duplicate_count': 0,
+                'old_entries': [], 'old': 0, '_summaries_with_dates': [],
+            }
         with self._cache_lock:
             result['_entry_count'] = current_count
             result['_key_epoch'] = current_epoch

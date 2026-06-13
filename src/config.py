@@ -62,14 +62,23 @@ DEFAULT_CONFIG = {
     'splitter_sizes': None,
 }
 
-_INT_RANGES = {
-    'auto_lock_minutes': (0, 60),
-    'clipboard_clear_seconds': (0, 300),
-    'password_visible_seconds': (3, 60),
-    'default_password_length': (4, 64),
-    'auto_backup_interval_hours': (1, 168),
-    'auto_backup_retention': (2, 50),
-    'old_password_warning_days': (30, 365),
+# 整型配置字段规范：(文件可接受下限, 上限, 运行时安全下限 or None)。
+# 单一真相源：_INT_RANGES（供 _is_valid 校验文件值）与 _SECURITY_MINIMUMS
+# （供 get_safe 在使用时强制下限）均由此派生，避免两处常量各自维护导致改一处漏一处。
+# 文件下限允许 0（如 auto_lock_minutes=0 表「禁用」），运行时安全下限由 get_safe 强制，
+# 防止配置文件被篡改后降低安全策略；为 None 表示该字段无额外运行时约束。
+_INT_SPECS: dict[str, tuple[int, int, int | None]] = {
+    'auto_lock_minutes': (0, 60, 1),
+    'clipboard_clear_seconds': (0, 300, 10),
+    'password_visible_seconds': (3, 60, 3),
+    'default_password_length': (4, 64, None),
+    'auto_backup_interval_hours': (1, 168, None),
+    'auto_backup_retention': (2, 50, None),
+    'old_password_warning_days': (30, 365, None),
+}
+_INT_RANGES = {k: (lo, hi) for k, (lo, hi, _) in _INT_SPECS.items()}
+_SECURITY_MINIMUMS: dict[str, int] = {
+    k: sm for k, (_, _, sm) in _INT_SPECS.items() if sm is not None
 }
 _BOOL_KEYS = {
     'default_uppercase', 'default_lowercase', 'default_digits',
@@ -147,6 +156,11 @@ class ConfigManager:
                                 '将使用默认配置覆盖异常值。'
                             )
                             self._integrity_warning = True
+                    else:
+                        # 无签名行：攻击者删除签名即可绕过 HMAC 校验。容错加载
+                        # （避免配置损坏导致无法启动），但 check_integrity 反映此风险，
+                        # 供调用方提示用户或触发重写带签名的配置。
+                        self._integrity_warning = True
                     saved = json.loads(json_text)
                     if not isinstance(saved, dict):
                         raise ValueError('配置文件根节点必须是对象')
@@ -190,17 +204,10 @@ class ConfigManager:
         with self._lock:
             return self._config.get(key, default)
 
-    # 安全关键配置项的运行时下限，即使配置文件被篡改也不接受低于阈值的值
-    _SECURITY_MINIMUMS: dict[str, int] = {
-        'clipboard_clear_seconds': 10,
-        'auto_lock_minutes': 1,
-        'password_visible_seconds': 3,
-    }
-
     def get_safe(self, key: str, default=None):
         """获取配置值，对安全关键键强制运行时下限。
 
-        与 get() 相同，但对 _SECURITY_MINIMUMS 中定义的键，
+        与 get() 相同，但对模块级 ``_SECURITY_MINIMUMS`` 中定义的键，
         返回值不低于安全阈值，防止配置文件被篡改后降低安全策略。
 
         设计折衷：``auto_lock_minutes=0`` 是用户主动禁用自动锁定的合法语义，
@@ -208,8 +215,8 @@ class ConfigManager:
         负值等非法篡改值仍会被修正为安全下限。
         """
         value = self.get(key, default)
-        if isinstance(value, int) and key in self._SECURITY_MINIMUMS:
-            minimum = self._SECURITY_MINIMUMS[key]
+        if isinstance(value, int) and key in _SECURITY_MINIMUMS:
+            minimum = _SECURITY_MINIMUMS[key]
             # auto_lock_minutes=0 是合法的"禁用"语义，不受安全下限约束
             if key == 'auto_lock_minutes' and value == 0:
                 return value

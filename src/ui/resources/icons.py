@@ -3,7 +3,7 @@
 使用方式：
     from .resources.icons import icon, set_icon, EYE, COPY
     set_icon(btn, EYE)                    # 设置按钮图标，并自动清除文字
-    act.setIcon(icon(COPY, size=SIZE_MENU))  # 菜单项图标
+    act.setIcon(icon(COPY))  # 菜单项图标
 """
 
 import qtawesome as qta
@@ -16,8 +16,6 @@ from .theme_colors import c
 # 预设尺寸
 # ============================================================
 SIZE_BTN = 16       # 标准按钮图标
-SIZE_MENU = 14      # 菜单项图标
-SIZE_SIDEBAR = 14   # 侧边栏列表项
 SIZE_EMPTY = 48     # 空状态大图标
 SIZE_TOAST = 18     # Toast 通知图标
 
@@ -155,12 +153,11 @@ def _make_icon(name: str, color_key: str | None = None) -> QIcon:
     return qta.icon(glyph, color=color)
 
 
-def icon(name: str, color_key: str | None = None, size: int = SIZE_BTN) -> QIcon:  # noqa: ARG001
+def icon(name: str, color_key: str | None = None) -> QIcon:
     """获取着色后的 QIcon。
 
-    Note:
-        ``size`` 参数暂未使用，QIcon 渲染尺寸由目标 widget 的 iconSize 决定。
-        保留此参数以便未来支持固定尺寸输出。
+    QIcon 为矢量图标，渲染尺寸由目标 widget 的 iconSize 决定，无需 size 参数。
+    若需固定尺寸位图，使用 icon_pixmap。
     """
     return _make_icon(name, color_key)
 

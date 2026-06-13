@@ -17,8 +17,9 @@ from PyQt6.QtWidgets import (
 
 from ...utils.memory import secure_zero_str
 from ..resources.constants import BTN_COPY, FONT_FAMILY_MONOSPACE
-from ..resources.icons import COPY, EYE, LOCK, set_icon
+from ..resources.icons import COPY, set_icon
 from ..resources.theme_colors import c
+from .secret_field import make_secret_field_row
 
 
 class CustomFieldsRenderer:
@@ -104,7 +105,7 @@ class CustomFieldsRenderer:
     ) -> tuple[QLabel, QWidget]:
         """创建普通字段行，明文显示并可选附带复制按钮。"""
         name_label = QLabel(f'{label}：')
-        name_label.setStyleSheet(f'font-weight: bold; color: {c("text_secondary")};')
+        name_label.setObjectName('fieldLabel')
 
         row_widget = QWidget()
         row_layout = QHBoxLayout(row_widget)
@@ -112,7 +113,7 @@ class CustomFieldsRenderer:
 
         val_label = QLabel(value)
         val_label.setWordWrap(True)
-        val_label.setStyleSheet(f'color: {c("text_primary")};')
+        val_label.setObjectName('fieldValue')
         row_layout.addWidget(val_label, 1)
 
         if copyable and value:
@@ -139,68 +140,24 @@ class CustomFieldsRenderer:
     def _make_secret_field_row(
         self, label: str, value: str, timers: list[QTimer], parent_widget,
     ) -> tuple[QLabel, QWidget]:
-        """创建敏感字段行，默认掩码，附带显示/隐藏与复制按钮。"""
-        name_label = QLabel(f'{label}：')
-        name_label.setStyleSheet(f'font-weight: bold; color: {c("text_secondary")};')
+        """创建敏感字段行，默认掩码，附带显示/隐藏与复制按钮。
 
-        row_widget = QWidget()
-        row_layout = QHBoxLayout(row_widget)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-
-        val_label = QLabel('••••••••')
-        val_label.setStyleSheet(
-            f'font-family: {FONT_FAMILY_MONOSPACE}; font-size: 13px; color: {c("text_primary")};'
-        )
-        row_layout.addWidget(val_label, 1)
-
-        show_btn = QPushButton()
-        set_icon(show_btn, EYE)
-        show_btn.setObjectName('iconBtn')
-        show_btn.setFixedSize(*BTN_COPY)
-        show_btn.setToolTip('显示/隐藏')
-
-        # 敏感字段以行索引为键存入间接引用字典，避免重名字段键覆盖
+        复用共享构建逻辑，明文按行索引（row_id）存入间接引用字典避免重名键覆盖。
+        """
         row_id = self._secret_row_counter
         self._secret_row_counter += 1
-        self._secret_values[row_id] = value
-        # 持久单次定时器，可取消
-        field_timer = QTimer(parent_widget)
-        field_timer.setSingleShot(True)
-        field_timer.timeout.connect(
-            lambda lbl=val_label, btn=show_btn: (
-                lbl.setText('••••••••'), set_icon(btn, EYE),
-            )
+        return make_secret_field_row(
+            label, value,
+            store=self._secret_values,
+            store_key=row_id,
+            timers=timers,
+            parent_widget=parent_widget,
+            get_pwd_visible_ms=self._get_pwd_visible_ms,
+            on_copy=self._copy_callback,
+            on_copy_feedback=self._copy_feedback_callback,
+            name_label_style=f'font-weight: bold; color: {c("text_secondary")};',
+            val_label_style=(
+                f'font-family: {FONT_FAMILY_MONOSPACE}; font-size: 13px;'
+                f' color: {c("text_primary")};'
+            ),
         )
-        timers.append(field_timer)
-
-        def _toggle(_checked=False, lbl=val_label, btn=show_btn, rid=row_id, timer=field_timer):
-            pwd = self._secret_values.get(rid, '')
-            if lbl.text() == '••••••••':
-                lbl.setText(pwd)
-                set_icon(btn, LOCK)
-                if timer is not None:
-                    timer.start(self._get_pwd_visible_ms())
-            else:
-                lbl.setText('••••••••')
-                set_icon(btn, EYE)
-                if timer is not None:
-                    timer.stop()
-
-        show_btn.clicked.connect(_toggle)
-        row_layout.addWidget(show_btn)
-
-        copy_btn = QPushButton()
-        set_icon(copy_btn, COPY)
-        copy_btn.setObjectName('iconBtn')
-        copy_btn.setFixedSize(*BTN_COPY)
-        copy_btn.setToolTip('复制密码')
-
-        def _copy_secret(_checked=False, rid=row_id, btn=copy_btn):
-            pwd = self._secret_values.get(rid, '')
-            self._copy_callback(btn, pwd)
-
-        copy_btn.clicked.connect(_copy_secret)
-        copy_btn.clicked.connect(self._copy_feedback_callback)
-        row_layout.addWidget(copy_btn)
-
-        return name_label, row_widget

@@ -32,7 +32,6 @@ from ..resources.icons import (
     SETTINGS,
     SHIELD,
     SHORTCUT,
-    SIZE_MENU,
     UPLOAD,
     icon,
 )
@@ -119,19 +118,19 @@ class _MainWindowMenuMixin(QMainWindow):
 
         add_act = QAction('新增条目', self)
         add_act.setShortcut('Ctrl+N')
-        add_act.setIcon(icon(PLUS, size=SIZE_MENU))
+        add_act.setIcon(icon(PLUS))
         add_act.triggered.connect(self._add_entry)
         file_menu.addAction(add_act)
 
         file_menu.addSeparator()
 
         import_act = QAction('导入 / 导出', self)
-        import_act.setIcon(icon(UPLOAD, size=SIZE_MENU))
+        import_act.setIcon(icon(UPLOAD))
         import_act.triggered.connect(self._show_import_export)
         file_menu.addAction(import_act)
 
         backup_act = QAction('备份与恢复', self)
-        backup_act.setIcon(icon(FOLDER, size=SIZE_MENU))
+        backup_act.setIcon(icon(FOLDER))
         backup_act.triggered.connect(self._show_backup)
         file_menu.addAction(backup_act)
 
@@ -139,13 +138,13 @@ class _MainWindowMenuMixin(QMainWindow):
 
         lock_act = QAction('锁定保险库', self)
         lock_act.setShortcut('Ctrl+L')
-        lock_act.setIcon(icon(LOCK_SOLID, size=SIZE_MENU))
+        lock_act.setIcon(icon(LOCK_SOLID))
         lock_act.triggered.connect(lambda: self.lock_requested.emit())
         file_menu.addAction(lock_act)
 
         quit_act = QAction('退出', self)
         quit_act.setShortcut('Ctrl+Q')
-        quit_act.setIcon(icon(CLOSE, size=SIZE_MENU))
+        quit_act.setIcon(icon(CLOSE))
         quit_act.triggered.connect(self.close)
         file_menu.addAction(quit_act)
 
@@ -155,12 +154,12 @@ class _MainWindowMenuMixin(QMainWindow):
             return
 
         gen_act = QAction('密码生成器', self)
-        gen_act.setIcon(icon(GENERATE, size=SIZE_MENU))
+        gen_act.setIcon(icon(GENERATE))
         gen_act.triggered.connect(self._show_password_generator)
         tools_menu.addAction(gen_act)
 
         security_act = QAction('安全仪表盘', self)
-        security_act.setIcon(icon(SHIELD, size=SIZE_MENU))
+        security_act.setIcon(icon(SHIELD))
         security_act.triggered.connect(self._show_security_dashboard)
         tools_menu.addAction(security_act)
 
@@ -170,12 +169,12 @@ class _MainWindowMenuMixin(QMainWindow):
             return
 
         prefs_act = QAction('偏好设置', self)
-        prefs_act.setIcon(icon(SETTINGS, size=SIZE_MENU))
+        prefs_act.setIcon(icon(SETTINGS))
         prefs_act.triggered.connect(self._show_settings)
         settings_menu.addAction(prefs_act)
 
         change_pwd_act = QAction('修改主密码', self)
-        change_pwd_act.setIcon(icon(KEY, size=SIZE_MENU))
+        change_pwd_act.setIcon(icon(KEY))
         change_pwd_act.triggered.connect(self._show_change_master)
         settings_menu.addAction(change_pwd_act)
 
@@ -185,14 +184,14 @@ class _MainWindowMenuMixin(QMainWindow):
             return
 
         shortcuts_act = QAction('快捷键', self)
-        shortcuts_act.setIcon(icon(SHORTCUT, size=SIZE_MENU))
+        shortcuts_act.setIcon(icon(SHORTCUT))
         shortcuts_act.triggered.connect(self._show_shortcuts)
         help_menu.addAction(shortcuts_act)
 
         help_menu.addSeparator()
 
         about_act = QAction('关于 CipherBox', self)
-        about_act.setIcon(icon(HELP, size=SIZE_MENU))
+        about_act.setIcon(icon(HELP))
         about_act.triggered.connect(self._show_about)
         help_menu.addAction(about_act)
 
@@ -241,7 +240,7 @@ class _MainWindowMenuMixin(QMainWindow):
                 text = action.text()
                 if text in icon_map:
                     icon_name, color_key = icon_map[text]
-                    action.setIcon(icon(icon_name, color_key, size=SIZE_MENU))
+                    action.setIcon(icon(icon_name, color_key))
 
     # ----- 对话框 -----
 

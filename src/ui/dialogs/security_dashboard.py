@@ -46,6 +46,9 @@ class _HealthScoreWidget(QWidget):
         super().__init__(parent)
         self._score = 100
         self.setFixedSize(160, 160)
+        # 预创建字体，避免 paintEvent 每帧重复构造 QFont
+        self._score_font = QFont(FONT_FAMILY_DISPLAY, 28, QFont.Weight.Bold)
+        self._label_font = QFont(FONT_FAMILY_DISPLAY, 9)
 
     def set_score(self, score: int):
         self._score = max(0, min(100, score))
@@ -82,13 +85,11 @@ class _HealthScoreWidget(QWidget):
 
             # 中心文字 — 分数
             painter.setPen(QColor(c('text_primary')))
-            font = QFont(FONT_FAMILY_DISPLAY, 28, QFont.Weight.Bold)
-            painter.setFont(font)
+            painter.setFont(self._score_font)
             painter.drawText(draw_rect, Qt.AlignmentFlag.AlignCenter, str(self._score))
 
             # 底部小标签
-            font_small = QFont(FONT_FAMILY_DISPLAY, 9)
-            painter.setFont(font_small)
+            painter.setFont(self._label_font)
             painter.setPen(QColor(c('text_secondary')))
             label_rect = QRectF(
                 center_x - radius, center_y + 8,
