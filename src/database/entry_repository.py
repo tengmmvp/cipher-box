@@ -12,7 +12,7 @@ from typing import Optional
 from ..exceptions import DatabaseError, VaultIntegrityError, VaultLockedError
 from ..models import MAX_PASSWORD_HISTORY, Entry, PasswordHistory, RawEntry
 from ..utils.format import utc_now_iso
-from ._decorators import _db_operation
+from ._decorators import _db_operation, _db_write
 from .types import VerifyMode
 
 logger = logging.getLogger(__name__)
@@ -135,8 +135,13 @@ class EntryRepository:
         favorite_only: bool = False,
         limit: int | None = None,
         after_id: int | None = None,
+        sort_by_updated: bool = False,
     ) -> list[Entry]:
-        """获取密码条目列表"""
+        """获取密码条目列表
+
+        sort_by_updated 为 True 时仅按 updated_at DESC 排序（不带 is_favorite），
+        供「近期更新」视图下推 LIMIT 到 SQL，避免全量内存排序再截断。
+        """
         query = """
             SELECT e.*, c.name as category_name
             FROM entries e
@@ -161,6 +166,8 @@ class EntryRepository:
             query += " AND e.id > ?"
             params.append(after_id)
             query += " ORDER BY e.id ASC"
+        elif sort_by_updated:
+            query += " ORDER BY e.updated_at DESC"
         else:
             query += " ORDER BY e.is_favorite DESC, e.updated_at DESC"
 
@@ -183,10 +190,9 @@ class EntryRepository:
         ).fetchone()
         return self._row_to_entry(row) if row else None
 
-    @_db_operation
+    @_db_write
     def add_entry(self, entry: Entry, preserve_metadata: bool = False) -> int:
         """添加条目，返回 ID"""
-        self._guard_write()
         # 防御性断言，防止明文静默写入加密列
         self._assert_encrypted(entry.username, 'username')
         self._assert_encrypted(entry.password, 'password')
@@ -238,12 +244,11 @@ class EntryRepository:
         self._auto_commit()
         return cursor.lastrowid or 0
 
-    @_db_operation
+    @_db_write
     def update_entry(
         self,
         entry: Entry,
         preserve_updated_at: bool = False,
-        metadata_mac: str | None = None,
     ):
         """更新条目。
 
@@ -251,7 +256,6 @@ class EntryRepository:
         仅由 soft_delete_entry / restore_entry 管理。若需修改删除状态，
         请使用上述专用方法。
         """
-        self._guard_write()
         # 防御性断言，防止明文静默写入加密列
         self._assert_encrypted(entry.username, 'username')
         self._assert_encrypted(entry.password, 'password')
@@ -263,7 +267,7 @@ class EntryRepository:
             if preserve_updated_at and entry.updated_at
             else utc_now_iso()
         )
-        entry.metadata_mac = metadata_mac or self._sign_entry(entry)
+        entry.metadata_mac = self._sign_entry(entry)
         # 参数顺序须与 _UPDATE_ENTRY_COLUMNS 一致（不含 is_deleted/deleted_at/created_at）。
         self._conn.execute(
             _UPDATE_ENTRY_SQL,
@@ -289,7 +293,7 @@ class EntryRepository:
         )
         self._auto_commit()
 
-    @_db_operation
+    @_db_write
     def update_entries_batch(self, rows: list) -> None:
         """批量更新条目，改密重加密专用。
 
@@ -301,14 +305,12 @@ class EntryRepository:
         """
         if not rows:
             return
-        self._guard_write()
         self._conn.executemany(_RE_ENCRYPT_BATCH_UPDATE_SQL, rows)
         self._auto_commit()
 
-    @_db_operation
+    @_db_write
     def soft_delete_entry(self, entry_id: int) -> bool:
         """软删除条目。返回是否实际执行（条目存在）。"""
-        self._guard_write()
         now = utc_now_iso()
         entry = self._select_entry_for_sign(entry_id)
         if entry is None:
@@ -324,10 +326,9 @@ class EntryRepository:
         self._auto_commit()
         return True
 
-    @_db_operation
+    @_db_write
     def restore_entry(self, entry_id: int) -> bool:
         """恢复条目。返回是否实际执行（条目存在）。"""
-        self._guard_write()
         entry = self._select_entry_for_sign(entry_id)
         if entry is None:
             logger.warning("恢复条目 %d 失败：条目不存在", entry_id)
@@ -342,23 +343,21 @@ class EntryRepository:
         self._auto_commit()
         return True
 
-    @_db_operation
+    @_db_write
     def permanent_delete_entry(self, entry_id: int) -> None:
         """永久删除条目"""
-        self._guard_write()
         self._conn.execute("DELETE FROM entries WHERE id=?", (entry_id,))
         self._auto_commit()
         self.secure_checkpoint()
 
-    @_db_operation
+    @_db_write
     def empty_trash(self) -> None:
         """清空回收站"""
-        self._guard_write()
         self._conn.execute("DELETE FROM entries WHERE is_deleted=1")
         self._auto_commit()
         self.secure_checkpoint()
 
-    @_db_operation
+    @_db_write
     def clear_vault_data(self) -> None:
         """清空领域数据，供事务化恢复使用。
 
@@ -366,7 +365,6 @@ class EntryRepository:
         一致。事务内调用时 secure_checkpoint 静默跳过，调用方须在事务提交后
         显式 checkpoint 以保证旧密文被清除（见 restore_backup）。
         """
-        self._guard_write()
         self._conn.execute("DELETE FROM password_history")
         self._conn.execute("DELETE FROM entries")
         self._conn.execute("DELETE FROM categories")
@@ -425,7 +423,7 @@ class EntryRepository:
 
     # ==================== 密码历史 ====================
 
-    @_db_operation
+    @_db_write
     def add_password_history(
         self,
         entry_id: int,
@@ -433,7 +431,6 @@ class EntryRepository:
         changed_at: str = '',
     ):
         """添加密码历史记录"""
-        self._guard_write()
         self._conn.execute(
             "INSERT INTO password_history (entry_id, old_password_enc, changed_at) VALUES (?, ?, ?)",
             (entry_id, old_password_enc, changed_at or utc_now_iso()),
@@ -449,7 +446,7 @@ class EntryRepository:
         )
         self._auto_commit()
 
-    @_db_operation
+    @_db_write
     def add_password_history_batch(
         self,
         entry_id: int,
@@ -466,7 +463,6 @@ class EntryRepository:
         """
         if not items:
             return
-        self._guard_write()
         now = utc_now_iso()
         rows = [
             (entry_id, enc, changed_at or now)
@@ -535,7 +531,7 @@ class EntryRepository:
         ).fetchone()
         return row[0] if row else 0
 
-    @_db_operation
+    @_db_write
     def update_password_history_batch(self, rows: list) -> None:
         """批量更新密码历史记录的密文。
 
@@ -547,7 +543,6 @@ class EntryRepository:
         """
         if not rows:
             return
-        self._guard_write()
         self._conn.executemany(
             "UPDATE password_history SET old_password_enc=? WHERE id=?",
             rows,
@@ -578,8 +573,12 @@ class EntryRepository:
         锁与事务契约：本方法未使用 ``@_db_operation`` 装饰器，不自行获取
         ``db_lock``。调用方（DatabaseManager.delete_category）须已持有
         ``db_lock`` 并处于活动事务内，以保证 SELECT 与 executemany UPDATE
-        的原子性及跨表一致性。
+        的原子性及跨表一致性。入口断言将此契约从注释升级为运行期检查，
+        防止未来误在无事务上下文中直接调用。
         """
+        assert self.in_transaction, (
+            'clear_category_signatures 须在活动事务内调用（由 DatabaseManager.delete_category 编排）'
+        )
         rows = self._conn.execute(
             "SELECT e.*, c.name as category_name "
             "FROM entries e LEFT JOIN categories c ON e.category_id = c.id "

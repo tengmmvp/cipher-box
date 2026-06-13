@@ -10,7 +10,7 @@ from typing import Optional
 
 from ..models import Category
 from ..utils.format import utc_now_iso
-from ._decorators import _db_operation
+from ._decorators import _db_operation, _db_write
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,10 @@ class CategoryRepository:
     @property
     def _lock(self):
         return self._mgr.db_lock
+
+    @property
+    def in_transaction(self) -> bool:
+        return self._mgr.in_transaction
 
     def _guard_write(self):
         return self._mgr.guard_write()
@@ -59,10 +63,9 @@ class CategoryRepository:
         ).fetchone()
         return self._row_to_category(row) if row else None
 
-    @_db_operation
+    @_db_write
     def add_category(self, category: Category) -> int:
         """添加分类，返回 ID"""
-        self._guard_write()
         cursor = self._conn.execute(
             "INSERT INTO categories (name, icon_char, color, sort_order, created_at) VALUES (?, ?, ?, ?, ?)",
             (category.name, category.icon_char, category.color, category.sort_order,
@@ -71,10 +74,9 @@ class CategoryRepository:
         self._auto_commit()
         return cursor.lastrowid or 0
 
-    @_db_operation
+    @_db_write
     def update_category(self, category: Category) -> None:
         """更新分类"""
-        self._guard_write()
         self._conn.execute(
             "UPDATE categories SET name=?, icon_char=?, color=?, sort_order=? WHERE id=?",
             (category.name, category.icon_char, category.color, category.sort_order, category.id),
@@ -91,8 +93,12 @@ class CategoryRepository:
         锁与事务契约：本方法未使用 ``@_db_operation`` 装饰器，不自行获取
         ``db_lock``。调用方（DatabaseManager.delete_category）须已持有
         ``db_lock`` 并处于活动事务内，使本 DELETE 与条目解关联在同事务内
-        原子提交或回滚。
+        原子提交或回滚。入口断言将此契约从注释升级为运行期检查，防止未来
+        误在无事务上下文中直接调用导致裸 DELETE。
         """
+        assert self.in_transaction, (
+            'delete_category 须在活动事务内调用（由 DatabaseManager.delete_category 编排）'
+        )
         self._conn.execute("DELETE FROM categories WHERE id=?", (category_id,))
 
     @_db_operation

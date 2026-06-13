@@ -27,7 +27,7 @@ from typing import Optional, Protocol, runtime_checkable
 from ..exceptions import DatabaseError, TransactionError
 from ..models import Category, Entry, PasswordHistory
 from ..utils.file_security import secure_directory, secure_file
-from ._decorators import _db_operation
+from ._decorators import _db_operation, _db_write
 from .category_repository import CategoryRepository
 from .entry_repository import EntryRepository
 from .schema_manager import SchemaManager
@@ -366,10 +366,9 @@ class DatabaseManager:
             result[row['key']] = row['value']
         return result
 
-    @_db_operation
+    @_db_write
     def set_meta(self, key: str, value: str) -> None:
         """设置元数据"""
-        self._guard_write()
         assert self._conn is not None
         self._conn.execute(
             "INSERT OR REPLACE INTO vault_meta (key, value) VALUES (?, ?)",
@@ -500,6 +499,7 @@ class DatabaseManager:
         favorite_only: bool = False,
         limit: int | None = None,
         after_id: int | None = None,
+        sort_by_updated: bool = False,
     ) -> list[Entry]:
         return self._entry_repo.get_entries(
             deleted_only=deleted_only,
@@ -508,6 +508,7 @@ class DatabaseManager:
             favorite_only=favorite_only,
             limit=limit,
             after_id=after_id,
+            sort_by_updated=sort_by_updated,
         )
 
     def get_entry(self, entry_id: int) -> Optional[Entry]:
@@ -520,12 +521,10 @@ class DatabaseManager:
         self,
         entry: Entry,
         preserve_updated_at: bool = False,
-        metadata_mac: str | None = None,
     ):
         return self._entry_repo.update_entry(
             entry,
             preserve_updated_at=preserve_updated_at,
-            metadata_mac=metadata_mac,
         )
 
     def update_entries_batch(self, rows: list[tuple]) -> None:

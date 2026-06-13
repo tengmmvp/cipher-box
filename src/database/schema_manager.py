@@ -12,6 +12,26 @@ from ..utils.format import utc_now_iso
 logger = logging.getLogger(__name__)
 
 
+# 索引定义：CREATE INDEX 与 _validate_current_schema 的单一事实来源。
+# 新增索引只需在此追加——建表循环与 schema 校验自动跟随，避免建表 SQL 与
+# 校验集合两份硬编码漂移（只改一处忘记另一处）。
+# 兼容性注意：新增索引会纳入 required_indexes，导致旧版创建的库（无此索引）
+# 启动时 schema 校验失败而拒绝打开。仅在可接受破坏旧库兼容性时才追加。
+# tuple 形式：(索引名, 表(列)定义, 是否 UNIQUE)
+_INDEX_DEFINITIONS: list[tuple[str, str, bool]] = [
+    ('idx_entries_category', 'entries(category_id)', False),
+    ('idx_entries_deleted', 'entries(is_deleted)', False),
+    ('idx_entries_favorite', 'entries(is_favorite)', False),
+    ('idx_entries_updated', 'entries(updated_at)', False),
+    ('idx_entries_type', 'entries(entry_type)', False),
+    ('idx_entries_password_changed', 'entries(password_changed_at)', False),
+    ('idx_entries_crypto_id', 'entries(crypto_id)', True),  # UNIQUE
+    ('idx_pw_history_entry', 'password_history(entry_id)', False),
+    # 复合索引：加速密码历史截断子查询 ORDER BY changed_at DESC
+    ('idx_pw_history_entry_time', 'password_history(entry_id, changed_at DESC)', False),
+]
+
+
 class SchemaManager:
     """数据库 schema 管理 — 表创建、索引创建、schema 验证。
 
@@ -103,18 +123,14 @@ class SchemaManager:
                 FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE
             );
 
-            CREATE INDEX IF NOT EXISTS idx_entries_category ON entries(category_id);
-            CREATE INDEX IF NOT EXISTS idx_entries_deleted ON entries(is_deleted);
-            CREATE INDEX IF NOT EXISTS idx_entries_favorite ON entries(is_favorite);
-            CREATE INDEX IF NOT EXISTS idx_entries_updated ON entries(updated_at);
-            CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(entry_type);
-            CREATE INDEX IF NOT EXISTS idx_entries_password_changed ON entries(password_changed_at);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_crypto_id ON entries(crypto_id);
-            CREATE INDEX IF NOT EXISTS idx_pw_history_entry ON password_history(entry_id);
-            -- 复合索引：加速密码历史截断子查询 ORDER BY changed_at DESC
-            CREATE INDEX IF NOT EXISTS idx_pw_history_entry_time
-                ON password_history(entry_id, changed_at DESC);
         """)
+        # 索引由 _INDEX_DEFINITIONS 统一定义，循环创建以与 schema 校验共用单一来源，
+        # 避免建表 SQL 与校验集合两份硬编码漂移。
+        for index_name, definition, is_unique in _INDEX_DEFINITIONS:
+            cursor.execute(
+                f"CREATE {'UNIQUE ' if is_unique else ''}INDEX IF NOT EXISTS "  # nosec B608 - 硬编码常量
+                f"{index_name} ON {definition}"
+            )
 
         # 默认分类仅在首次创建数据库时写入，尊重用户后续删除操作。
         default_categories = [
@@ -189,14 +205,7 @@ class SchemaManager:
             }
             if not expected_columns.issubset(columns):
                 raise SchemaError(f'数据库结构损坏或不是当前格式：{table}')
-        required_indexes = {
-            'idx_entries_category', 'idx_entries_deleted',
-            'idx_entries_favorite', 'idx_entries_updated',
-            'idx_entries_type', 'idx_entries_password_changed',
-            'idx_entries_crypto_id',
-            'idx_pw_history_entry',
-            'idx_pw_history_entry_time',
-        }
+        required_indexes = {name for name, _, _ in _INDEX_DEFINITIONS}
         indexes = {
             row['name'] for row in cursor.execute(
                 "SELECT name FROM sqlite_master WHERE type='index'"
