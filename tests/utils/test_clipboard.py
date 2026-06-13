@@ -34,7 +34,7 @@ class TestClipboardManager:
         assert clipboard is not None
         assert clipboard.text() == text
         expected_hash = hmac.digest(_CLIPBOARD_HMAC_KEY, text.encode('utf-8'), 'sha256')
-        assert self.mgr._last_copied_hash == expected_hash
+        assert self.mgr._last_text_hash == expected_hash
 
     # ---- 自动清空计时器 ----
 
@@ -81,6 +81,6 @@ class TestClipboardManager:
         """复制空字符串不触发清空定时器"""
         self.mgr.copy_text("")
 
-        # _last_copied_hash 应保持初始空值，未被设置
-        assert self.mgr._last_copied_hash == b''
+        # _last_text_hash 应保持初始空值，未被设置
+        assert self.mgr._last_text_hash == b''
         assert not self.mgr._timer.isActive()

@@ -368,6 +368,11 @@ class DatabaseManager:
 
         截断后立即刷新 WAL/SHM 文件权限：checkpoint 会改写这些文件，
         需重新收紧 ACL，而非依赖后续提交的防抖刷新或目录继承 ACL。
+
+        Note:
+            事务内调用时静默跳过（checkpoint 会干扰进行中的事务）。此时 WAL
+            清除依赖事务提交时 SQLite 的自动 checkpoint；若调用方需保证 WAL
+            被显式截断以清除已删密文残留，应在事务提交后调用本方法。
         """
         if self._conn is not None and not self.in_transaction:
             try:

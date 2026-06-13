@@ -117,3 +117,11 @@ def wait_worker_shutdown(worker, *, cancel=True, timeout=None):
     if cancel:
         worker.cancel()
     worker.wait(timeout)
+    # 超时后 worker 仍运行属异常：父对象析构时 QThread 处于 running 会触发
+    # Qt 致命警告（QThread: Destroyed while thread is still running）并崩溃。
+    # 记录 error 提升可见性；配合业务层 cancel_check 应使长操作快速退出，
+    # 正常情况下不会触发此告警。
+    if worker.isRunning():
+        logger.error(
+            "后台 worker 等待 %dms 后仍在运行，父对象析构可能崩溃", timeout,
+        )

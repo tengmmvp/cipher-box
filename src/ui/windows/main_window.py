@@ -209,7 +209,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         # 状态栏
         self._status_bar = QStatusBar()
         self._warning_label = QLabel()
-        self._warning_label.setStyleSheet(f'color: {c("warning")}; font-size: 12px;')
+        self._warning_label.setObjectName('warningText')
         self.setStatusBar(self._status_bar)
         self._update_status_bar()
 
@@ -442,11 +442,12 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._reset_lock_timer()
 
     def _setup_auto_backup(self):
+        # 仅创建定时器，不启动：__init__ 时 vault 尚未解锁，启动会使首次
+        # singleShot 在未解锁状态空转。定时器与首次延迟检查统一由
+        # refresh_after_unlock 在解锁后启动。
         self._backup_timer = QTimer(self)
         self._backup_timer.setInterval(MS_AUTO_BACKUP_CHECK)
         self._backup_timer.timeout.connect(self._maybe_auto_backup)
-        self._backup_timer.start()
-        QTimer.singleShot(MS_INITIAL_BACKUP_DELAY, self._maybe_auto_backup)
 
     def _maybe_auto_backup(self, force: bool = False):
         """按设置创建当前保险库的本地快速快照，后台执行以避免阻塞 UI。"""
@@ -471,7 +472,13 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             return
 
         def _task():
-            return self._backup.maybe_auto_backup(self._config, force=force)
+            # 接入 worker 的协作取消探针：锁定/隐藏到托盘时 wait_worker_shutdown
+            # 设置取消标志，maybe_auto_backup 的全量解密循环据此及时退出，
+            # 避免锁定后继续持密钥解密并推迟密钥清零。worker 为下方局部变量，
+            # _task 闭包延迟绑定，调用时（worker.start 后）worker 已就绪。
+            return self._backup.maybe_auto_backup(
+                self._config, force=force, cancel_check=lambda: worker.is_cancelled,
+            )
 
         worker = BackgroundWorker(_task, parent=self)
         worker.error.connect(lambda msg: logger.warning("自动快照失败: %s", msg))
@@ -542,14 +549,15 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             self._build_filter_list()
             # 刷新菜单栏图标
             self._update_menu_icons()
-            self._warning_label.setStyleSheet(f'color: {c("warning")}; font-size: 12px;')
             self._brand_icon.setPixmap(icon_pixmap(SHIELD, 'accent', 24))
             if self._tray:
                 self._tray.set_locked(False)
             # 主题切换时数据未变，只需强制重绘列表控件
             self._entry_delegate.clear_color_cache()
             self._entry_list.update()
-            self._category_list.update()
+            # 分类列表的 FOLDER 图标颜色已烘焙到 QIcon，update() 不会刷新，
+            # 需重建分类列表以用新主题颜色重新生成图标。
+            self._refresh_categories()
             # 空状态 EmptyStateWidget 的颜色在创建时烘焙，主题切换时需重建刷新
             if self._list_stack.currentWidget() is not self._entry_list:
                 self._show_empty_state()
@@ -589,6 +597,8 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             self._detail_panel.show_empty()
             self._clipboard.clear_now()
             self._select_timer.stop()
+            self._entry_change_timer.stop()
+            self._pending_selection = None
             from ..components.toast import ToastManager
             ToastManager.cancel_all_for(self)
             wait_worker_shutdown(self._status_worker)
@@ -637,6 +647,8 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         # 重启自动备份定时器：prepare_for_lock 已停止它，解锁后须恢复，
         # 否则任意一次锁定→解锁后本地自动快照将永久失效。
         self._backup_timer.start()
+        # 解锁后延迟首次备份检查，与解锁刷新错峰避免争用主线程
+        QTimer.singleShot(MS_INITIAL_BACKUP_DELAY, self._maybe_auto_backup)
         if self._tray:
             self._tray.set_locked(False)
 
@@ -664,6 +676,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._search_edit.blockSignals(False)
         self._search_timer.stop()
         self._select_timer.stop()
+        self._entry_change_timer.stop()
         self._pending_selection = None
         # 清空条目列表，移除对 Entry 对象的引用
         self._entry_model.set_entries([])

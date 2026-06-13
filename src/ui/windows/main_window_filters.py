@@ -449,6 +449,8 @@ class _MainWindowFiltersMixin(QMainWindow):
         if current:
             self._current_filter = current.data(Qt.ItemDataRole.UserRole)
             self._current_category_id = None
+            # 切换过滤器使总数缓存失效，避免空库文案误判（EMPTY_VAULT/EMPTY_GENERIC）
+            self._cached_total_entries = -1
             self._category_list.blockSignals(True)
             self._category_list.setCurrentRow(-1)
             self._category_list.blockSignals(False)
@@ -458,6 +460,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         if current:
             self._current_category_id = current.data(Qt.ItemDataRole.UserRole)
             self._current_filter = 'all'
+            self._cached_total_entries = -1
             self._filter_list.blockSignals(True)
             self._filter_list.setCurrentRow(0)
             self._filter_list.blockSignals(False)

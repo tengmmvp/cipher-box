@@ -127,8 +127,15 @@ class KeyRotationService:
                             plain = _decrypt_field_impl(
                                 value, old_key, raw_entry.crypto_id, field,
                             )
-                            setattr(raw_entry, field,
-                                    _encrypt_field_impl(plain, new_key, raw_entry.crypto_id, field))
+                            new_cipher = _encrypt_field_impl(
+                                plain, new_key, raw_entry.crypto_id, field,
+                            )
+                            setattr(raw_entry, field, new_cipher)
+                            # custom_fields 与 custom_fields_enc 在 DB-raw 态同为密文 str，
+                            # 同步更新两者保持对象自洽，避免后续直接读 custom_fields_enc
+                            # 取到旧密钥密文。
+                            if field == 'custom_fields':
+                                raw_entry.custom_fields_enc = new_cipher
                             del plain
                 except ValueError:
                     logger.error("重加密中止：条目 id=%s 解密失败", raw_entry.id)

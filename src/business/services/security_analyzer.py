@@ -151,7 +151,9 @@ class SecurityAnalyzer:
             self._analysis_cache = result
             self._analysis_cache_time = time.monotonic()
             self._analysis_cache_days = days
-            return result
+            # 出口复制：与 hit 路径一致，返回经 _refilter_cache 的独立副本，
+            # 防止调用方修改返回的列表/Entry 污染缓存本体。
+            return self._refilter_cache(dict(result), days)
 
     def get_cached_report(self, days: int = 90) -> dict | None:
         """返回仍有效的缓存报告，无缓存或已过期则返回 None。

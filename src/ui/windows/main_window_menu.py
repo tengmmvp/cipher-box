@@ -313,3 +313,6 @@ class _MainWindowMenuMixin(QMainWindow):
             return
         self.showNormal()
         self.activateWindow()
+        # 从托盘恢复后刷新状态栏摘要：close_to_tray 清了详情面板与 worker，
+        # 状态栏可能停留在隐藏前的陈旧文本，重启定时器触发刷新。
+        self._status_timer.start()

@@ -237,6 +237,10 @@ QLabel#sidebarBrandSubtitle {{
     font-size: 10px;
     color: {text_muted};
 }}
+QLabel#warningText {{
+    color: {warning};
+    font-size: 12px;
+}}
 QMenuBar {{
     background: {bg_secondary};
     border-bottom: 1px solid {border_light};

@@ -199,8 +199,10 @@ class EntryRepository:
         entry.updated_at = entry.updated_at if preserve_metadata and entry.updated_at else now
         entry.is_deleted = bool(preserve_metadata and entry.is_deleted)
         entry.deleted_at = entry.deleted_at if preserve_metadata else ''
+        # password_changed_at 回退到 created_at（"未改过密码即创建时间"语义），
+        # 而非 updated_at/now，避免导入/恢复时用导入时刻的 updated_at 覆盖历史时间。
         entry.password_changed_at = (
-            entry.password_changed_at or entry.updated_at or entry.created_at or now
+            entry.password_changed_at or entry.created_at or now
         )
         entry.metadata_mac = self._sign_entry(entry)
         # 参数顺序须与 _ENTRY_COLUMNS 一致；加密列存 entry 的密文属性。

@@ -119,3 +119,25 @@ class TestSecurityAnalyzerSkipCorrupt:
         assert isinstance(result, dict)
         # 2020 远早于 now-90d，naive 视为 UTC 后应归入过期
         assert result['old'] == 1
+
+
+def test_cached_analysis_returns_independent_copy():
+    """_cached_analysis 返回独立副本，调用方修改不污染缓存本体。
+
+    回归守护：miss 与 hit 两条出口路径都经 _refilter_cache 复制，
+    防止调用方修改返回的列表/Entry 污染后续命中的缓存。
+    """
+    vault = MagicMock()
+    vault.key = b'\x00' * 32
+    vault.is_unlocked = True
+    vault.key_epoch = 1
+    vault.db.get_entries.return_value = []
+    vault.db.get_entry_count.return_value = 0
+
+    analyzer = SecurityAnalyzer(vault)
+    result1 = analyzer._cached_analysis(90)
+    # 模拟调用方修改返回对象（如 UI 排序/追加）
+    result1['weak_entries'].append('polluted')
+
+    result2 = analyzer._cached_analysis(90)
+    assert 'polluted' not in result2['weak_entries']

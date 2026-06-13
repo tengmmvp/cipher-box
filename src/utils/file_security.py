@@ -1,5 +1,7 @@
 """应用数据文件的最小权限控制。"""
 
+import csv
+import io
 import logging
 import os
 import subprocess
@@ -45,8 +47,10 @@ def _windows_user_sid() -> str:
                 check=True,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
             )
-            columns = [item.strip().strip('"') for item in result.stdout.split(',')]
-            sid = columns[1] if len(columns) >= 2 else ''
+            # 用 csv 解析 whoami 的 CSV 输出，正确处理用户名含逗号时的引号边界，
+            # 避免 split(',') 在 "Doe, John" 场景误切导致 SID 解析错误。
+            rows = list(csv.reader(io.StringIO(result.stdout.strip())))
+            sid = rows[0][1] if rows and len(rows[0]) >= 2 else ''
         except (OSError, subprocess.SubprocessError, IndexError):
             logger.error('无法获取当前 Windows 用户 SID，本次跳过 ACL 限制', exc_info=True)
             return ''  # 不缓存，下次重试
@@ -130,6 +134,11 @@ def validate_file_path(path, base_dir: Path | None = None) -> Path:
 
     调用方必须使用返回的 resolved 路径而非原始 path 参数，
     以避免 TOCTOU 竞态窗口。
+
+    Note:
+        Windows 上 ``is_symlink`` 不识别 junction/reparse point；高安全场景
+        应显式提供 ``base_dir``，由 ``resolve()`` 展开 junction 后用
+        ``is_relative_to`` 提供更强保证。
 
     Args:
         path: 待验证的文件路径

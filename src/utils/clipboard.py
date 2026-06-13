@@ -4,7 +4,7 @@ import hmac
 import logging
 import os
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QObject, QTimer
 from PyQt6.QtGui import QClipboard
 from PyQt6.QtWidgets import QApplication
 
@@ -14,18 +14,28 @@ _CLIPBOARD_HMAC_KEY: bytes = os.urandom(32)
 logger = logging.getLogger(__name__)
 
 
-class ClipboardManager:
+def _hmac_of(text: str) -> bytes:
+    """对文本计算会话级 HMAC 摘要，用于常数时间比对剪贴板内容。"""
+    return hmac.digest(_CLIPBOARD_HMAC_KEY, text.encode('utf-8'), 'sha256')
+
+
+class ClipboardManager(QObject):
     """管理剪贴板复制与自动清空。
 
-    ClipboardManager 是由 MainWindow 持有的长生命周期对象，因此内部
-    QTimer 虽未指定 parent，但随 ClipboardManager 一同被 MainWindow
-    管理，生命周期安全。
+    继承 QObject 使内部 QTimer 以本对象为 parent，归属明确，避免纯 Python
+    对象持有无主定时器在异常关闭路径触发 Qt 告警。ClipboardManager 由
+    MainWindow 持有，随其生命周期一同回收。
     """
 
     def __init__(self, clear_seconds: int = 30):
+        super().__init__()
         self._clear_seconds = clear_seconds
-        self._last_copied_hash: bytes = b''
-        self._timer = QTimer()
+        # text() 与 X11 Primary Selection 独立记录 hash：Linux 下二者可被分别
+        # 替换，独立校验避免一方被用户替换时另一方仍残留密码（Windows 不支持
+        # Selection，_last_selection_hash 恒为空）。
+        self._last_text_hash: bytes = b''
+        self._last_selection_hash: bytes = b''
+        self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._clear_clipboard)
 
@@ -48,35 +58,45 @@ class ClipboardManager:
         clipboard = QApplication.clipboard()
         if clipboard:
             clipboard.setText(text)
+            self._last_text_hash = _hmac_of(text)
             # X11 Primary Selection：Linux 下中键粘贴使用的独立缓冲区
             if clipboard.supportsSelection():
                 clipboard.setText(text, QClipboard.Mode.Selection)
-            self._last_copied_hash = hmac.digest(_CLIPBOARD_HMAC_KEY, text.encode('utf-8'), 'sha256')
+                self._last_selection_hash = _hmac_of(text)
+            else:
+                self._last_selection_hash = b''
             if self._clear_seconds > 0:
                 self._timer.start(self._clear_seconds * 1000)
 
     def _clear_clipboard(self):
-        """清空剪贴板，仅当内容仍为上次复制的文本时才清空。"""
+        """清空剪贴板，仅当对应缓冲区内容仍为上次复制的文本时才清空。
+
+        text() 与 Selection 独立校验：用户可能只替换了其中一方，独立判断
+        确保仍为密码的一方被清除，已被用户替换的一方不被误清。
+        """
         self._timer.stop()
         clipboard = QApplication.clipboard()
-        if clipboard:
-            current_text = clipboard.text()
-            if self._last_copied_hash:
-                current_hash = hmac.digest(_CLIPBOARD_HMAC_KEY, current_text.encode('utf-8'), 'sha256')
-                if hmac.compare_digest(current_hash, self._last_copied_hash):
-                    # clipboard.clear 在剪贴板被其它进程占用或模式不支持时
-                    # 可能抛 RuntimeError；捕获以免中断锁定等后续清理流程
-                    try:
-                        clipboard.clear()
-                        # 同步清除 X11 Primary Selection
-                        if clipboard.supportsSelection():
-                            clipboard.clear(QClipboard.Mode.Selection)
-                    except RuntimeError:
-                        logger.warning("剪贴板清空失败（可能被占用）", exc_info=True)
-                    self._last_copied_hash = b''
-                else:
-                    # 用户已复制其他内容，原始内容已不在剪贴板中
-                    self._last_copied_hash = b''
+        if not clipboard:
+            return
+        if self._last_text_hash:
+            if hmac.compare_digest(_hmac_of(clipboard.text()), self._last_text_hash):
+                # clipboard.clear 在剪贴板被其它进程占用或模式不支持时
+                # 可能抛 RuntimeError；捕获以免中断锁定等后续清理流程
+                try:
+                    clipboard.clear()
+                except RuntimeError:
+                    logger.warning("剪贴板清空失败（可能被占用）", exc_info=True)
+            self._last_text_hash = b''
+        if self._last_selection_hash and clipboard.supportsSelection():
+            if hmac.compare_digest(
+                _hmac_of(clipboard.text(QClipboard.Mode.Selection)),
+                self._last_selection_hash,
+            ):
+                try:
+                    clipboard.clear(QClipboard.Mode.Selection)
+                except RuntimeError:
+                    logger.warning("Selection 清空失败（可能被占用）", exc_info=True)
+            self._last_selection_hash = b''
 
     def cancel(self):
         """取消自动清空"""

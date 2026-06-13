@@ -141,6 +141,9 @@ class MasterKeyManager:
                 return key
         except ValueError:
             pass
+        # 验证失败：派生密钥不再返回，原地清零收缩驻留（与 create 异常路径一致）。
+        # 登录是最频繁的错误密码入口，避免每次输错都把 60 万次迭代派生的密钥留给 GC。
+        key[:] = b'\x00' * len(key)
         logger.debug("主密码验证失败")
         return None
 
