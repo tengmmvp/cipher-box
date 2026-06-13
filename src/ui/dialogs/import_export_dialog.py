@@ -301,8 +301,11 @@ class ImportExportDialog(QDialog):
         self._worker.start()
 
     def _on_export_done(self, count):
+        if self.sender() is not self._worker:
+            return
         release_worker(self)
         self._set_busy(False)
+        self._progress.hide()
         # 防御性加保：即使业务层已对导出文件调用 secure_file，UI 层仍
         # 再次收紧权限。使用 _selected_path 而非文本框内容判空，避免
         # 用户编辑文本框导致路径不可靠。
@@ -322,8 +325,11 @@ class ImportExportDialog(QDialog):
         set_label_severity(self._status_label, 'success')
 
     def _on_export_error(self, error_msg: str):
+        if self.sender() is not self._worker:
+            return
         release_worker(self)
         self._set_busy(False)
+        self._progress.hide()
         logger.error("导出失败: %s", error_msg)
         self._status_label.setText(format_status(False, f'导出失败：{error_msg}'))
         set_label_severity(self._status_label, 'error')
@@ -379,6 +385,8 @@ class ImportExportDialog(QDialog):
         self._progress.setValue(current)
 
     def _on_import_done(self, count):
+        if self.sender() is not self._worker:
+            return
         release_worker(self)
         self._set_busy(False)
         self._progress.hide()
@@ -388,6 +396,8 @@ class ImportExportDialog(QDialog):
             self.import_completed.emit()
 
     def _on_import_error(self, error_msg: str):
+        if self.sender() is not self._worker:
+            return
         release_worker(self)
         self._set_busy(False)
         self._progress.hide()

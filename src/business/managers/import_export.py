@@ -405,9 +405,14 @@ class ImportExportManager:
                     entry.created_at = existing.created_at
                     if overwrite_merger is not None:
                         overwrite_merger(entry, existing)
-                    self._entry_mgr.update_entry(entry)
+                    # 导入覆盖保留原 password_changed_at，避免批量导入把"久未
+                    # 修改"条目重置为"刚修改"从而绕过过期检测
+                    entry.password_changed_at = existing.password_changed_at
+                    self._entry_mgr.update_entry(
+                        entry, preserve_password_changed_at=True, notify=False,
+                    )
                 else:
-                    self._entry_mgr.add_entry(entry)
+                    self._entry_mgr.add_entry(entry, notify=False)
             except (ValueError, EntryIntegrityError) as exc:
                 # 字段长度违规或完整性错误，跳过该条目而非回滚整个导入
                 skipped += 1
@@ -421,6 +426,9 @@ class ImportExportManager:
             count += 1
             if progress_callback:
                 progress_callback(i + 1, total)
+
+        # 批量导入统一通知一次（add/update 已传 notify=False 避免逐条回调）
+        self._entry_mgr._notify_entry_change()
 
         if skipped:
             logger.info("%s: 跳过 %d 条无效条目", source_label, skipped)

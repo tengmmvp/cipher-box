@@ -369,12 +369,12 @@ def test_import_rolls_back_when_any_entry_fails():
         original_add = manager.add_entry
         calls = 0
 
-        def fail_second(entry):
+        def fail_second(entry, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 2:
                 raise RuntimeError('simulated import failure')
-            return original_add(entry)
+            return original_add(entry, **kwargs)
 
         with patch.object(manager, 'add_entry', side_effect=fail_second):
             try:

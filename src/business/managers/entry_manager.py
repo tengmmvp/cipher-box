@@ -350,7 +350,7 @@ class EntryManager:
         summary.integrity_message = '账号' if integrity_error else ''
         return summary
 
-    def add_entry(self, entry: Entry) -> int:
+    def add_entry(self, entry: Entry, *, notify: bool = True) -> int:
         """添加新条目，自动加密并检测强度。"""
         self._validate_plain_entry(entry)
         strength = PasswordGenerator.check_strength(entry.password)
@@ -367,10 +367,11 @@ class EntryManager:
             enc_entry,
             preserve_metadata=bool(entry.created_at or entry.updated_at),
         )
-        self._notify_entry_change()
+        if notify:
+            self._notify_entry_change()
         return result
 
-    def update_entry(self, entry: Entry):
+    def update_entry(self, entry: Entry, *, preserve_password_changed_at: bool = False, notify: bool = True):
         """更新条目，自动加密并记录密码历史。
 
         线程安全说明：此方法采用 read-modify-write 模式，先读取旧密码，
@@ -406,11 +407,14 @@ class EntryManager:
         new_pwd_enc = self._encrypt_field(entry.password, raw.crypto_id, 'password')
         password_changed = (old_password != entry.password)
         del old_password  # 尽快释放明文引用
-        password_changed_at = (
-            utc_now_iso()
-            if password_changed
-            else raw.password_changed_at
-        )
+        if preserve_password_changed_at:
+            # 导入覆盖等同步场景：保留原 password_changed_at，避免批量导入
+            # 把"久未修改"条目重置为"刚修改"从而绕过过期检测
+            password_changed_at = entry.password_changed_at or raw.password_changed_at
+        elif password_changed:
+            password_changed_at = utc_now_iso()
+        else:
+            password_changed_at = raw.password_changed_at
 
         strength = PasswordGenerator.check_strength(entry.password)
         entry.password_strength = strength.score
@@ -441,9 +445,14 @@ class EntryManager:
                         entry.id,
                     )
             if old_pwd_enc and password_changed and entry.id is not None:
-                self.db.add_password_history(entry.id, old_pwd_enc)
+                # 用与条目一致的 password_changed_at 作为历史 changed_at，
+                # 避免两次独立 utc_now_iso() 产生的微秒级时序倒置
+                self.db.add_password_history(
+                    entry.id, old_pwd_enc, changed_at=password_changed_at,
+                )
             self.db.update_entry(enc_entry)
-        self._notify_entry_change(password_changed)
+        if notify:
+            self._notify_entry_change(password_changed)
 
     def delete_entry(self, entry_id: int):
         """软删除条目，移入回收站。"""
@@ -649,6 +658,11 @@ class EntryManager:
                     'changed_at': format_datetime(h.changed_at),
                     'password': pwd,
                 })
+            else:
+                # 解密失败（损坏记录）静默丢弃会掩盖数据问题，记录告警便于排查
+                logger.warning(
+                    "密码历史解密失败 entry_crypto_id=%s，已跳过", h.entry_crypto_id,
+                )
         return result
 
     # ==================== TOTP 生成 ====================

@@ -54,7 +54,8 @@ class _ColorDotButton(QPushButton):
         self.setFixedSize(32, 32)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(color)
-        self.clicked.connect(self._on_clicked)
+        # 选中态由外层 CategoryDialog._on_color_dot_clicked 统一管理（遍历重算），
+        # 此处不再连接内部 _on_clicked，避免冗余设置被外层覆盖
         self._update_style()
 
     @property
@@ -85,9 +86,6 @@ class _ColorDotButton(QPushButton):
             f"  border: 2px solid {c('text_secondary')};"
             f"}}"
         )
-
-    def _on_clicked(self):
-        self.selected = True
 
 
 class CategoryDialog(QDialog):

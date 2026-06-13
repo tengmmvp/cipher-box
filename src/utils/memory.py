@@ -39,8 +39,7 @@ def secure_zero_str(value: str) -> None:
         return
     try:
         buf = bytearray(value.encode('utf-16-le'))
-        for i in range(len(buf)):
-            buf[i] = 0
+        buf[:] = b'\x00' * len(buf)
         del buf
     except Exception:
         logger.debug("字符串副本清零失败（CPython 限制）", exc_info=True)

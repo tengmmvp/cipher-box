@@ -23,6 +23,10 @@ class TestClipboardManager:
     def setup_method(self):
         self.mgr = ClipboardManager(clear_seconds=30)
 
+    def teardown_method(self):
+        # 停止单次定时器，避免跨测试到期回调清空共享系统剪贴板污染其他测试
+        self.mgr._timer.stop()
+
     # ---- 基础复制与获取 ----
 
     def test_copy_and_get(self):

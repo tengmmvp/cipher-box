@@ -85,10 +85,6 @@ def _restrict_windows_acl(path: Path, is_directory: bool):
             # LRU：命中时更新为最近使用，避免常用路径被淘汰
             _SECURED_WINDOWS_OBJECTS.move_to_end(cache_key)
             return
-    with _SECURED_LOCK:
-        # LRU 淘汰最旧条目，而非全量清空，避免频繁重建反复调用 icacls
-        while len(_SECURED_WINDOWS_OBJECTS) > _MAX_SECURED_CACHE:
-            _SECURED_WINDOWS_OBJECTS.popitem(last=False)
     permission = '(OI)(CI)F' if is_directory else 'F'
     common = {
         'capture_output': True,
@@ -113,6 +109,9 @@ def _restrict_windows_acl(path: Path, is_directory: bool):
         if identity is not None:
             with _SECURED_LOCK:
                 _SECURED_WINDOWS_OBJECTS[cache_key] = identity
+                # LRU 淘汰合并到写入，避免分离锁段导致并发重复 icacls
+                while len(_SECURED_WINDOWS_OBJECTS) > _MAX_SECURED_CACHE:
+                    _SECURED_WINDOWS_OBJECTS.popitem(last=False)
     except (OSError, subprocess.TimeoutExpired):
         logger.warning('无法限制文件 ACL：%s', path, exc_info=True)
 

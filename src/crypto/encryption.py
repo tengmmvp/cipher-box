@@ -16,6 +16,7 @@ import hashlib
 import logging
 import os
 import threading
+from collections import OrderedDict
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -31,7 +32,7 @@ def _cache_key(key: bytes) -> bytes:
 _cache_lock = threading.RLock()
 # AESGCM 实例缓存：按密钥摘要索引，通常仅含当前活跃密钥。
 _MAX_CACHE_SIZE = 16
-_cipher_cache: dict[bytes, AESGCM] = {}
+_cipher_cache: OrderedDict[bytes, AESGCM] = OrderedDict()
 
 
 class EncryptionEngine:
@@ -60,13 +61,13 @@ class EncryptionEngine:
             ck = _cache_key(key)
             cipher = _cipher_cache.get(ck)
             if cipher is None:
-                # 安全上限：防止异常场景下缓存无限增长
-                if len(_cipher_cache) >= _MAX_CACHE_SIZE:
-                    logger.warning("加密缓存超过上限 (%d > %d)，执行全量清除",
-                                   len(_cipher_cache), _MAX_CACHE_SIZE)
-                    _cipher_cache.clear()
                 cipher = AESGCM(key)
                 _cipher_cache[ck] = cipher
+                # LRU：超限时淘汰最旧条目，而非全量清空（保留活跃密钥）
+                if len(_cipher_cache) > _MAX_CACHE_SIZE:
+                    _cipher_cache.popitem(last=False)
+            else:
+                _cipher_cache.move_to_end(ck)
             return cipher
 
     @classmethod

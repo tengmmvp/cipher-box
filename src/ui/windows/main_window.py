@@ -708,7 +708,8 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._entry_mgr.invalidate_caches()
         self._count_label.setText('0 项')
         self._status_bar.clearMessage()
-        self._on_lock_tray()
+        # 托盘锁定状态由 lock_requested 信号驱动（_setup_tray 连接 _on_lock_tray），
+        # 此处不再显式调用，避免与信号链重复触发
 
     def _on_lock_tray(self):
         """锁定时更新托盘图标状态"""

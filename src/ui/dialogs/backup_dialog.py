@@ -245,6 +245,8 @@ class BackupDialog(QDialog):
         self._worker.start()
 
     def _on_backup_done(self, result):
+        if self.sender() is not self._worker:
+            return
         self._set_busy(False)
         release_worker(self)
         success, error_msg = result
@@ -260,10 +262,12 @@ class BackupDialog(QDialog):
             QMessageBox.critical(self, '错误', msg)
 
     def _on_backup_error(self, error_msg: str):
+        if self.sender() is not self._worker:
+            return
         self._set_busy(False)
         release_worker(self)
         self._status_label.setText(format_status(False, '备份失败'))
-        self._status_label.setStyleSheet(f'color: {c("danger")};')
+        set_label_severity(self._status_label, 'error')
         QMessageBox.critical(self, '错误', f'备份创建失败：{error_msg}')
 
     def _do_restore(self, path: str):
@@ -301,6 +305,8 @@ class BackupDialog(QDialog):
         self._worker.start()
 
     def _on_restore_done(self, result):
+        if self.sender() is not self._worker:
+            return
         self._set_busy(False)
         release_worker(self)
         success, error_msg = result
@@ -316,10 +322,12 @@ class BackupDialog(QDialog):
             QMessageBox.critical(self, '错误', f'恢复失败，请确认备份文件有效且主密码正确。{detail}')
 
     def _on_restore_error(self, error_msg: str):
+        if self.sender() is not self._worker:
+            return
         self._set_busy(False)
         release_worker(self)
         self._status_label.setText(format_status(False, '恢复失败'))
-        self._status_label.setStyleSheet(f'color: {c("danger")};')
+        set_label_severity(self._status_label, 'error')
         QMessageBox.critical(self, '错误', f'恢复失败：{error_msg}')
 
     def _purge_restore_points(self):
