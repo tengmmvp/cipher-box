@@ -10,12 +10,12 @@ import pytest
 
 from src.business.services.metadata_signer import MetadataSigner
 from src.exceptions import VaultIntegrityError, VaultLockedError
-from src.models import Entry
+from src.models import RawEntry
 
 
-def _make_entry(**overrides) -> Entry:
-    """构造用于测试的 Entry，提供合理默认值。"""
-    entry = Entry(
+def _make_entry(**overrides) -> RawEntry:
+    """构造用于测试的 RawEntry（签名操作密文态），提供合理默认值。"""
+    entry = RawEntry(
         crypto_id='test-crypto-id-001',
         title='示例条目',
         username='',
@@ -24,8 +24,7 @@ def _make_entry(**overrides) -> Entry:
         category_id=None,
         tags='',
         notes='',
-        custom_fields_enc='',
-        custom_fields=[],
+        custom_fields='',
         is_favorite=False,
         is_deleted=False,
         password_strength=0,

@@ -9,7 +9,7 @@ import threading
 import pytest
 
 from src.database.db_manager import DatabaseManager
-from src.models import Category, Entry
+from src.models import Category, RawEntry
 
 
 @pytest.mark.usefixtures('_disable_encrypted_assertions')
@@ -53,10 +53,10 @@ class TestDatabaseThreadSafety:
             try:
                 category = Category(name=f'cat_{i}')
                 cat_id = db.add_category(category)
-                entry = Entry(
+                entry = RawEntry(
                     crypto_id=f'crypto_{i}',
                     title=f'Entry {i}',
-                    custom_fields_enc='',
+                    custom_fields='',
                     category_id=cat_id,
                 )
                 db.add_entry(entry)
@@ -84,10 +84,10 @@ class TestDatabaseThreadSafety:
         cat = Category(name='initial_cat')
         cat_id = db.add_category(cat)
         for j in range(5):
-            db.add_entry(Entry(
+            db.add_entry(RawEntry(
                 crypto_id=f'init_crypto_{j}',
                 title=f'Initial Entry {j}',
-                custom_fields_enc='',
+                custom_fields='',
                 category_id=cat_id,
             ))
 
@@ -104,10 +104,10 @@ class TestDatabaseThreadSafety:
         def writer(i):
             try:
                 for j in range(10):
-                    entry = Entry(
+                    entry = RawEntry(
                         crypto_id=f'rw_crypto_{i}_{j}',
                         title=f'RW Entry {i}-{j}',
-                        custom_fields_enc='',
+                        custom_fields='',
                     )
                     db.add_entry(entry)
             except Exception as e:

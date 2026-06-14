@@ -62,7 +62,7 @@ class AboutDialog(QDialog):
 
         tech = QLabel(
             '技术栈：Python + PyQt6 + cryptography\n'
-            '加密算法：AES-256-GCM + PBKDF2-SHA256\n'
+            '加密算法：AES-256-GCM + Argon2id\n'
             '数据存储：SQLite'
         )
         tech.setAlignment(Qt.AlignmentFlag.AlignCenter)

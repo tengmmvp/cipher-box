@@ -77,7 +77,7 @@ def make_entry():
             password='Pass123!@#',
             url='',
             notes='',
-            custom_fields='',
+            custom_fields=[],
             tags='',
             entry_type='login',
             totp_secret='',

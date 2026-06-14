@@ -10,7 +10,55 @@ from pathlib import Path
 
 import pytest
 
-from src.utils.file_security import secure_directory, secure_file
+from src.utils.file_security import secure_delete_file, secure_directory, secure_file
+
+
+class TestSecureDeleteFile:
+    """secure_delete_file 测试：随机覆写后 unlink，收缩明文取证还原面。"""
+
+    def test_overwrites_then_deletes(self, tmp_path):
+        target = tmp_path / 'secret.cbox'
+        target.write_bytes(b'super-secret-plaintext')
+        secure_delete_file(target)
+        assert not target.exists()
+
+    def test_nonexistent_raises_oserror(self, tmp_path):
+        """文件不存在时 path.stat() 抛 FileNotFoundError（OSError 子类），与调用方
+        ``except OSError`` 契约一致——恢复点/快照清理路径据此计入失败清单或告警。"""
+        with pytest.raises(OSError):
+            secure_delete_file(tmp_path / 'missing.cbox')
+
+    def test_empty_file_deletes_without_overwrite(self, tmp_path):
+        """size=0 时跳过覆写（无内容可覆写）仅 unlink。"""
+        target = tmp_path / 'empty.cbox'
+        target.write_bytes(b'')
+        secure_delete_file(target)
+        assert not target.exists()
+
+    def test_overwrite_replaces_content_before_unlink(self, tmp_path):
+        """覆写确实发生：覆写后、unlink 前内容应与原明文不同。
+
+        通过 monkeypatch 让 unlink 失败（保留文件），读取覆写后的内容验证非原文。
+        """
+        target = tmp_path / 'probe.cbox'
+        original = b'A' * 64
+        target.write_bytes(original)
+
+        real_unlink = Path.unlink
+
+        def _keep(self, *args, **kwargs):
+            pass
+
+        Path.unlink = _keep  # type: ignore[method-assign]
+        try:
+            secure_delete_file(target)
+            overwritten = target.read_bytes()
+        finally:
+            Path.unlink = real_unlink  # type: ignore[method-assign]
+        assert overwritten != original
+        assert len(overwritten) == len(original)
+        # 清理：用真实 unlink 删除探测文件
+        real_unlink(target)
 
 
 class TestSecureDirectory:

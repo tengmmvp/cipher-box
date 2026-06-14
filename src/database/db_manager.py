@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 
 from ..exceptions import DatabaseError, TransactionError
-from ..models import Category, Entry, PasswordHistory
+from ..models import Category, PasswordHistory, RawEntry
 from ..utils.file_security import secure_directory, secure_file
 from ._decorators import _db_operation, _db_write
 from .category_repository import CategoryRepository
@@ -49,12 +49,12 @@ _B64_CHARS = frozenset('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123
 # 签名/验证函数的类型协议，替代弱类型 Callable
 @runtime_checkable
 class EntrySigner(Protocol):
-    def __call__(self, entry: Entry) -> str: ...
+    def __call__(self, entry: RawEntry) -> str: ...
 
 
 @runtime_checkable
 class EntryVerifier(Protocol):
-    def __call__(self, entry: Entry) -> None: ...
+    def __call__(self, entry: RawEntry) -> None: ...
 
 
 class DatabaseManager:
@@ -120,7 +120,7 @@ class DatabaseManager:
         """非事务模式下自动提交，公共接口。"""
         self._auto_commit()
 
-    def sign_entry(self, entry: Entry) -> str:
+    def sign_entry(self, entry: RawEntry) -> str:
         """条目元数据签名，公共接口。"""
         return self._sign_entry(entry)
 
@@ -418,7 +418,7 @@ class DatabaseManager:
                     f'（期望 cb: 前缀的 base64 密文），请通过 EntryManager 操作条目'
                 )
 
-    def _sign_entry(self, entry: Entry) -> str:
+    def _sign_entry(self, entry: RawEntry) -> str:
         if self._entry_signer:
             return self._entry_signer(entry)
         return entry.metadata_mac
@@ -500,7 +500,7 @@ class DatabaseManager:
         limit: int | None = None,
         after_id: int | None = None,
         sort_by_updated: bool = False,
-    ) -> list[Entry]:
+    ) -> list[RawEntry]:
         return self._entry_repo.get_entries(
             deleted_only=deleted_only,
             include_deleted=include_deleted,
@@ -511,15 +511,15 @@ class DatabaseManager:
             sort_by_updated=sort_by_updated,
         )
 
-    def get_entry(self, entry_id: int) -> Optional[Entry]:
+    def get_entry(self, entry_id: int) -> Optional[RawEntry]:
         return self._entry_repo.get_entry(entry_id)
 
-    def add_entry(self, entry: Entry, preserve_metadata: bool = False) -> int:
+    def add_entry(self, entry: RawEntry, preserve_metadata: bool = False) -> int:
         return self._entry_repo.add_entry(entry, preserve_metadata=preserve_metadata)
 
     def update_entry(
         self,
-        entry: Entry,
+        entry: RawEntry,
         preserve_updated_at: bool = False,
     ):
         return self._entry_repo.update_entry(
@@ -551,7 +551,7 @@ class DatabaseManager:
     def get_all_tags(self) -> list[str]:
         return self._entry_repo.get_all_tags()
 
-    def get_entries_by_ids(self, entry_ids: list[int]) -> list[Entry]:
+    def get_entries_by_ids(self, entry_ids: list[int]) -> list[RawEntry]:
         return self._entry_repo.get_entries_by_ids(entry_ids)
 
     # -- 委托透传：Password History --

@@ -1,7 +1,5 @@
 """业务层共享加密工具函数。"""
 
-import copy
-import dataclasses
 import json
 import logging
 from typing import TYPE_CHECKING
@@ -11,7 +9,7 @@ if TYPE_CHECKING:
 
 from ...crypto.encryption import EncryptionEngine
 from ...exceptions import DecryptionError, VaultLockedError
-from ...models import Entry
+from ...models import Entry, RawEntry
 
 logger = logging.getLogger(__name__)
 
@@ -79,14 +77,15 @@ def decrypt_field(
         return ''
 
 
-def matches_search(entry: Entry, query: str, *, username_override: str | None = None) -> bool:
+def matches_search(entry: Entry | RawEntry, query: str, *, username_override: str | None = None) -> bool:
     """检查条目是否匹配搜索关键词，大小写不敏感，搜索 title/username/url/tags。
 
     Args:
-        entry: 待匹配条目。
+        entry: 待匹配条目（明文 Entry 摘要或密文 RawEntry；title/url/tags 在两者
+            均为明文，username 在 RawEntry 为密文需经 username_override 传入解密值）。
         query: 搜索关键词，空字符串匹配所有条目。
         username_override: 若提供，替代 entry.username 用于搜索。
-            用于原始条目 username 仍为密文时传入缓存解密值。
+            用于 RawEntry 的 username 仍为密文时传入缓存解密值。
     """
     if not query:
         return True
@@ -111,26 +110,44 @@ def matches_tag(entry: Entry, tag: str) -> bool:
     return tag_lower in entry_tags
 
 
-def copy_entry_fields(raw: Entry, **overrides) -> Entry:
-    """从 raw Entry 复制所有字段，按需覆盖。
+def copy_entry_fields(raw: RawEntry, **overrides) -> Entry:
+    """从密文态 RawEntry 构建明文 Entry，按需覆盖字段。
 
-    使用 dataclasses.replace 实现，自动复制 Entry 的全部字段，
-    仅 overrides 中指定的字段会被替换。运行时字段 password_present
-    和 totp_present 根据 DB 原始值 raw.password 与 raw.totp_secret
-    自动设置，除非调用方已在 overrides 中显式提供。
-
-    custom_fields 为 list 时执行深拷贝，避免浅拷贝导致多个 Entry
-    共享同一个可变列表对象。
+    RawEntry 与 Entry 是不同 dataclass，不能用 ``dataclasses.replace`` 跨类型
+    （会产出 RawEntry）。直接构造 Entry，逐字段从 raw 取值；可变字段（username/
+    password/notes/totp_secret/custom_fields 等）经 overrides 覆盖。``custom_fields``
+    默认空 list，调用方解密路径应在 ``overrides`` 传入解密后的 ``list[CustomField]``。
     """
-    overrides.setdefault('password_present', bool(raw.password))
-    overrides.setdefault('totp_present', bool(raw.totp_secret))
-    # 深拷贝 custom_fields 防止浅拷贝别名问题
-    if 'custom_fields' not in overrides and raw.is_decrypted:
-        overrides['custom_fields'] = copy.deepcopy(raw.custom_fields)
-    return dataclasses.replace(raw, **overrides)
+    return Entry(
+        id=overrides.get('id', raw.id),
+        crypto_id=overrides.get('crypto_id', raw.crypto_id),
+        title=overrides.get('title', raw.title),
+        username=overrides.get('username', raw.username),
+        password=overrides.get('password', raw.password),
+        url=overrides.get('url', raw.url),
+        category_id=overrides.get('category_id', raw.category_id),
+        category_name=overrides.get('category_name', raw.category_name),
+        tags=overrides.get('tags', raw.tags),
+        notes=overrides.get('notes', raw.notes),
+        custom_fields=overrides.get('custom_fields', []),
+        is_favorite=overrides.get('is_favorite', raw.is_favorite),
+        is_deleted=overrides.get('is_deleted', raw.is_deleted),
+        password_strength=overrides.get('password_strength', raw.password_strength),
+        entry_type=overrides.get('entry_type', raw.entry_type),
+        totp_secret=overrides.get('totp_secret', raw.totp_secret),
+        created_at=overrides.get('created_at', raw.created_at),
+        updated_at=overrides.get('updated_at', raw.updated_at),
+        deleted_at=overrides.get('deleted_at', raw.deleted_at),
+        password_changed_at=overrides.get('password_changed_at', raw.password_changed_at),
+        metadata_mac=overrides.get('metadata_mac', raw.metadata_mac),
+        integrity_error=overrides.get('integrity_error', raw.integrity_error),
+        integrity_message=overrides.get('integrity_message', raw.integrity_message),
+        password_present=overrides.get('password_present', bool(raw.password)),
+        totp_present=overrides.get('totp_present', bool(raw.totp_secret)),
+    )
 
 
-def build_entry_summary(raw: Entry, username: str = '') -> Entry:
+def build_entry_summary(raw: RawEntry, username: str = '') -> Entry:
     """从原始数据库字段构建摘要 Entry，可选附带已解密的用户名。
 
     Summary 条目不含 password/notes/totp_secret/custom_fields 等敏感字段，
@@ -141,13 +158,13 @@ def build_entry_summary(raw: Entry, username: str = '') -> Entry:
         username=username,
         password='',
         notes='',
-        custom_fields='',
+        custom_fields=[],
         totp_secret='',
     )
 
 
 def decrypt_entry_to_portable_dict(
-    raw_entry: Entry,
+    raw_entry: RawEntry,
     key: bytes,
     *,
     include_secrets: bool = True,

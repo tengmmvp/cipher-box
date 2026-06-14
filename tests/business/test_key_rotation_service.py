@@ -21,7 +21,7 @@ from src.business.services.key_rotation import (
 from src.business.services.metadata_signer import MetadataSigner
 from src.crypto.encryption import EncryptionEngine
 from src.exceptions import DecryptionError
-from src.models import Entry, PasswordHistory
+from src.models import PasswordHistory, RawEntry
 
 # ---------------------------------------------------------------------------
 # 辅助函数：生成随机 AES-256 密钥
@@ -44,12 +44,12 @@ def _make_raw_entry(
     notes: str = '',
     totp_secret: str = '',
     custom_fields: list | None = None,
-) -> Entry:
-    """创建一个模拟数据库原始状态的 Entry，敏感字段已用 key 加密。"""
+) -> RawEntry:
+    """创建一个模拟数据库原始状态的 RawEntry，敏感字段已用 key 加密。"""
     crypto_id = uuid.uuid4().hex
     custom_json = json.dumps(custom_fields or [], ensure_ascii=False)
 
-    return Entry(
+    return RawEntry(
         id=entry_id,
         crypto_id=crypto_id,
         title=f'条目{entry_id}',
@@ -59,7 +59,6 @@ def _make_raw_entry(
         category_id=None,
         tags='',
         notes=encrypt_field(notes, key, crypto_id, 'notes') if notes else '',
-        custom_fields_enc=encrypt_field(custom_json, key, crypto_id, 'custom_fields') if custom_json != '[]' else '',
         custom_fields=encrypt_field(custom_json, key, crypto_id, 'custom_fields') if custom_json != '[]' else '',
         is_favorite=False,
         is_deleted=False,
@@ -82,7 +81,7 @@ class MockDB:
     """内存 mock，实现 KeyRotationDB Protocol 四个方法。"""
 
     def __init__(self):
-        self._entries: list[Entry] = []
+        self._entries: list[RawEntry] = []
         self._history: list[PasswordHistory] = []
         # 记录调用参数供断言
         self.updated_entry_batches: list[list] = []
@@ -90,7 +89,7 @@ class MockDB:
 
     # -- 填充接口 --
 
-    def add_entry(self, entry: Entry):
+    def add_entry(self, entry: RawEntry):
         self._entries.append(entry)
 
     def add_history(self, history: PasswordHistory):

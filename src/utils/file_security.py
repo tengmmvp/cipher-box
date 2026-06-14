@@ -196,3 +196,26 @@ def secure_file(path: Path) -> Path:
     if os.name == 'nt':
         _restrict_windows_acl(path, False)
     return path
+
+
+def secure_delete_file(path: Path) -> None:
+    """覆盖删除文件：先以随机字节覆写内容再 unlink，收缩明文在支持数据恢复的
+    文件系统（NTFS/ext4）上的取证还原面。
+
+    用于含明文或历史明文的敏感文件（恢复点 pre_restore_*.cbox、自动快照
+    cipherbox_snapshot_*.cbox、临时备份），统一改密路径与其它清理路径的删除强度，
+    避免敏感快照仅被 unlink 而明文扇区可被取证工具还原。
+
+    注意：SSD 的磨损均衡与写入放大使覆写并非密码学保证，但比单纯 unlink（仅
+    释放 inode 引用）显著更强。覆写或 unlink 失败均抛 OSError，由调用方计入
+    失败清单上报而非静默丢失。
+    """
+    try:
+        size = path.stat().st_size
+        if size > 0:
+            with open(path, 'r+b') as fp:
+                fp.write(os.urandom(size))
+                fp.flush()
+                os.fsync(fp.fileno())
+    finally:
+        path.unlink()

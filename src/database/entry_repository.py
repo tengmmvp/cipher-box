@@ -10,7 +10,7 @@ import uuid
 from typing import Optional
 
 from ..exceptions import DatabaseError, VaultIntegrityError, VaultLockedError
-from ..models import MAX_PASSWORD_HISTORY, Entry, PasswordHistory, RawEntry
+from ..models import MAX_PASSWORD_HISTORY, PasswordHistory, RawEntry
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation, _db_write
 from .types import VerifyMode
@@ -105,7 +105,7 @@ class EntryRepository:
     def _auto_commit(self):
         return self._mgr.auto_commit()
 
-    def _sign_entry(self, entry: Entry) -> str:
+    def _sign_entry(self, entry: RawEntry) -> str:
         return self._mgr.sign_entry(entry)
 
     @property
@@ -136,7 +136,7 @@ class EntryRepository:
         limit: int | None = None,
         after_id: int | None = None,
         sort_by_updated: bool = False,
-    ) -> list[Entry]:
+    ) -> list[RawEntry]:
         """获取密码条目列表
 
         sort_by_updated 为 True 时仅按 updated_at DESC 排序（不带 is_favorite），
@@ -179,7 +179,7 @@ class EntryRepository:
         return [self._row_to_entry(r, verify=VerifyMode.LENIENT) for r in rows]
 
     @_db_operation
-    def get_entry(self, entry_id: int) -> Optional[Entry]:
+    def get_entry(self, entry_id: int) -> Optional[RawEntry]:
         """获取单个条目"""
         row = self._conn.execute(
             """SELECT e.*, c.name as category_name
@@ -191,7 +191,7 @@ class EntryRepository:
         return self._row_to_entry(row) if row else None
 
     @_db_write
-    def add_entry(self, entry: Entry, preserve_metadata: bool = False) -> int:
+    def add_entry(self, entry: RawEntry, preserve_metadata: bool = False) -> int:
         """添加条目，返回 ID"""
         # 防御性断言，防止明文静默写入加密列
         self._assert_encrypted(entry.username, 'username')
@@ -247,7 +247,7 @@ class EntryRepository:
     @_db_write
     def update_entry(
         self,
-        entry: Entry,
+        entry: RawEntry,
         preserve_updated_at: bool = False,
     ):
         """更新条目。
@@ -389,7 +389,7 @@ class EntryRepository:
         return [row['tags'] or '' for row in rows]
 
     @_db_operation
-    def get_entries_by_ids(self, entry_ids: list[int]) -> list[Entry]:
+    def get_entries_by_ids(self, entry_ids: list[int]) -> list[RawEntry]:
         """按 ID 列表批量获取条目。
 
         用于导入覆盖等需要一次性获取多个条目的场景，
@@ -551,7 +551,7 @@ class EntryRepository:
 
     # ========== 内部方法 ==========
 
-    def _select_entry_for_sign(self, entry_id: int) -> Entry | None:
+    def _select_entry_for_sign(self, entry_id: int) -> RawEntry | None:
         """按 ID 查询签名所需的完整行并返回 Entry 对象。
 
         供 soft_delete_entry / restore_entry 等需要重算签名的操作复用，
@@ -607,7 +607,7 @@ class EntryRepository:
                 STRICT 在校验失败时抛出异常；LENIENT 仅设置
                 integrity_error 标志并继续；SKIP 完全跳过校验。
         """
-        entry = Entry(
+        entry = RawEntry(
             id=row['id'],
             crypto_id=row['crypto_id'],
             title=row['title'],
@@ -618,8 +618,7 @@ class EntryRepository:
             category_name=row['category_name'],
             tags=row['tags'] or '',
             notes=row['notes_enc'],
-            custom_fields_enc=row['custom_fields_enc'] or '',
-            custom_fields=row['custom_fields_enc'],
+            custom_fields=row['custom_fields_enc'] or '',
             is_favorite=bool(row['is_favorite']),
             is_deleted=bool(row['is_deleted']),
             password_strength=row['password_strength'],

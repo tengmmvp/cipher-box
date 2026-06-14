@@ -9,7 +9,7 @@ import dataclasses
 import pytest
 
 from src.database.db_manager import DatabaseManager
-from src.models import Entry
+from src.models import RawEntry
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ def _make_encrypted_entry(**overrides):
     注意：此函数硬编码了 Entry dataclass 的全部字段。Entry 模型新增字段时，
     此处的 defaults 字典必须同步更新，否则构造时会因缺少默认值而报错。
     """
-    entry = Entry(
+    entry = RawEntry(
         id=None,
         crypto_id='test-crypto-id',
         title='Test',
@@ -41,7 +41,6 @@ def _make_encrypted_entry(**overrides):
         category_id=None,
         tags='',
         notes='cb:encrypted',
-        custom_fields_enc='cb:encrypted',
         custom_fields='cb:encrypted',
         is_favorite=False,
         is_deleted=False,
@@ -59,7 +58,7 @@ def _make_encrypted_entry(**overrides):
 
 def _make_plain_entry(**overrides):
     """构建一个明文字段的 Entry，模拟未加密状态。"""
-    entry = Entry(
+    entry = RawEntry(
         id=None,
         crypto_id='test-crypto-id',
         title='Test',
@@ -69,7 +68,6 @@ def _make_plain_entry(**overrides):
         category_id=None,
         tags='',
         notes='',
-        custom_fields_enc='',
         custom_fields='',
         is_favorite=False,
         is_deleted=False,

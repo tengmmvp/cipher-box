@@ -10,6 +10,7 @@ import json
 import logging
 
 from ...exceptions import VaultIntegrityError, VaultLockedError
+from ...models import RawEntry
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +26,10 @@ class MetadataSigner:
     或在 ``sign()`` / ``verify()`` 时传入显式 key 临时派生。
     """
 
-    def __init__(self, domain_key: bytes | None = None):
-        self._domain_key = domain_key
+    def __init__(self, domain_key: bytes | bytearray | None = None):
+        self._domain_key = (
+            bytearray(domain_key) if domain_key is not None else None
+        )
 
     def set_domain_key(self, key: bytes | bytearray) -> None:
         """设置预计算的域密钥，解锁或改密成功后调用。
@@ -55,7 +58,7 @@ class MetadataSigner:
         """
         return bytearray(hmac.new(key, b'cipherbox:entry-metadata-key', hashlib.sha256).digest())
 
-    def sign(self, entry) -> str:
+    def sign(self, entry: RawEntry) -> str:
         """计算条目元数据 HMAC 签名，使用预计算的域密钥。
 
         Returns:
@@ -72,7 +75,7 @@ class MetadataSigner:
             hashlib.sha256,
         ).hexdigest()
 
-    def sign_with_domain_key(self, entry, domain_key: bytes) -> str:
+    def sign_with_domain_key(self, entry: RawEntry, domain_key: bytes) -> str:
         """直接使用预计算的域密钥签名，跳过密钥派生步骤。
 
         用于 KeyRotationService 批量重加密场景，避免每条条目
@@ -88,7 +91,7 @@ class MetadataSigner:
             hashlib.sha256,
         ).hexdigest()
 
-    def verify(self, entry) -> None:
+    def verify(self, entry: RawEntry) -> None:
         """验证条目元数据完整性签名。
 
         Raises:
@@ -102,7 +105,7 @@ class MetadataSigner:
             raise VaultIntegrityError(f'条目 {entry.id} 元数据完整性校验失败')
 
     @staticmethod
-    def _payload(entry) -> bytes:
+    def _payload(entry: RawEntry) -> bytes:
         """构造签名载荷。
 
         Args:
@@ -131,11 +134,14 @@ class MetadataSigner:
             'deleted_at': entry.deleted_at,
             'password_changed_at': entry.password_changed_at,
         }
-        # 绑定加密字段密文到签名，防止密文置换或回滚攻击
-        enc_concat = '|'.join([
+        # 绑定加密字段密文到签名，防止密文置换或回滚攻击。长度前缀拼接消除对
+        # 「密文不含分隔符」的隐式假设：固定分隔符（如 '|'）在当前 cb: base64 密文
+        # 下安全，但未来加密格式若使密文含该字符会产生歧义载荷；长度前缀无歧义。
+        enc_parts = [
             entry.username, entry.password, entry.notes,
             entry.totp_secret, entry.custom_fields_db_value,
-        ])
+        ]
+        enc_concat = ''.join(f'{len(p)}:{p}' for p in enc_parts)
         data['_enc_hash'] = hashlib.sha256(enc_concat.encode('utf-8')).hexdigest()
         return json.dumps(
             data,

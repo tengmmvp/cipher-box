@@ -92,6 +92,16 @@ class EntryManager:
         return self._vault.db
 
     @property
+    def key_epoch(self) -> str | None:
+        """当前密钥版本，委托 vault。
+
+        供 ImportExportManager 等跨管理器操作做 epoch 守卫，避免直接穿透
+        ``_vault`` 私有属性。EntryManager 内部（``_invalidate_if_epoch_changed``）
+        本就经此路径访问 key_epoch。
+        """
+        return self._vault.key_epoch
+
+    @property
     def _key(self) -> bytes:
         return require_vault_key(self._vault)
 
@@ -105,10 +115,11 @@ class EntryManager:
         updated_at: str | None = None,
         password_override: str | None = None,
         entry_id: int | None = None,
-    ) -> Entry:
-        """构建加密 Entry 对象，统一处理字段加密逻辑。
+    ) -> RawEntry:
+        """构建加密 RawEntry 对象，统一处理字段加密逻辑。
 
-        add_entry 和 update_entry 共用此方法，避免加密字段遗漏。
+        add_entry 和 update_entry 共用此方法，避免加密字段遗漏。返回密文态
+        RawEntry（custom_fields 为密文 str），供 EntryRepository 写入数据库。
         password_override: 若提供，视为已加密的密文，直接赋值，不再重复加密。
         """
         # password_override 已是密文，即 update_entry 场景，直接赋值；
@@ -118,7 +129,8 @@ class EntryManager:
             if password_override is not None
             else self._encrypt_field(entry.password, crypto_id, 'password')
         )
-        return Entry(
+        custom_fields_cipher = self._encrypt_custom_fields(entry.custom_fields, crypto_id)
+        return RawEntry(
             id=entry_id,
             crypto_id=crypto_id,
             title=entry.title,
@@ -128,7 +140,7 @@ class EntryManager:
             category_id=entry.category_id,
             tags=entry.tags,
             notes=self._encrypt_field(entry.notes, crypto_id, 'notes'),
-            custom_fields=self._encrypt_custom_fields(entry.custom_fields, crypto_id),
+            custom_fields=custom_fields_cipher,
             is_favorite=entry.is_favorite,
             password_strength=entry.password_strength,
             entry_type=entry.entry_type,
@@ -438,21 +450,9 @@ class EntryManager:
         )
         enc_entry.password_changed_at = password_changed_at
         with self.db.transaction():
-            # 乐观锁观测：事务内复查密码密文是否与读取时一致。单用户桌面应用
-            # 竞态窗口极小（TOTP 后台只读，无并发写），若检测到读取后密码被并发
-            # 修改则记录告警，便于未来引入并发写时定位丢失归档问题。归档读取
-            # 时刻的 old_pwd_enc 仍正确（它是读取时的真实密码）。
-            if entry.id is not None:
-                fresh = self.db.get_entry(entry.id)
-                if (
-                    fresh is not None
-                    and old_pwd_enc
-                    and fresh.password != old_pwd_enc
-                ):
-                    logger.warning(
-                        "条目 %d 更新期间密码被并发修改（读取与提交密文不一致）",
-                        entry.id,
-                    )
+            # 单用户桌面应用无并发写（TOTP 后台只读），事务内无需复查密码密文
+            # 一致性。历史版本的乐观锁观测在单用户下竞态窗口永不触发，移除以
+            # 省一次 DB 往返。归档读取时刻的 old_pwd_enc 仍正确（它是读取时的真实密码）。
             if old_pwd_enc and password_changed and entry.id is not None:
                 # 用与条目一致的 password_changed_at 作为历史 changed_at，
                 # 避免两次独立 utc_now_iso() 产生的微秒级时序倒置
@@ -575,12 +575,21 @@ class EntryManager:
             favorite_only=favorite_only,
             limit=sql_limit,
         )
-        summaries = [self._decrypt_summary(entry) for entry in raw_entries]
         if search:
-            summaries = [e for e in summaries if matches_search(e, search)]
+            # 早过滤：先用 _cached_username（命中会话内缓存，避免重复解密）+
+            # matches_search 判断命中，仅对命中条目构建 summary，省去未命中条目
+            # 的 dataclass 拷贝开销。username 解密经 _cached_username 缓存，首次
+            # 搜索后命中缓存，重复搜索无解密成本。
+            summaries = []
+            for raw in raw_entries:
+                username = self._cached_username(raw)
+                if matches_search(raw, search, username_override=username):
+                    summaries.append(self._decrypt_summary(raw))
             # search 时 limit 未下推 SQL，此处截断以兑现 limit 契约
             if limit:
                 summaries = summaries[:limit]
+        else:
+            summaries = [self._decrypt_summary(entry) for entry in raw_entries]
         return summaries
 
     def get_recent_summaries(self, limit: int = 20) -> list[Entry]:

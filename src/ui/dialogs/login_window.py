@@ -1,7 +1,7 @@
 """登录窗口，负责首次设置主密码与日常主密码解锁。
 
 依据保险库是否已初始化切换首次设置与登录两套流程。主密码相关操作
-涉及 PBKDF2 高强度迭代，在后台线程执行以避免冻结 UI。内置速率限制
+涉及 Argon2id 内存硬化密钥派生，在后台线程执行以避免冻结 UI。内置速率限制
 与失败锁定，登录成功后立即清除输入框中的明文。
 """
 
@@ -243,7 +243,7 @@ class LoginWindow(QDialog):
             action = self._vault.unlock
             error_default = '主密码错误'
 
-        # 主密码派生使用 PBKDF2 600k 迭代，耗时较高，需在后台线程执行避免冻结 UI
+        # 主密码派生使用 Argon2id（内存硬化 KDF），耗时较高，需在后台线程执行避免冻结 UI
         self._start_auth(action, password, error_default)
 
     def _start_auth(self, action, password: str, error_default: str):

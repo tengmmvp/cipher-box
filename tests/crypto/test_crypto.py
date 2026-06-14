@@ -111,7 +111,7 @@ def test_change_password():
     assert result is not None
     new_salt, new_verify, new_key = result
     # change_password 返回复用 create 已派生的 new_key，调用方无需
-    # 重复一次 PBKDF2 派生即可得到 32 字节 AES-256 密钥。
+    # 重复一次 Argon2id 派生即可得到 32 字节 AES-256 密钥。
     assert len(new_key) == 32
 
     # 新密码应能验证。

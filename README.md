@@ -26,7 +26,7 @@
 <td width="50%">
 
 ### 🔑 密码保险库
-- PBKDF2-HMAC-SHA256 密钥派生（600K 迭代）
+- Argon2id 内存硬化密钥派生（OWASP 推荐量级）
 - 主密码修改时自动全量重加密
 - 自动锁定 · 登录限流 · 事务安全
 
@@ -95,7 +95,8 @@ python main.py
 | 包名 | 用途 |
 |------|------|
 | `PyQt6 >= 6.6.0` | 桌面端 UI 框架 |
-| `cryptography >= 42.0.0` | AES-256-GCM 加密、PBKDF2 密钥派生 |
+| `cryptography >= 42.0.0` | AES-256-GCM 加密 |
+| `argon2-cffi >= 25.1.0` | Argon2id 密钥派生 |
 | `QtAwesome >= 1.3.0` | 统一矢量图标系统 |
 
 </details>
@@ -115,7 +116,7 @@ python -m unittest discover tests/  # unittest
 
 | 组件 | 算法 | 说明 |
 |:-----|:-----|:-----|
-| 密钥派生 | PBKDF2-HMAC-SHA256 | 600K 迭代，32 字节盐 |
+| 密钥派生 | Argon2id | time=3 / 64MB / 并行=4，32 字节盐 |
 | 数据加密 | AES-256-GCM | 每值独立随机 nonce，并绑定条目和字段上下文 |
 | 密码验证 | 加密验证令牌 | 不存储密码哈希 |
 | 数据库写入 | SQLite WAL + FULL 同步 | 事务写入、外键约束、安全删除与检查点 |
@@ -132,7 +133,7 @@ python -m unittest discover tests/  # unittest
 
 ```
 src/
-├── crypto/          # 加密引擎（AES-256-GCM、PBKDF2、TOTP）
+├── crypto/          # 加密引擎（AES-256-GCM、Argon2id、TOTP）
 ├── database/        # SQLite 数据层与固定结构校验
 ├── business/        # 业务编排（保险库、条目、安全分析、导入导出）
 ├── ui/              # PyQt6 界面（主题系统、QSS 样式）

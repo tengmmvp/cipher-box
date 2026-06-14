@@ -185,13 +185,11 @@ class PasswordHistory:
 
 @dataclass
 class Entry:
-    """密码条目
+    """密码条目（明文态）。
 
-    custom_fields 双重类型状态机：
-    - DB-raw 状态：从数据库读取后为 str 即加密密文，custom_fields_enc 与之相同
-    - Decrypted 状态：经 EntryManager.decrypt_entry() 解密后为 list[CustomField]
-    - 消费者可通过 is_decrypted 属性检查当前状态
-    - 使用 custom_fields_db_value 属性可安全获取用于 DB 存储的密文值
+    custom_fields 为已解密的 list[CustomField]。数据库密文态由独立的 RawEntry 表示，
+    经 EntryManager.decrypt_entry 解密后得到本类。is_decrypted 恒为 True。签名/写库
+    等需密文的场景操作 RawEntry（其 custom_fields 即密文）。
     """
 
     id: int | None = None
@@ -204,8 +202,7 @@ class Entry:
     category_name: str = ''
     tags: str = ''
     notes: str = ''
-    custom_fields_enc: str = ''
-    custom_fields: list[CustomField] | str = field(default_factory=list)
+    custom_fields: list[CustomField] = field(default_factory=list)
     is_favorite: bool = False
     is_deleted: bool = False
     password_strength: int = 0
@@ -241,15 +238,6 @@ class Entry:
                 f'Entry (id={self.id}, title={self.title!r}) 尚未解密，'
                 f'custom_fields 类型为 {type(self.custom_fields).__name__}'
             )
-
-    @property
-    def custom_fields_db_value(self) -> str:
-        """返回用于数据库存储的加密字符串。
-
-        当 custom_fields 为 str 即原始密文时直接返回；
-        当 custom_fields 为 list 即已解密时回退到 custom_fields_enc。
-        """
-        return self.custom_fields if isinstance(self.custom_fields, str) else self.custom_fields_enc
 
     @property
     def type_icon(self) -> str:
@@ -376,16 +364,79 @@ class Entry:
         )
 
 
-# RawEntry 是从数据库读取、尚未解密的 Entry 的类型别名。
-#
-# 数据层 EntryRepository._row_to_entry 等返回 RawEntry，其加密字段
-# （username/password/notes/totp_secret/custom_fields）为密文字符串，
-# custom_fields 此时为 str 即密文；业务层 EntryManager.decrypt_entry
-# 将 RawEntry 解密为明文 Entry，custom_fields 变为 list[CustomField]。
-#
-# 运行时 RawEntry 与 Entry 同为 Entry 类（custom_fields 的双类型 +
-# is_decrypted 属性区分状态），此别名用于类型标注与文档，使数据层的
-# 密文返回值与业务层的明文返回值在类型层面可分辨，降低误用风险。
-# 未采用两个独立 dataclass 的完整运行时分离，因会触及全链路加解密、
-# 签名与序列化逻辑，对密码管理器的数据损坏风险高于可维护性收益。
-RawEntry = Entry
+@dataclass
+class RawEntry:
+    """从数据库读取的密文态条目。
+
+    加密字段（username/password/notes/totp_secret/custom_fields）为密文字符串；
+    ``custom_fields`` 为密文 JSON 字符串（区别于明文态 :class:`Entry` 的
+    ``list[CustomField]``）。经 ``EntryManager.decrypt_entry`` /
+    ``build_entry_summary`` 解密为明文 Entry。
+
+    ``is_decrypted`` 恒为 False；``custom_fields_db_value`` 返回 ``custom_fields``
+    （密文），供签名、重加密、备份等需要密文的场景。与 Entry 共享字段名以便显式
+    转换，但 ``custom_fields`` 类型不同（str vs list），编译期可分辨，消除原先
+    同名字段双语义（DB-raw 密文 str / 解密 list 共存于 Entry）导致的误用风险——
+    对 RawEntry 误调用 list 方法、或对明文 Entry 误当密文，都会被类型检查捕获。
+    """
+
+    id: int | None = None
+    crypto_id: str = ''
+    title: str = ''
+    username: str = ''
+    password: str = ''
+    url: str = ''
+    category_id: int | None = None
+    category_name: str = ''
+    tags: str = ''
+    notes: str = ''
+    custom_fields: str = ''
+    is_favorite: bool = False
+    is_deleted: bool = False
+    password_strength: int = 0
+    entry_type: str = ENTRY_TYPE_LOGIN
+    totp_secret: str = ''
+    created_at: str = ''
+    updated_at: str = ''
+    deleted_at: str = ''
+    password_changed_at: str = ''
+    metadata_mac: str = ''
+    # 运行时字段（_row_to_entry 在 LENIENT 校验失败时设置）
+    integrity_error: bool = False
+    integrity_message: str = ''
+    password_present: bool = False
+    totp_present: bool = False
+
+    @property
+    def is_decrypted(self) -> bool:
+        """RawEntry 恒为密文态。"""
+        return False
+
+    def assert_decrypted(self) -> None:
+        """RawEntry 是密文态，调用此方法说明误把密文当明文使用。"""
+        raise ValueError(
+            f'RawEntry (id={self.id}, title={self.title!r}) 是密文态，'
+            f'需先经 EntryManager.decrypt_entry 解密为 Entry'
+        )
+
+    @property
+    def custom_fields_db_value(self) -> str:
+        """密文 custom_fields，直接用于 DB 存储/签名/重加密。"""
+        return self.custom_fields
+
+    @property
+    def type_icon(self) -> str:
+        return ENTRY_TYPES.get(self.entry_type, ENTRY_TYPES[ENTRY_TYPE_LOGIN])['icon']
+
+    @property
+    def type_label(self) -> str:
+        return ENTRY_TYPES.get(self.entry_type, ENTRY_TYPES[ENTRY_TYPE_LOGIN])['label']
+
+    @property
+    def has_totp(self) -> bool:
+        return self.totp_present or bool(self.totp_secret)
+
+    def get_tag_list(self) -> list[str]:
+        if not self.tags:
+            return []
+        return [t.strip() for t in self.tags.split(',') if t.strip()]

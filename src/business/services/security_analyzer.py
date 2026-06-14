@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 from ...exceptions import VaultLockedError
-from ...models import Entry
+from ...models import Entry, RawEntry
 from .crypto_utils import build_entry_summary, decrypt_field, require_vault_key
 
 # 分析缓存存活时间，单位为秒。命中期内复用基础分析与密码指纹结果，
@@ -55,7 +55,7 @@ class SecurityAnalyzer:
         return require_vault_key(self._vault)
 
     def _decrypt(
-        self, raw: Entry, field_name: str, value: str, *,
+        self, raw: RawEntry, field_name: str, value: str, *,
         strict: bool = False, key: bytes | None = None,
     ) -> str:
         if not value:
@@ -64,7 +64,7 @@ class SecurityAnalyzer:
             value, key or self._key, raw.crypto_id, field_name, strict=strict
         )
 
-    def _make_summary(self, raw: Entry, key: bytes | None = None) -> Entry:
+    def _make_summary(self, raw: RawEntry, key: bytes | None = None) -> Entry:
         """只返回分析界面所需字段，避免缓存敏感明文。
 
         Summary Entry 不含 password/notes/totp_secret/custom_fields 明文，
@@ -200,6 +200,27 @@ class SecurityAnalyzer:
             self._analysis_cache = None
             self._analysis_cache_time = 0
 
+    def _parse_changed_utc(self, raw: RawEntry) -> datetime | None:
+        """解析条目的密码变更时间为 UTC datetime，供过期检测。
+
+        回退顺序 password_changed_at → updated_at → created_at。naive 视为 UTC、
+        aware 归一化到 UTC，避免 naive 与 aware cutoff 比较抛 TypeError。解析
+        失败返回 None（不计入过期）。
+        """
+        changed_at_str = (
+            raw.password_changed_at or raw.updated_at or raw.created_at
+        )
+        if not changed_at_str:
+            return None
+        try:
+            changed_utc = datetime.fromisoformat(changed_at_str)
+            if changed_utc.tzinfo is None:
+                return changed_utc.replace(tzinfo=timezone.utc)
+            return changed_utc.astimezone(timezone.utc)
+        except (ValueError, TypeError):
+            logger.debug('条目 %s 日期解析失败: %s', raw.id, changed_at_str)
+            return None
+
     def full_analysis(self, days: int = 90) -> dict:
         """一次性完成所有安全分析，避免重复解密。
 
@@ -240,21 +261,9 @@ class SecurityAnalyzer:
                 skipped_count += 1
                 continue
 
-            # 解析 changed_at 为 UTC datetime：naive 视为 UTC、aware 归一化到 UTC，
-            # 避免 naive 与 aware cutoff 比较抛 TypeError 使整个分析崩溃
-            changed_at_str = (
-                raw.password_changed_at or raw.updated_at or raw.created_at
-            )
-            changed_utc = None
-            if changed_at_str:
-                try:
-                    changed_utc = datetime.fromisoformat(changed_at_str)
-                    if changed_utc.tzinfo is None:
-                        changed_utc = changed_utc.replace(tzinfo=timezone.utc)
-                    else:
-                        changed_utc = changed_utc.astimezone(timezone.utc)
-                except (ValueError, TypeError):
-                    logger.debug('条目 %s 日期解析失败: %s', raw.id, changed_at_str)
+            # 解析 changed_at 为 UTC datetime，抽至 _parse_changed_utc 降低 full_analysis
+            # 圈复杂度，且便于单测覆盖日期回退与 naive/aware 归一化逻辑。
+            changed_utc = self._parse_changed_utc(raw)
             _summaries_with_dates.append((summary, changed_utc))
 
             # 弱密码检测，使用已存储的强度评分，无需解密

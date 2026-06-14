@@ -7,7 +7,7 @@ SecurityAnalyzer 在 full_analysis 中遇到解密失败的条目时应跳过而
 from unittest.mock import MagicMock, patch
 
 from src.business.services.security_analyzer import SecurityAnalyzer
-from src.models import Entry
+from src.models import RawEntry
 
 
 class TestSecurityAnalyzerSkipCorrupt:
@@ -19,13 +19,13 @@ class TestSecurityAnalyzerSkipCorrupt:
         vault.key = b'\x00' * 32
         vault.is_unlocked = True
 
-        bad_entry = Entry(
+        bad_entry = RawEntry(
             id=1,
             crypto_id='bad_crypto_id',
             title='损坏条目',
             username='enc_bad_user',
             password='enc_bad_pass',
-            custom_fields_enc='',
+            custom_fields='',
             notes='enc_bad_notes',
             totp_secret='',
             password_strength=0,
@@ -50,13 +50,13 @@ class TestSecurityAnalyzerSkipCorrupt:
         vault.key = b'\x00' * 32
         vault.is_unlocked = True
 
-        corrupt_entry = Entry(
+        corrupt_entry = RawEntry(
             id=1,
             crypto_id='corrupt_crypto',
             title='损坏',
             username='enc',
             password='enc_pass',
-            custom_fields_enc='',
+            custom_fields='',
             password_strength=0,
         )
 
@@ -101,13 +101,13 @@ class TestSecurityAnalyzerSkipCorrupt:
         vault.key = b'\x00' * 32
         vault.is_unlocked = True
 
-        entry = Entry(
+        entry = RawEntry(
             id=1,
             crypto_id='naive_crypto',
             title='旧条目',
             username='',
             password='',
-            custom_fields_enc='',
+            custom_fields='',
             # naive ISO 字符串，无 +00:00 偏移（模拟旧版或外部导入数据）
             password_changed_at='2020-01-01T00:00:00',
         )

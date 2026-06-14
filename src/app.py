@@ -71,7 +71,9 @@ class CipherBoxApp:
             try:
                 self._emergency_cleanup(full=True)
             except Exception:
-                pass
+                # 崩溃兜底绝不能再次抛出（会让进程状态进一步恶化），但记录 exc_info
+                # 保留可审计性——崩溃清理静默失效是密码管理器最难诊断的安全路径。
+                logger.warning("崩溃兜底清理失败", exc_info=True)
             original_excepthook(exc_type, exc_value, exc_tb)
 
         sys.excepthook = _excepthook
@@ -86,6 +88,9 @@ class CipherBoxApp:
         避免阻塞退出）。``lock()`` 与 ``clear_now()`` 均幂等；保险库已锁定时短路，
         避免 ``closeEvent``/``_quit_app`` 已先行清理后 ``aboutToQuit`` 对已关闭的
         vault 重复 ``lock()`` 触发回调访问已关闭 DB。
+
+        每个兜底分支记录 ``exc_info`` 而非静默 ``pass``：崩溃/退出路径的清理失败
+        事后无法复现，缺日志会让"锁屏/剪贴板清理在异常态静默失效"无从诊断。
         """
         # 短路：保险库未解锁（已锁定/未登录）时无需清理，避免退出路径多处兜底
         # 对已 lock 的 vault 重复操作。is_unlocked 访问也吞异常以防 vault 异常态。
@@ -93,23 +98,23 @@ class CipherBoxApp:
             if not self._vault.is_unlocked:
                 return
         except Exception:
-            pass
+            logger.warning("崩溃兜底：检查解锁状态失败", exc_info=True)
         if full and self._main_window is not None:
             try:
                 self._main_window.prepare_for_lock()
             except Exception:
-                pass
+                logger.warning("崩溃兜底：prepare_for_lock 失败", exc_info=True)
         if self._main_window is not None:
             try:
                 # 经公共方法而非 getattr 访问 _clipboard 私有属性：崩溃兜底路径
                 # 最不应静默失效，私有属性重命名时 getattr 返回 None 会无声错过清理。
                 self._main_window.emergency_clear_clipboard()
             except Exception:
-                pass
+                logger.warning("崩溃兜底：清空剪贴板失败", exc_info=True)
         try:
             self._vault.lock()
         except Exception:
-            pass
+            logger.warning("崩溃兜底：锁定保险库失败", exc_info=True)
 
     def run(self) -> int:
         """启动应用"""

@@ -9,6 +9,7 @@ from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from ...crypto.totp import TOTPGenerator
 from ...utils.format import utc_now_iso
 
 if TYPE_CHECKING:
@@ -77,6 +78,11 @@ def _transactional_import(method):
     仅可能发生在事务外的读取阶段，此处统一替换为友好提示。
     """
     method_sig = inspect.signature(method)
+    # 装饰器应用即校验被装饰方法含 filepath 参数，让重命名/漏参在导入时立即暴露，
+    # 而非延迟到运行时 bound.arguments['filepath'] 抛 KeyError（栈帧远离原因）。
+    assert 'filepath' in method_sig.parameters, (
+        f'@_transactional_import 装饰的方法 {method.__qualname__} 必须含 filepath 参数'
+    )
 
     @wraps(method)
     def wrapper(self, *args, **kwargs):
@@ -450,9 +456,9 @@ class ImportExportManager:
         # 保证（改密 _re_encrypt_all 同样经该锁串行），不会与导入并发写库。此处二次
         # 校验 epoch 是纵深防御，避免未来若移除事务锁时静默引入竞态——切勿据此
         # 误以为去掉事务锁后仅靠此守卫仍安全。
-        pre_epoch = self._entry_mgr._vault.key_epoch
+        pre_epoch = self._entry_mgr.key_epoch
         with self._entry_mgr.db.transaction():
-            current_epoch = self._entry_mgr._vault.key_epoch
+            current_epoch = self._entry_mgr.key_epoch
             if pre_epoch != current_epoch:
                 raise VaultKeyEpochMismatchError('导入期间检测到密钥变更，已中止导入')
             return importer()
@@ -830,6 +836,12 @@ class ImportExportManager:
                         raise ValueError(
                             f'导入条目字段 {internal_field} 过长（最多 {max_len} 字符）'
                         )
+            # totp_secret 校验：非空时须为有效 base32，损坏密钥静默入库会导致后续
+            # TOTP 验证码生成失败且用户无反馈。损坏则清空并告警，保留条目其余字段。
+            totp_value = kwargs.get('totp_secret', '')
+            if totp_value and not TOTPGenerator.validate_secret(totp_value):
+                logger.warning("导入条目 totp_secret 非有效 base32，已清空该字段")
+                kwargs['totp_secret'] = ''
             entries.append(Entry(**kwargs))
             entries_data.append({
                 'title': kwargs.get('title', ''),

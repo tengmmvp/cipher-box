@@ -1,12 +1,10 @@
 """备份密钥派生测试。
 
-验证备份密钥基于主密钥与 salt 通过 HMAC-SHA256 派生的确定性、
-salt 与主密钥变更时的差异化输出，并端到端验证非密码备份的
-创建与恢复流程。
+验证 MasterKeyManager.derive_backup_key 基于 Argon2id 从备份密码派生密钥的
+确定性、salt 与密码变更下的差异化输出，以及与主密钥域的分离；并端到端
+验证非密码备份的创建与恢复流程。
 """
 
-import hashlib
-import hmac
 import os
 import tempfile
 from pathlib import Path
@@ -14,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from src.business.managers.vault_manager import VaultManager
+from src.crypto.master_key import MasterKeyManager
 from tests.helpers import make_test_config
 
 
@@ -34,45 +33,44 @@ def vault_and_key():
     vault.close()
 
 
-def test_hmac_deterministic(vault_and_key):
-    """相同密钥和 salt 应产生相同的派生密钥"""
-    _vault, key, _tmp_dir = vault_and_key
-    salt = os.urandom(16)
-    k1 = hmac.new(
-        key, b'cipherbox:backup-key-v1' + salt, hashlib.sha256
-    ).digest()
-    k2 = hmac.new(
-        key, b'cipherbox:backup-key-v1' + salt, hashlib.sha256
-    ).digest()
+def test_derive_backup_key_deterministic():
+    """相同备份密码与 salt 应派生出相同的备份密钥。"""
+    salt = os.urandom(32)
+    k1 = MasterKeyManager.derive_backup_key('backup_pw', salt)
+    k2 = MasterKeyManager.derive_backup_key('backup_pw', salt)
     assert k1 == k2
+    assert len(k1) == 32
 
 
-def test_different_salt_produces_different_key(vault_and_key):
-    """不同 salt 应产生不同的派生密钥"""
-    _vault, key, _tmp_dir = vault_and_key
-    salt1 = os.urandom(16)
-    salt2 = os.urandom(16)
-    k1 = hmac.new(
-        key, b'cipherbox:backup-key-v1' + salt1, hashlib.sha256
-    ).digest()
-    k2 = hmac.new(
-        key, b'cipherbox:backup-key-v1' + salt2, hashlib.sha256
-    ).digest()
-    assert k1 != k2
+def test_derive_backup_key_different_salt():
+    """不同 salt 应派生出不同的备份密钥。"""
+    pwd = 'backup_pw'
+    assert (
+        MasterKeyManager.derive_backup_key(pwd, os.urandom(32))
+        != MasterKeyManager.derive_backup_key(pwd, os.urandom(32))
+    )
 
 
-def test_different_master_key_produces_different_backup_key(vault_and_key):
-    """不同主密钥应产生不同的备份密钥"""
-    _vault, key, _tmp_dir = vault_and_key
-    salt = os.urandom(16)
-    key2 = os.urandom(32)
-    k1 = hmac.new(
-        key, b'cipherbox:backup-key-v1' + salt, hashlib.sha256
-    ).digest()
-    k2 = hmac.new(
-        key2, b'cipherbox:backup-key-v1' + salt, hashlib.sha256
-    ).digest()
-    assert k1 != k2
+def test_derive_backup_key_different_password():
+    """不同备份密码应派生出不同的备份密钥。"""
+    salt = os.urandom(32)
+    assert (
+        MasterKeyManager.derive_backup_key('pw_a', salt)
+        != MasterKeyManager.derive_backup_key('pw_b', salt)
+    )
+
+
+def test_derive_backup_key_isolated_from_master_key():
+    """备份密钥与主密钥域分离：相同 password+salt 下两者不同。
+
+    derive_backup_key 内部对盐加 b'backup:' 前缀再派生，使备份密钥与
+    derive_key（主密钥域）隔离——即便备份密码与主密码相同、salt 相同，
+    派生结果也不同，避免备份密钥泄露等价于主密钥泄露。
+    """
+    salt = os.urandom(32)
+    backup_key = MasterKeyManager.derive_backup_key('same_pw', salt)
+    master_key = MasterKeyManager.derive_key('same_pw', salt)
+    assert backup_key != master_key
 
 
 def test_create_and_restore_non_password_backup(vault_and_key):
@@ -119,22 +117,18 @@ def test_create_without_password_or_snapshot_rejected(vault_and_key):
 
 
 def test_derive_key_rejects_short_or_empty_salt():
-    """derive_key 拒绝空盐或过短盐，防止 PBKDF2 退化为弱派生。"""
-    from src.crypto.master_key import MasterKeyManager
-
+    """derive_key 拒绝空盐或过短盐，防止 Argon2id 退化为弱派生。"""
     with pytest.raises(ValueError):
-        MasterKeyManager.derive_key('pw', b'', 100_000)
+        MasterKeyManager.derive_key('pw', b'')
     with pytest.raises(ValueError):
-        MasterKeyManager.derive_key('pw', b'short', 100_000)  # 5 字节 < MIN_SALT_SIZE
+        MasterKeyManager.derive_key('pw', b'short')  # 5 字节 < MIN_SALT_SIZE
 
     # 合法长度盐正常派生 32 字节密钥
-    key = MasterKeyManager.derive_key('pw', os.urandom(32), 100_000)
+    key = MasterKeyManager.derive_key('pw', os.urandom(32))
     assert len(key) == 32
 
 
 def test_derive_backup_key_rejects_empty_salt():
     """derive_backup_key 对空盐在 b'backup:' 前缀后仍不足最小长度，应拒绝。"""
-    from src.crypto.master_key import MasterKeyManager
-
     with pytest.raises(ValueError):
-        MasterKeyManager.derive_backup_key('pw', b'', 100_000)
+        MasterKeyManager.derive_backup_key('pw', b'')

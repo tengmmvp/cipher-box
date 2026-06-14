@@ -5,11 +5,12 @@ build_entry_summary 生成的摘要条目不包含敏感字段。
 """
 
 from src.business.services.crypto_utils import build_entry_summary, copy_entry_fields
-from src.models import Entry
+from src.models import RawEntry
 
 
-# 本辅助函数设置了 id、时间戳等更多字段默认值，与 conftest.py 的 make_entry fixture 略有差异
-def _make_entry(**kwargs) -> Entry:
+# 本辅助函数设置密文态 RawEntry（custom_fields 为密文 str），与 conftest.py 的
+# make_entry fixture（明文 Entry）不同，用于测试 RawEntry → Entry 的转换。
+def _make_entry(**kwargs) -> RawEntry:
     kwargs.setdefault('id', 1)
     kwargs.setdefault('crypto_id', 'abc123')
     kwargs.setdefault('title', 'Test')
@@ -30,7 +31,7 @@ def _make_entry(**kwargs) -> Entry:
     kwargs.setdefault('updated_at', '2024-01-01')
     kwargs.setdefault('deleted_at', '')
     kwargs.setdefault('password_changed_at', '')
-    return Entry(**kwargs)
+    return RawEntry(**kwargs)
 
 
 class TestCopyEntryFields:
@@ -81,7 +82,7 @@ class TestBuildEntrySummary:
         assert summary.password == ''
         assert summary.notes == ''
         assert summary.totp_secret == ''
-        assert summary.custom_fields == ''
+        assert summary.custom_fields == []
 
     def test_summary_preserves_non_sensitive_fields(self):
         raw = _make_entry(

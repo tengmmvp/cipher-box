@@ -265,8 +265,8 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
         with open(valid_path, 'rb') as f:
             raw = f.read()
 
-        # 备份布局：MAGIC 占 16 字节、flags 占 1 字节、salt 占 32 字节、iterations 占 4 字节，其后为 ciphertext
-        header_len = len(BACKUP_MAGIC) + 1 + BACKUP_SALT_SIZE + 4
+        # 备份布局：MAGIC 占 16 字节、flags 占 1 字节、salt 占 32 字节，其后为 ciphertext
+        header_len = len(BACKUP_MAGIC) + 1 + BACKUP_SALT_SIZE
         assert len(raw) > header_len + 16, '备份密文区过短，无法构造篡改'
 
         body = bytearray(raw[header_len:])
@@ -339,8 +339,7 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
         with open(path, 'wb') as f:
             f.write(BACKUP_MAGIC)
             f.write(struct.pack('<B', BackupFlag.SNAPSHOT))
-            f.write(os.urandom(BACKUP_SALT_SIZE))  # snapshot 模式不使用 salt
-            f.write(struct.pack('<I', 0))  # snapshot 模式 iterations=0
+            f.write(os.urandom(BACKUP_SALT_SIZE))  # snapshot 模式不使用 salt，但格式仍占位
             f.write(encrypted)
 
         success, error = self._backup_mgr.restore_backup(path)

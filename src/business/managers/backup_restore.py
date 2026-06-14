@@ -17,16 +17,21 @@ if TYPE_CHECKING:
     from .vault_manager import VaultManager
 
 from ...crypto.encryption import EncryptionEngine
-from ...crypto.master_key import MasterKeyManager
+from ...crypto.master_key import DEFAULT_KDF_PARAMS, MasterKeyManager
 from ...exceptions import BackupError, VaultKeyEpochMismatchError
 from ...models import (
     ENTRY_TYPES,
     MAX_CUSTOM_FIELDS_PER_ENTRY,
     MAX_PASSWORD_HISTORY,
     Category,
-    Entry,
+    RawEntry,
 )
-from ...utils.file_security import secure_directory, secure_file, validate_file_path
+from ...utils.file_security import (
+    secure_delete_file,
+    secure_directory,
+    secure_file,
+    validate_file_path,
+)
 from ...utils.format import utc_now_iso
 from ...utils.memory import secure_zero_buffer
 from ..services.crypto_utils import (
@@ -70,9 +75,6 @@ BACKUP_MAGIC = b'CipherBoxBackup\x00'
 BACKUP_FORMAT = 'CipherBoxBackup'
 BACKUP_AAD = b'CipherBox:backup'
 BACKUP_SALT_SIZE = 32
-BACKUP_KDF_ITERATIONS = 600_000
-BACKUP_MIN_KDF_ITERATIONS = 100_000
-BACKUP_MAX_KDF_ITERATIONS = 2_000_000
 MAX_BACKUP_FILE_SIZE = 64 * 1024 * 1024
 MAX_BACKUP_PAYLOAD_SIZE = 32 * 1024 * 1024
 MAX_BACKUP_ENTRIES = 50_000
@@ -103,8 +105,8 @@ class BackupRestoreManager:
         return require_vault_key(self._vault)
 
     @staticmethod
-    def _derive_backup_key(password: str, salt: bytes, iterations: int) -> bytearray:
-        return MasterKeyManager.derive_backup_key(password, salt, iterations)
+    def _derive_backup_key(password: str, salt: bytes) -> bytearray:
+        return MasterKeyManager.derive_backup_key(password, salt, DEFAULT_KDF_PARAMS)
 
     def _collect_portable_data(
         self, cancel_check: Callable[[], bool] | None = None,
@@ -223,11 +225,9 @@ class BackupRestoreManager:
                     return False, '备份已取消'
                 if backup_password:
                     flags = BackupFlag.PASSWORD
-                    iterations = BACKUP_KDF_ITERATIONS
-                    backup_key = self._derive_backup_key(backup_password, salt, iterations)
+                    backup_key = self._derive_backup_key(backup_password, salt)
                 elif use_snapshot_key:
                     flags = BackupFlag.SNAPSHOT
-                    iterations = 0
                     backup_key = self._vault.snapshot_key
                 else:
                     raise ValueError('必须指定备份密码或使用快照密钥')
@@ -254,7 +254,6 @@ class BackupRestoreManager:
                     file.write(BACKUP_MAGIC)
                     file.write(struct.pack('<B', flags))
                     file.write(salt)
-                    file.write(struct.pack('<I', iterations))
                     file.write(encrypted)
                     file.flush()
                     os.fsync(file.fileno())
@@ -320,13 +319,15 @@ class BackupRestoreManager:
     def _restore_current(self, file, backup_password: str | None) -> tuple[bool, str]:
         flags_raw = file.read(1)
         salt = file.read(BACKUP_SALT_SIZE)
-        iterations_raw = file.read(4)
-        if len(flags_raw) != 1 or len(salt) != BACKUP_SALT_SIZE or len(iterations_raw) != 4:
+        if len(flags_raw) != 1 or len(salt) != BACKUP_SALT_SIZE:
             return False, '备份文件头已损坏'
         flags = struct.unpack('<B', flags_raw)[0]
         if flags not in (BackupFlag.PASSWORD, BackupFlag.SNAPSHOT):
             return False, '备份文件格式无效或已损坏'
-        iterations = struct.unpack('<I', iterations_raw)[0]
+        # 预声明 backup_key：PASSWORD 派生失败或 SNAPSHOT 路径前的提前 return 会使
+        # backup_key 未在 with 块内赋值，方法级 finally 仍需引用它。预声明 None 避免
+        # locals().get 反射（字段重命名时静态检查无法发现）。
+        backup_key: bytearray | bytes | None = None
         try:
             # 持 vault 写锁串行化恢复与改密/备份：从解密全量明文到写库全程持锁，
             # 与 create_backup 的「持锁才接触全量明文」契约统一。经公共
@@ -338,9 +339,7 @@ class BackupRestoreManager:
                 if flags == BackupFlag.PASSWORD:
                     if not backup_password:
                         return False, '请输入创建备份时设置的备份密码'
-                    if not BACKUP_MIN_KDF_ITERATIONS <= iterations <= BACKUP_MAX_KDF_ITERATIONS:
-                        return False, '备份密钥派生参数无效'
-                    backup_key = self._derive_backup_key(backup_password, salt, iterations)
+                    backup_key = self._derive_backup_key(backup_password, salt)
                 else:
                     if not self._vault.is_unlocked:
                         return False, '恢复快照备份需要先解锁保险库'
@@ -371,15 +370,15 @@ class BackupRestoreManager:
                     # 恢复失败时清理刚创建的恢复点，避免反复尝试时占用磁盘空间。
                     if restore_path is not None:
                         try:
-                            restore_path.unlink(missing_ok=True)
+                            secure_delete_file(restore_path)
                         except OSError:
                             logger.debug("清理恢复点失败", exc_info=True)
                     raise
                 finally:
-                    if 'plaintext' in locals():
-                        del plaintext
-                    if 'data' in locals():
-                        del data
+                    # plaintext/data 在内层 try 成功后必然已赋值（内层 try 异常走
+                    # except return，不会到达此处），直接释放明文引用，无需 locals 反射。
+                    del plaintext
+                    del data
                 # 事务已提交，key_epoch 与 snapshot_key_enc 均已在同一事务内原子写入。
                 # 在释放 vault 锁前同步内存状态（不写库），既消除事务外写库的崩溃窗口，
                 # 也消除旧 snapshot_key 仍可被并发读取（snapshot_key property）的窗口。
@@ -398,8 +397,8 @@ class BackupRestoreManager:
         finally:
             # 确保 PASSWORD 派生的 backup_key 在所有退出路径（含密钥派生失败、文件
             # 过大、解密异常）都清零；SNAPSHOT 路径借用 snapshot_key 不清零。
-            # backup_key 在 with 块内赋值，派生阶段异常时可能未定义，用 locals 兜底。
-            self._zero_backup_key_if_owned(flags, locals().get('backup_key'))
+            # backup_key 已在方法级预声明，派生异常时为 None，_zero_backup_key_if_owned 对 None 跳过。
+            self._zero_backup_key_if_owned(flags, backup_key)
 
     @staticmethod
     def _zero_backup_key_if_owned(flags, key) -> None:
@@ -612,7 +611,7 @@ class BackupRestoreManager:
         )
         for expired in restore_points[MAX_RESTORE_POINTS:]:
             try:
-                expired.unlink()
+                secure_delete_file(expired)
             except OSError:
                 logger.warning('清理过期恢复点失败：%s', expired, exc_info=True)
         return target_path
@@ -629,7 +628,7 @@ class BackupRestoreManager:
         count = 0
         for f in directory.glob('pre_restore_*.cbox'):
             try:
-                f.unlink()
+                secure_delete_file(f)
                 count += 1
             except OSError:
                 logger.warning('清理恢复点失败：%s', f, exc_info=True)
@@ -691,7 +690,7 @@ class BackupRestoreManager:
             old_category = item.get('category_id')
             crypto_id = item['crypto_id']  # 已由 _validate_entries 校验
             enc = build_encrypted_entry_fields(item, key, crypto_id)
-            entry = Entry(
+            entry = RawEntry(
                 crypto_id=crypto_id,
                 title=item.get('title', ''),
                 username=enc['username'],
@@ -771,7 +770,9 @@ class BackupRestoreManager:
                 if elapsed < timedelta(hours=interval):
                     return True, ''
             except ValueError:
-                pass
+                # last_auto_backup_at 解析失败（损坏的时间戳）会让间隔检查每次都
+                # 重新备份；记录以便运维发现配置损坏，而非静默持续冗余备份。
+                logger.warning('last_auto_backup_at 解析失败，跳过间隔检查：%s', last_text)
 
         backup_dir = config.get('backup_directory', '')
         if backup_dir:
@@ -798,8 +799,9 @@ class BackupRestoreManager:
         snapshots = sorted(directory.glob('cipherbox_snapshot_*.cbox'), reverse=True)
         for old_file in snapshots[retention:]:
             try:
-                old_file.unlink()
+                secure_delete_file(old_file)
             except OSError:
-                pass
+                # 过期自动快照含全量明文，清理失败会扩大泄漏面；记录以便人工处理。
+                logger.warning('清理过期自动快照失败：%s', old_file, exc_info=True)
 
         return True, ''

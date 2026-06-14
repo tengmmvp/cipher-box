@@ -240,10 +240,11 @@ def test_vault_persists_kdf_parameters_and_ciphertext_format():
         raw = vault.db.get_entry(entry_id)
         assert raw is not None
 
-        assert vault.db.get_meta('master_kdf') == 'pbkdf2-sha256'
-        iterations = vault.db.get_meta('master_kdf_iterations')
-        assert iterations is not None
-        assert int(iterations) >= 600_000
+        assert vault.db.get_meta('master_kdf') == 'argon2id'
+        from src.crypto.master_key import DEFAULT_KDF_PARAMS
+        assert vault.db.get_meta('master_kdf_time_cost') == str(DEFAULT_KDF_PARAMS.time_cost)
+        assert vault.db.get_meta('master_kdf_memory_cost') == str(DEFAULT_KDF_PARAMS.memory_cost)
+        assert vault.db.get_meta('master_kdf_parallelism') == str(DEFAULT_KDF_PARAMS.parallelism)
         assert vault.db.get_meta('ciphertext_format') == 'aes-256-gcm-aad'
         assert raw.password.startswith('cb:')
         vault.close()

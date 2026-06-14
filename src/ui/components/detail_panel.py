@@ -10,6 +10,7 @@ from collections import OrderedDict
 from html import escape
 from urllib.parse import urlparse
 
+from PyQt6 import sip
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QFormLayout,
@@ -454,6 +455,8 @@ class DetailPanel(QWidget):
 
             # 使用闭包捕获当前值，主条目字段无需间接引用，其生命周期与面板同步
             def _copy_value(_checked=False, v=value, btn=copy_btn):
+                if sip.isdeleted(btn):
+                    return
                 self._copy_with_feedback(btn, v)
 
             copy_btn.clicked.connect(_copy_value)
@@ -508,6 +511,11 @@ class DetailPanel(QWidget):
         self._current_password = value
 
         def _toggle(_checked=False, lbl=val_label, btn=show_btn):
+            # _clear_content 经 deleteLater 异步销毁控件；销毁窗口期内若仍有挂起的
+            # clicked 事件触发闭包，操作已删除的 C++ 对象会抛 RuntimeError。守卫
+            # 避免该竞态，与 _signal_connections 在 secure_clear 时显式断开的设计互补。
+            if sip.isdeleted(lbl) or sip.isdeleted(btn):
+                return
             pwd = self._current_password
             if lbl.text() == '••••••••':
                 lbl.setText(pwd)
@@ -528,6 +536,8 @@ class DetailPanel(QWidget):
         copy_btn.setToolTip('复制密码')
 
         def _copy_secret(_checked=False, btn=copy_btn):
+            if sip.isdeleted(btn):
+                return
             self._copy_with_feedback(btn, self._current_password)
 
         copy_btn.clicked.connect(_copy_secret)

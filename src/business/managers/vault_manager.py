@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 from ...config import ConfigManager
 from ...crypto.encryption import EncryptionEngine
-from ...crypto.master_key import PBKDF2_ITERATIONS, MasterKeyManager
+from ...crypto.master_key import DEFAULT_KDF_PARAMS, KDF_NAME, KdfParams, MasterKeyManager
 from ...crypto.password_generator import PasswordGenerator
 from ...database.db_manager import DatabaseManager
 from ...exceptions import (
@@ -25,12 +25,17 @@ from ...exceptions import (
     VaultKeyEpochMismatchError,
     VaultLockedError,
 )
+from ...utils.file_security import secure_delete_file
 from ...utils.memory import secure_zero_buffer
 from ..services.key_manager import KeyManager
 from ..services.key_rotation import KeyRotationService
 from ..services.metadata_signer import MetadataSigner
 
 _SNAPSHOT_KEY_AAD = 'vault:snapshot-key'
+
+# 改密时旧主密码验证失败的错误消息。供 change_master_dialog 判定是否计入速率
+# 限制——以常量而非硬编码字面量比较，使文案变更不需同步改 dialog（单一真相源）。
+AUTH_FAILED_MESSAGE = '当前主密码错误'
 
 
 # TODO: 初始化/解锁/锁定/改密流程可进一步提取为独立的 VaultLifecycle。
@@ -194,7 +199,7 @@ class VaultManager:
             if self._db.get_meta('master_salt') or self._db.get_meta('master_verify'):
                 raise VaultAlreadyInitializedError('保险库已经初始化，不能重复设置主密码')
             salt, verify_token, derived_key = MasterKeyManager.create(
-                master_password, PBKDF2_ITERATIONS
+                master_password, DEFAULT_KDF_PARAMS
             )
             snapshot_key = os.urandom(32)
             key_epoch = uuid.uuid4().hex
@@ -216,6 +221,18 @@ class VaultManager:
             logger.warning("保险库初始化失败", exc_info=True)
             return False, msg
 
+    @staticmethod
+    def _read_kdf_params(meta: dict) -> KdfParams:
+        """从 vault_meta 解析 Argon2id 参数，缺失或非法时抛 VaultLockedError。"""
+        try:
+            return KdfParams(
+                int(meta['master_kdf_time_cost']),
+                int(meta['master_kdf_memory_cost']),
+                int(meta['master_kdf_parallelism']),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise VaultLockedError('保险库缺少密钥派生参数') from exc
+
     def unlock(self, master_password: str) -> tuple[bool, str]:
         """使用主密码解锁保险库
 
@@ -225,13 +242,17 @@ class VaultManager:
         Returns:
             由是否成功与错误信息组成的二元组，成功时错误信息为空字符串。
         """
+        # 预声明 key：verify 未执行（如凭据校验前异常）时，except 仍需引用它做清零
+        # 判断。预声明 None 避免 locals().get 反射（字段重命名时静态检查无法发现）。
+        key: bytearray | None = None
         try:
             t0 = time.monotonic()
             self._ensure_db_open()
 
             # 单次查询获取全部元数据，避免 7 次独立 DB 锁获取
             meta = self._db.get_meta_batch([
-                'master_salt', 'master_verify', 'master_kdf_iterations',
+                'master_salt', 'master_verify', 'master_kdf_time_cost',
+                'master_kdf_memory_cost', 'master_kdf_parallelism',
                 'master_kdf', 'ciphertext_format', 'key_epoch',
                 'snapshot_key_enc',
             ])
@@ -243,12 +264,9 @@ class VaultManager:
                 return False, '保险库凭据不完整'
 
             salt = base64.b64decode(salt_b64)
-            iterations_text = meta['master_kdf_iterations']
-            if not iterations_text:
-                raise VaultLockedError('保险库缺少密钥派生参数')
-            iterations = int(iterations_text)
+            params = self._read_kdf_params(meta)
             key = MasterKeyManager.verify(
-                master_password, salt, verify_token, iterations
+                master_password, salt, verify_token, params
             )
 
             if key is None:
@@ -256,7 +274,7 @@ class VaultManager:
 
             # 先完成全部元数据格式校验，再持有密钥，遵循最小暴露原则：
             # 格式校验失败时 key 仅作局部变量，不写入 KeyManager 也不触发加密缓存。
-            if meta['master_kdf'] != 'pbkdf2-sha256':
+            if meta['master_kdf'] != KDF_NAME:
                 raise VaultLockedError('不支持的主密钥派生格式')
             if meta['ciphertext_format'] != EncryptionEngine.FORMAT_ID:
                 raise VaultLockedError('不支持的密文格式')
@@ -268,18 +286,22 @@ class VaultManager:
             # KeyManager，但 lock 会一并清零，状态最终一致）。
             self._key = key
             self._key_epoch = key_epoch
-            self._is_unlocked = True
             self._signer.set_domain_key(MetadataSigner.compute_domain_key(key))
             self._load_snapshot_key(meta.get('snapshot_key_enc'))
+            # 全部密钥材料（主密钥、epoch、domain_key、snapshot_key）就位后再标记解锁，
+            # 缩小「主密钥已写入但 snapshot_key 尚未加载」的部分就位窗口：此窗口内
+            # is_unlocked 为 False，并发读取者不会得到「已解锁但 snapshot_key 缺失」的
+            # 中间态。_load_snapshot_key 仅依赖 self._key（已设置），不依赖 is_unlocked。
+            self._is_unlocked = True
             logger.info("解锁完成 (%.1fms)", (time.monotonic() - t0) * 1000)
             return True, ''
         except CipherBoxError:
             # key 可能已写入 KeyManager（_load_snapshot_key 在 _key 赋值后调用，
             # snapshot_key 损坏时 key 已就位）。secure_zero_buffer 清零该 bytearray
             # （KeyManager 持同一对象），随后的 lock() 统一清零全部密钥材料。
-            key_local = locals().get('key')
-            if key_local is not None:
-                secure_zero_buffer(key_local)
+            # key 已在 try 前预声明，verify 未执行时为 None，跳过清零。
+            if key is not None:
+                secure_zero_buffer(key)
             self.lock()
             raise
         except Exception as exc:
@@ -377,7 +399,8 @@ class VaultManager:
             if old_password == new_password:
                 return False, '新密码不能与当前主密码相同'
             meta = self._db.get_meta_batch([
-                'master_salt', 'master_verify', 'master_kdf_iterations',
+                'master_salt', 'master_verify', 'master_kdf_time_cost',
+                'master_kdf_memory_cost', 'master_kdf_parallelism',
             ])
             salt_b64 = meta['master_salt']
             verify_token = meta['master_verify']
@@ -385,26 +408,23 @@ class VaultManager:
                 return False, '保险库凭据不完整'
 
             old_salt = base64.b64decode(salt_b64)
-            iterations_text = meta['master_kdf_iterations']
-            if not iterations_text:
-                raise VaultLockedError('保险库缺少密钥派生参数')
-            old_iterations = int(iterations_text)
+            old_params = self._read_kdf_params(meta)
             result = MasterKeyManager.change_password(
                 old_password,
                 new_password,
                 old_salt,
                 verify_token,
-                old_iterations,
-                PBKDF2_ITERATIONS,
+                old_params,
+                DEFAULT_KDF_PARAMS,
             )
             if result is None:
-                return False, '当前主密码错误'
+                return False, AUTH_FAILED_MESSAGE
 
             new_salt, new_verify_token, new_key = result
 
-            # 复用 MasterKeyManager.create 已派生的 new_key，省一次 PBKDF2 派生
+            # 复用 MasterKeyManager.create 已派生的 new_key，省一次 Argon2id 派生
             failed_purges = self._re_encrypt_all(
-                new_key, new_salt, new_verify_token, new_iterations=PBKDF2_ITERATIONS,
+                new_key, new_salt, new_verify_token, new_params=DEFAULT_KDF_PARAMS,
             )
             if failed_purges:
                 # 改密成功但旧明文快照未能清理：明确反馈用户，避免误以为泄漏面已收缩
@@ -420,7 +440,7 @@ class VaultManager:
             return False, str(exc) or '修改主密码失败'
 
     def _re_encrypt_all(self, new_key: bytes, new_salt: bytes, new_verify_token: str,
-                        new_iterations: int = PBKDF2_ITERATIONS):
+                        new_params: KdfParams = DEFAULT_KDF_PARAMS):
         """使用新密钥重新加密所有条目，含已删除条目，受事务保护。
 
         调用方须已持有 self._lock，当前唯一调用方 _change_master_password_locked
@@ -453,7 +473,7 @@ class VaultManager:
                 self._rotator.re_encrypt_history(old_key, new_key, cancel_event=self._cancel_event)
                 self._update_vault_metadata(
                     new_key, new_salt, new_verify_token, new_epoch,
-                    snapshot_key=new_snapshot_key, iterations=new_iterations,
+                    snapshot_key=new_snapshot_key, params=new_params,
                 )
 
             # 事务已提交。密钥赋值放在 commit 之后，避免后台线程在 commit 前
@@ -519,29 +539,10 @@ class VaultManager:
             for pattern in ('pre_restore_*.cbox', 'cipherbox_snapshot_*.cbox'):
                 for f in directory.glob(pattern):
                     try:
-                        self._secure_delete_file(f)
+                        secure_delete_file(f)
                     except OSError:
                         failed.append(f)
         return failed
-
-    @staticmethod
-    def _secure_delete_file(path: Path) -> None:
-        """覆盖删除文件：先以随机字节覆写内容再 unlink，收缩旧 snapshot_key
-        加密的明文快照在支持数据恢复的文件系统（NTFS/ext4）上的取证还原面。
-
-        注意：SSD 的磨损均衡与写入放大使覆写并非密码学保证，但比单纯 unlink
-        （仅释放 inode 引用、明文扇区可被取证工具还原）显著更强。覆写或 unlink
-        失败均抛 OSError，由调用方计入 failed 清单上报而非静默丢失。
-        """
-        try:
-            size = path.stat().st_size
-            if size > 0:
-                with open(path, 'r+b') as fp:
-                    fp.write(os.urandom(size))
-                    fp.flush()
-                    os.fsync(fp.fileno())
-        finally:
-            path.unlink()
 
     def encrypt_snapshot_key(self, snapshot_key: bytes) -> str:
         """加密 snapshot_key 以写入 vault_meta，供恢复流程在事务内复用。
@@ -577,17 +578,19 @@ class VaultManager:
     def _write_vault_metadata(
         self, *, salt: bytes, verify_token: str,
         snapshot_key: bytes, key: bytes, key_epoch: str,
-        iterations: int = PBKDF2_ITERATIONS,
+        params: KdfParams = DEFAULT_KDF_PARAMS,
     ):
         """将保险库元数据写入 vault_meta，包含盐、验证令牌、KDF 参数、快照密钥和 epoch。
 
-        initialize 与改密共用此序列，避免两处逐字重复。iterations 为实际派生所用的
-        PBKDF2 迭代次数，写入数据库而非硬编码常量，为未来提升迭代次数保留正确性。
+        initialize 与改密共用此序列，避免两处逐字重复。params 为实际派生所用的
+        Argon2id 参数，写入数据库而非硬编码常量，为未来调整参数保留正确性。
         """
         self._db.set_meta('master_salt', base64.b64encode(salt).decode('ascii'))
         self._db.set_meta('master_verify', verify_token)
-        self._db.set_meta('master_kdf', 'pbkdf2-sha256')
-        self._db.set_meta('master_kdf_iterations', str(iterations))
+        self._db.set_meta('master_kdf', KDF_NAME)
+        self._db.set_meta('master_kdf_time_cost', str(params.time_cost))
+        self._db.set_meta('master_kdf_memory_cost', str(params.memory_cost))
+        self._db.set_meta('master_kdf_parallelism', str(params.parallelism))
         self._db.set_meta('ciphertext_format', EncryptionEngine.FORMAT_ID)
         self._db.set_meta(
             'snapshot_key_enc',
@@ -602,19 +605,19 @@ class VaultManager:
     def _update_vault_metadata(
         self, new_key: bytes, new_salt: bytes, new_verify_token: str,
         new_epoch: str, *, snapshot_key: bytes | None,
-        iterations: int = PBKDF2_ITERATIONS,
+        params: KdfParams = DEFAULT_KDF_PARAMS,
     ):
         """更新 vault_meta 表中的验证信息和密钥元数据。
 
         snapshot_key 由调用方传入，改密时轮换为全新值，不再复用旧值。
-        iterations 透传给 _write_vault_metadata，写入实际派生所用的迭代次数。
+        params 透传给 _write_vault_metadata，写入实际派生所用的 Argon2id 参数。
         """
         if snapshot_key is None:
             raise VaultIntegrityError('snapshot_key 未加载，无法更新保险库元数据')
         self._write_vault_metadata(
             salt=new_salt, verify_token=new_verify_token,
             snapshot_key=snapshot_key, key=new_key, key_epoch=new_epoch,
-            iterations=iterations,
+            params=params,
         )
 
     def _load_snapshot_key(self, encrypted: str | None = None):

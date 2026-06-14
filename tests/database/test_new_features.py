@@ -11,15 +11,15 @@ import pytest
 
 from src.crypto.totp import TOTPGenerator
 from src.database.db_manager import DatabaseManager
-from src.models import ENTRY_TYPE_LOGIN, ENTRY_TYPES, Category, Entry
+from src.models import ENTRY_TYPE_LOGIN, ENTRY_TYPES, Category, Entry, RawEntry
 
 
 # TODO: 迁移到 conftest.py make_entry fixture
-def _make_entry(**kwargs) -> Entry:
+def _make_entry(**kwargs) -> RawEntry:
     kwargs.setdefault('password', 'x')
     kwargs.setdefault('notes', '')
     kwargs.setdefault('custom_fields', '')
-    return Entry(**kwargs)
+    return RawEntry(**kwargs)
 
 
 # --- TestTOTP ---
@@ -71,7 +71,7 @@ def test_two_codes_same_period():
     assert code1 == code2
 
 
-# --- TestEntryTypes ---
+# --- TestRawEntryTypes ---
 
 
 def test_entry_type_constants():
@@ -85,24 +85,24 @@ def test_entry_type_constants():
 
 def test_entry_type_icon():
     """条目类型图标。"""
-    entry = Entry(title='Test', entry_type='card')
+    entry = RawEntry(title='Test', entry_type='card')
     assert entry.type_icon == '[CARD]'
     assert entry.type_label == '信用卡'
 
 
 def test_entry_default_type():
     """默认类型为 login。"""
-    entry = Entry(title='Test')
+    entry = RawEntry(title='Test')
     assert entry.entry_type == ENTRY_TYPE_LOGIN
     assert entry.type_icon == '[KEY]'
 
 
 def test_has_totp():
     """TOTP 状态检测。"""
-    entry1 = Entry(title='A', totp_secret='')
+    entry1 = RawEntry(title='A', totp_secret='')
     assert not entry1.has_totp
 
-    entry2 = Entry(title='B', totp_secret='JBSWY3DPEHPK3PXP')
+    entry2 = RawEntry(title='B', totp_secret='JBSWY3DPEHPK3PXP')
     assert entry2.has_totp
 
 

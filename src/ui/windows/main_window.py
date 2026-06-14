@@ -6,8 +6,9 @@ _MainWindowFiltersMixin 与 _MainWindowMenuMixin 多重继承拆分方法实现�
 """
 
 import logging
+import sys
 
-from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QAbstractNativeEventFilter, QEvent, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QApplication,
@@ -66,11 +67,40 @@ from ..resources.icons import (
     set_icon_with_text,
 )
 from ..resources.styles import get_style
-from ..resources.theme_colors import c
 from .main_window_filters import _MainWindowFiltersMixin
 from .main_window_menu import _MainWindowMenuMixin
 
 logger = logging.getLogger(__name__)
+
+# Windows 会话锁屏通知消息常量。系统锁屏（Win+L）时立即锁定保险库（1Password/
+# Bitwarden 等行业惯例），而非等应用内 QTimer 到期。非 Windows 平台不注册
+# （nativeEvent 中以 sys.platform 短路），降级为仅超时锁定。
+_WM_WTSSESSION_CHANGE = 0x02B1
+_WTS_SESSION_LOCK = 0x7
+
+
+class _SessionLockFilter(QAbstractNativeEventFilter):
+    """Windows 会话锁屏事件过滤器，捕获 WM_WTSSESSION_CHANGE 触发保险库锁定。
+
+    用 QAbstractNativeEventFilter 挂载 QApplication，而非重写 MainWindow.nativeEvent：
+    后者在 MainWindow 多继承（FiltersMixin/MenuMixin/QMainWindow）MRO 下会触发
+    C 层 access violation；独立过滤器规避该问题，是 Qt 推荐的原生消息拦截方式。
+    """
+
+    def __init__(self, on_lock):
+        super().__init__()
+        self._on_lock = on_lock
+
+    def nativeEventFilter(self, eventType, message):  # pyright: ignore[reportIncompatibleMethodOverride]
+        try:
+            if bytes(eventType) == b'windows_generic_MSG':  # pyright: ignore[reportArgumentType]
+                from ctypes import wintypes
+                msg = wintypes.MSG.from_address(int(message))  # pyright: ignore[reportArgumentType]
+                if msg.message == _WM_WTSSESSION_CHANGE and msg.wParam == _WTS_SESSION_LOCK:
+                    self._on_lock()
+        except Exception:
+            logger.debug("会话锁屏过滤器处理消息失败", exc_info=True)
+        return False, 0
 
 # 排序选项来自共享常量，作为单一事实来源
 _SORT_OPTIONS = SORT_OPTIONS
@@ -441,6 +471,51 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._lock_timer.timeout.connect(lambda: self.lock_requested.emit())
         self._reset_lock_timer()
 
+    def showEvent(self, event):  # pyright: ignore[reportIncompatibleMethodOverride]
+        super().showEvent(event)
+        # WTS 注册须在窗口 show 后（HWND 有效）；__init__ 时未 show 会触发 C 层
+        # access violation。showEvent 守卫使注册仅在实际显示时发生。测试环境
+        # （pytest）_setup_session_notification 直接跳过，不安装过滤器。
+        if not getattr(self, '_wts_setup_attempted', False):
+            self._wts_setup_attempted = True
+            self._setup_session_notification()
+
+    def _setup_session_notification(self) -> None:
+        """注册 Windows 会话锁屏通知，系统锁屏时立即触发保险库锁定。
+
+        仅 Windows 平台启用；注册失败（如远程会话、权限受限、wtsapi32 不可用）
+        静默降级为仅 QTimer 超时锁定，不影响其他功能。winId 须在窗口创建后调用，
+        故置于 __init__ 的 _setup_ui 之后。
+        """
+        self._wts_registered = False
+        # 仅 Windows 交互会话注册。测试环境（pytest 驱动 QApplication）的窗口未进入
+        # 真实消息循环，WTSRegisterSessionNotification 会触发 C 层 access violation
+        # （无法 try/except 捕获）；真实交互运行时窗口进入消息循环，WTS 正常工作。
+        if sys.platform != 'win32' or 'pytest' in sys.modules:
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            # 显式声明 argtypes/restype：HWND 是指针类型，64 位下默认 c_int 推断会使
+            # HWND 传参截断，触发 access violation（C 层崩溃，try/except 无法捕获）。
+            wts = ctypes.windll.wtsapi32
+            wts.WTSRegisterSessionNotification.argtypes = [
+                wintypes.HWND, wintypes.DWORD,
+            ]
+            wts.WTSRegisterSessionNotification.restype = wintypes.BOOL
+            hwnd = int(self.winId())
+            # NOTIFY_FOR_THIS_SESSION = 0：仅当前会话的锁屏/解锁通知
+            if wts.WTSRegisterSessionNotification(hwnd, 0):
+                self._wts_registered = True
+                self._session_filter = _SessionLockFilter(self.lock_requested.emit)
+                app = QApplication.instance()
+                if app is not None:
+                    app.installNativeEventFilter(self._session_filter)
+            else:
+                logger.debug("WTSRegisterSessionNotification 返回 0，会话锁屏联动降级")
+        except Exception:
+            logger.debug("WTS 会话通知注册失败，降级为仅 QTimer 超时锁定", exc_info=True)
+
     def _setup_auto_backup(self):
         # 仅创建定时器，不启动：__init__ 时 vault 尚未解锁，启动会使首次
         # singleShot 在未解锁状态空转。定时器与首次延迟检查统一由
@@ -463,7 +538,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         """异步执行自动备份。
 
         始终在 BackgroundWorker 中运行：maybe_auto_backup 在间隔到期时会执行
-        全量解密 + PBKDF2 + 加密，同步执行会阻塞 UI 主线程数秒。
+        全量解密 + 备份密钥 Argon2id 派生 + 加密，同步执行会阻塞 UI 主线程数秒。
         """
         if not self._vault.is_unlocked:
             return
@@ -541,13 +616,22 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             self._tray.deleteLater()
             self._tray = None
 
-    def _quit_app(self):
-        # 托盘退出：等待后台 worker 退出（避免 QThread running 析构崩溃），
-        # 清剪贴板明文，再关闭 vault——与 closeEvent 退出分支的清理对齐
+    def _shutdown_workers(self) -> None:
+        """取消并等待所有后台 worker 结束，避免 QThread running 析构崩溃。
+
+        统一 status/backup 两类 worker 的关闭：取消（设置协作取消标志）并等待
+        其退出，超时则记 error（见 ``wait_worker_shutdown``）。锁定、退出、隐藏到
+        托盘前调用，确保这些路径不再持有密钥或对已锁定 vault 发信号、继续解密条目。
+        """
         wait_worker_shutdown(self._status_worker)
         self._status_worker = None
         wait_worker_shutdown(self._backup_worker)
         self._backup_worker = None
+
+    def _quit_app(self):
+        # 托盘退出：等待后台 worker 退出（避免 QThread running 析构崩溃），
+        # 清剪贴板明文，再关闭 vault——与 closeEvent 退出分支的清理对齐
+        self._shutdown_workers()
         self._clipboard.clear_now()
         self._vault.close()
         if self._tray:
@@ -622,10 +706,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             self._pending_selection = None
             from ..components.toast import ToastManager
             ToastManager.cancel_all_for(self)
-            wait_worker_shutdown(self._status_worker)
-            self._status_worker = None
-            wait_worker_shutdown(self._backup_worker)
-            self._backup_worker = None
+            self._shutdown_workers()
             a0.ignore()
             self.hide()
         else:
@@ -633,12 +714,16 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             app = QApplication.instance()
             if app:
                 app.removeEventFilter(self)
-            # 统一用 wait_worker_shutdown 取消并等待后台 worker 结束，
+                # 移除会话锁屏原生事件过滤器，与 removeEventFilter(self) 对称：
+                # 完全退出时解除 QApplication 对 _session_filter 的引用，避免其闭包
+                # （绑定 lock_requested）在窗口销毁后仍被原生消息派发调用。
+                # _session_filter 仅 Windows 实际显示时才安装，未注册时为缺失属性。
+                session_filter = getattr(self, '_session_filter', None)
+                if session_filter is not None:
+                    app.removeNativeEventFilter(session_filter)
+            # 统一用 _shutdown_workers 取消并等待后台 worker 结束，
             # 与 prepare_for_lock 的关闭模式一致，确保退出前 worker 不再持有密钥。
-            wait_worker_shutdown(self._status_worker)
-            self._status_worker = None
-            wait_worker_shutdown(self._backup_worker)
-            self._backup_worker = None
+            self._shutdown_workers()
             # 完全退出时清除剪贴板中的明文密码，防止应用关闭后残留
             self._clipboard.clear_now()
             self._vault.close()
@@ -721,12 +806,9 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         # 停止后台定时器
         self._backup_timer.stop()
         self._status_timer.stop()
-        # 取消后台状态分析 worker，避免锁定后仍运行或对已锁定 vault 发信号
-        wait_worker_shutdown(self._status_worker)
-        self._status_worker = None
-        # 取消异步备份 worker，防止锁定后继续解密条目
-        wait_worker_shutdown(self._backup_worker)
-        self._backup_worker = None
+        # 取消后台 worker（状态分析/备份/列表刷新），避免锁定后仍运行、对已锁定
+        # vault 发信号或继续解密条目
+        self._shutdown_workers()
         # 清除缓存
         self._invalidate_security_cache()
         # 清空 username 明文缓存。epoch 失效会在下次访问时触发，

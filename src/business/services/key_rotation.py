@@ -88,10 +88,8 @@ class KeyRotationService:
         """分批重新加密所有条目的敏感字段。
 
         逐字段解密→加密，减少同时驻留内存的明文数量。
-        不变量：raw_entry 来自 get_entries，_row_to_entry 将 custom_fields
-        设为与 custom_fields_enc 相同的密文字符串，str 类型，因此 getattr
-        读取的是密文字符串，setattr 写入的也是密文字符串。
-        若 _row_to_entry 的行为改变，如改为解密后设为 list，此处会静默损坏。
+        不变量：raw_entry 来自 get_entries（RawEntry），custom_fields 为密文 str。
+        RawEntry 类型保证 custom_fields 恒为密文，getattr/setattr 读写均为密文 str。
 
         每批收集所有更新行，通过 executemany 一次性写入，将 N 次单独
         UPDATE 减少为 N/200 次 executemany 调用。
@@ -131,11 +129,6 @@ class KeyRotationService:
                                 plain, new_key, raw_entry.crypto_id, field,
                             )
                             setattr(raw_entry, field, new_cipher)
-                            # custom_fields 与 custom_fields_enc 在 DB-raw 态同为密文 str。
-                            # 此赋值保持对象状态自洽（实际 DB 写入经 custom_fields_db_value
-                            # 读取，由上一行 setattr 生效）；冗余赋值便于审计对象一致性。
-                            if field == 'custom_fields':
-                                raw_entry.custom_fields_enc = new_cipher
                             del plain
                 except ValueError as exc:
                     logger.error("重加密中止：条目 id=%s 解密失败", raw_entry.id)

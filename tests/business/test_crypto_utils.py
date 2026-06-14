@@ -23,7 +23,7 @@ from src.business.services.crypto_utils import (
     require_vault_key,
 )
 from src.exceptions import VaultLockedError
-from src.models import CustomField, Entry
+from src.models import CustomField, Entry, RawEntry
 
 # ---------------------------------------------------------------------------
 # 固定 fixture
@@ -50,6 +50,24 @@ def sample_entry() -> Entry:
         custom_fields=[CustomField(name='pin', value='1234')],
         entry_type='login',
         totp_secret='JBSWY3DPEHPK3PXP',
+    )
+
+
+@pytest.fixture
+def raw_entry() -> RawEntry:
+    """返回一个密文态 RawEntry 实例（加密字段为密文，custom_fields 为密文 str）。"""
+    return RawEntry(
+        id=1,
+        crypto_id='cid-001',
+        title='GitHub',
+        username='cb:encrypted',
+        password='cb:encrypted',
+        url='https://github.com',
+        tags='dev, coding',
+        notes='cb:encrypted',
+        custom_fields='cb:encrypted',
+        entry_type='login',
+        totp_secret='cb:encrypted',
     )
 
 
@@ -231,58 +249,52 @@ class TestMatchesTag:
 
 
 class TestCopyEntryFields:
-    """字段复制逻辑。"""
+    """字段复制逻辑（密文态 RawEntry → 明文 Entry）。"""
 
-    def test_basic_copy(self, sample_entry):
-        copied = copy_entry_fields(sample_entry)
-        assert copied.title == sample_entry.title
-        assert copied.username == sample_entry.username
-        assert copied.url == sample_entry.url
-        assert copied is not sample_entry
+    def test_basic_copy(self, raw_entry):
+        copied = copy_entry_fields(raw_entry)
+        assert copied.title == raw_entry.title
+        assert copied.url == raw_entry.url
+        assert copied is not raw_entry
 
-    def test_override_specific_fields(self, sample_entry):
-        copied = copy_entry_fields(sample_entry, title='New Title', username='bob')
+    def test_override_specific_fields(self, raw_entry):
+        copied = copy_entry_fields(raw_entry, title='New Title', username='bob')
         assert copied.title == 'New Title'
         assert copied.username == 'bob'
-        assert copied.url == sample_entry.url
+        assert copied.url == raw_entry.url
 
     def test_password_present_auto_set(self):
-        """有密码时 password_present 自动为 True。"""
-        entry = Entry(password='secret')
-        copied = copy_entry_fields(entry)
+        """有密文密码时 password_present 自动为 True。"""
+        raw = RawEntry(password='cb:secret')
+        copied = copy_entry_fields(raw)
         assert copied.password_present is True
 
     def test_password_present_false_when_empty(self):
-        entry = Entry(password='')
-        copied = copy_entry_fields(entry)
+        raw = RawEntry(password='')
+        copied = copy_entry_fields(raw)
         assert copied.password_present is False
 
     def test_totp_present_auto_set(self):
-        entry = Entry(totp_secret='JBSWY3DPEHPK3PXP')
-        copied = copy_entry_fields(entry)
+        raw = RawEntry(totp_secret='cb:JBSWY3DPEHPK3PXP')
+        copied = copy_entry_fields(raw)
         assert copied.totp_present is True
 
     def test_totp_present_false_when_empty(self):
-        entry = Entry(totp_secret='')
-        copied = copy_entry_fields(entry)
+        raw = RawEntry(totp_secret='')
+        copied = copy_entry_fields(raw)
         assert copied.totp_present is False
 
     def test_explicit_override_takes_precedence(self):
         """调用方显式提供 password_present 时应覆盖自动推断。"""
-        entry = Entry(password='secret')
-        copied = copy_entry_fields(entry, password_present=False)
+        raw = RawEntry(password='cb:secret')
+        copied = copy_entry_fields(raw, password_present=False)
         assert copied.password_present is False
 
-    def test_custom_fields_deep_copy(self, sample_entry):
-        """custom_fields 应深拷贝，修改副本不影响原件。"""
-        copied = copy_entry_fields(sample_entry)
-        assert copied.custom_fields == sample_entry.custom_fields
-        assert copied.custom_fields is not sample_entry.custom_fields
-
-    def test_custom_fields_independent_mutation(self, sample_entry):
-        copied = copy_entry_fields(sample_entry)
-        cast(list[CustomField], copied.custom_fields).append(CustomField(name='new', value='field'))
-        assert len(sample_entry.custom_fields) == 1
+    def test_custom_fields_override(self, raw_entry):
+        """custom_fields 经 overrides 传入明文 list，正确设置到 Entry。"""
+        fields = [CustomField(name='pin', value='1234')]
+        copied = copy_entry_fields(raw_entry, custom_fields=fields)
+        assert copied.custom_fields == fields
 
 
 # ==================== build_entry_summary ====================
@@ -291,31 +303,31 @@ class TestCopyEntryFields:
 class TestBuildEntrySummary:
     """摘要 Entry 不含敏感字段。"""
 
-    def test_sensitive_fields_cleared(self, sample_entry):
-        summary = build_entry_summary(sample_entry)
+    def test_sensitive_fields_cleared(self, raw_entry):
+        summary = build_entry_summary(raw_entry)
         assert summary.password == ''
         assert summary.notes == ''
         assert summary.totp_secret == ''
-        assert summary.custom_fields == ''
+        assert summary.custom_fields == []
 
-    def test_username_default_empty(self, sample_entry):
+    def test_username_default_empty(self, raw_entry):
         """不传 username 时默认为空字符串。"""
-        summary = build_entry_summary(sample_entry)
+        summary = build_entry_summary(raw_entry)
         assert summary.username == ''
 
-    def test_username_preserved_when_provided(self, sample_entry):
-        summary = build_entry_summary(sample_entry, username='alice')
+    def test_username_preserved_when_provided(self, raw_entry):
+        summary = build_entry_summary(raw_entry, username='alice')
         assert summary.username == 'alice'
 
-    def test_username_override(self, sample_entry):
-        summary = build_entry_summary(sample_entry, username='override-user')
+    def test_username_override(self, raw_entry):
+        summary = build_entry_summary(raw_entry, username='override-user')
         assert summary.username == 'override-user'
 
-    def test_non_sensitive_fields_preserved(self, sample_entry):
-        summary = build_entry_summary(sample_entry)
-        assert summary.title == sample_entry.title
-        assert summary.url == sample_entry.url
-        assert summary.tags == sample_entry.tags
+    def test_non_sensitive_fields_preserved(self, raw_entry):
+        summary = build_entry_summary(raw_entry)
+        assert summary.title == raw_entry.title
+        assert summary.url == raw_entry.url
+        assert summary.tags == raw_entry.tags
 
 
 # ==================== entry_aad ====================

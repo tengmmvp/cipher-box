@@ -10,15 +10,15 @@ from pathlib import Path
 import pytest
 
 from src.database.db_manager import DatabaseManager
-from src.models import Entry
+from src.models import RawEntry
 
 
 # TODO: 迁移到 conftest.py make_entry fixture
-def _make_entry(**kwargs) -> Entry:
+def _make_entry(**kwargs) -> RawEntry:
     kwargs.setdefault('password', 'x')
     kwargs.setdefault('notes', '')
     kwargs.setdefault('custom_fields', '')
-    return Entry(**kwargs)
+    return RawEntry(**kwargs)
 
 
 @pytest.fixture

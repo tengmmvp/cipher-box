@@ -40,7 +40,7 @@ from ..resources.icons import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from PyQt6.QtCore import pyqtSignal
+    from PyQt6.QtCore import pyqtSignal, QTimer
     from PyQt6.QtWidgets import QLineEdit
 
     from ...business.managers.backup_restore import BackupRestoreManager
@@ -83,6 +83,7 @@ class _MainWindowMenuMixin(QMainWindow):
         _clipboard: ClipboardManager
         _detail_panel: DetailPanel
         _locked_ui: bool
+        _status_timer: QTimer
         _shortcuts: list[QShortcut]
         _search_edit: QLineEdit
         lock_requested: pyqtSignal

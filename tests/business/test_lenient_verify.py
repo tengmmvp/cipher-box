@@ -9,7 +9,7 @@ import pytest
 from src.business.managers.entry_manager import EntryManager
 from src.business.managers.vault_manager import VaultManager
 from src.exceptions import VaultIntegrityError
-from src.models import Entry
+from src.models import Entry, RawEntry
 
 
 class TestLenientVerify:
@@ -30,7 +30,7 @@ class TestLenientVerify:
         ))
 
         # 设置一个会抛 VaultIntegrityError 的 verifier
-        def bad_verifier(entry: Entry):
+        def bad_verifier(entry: RawEntry):
             raise VaultIntegrityError('元数据签名不匹配')
 
         self._vault.db._entry_verifier = bad_verifier
@@ -49,7 +49,7 @@ class TestLenientVerify:
             title='测试条目', username='user', password='pass', entry_type='login',
         ))
 
-        def bad_verifier(entry: Entry):
+        def bad_verifier(entry: RawEntry):
             raise VaultIntegrityError('元数据签名不匹配')
 
         self._vault.db._entry_verifier = bad_verifier

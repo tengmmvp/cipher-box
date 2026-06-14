@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ...business.managers.vault_manager import AUTH_FAILED_MESSAGE
 from ...business.services.password_service import PasswordService
 from ..components.widgets import (
     RateLimiter,
@@ -213,9 +214,9 @@ class ChangeMasterDialog(QDialog):
             QMessageBox.information(self, '成功', message)
             self.accept()
         else:
-            display_msg = error_msg or '当前主密码错误'
+            display_msg = error_msg or AUTH_FAILED_MESSAGE
             # 仅明确的认证失败计入速率限制；新密码校验问题或系统错误不惩罚用户
-            if error_msg == '当前主密码错误':
+            if error_msg == AUTH_FAILED_MESSAGE:
                 lock_seconds = self._rate_limiter.record_failure()
             else:
                 lock_seconds = 0

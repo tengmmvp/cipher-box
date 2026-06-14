@@ -21,7 +21,7 @@ from src.business.managers.vault_manager import VaultManager
 from src.business.services.security_analyzer import SecurityAnalyzer
 from src.crypto.encryption import EncryptionEngine
 from src.database.db_manager import DatabaseManager
-from src.models import Category, CustomField, Entry
+from src.models import Category, CustomField, Entry, RawEntry
 from tests.helpers import make_test_config
 
 # ── TestEntryManagerIntegration ──────────────────────────────────────────────
@@ -528,9 +528,9 @@ def test_transaction_commit(db_env):
     db.begin_transaction()
     try:
         # custom_fields 必须为字符串，不能为 list
-        e1 = Entry(title='事务条目1', username='tx_user1', password='tx_pwd1',
+        e1 = RawEntry(title='事务条目1', username='tx_user1', password='tx_pwd1',
                     notes='', custom_fields='')
-        e2 = Entry(title='事务条目2', username='tx_user2', password='tx_pwd2',
+        e2 = RawEntry(title='事务条目2', username='tx_user2', password='tx_pwd2',
                     notes='', custom_fields='')
         db.add_entry(e1)
         db.add_entry(e2)
@@ -560,7 +560,7 @@ def test_transaction_rollback(db_env):
     db.begin_transaction()
     try:
         # custom_fields 必须为字符串，不能为 list
-        e = Entry(title='回滚条目', username='rb_user', password='rb_pwd',
+        e = RawEntry(title='回滚条目', username='rb_user', password='rb_pwd',
                   notes='', custom_fields='')
         db.add_entry(e)
 

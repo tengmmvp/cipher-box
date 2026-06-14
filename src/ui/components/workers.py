@@ -87,6 +87,9 @@ class BackgroundWorker(QThread):
             # 否则用户会误以为操作成功（如导出失败时静默关闭对话框）。
             # cancelled 信号只在 func 正常返回但检测到取消请求时发出，
             # 以区分「干净取消」与「取消途中真正出错」。
+            # error 信号只传消息字符串给 UI（用户可见），完整堆栈在 worker 线程
+            # 记录到日志，避免「error 信号已脱离异常上下文，exc_info 无堆栈可诊断」。
+            logger.error("后台 worker 执行失败", exc_info=True)
             self.error.emit(str(e))
         else:
             if self._cancel_event.is_set():

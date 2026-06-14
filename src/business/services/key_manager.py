@@ -84,8 +84,10 @@ class KeyManager:
         CPython 下加密库内部仍持有密钥副本，依赖 GC 回收，此为固有限制。
         """
         try:
-            for attr in ('_key', '_snapshot_key'):
-                secret = getattr(self, attr, None)
+            # 直接遍历密钥属性而非 getattr(字符串名)：字段重命名时静态检查立即
+            # 报错，避免 getattr 默认值掩盖重命名导致的静默空转清零（与避免
+            # __getattr__ 全面委托破坏类型的教训同源）。
+            for secret in (self._key, self._snapshot_key):
                 if secret is not None:
                     secure_zero_buffer(secret)
         except Exception:
