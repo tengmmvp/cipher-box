@@ -115,9 +115,11 @@ class SettingsDialog(QDialog):
         clip_group = QGroupBox('剪贴板')
         clip_layout = QFormLayout(clip_group)
         self._clipboard_spin = QSpinBox()
-        self._clipboard_spin.setRange(0, 300)
+        # 最小 10 秒与 config._SECURITY_MINIMUMS 的运行时安全下限一致：
+        # get_safe('clipboard_clear_seconds') 会将低于 10 的值钳制到 10，
+        # 故 UI 不再提供 0 /「不自动清空」选项，避免界面值与运行时实际值脱节。
+        self._clipboard_spin.setRange(10, 300)
         self._clipboard_spin.setSuffix(' 秒')
-        self._clipboard_spin.setSpecialValueText('不自动清空')
         clip_layout.addRow('复制后自动清空：', self._clipboard_spin)
         layout.addWidget(clip_group)
 

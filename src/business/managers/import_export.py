@@ -377,6 +377,7 @@ class ImportExportManager:
         source_label: str,
         progress_callback: Optional[Callable[[int, int], None]] = None,
         overwrite_merger: Optional[Callable[[Entry, Entry], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> int:
         """统一的导入循环：去重、分类解析、覆盖/新增、进度回调。
 
@@ -404,6 +405,10 @@ class ImportExportManager:
         skipped = 0
         total = len(entries)
         for i, entry in enumerate(entries):
+            if cancel_check and cancel_check():
+                # 用户取消：中止后续导入，已写入条目随事务提交（部分导入）。
+                # 使 worker.cancel() 真正生效而非空转冻结 UI。
+                break
             if i in duplicate_indices:
                 continue
 
@@ -484,6 +489,7 @@ class ImportExportManager:
         default_category_id: Optional[int] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
         duplicate_action: str = 'import_all',
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> int:
         """从 JSON 文件导入。
 
@@ -544,6 +550,7 @@ class ImportExportManager:
             entries, entries_data, categories, default_category_id,
             duplicate_action, 'JSON 导入', progress_callback,
             overwrite_merger=_merge,
+            cancel_check=cancel_check,
         ))
 
     @_transactional_import
@@ -553,6 +560,7 @@ class ImportExportManager:
         default_category_id: Optional[int] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
         duplicate_action: str = 'import_all',
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> int:
         """从 CSV 文件导入，支持多种列名格式。
 
@@ -593,6 +601,7 @@ class ImportExportManager:
             entries, entries_data, categories, default_category_id,
             duplicate_action, 'CSV 导入', progress_callback,
             overwrite_merger=_merge,
+            cancel_check=cancel_check,
         ))
 
     # 注意：Chrome/Edge CSV 与 CipherBox CSV 共享相同的列名格式，即 name/url/username/password 等，
@@ -604,6 +613,7 @@ class ImportExportManager:
         default_category_id: Optional[int] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
         duplicate_action: str = 'import_all',
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> int:
         """从 Chrome/Edge 导出的 CSV 导入。
 
@@ -616,7 +626,7 @@ class ImportExportManager:
                 - 'overwrite': 覆盖匹配的已有条目
                 - 'import_all': 全部导入，默认行为
         """
-        return self.import_from_csv(filepath, default_category_id, progress_callback, duplicate_action)
+        return self.import_from_csv(filepath, default_category_id, progress_callback, duplicate_action, cancel_check)
 
     @_transactional_import
     def import_from_keepass_csv(
@@ -625,6 +635,7 @@ class ImportExportManager:
         default_category_id: Optional[int] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
         duplicate_action: str = 'import_all',
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> int:
         """从 KeePass 导出的 CSV 文件导入。
 
@@ -666,6 +677,7 @@ class ImportExportManager:
             entries, entries_data, categories, default_category_id,
             duplicate_action, 'KeePass CSV 导入', progress_callback,
             overwrite_merger=_merge,
+            cancel_check=cancel_check,
         ))
 
     @staticmethod
@@ -731,6 +743,7 @@ class ImportExportManager:
         default_category_id: Optional[int] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
         duplicate_action: str = 'import_all',
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> int:
         """从 Bitwarden JSON 导出文件导入。
 
@@ -791,6 +804,7 @@ class ImportExportManager:
             entries, entries_data, categories, default_category_id,
             duplicate_action, 'Bitwarden 导入', progress_callback,
             overwrite_merger=self._merge_bitwarden_secrets,
+            cancel_check=cancel_check,
         ))
 
     @staticmethod

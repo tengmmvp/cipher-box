@@ -51,7 +51,8 @@ class CategoryRepository:
     def get_categories(self) -> list[Category]:
         """获取所有分类。"""
         rows = self._conn.execute(
-            "SELECT * FROM categories ORDER BY sort_order, name"
+            "SELECT id, name, icon_char, color, sort_order, created_at "
+            "FROM categories ORDER BY sort_order, name"
         ).fetchall()
         return [self._row_to_category(r) for r in rows]
 

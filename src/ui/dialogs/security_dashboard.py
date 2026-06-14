@@ -330,9 +330,13 @@ class SecurityDashboard(QDialog):
             # 避免"正在分析..."提示残留
             self._clear_layout(self._weak_layout)
             self._status_hint = None
-            release_worker(self)
             QMessageBox.critical(self, '错误', '加载安全数据失败，请重试')
             return
+        finally:
+            # 统一释放当前 worker：成功与异常两个出口合并到 finally，
+            # 避免未来新增分支时漏调 release_worker 造成 worker 引用泄漏。
+            # _on_data_error（worker.error 信号）是另一独立路径，自行 release。
+            release_worker(self)
 
         weak_count = len(self._weak_entries)
         dup_count = len(self._duplicate_groups)
@@ -353,10 +357,9 @@ class SecurityDashboard(QDialog):
         self._populate_weak_tab()
         self._populate_duplicate_tab()
         self._populate_old_tab()
-        release_worker(self)
 
     def _on_data_error(self, error_msg: str):
-        """后台分析失败。"""
+        """后台分析失败（worker.error 信号路径，独立于 _on_data_loaded 的成功/异常出口）。"""
         release_worker(self)
         # 统一用 _clear_layout 回收 _status_hint，与 _on_data_loaded 出口一致
         self._clear_layout(self._weak_layout)

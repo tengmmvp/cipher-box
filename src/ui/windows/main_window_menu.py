@@ -278,7 +278,19 @@ class _MainWindowMenuMixin(QMainWindow):
         if result == ChangeMasterDialog.DialogCode.Accepted:
             self._refresh_all_data()
             self._detail_panel.show_empty()
+            # 改密后强制创建当前保险库快照（force=True 绕过自动备份开关）。
+            # 即使用户已禁用自动备份，改密快照仍会创建以保留改密前的可回滚点；
+            # 显式 Toast 告知，避免用户误以为禁用自动备份后没有任何快照产生。
             self._run_backup_async(force=True)
+            from ..components.toast import Toast
+            from ..resources.constants import MS_TOAST_DEFAULT
+            # 备份异步进行，文案不谎称"已创建"（force=True 绕过开关，可能被并发跳过
+            # 或后台失败）。完成后用户可在「备份与恢复」查看。
+            Toast.show(
+                self, '正在创建改密快照，完成后可在「备份与恢复」中查看或恢复',
+                Toast.INFO, duration=MS_TOAST_DEFAULT,
+            )
+            logger.info("改密成功，已触发强制快照")
 
     def _show_about(self):
         dialog = AboutDialog(self)

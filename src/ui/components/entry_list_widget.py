@@ -16,6 +16,17 @@ from ..resources.theme_colors import c, get_strength_color
 # 收藏标记字符
 FAVORITE_MARKER = '★ '
 
+# paint 行内垂直布局不变量（单位：像素）。
+# 标题区域必须完整落在副标题区域之前，避免两段文本垂直重叠。
+_TITLE_Y_OFFSET = 7        # 标题绘制基线 Y 偏移（相对 rect.top()）
+_TITLE_HEIGHT = 22         # 标题绘制区域高度
+# 副标题紧接标题区域之后留 1px 间隔，由前两个不变量派生，
+# 改标题区几何时副标题自动跟随，杜绝两段文本重叠的回归。
+_SUBTITLE_Y_OFFSET = _TITLE_Y_OFFSET + _TITLE_HEIGHT + 1
+assert _TITLE_Y_OFFSET + _TITLE_HEIGHT <= _SUBTITLE_Y_OFFSET, (
+    '标题区域与副标题区域重叠：paint 垂直布局不变量被破坏'
+)
+
 
 def _resolve_font_family() -> str:
     """返回当前平台上第一个可用的字体族名称。
@@ -97,10 +108,12 @@ class EntryItemDelegate(QStyledItemDelegate):
     DELETE_BADGE_HEIGHT = 20
     _TEXT_RIGHT_MARGIN = 38           # 文本区域右侧保留宽度
     _DELETE_TEXT_RIGHT_EXTRA = 28     # 删除徽章额外保留宽度
-    # paint 内行内垂直坐标偏移（相对 rect.top()）
-    _TITLE_Y_OFFSET = 7       # 标题绘制基线 Y 偏移
-    _TITLE_HEIGHT = 22        # 标题绘制区域高度
-    _SUBTITLE_Y_OFFSET = 30   # 副标题绘制基线 Y 偏移
+    # paint 内行内垂直坐标偏移（相对 rect.top()）。
+    # _TITLE_Y_OFFSET / _TITLE_HEIGHT / _SUBTITLE_Y_OFFSET 引用模块级
+    # 不变量常量，三者几何关系在模块加载时由 assert 校验。
+    _TITLE_Y_OFFSET = _TITLE_Y_OFFSET
+    _TITLE_HEIGHT = _TITLE_HEIGHT
+    _SUBTITLE_Y_OFFSET = _SUBTITLE_Y_OFFSET
     _SUBTITLE_HEIGHT = 19     # 副标题绘制区域高度
     _MARKER_DOT_Y_OFFSET = 10 # 强度圆点 Y 偏移
     _MARKER_DOT_WIDTH = 12    # 强度圆点绘制区域宽度

@@ -106,6 +106,10 @@ class CipherBoxApp:
                 logger.warning("崩溃兜底：prepare_for_lock 失败", exc_info=True)
         if self._main_window is not None:
             try:
+                if not full:
+                    # aboutToQuit 不等待 worker（避免阻塞退出），但仍取消它们，
+                    # 避免 backup worker 残留持密钥继续解密，与 lock() 清零竞态。
+                    self._main_window.emergency_cancel_workers()
                 # 经公共方法而非 getattr 访问 _clipboard 私有属性：崩溃兜底路径
                 # 最不应静默失效，私有属性重命名时 getattr 返回 None 会无声错过清理。
                 self._main_window.emergency_clear_clipboard()
@@ -149,7 +153,23 @@ class CipherBoxApp:
         def on_login():
             first_show = self._main_window is None
             if self._main_window is None:
-                self._main_window = MainWindow(self._config, self._vault)
+                # MainWindow 构造涉及 UI 组件、托盘、定时器、WTS 注册等多个子系统，
+                # 任一环节抛异常会留下半构造窗口与已连接的部分信号槽。捕获后回滚
+                # 引用为 None，提示用户重启而非继续 show 一个状态不一致的窗口。
+                try:
+                    self._main_window = MainWindow(self._config, self._vault)
+                except Exception:
+                    logger.error("主窗口构造失败，已回滚", exc_info=True)
+                    self._main_window = None
+                    QMessageBox.critical(
+                        None, '启动失败',
+                        '主窗口初始化失败，请重试或检查日志。保险库已解锁，'
+                        '退出前将自动锁定。',
+                    )
+                    self._vault.lock()
+                    self._running = False
+                    self._app.quit()
+                    return
                 self._main_window.lock_requested.connect(self._on_lock)
             assert self._main_window is not None
             self._main_window.refresh_after_unlock()

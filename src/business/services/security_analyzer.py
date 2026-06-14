@@ -112,6 +112,9 @@ class SecurityAnalyzer:
                 if dt is not None and dt < cutoff
             ]
             cache['old'] = len(cache['old_entries'])
+            # 更新已生效的 days，使后续相同 days 命中跳过重复 O(n) 过滤。
+            # 持 _cache_lock 调用，写自亦受同一锁保护，无额外竞态。
+            self._analysis_cache_days = days
         # 出口复制：列表新建，Entry 用 dataclasses.replace 创建独立实例，
         # 防止调用方修改返回对象污染缓存中的共享 Entry。
         if 'weak_entries' in cache:

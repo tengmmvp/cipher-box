@@ -181,10 +181,9 @@ class DatabaseManager:
                     raise
                 return
 
-            # 与外层事务分支（上方 _conn is None 检查）保持异常契约一致：
-            # 连接已关闭时抛 DatabaseError，而非在下方 execute 处抛 AttributeError。
-            if self._conn is None:
-                raise DatabaseError("数据库未连接")
+            # 此分支仅在 in_transaction 为真时进入，而 in_transaction 要求
+            # _transaction_depth > 0，事务开始必然先经过 begin_transaction 的
+            # _conn is None 断言，故此处 conn 必非 None，无需重复检查。
             self._guard_write()
             self._savepoint_counter += 1
             savepoint = f'"cipherbox_sp_{self._savepoint_counter}"'
@@ -330,6 +329,10 @@ class DatabaseManager:
                         "数据库关闭时存在未提交事务 (depth=%d)，将回滚",
                         self._transaction_depth,
                     )
+                    # 先回滚再关闭，确保事务状态机被显式清理；仅 close 会
+                    # 把 _transaction_depth 留在 > 0，后续若在同实例重开连接，
+                    # transaction() 会误判仍处事务内而走 savepoint 分支。
+                    self.rollback_transaction()
                 self._conn.close()
                 self._conn = None
             self._transaction_depth = 0

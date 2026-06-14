@@ -302,13 +302,22 @@ class EntryRepository:
         """批量更新条目，改密重加密专用。
 
         Args:
-            rows: ``ReEncryptedEntry`` NamedTuple 列表，或与
-                ``_RE_ENCRYPT_BATCH_UPDATE_SQL`` 列顺序一致的 tuple 列表，
-                推荐使用 NamedTuple。NamedTuple 自动适配 executemany
-                的位置参数绑定。
+            rows: ``ReEncryptedEntry`` NamedTuple 列表（key_rotation 产出）。
+                采样断言按 NamedTuple 属性访问加密列，故不支持普通 tuple；
+                NamedTuple 自动适配 executemany 的位置参数绑定。
         """
         if not rows:
             return
+        # 采样首条的加密列做格式自检，防止重加密流程 bug 导致明文静默落入
+        # 加密列。逐行断言开销不可接受（改密可达数万条），采样首条作护栏；
+        # rows 实际为 ReEncryptedEntry NamedTuple（key_rotation 产出）。
+        first = rows[0]
+        for enc_value in (
+            first.username_enc, first.password_enc, first.notes_enc,
+            first.custom_fields_enc, first.totp_secret_enc,
+        ):
+            if enc_value:
+                self._assert_encrypted(enc_value, 're_encrypt_batch')
         self._conn.executemany(_RE_ENCRYPT_BATCH_UPDATE_SQL, rows)
         self._auto_commit()
 
@@ -407,9 +416,11 @@ class EntryRepository:
         """
         if not entry_ids:
             return []
+        # 去重保序：重复 id 致返回行数 < 请求数，调用方按位置对齐会错位。
+        unique_ids = list(dict.fromkeys(entry_ids))
         results = []
-        for start in range(0, len(entry_ids), _ID_BATCH_SIZE):
-            batch = entry_ids[start:start + _ID_BATCH_SIZE]
+        for start in range(0, len(unique_ids), _ID_BATCH_SIZE):
+            batch = unique_ids[start:start + _ID_BATCH_SIZE]
             placeholders = ','.join('?' for _ in batch)
             rows = self._conn.execute(
                 f"""SELECT e.*, c.name as category_name

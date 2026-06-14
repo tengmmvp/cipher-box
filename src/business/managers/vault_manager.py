@@ -20,6 +20,7 @@ from ...database.db_manager import DatabaseManager
 from ...exceptions import (
     CipherBoxError,
     DatabaseError,
+    SchemaError,
     VaultAlreadyInitializedError,
     VaultIntegrityError,
     VaultKeyEpochMismatchError,
@@ -106,16 +107,41 @@ class VaultManager:
 
     @property
     def is_initialized(self) -> bool:
-        """保险库是否已初始化，即是否设置了主密码。"""
+        """保险库是否已初始化，即是否设置了主密码。
+
+        仅「数据库不存在」返回 False；schema 损坏（``SchemaError``）或
+        元数据完整性失败（``VaultIntegrityError``）向上传播，不吞为 False，
+        避免让 UI 误判为未初始化后在损坏库上重新初始化导致数据覆盖。
+        """
         if not self._config.db_path.exists():
             return False
         try:
             self._ensure_db_open()
             salt_b64 = self._db.get_meta('master_salt')
             return salt_b64 is not None
+        except (SchemaError, VaultIntegrityError):
+            # schema 损坏 / 完整性校验失败必须向上传播：吞为 False 会让 UI
+            # 误判为未初始化，引导用户在损坏库上初始化从而覆盖既有数据。
+            logger.error("检查保险库状态发现数据库损坏", exc_info=True)
+            self._close_db_safely()
+            raise
         except Exception:
             logger.error("检查保险库状态失败", exc_info=True)
+            self._close_db_safely()
             return False
+
+    def _close_db_safely(self) -> None:
+        """关闭探测期间打开的数据库连接，避免文件锁阻碍临时目录清理。
+
+        is_initialized 等探测方法打开连接后若失败，连接未关会导致 Windows 下
+        tempfile 清理抛 WinError 32。失败路径主动关闭，回滚到未打开状态。
+        """
+        if getattr(self._db, 'is_open', False):
+            try:
+                self._db.close()
+            except Exception:
+                logger.debug("关闭数据库连接失败", exc_info=True)
+        self._db_initialized = False
 
     def _ensure_db_open(self):
         """确保数据库已打开且表已初始化。幂等方法，已打开则跳过。"""

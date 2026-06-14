@@ -19,6 +19,7 @@ from src.business.managers.entry_manager import EntryManager
 from src.business.managers.import_export import ImportExportManager
 from src.business.managers.vault_manager import VaultManager
 from src.crypto.totp import TOTPGenerator
+from src.exceptions import SchemaError
 from src.models import CustomField, Entry
 from src.ui.dialogs.entry_dialog import EntryDialog
 from src.ui.dialogs.login_window import LoginWindow
@@ -652,7 +653,13 @@ def test_existing_database_missing_table_is_rejected_without_repair():
         connection.close()
 
         reopened = VaultManager(_config(root))
-        assert reopened.is_initialized is False
+        # schema 损坏（缺表）时 is_initialized 传播 SchemaError 而非静默 False，
+        # 避免 UI 误判为未初始化后在损坏库上初始化覆盖既有数据。
+        try:
+            reopened.is_initialized
+            raise AssertionError('缺表的库 is_initialized 应抛 SchemaError')
+        except SchemaError:
+            pass
         connection = sqlite3.connect(db_path)
         tables = {
             row[0] for row in connection.execute(

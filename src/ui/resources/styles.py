@@ -476,20 +476,36 @@ QLabel#hintLabel {{
 """
 
 
-def get_style(theme: str) -> str:
-    """获取指定主题的样式表。
+def render_style(theme: str) -> str:
+    """纯渲染指定主题的样式表，无副作用。
 
-    Note:
-        会调用 set_theme(theme) 设置全局活跃主题作为副作用。
-        这是设计上的有意耦合，样式表生成与主题激活必须同步。
+    仅根据主题颜色字典与字体常量格式化 ``STYLE_TEMPLATE``，不触碰
+    ``theme_colors`` 的全局活跃主题状态。调用方需自行决定是否调用
+    ``set_theme`` 激活主题（如仅预览样式表而不切换活跃主题时使用本函数）。
     """
     from .constants import FONT_FAMILY_CSS, FONT_FAMILY_MONOSPACE
-    from .theme_colors import get_colors, set_theme
+    from .theme_colors import get_colors
     colors = get_colors(theme)
-    set_theme(theme)
     return STYLE_TEMPLATE.format(
         font_family=FONT_FAMILY_CSS,
         font_mono=FONT_FAMILY_MONOSPACE,
         **colors,
     )
+
+
+def get_style(theme: str) -> str:
+    """获取指定主题的样式表并激活该主题。
+
+    Note:
+        会调用 set_theme(theme) 设置全局活跃主题作为副作用。
+        这是设计上的有意耦合，样式表生成与主题激活必须同步：
+        样式中部分控件使用运行时 ``c()`` 解析的颜色（如 delegate），
+        若样式表已切到新主题但全局活跃主题仍为旧值，会得到不一致配色。
+
+    保留以向后兼容现有调用方；新代码可显式分两步：
+    ``set_theme(theme)`` + ``render_style(theme)``。
+    """
+    from .theme_colors import set_theme
+    set_theme(theme)
+    return render_style(theme)
 

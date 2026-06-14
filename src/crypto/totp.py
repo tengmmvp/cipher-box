@@ -26,11 +26,8 @@ class TOTPGenerator:
 
     # 密钥前缀 -> 算法。SHA1 不入表：它是默认算法，显式 ``SHA1:`` 前缀不被识别
     # （_parse_secret 对无匹配前缀的密钥返回默认 'SHA1'，由 URI/调用方 algorithm 生效）。
-    # 注意：新增算法须同步 ALGO_MAP（上方）与此处，避免两表漂移。
-    _PREFIX_MAP = {
-        'SHA256:': 'SHA256',
-        'SHA512:': 'SHA512',
-    }
+    # 从 ALGO_MAP 派生，消除手动两表同步漂移：新增算法仅需改 ALGO_MAP，此表自动跟随。
+    _PREFIX_MAP = {f'{a}:': a for a in ALGO_MAP if a != 'SHA1'}
 
     @staticmethod
     def _parse_secret(secret: str) -> tuple[str, str]:
@@ -239,8 +236,14 @@ class TOTPGenerator:
             return False
 
         try:
-            base64.b32decode(TOTPGenerator._normalize_base32(raw_secret), casefold=True)
-            return True
+            decoded = base64.b32decode(TOTPGenerator._normalize_base32(raw_secret), casefold=True)
         except (binascii.Error, ValueError):
             logger.debug("TOTP 密钥验证失败", exc_info=True)
             return False
+        # 解码字节数 < 10 视为无效：截断密钥会被静默接受，但生成的验证码
+        # 永不匹配，用户难以察觉密钥已损坏。RFC 6238 起码要求 160 位（20 字节），
+        # 此处放宽到 10 字节仅拦截明显损坏的极短输入。
+        if len(decoded) < 10:
+            logger.debug("TOTP 密钥解码后长度不足：%d 字节", len(decoded))
+            return False
+        return True

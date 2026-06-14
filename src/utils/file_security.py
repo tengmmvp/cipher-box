@@ -216,8 +216,15 @@ def secure_delete_file(path: Path) -> None:
     try:
         size = path.stat().st_size
         if size > 0:
+            # 分块覆写（1MB）：恢复点/快照可达数十 MB，一次性 os.urandom(size)
+            # 等量分配内存，批量清理峰值=N×文件大小可能 OOM。分块收缩峰值。
+            _DELETE_CHUNK = 1024 * 1024
             with open(path, 'r+b') as fp:
-                fp.write(os.urandom(size))
+                remaining = size
+                while remaining > 0:
+                    chunk = min(_DELETE_CHUNK, remaining)
+                    fp.write(os.urandom(chunk))
+                    remaining -= chunk
                 fp.flush()
                 os.fsync(fp.fileno())
     finally:

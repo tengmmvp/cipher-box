@@ -31,6 +31,8 @@ def _cache_key(key: bytes) -> bytes:
 
 _cache_lock = threading.RLock()
 # AESGCM 实例缓存：按密钥摘要索引，通常仅含当前活跃密钥。
+# 模块级缓存会跨 VaultManager 实例共享（如同一进程内的测试创建多个实例），
+# 经 SHA-256 摘要索引，缓存键不持有也不泄漏明文密钥材料。
 _MAX_CACHE_SIZE = 16
 _cipher_cache: OrderedDict[bytes, AESGCM] = OrderedDict()
 
@@ -152,6 +154,9 @@ class EncryptionEngine:
             aad = cls._aad_bytes(associated_data)
             plaintext = aesgcm.decrypt(nonce, ciphertext, aad)
             result = plaintext.decode('utf-8')
+            # 非常量时间比较是有意设计：哨兵判定发生在 GCM 认证成功之后，
+            # 攻击者无法越过认证到达此处；哨兵本身不是密钥或敏感机密，
+            # 不存在通过时序差异泄漏密钥材料的途径。
             if result == cls._EMPTY_SENTINEL:
                 return ''
             return result

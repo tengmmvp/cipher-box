@@ -177,7 +177,7 @@ class SchemaManager:
             "SELECT value FROM vault_meta WHERE key = 'schema_format'"
         ).fetchone()
         if row is None or row['value'] != self.SCHEMA_FORMAT:
-            actual = row['value'] if row else '未知'
+            actual = row['value'] if row and row['value'] else '未知'
             raise SchemaError(
                 f'不支持的数据库格式：{actual}'
             )

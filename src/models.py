@@ -12,7 +12,9 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
-# 字段最大长度常量，作为单一事实来源
+# 字段最大长度常量，作为单一事实来源。
+# 明文长度上限（密文不受此限，base64 后更长）：这些常量约束加密前的明文输入，
+# 加密后存储的密文经 base64 编码 + nonce + tag，长度会显著超出上限。
 MAX_FIELD_TITLE = 1024
 MAX_FIELD_USERNAME = 1024
 MAX_FIELD_URL = 2048

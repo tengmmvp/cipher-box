@@ -40,18 +40,15 @@ class PasswordHistoryWidget(QWidget):
         # 避免 deleteLater 异步销毁前明文驻留 Qt 对象（锁定时内存转储可读）。
         self._pwd_labels: list[QLabel] = []
         self._entry_mgr = None
-        # 外部 _field_hide_timers 引用，通过 set_hide_timers_ref 注入
-        self._field_hide_timers: list[QTimer] = []
+        # 本组件自管的密码显示超时定时器：clear() 时停止，所有权清晰，
+        # 不再依赖外层 DetailPanel 的调用顺序兜底。
+        self._own_timers: list[QTimer] = []
         # 回调：获取密码可见毫秒数
         self._get_pwd_visible_ms: Callable[[], int] | None = None
         # 回调：复制并反馈
         self._copy_with_feedback: Callable[..., None] | None = None
 
     # ---- 公开接口 ----
-
-    def set_hide_timers_ref(self, timers: list[QTimer]):
-        """接收外部 _field_hide_timers 引用。"""
-        self._field_hide_timers = timers
 
     def set_callbacks(self, get_pwd_visible_ms, copy_with_feedback):
         """注入回调函数。
@@ -105,6 +102,10 @@ class PasswordHistoryWidget(QWidget):
 
     def clear(self):
         """安全清除所有状态和密码。"""
+        # 停止本组件自管的定时器，避免到期回调访问已销毁控件。
+        for timer in self._own_timers:
+            timer.stop()
+        self._own_timers.clear()
         # 先掩码已渲染的明文 QLabel 再释放，避免 deleteLater 异步销毁前明文驻留。
         for lbl in self._pwd_labels:
             lbl.setText('••••••••')
@@ -156,7 +157,7 @@ class PasswordHistoryWidget(QWidget):
             # 历史密码显示超时定时器，持久且可取消
             hist_timer = QTimer(self)
             hist_timer.setSingleShot(True)
-            self._field_hide_timers.append(hist_timer)
+            self._own_timers.append(hist_timer)
 
             def _on_hist_timeout(lbl=pwd_label, btn=show_btn):
                 # 仅重置显示，不清空槽位：历史密码需支持显示→隐藏→再显示，

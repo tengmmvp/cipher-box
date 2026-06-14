@@ -654,9 +654,12 @@ class EntryDialog(QDialog):
         )
         self._password_edit.setText(password)
         # 通过按钮公共方法显示密码并按配置启动自动隐藏，替代反射式属性访问
-        visible_seconds = PWD_VISIBLE_SECONDS_DEFAULT
-        if self._config:
-            visible_seconds = self._config.get_safe('password_visible_seconds', PWD_VISIBLE_SECONDS_DEFAULT)
+        # 注意此处用 _cfg（非 get_safe）：password_visible_seconds 的运行时安全下限
+        # 对"显示多久"无安全意义（最长仅是用户多看几秒明文），get_safe 的钳制用于
+        # 防篡改类键（auto_lock/clipboard_clear），visible_seconds 不在
+        # _SECURITY_MINIMUMS 需要强制下限的语义范围内。与 _generate_password 中
+        # 其他 _cfg 调用保持一致，统一走无钳制路径。
+        visible_seconds = self._cfg('password_visible_seconds', PWD_VISIBLE_SECONDS_DEFAULT)
         self._toggle_pwd_btn.show_password(seconds=visible_seconds)
 
     def _on_password_changed(self, text: str):
@@ -804,11 +807,10 @@ class EntryDialog(QDialog):
         self._cf_editor.clear_sensitive_values()
 
     def reject(self):
-        """取消/关闭前清除敏感输入框。"""
+        """取消/关闭前清除敏感输入框。
+
+        QDialog 通过窗口关闭按钮（X）、Esc、调用 reject() 或 done(Rejected) 退出时
+        均走此入口，故无需再重写 closeEvent 重复清理，避免双重 _clear_sensitive_inputs。
+        """
         self._clear_sensitive_inputs()
         super().reject()
-
-    def closeEvent(self, a0):
-        """窗口关闭前清除敏感输入框。"""
-        self._clear_sensitive_inputs()
-        super().closeEvent(a0)

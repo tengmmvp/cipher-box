@@ -8,7 +8,10 @@ from PyQt6.QtCore import QObject, QTimer
 from PyQt6.QtGui import QClipboard
 from PyQt6.QtWidgets import QApplication
 
-# 每次会话随机生成 HMAC 密钥，避免硬编码可被预测
+# 模块级会话级 key，用于常数时间比对剪贴板内容是否仍为上次写入值（非认证用途）。
+# 每次进程启动随机生成，避免硬编码可被预测；此处不涉及跨进程认证或防篡改——
+# 仅在 _clear_clipboard 中以 hmac.compare_digest 比对"剪贴板当前内容是否仍是
+# 本会话写入的密码"，决定是否清空。即便攻击者已知此 key 也无法借此读取密码内容。
 _CLIPBOARD_HMAC_KEY: bytes = os.urandom(32)
 
 logger = logging.getLogger(__name__)

@@ -8,7 +8,7 @@
 import logging
 from collections import OrderedDict
 from html import escape
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from PyQt6 import sip
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
@@ -105,7 +105,6 @@ class DetailPanel(QWidget):
         self._totp_widget.copy_feedback.connect(self.copy_feedback.emit)
 
         self._history_widget = PasswordHistoryWidget(self)
-        self._history_widget.set_hide_timers_ref(self._field_hide_timers)
         self._history_widget.set_callbacks(
             get_pwd_visible_ms=self._get_pwd_visible_ms,
             copy_with_feedback=self._copy_with_feedback,
@@ -238,6 +237,9 @@ class DetailPanel(QWidget):
         self._pwd_hide_timer.stop()
         self._totp_widget.stop()
         self._clear_content()
+        # 显示具体条目时隐藏空状态占位
+        if self._empty_label is not None:
+            self._empty_label.hide()
 
         # 更新标题
         self._title_label.setText(f'{entry.type_icon} {entry.title}')
@@ -294,7 +296,11 @@ class DetailPanel(QWidget):
             safe_url = parsed_url.scheme.lower() in ('http', 'https')
             escaped_url = escape(entry.url, quote=True)
             if safe_url:
-                text = f'<a href="{escaped_url}" style="color: {c("link")}; text-decoration:none;">{escaped_url}</a>'
+                # href 用 quote 编码以容忍空格/中文等字符，避免 RichText
+                # 解析器在 <a href="..."> 内被特殊字符截断；safe 白名单保留
+                # URL 结构字符。链接显示文本仍用转义后的原文。
+                href = quote(entry.url, safe='/:?&=#%+')
+                text = f'<a href="{escape(href, quote=True)}" style="color: {c("link")}; text-decoration:none;">{escaped_url}</a>'
             else:
                 text = escaped_url
             url_label = QLabel(text)
@@ -595,11 +601,13 @@ class DetailPanel(QWidget):
             self._pwd_label_ref.setText('••••••••')
         self._pwd_label_ref = None
         self._show_btn_ref = None
+        # _empty_label 为构造时一次创建的常驻控件，从布局中取出避免被
+        # _clear_layout 的 deleteLater 销毁，从而 show_empty 可直接复用。
+        if self._empty_label is not None:
+            self._content_layout.removeWidget(self._empty_label)
+            self._empty_label.hide()
         self._clear_layout(self._content_layout)
         logger.debug("详情面板内容已清除")
-        # _clear_layout 通过 deleteLater 销毁所有子控件，将引用置空
-        # 以避免对已销毁控件留下悬空引用。
-        self._empty_label = None
 
     @staticmethod
     def _clear_layout(layout):
@@ -630,10 +638,11 @@ class DetailPanel(QWidget):
         self._edit_btn.hide()
         self._delete_btn.hide()
         self._fav_btn.hide()
-        self._empty_label = QLabel('请从列表中选择一个条目\n以查看详细信息')
-        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty_label.setObjectName('detailEmpty')
+        # 复用构造时创建的常驻 _empty_label，仅更新文本并显示，
+        # 避免每次 show_empty 频繁 new QLabel + deleteLater 累积。
+        self._empty_label.setText('请从列表中选择一个条目\n以查看详细信息')
         self._content_layout.addWidget(self._empty_label)
+        self._empty_label.show()
 
     def secure_clear(self):
         """安全清除所有敏感数据和信号连接，由主窗口在锁定时调用。"""

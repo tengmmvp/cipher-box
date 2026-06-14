@@ -236,8 +236,23 @@ class BackupDialog(QDialog):
             return
         self._set_busy(True)
         self._worker_is_backup = True
+        # lambda 默认参数在定义时拷贝 password，避免 del 局部后闭包引用触发
+        # pyflakes F821，且 worker 线程执行时 pwd 已就绪。
+        # 传 cancel_check 使 reject() 真正中断全量解密循环，而非空转阻塞主线程。
         self._worker = BackgroundWorker(
-            lambda: self._backup_mgr.create_backup(path, password),
+            lambda pwd=password: self._backup_mgr.create_backup(
+                path, pwd,
+                # 守卫 None 仅为满足 Optional 类型静态检查；worker 线程执行时
+                # self._worker 必已赋值，cancel_check 使 reject() 真正中断解密循环。
+                cancel_check=(
+                    # is_cancelled 是 @property 返回 bool，须包成 lambda 提供
+                    # Callable[[], bool]，否则 create_backup 的 cancel_check() 对 bool
+                    # 调用会抛 TypeError（取消时）或永不检查（未取消时短路）。
+                    (lambda: self._worker.is_cancelled if self._worker is not None else False)
+                    if self._worker is not None
+                    else None
+                ),
+            ),
             parent=self,
         )
         self._worker.finished.connect(self._on_backup_done)

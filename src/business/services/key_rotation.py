@@ -99,7 +99,9 @@ class KeyRotationService:
             new_key: 改密后的新 AES 密钥。
             cancel_event: 可选的 threading.Event，设置时提前终止循环。
         """
-        # 预计算域密钥，避免每条条目重复 HMAC 派生，每批 200 条可省 200 次 HMAC
+        # 预计算 domain_key：省的是「从主密钥派生域密钥」的那一次 HMAC，
+        # 不是 sign_with_domain_key 每条仍做的签名 HMAC——后者无法预计算，
+        # 因其输入含每条目不同的字段明文。每批 200 条省 200 次域密钥派生 HMAC。
         precomputed_domain_key = self._signer.compute_domain_key(new_key)
         last_id = 0
         while True:

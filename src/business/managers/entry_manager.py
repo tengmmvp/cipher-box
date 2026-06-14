@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 from ...crypto.password_generator import PasswordGenerator
 from ...crypto.totp import TOTPGenerator
-from ...exceptions import DecryptionError, EntryIntegrityError
+from ...exceptions import DecryptionError, EntryIntegrityError, VaultKeyEpochMismatchError
 from ...models import (
     ENTRY_TYPES,
     MAX_CUSTOM_FIELDS_PER_ENTRY,
@@ -38,11 +38,17 @@ from ...utils.format import format_datetime, utc_now_iso
 from ..services.crypto_utils import (
     build_entry_summary,
     copy_entry_fields,
-    decrypt_field as _decrypt_field_impl,
-    encrypt_field as _encrypt_field_impl,
     matches_search,
-    matches_tag as _matches_tag_impl,
     require_vault_key,
+)
+from ..services.crypto_utils import (
+    decrypt_field as _decrypt_field_impl,
+)
+from ..services.crypto_utils import (
+    encrypt_field as _encrypt_field_impl,
+)
+from ..services.crypto_utils import (
+    matches_tag as _matches_tag_impl,
 )
 
 logger = logging.getLogger(__name__)
@@ -179,6 +185,9 @@ class EntryManager:
         with self._cache_lock:
             if cid in self._username_cache:
                 return self._username_cache[cid]
+            # 记录进入时的 epoch，供锁外解密后复查，防止并发 invalidate
+            # 在写缓存前清空 epoch，导致把旧密钥解密结果写入新 epoch 的缓存。
+            entry_epoch = self._cache_epoch
         # 解密在锁外执行，避免长时间持锁阻塞 TOTP 定时器等其他缓存访问；
         # 并发首访可能重复解密，属可接受的性能折衷（非正确性问题）。
         try:
@@ -191,9 +200,13 @@ class EntryManager:
             )
             username = ''
             with self._cache_lock:
-                self._username_decrypt_failed.add(cid)
+                if self._cache_epoch == entry_epoch:
+                    self._username_decrypt_failed.add(cid)
         with self._cache_lock:
-            self._username_cache[cid] = username
+            # 锁外解密期间若 epoch 已被并发 invalidate 改变（改密/锁定），
+            # 跳过写缓存，避免把旧密钥解密的明文污染新 epoch 的缓存。
+            if self._cache_epoch == entry_epoch:
+                self._username_cache[cid] = username
         return username
 
     def _invalidate_if_epoch_changed(self):
@@ -413,6 +426,9 @@ class EntryManager:
             )
         if entry.id is None:
             return
+        # read 前快照 key_epoch，事务内复查，防止 read-modify-write 期间改密
+        # 导致 add_password_history 写入旧密钥密文到已被重写的历史表。
+        pre_epoch = self.key_epoch
         raw = self.db.get_entry(entry.id)
         if raw is None:
             return
@@ -456,9 +472,12 @@ class EntryManager:
         )
         enc_entry.password_changed_at = password_changed_at
         with self.db.transaction():
-            # 单用户桌面应用无并发写（TOTP 后台只读），事务内无需复查密码密文
-            # 一致性。历史版本的乐观锁观测在单用户下竞态窗口永不触发，移除以
-            # 省一次 DB 往返。归档读取时刻的 old_pwd_enc 仍正确（它是读取时的真实密码）。
+            # epoch 复查：_enforce_key_epoch 事务内跳过，单条写路径须自行复查，
+            # 防止 read（事务外）到 commit（事务内）期间改密导致写入旧密钥密文。
+            if self.key_epoch != pre_epoch:
+                raise VaultKeyEpochMismatchError(
+                    '更新期间检测到密钥变更（改密/锁定），已中止以防写入旧密钥密文'
+                )
             if old_pwd_enc and password_changed and entry.id is not None:
                 # 用与条目一致的 password_changed_at 作为历史 changed_at，
                 # 避免两次独立 utc_now_iso() 产生的微秒级时序倒置
@@ -516,11 +535,12 @@ class EntryManager:
         NOTE: search 参数不传递到 SQL 层，因为 username 是加密字段，
         SQL LIKE 无法过滤。所有搜索匹配在 Python 层完成。
 
-        PERF: 生产代码中列表展示统一走轻量的 get_entry_summaries（仅解密
-        username），本方法的 search 分支「命中后完整解密」仅在测试中使用，
-        不构成生产路径的性能热点。导出等需要全字段的场景走
-        get_entries_for_export。如未来需要列表展示调用此方法，应改用
-        get_entry_summaries 以避免过度解密。
+        .. deprecated::
+            ``search`` 分支仅供测试使用。生产代码的列表展示应使用
+            :meth:`get_entry_summaries`，导出全字段场景应使用
+            :meth:`get_entries_for_export`。误用 ``get_entries`` 的 ``search``
+            分支会触发 O(n) 全量解密（命中条目逐条完整解密 password、
+            totp_secret 等高敏字段），不应出现在生产路径。
         """
         raw_entries = self._vault.db.get_entries(
             deleted_only=deleted_only,
@@ -663,7 +683,12 @@ class EntryManager:
         在单个事务内完成读-改-写，避免 TOCTOU 竞态。
         update_entry 会自动重签 metadata_mac，保证元数据完整性。
         """
+        pre_epoch = self.key_epoch
         with self._vault.db.transaction():
+            if self.key_epoch != pre_epoch:
+                raise VaultKeyEpochMismatchError(
+                    '切换收藏期间检测到密钥变更（改密/锁定），已中止'
+                )
             raw = self._vault.db.get_entry(entry_id)
             if raw is None:
                 return None

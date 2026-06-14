@@ -188,6 +188,10 @@ DARK_COLORS = {
     'icon_btn_hover': 'rgba(200,200,200,0.15)',
 }
 
+# 模块加载即校验浅色/深色主题颜色 key 集合一致，早失败而非等首次
+# set_theme 触发。新增颜色 token 时若遗漏某一主题会立刻报错。
+assert set(LIGHT_COLORS) == set(DARK_COLORS), '浅色/深色主题颜色 key 不一致'
+
 _current_theme = 'light'
 _current_colors = dict(LIGHT_COLORS)
 
@@ -202,7 +206,6 @@ def get_colors(theme: str = '') -> dict:
 def set_theme(theme: str):
     """设置当前主题。"""
     global _current_theme, _current_colors
-    assert set(LIGHT_COLORS.keys()) == set(DARK_COLORS.keys()), '浅色/深色主题颜色 key 不一致'
     _current_theme = theme
     _current_colors = dict(DARK_COLORS) if theme == 'dark' else dict(LIGHT_COLORS)
 

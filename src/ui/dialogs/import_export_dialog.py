@@ -356,12 +356,16 @@ class ImportExportDialog(QDialog):
         self._progress.setValue(0)
         self._progress.show()
 
+        worker_holder: list = []
+
         def _import_task():
-            # 时序契约：下方 self._worker 赋值先于 worker.start()，而 task 在
-            # worker 线程内执行（start 之后），故读取时引用必然已就绪。
-            # 局部取出并判空以兼顾类型检查与线程安全访问。
-            worker = self._worker
+            # worker_holder 解耦：闭包经 holder[0] 访问 worker，消除对
+            # self._worker 赋值时序的依赖（原读 self._worker 依赖赋值先于 start，
+            # 是脆弱的隐式契约）。同时取 cancel_check 使 reject() 真正中断导入循环。
+            worker = worker_holder[0] if worker_holder else None
             progress_cb = worker.emit_progress if worker is not None else None
+            # is_cancelled 是 @property 返回 bool，须包成 lambda 提供 Callable[[], bool]。
+            cancel_check = (lambda: worker.is_cancelled if worker is not None else False) if worker is not None else None
             fmt_name = _IMPORT_FORMATS[fmt_index] if 0 <= fmt_index < len(_IMPORT_FORMATS) else ''
             method_name = self._IMPORT_HANDLERS.get(fmt_name)
             if method_name:
@@ -370,10 +374,12 @@ class ImportExportDialog(QDialog):
                     path,
                     progress_callback=progress_cb,
                     duplicate_action=duplicate_action,
+                    cancel_check=cancel_check,
                 )
             return 0
 
         self._worker = BackgroundWorker(_import_task, parent=self)
+        worker_holder.append(self._worker)
         self._worker.progress.connect(self._on_import_progress)
         self._worker.finished.connect(self._on_import_done)
         self._worker.error.connect(self._on_import_error)

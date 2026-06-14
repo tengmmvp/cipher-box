@@ -25,14 +25,30 @@ class CustomFieldsEditor:
     每行的类型下拉框切换时自动调整值输入框的回显模式。
     """
 
-    # 字段类型到下拉框索引的映射，与下拉框 addItem 顺序一致
-    _TYPE_INDEX_MAP = {'text': 0, 'password': 1, 'url': 2, 'email': 3}
-    _INDEX_TYPE_MAP = {0: 'text', 1: 'password', 2: 'url', 3: 'email'}
+    # 字段类型单一事实来源：下拉框 addItem 顺序、index/type 双向映射、
+    # 中文标签均从此列表派生，避免三处定义发散导致索引错位。
+    _TYPE_ORDER = ['text', 'password', 'url', 'email']
+    # 中文标签按 _TYPE_ORDER 顺序对应
+    _TYPE_LABELS = {'text': '文本', 'password': '密码', 'url': '网址', 'email': '邮箱'}
+    _TYPE_INDEX_MAP = {t: i for i, t in enumerate(_TYPE_ORDER)}
+    _INDEX_TYPE_MAP = dict(enumerate(_TYPE_ORDER))
 
     def __init__(self, container_layout: QVBoxLayout):
         self._container = container_layout
         # 各元素依次为字段名、类型、值编辑框与所在行布局的四元组
         self._rows: list[tuple[QLineEdit, QComboBox, QLineEdit, QHBoxLayout]] = []
+
+    def _on_type_change(self, idx: int, value_edit: QLineEdit) -> None:
+        """类型下拉框切换回调，按新类型切换值输入框的回显模式。
+
+        作为具名方法替代内联 lambda，与项目其它处具名回调风格一致，
+        便于阅读、调试栈追踪与后续扩展（如 url/email 校验提示）。
+        """
+        field_type = self._INDEX_TYPE_MAP.get(idx)
+        if field_type == 'password':
+            value_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        else:
+            value_edit.setEchoMode(QLineEdit.EchoMode.Normal)
 
     def add_row(self, name: str = '', value: str = '', field_type: str = 'text') -> None:
         """新增一行自定义字段，并绑定类型切换时切换回显模式。"""
@@ -43,7 +59,7 @@ class CustomFieldsEditor:
         row_layout.addWidget(name_edit)
 
         type_combo = QComboBox()
-        type_combo.addItems(['文本', '密码', '网址', '邮箱'])
+        type_combo.addItems([self._TYPE_LABELS[t] for t in self._TYPE_ORDER])
         type_combo.setCurrentIndex(self._TYPE_INDEX_MAP.get(field_type, 0))
         type_combo.setFixedWidth(64)
         type_combo.setToolTip('字段类型')
@@ -54,11 +70,7 @@ class CustomFieldsEditor:
         if field_type == 'password':
             value_edit.setEchoMode(QLineEdit.EchoMode.Password)
         type_combo.currentIndexChanged.connect(
-            lambda idx, ve=value_edit, tmap=self._INDEX_TYPE_MAP: ve.setEchoMode(
-                QLineEdit.EchoMode.Password
-                if tmap.get(idx) == 'password'
-                else QLineEdit.EchoMode.Normal
-            )
+            lambda idx, ve=value_edit: self._on_type_change(idx, ve)
         )
         row_layout.addWidget(value_edit)
 
@@ -88,7 +100,9 @@ class CustomFieldsEditor:
     def clear_rows(self) -> None:
         """清空所有自定义字段行，供加载已有条目时重建。"""
         while self._rows:
-            _name, _type, _value, layout = self._rows.pop()
+            _name, _type, value_edit, layout = self._rows.pop()
+            # 先清空敏感值再 deleteLater（异步），缩短明文在控件中的驻留窗口
+            value_edit.clear()
             while layout.count():
                 item = layout.takeAt(0)
                 if item is not None:

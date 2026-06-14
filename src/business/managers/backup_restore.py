@@ -595,7 +595,7 @@ class BackupRestoreManager:
         """创建恢复前安全快照，返回快照文件路径用于失败时清理，创建失败返回 None。"""
         directory = self._vault.data_dir / 'backups'
         secure_directory(directory)
-        filename = f'pre_restore_{datetime.now(timezone.utc):%Y%m%d_%H%M%S_%f}.cbox'
+        filename = f'pre_restore_{datetime.now(timezone.utc):%Y%m%d_%H%M%S_%f}_{uuid.uuid4().hex[:8]}.cbox'
         target_path = directory / filename
         success, error = self.create_backup(
             str(target_path),
@@ -784,7 +784,7 @@ class BackupRestoreManager:
         directory = Path(backup_dir) if backup_dir else config.data_dir / 'backups'
         # 创建并收紧权限，含用户自定义目录，避免快照全量明文以宽松 ACL 落盘
         secure_directory(directory)
-        filename = f'cipherbox_snapshot_{datetime.now(timezone.utc):%Y%m%d_%H%M%S_%f}.cbox'
+        filename = f'cipherbox_snapshot_{datetime.now(timezone.utc):%Y%m%d_%H%M%S_%f}_{uuid.uuid4().hex[:8]}.cbox'
         success, error = self.create_backup(
             str(directory / filename), use_snapshot_key=True,
             cancel_check=cancel_check,

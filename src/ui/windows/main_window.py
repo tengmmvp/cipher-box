@@ -455,6 +455,13 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
     def _setup_tray(self):
         if not self._config.get('show_tray_icon', True):
             return
+        # 与 _apply_runtime_settings 的 disable 分支对称：若已存在旧托盘实例
+        # （如运行期设置变更或重建路径调用此方法），先清理避免孤儿 QSystemTrayIcon
+        # 残留并占用任务栏图标槽位。deleteLater 由 Qt 事件循环安全回收。
+        if self._tray is not None:
+            self._tray.hide()
+            self._tray.deleteLater()
+            self._tray = None
         # 先断开旧连接，避免禁用→重启用托盘时 _on_lock_tray 重复连接
         try:
             self.lock_requested.disconnect(self._on_lock_tray)
@@ -784,6 +791,22 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             except Exception:
                 logger.debug("紧急剪贴板清理失败", exc_info=True)
 
+    def emergency_cancel_workers(self) -> None:
+        """紧急取消后台 worker（不等待），供 app 层 aboutToQuit 等不阻塞退出路径。
+
+        与 ``_shutdown_workers`` 的区别：仅取消不等待，避免阻塞退出；worker 收到
+        取消标志后尽快退出协作循环，缩短持密钥解密的残留窗口。
+        """
+        for worker in (
+            getattr(self, '_backup_worker', None),
+            getattr(self, '_status_worker', None),
+        ):
+            if worker is not None:
+                try:
+                    worker.cancel()
+                except RuntimeError:
+                    pass
+
     def prepare_for_lock(self):
         """在清除主密钥前销毁界面和剪贴板中的明文副本。"""
         self._locked_ui = True
@@ -791,15 +814,15 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         # 清除活跃 Toast 的回调，防止锁定后撤销操作触发异常。
         from ..components.toast import ToastManager
         ToastManager.cancel_all_for(self)
-        # 关闭所有打开的对话框，清除其中的输入内容
+        # 关闭所有打开的对话框：直接走对话框自身的 reject()——各对话框 reject 调用
+        # 自己的 _clear_sensitive_inputs 清零敏感控件，且 wait_worker_shutdown 等待
+        # 后台 worker 退出。原先 findChildren(QLineEdit/QTextEdit).clear() 旁路既无法
+        # 等待 worker，也抓不到未来新增的非 LineEdit 敏感控件，与各对话框的清零双轨
+        # 易漂移，故移除，单一清零路径交由对话框自身负责。
         if QApplication.instance():
             for widget in list(QApplication.topLevelWidgets()):
                 if widget is self or not isinstance(widget, QDialog):
                     continue
-                for line_edit in widget.findChildren(QLineEdit):
-                    line_edit.clear()
-                for text_edit in widget.findChildren(QTextEdit):
-                    text_edit.clear()
                 widget.reject()
         # 重置搜索状态
         self._current_search = ''

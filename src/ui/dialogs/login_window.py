@@ -204,8 +204,9 @@ class LoginWindow(QDialog):
             self._rate_limiter.record_success()
             # 登录成功后立即清除密码输入框，缩短明文在内存中的驻留时间
             self._password_edit.clear()
-            if hasattr(self, '_confirm_edit'):
-                self._confirm_edit.clear()
+            # _confirm_edit 在 _setup_ui 中无条件创建（首设显示，登录态隐藏），
+            # 无需 hasattr 守卫；登录态下隐藏控件 clear() 是安全的无副作用操作
+            self._confirm_edit.clear()
             self.login_success.emit()
             self.accept()
         else:
@@ -258,7 +259,9 @@ class LoginWindow(QDialog):
         self._message_label.setText('')
         self._worker = BackgroundWorker(lambda: action(password), parent=self)
         self._worker.finished.connect(self._on_auth_done)
-        self._worker.error.connect(lambda _msg: self._on_auth_error(error_default))
+        # worker.error 携带异常的 str(e)，透传给 _on_auth_error 优先展示真实系统错误
+        # 信息，仅当无具体信息时回退到 error_default（"初始化失败/主密码错误"）
+        self._worker.error.connect(lambda msg: self._on_auth_error(msg, error_default))
         self._worker.start()
 
     def _on_auth_done(self, result: tuple[bool, str]):
@@ -268,12 +271,16 @@ class LoginWindow(QDialog):
         success, error_msg = result
         self._on_auth_result(success, error_msg)
 
-    def _on_auth_error(self, error_default: str):
-        """后台认证异常回调（系统错误，非认证失败）。"""
+    def _on_auth_error(self, error_msg: str, error_default: str):
+        """后台认证异常回调（系统错误，非认证失败）。
+
+        优先展示 worker 抛出的真实异常信息（如 IO 错误、KDF 失败），
+        无具体信息时回退到 error_default。is_auth_failure=False 保持不变，
+        系统错误不计入速率锁定，避免故障触发账户级递增锁定。
+        """
         release_worker(self)
         self._reset_confirm_btn()
-        # 系统错误不计入速率锁定，避免故障触发账户级锁定
-        self._on_auth_result(False, error_default, is_auth_failure=False)
+        self._on_auth_result(False, error_msg or error_default, is_auth_failure=False)
 
     def _reset_confirm_btn(self):
         self._confirm_btn.setEnabled(True)
