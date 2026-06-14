@@ -30,6 +30,17 @@ class TestPasswordServiceProxy:
         ok, msg = PasswordService.validate_master_password('Str0ng!Pass#2024', '主密码')
         assert ok
 
+    def test_validate_master_password_accepts_long_passphrase(self):
+        ok, msg = PasswordService.validate_master_password(
+            'correct horse battery staple', '主密码'
+        )
+        assert ok, msg
+
+    def test_validate_master_password_rejects_repeated_characters(self):
+        ok, msg = PasswordService.validate_master_password('a' * 30, '主密码')
+        assert not ok
+        assert '重复' in msg
+
     def test_validate_totp_secret_rejects_invalid(self):
         ok = PasswordService.validate_totp_secret('not-base32!')
         assert not ok

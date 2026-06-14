@@ -172,6 +172,7 @@ class SecurityDashboard(QDialog):
         self._duplicate_groups = []
         self._old_entries = []
         self._worker = None  # 预先声明，确保 reject 时可安全判空
+        self._status_hint: QLabel | None = None
         self._setup_ui()
         self._load_data()
 

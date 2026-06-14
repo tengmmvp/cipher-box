@@ -14,11 +14,13 @@ import pytest
 
 from src.business.managers.backup_restore import (
     BACKUP_MAGIC,
+    BACKUP_MAGIC_V1,
     MAX_BACKUP_FILE_SIZE,
     BackupRestoreManager,
 )
 from src.business.managers.entry_manager import EntryManager
 from src.business.managers.vault_manager import VaultManager
+from src.crypto.master_key import DEFAULT_KDF_PARAMS, MasterKeyManager
 from src.models import Entry
 
 
@@ -110,6 +112,8 @@ class TestBackupCorruption:
         info = BackupRestoreManager.inspect_backup(path)
         assert info['password_required']
         assert not info['snapshot_required']
+        assert info['version'] == 2
+        assert info['kdf']['memory_cost'] == DEFAULT_KDF_PARAMS.memory_cost
 
     def test_inspect_snapshot_backup(self):
         """检查快照备份应标记为 snapshot_required。"""
@@ -145,6 +149,46 @@ class TestBackupCorruption:
             f.write(struct.pack('<B', 0xFF))
         with pytest.raises(ValueError):
             BackupRestoreManager.inspect_backup(path)
+
+    def test_v2_backup_uses_persisted_kdf_params(self, monkeypatch):
+        """恢复必须使用文件头参数，而不是进程当前默认参数。"""
+        path = os.path.join(self._tmp_dir, 'persisted_kdf.cbox')
+        self._create_valid_backup(path, 'persisted_password')
+
+        seen = []
+        original = MasterKeyManager.derive_backup_key
+
+        def _capture(password, salt, params=DEFAULT_KDF_PARAMS):
+            seen.append(params)
+            return original(password, salt, params)
+
+        monkeypatch.setattr(MasterKeyManager, 'derive_backup_key', _capture)
+        success, error = self._backup_mgr.restore_backup(path, 'persisted_password')
+
+        assert success, error
+        assert seen[-1] == DEFAULT_KDF_PARAMS
+
+    def test_v1_backup_remains_restore_compatible(self):
+        """升级到 v2 后仍可读取现有 v1 备份。"""
+        current = Path(self._tmp_dir) / 'current.cbox'
+        legacy = Path(self._tmp_dir) / 'legacy.cbox'
+        self._create_valid_backup(str(current), 'legacy_password')
+
+        with current.open('rb') as source:
+            flags, salt, _params, _version = BackupRestoreManager._read_backup_header(source)
+            encrypted = source.read()
+        with legacy.open('wb') as target:
+            target.write(BACKUP_MAGIC_V1)
+            target.write(struct.pack('<B', flags))
+            target.write(salt)
+            target.write(encrypted)
+
+        info = BackupRestoreManager.inspect_backup(str(legacy))
+        assert info['version'] == 1
+        success, error = self._backup_mgr.restore_backup(
+            str(legacy), 'legacy_password',
+        )
+        assert success, error
 
     def test_backup_with_snapshot_key(self):
         """使用快照密钥的备份应可恢复。"""

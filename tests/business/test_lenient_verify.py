@@ -35,13 +35,15 @@ class TestLenientVerify:
 
         self._vault.db._entry_verifier = bad_verifier
 
-        # 通过 db 层直接调用 get_entries 验证宽容模式行为
-        # EntryManager.decrypt_entry 会创建新 Entry 覆盖 db 层的 integrity_error，
-        # 因此直接使用 db.get_entries 观察元数据校验结果
-        entries = self._vault.db.get_entries()
+        # 通过生产列表路径验证完整性状态不会在 RawEntry -> Entry 转换时丢失。
+        entries = self._entry_mgr.get_entry_summaries()
         assert len(entries) == 1
         assert entries[0].integrity_error is True
         assert '完整性' in entries[0].integrity_message
+
+        decrypted = self._entry_mgr.get_entries()
+        assert decrypted[0].integrity_error is True
+        assert '完整性' in decrypted[0].integrity_message
 
     def test_get_entry_with_bad_verifier_raises(self):
         """单条 get_entry 在验证失败时仍抛异常。"""

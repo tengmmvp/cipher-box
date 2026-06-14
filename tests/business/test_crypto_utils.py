@@ -187,27 +187,6 @@ class TestMatchesSearch:
         assert matches_search(entry, '') is True
 
 
-# ==================== matches_search username_override ====================
-
-
-class TestMatchesSearchUsernameOverride:
-    """username_override 参数覆盖 username 字段进行搜索。"""
-
-    def test_override_matches(self, sample_entry):
-        """即使 entry.username 不含关键词，override 值匹配也应返回 True。"""
-        result = matches_search(sample_entry, 'bob', username_override='bob@example.com')
-        assert result is True
-
-    def test_override_no_match(self, sample_entry):
-        result = matches_search(sample_entry, 'charlie', username_override='bob@example.com')
-        assert result is False
-
-    def test_override_none_uses_entry_username(self, sample_entry):
-        """username_override=None 时应回退到 entry.username。"""
-        result = matches_search(sample_entry, 'alice', username_override=None)
-        assert result is True
-
-
 # ==================== matches_tag ====================
 
 

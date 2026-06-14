@@ -244,23 +244,18 @@ class PasswordGenerator:
 
     @staticmethod
     def validate_master_password(password: str, label: str = '主密码') -> tuple[bool, str]:
-        """密码策略：至少 12 字符、至少 3 种字符类型，并达到最低强度要求。"""
+        """主密码策略：至少 15 字符，拒绝常见与明显重复密码。"""
         if not password:
             return False, f'{label}不能为空'
-        if len(password) < 12:
-            return False, f'{label}长度不能少于 12 个字符'
-        # 主密码须覆盖至少 3 类字符，防止仅靠长度通过的组成性弱密码
-        char_classes = sum([
-            bool(_RE_UPPER.search(password)),
-            bool(_RE_LOWER.search(password)),
-            bool(_RE_DIGIT.search(password)),
-            bool(_RE_SYMBOL.search(password)),
-        ])
-        if char_classes < 3:
-            return False, f'{label}须包含至少 3 种字符类型（大写、小写、数字、特殊符号）'
+        if len(password) < 15:
+            return False, f'{label}长度不能少于 15 个字符'
+        if len(password) > 1024:
+            return False, f'{label}长度不能超过 1024 个字符'
+        if len(set(password)) <= 2:
+            return False, f'{label}包含过多重复字符'
         strength = PasswordGenerator.check_strength(password)
         if strength.is_common:
             return False, f'不能使用常见弱密码作为{label}'
-        if strength.score < 3:
+        if len(password) < 20 and strength.score < 3:
             return False, f'{label}强度不足，请增加字符种类并避免重复字符'
         return True, ''

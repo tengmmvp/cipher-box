@@ -19,6 +19,7 @@ dist/
 
 # 测试 / 静态分析
 .pytest_cache/
+.pytest_tmp/
 .tox/
 .coverage
 htmlcov/

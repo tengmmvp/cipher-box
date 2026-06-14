@@ -89,8 +89,8 @@ class ToastWidget(QFrame):
         self.setGraphicsEffect(self._opacity_effect)
         self._shadow_frame: QFrame | None = None  # 阴影层，由 ToastManager 设置
         self._action_btn: QPushButton | None = None  # 可选操作按钮，主题切换时刷新
-        self._fade_in_anim = None
-        self._fade_out_anim = None
+        self._fade_in_anim: QPropertyAnimation | None = None
+        self._fade_out_anim: QPropertyAnimation | None = None
         self._stable_height: int | None = None  # 布局稳定后缓存的卡片高度，消除首次堆叠跳变
 
         self._setup_ui(message, toast_type, action_text)

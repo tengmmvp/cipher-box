@@ -22,6 +22,7 @@ from ..components.workers import BackgroundWorker
 from ..dialogs.category_dialog import CategoryDialog
 from ..dialogs.entry_dialog import EntryDialog
 from ..resources.constants import (
+    ASYNC_SEARCH_THRESHOLD,
     MS_TOAST_DEFAULT,
     MS_TOAST_LONG,
     MS_TOAST_SHORT,
@@ -113,19 +114,11 @@ class _MainWindowFiltersMixin(QMainWindow):
     _cached_tag_names: list[str]
     _cached_total_entries: int
     _status_worker: BackgroundWorker | None
+    _entry_worker: BackgroundWorker | None
+    _entry_workers: set[BackgroundWorker]
+    _entry_refresh_generation: int
     _locked_ui: bool
     _last_refresh_filter: str | None
-
-    if TYPE_CHECKING:
-        def _refresh_categories(self) -> None: ...
-        def _refresh_tag_filter(self) -> None: ...
-        def _refresh_entries(self) -> None: ...
-        def _show_empty_state(self) -> None: ...
-        def _update_status_bar(self) -> None: ...
-        def _get_sort_config(self) -> tuple[str, str]: ...
-        def _sort_entries(self, entries: list) -> list: ...
-        def _invalidate_security_cache(self) -> None: ...
-        def _refresh_entries_only(self) -> None: ...
 
     # ========== 排序 ==========
 
@@ -170,8 +163,8 @@ class _MainWindowFiltersMixin(QMainWindow):
         target_row = 0
         if selected_category_id is not None:
             for row in range(self._category_list.count()):
-                item = self._category_list.item(row)
-                if item and item.data(Qt.ItemDataRole.UserRole) == selected_category_id:
+                selected_item = self._category_list.item(row)
+                if selected_item and selected_item.data(Qt.ItemDataRole.UserRole) == selected_category_id:
                     target_row = row
                     break
             else:
@@ -199,18 +192,28 @@ class _MainWindowFiltersMixin(QMainWindow):
 
     # ======== 过滤器数据获取：委托给 EntryListController ========
 
-    def _fetch_for_filter(self, filter_key: str) -> tuple[list, str]:
+    def _fetch_for_filter(
+        self,
+        filter_key: str,
+        *,
+        category_id: int | None = None,
+        search: str | None = None,
+        cancel_check=None,
+        use_current_state: bool = True,
+    ) -> tuple[list, str]:
         """按过滤器键获取数据，参数绑定基于当前 UI 状态。
 
         过滤器→方法的映射复用 EntryListController.get_fetcher，避免在控制器
         与本 Mixin 两处维护相同的键集合。各 fetcher 所需的当前分类、搜索等
         参数在此按 filter_key 统一绑定。
         """
+        effective_search = self._current_search if use_current_state else (search or '')
+        effective_category = self._current_category_id if use_current_state else category_id
         fetcher = self._entry_list_ctrl.get_fetcher(filter_key)
         if filter_key == 'all':
-            return fetcher(self._current_category_id, self._current_search)
+            return fetcher(effective_category, effective_search, cancel_check)
         if filter_key in ('favorite', 'recent', 'trash'):
-            return fetcher(self._current_search)
+            return fetcher(effective_search, cancel_check)
         return fetcher()  # weak、duplicate 无参数
 
     def _current_category_name(self) -> str:
@@ -233,10 +236,101 @@ class _MainWindowFiltersMixin(QMainWindow):
         current_filter = self._current_filter
         should_restore_position = (saved_filter == current_filter)
         self._last_refresh_filter = current_filter
-        saved_scroll = self._entry_list.verticalScrollBar().value() if should_restore_position else 0  # pyright: ignore[reportOptionalMemberAccess]
+        scrollbar = self._entry_list.verticalScrollBar()
+        saved_scroll = (
+            scrollbar.value() if should_restore_position and scrollbar is not None else 0
+        )
         saved_row = self._entry_list.currentIndex().row() if should_restore_position else -1
 
+        if (
+            self._current_search
+            and self._current_filter in ('all', 'favorite', 'recent', 'trash')
+            and self._entry_mgr.get_entry_count(include_deleted=True)
+            >= ASYNC_SEARCH_THRESHOLD
+        ):
+            self._start_async_entry_refresh(
+                current_filter,
+                self._current_category_id,
+                self._current_search,
+                should_restore_position,
+                saved_scroll,
+                saved_row,
+            )
+            return
+
+        if self._entry_worker is not None:
+            self._entry_worker.cancel()
+            self._entry_worker = None
         entries, title = self._fetch_for_filter(self._current_filter)
+        self._apply_entry_results(
+            entries, title, should_restore_position, saved_scroll, saved_row,
+        )
+
+    def _start_async_entry_refresh(
+        self,
+        filter_key: str,
+        category_id: int | None,
+        search: str,
+        should_restore_position: bool,
+        saved_scroll: int,
+        saved_row: int,
+    ) -> None:
+        if self._entry_worker is not None:
+            self._entry_worker.cancel()
+        self._entry_refresh_generation += 1
+        generation = self._entry_refresh_generation
+        holder: list[BackgroundWorker] = []
+
+        def _fetch():
+            worker = holder[0]
+            return self._fetch_for_filter(
+                filter_key,
+                category_id=category_id,
+                search=search,
+                cancel_check=lambda: worker.is_cancelled,
+                use_current_state=False,
+            )
+
+        worker = BackgroundWorker(_fetch, parent=self)
+        holder.append(worker)
+        self._entry_worker = worker
+        self._entry_workers.add(worker)
+        self._count_label.setText('搜索中...')
+
+        def _release() -> None:
+            self._entry_workers.discard(worker)
+            if self._entry_worker is worker:
+                self._entry_worker = None
+
+        def _done(result) -> None:
+            if (
+                self._locked_ui
+                or generation != self._entry_refresh_generation
+                or self._current_filter != filter_key
+                or self._current_category_id != category_id
+                or self._current_search != search
+            ):
+                _release()
+                return
+            entries, title = result
+            _release()
+            self._apply_entry_results(
+                entries, title, should_restore_position, saved_scroll, saved_row,
+            )
+
+        worker.finished.connect(_done)
+        worker.error.connect(lambda _message: _release())
+        worker.cancelled.connect(_release)
+        worker.start()
+
+    def _apply_entry_results(
+        self,
+        entries: list,
+        title: str,
+        should_restore_position: bool,
+        saved_scroll: int,
+        saved_row: int,
+    ) -> None:
         # 分类筛选下显示分类名作为标题，而非 fetcher 默认的「全部条目」
         if self._current_category_id is not None:
             title = self._current_category_name() or title
@@ -269,7 +363,9 @@ class _MainWindowFiltersMixin(QMainWindow):
         if should_restore_position and not self._current_search and 0 <= saved_row < self._entry_model.rowCount():
             self._entry_list.setCurrentIndex(self._entry_model.index(saved_row))
         if should_restore_position:
-            self._entry_list.verticalScrollBar().setValue(saved_scroll)  # pyright: ignore[reportOptionalMemberAccess]
+            scrollbar = self._entry_list.verticalScrollBar()
+            if scrollbar is not None:
+                scrollbar.setValue(saved_scroll)
 
         if truncated:
             self._count_label.setText(f'前 {len(entries)} 项（共 {original_count} 项）')
@@ -620,12 +716,15 @@ class _MainWindowFiltersMixin(QMainWindow):
                 Toast.show(self, '验证码生成失败，请检查密钥', Toast.ERROR, duration=MS_TOAST_DEFAULT)
 
         # dict dispatch 替代 if/elif 链
+        def _toggle_favorite() -> None:
+            self._entry_mgr.toggle_favorite(summary.id)
+            self._refresh_entries_only()
+
         handlers: dict = {
             copy_user_act: _copy_user,
             copy_pwd_act: _copy_pwd,
             edit_act: lambda: self._edit_entry(summary.id),
-            fav_act: lambda: (self._entry_mgr.toggle_favorite(summary.id),
-                              self._refresh_entries_only()),
+            fav_act: _toggle_favorite,
             del_act: lambda: self._delete_entry(summary.id),
         }
         if copy_totp_act:

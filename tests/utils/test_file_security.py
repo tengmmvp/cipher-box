@@ -143,6 +143,23 @@ class TestSecureFile:
         secure_file(target)
         assert target.read_text(encoding='utf-8') == 'test'
 
+    def test_strict_mode_propagates_permission_failure(self, tmp_path, monkeypatch):
+        target = tmp_path / 'strict.txt'
+        target.write_text('secret', encoding='utf-8')
+
+        def _fail(*_args, **_kwargs):
+            raise OSError('permission denied')
+
+        if os.name == 'nt':
+            monkeypatch.setattr(
+                'src.utils.file_security._restrict_windows_acl', _fail
+            )
+        else:
+            monkeypatch.setattr('src.utils.file_security.os.chmod', _fail)
+
+        with pytest.raises(OSError, match='permission denied'):
+            secure_file(target, strict=True)
+
 
 class TestValidateFilePath:
     """validate_file_path 测试。"""

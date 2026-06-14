@@ -5,6 +5,8 @@
 与失败锁定，登录成功后立即清除输入框中的明文。
 """
 
+from pathlib import Path
+
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
@@ -43,7 +45,12 @@ class LoginWindow(QDialog):
         super().__init__(parent)
         self._vault = vault_manager
         self._is_first_time = not vault_manager.is_initialized
-        self._rate_limiter = RateLimiter()
+        data_dir = getattr(self._vault, 'data_dir', None)
+        state_path = (
+            Path(data_dir) / 'login_rate_limit.json'
+            if isinstance(data_dir, (str, Path)) else None
+        )
+        self._rate_limiter = RateLimiter(state_path)
         self._worker = None
         self._setup_ui()
 

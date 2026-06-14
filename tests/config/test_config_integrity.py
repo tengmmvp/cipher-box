@@ -58,3 +58,14 @@ class TestConfigIntegrity:
         assert not tmp_file.exists()
         # 目标文件存在
         assert config._config_path.exists()
+
+    def test_each_install_uses_distinct_integrity_key(self, tmp_path):
+        first = make_test_config(tmp_path / 'first')
+        second = make_test_config(tmp_path / 'second')
+        first.save()
+        second.save()
+
+        assert first._integrity_key != second._integrity_key
+        first_sig = first.config_path.read_text(encoding='utf-8').rsplit('\n', 1)[1]
+        second_sig = second.config_path.read_text(encoding='utf-8').rsplit('\n', 1)[1]
+        assert first_sig != second_sig

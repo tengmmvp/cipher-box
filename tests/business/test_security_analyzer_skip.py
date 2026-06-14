@@ -6,6 +6,7 @@ SecurityAnalyzer 在 full_analysis 中遇到解密失败的条目时应跳过而
 
 from unittest.mock import MagicMock, patch
 
+from src.business.services.crypto_utils import encrypt_field
 from src.business.services.security_analyzer import SecurityAnalyzer
 from src.models import RawEntry
 
@@ -104,7 +105,7 @@ class TestSecurityAnalyzerSkipCorrupt:
         entry = RawEntry(
             id=1,
             crypto_id='naive_crypto',
-            title='旧条目',
+            title=encrypt_field('旧条目', vault.key, 'naive_crypto', 'title'),
             username='',
             password='',
             custom_fields='',

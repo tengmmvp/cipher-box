@@ -237,6 +237,8 @@ class VaultManager:
             self._key_mgr.activate(derived_key, snapshot_key, key_epoch)
             self._signer.set_domain_key(MetadataSigner.compute_domain_key(derived_key))
             self._is_unlocked = True
+            from .entry_manager import EntryManager
+            EntryManager(self).migrate_sensitive_metadata()
             return True, ''
         except VaultAlreadyInitializedError as exc:
             return False, str(exc)
@@ -245,6 +247,10 @@ class VaultManager:
         except Exception as exc:
             msg = str(exc) or '保险库初始化失败'
             logger.warning("保险库初始化失败", exc_info=True)
+            # 强制清除可能已激活的密钥：migrate_sensitive_metadata 等步骤失败时，
+            # 密钥已在上方 activate 激活、is_unlocked 置 True。不清除会使 initialize
+            # 报失败但保险库处于半解锁状态（持密钥），状态不一致。
+            self._clear_vault_state()
             return False, msg
 
     @staticmethod
@@ -319,6 +325,8 @@ class VaultManager:
             # is_unlocked 为 False，并发读取者不会得到「已解锁但 snapshot_key 缺失」的
             # 中间态。_load_snapshot_key 仅依赖 self._key（已设置），不依赖 is_unlocked。
             self._is_unlocked = True
+            from .entry_manager import EntryManager
+            EntryManager(self).migrate_sensitive_metadata()
             logger.info("解锁完成 (%.1fms)", (time.monotonic() - t0) * 1000)
             return True, ''
         except CipherBoxError:
@@ -501,6 +509,7 @@ class VaultManager:
             # 其他线程在此连接上插队写入导致跨线程部分回滚。异常时由
             # transaction() 自动回滚所有数据库变更。
             with self._db.transaction():
+                self._rotator.re_encrypt_categories(old_key, new_key)
                 self._rotator.re_encrypt_entries(old_key, new_key, cancel_event=self._cancel_event)
                 self._rotator.re_encrypt_history(old_key, new_key, cancel_event=self._cancel_event)
                 self._update_vault_metadata(

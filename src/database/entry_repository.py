@@ -125,12 +125,11 @@ class EntryRepository:
     # ======== 防御性断言 ========
 
     def _assert_encrypted(self, value: str, field_name: str) -> None:
-        """防御性断言：加密列的值应为密文，以 cb: 前缀，或空字符串。"""
+        """防御性断言：加密列的值应为受支持格式的密文，或空字符串。"""
         self._mgr.assert_encrypted(value, field_name)
 
     # ==================== 条目 ====================
 
-    @_db_operation
     def get_entries(
         self,
         deleted_only: bool = False,
@@ -179,7 +178,10 @@ class EntryRepository:
             query += " LIMIT ?"
             params.append(limit)
 
-        rows = self._conn.execute(query, params).fetchall()
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        # fetchall 后 sqlite3.Row 已脱离游标；完整性验签与 dataclass 构建不再
+        # 持有数据库锁，避免大库后台搜索长期阻塞其他短查询。
         return [self._row_to_entry(r, verify=VerifyMode.LENIENT) for r in rows]
 
     @_db_operation
@@ -198,8 +200,11 @@ class EntryRepository:
     def add_entry(self, entry: RawEntry, preserve_metadata: bool = False) -> int:
         """添加条目，返回 ID。"""
         # 防御性断言，防止明文静默写入加密列
+        self._assert_encrypted(entry.title, 'title')
         self._assert_encrypted(entry.username, 'username')
         self._assert_encrypted(entry.password, 'password')
+        self._assert_encrypted(entry.url, 'url')
+        self._assert_encrypted(entry.tags, 'tags')
         self._assert_encrypted(entry.notes, 'notes')
         self._assert_encrypted(entry.totp_secret, 'totp_secret')
         self._assert_encrypted(entry.custom_fields_db_value, 'custom_fields')
@@ -261,8 +266,11 @@ class EntryRepository:
         请使用上述专用方法。
         """
         # 防御性断言，防止明文静默写入加密列
+        self._assert_encrypted(entry.title, 'title')
         self._assert_encrypted(entry.username, 'username')
         self._assert_encrypted(entry.password, 'password')
+        self._assert_encrypted(entry.url, 'url')
+        self._assert_encrypted(entry.tags, 'tags')
         self._assert_encrypted(entry.notes, 'notes')
         self._assert_encrypted(entry.totp_secret, 'totp_secret')
         self._assert_encrypted(entry.custom_fields_db_value, 'custom_fields')
@@ -313,7 +321,8 @@ class EntryRepository:
         # rows 实际为 ReEncryptedEntry NamedTuple（key_rotation 产出）。
         first = rows[0]
         for enc_value in (
-            first.username_enc, first.password_enc, first.notes_enc,
+            first.title, first.username_enc, first.password_enc, first.url,
+            first.tags, first.notes_enc,
             first.custom_fields_enc, first.totp_secret_enc,
         ):
             if enc_value:
@@ -401,7 +410,6 @@ class EntryRepository:
         ).fetchall()
         return [row['tags'] or '' for row in rows]
 
-    @_db_operation
     def get_entries_by_ids(self, entry_ids: list[int]) -> list[RawEntry]:
         """按 ID 列表批量获取条目。
 
@@ -418,21 +426,23 @@ class EntryRepository:
             return []
         # 去重保序：重复 id 致返回行数 < 请求数，调用方按位置对齐会错位。
         unique_ids = list(dict.fromkeys(entry_ids))
-        results = []
-        for start in range(0, len(unique_ids), _ID_BATCH_SIZE):
-            batch = unique_ids[start:start + _ID_BATCH_SIZE]
-            placeholders = ','.join('?' for _ in batch)
-            rows = self._conn.execute(
-                f"""SELECT e.*, c.name as category_name
-                    FROM entries e
-                    LEFT JOIN categories c ON e.category_id = c.id
-                    WHERE e.id IN ({placeholders})""",  # nosec B608 - 参数化占位符
-                batch,
-            ).fetchall()
-            results.extend(
-                self._row_to_entry(r, verify=VerifyMode.LENIENT) for r in rows
-            )
-        return results
+        fetched_rows = []
+        with self._lock:
+            for start in range(0, len(unique_ids), _ID_BATCH_SIZE):
+                batch = unique_ids[start:start + _ID_BATCH_SIZE]
+                placeholders = ','.join('?' for _ in batch)
+                rows = self._conn.execute(
+                    f"""SELECT e.*, c.name as category_name
+                        FROM entries e
+                        LEFT JOIN categories c ON e.category_id = c.id
+                        WHERE e.id IN ({placeholders})""",  # nosec B608 - 参数化占位符
+                    batch,
+                ).fetchall()
+                fetched_rows.extend(rows)
+        return [
+            self._row_to_entry(row, verify=VerifyMode.LENIENT)
+            for row in fetched_rows
+        ]
 
     # ==================== 密码历史 ====================
 
@@ -444,6 +454,7 @@ class EntryRepository:
         changed_at: str = '',
     ):
         """添加密码历史记录。"""
+        self._assert_encrypted(old_password_enc, 'password_history')
         self._conn.execute(
             "INSERT INTO password_history (entry_id, old_password_enc, changed_at) VALUES (?, ?, ?)",
             (entry_id, old_password_enc, changed_at or utc_now_iso()),
@@ -477,6 +488,8 @@ class EntryRepository:
         """
         if not items:
             return
+        for encrypted, _changed_at in items:
+            self._assert_encrypted(encrypted, 'password_history')
         now = utc_now_iso()
         rows = [
             (entry_id, enc, changed_at or now)
@@ -557,6 +570,8 @@ class EntryRepository:
         """
         if not rows:
             return
+        for encrypted, _history_id in rows:
+            self._assert_encrypted(encrypted, 'password_history')
         self._conn.executemany(
             "UPDATE password_history SET old_password_enc=? WHERE id=?",
             rows,

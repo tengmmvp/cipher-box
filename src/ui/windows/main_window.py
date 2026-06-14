@@ -130,6 +130,9 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._status_timer.timeout.connect(self._update_status_bar)
         self._status_worker: BackgroundWorker | None = None
         self._backup_worker: BackgroundWorker | None = None
+        self._entry_worker: BackgroundWorker | None = None
+        self._entry_workers: set[BackgroundWorker] = set()
+        self._entry_refresh_generation = 0
         self._cached_categories = []
         self._cached_tag_names = []
         self._cached_total_entries = -1
@@ -433,7 +436,9 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._entry_list.setUniformItemSizes(True)
         self._entry_list.setAlternatingRowColors(True)
         # QListView 无 currentItemChanged，改用 selectionModel 的 currentChanged
-        self._entry_list.selectionModel().currentChanged.connect(self._on_entry_selected)  # pyright: ignore[reportOptionalMemberAccess]
+        selection_model = self._entry_list.selectionModel()
+        if selection_model is not None:
+            selection_model.currentChanged.connect(self._on_entry_selected)
         self._entry_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._entry_list.customContextMenuRequested.connect(self._on_entry_context_menu)
         self._list_stack.addWidget(self._entry_list)
@@ -636,6 +641,10 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._status_worker = None
         wait_worker_shutdown(self._backup_worker)
         self._backup_worker = None
+        for worker in tuple(self._entry_workers):
+            wait_worker_shutdown(worker)
+        self._entry_workers.clear()
+        self._entry_worker = None
 
     def _quit_app(self):
         # 托盘退出：与 closeEvent 退出分支清理对齐——先移除事件过滤器，防止
@@ -800,6 +809,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         for worker in (
             getattr(self, '_backup_worker', None),
             getattr(self, '_status_worker', None),
+            getattr(self, '_entry_worker', None),
         ):
             if worker is not None:
                 try:

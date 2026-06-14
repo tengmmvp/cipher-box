@@ -11,13 +11,10 @@ from typing import Any
 
 from .utils.file_security import secure_directory, secure_file
 
-# 配置完整性 HMAC 密钥。
-# 此密钥硬编码于源码中，仅用于防护意外损坏，如磁盘错误或部分写入，
-# 不防护有意篡改。攻击者若能修改配置文件且可访问源码，可重新计算 HMAC
-# 绕过检查。所有配置值在使用时应通过 validate_file_path() 等函数做二次校验。
-# 这是本地优先应用的常见防御模式。
-_CONFIG_INTEGRITY_KEY = b'cipherbox:config-integrity-v1'
+# 仅用于迁移旧版固定密钥签名；新配置使用每个安装独立的随机密钥。
+_LEGACY_CONFIG_INTEGRITY_KEY = b'cipherbox:config-integrity-v1'
 _CONFIG_SIG_PREFIX = '#__sig__:'
+_CONFIG_KEY_SIZE = 32
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +93,8 @@ class ConfigManager:
     def __init__(self):
         self._data_dir = get_data_dir()
         self._config_path = self._data_dir / 'config.json'
+        self._integrity_key_path = self._data_dir / 'config.key'
+        self._integrity_key = self._load_or_create_integrity_key()
         self._config: dict = dict(DEFAULT_CONFIG)
         self._integrity_warning = False
         self._integrity_reason: str | None = None
@@ -111,12 +110,39 @@ class ConfigManager:
         cfg = cls.__new__(cls)
         cfg._data_dir = Path(data_dir)
         cfg._config_path = Path(data_dir) / 'config.json'
+        cfg._integrity_key_path = Path(data_dir) / 'config.key'
+        cfg._integrity_key = cfg._load_or_create_integrity_key()
         cfg._config = dict(DEFAULT_CONFIG)
         cfg._config['show_tray_icon'] = False
         cfg._integrity_warning = False
         cfg._integrity_reason = None
         cfg._lock = threading.RLock()
         return cfg
+
+    def _load_or_create_integrity_key(self) -> bytes:
+        """加载安装级配置签名密钥；缺失或损坏时原子生成新密钥。"""
+        secure_directory(self._data_dir, strict=True)
+        if self._integrity_key_path.exists():
+            key = self._integrity_key_path.read_bytes()
+            if len(key) == _CONFIG_KEY_SIZE:
+                secure_file(self._integrity_key_path, strict=True)
+                return key
+            logger.warning('配置签名密钥损坏，将生成新密钥')
+
+        key = os.urandom(_CONFIG_KEY_SIZE)
+        temp_path = self._integrity_key_path.with_suffix('.key.tmp')
+        try:
+            with open(temp_path, 'wb') as file:
+                file.write(key)
+                file.flush()
+                os.fsync(file.fileno())
+            secure_file(temp_path, strict=True)
+            os.replace(temp_path, self._integrity_key_path)
+            secure_file(self._integrity_key_path, strict=True)
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
+        return key
 
     @property
     def data_dir(self) -> Path:
@@ -148,18 +174,27 @@ class ConfigManager:
                         stored_sig = lines[1][len(_CONFIG_SIG_PREFIX):]
                     # 验证完整性签名
                     expected_sig = hmac.new(
-                        _CONFIG_INTEGRITY_KEY,
+                        self._integrity_key,
                         json_text.encode('utf-8'),
                         hashlib.sha256,
                     ).hexdigest()
+                    needs_resign = False
                     if stored_sig:
                         if not hmac.compare_digest(stored_sig, expected_sig):
-                            logger.warning(
-                                '配置文件完整性校验失败，可能已被篡改。'
-                                '将使用默认配置覆盖异常值。'
-                            )
-                            self._integrity_warning = True
-                            self._integrity_reason = 'mismatch'
+                            legacy_sig = hmac.new(
+                                _LEGACY_CONFIG_INTEGRITY_KEY,
+                                json_text.encode('utf-8'),
+                                hashlib.sha256,
+                            ).hexdigest()
+                            if hmac.compare_digest(stored_sig, legacy_sig):
+                                needs_resign = True
+                            else:
+                                logger.warning(
+                                    '配置文件完整性校验失败，可能已被篡改。'
+                                    '将使用默认配置覆盖异常值。'
+                                )
+                                self._integrity_warning = True
+                                self._integrity_reason = 'mismatch'
                     else:
                         # 无签名行：攻击者删除签名即可绕过 HMAC 校验。容错加载
                         # （避免配置损坏导致无法启动），但 check_integrity 反映此风险，
@@ -188,6 +223,8 @@ class ConfigManager:
                                 logger.warning('配置项 %s 值无效，已使用默认值', key)
                         else:
                             logger.debug('忽略未知配置项：%s', key)
+                    if needs_resign:
+                        self.save()
                 except (json.JSONDecodeError, OSError, ValueError):
                     logger.warning('配置文件无效，已使用默认配置', exc_info=True)
 
@@ -210,7 +247,7 @@ class ConfigManager:
             temp_path = self._config_path.with_suffix('.json.tmp')
             content = json.dumps(self._config, indent=2, ensure_ascii=False)
             sig = hmac.new(
-                _CONFIG_INTEGRITY_KEY,
+                self._integrity_key,
                 content.encode('utf-8'),
                 hashlib.sha256,
             ).hexdigest()
@@ -220,11 +257,9 @@ class ConfigManager:
                     f.write(f'\n{_CONFIG_SIG_PREFIX}{sig}')
                     f.flush()
                     os.fsync(f.fileno())
-                secure_file(temp_path)
+                secure_file(temp_path, strict=True)
                 os.replace(temp_path, self._config_path)
-                # os.replace 在 NTFS/Linux 下保留文件安全描述符（ACL/权限随文件
-                # 对象移动），故无需对 replace 后的 .json 再次 secure_file，省一次
-                # icacls 子进程调用。
+                secure_file(self._config_path, strict=True)
             except Exception:
                 # 异常时清理临时文件，避免残留含明文配置的 .tmp 孤儿文件
                 temp_path.unlink(missing_ok=True)

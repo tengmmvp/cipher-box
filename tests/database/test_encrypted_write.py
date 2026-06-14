@@ -34,12 +34,12 @@ def _make_encrypted_entry(**overrides):
     entry = RawEntry(
         id=None,
         crypto_id='test-crypto-id',
-        title='Test',
+        title='cb:encrypted',
         username='cb:encrypted',
         password='cb:encrypted',
-        url='',
+        url='cb:encrypted',
         category_id=None,
-        tags='',
+        tags='cb:encrypted',
         notes='cb:encrypted',
         custom_fields='cb:encrypted',
         is_favorite=False,
@@ -110,3 +110,17 @@ class TestEncryptedWriteAssertions:
         # 不应抛出异常，此处仅验证断言放行，密文写入由实际加密产生。
         entry_id = secure_db.add_entry(entry)
         assert entry_id is not None
+
+    def test_password_history_rejects_plaintext(self, secure_db):
+        entry_id = secure_db.add_entry(_make_encrypted_entry())
+
+        with pytest.raises(ValueError, match="未加密"):
+            secure_db.add_password_history(entry_id, 'plaintext password')
+
+    def test_password_history_batch_rejects_plaintext(self, secure_db):
+        entry_id = secure_db.add_entry(_make_encrypted_entry())
+
+        with pytest.raises(ValueError, match="未加密"):
+            secure_db.add_password_history_batch(
+                entry_id, [('cb2:ZW5jcnlwdGVk', ''), ('plaintext password', '')]
+            )

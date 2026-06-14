@@ -66,7 +66,17 @@ class CategoryRepository:
 
     @_db_write
     def add_category(self, category: Category) -> int:
-        """添加分类，返回 ID。"""
+        """添加分类，返回 ID。
+
+        名称在数据层以加密形态存储（每次 nonce 不同），故同名明文加密后互异，
+        categories.name 的 UNIQUE 约束与本处查重均无法对加密名触发。本查重仅
+        对直接传入明文名的调用方（含本层测试）作防御性兜底；生产路径的真正
+        明文查重在 EntryManager.add_category 完成。
+        """
+        if self._conn.execute(
+            "SELECT 1 FROM categories WHERE name=? LIMIT 1", (category.name,)
+        ).fetchone():
+            raise ValueError(f'分类名称「{category.name}」已存在')
         cursor = self._conn.execute(
             "INSERT INTO categories (name, icon_char, color, sort_order, created_at) VALUES (?, ?, ?, ?, ?)",
             (category.name, category.icon_char, category.color, category.sort_order,
@@ -77,7 +87,17 @@ class CategoryRepository:
 
     @_db_write
     def update_category(self, category: Category) -> None:
-        """更新分类。"""
+        """更新分类。
+
+        名称在数据层以加密形态存储（每次 nonce 不同），同名明文加密后互异，
+        故本查重无法对加密名触发，仅对直接传入明文名的调用方作防御性兜底；
+        生产路径的真正明文查重在 EntryManager.update_category 完成。
+        """
+        if category.id is not None and self._conn.execute(
+            "SELECT 1 FROM categories WHERE name=? AND id!=? LIMIT 1",
+            (category.name, category.id),
+        ).fetchone():
+            raise ValueError(f'分类名称「{category.name}」已被其他分类占用')
         self._conn.execute(
             "UPDATE categories SET name=?, icon_char=?, color=?, sort_order=? WHERE id=?",
             (category.name, category.icon_char, category.color, category.sort_order, category.id),

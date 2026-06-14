@@ -71,11 +71,19 @@ def _windows_object_identity(path: Path) -> tuple[int, int] | None:
         return None
 
 
-def _restrict_windows_acl(path: Path, is_directory: bool):
+def _restrict_windows_acl(
+    path: Path,
+    is_directory: bool,
+    *,
+    strict: bool = False,
+) -> None:
     """限制文件或目录的 ACL 权限为当前用户独占访问。"""
     sid = _windows_user_sid()
     if not sid:
-        logger.warning('无法获取 Windows 用户 SID，跳过 ACL 权限限制：%s', path)
+        message = f'无法获取 Windows 用户 SID，无法限制 ACL：{path}'
+        if strict:
+            raise OSError(message)
+        logger.warning(message)
         return
     cache_key = str(path.resolve())
     identity = _windows_object_identity(path)
@@ -86,23 +94,22 @@ def _restrict_windows_acl(path: Path, is_directory: bool):
             _SECURED_WINDOWS_OBJECTS.move_to_end(cache_key)
             return
     permission = '(OI)(CI)F' if is_directory else 'F'
-    common = {
-        'capture_output': True,
-        'text': True,
-        'creationflags': getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-    }
     try:
         grant = subprocess.run(
             ['icacls', str(path), '/grant:r', f'*{sid}:{permission}'],
+            capture_output=True,
+            text=True,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
             timeout=10,
-            **common,
         )
         if grant.returncode != 0:
             raise OSError(grant.stderr.strip() or 'icacls grant failed')
         inherit = subprocess.run(
             ['icacls', str(path), '/inheritance:r'],
+            capture_output=True,
+            text=True,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
             timeout=10,
-            **common,
         )
         if inherit.returncode != 0:
             raise OSError(inherit.stderr.strip() or 'icacls inheritance failed')
@@ -112,20 +119,24 @@ def _restrict_windows_acl(path: Path, is_directory: bool):
                 # LRU 淘汰合并到写入，避免分离锁段导致并发重复 icacls
                 while len(_SECURED_WINDOWS_OBJECTS) > _MAX_SECURED_CACHE:
                     _SECURED_WINDOWS_OBJECTS.popitem(last=False)
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        if strict:
+            raise OSError(f'无法限制文件 ACL：{path}') from exc
         logger.warning('无法限制文件 ACL：%s', path, exc_info=True)
 
 
-def secure_directory(path: Path) -> Path:
+def secure_directory(path: Path, *, strict: bool = False) -> Path:
     """创建目录并设置最小权限，仅当前用户可访问。"""
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     if sys.platform != 'win32':
         try:
             os.chmod(path, 0o700)
         except OSError:
+            if strict:
+                raise
             logger.warning('无法限制目录权限：%s', path, exc_info=True)
     if os.name == 'nt':
-        _restrict_windows_acl(path, True)
+        _restrict_windows_acl(path, True, strict=strict)
     return path
 
 
@@ -184,7 +195,7 @@ def validate_file_path(path, base_dir: Path | None = None) -> Path:
     return resolved
 
 
-def secure_file(path: Path) -> Path:
+def secure_file(path: Path, *, strict: bool = False) -> Path:
     """设置文件最小权限，仅当前用户可读写。"""
     if not path.exists():
         return path
@@ -192,9 +203,11 @@ def secure_file(path: Path) -> Path:
         try:
             os.chmod(path, 0o600)
         except OSError:
+            if strict:
+                raise
             logger.warning('无法限制文件权限：%s', path, exc_info=True)
     if os.name == 'nt':
-        _restrict_windows_acl(path, False)
+        _restrict_windows_acl(path, False, strict=strict)
     return path
 
 

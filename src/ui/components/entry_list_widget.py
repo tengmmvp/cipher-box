@@ -86,7 +86,7 @@ class EntryListModel(QAbstractItemModel):
             return QModelIndex()
         return self.createIndex(row, column)
 
-    def parent(self, child: QModelIndex) -> QModelIndex:  # noqa: ARG002  # pyright: ignore[reportIncompatibleMethodOverride]
+    def parent(self, child: QModelIndex) -> QModelIndex:  # type: ignore[override]  # noqa: ARG002
         return QModelIndex()
 
 
@@ -158,7 +158,14 @@ class EntryItemDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         return QSize(option.rect.width(), self.ROW_HEIGHT)
 
-    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex):  # pyright: ignore[reportIncompatibleMethodOverride]
+    def paint(
+        self,
+        painter: QPainter | None,
+        option: QStyleOptionViewItem,
+        index: QModelIndex,
+    ):
+        if painter is None:
+            return
         entry = index.data(Qt.ItemDataRole.UserRole)
         if entry is None:
             super().paint(painter, option, index)

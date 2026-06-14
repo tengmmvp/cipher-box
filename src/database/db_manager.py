@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 SECURE_FILES_DEBOUNCE_SECONDS = 1.0
 
 
-# 加密列密文的格式自检字符集：cb: 前缀后为 base64 字符。
+# 加密列密文的格式自检字符集：版本前缀后为 base64 字符。
 _B64_CHARS = frozenset('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=')
 
 
@@ -91,7 +91,8 @@ class DatabaseManager:
     @property
     def connection(self) -> sqlite3.Connection:
         """数据库连接，供 Repository 使用。调用方须确保数据库已连接。"""
-        assert self._conn is not None, '数据库未连接'
+        if self._conn is None:
+            raise DatabaseError('数据库未连接')
         return self._conn
 
     @property
@@ -306,14 +307,17 @@ class DatabaseManager:
             self._secure_database_files()
             self._schema_validated = False  # 新连接需要重新验证 schema
             return True
-        except sqlite3.Error:
+        except (sqlite3.Error, OSError):
             logger.error("数据库打开失败", exc_info=True)
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
             return False
 
     def _secure_database_files(self) -> None:
-        secure_file(self._db_path)
-        secure_file(Path(f'{self._db_path}-wal'))
-        secure_file(Path(f'{self._db_path}-shm'))
+        secure_file(self._db_path, strict=True)
+        secure_file(Path(f'{self._db_path}-wal'), strict=True)
+        secure_file(Path(f'{self._db_path}-shm'), strict=True)
 
     def close(self) -> None:
         """关闭数据库连接。
@@ -407,7 +411,7 @@ class DatabaseManager:
     # ==================== 内部方法 ====================
 
     def _assert_encrypted(self, value: str, field_name: str) -> None:
-        """格式自检（非密码学保证）：加密列须为 ``cb:`` 前缀的 base64 密文，或空。
+        """格式自检（非密码学保证）：加密列须为受支持前缀的 base64 密文，或空。
 
         仅校验密文形态以拦截明显的明文误写（明文常含 @、空格、下划线等非 base64
         字符），不验证密文真实性——真正的认证由 GCM 认证标签在解密时完成。纯字母
@@ -416,15 +420,17 @@ class DatabaseManager:
         update_entry 时明文静默落入加密列。空值允许通过，未填写字段存储为空字符串。
         读取实例级 _enforce_encrypted_fields，避免测试覆写泄漏到其他实例。
 
-        适用范围：当前仅校验 ``encrypt`` 产出的 ``cb:`` 前缀密文；
-        ``encrypt_bytes`` 走 ``CBX`` 字节前缀路径，不经过此加密列断言。
+        适用范围：接受新 ``cb2:`` 与兼容旧数据的 ``cb:`` 前缀；
+        ``encrypt_bytes`` 的字节前缀路径不经过此加密列断言。
         """
         if self._enforce_encrypted_fields and value:
-            tail = value[3:] if value.startswith('cb:') else ''
+            prefixes = ('cb2:', 'cb:')
+            prefix = next((item for item in prefixes if value.startswith(item)), '')
+            tail = value[len(prefix):] if prefix else ''
             if not tail or not frozenset(tail).issubset(_B64_CHARS):
                 raise ValueError(
                     f'数据层收到未加密或格式异常的 {field_name}'
-                    f'（期望 cb: 前缀的 base64 密文），请通过 EntryManager 操作条目'
+                    f'（期望 cb2:/cb: 前缀的 base64 密文），请通过 EntryManager 操作条目'
                 )
 
     def _sign_entry(self, entry: RawEntry) -> str:

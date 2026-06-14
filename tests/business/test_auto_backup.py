@@ -15,10 +15,21 @@ def test_maybe_auto_backup_disabled(vault, vault_config):
     mgr = BackupRestoreManager(vault)
     vault_config.set('auto_backup_enabled', False)
 
-    ok, err = mgr.maybe_auto_backup(vault_config, force=True)
+    ok, err = mgr.maybe_auto_backup(vault_config, force=False)
 
     assert ok and err == ''
     assert _snapshots(vault_config) == []
+
+
+def test_maybe_auto_backup_force_bypasses_disabled_setting(vault, vault_config):
+    """force=True 必须真正绕过自动备份开关，供改密后强制快照使用。"""
+    mgr = BackupRestoreManager(vault)
+    vault_config.set('auto_backup_enabled', False)
+
+    ok, err = mgr.maybe_auto_backup(vault_config, force=True)
+
+    assert ok, err
+    assert len(_snapshots(vault_config)) == 1
 
 
 def test_maybe_auto_backup_force_creates_snapshot(vault, vault_config):

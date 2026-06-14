@@ -6,6 +6,7 @@
 """
 
 import logging
+from pathlib import Path
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -43,7 +44,12 @@ class ChangeMasterDialog(QDialog):
     def __init__(self, vault_manager, parent=None):
         super().__init__(parent)
         self._vault = vault_manager
-        self._rate_limiter = RateLimiter()
+        data_dir = getattr(self._vault, 'data_dir', None)
+        state_path = (
+            Path(data_dir) / 'change_master_rate_limit.json'
+            if isinstance(data_dir, (str, Path)) else None
+        )
+        self._rate_limiter = RateLimiter(state_path)
         self._worker = None
         self._setup_ui()
 
@@ -96,7 +102,7 @@ class ChangeMasterDialog(QDialog):
         new_pwd_layout = QHBoxLayout()
         self._new_pwd = QLineEdit()
         self._new_pwd.setEchoMode(QLineEdit.EchoMode.Password)
-        self._new_pwd.setPlaceholderText('请输入新主密码（至少 12 位）')
+        self._new_pwd.setPlaceholderText('请输入新主密码（至少 15 位）')
         self._new_pwd.textChanged.connect(self._on_pwd_changed)
         new_pwd_layout.addWidget(self._new_pwd)
         self._new_toggle = create_password_toggle_btn(self._new_pwd)

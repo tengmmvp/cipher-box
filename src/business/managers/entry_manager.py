@@ -9,11 +9,12 @@ import json
 import logging
 import threading
 import uuid
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 if TYPE_CHECKING:
     from .vault_manager import VaultManager
 
+from ...crypto.encryption import EncryptionEngine
 from ...crypto.password_generator import PasswordGenerator
 from ...crypto.totp import TOTPGenerator
 from ...exceptions import DecryptionError, EntryIntegrityError, VaultKeyEpochMismatchError
@@ -53,30 +54,30 @@ from ..services.crypto_utils import (
 
 logger = logging.getLogger(__name__)
 
+_SENSITIVE_METADATA_VERSION = '2'
+
 
 class EntryManager:
     """管理密码条目的加密、解密和 CRUD 操作。"""
 
     def __init__(self, vault_manager: 'VaultManager'):
         self._vault = vault_manager
-        # username 明文缓存，crypto_id → 解密 username，减少重复搜索解密。
-        # 生命周期：会话内有效，key_epoch 变化即改密或锁定时自动失效。
-        # username 非密码，缓存风险可控；详见 _cached_username。
-        self._username_cache: dict[str, str] = {}
-        self._username_decrypt_failed: set[str] = set()
+        # 搜索摘要缓存保存 title/username/url/tags 明文，减少重复搜索解密。
+        self._search_metadata_cache: dict[str, tuple[str, str, str, str]] = {}
+        self._search_metadata_failed: dict[str, set[str]] = {}
+        self._category_name_cache: dict[int, str] = {}
         self._cache_epoch: str | None = None
         # TOTP secret 明文缓存，entry_id → 解密 totp_secret。
         # 仅供 generate_totp_cached 复用，避免定时器每秒查 DB + AESGCM 解密。
-        # 生命周期与 username 缓存一致：key_epoch 因改密或锁定而变化时即清空，
+        # 生命周期与搜索摘要缓存一致：key_epoch 因改密或锁定而变化时即清空，
         # 条目更新修改 totp_secret 时按 entry_id 失效，详见 update_entry。
         # TOTP secret 用于生成验证码，属敏感凭据，但与 username 同属会话内
         # 必需明文，缓存窗口与 username 缓存等价。
         self._totp_secret_cache: dict[int, str] = {}
-        # 标签计数缓存，避免侧边栏每次刷新都全表扫描 tags 列并内存聚合。
-        # tags 为明文字段、非加密，缓存仅含 tag 计数，无敏感数据。
+        # 标签计数缓存，避免侧边栏每次刷新都全表解密 tags 并内存聚合。
         # 失效条件：条目增删改经 _notify_entry_change 触发，锁定或改密使 epoch 变化。
         self._tags_cache: list[tuple[str, int]] | None = None
-        # 缓存锁：保护 _username_cache / _totp_secret_cache / _tags_cache / _cache_epoch
+        # 缓存锁：保护搜索摘要/TOTP/标签缓存及 _cache_epoch
         # 的结构性读写，消除 TOTP 定时器线程与锁定 invalidate_caches 并发时的竞态。
         # 约定：锁内不调用数据库方法或变更回调，避免与 db 事务锁构成顺序反转死锁。
         self._cache_lock = threading.RLock()
@@ -133,12 +134,12 @@ class EntryManager:
         return RawEntry(
             id=entry_id,
             crypto_id=crypto_id,
-            title=entry.title,
+            title=self._encrypt_field(entry.title, crypto_id, 'title'),
             username=self._encrypt_field(entry.username, crypto_id, 'username'),
             password=encrypted_pwd,
-            url=entry.url,
+            url=self._encrypt_field(entry.url, crypto_id, 'url'),
             category_id=entry.category_id,
-            tags=entry.tags,
+            tags=self._encrypt_field(entry.tags, crypto_id, 'tags'),
             notes=self._encrypt_field(entry.notes, crypto_id, 'notes'),
             custom_fields=custom_fields_cipher,
             is_favorite=entry.is_favorite,
@@ -166,48 +167,62 @@ class EntryManager:
             encrypted, self._key, crypto_id, field_name, strict=strict,
         )
 
-    def _cached_username(self, raw_entry: RawEntry) -> str:
-        """返回解密后的 username，带会话内缓存，key_epoch 变化时失效。
-
-        加密 username 使 SQL 无法下推搜索匹配，每次搜索需解密全部 username。
-        本缓存避免重复解密：首次解密后按 crypto_id 缓存，后续命中直接返回。
-
-        生命周期与安全：
-        - key_epoch 变化即改密或锁定时，下次访问检测到并清空缓存。
-        - 锁定后 key_epoch 为 None，触发清空；MainWindow.prepare_for_lock 亦会
-          显式调用 invalidate_caches 以立即释放明文，避免锁定到进程退出的残留窗口。
-        - 缓存的是 username 明文，属 PII 而非密码，风险可控。
-        - 解密失败的 crypto_id 记入 _username_decrypt_failed，供 _decrypt_summary
-          标记 integrity_error。
-        """
+    def _cached_search_metadata(
+        self, raw_entry: RawEntry,
+    ) -> tuple[str, str, str, str]:
+        """解密并缓存列表/搜索所需的 title、username、url、tags。"""
         self._invalidate_if_epoch_changed()
         cid = raw_entry.crypto_id
         with self._cache_lock:
-            if cid in self._username_cache:
-                return self._username_cache[cid]
-            # 记录进入时的 epoch，供锁外解密后复查，防止并发 invalidate
-            # 在写缓存前清空 epoch，导致把旧密钥解密结果写入新 epoch 的缓存。
+            cached = self._search_metadata_cache.get(cid)
+            if cached is not None:
+                return cached
             entry_epoch = self._cache_epoch
-        # 解密在锁外执行，避免长时间持锁阻塞 TOTP 定时器等其他缓存访问；
-        # 并发首访可能重复解密，属可接受的性能折衷（非正确性问题）。
-        try:
-            username = self._decrypt_field(
-                raw_entry.username, cid, 'username', strict=True
-            )
-        except ValueError:
-            logger.warning(
-                "username 解密失败 (crypto_id=%s)，缓存为空串", cid,
-            )
-            username = ''
-            with self._cache_lock:
-                if self._cache_epoch == entry_epoch:
-                    self._username_decrypt_failed.add(cid)
+
+        values: list[str] = []
+        failed: set[str] = set()
+        for field_name, encrypted in (
+            ('title', raw_entry.title),
+            ('username', raw_entry.username),
+            ('url', raw_entry.url),
+            ('tags', raw_entry.tags),
+        ):
+            try:
+                value = self._decrypt_field(
+                    encrypted, cid, field_name, strict=True,
+                )
+            except ValueError:
+                value = ''
+                failed.add(field_name)
+            values.append(value)
+        result = (values[0], values[1], values[2], values[3])
         with self._cache_lock:
-            # 锁外解密期间若 epoch 已被并发 invalidate 改变（改密/锁定），
-            # 跳过写缓存，避免把旧密钥解密的明文污染新 epoch 的缓存。
             if self._cache_epoch == entry_epoch:
-                self._username_cache[cid] = username
-        return username
+                self._search_metadata_cache[cid] = result
+                if failed:
+                    self._search_metadata_failed[cid] = failed
+        return result
+
+    @staticmethod
+    def _category_crypto_id(category_id: int) -> str:
+        return f'category-{category_id}'
+
+    def _decrypt_category_name(self, category_id: int | None, value: str) -> str:
+        if category_id is None or not value:
+            return ''
+        with self._cache_lock:
+            cached = self._category_name_cache.get(category_id)
+        if cached is not None:
+            return cached
+        name = self._decrypt_field(
+            value,
+            self._category_crypto_id(category_id),
+            'category_name',
+            strict=True,
+        )
+        with self._cache_lock:
+            self._category_name_cache[category_id] = name
+        return name
 
     def _invalidate_if_epoch_changed(self):
         """检测 vault.key_epoch 变化，变化则清空所有明文缓存。
@@ -221,8 +236,9 @@ class EntryManager:
                 # 持锁后再次确认，避免与并发 invalidate 重复执行清空序列
                 current = self._vault.key_epoch
                 if current is None or current != self._cache_epoch:
-                    self._username_cache.clear()
-                    self._username_decrypt_failed.clear()
+                    self._search_metadata_cache.clear()
+                    self._search_metadata_failed.clear()
+                    self._category_name_cache.clear()
                     self._totp_secret_cache.clear()
                     self._tags_cache = None
                     self._cache_epoch = current
@@ -230,8 +246,9 @@ class EntryManager:
     def invalidate_caches(self):
         """外部调用：锁定或改密后显式清空明文缓存。"""
         with self._cache_lock:
-            self._username_cache.clear()
-            self._username_decrypt_failed.clear()
+            self._search_metadata_cache.clear()
+            self._search_metadata_failed.clear()
+            self._category_name_cache.clear()
             self._totp_secret_cache.clear()
             self._tags_cache = None
             self._cache_epoch = None
@@ -243,12 +260,12 @@ class EntryManager:
         即弱密码、重复、过期结果不变，订阅方可据此跳过昂贵的缓存重算。
         增删条目等结构性变更保持默认 True，因其改变 total 与重复分组。
         """
-        # 条目增删改可能改变 tags 分布与 username 缓存，失效相关缓存。
-        # _username_cache 统一失效：update_entry 改 username 后避免搜索命中旧值，
-        # permanent_delete / empty_trash 后避免已删条目明文驻留内存。
+        # 条目增删改可能改变搜索摘要与标签分布，统一失效相关缓存。
         with self._cache_lock:
             self._tags_cache = None
-            self._username_cache.clear()
+            self._search_metadata_cache.clear()
+            self._search_metadata_failed.clear()
+            self._category_name_cache.clear()
         # 回调在锁外执行，避免回调重入 EntryManager 缓存方法时与持锁线程竞争
         for cb in self._on_entry_change_callbacks:
             try:
@@ -297,6 +314,8 @@ class EntryManager:
     def decrypt_entry(self, raw_entry: RawEntry) -> Entry:
         """解密条目的所有敏感字段，返回新的 Entry 对象。"""
         integrity_errors = []
+        if raw_entry.integrity_error:
+            integrity_errors.append(raw_entry.integrity_message or '元数据')
 
         def decrypt(name: str, value: str) -> str:
             try:
@@ -318,13 +337,19 @@ class EntryManager:
 
         return copy_entry_fields(
             raw_entry,
+            title=decrypt('title', raw_entry.title),
             username=decrypt('username', raw_entry.username),
             password=Sensitive(decrypt('password', raw_entry.password)),
+            url=decrypt('url', raw_entry.url),
+            category_name=self._decrypt_category_name(
+                raw_entry.category_id, raw_entry.category_name,
+            ),
+            tags=decrypt('tags', raw_entry.tags),
             notes=decrypt('notes', raw_entry.notes),
             custom_fields=custom_fields,
             totp_secret=Sensitive(decrypt('totp_secret', raw_entry.totp_secret)),
             integrity_error=bool(integrity_errors),
-            integrity_message='、'.join(integrity_errors),
+            integrity_message='、'.join(dict.fromkeys(integrity_errors)),
         )
 
     def decrypt_entry_for_export(
@@ -333,6 +358,10 @@ class EntryManager:
         include_secrets: bool = False,
     ) -> Entry:
         """仅解密导出所需字段，默认不让密码与 TOTP 进入内存结果。"""
+        if raw_entry.integrity_error:
+            raise DecryptionError(
+                f'条目 {raw_entry.id} 元数据完整性校验失败，已拒绝导出'
+            )
         try:
             custom_fields = self._decrypt_custom_fields(
                 raw_entry.custom_fields_db_value,
@@ -340,6 +369,9 @@ class EntryManager:
             )
             return copy_entry_fields(
                 raw_entry,
+                title=self._decrypt_field(
+                    raw_entry.title, raw_entry.crypto_id, 'title', strict=True
+                ),
                 username=self._decrypt_field(
                     raw_entry.username, raw_entry.crypto_id, 'username', strict=True
                 ),
@@ -347,6 +379,15 @@ class EntryManager:
                     self._decrypt_field(
                         raw_entry.password, raw_entry.crypto_id, 'password', strict=True
                     ) if include_secrets else ''
+                ),
+                url=self._decrypt_field(
+                    raw_entry.url, raw_entry.crypto_id, 'url', strict=True
+                ),
+                category_name=self._decrypt_category_name(
+                    raw_entry.category_id, raw_entry.category_name,
+                ),
+                tags=self._decrypt_field(
+                    raw_entry.tags, raw_entry.crypto_id, 'tags', strict=True
                 ),
                 notes=self._decrypt_field(
                     raw_entry.notes, raw_entry.crypto_id, 'notes', strict=True
@@ -366,20 +407,70 @@ class EntryManager:
     def _decrypt_summary(self, raw_entry: RawEntry) -> Entry:
         """仅解密列表展示所需字段，不让密码等明文进入列表模型。
 
-        username 经 _cached_username 复用会话内缓存，避免列表/搜索路径
-        重复解密。解密失败由 _username_decrypt_failed 记录并据此标记完整性。
-
-        设计权衡：username 是列表摘要的必需展示字段（PII，非密码），用于区分
-        同站多账号，故无法对非搜索路径省略解密。本方法已将解密范围收敛到
-        username 单字段（不含 password/totp_secret 等高敏字段），并经会话内
-        缓存降低重复解密与明文驻留；epoch 变化或锁定时缓存即失效。
+        title/username/url/tags 经统一摘要缓存复用，避免列表与搜索重复解密。
+        摘要不包含 password/totp_secret/notes/custom_fields 等高敏字段；
+        epoch 变化、锁定或条目更新时缓存立即失效。
         """
-        username = self._cached_username(raw_entry)
-        integrity_error = raw_entry.crypto_id in self._username_decrypt_failed
+        title, username, url, tags = self._cached_search_metadata(raw_entry)
+        failed = self._search_metadata_failed.get(raw_entry.crypto_id, set())
         summary = build_entry_summary(raw_entry, username)
-        summary.integrity_error = integrity_error
-        summary.integrity_message = '账号' if integrity_error else ''
+        summary.title = title
+        summary.url = url
+        summary.tags = tags
+        try:
+            summary.category_name = self._decrypt_category_name(
+                raw_entry.category_id, raw_entry.category_name,
+            )
+        except ValueError:
+            failed = set(failed)
+            failed.add('category')
+        summary.integrity_error = raw_entry.integrity_error or bool(failed)
+        messages = []
+        if raw_entry.integrity_error:
+            messages.append(raw_entry.integrity_message or '元数据')
+        label_map = {
+            'title': '标题', 'username': '账号', 'url': 'URL',
+            'tags': '标签', 'category': '分类',
+        }
+        messages.extend(label_map[name] for name in failed)
+        summary.integrity_message = '、'.join(dict.fromkeys(messages))
         return summary
+
+    def migrate_sensitive_metadata(self) -> None:
+        """将旧库明文 title/url/tags 原子迁移为逐字段密文。"""
+        if self.db.get_meta('sensitive_metadata_version') == _SENSITIVE_METADATA_VERSION:
+            return
+        with self.db.transaction():
+            for category in self.db.get_categories():
+                if category.id is None:
+                    continue
+                if not EncryptionEngine.is_encrypted_text(category.name):
+                    category.name = self._encrypt_field(
+                        category.name,
+                        self._category_crypto_id(category.id),
+                        'category_name',
+                    )
+                    self.db.update_category(category)
+            for raw in self.db.get_entries(include_deleted=True):
+                if raw.integrity_error:
+                    raise EntryIntegrityError(
+                        f'条目 {raw.id} 完整性校验失败，无法迁移敏感元数据'
+                    )
+                changed = False
+                for field_name in ('title', 'url', 'tags'):
+                    value = getattr(raw, field_name)
+                    if not EncryptionEngine.is_encrypted_text(value):
+                        setattr(
+                            raw,
+                            field_name,
+                            self._encrypt_field(value, raw.crypto_id, field_name),
+                        )
+                        changed = True
+                if changed:
+                    self.db.update_entry(raw, preserve_updated_at=True)
+            self.db.set_meta(
+                'sensitive_metadata_version', _SENSITIVE_METADATA_VERSION
+            )
 
     def add_entry(
         self, entry: Entry, *, notify: bool = True, skip_validation: bool = False,
@@ -528,12 +619,12 @@ class EntryManager:
     ) -> list[Entry]:
         """获取并解密条目列表。
 
-        WARNING: 搜索场景下仅解密 username 用于匹配，命中条目再完整解密，
-        减少未命中条目的 password、totp_secret 等敏感数据暴露在内存中。
+        WARNING: 搜索场景下解密 title/username/url/tags 用于匹配，命中条目再
+        完整解密，减少未命中条目的 password、totp_secret 等敏感数据暴露在内存中。
         对于列表展示等不需要密码的场景，优先使用 get_entry_summaries。
 
-        NOTE: search 参数不传递到 SQL 层，因为 username 是加密字段，
-        SQL LIKE 无法过滤。所有搜索匹配在 Python 层完成。
+        NOTE: search 参数不传递到 SQL 层，因为上述字段是加密字段，SQL LIKE
+        无法过滤。所有搜索匹配在 Python 层完成。
 
         .. deprecated::
             ``search`` 分支仅供测试使用。生产代码的列表展示应使用
@@ -550,12 +641,11 @@ class EntryManager:
         )
 
         if search:
-            # 搜索路径：仅解密 username 用于匹配，复用会话内缓存避免重复解密。
-            # 通过 username_override 将缓存值注入 matches_search，避免内联搜索逻辑。
+            # 搜索路径：解密摘要（title/username/url/tags）用于匹配，
+            # 复用会话内缓存避免重复解密；命中后再完整解密。
             matched = []
             for raw in raw_entries:
-                username = self._cached_username(raw)
-                if matches_search(raw, search, username_override=username):
+                if matches_search(self._decrypt_summary(raw), search):
                     matched.append(self.decrypt_entry(raw))
             decrypted = matched
         else:
@@ -582,14 +672,15 @@ class EntryManager:
         favorite_only: bool = False,
         search: str = '',
         limit: int | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> list[Entry]:
         """获取不含密码等敏感明文的列表摘要。
 
         Note:
             ``limit`` 的生效方式取决于 ``search``：
             - ``search`` 为空时，``limit`` 在 SQL 层生效（LIMIT 子句），高效截断。
-            - ``search`` 非空时，因加密字段无法在数据库层面搜索，必须先全量
-              解密 username 再在内存中过滤。此时 ``limit`` 不下推到 SQL（否则会先
+            - ``search`` 非空时，因摘要字段已加密，必须先全量解密搜索摘要再过滤。
+              此时 ``limit`` 不下推到 SQL（否则会先
               截断再过滤，导致搜索命中远少于实际），由调用方在内存过滤后自行截断。
               即当 search 非空时本方法忽略 limit，返回全部命中结果。
         """
@@ -602,20 +693,23 @@ class EntryManager:
             limit=sql_limit,
         )
         if search:
-            # 早过滤：先用 _cached_username（命中会话内缓存，避免重复解密）+
-            # matches_search 判断命中，仅对命中条目构建 summary，省去未命中条目
-            # 的 dataclass 拷贝开销。username 解密经 _cached_username 缓存，首次
-            # 搜索后命中缓存，重复搜索无解密成本。
+            # 摘要字段首次搜索后进入会话缓存，后续搜索无重复解密成本。
             summaries = []
             for raw in raw_entries:
-                username = self._cached_username(raw)
-                if matches_search(raw, search, username_override=username):
-                    summaries.append(self._decrypt_summary(raw))
+                if cancel_check and cancel_check():
+                    break
+                summary = self._decrypt_summary(raw)
+                if matches_search(summary, search):
+                    summaries.append(summary)
             # search 时 limit 未下推 SQL，此处截断以兑现 limit 契约
             if limit:
                 summaries = summaries[:limit]
         else:
-            summaries = [self._decrypt_summary(entry) for entry in raw_entries]
+            summaries = []
+            for raw in raw_entries:
+                if cancel_check and cancel_check():
+                    break
+                summaries.append(self._decrypt_summary(raw))
         return summaries
 
     def get_recent_summaries(self, limit: int = 20) -> list[Entry]:
@@ -633,24 +727,39 @@ class EntryManager:
         raw_entries = self.db.get_entries(sort_by_updated=True, limit=limit)
         return [self._decrypt_summary(entry) for entry in raw_entries]
 
-    def get_entries_for_export(self, include_secrets: bool = False) -> list[Entry]:
+    def get_entries_for_export(
+        self,
+        include_secrets: bool = False,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> list[Entry]:
         raw_entries = self.db.get_entries(include_deleted=False)
-        return [
-            self.decrypt_entry_for_export(entry, include_secrets)
-            for entry in raw_entries
-        ]
+        entries = []
+        for raw_entry in raw_entries:
+            if cancel_check and cancel_check():
+                break
+            entries.append(
+                self.decrypt_entry_for_export(raw_entry, include_secrets)
+            )
+        return entries
 
     # ==================== 委托方法 ====================
     # 以下方法直接委托给 DatabaseManager，无额外业务逻辑。
     # 委托层存在的理由：为 UI 层提供单一入口点，允许未来在此层添加
     # 验证或日志逻辑，防止 UI 直接依赖 DatabaseManager。
-    # DELEGATE: see DatabaseManager.get_categories
     def get_categories(self) -> list[Category]:
-        return self._vault.db.get_categories()
+        categories = self._vault.db.get_categories()
+        for category in categories:
+            if category.id is not None:
+                category.name = self._decrypt_category_name(
+                    category.id, category.name,
+                )
+        return sorted(categories, key=lambda item: (item.sort_order, item.name.casefold()))
 
-    # DELEGATE: see DatabaseManager.get_category
     def get_category(self, category_id: int) -> Category | None:
-        return self._vault.db.get_category(category_id)
+        category = self._vault.db.get_category(category_id)
+        if category is not None:
+            category.name = self._decrypt_category_name(category_id, category.name)
+        return category
 
     # DELEGATE: see DatabaseManager.get_category_entry_count
     def get_category_entry_count(self, category_id: int) -> int:
@@ -660,16 +769,56 @@ class EntryManager:
     def get_category_entry_counts(self) -> dict[int, int]:
         return self._vault.db.get_category_entry_counts()
 
-    # DELEGATE: see DatabaseManager.add_category
-    def add_category(self, category: Category) -> int:
-        result = self._vault.db.add_category(category)
+    def add_category(self, category: Category, *, notify: bool = True) -> int:
+        if not category.name.strip():
+            raise ValueError('分类名称不能为空')
+        if any(
+            existing.name.casefold() == category.name.strip().casefold()
+            for existing in self.get_categories()
+        ):
+            raise ValueError('分类名称已存在')
+        plaintext_name = category.name.strip()
+        pending_id = f'category-pending-{uuid.uuid4().hex}'
+        stored = Category(
+            name=self._encrypt_field(plaintext_name, pending_id, 'category_name'),
+            icon_char=category.icon_char,
+            color=category.color,
+            sort_order=category.sort_order,
+            created_at=category.created_at,
+        )
+        with self.db.transaction():
+            result = self.db.add_category(stored)
+            stored.id = result
+            stored.name = self._encrypt_field(
+                plaintext_name,
+                self._category_crypto_id(result),
+                'category_name',
+            )
+            self.db.update_category(stored)
+        category.id = result
+        category.name = plaintext_name
         # 分类变更不改变条目密码相关维度，仅失效 _tags_cache 等结构缓存。
-        self._notify_entry_change(password_changed=False)
+        if notify:
+            self._notify_entry_change(password_changed=False)
         return result
 
-    # DELEGATE: see DatabaseManager.update_category
     def update_category(self, category: Category) -> None:
-        self._vault.db.update_category(category)
+        if category.id is None:
+            raise ValueError('分类 ID 不能为空')
+        plaintext_name = category.name.strip()
+        stored = Category(
+            id=category.id,
+            name=self._encrypt_field(
+                plaintext_name,
+                self._category_crypto_id(category.id),
+                'category_name',
+            ),
+            icon_char=category.icon_char,
+            color=category.color,
+            sort_order=category.sort_order,
+            created_at=category.created_at,
+        )
+        self._vault.db.update_category(stored)
         self._notify_entry_change(password_changed=False)
 
     # DELEGATE: see DatabaseManager.delete_category
@@ -835,19 +984,18 @@ class EntryManager:
     def get_all_tags(self) -> list[tuple[str, int]]:
         """获取所有标签及其使用频率。
 
-        结果在会话内缓存，避免侧边栏每次刷新（含搜索防抖）都全表扫描 tags
-        列并内存聚合。缓存于条目增删改（_notify_entry_change）与锁定/改密
-        （key_epoch 变化）时失效。tags 为明文字段，缓存无敏感数据。
+        结果在会话内缓存，避免侧边栏每次刷新都全表解密 tags 并聚合。
+        缓存于条目增删改与锁定/改密时失效。
         """
         self._invalidate_if_epoch_changed()
         with self._cache_lock:
             cached = self._tags_cache
         if cached is not None:
             return cached
-        # DB 扫描与聚合在锁外，避免持锁阻塞并发缓存访问
-        tag_rows = self.db.get_all_tags()
         tag_count: dict[str, int] = {}
-        for tags_str in tag_rows:
+        # 标签列为密文，逐条解密摘要字段后聚合；结果在会话内缓存。
+        for raw in self.db.get_entries(include_deleted=False):
+            tags_str = self._cached_search_metadata(raw)[3]
             for tag in (t.strip() for t in tags_str.split(',') if t.strip()):
                 tag_count[tag] = tag_count.get(tag, 0) + 1
         result = sorted(tag_count.items(), key=lambda x: -x[1])

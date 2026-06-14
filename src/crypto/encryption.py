@@ -43,15 +43,20 @@ class EncryptionEngine:
     NONCE_SIZE = 12  # GCM 推荐 nonce 长度
     TAG_SIZE = 16    # GCM 认证标签长度，128 位
     FORMAT_ID = 'aes-256-gcm-aad'
-    TEXT_PREFIX = 'cb:'
-    BYTES_PREFIX = b'CBX'
-    # 空值哨兵：使用 UUID 前缀降低碰撞概率，加密空输入时替换为哨兵走正常流程。
-    # _EMPTY_UUID 作为唯一来源，两个哨兵均从其派生，避免 UUID 硬编码两份漂移。
-    # 注意：字符串与字节哨兵各自保留独立前缀（CBX_EMPTY / CBX_BE），二者字节值
-    # 不同，不能互相 encode/decode 替换，否则会破坏已存量数据的解密识别。
+    TEXT_PREFIX = 'cb2:'
+    BYTES_PREFIX = b'CB2'
+    LEGACY_TEXT_PREFIX = 'cb:'
+    LEGACY_BYTES_PREFIX = b'CBX'
+    # 旧格式使用空值哨兵。仅在解密旧 cb:/CBX 数据时保留识别，
+    # 新格式直接让 AES-GCM 加密空载荷，从根源消除真实输入与哨兵碰撞。
     _EMPTY_UUID = '7f3a2b1c-4d5e-6f8a-9b0c-1d2e3f4a5b6c'
     _EMPTY_SENTINEL = f'__CBX_EMPTY_{_EMPTY_UUID}__'
     _EMPTY_BYTES_SENTINEL = f'__CBX_BE_{_EMPTY_UUID}__'.encode('ascii')
+
+    @classmethod
+    def is_encrypted_text(cls, value: str) -> bool:
+        """返回字符串是否带受支持的文本密文版本前缀。"""
+        return value.startswith((cls.TEXT_PREFIX, cls.LEGACY_TEXT_PREFIX))
 
     @classmethod
     def _get_cipher(cls, key: bytes) -> AESGCM:
@@ -105,12 +110,9 @@ class EncryptionEngine:
             associated_data: 参与认证的附加数据，解密时需原样提供
 
         Returns:
-            形如 ``cb:`` 前缀加 base64 的密文字符串。密文内部由随机 nonce、
+            形如 ``cb2:`` 前缀加 base64 的密文字符串。密文内部由随机 nonce、
             密文与 GCM 认证标签拼接后编码得到。
         """
-        # 空字符串替换为哨兵值走正常加密流程，确保 AAD 始终参与认证。
-        if not plaintext:
-            plaintext = cls._EMPTY_SENTINEL
         nonce = os.urandom(cls.NONCE_SIZE)
         aesgcm = cls._get_cipher(key)
         aad = cls._aad_bytes(associated_data)
@@ -142,9 +144,15 @@ class EncryptionEngine:
         if not encrypted_b64:
             raise ValueError('收到空密文')
         try:
-            if not encrypted_b64.startswith(cls.TEXT_PREFIX):
+            if encrypted_b64.startswith(cls.TEXT_PREFIX):
+                prefix = cls.TEXT_PREFIX
+                legacy = False
+            elif encrypted_b64.startswith(cls.LEGACY_TEXT_PREFIX):
+                prefix = cls.LEGACY_TEXT_PREFIX
+                legacy = True
+            else:
                 raise ValueError('不支持的密文格式')
-            encoded = encrypted_b64[len(cls.TEXT_PREFIX):]
+            encoded = encrypted_b64[len(prefix):]
             raw = base64.b64decode(encoded, validate=True)
             if len(raw) < cls.NONCE_SIZE + cls.TAG_SIZE:
                 raise ValueError('密文长度无效')
@@ -157,7 +165,7 @@ class EncryptionEngine:
             # 非常量时间比较是有意设计：哨兵判定发生在 GCM 认证成功之后，
             # 攻击者无法越过认证到达此处；哨兵本身不是密钥或敏感机密，
             # 不存在通过时序差异泄漏密钥材料的途径。
-            if result == cls._EMPTY_SENTINEL:
+            if legacy and result == cls._EMPTY_SENTINEL:
                 return ''
             return result
         except (InvalidTag, ValueError, AttributeError, TypeError) as exc:
@@ -171,14 +179,11 @@ class EncryptionEngine:
         key: bytes,
         associated_data: str | bytes,
     ) -> bytes:
-        """加密字节数据，返回带 ``CBX`` 字节前缀的密文。
+        """加密字节数据，返回带 ``CB2`` 字节前缀的密文。
 
         与 encrypt 对称，区别在于处理 bytes 并以字节前缀返回；空数据同样
         替换为哨兵值走正常加密流程，保证附加数据始终参与认证。
         """
-        if not data:
-            # 与字符串路径对称：空数据替换为哨兵值走正常加密流程
-            data = cls._EMPTY_BYTES_SENTINEL
         nonce = os.urandom(cls.NONCE_SIZE)
         aesgcm = cls._get_cipher(key)
         aad = cls._aad_bytes(associated_data)
@@ -206,9 +211,15 @@ class EncryptionEngine:
         Raises:
             ValueError: 密文格式不符、长度不足或认证失败时抛出
         """
-        if not data.startswith(cls.BYTES_PREFIX):
+        if data.startswith(cls.BYTES_PREFIX):
+            prefix = cls.BYTES_PREFIX
+            legacy = False
+        elif data.startswith(cls.LEGACY_BYTES_PREFIX):
+            prefix = cls.LEGACY_BYTES_PREFIX
+            legacy = True
+        else:
             raise ValueError('不支持的密文字节格式')
-        payload = data[len(cls.BYTES_PREFIX):]
+        payload = data[len(prefix):]
         if not payload:
             raise ValueError('收到空密文字节')
         if len(payload) < cls.NONCE_SIZE + cls.TAG_SIZE:
@@ -222,6 +233,6 @@ class EncryptionEngine:
         except (InvalidTag, ValueError, AttributeError, TypeError) as exc:
             logger.warning("解密失败: %s", type(exc).__name__)
             raise ValueError('解密失败，密钥或数据可能已损坏') from exc
-        if result == cls._EMPTY_BYTES_SENTINEL:
+        if legacy and result == cls._EMPTY_BYTES_SENTINEL:
             return b''
         return result

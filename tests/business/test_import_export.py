@@ -10,7 +10,7 @@ import os
 import tempfile
 from typing import cast
 
-from src.models import CustomField, Entry
+from src.models import CustomField, Entry, Sensitive
 
 
 def test_entry_json_roundtrip():
@@ -103,3 +103,17 @@ def test_custom_field_serialization():
     restored = CustomField.from_dict(d)
     assert restored.name == 'test'
     assert restored.value == 'val'
+
+
+def test_sensitive_representations_are_redacted():
+    secret = 'TopSecret!2026'
+    entry = Entry(
+        title='Account',
+        password=Sensitive(secret),
+        notes=secret,
+        custom_fields=[CustomField('api_key', secret, 'password')],
+    )
+
+    assert secret not in repr(Sensitive(secret))
+    assert secret not in repr(entry)
+    assert secret not in repr(entry.custom_fields[0])

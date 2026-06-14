@@ -7,7 +7,11 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 import time
+from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
@@ -18,6 +22,7 @@ from PyQt6.QtWidgets import (
 
 from ...business.services.password_service import PasswordService
 from ...config import RATE_LIMITS
+from ...utils.file_security import secure_file
 from ..resources.constants import BTN_ICON
 from ..resources.icons import EYE, LOCK, set_icon
 from ..resources.theme_colors import get_strength_color
@@ -229,9 +234,56 @@ class RateLimiter:
         secs = limiter.record_failure()  # 返回锁定秒数，0 表示不锁定
     """
 
-    def __init__(self) -> None:
+    def __init__(self, state_path: str | Path | None = None) -> None:
         self._fail_count: int = 0
         self._lock_until: float = 0.0
+        self._state_path = Path(state_path) if state_path is not None else None
+        self._load_state()
+
+    def _load_state(self) -> None:
+        if self._state_path is None or not self._state_path.exists():
+            return
+        try:
+            data = json.loads(self._state_path.read_text(encoding='utf-8'))
+            fail_count = data.get('fail_count', 0)
+            lock_until = data.get('lock_until', 0.0)
+            if type(fail_count) is not int or fail_count < 0:
+                raise ValueError('失败次数无效')
+            if not isinstance(lock_until, (int, float)) or lock_until < 0:
+                raise ValueError('锁定时间无效')
+            self._fail_count = fail_count
+            self._lock_until = float(lock_until)
+        except (OSError, ValueError, json.JSONDecodeError, AttributeError):
+            # 状态损坏时按最高阶梯短暂锁定，避免删除/破坏状态文件直接绕过限流。
+            self._fail_count = RATE_LIMITS[-1][0]
+            self._lock_until = time.time() + RATE_LIMITS[-1][1]
+            self._save_state()
+
+    def _save_state(self) -> None:
+        if self._state_path is None:
+            return
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self._state_path.with_name(self._state_path.name + '.tmp')
+        payload = json.dumps({
+            'fail_count': self._fail_count,
+            'lock_until': self._lock_until,
+        })
+        try:
+            with open(temp_path, 'w', encoding='utf-8') as file:
+                file.write(payload)
+                file.flush()
+                os.fsync(file.fileno())
+            secure_file(temp_path)
+            os.replace(temp_path, self._state_path)
+            secure_file(self._state_path)
+        except OSError:
+            # 写盘失败（只读盘/磁盘满/权限）不应中断登录流程：RateLimiter 是
+            # 内存限流，持久化仅为跨会话保留；失败时内存状态仍生效，仅记日志。
+            logging.getLogger(__name__).warning(
+                "登录限流状态写盘失败，本次仅内存生效", exc_info=True
+            )
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     def check(self) -> str | None:
         """检查是否处于锁定状态。
@@ -241,17 +293,21 @@ class RateLimiter:
         Returns:
             锁定提示消息，含剩余秒数；若可继续则返回 ``None``。
         """
-        if self._lock_until and time.monotonic() < self._lock_until:
-            remaining = int(self._lock_until - time.monotonic()) + 1
+        now = time.time()
+        if self._lock_until and now < self._lock_until:
+            remaining = int(self._lock_until - now) + 1
             return f'尝试次数过多，请等待 {remaining} 秒后重试'
-        if self._lock_until and time.monotonic() >= self._lock_until:
+        if self._lock_until and now >= self._lock_until:
             self._fail_count = 0
             self._lock_until = 0.0
+            self._save_state()
         return None
 
     def record_success(self) -> None:
         """记录成功，重置失败计数。"""
         self._fail_count = 0
+        self._lock_until = 0.0
+        self._save_state()
 
     def record_failure(self) -> int:
         """记录失败并根据策略计算锁定秒数。
@@ -262,7 +318,8 @@ class RateLimiter:
         self._fail_count += 1
         lock_seconds = apply_rate_limit(self._fail_count)
         if lock_seconds > 0:
-            self._lock_until = time.monotonic() + lock_seconds
+            self._lock_until = time.time() + lock_seconds
+        self._save_state()
         return lock_seconds
 
 

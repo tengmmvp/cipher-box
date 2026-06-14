@@ -286,16 +286,29 @@ class ImportExportDialog(QDialog):
 
         self._set_busy(True)
 
+        worker_holder: list[BackgroundWorker] = []
+
         def _export_task():
-            entries = self._entry_mgr.get_entries_for_export(include_pwd)
+            worker = worker_holder[0]
+            cancel_check = lambda: worker.is_cancelled
+            entries = self._entry_mgr.get_entries_for_export(
+                include_pwd, cancel_check=cancel_check,
+            )
+            if worker.is_cancelled:
+                return 0
             if fmt == 'JSON':
-                self._import_export.export_to_json(path, entries, include_pwd)
+                self._import_export.export_to_json(
+                    path, entries, include_pwd, cancel_check=cancel_check,
+                )
             else:
-                self._import_export.export_to_csv(path, entries, include_pwd)
+                self._import_export.export_to_csv(
+                    path, entries, include_pwd, cancel_check=cancel_check,
+                )
             return len(entries)
 
         self._worker_is_export = True
         self._worker = BackgroundWorker(_export_task, parent=self)
+        worker_holder.append(self._worker)
         self._worker.finished.connect(self._on_export_done)
         self._worker.error.connect(self._on_export_error)
         self._worker.start()
@@ -313,7 +326,7 @@ class ImportExportDialog(QDialog):
         perm_warning = False
         if path:
             try:
-                secure_file(Path(path))
+                secure_file(Path(path), strict=True)
             except OSError:
                 logger.warning("导出文件权限设置失败: %s", path)
                 perm_warning = True

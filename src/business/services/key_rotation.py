@@ -26,10 +26,15 @@ class KeyRotationDB(Protocol):
     def update_entries_batch(self, rows: list) -> None: ...
     def get_all_password_history_batch(self, after_id: int, limit: int) -> list: ...
     def update_password_history_batch(self, rows: list) -> None: ...
+    def get_categories(self) -> list: ...
+    def update_category(self, category) -> None: ...
 
 
 _RE_ENCRYPT_BATCH_SIZE = 200
-_ENCRYPTED_ENTRY_FIELDS = ('username', 'password', 'notes', 'totp_secret', 'custom_fields')
+_ENCRYPTED_ENTRY_FIELDS = (
+    'title', 'username', 'password', 'url', 'tags', 'notes',
+    'totp_secret', 'custom_fields',
+)
 
 
 class ReEncryptedEntry(NamedTuple):
@@ -162,6 +167,25 @@ class KeyRotationService:
                 ))
             self._db.update_entries_batch(rows)
             del batch, rows
+
+    def re_encrypt_categories(self, old_key: bytes, new_key: bytes) -> None:
+        """使用分类 ID 绑定的 AAD 重加密全部分类名称。"""
+        for category in self._db.get_categories():
+            if category.id is None:
+                continue
+            crypto_id = f'category-{category.id}'
+            try:
+                plaintext = _decrypt_field_impl(
+                    category.name, old_key, crypto_id, 'category_name', strict=True,
+                )
+            except ValueError as exc:
+                raise DecryptionError(
+                    f'分类 {category.id} 名称解密失败，已中止改密'
+                ) from exc
+            category.name = _encrypt_field_impl(
+                plaintext, new_key, crypto_id, 'category_name',
+            )
+            self._db.update_category(category)
 
     def re_encrypt_history(self, old_key: bytes, new_key: bytes, *,
                            cancel_event=None):

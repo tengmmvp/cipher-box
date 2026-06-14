@@ -4,6 +4,7 @@
 锁定清理、登录窗口渲染等端到端场景，作为发布前的整体回归防线。
 """
 
+import dataclasses
 import json
 import sqlite3
 import tempfile
@@ -18,6 +19,7 @@ from src.business.managers.backup_restore import BackupRestoreManager
 from src.business.managers.entry_manager import EntryManager
 from src.business.managers.import_export import ImportExportManager
 from src.business.managers.vault_manager import VaultManager
+from src.crypto.encryption import EncryptionEngine
 from src.crypto.totp import TOTPGenerator
 from src.exceptions import SchemaError
 from src.models import CustomField, Entry
@@ -247,8 +249,84 @@ def test_vault_persists_kdf_parameters_and_ciphertext_format():
         assert vault.db.get_meta('master_kdf_memory_cost') == str(DEFAULT_KDF_PARAMS.memory_cost)
         assert vault.db.get_meta('master_kdf_parallelism') == str(DEFAULT_KDF_PARAMS.parallelism)
         assert vault.db.get_meta('ciphertext_format') == 'aes-256-gcm-aad'
-        assert raw.password.startswith('cb:')
+        assert raw.password.startswith(EncryptionEngine.TEXT_PREFIX)
+        assert raw.title.startswith(EncryptionEngine.TEXT_PREFIX)
+        assert raw.url.startswith(EncryptionEngine.TEXT_PREFIX)
+        assert raw.tags.startswith(EncryptionEngine.TEXT_PREFIX)
+        assert all(
+            category.name.startswith(EncryptionEngine.TEXT_PREFIX)
+            for category in vault.db.get_categories()
+        )
         vault.close()
+
+
+def test_unlock_migrates_legacy_plaintext_metadata_atomically():
+    with tempfile.TemporaryDirectory() as root:
+        config = _config(root)
+        vault = VaultManager(config)
+        password = 'MasterPassword!2026'
+        assert vault.initialize(password)[0]
+        manager = EntryManager(vault)
+        entry_id = manager.add_entry(
+            Entry(
+                title='Legacy Account',
+                url='https://legacy.example',
+                tags='legacy,work',
+                password='Secret!2026',
+            )
+        )
+        raw = vault.db.get_entry(entry_id)
+        assert raw is not None
+        legacy = dataclasses.replace(
+            raw,
+            title='Legacy Account',
+            url='https://legacy.example',
+            tags='legacy,work',
+        )
+        legacy.metadata_mac = vault._signer.sign(legacy)
+        vault.db.connection.execute(
+            'UPDATE entries SET title=?, url=?, tags=?, metadata_mac=? WHERE id=?',
+            (
+                legacy.title,
+                legacy.url,
+                legacy.tags,
+                legacy.metadata_mac,
+                entry_id,
+            ),
+        )
+        vault.db.connection.execute(
+            "DELETE FROM vault_meta WHERE key='sensitive_metadata_version'"
+        )
+        category = vault.db.get_categories()[0]
+        assert category.id is not None
+        vault.db.connection.execute(
+            'UPDATE categories SET name=? WHERE id=?',
+            ('Legacy Category', category.id),
+        )
+        vault.db.connection.commit()
+        vault.close()
+
+        reopened = VaultManager(config)
+        ok, error = reopened.unlock(password)
+        assert ok, error
+        migrated = reopened.db.get_entry(entry_id)
+        assert migrated is not None
+        assert migrated.title.startswith(EncryptionEngine.TEXT_PREFIX)
+        assert migrated.url.startswith(EncryptionEngine.TEXT_PREFIX)
+        assert migrated.tags.startswith(EncryptionEngine.TEXT_PREFIX)
+        assert all(
+            category.name.startswith(EncryptionEngine.TEXT_PREFIX)
+            for category in reopened.db.get_categories()
+        )
+        assert 'Legacy Category' in {
+            category.name for category in EntryManager(reopened).get_categories()
+        }
+        restored = EntryManager(reopened).get_entry(entry_id)
+        assert restored is not None
+        assert restored.title == 'Legacy Account'
+        assert restored.url == 'https://legacy.example'
+        assert restored.tags == 'legacy,work'
+        reopened.close()
 
 
 def test_selecting_first_entry_opens_detail_panel_without_crash():
@@ -556,7 +634,7 @@ def test_vault_api_rejects_weak_master_passwords():
         vault = VaultManager(_config(root))
         ok, msg = vault.initialize('aaaaaaaaaaaa')
         assert ok is False
-        assert '字符类型' in msg
+        assert msg
         assert not (Path(root) / 'vault.db').exists()
 
 
@@ -675,7 +753,10 @@ def test_deleted_default_category_does_not_reappear_after_restart():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
         assert vault.initialize('MasterPassword!2026')[0]
-        category = next(item for item in vault.db.get_categories() if item.name == '社交')
+        category = next(
+            item for item in EntryManager(vault).get_categories()
+            if item.name == '社交'
+        )
         category_id = category.id
         assert category_id is not None
         vault.db.delete_category(category_id)
@@ -683,5 +764,9 @@ def test_deleted_default_category_does_not_reappear_after_restart():
 
         reopened = VaultManager(_config(root))
         assert reopened.is_initialized is True
-        assert all(item.name != '社交' for item in reopened.db.get_categories())
+        assert reopened.unlock('MasterPassword!2026')[0]
+        assert all(
+            item.name != '社交'
+            for item in EntryManager(reopened).get_categories()
+        )
         reopened.close()

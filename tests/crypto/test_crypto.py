@@ -42,6 +42,24 @@ def test_empty_string():
         EncryptionEngine.decrypt('', key, AAD)
 
 
+def test_legacy_empty_sentinel_is_not_reserved_in_new_format():
+    key = os.urandom(32)
+    plaintext = EncryptionEngine._EMPTY_SENTINEL
+    encrypted = EncryptionEngine.encrypt(plaintext, key, AAD)
+
+    assert encrypted.startswith('cb2:')
+    assert EncryptionEngine.decrypt(encrypted, key, AAD) == plaintext
+
+
+def test_legacy_empty_bytes_sentinel_is_not_reserved_in_new_format():
+    key = os.urandom(32)
+    plaintext = EncryptionEngine._EMPTY_BYTES_SENTINEL
+    encrypted = EncryptionEngine.encrypt_bytes(plaintext, key, AAD)
+
+    assert encrypted.startswith(b'CB2')
+    assert EncryptionEngine.decrypt_bytes(encrypted, key, AAD) == plaintext
+
+
 def test_unicode():
     key = os.urandom(32)
     plaintext = '中文密码测试 <SEC> emojis <JOY>'

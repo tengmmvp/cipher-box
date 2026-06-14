@@ -44,7 +44,7 @@ ENTRY_TYPES = {
 }
 
 
-@dataclass
+@dataclass(repr=False)
 class CustomField:
     """自定义字段。"""
     name: str
@@ -53,6 +53,12 @@ class CustomField:
 
     # 允许的自定义字段类型
     _VALID_FIELD_TYPES = frozenset({'text', 'password', 'url', 'email'})
+
+    def __repr__(self) -> str:
+        return (
+            f'CustomField(name={self.name!r}, value=<redacted>, '
+            f'field_type={self.field_type!r})'
+        )
 
     def to_dict(self) -> dict:
         return {
@@ -101,6 +107,9 @@ class Sensitive(str):
     """
 
     __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "Sensitive('<redacted>')"
 
 
 @dataclass
@@ -185,7 +194,7 @@ class PasswordHistory:
         }
 
 
-@dataclass
+@dataclass(repr=False)
 class Entry:
     """密码条目（明文态）。
 
@@ -223,6 +232,12 @@ class Entry:
     # 表示"已加密但内容为空字符串"，而非"从未存储过"。
     password_present: bool = False
     totp_present: bool = False
+
+    def __repr__(self) -> str:
+        return (
+            f'Entry(id={self.id!r}, title={self.title!r}, '
+            f'entry_type={self.entry_type!r}, integrity_error={self.integrity_error!r})'
+        )
 
     @property
     def is_decrypted(self) -> bool:
@@ -370,7 +385,8 @@ class Entry:
 class RawEntry:
     """从数据库读取的密文态条目。
 
-    加密字段（username/password/notes/totp_secret/custom_fields）为密文字符串；
+    加密字段（title/username/password/url/tags/notes/totp_secret/custom_fields）
+    为密文字符串；
     ``custom_fields`` 为密文 JSON 字符串（区别于明文态 :class:`Entry` 的
     ``list[CustomField]``）。经 ``EntryManager.decrypt_entry`` /
     ``build_entry_summary`` 解密为明文 Entry。

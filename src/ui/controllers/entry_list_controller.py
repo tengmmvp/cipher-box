@@ -74,17 +74,25 @@ class EntryListController:
         self,
         category_id: int | None,
         search: str,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[list, str]:
         """获取全部条目，可按分类和搜索过滤。"""
         return self._entry_mgr.get_entry_summaries(
             category_id=category_id,
             search=search,
+            cancel_check=cancel_check,
         ), '全部条目'
 
-    def fetch_favorite(self, search: str) -> tuple[list, str]:
+    def fetch_favorite(
+        self,
+        search: str,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> tuple[list, str]:
         """获取收藏条目。"""
         return (
-            self._entry_mgr.get_entry_summaries(favorite_only=True, search=search),
+            self._entry_mgr.get_entry_summaries(
+                favorite_only=True, search=search, cancel_check=cancel_check,
+            ),
             '收藏',
         )
 
@@ -99,7 +107,11 @@ class EntryListController:
         groups = (summary or {}).get('duplicate_groups', [])
         return [e for group in groups for e in group], '重复密码（全部分类）'
 
-    def fetch_recent(self, search: str) -> tuple[list, str]:
+    def fetch_recent(
+        self,
+        search: str,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> tuple[list, str]:
         """获取近期更新条目，按 updated_at 降序取最近 N 条。
 
         无搜索时下推 ORDER BY updated_at DESC LIMIT 到 SQL（经
@@ -107,17 +119,25 @@ class EntryListController:
         有搜索时因加密字段无法 SQL 过滤，仍需全量解密后内存过滤、排序再截断。
         """
         if search:
-            entries = self._entry_mgr.get_entry_summaries(search=search)
+            entries = self._entry_mgr.get_entry_summaries(
+                search=search, cancel_check=cancel_check,
+            )
             entries.sort(key=lambda e: e.updated_at or '', reverse=True)
             entries = entries[:RECENT_ENTRY_LIMIT]
         else:
             entries = self._entry_mgr.get_recent_summaries(limit=RECENT_ENTRY_LIMIT)
         return entries, '近期更新'
 
-    def fetch_trash(self, search: str) -> tuple[list, str]:
+    def fetch_trash(
+        self,
+        search: str,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> tuple[list, str]:
         """获取回收站条目。"""
         return (
-            self._entry_mgr.get_entry_summaries(deleted_only=True, search=search),
+            self._entry_mgr.get_entry_summaries(
+                deleted_only=True, search=search, cancel_check=cancel_check,
+            ),
             '回收站',
         )
 

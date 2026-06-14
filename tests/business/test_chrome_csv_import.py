@@ -5,6 +5,8 @@
 新增测试以固化 Chrome 导出列名到内部字段的映射关系。
 """
 
+import pytest
+
 from src.business.managers.import_export import ImportExportManager
 
 
@@ -42,3 +44,15 @@ def test_import_from_chrome_csv_empty(entry_mgr, tmp_path):
 
     assert mgr.import_from_chrome_csv(str(csv_path)) == 0
     assert entry_mgr.get_entries() == []
+
+
+def test_import_rejects_missing_default_category(entry_mgr, tmp_path):
+    mgr = ImportExportManager(entry_mgr)
+    csv_path = tmp_path / 'chrome.csv'
+    csv_path.write_text(
+        'name,url,username,password\nGitHub,https://github.com,alice,Pass123!\n',
+        encoding='utf-8',
+    )
+
+    with pytest.raises(ValueError, match='默认分类不存在'):
+        mgr.import_from_chrome_csv(str(csv_path), default_category_id=999_999)

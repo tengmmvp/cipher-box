@@ -60,6 +60,11 @@ class MasterKeyManager:
     """主密码密钥管理器。"""
 
     @classmethod
+    def validate_params(cls, params: KdfParams) -> None:
+        """公开校验 KDF 参数，供备份头等持久化格式在派生前复用。"""
+        cls._validate_params(params)
+
+    @classmethod
     def _validate_params(cls, params: KdfParams) -> None:
         """校验 Argon2id 参数是否在安全范围内，防止 meta 篡改导致静默降级。"""
         if not MIN_ARGON2_TIME_COST <= params.time_cost <= MAX_ARGON2_TIME_COST:

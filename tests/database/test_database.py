@@ -78,6 +78,24 @@ def test_add_get_category(db):
     assert retrieved.icon_char == '🧪'
 
 
+def test_add_category_rejects_duplicate_name(db):
+    """add_category 名称重复时抛 ValueError（避开默认分类名）。"""
+    db.add_category(Category(name='测试分类A'))
+    with pytest.raises(ValueError, match='已存在'):
+        db.add_category(Category(name='测试分类A'))
+
+
+def test_update_category_rejects_duplicate_name(db):
+    """update_category 改名为其他分类名称时抛 ValueError（避开默认分类名）。"""
+    cat1_id = db.add_category(Category(name='测试分类A'))
+    db.add_category(Category(name='测试分类B'))
+    cat1 = db.get_category(cat1_id)
+    assert cat1 is not None
+    cat1.name = '测试分类B'
+    with pytest.raises(ValueError, match='已被其他分类占用'):
+        db.update_category(cat1)
+
+
 def test_add_get_entry(db):
     """测试添加和获取条目。"""
     entry = _make_entry(

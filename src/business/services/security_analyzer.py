@@ -68,16 +68,25 @@ class SecurityAnalyzer:
         """只返回分析界面所需字段，避免缓存敏感明文。
 
         Summary Entry 不含 password/notes/totp_secret/custom_fields 明文，
-        仅包含 username，用于重复密码分组的展示。缓存中的 duplicate_groups
-        因此不会暴露完整密码明文，仅有 username 和条目元数据。
-
-        后台线程每次 full_analysis 独立解密 username（不读 EntryManager 的
-        _username_cache），避免与 UI 线程并发读写该 dict 导致数据竞争。传入
-        ``key`` 复用调用方快照的主密钥，与 full_analysis 全程一致。username
-        解密用 strict=True：损坏时抛 ValueError 供调用方计入 skipped_count。
+        仅解密列表展示所需 title/username/url/tags。所有摘要字段使用 strict=True，
+        损坏时抛 ValueError 供调用方计入 skipped_count。
         """
         username = self._decrypt(raw, 'username', raw.username, strict=True, key=key)
-        return build_entry_summary(raw, username)
+        summary = build_entry_summary(raw, username)
+        summary.title = self._decrypt(
+            raw, 'title', raw.title, strict=True, key=key,
+        )
+        summary.url = self._decrypt(raw, 'url', raw.url, strict=True, key=key)
+        summary.tags = self._decrypt(raw, 'tags', raw.tags, strict=True, key=key)
+        if raw.category_id is not None and raw.category_name:
+            summary.category_name = decrypt_field(
+                raw.category_name,
+                key or self._key,
+                f'category-{raw.category_id}',
+                'category_name',
+                strict=True,
+            )
+        return summary
 
     def _password_fingerprint(self, password: str, key: bytes | None = None) -> bytes:
         """使用主密钥生成密码指纹，用于去重检测。
@@ -251,63 +260,64 @@ class SecurityAnalyzer:
         对于单用户桌面应用，这不是问题，分析操作不会被并发触发。若未来
         引入后台线程定期分析，需在调用方加锁或在方法内持有读锁。
         """
-        entries = self._vault.db.get_entries(include_deleted=False)
-        total = len(entries)
-        weak_entries = []
-        password_map: dict[bytes, list[Entry]] = {}
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        # 保存所有条目的 summary + changed_at_utc，供缓存后不同 days 重新过滤
-        _summaries_with_dates: list[tuple] = []  # summary 与 changed_utc 的配对列表
+        # 全量分析会持有主密钥副本并逐条解密。整个敏感生命周期都持保险库
+        # 操作锁，使 lock() 必须等待分析释放密钥后才能清零并返回，避免后台
+        # Worker 超时后在“已锁定”状态继续持有主密钥和明文。
+        with self._vault.vault_write_lock():
+            entries = self._vault.db.get_entries(include_deleted=False)
+            total = len(entries)
+            weak_entries = []
+            password_map: dict[bytes, list[Entry]] = {}
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            # 保存所有条目的 summary + changed_at_utc，供缓存后不同 days 重新过滤
+            _summaries_with_dates: list[tuple] = []
 
-        skipped_count = 0
-        # 循环外取一次主密钥副本，供重复检测的 HMAC 指纹复用，避免逐条密码都经
-        # self._key 触发 bytes 复制而累积主密钥驻留面。
-        vault_key = self._key
-        for raw in entries:
-            try:
-                summary = self._make_summary(raw, vault_key)
-            except ValueError:
-                # 容错：跳过单条损坏条目，继续分析其余条目
-                logger.debug("安全分析跳过损坏条目 id=%s", raw.id, exc_info=True)
-                skipped_count += 1
-                continue
+            skipped_count = 0
+            # 循环外取一次主密钥副本，供重复检测的 HMAC 指纹复用。
+            vault_key = self._key
+            for raw in entries:
+                if raw.integrity_error:
+                    logger.debug("安全分析跳过元数据完整性失败条目 id=%s", raw.id)
+                    skipped_count += 1
+                    continue
+                try:
+                    summary = self._make_summary(raw, vault_key)
+                except ValueError:
+                    logger.debug("安全分析跳过损坏条目 id=%s", raw.id, exc_info=True)
+                    skipped_count += 1
+                    continue
 
-            # 解析 changed_at 为 UTC datetime，抽至 _parse_changed_utc 降低 full_analysis
-            # 圈复杂度，且便于单测覆盖日期回退与 naive/aware 归一化逻辑。
-            changed_utc = self._parse_changed_utc(raw)
-            _summaries_with_dates.append((summary, changed_utc))
+                changed_utc = self._parse_changed_utc(raw)
+                _summaries_with_dates.append((summary, changed_utc))
 
-            # 弱密码检测，使用已存储的强度评分，无需解密
-            if (raw.password_strength or 0) <= 1 and raw.password:
-                weak_entries.append(summary)
+                if (raw.password_strength or 0) <= 1 and raw.password:
+                    weak_entries.append(summary)
 
-            if not raw.password:
-                continue
+                if not raw.password:
+                    continue
 
-            # 重复检测，需要解密密码以计算 HMAC 指纹
-            try:
-                password = self._decrypt(
-                    raw, 'password', raw.password, strict=True, key=vault_key,
-                )
-            except ValueError:
-                logger.debug("安全分析跳过损坏条目 id=%s，原因：密码解密失败", raw.id)
-                skipped_count += 1
-                continue
-            if not password:
-                continue
+                try:
+                    password = self._decrypt(
+                        raw, 'password', raw.password, strict=True, key=vault_key,
+                    )
+                except ValueError:
+                    logger.debug("安全分析跳过损坏条目 id=%s，原因：密码解密失败", raw.id)
+                    skipped_count += 1
+                    continue
+                if not password:
+                    continue
 
-            fingerprint = self._password_fingerprint(password, vault_key)
-            del password  # 显式释放明文密码，缩短驻留时间
-            password_map.setdefault(fingerprint, []).append(summary)
+                fingerprint = self._password_fingerprint(password, vault_key)
+                del password
+                password_map.setdefault(fingerprint, []).append(summary)
 
-        # 从收集的日期数据过滤过期条目，与循环内即时过滤等效，
-        # 但允许缓存后对不同 days 参数重新过滤而无需重新解密
-        old_entries = [
-            s for s, dt in _summaries_with_dates
-            if dt is not None and dt < cutoff
-        ]
-        duplicate_groups = [g for g in password_map.values() if len(g) > 1]
-        duplicate_count = sum(len(g) - 1 for g in duplicate_groups)
+            old_entries = [
+                s for s, dt in _summaries_with_dates
+                if dt is not None and dt < cutoff
+            ]
+            duplicate_groups = [g for g in password_map.values() if len(g) > 1]
+            duplicate_count = sum(len(g) - 1 for g in duplicate_groups)
+            del vault_key
 
         if skipped_count:
             logger.warning("安全分析共跳过 %d 条损坏条目", skipped_count)

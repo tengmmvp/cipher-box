@@ -21,6 +21,7 @@ from ...models import (
     ENTRY_TYPE_IDENTITY,
     ENTRY_TYPE_LOGIN,
     ENTRY_TYPE_NOTE,
+    MAX_CATEGORY_NAME,
     MAX_FIELD_NOTES,
     MAX_FIELD_PASSWORD,
     MAX_FIELD_TAGS,
@@ -92,6 +93,12 @@ def _transactional_import(method):
         filepath = bound.arguments['filepath']
         resolved = self._validate_import_path(filepath)
         bound.arguments['filepath'] = resolved
+        default_category_id = bound.arguments.get('default_category_id')
+        if (
+            default_category_id is not None
+            and self._entry_mgr.get_category(default_category_id) is None
+        ):
+            raise ValueError('默认分类不存在或已被删除')
         try:
             return method(*bound.args, **bound.kwargs)
         except UnicodeDecodeError:
@@ -285,11 +292,13 @@ class ImportExportManager:
         clean_name = (name or '').strip()
         if not clean_name:
             return default_category_id
+        if len(clean_name) > MAX_CATEGORY_NAME:
+            raise ValueError(f'分类名称过长（最多 {MAX_CATEGORY_NAME} 字符）')
         key = clean_name.casefold()
         if key in categories:
             return categories[key].id
         category = Category(name=clean_name, icon_char='[IMPORT]', color='#0f766e')
-        category.id = self._entry_mgr.db.add_category(category)
+        category.id = self._entry_mgr.add_category(category)
         categories[key] = category
         return category.id
 
@@ -300,23 +309,48 @@ class ImportExportManager:
         filepath: str,
         entries: list[Entry],
         include_password: bool = False,
-    ):
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ) -> bool:
         """导出为 JSON 文件。"""
-        data = {
-            'app': 'CipherBox',
-            'exported_at': self._now(),
-            'secrets_included': include_password,
-            'entries': [e.to_dict(include_password=include_password) for e in entries],
-        }
         target, temp = self._atomic_target(filepath)
         try:
             with open(temp, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+                header = {
+                    'app': 'CipherBox',
+                    'exported_at': self._now(),
+                    'secrets_included': include_password,
+                }
+                f.write('{\n')
+                for index, (key, value) in enumerate(header.items()):
+                    comma = ','  # header 后必跟 entries 数组，故每项后都加逗号
+                    f.write(
+                        f'  {json.dumps(key)}: '
+                        f'{json.dumps(value, ensure_ascii=False)}{comma}\n'
+                    )
+                f.write('  "entries": [')
+                first = True
+                for entry in entries:
+                    if cancel_check and cancel_check():
+                        return False
+                    if not first:
+                        f.write(',')
+                    f.write('\n')
+                    serialized = json.dumps(
+                        entry.to_dict(include_password=include_password),
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                    f.write('\n'.join(f'    {line}' for line in serialized.splitlines()))
+                    first = False
+                if not first:
+                    f.write('\n')
+                f.write('  ]\n}\n')
                 f.flush()
                 os.fsync(f.fileno())
-            secure_file(temp)
+            secure_file(temp, strict=True)
             os.replace(temp, target)
-            secure_file(target)
+            secure_file(target, strict=True)
+            return True
         finally:
             temp.unlink(missing_ok=True)
 
@@ -325,7 +359,8 @@ class ImportExportManager:
         filepath: str,
         entries: list[Entry],
         include_password: bool = False,
-    ):
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ) -> bool:
         """导出为 CSV 文件。"""
         fieldnames = ['title', 'username', 'password', 'totp_secret', 'url',
                        'category', 'tags', 'notes', 'is_favorite',
@@ -340,6 +375,8 @@ class ImportExportManager:
                 writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
                 writer.writeheader()
                 for entry in entries:
+                    if cancel_check and cancel_check():
+                        return False
                     if not entry.is_decrypted:
                         continue
                     row = entry.to_dict(include_password=include_password)
@@ -359,9 +396,10 @@ class ImportExportManager:
                     writer.writerow({key: self._csv_safe(value) for key, value in row.items()})
                 f.flush()
                 os.fsync(f.fileno())
-            secure_file(temp)
+            secure_file(temp, strict=True)
             os.replace(temp, target)
-            secure_file(target)
+            secure_file(target, strict=True)
+            return True
         finally:
             temp.unlink(missing_ok=True)
 

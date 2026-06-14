@@ -101,7 +101,7 @@ class BackgroundWorker(QThread):
             self._func = None
 
 
-def wait_worker_shutdown(worker, *, cancel=True, timeout=None):
+def wait_worker_shutdown(worker, *, cancel=True, timeout=None) -> bool:
     """取消并等待后台 worker 结束，统一关闭时的取消-等待模式。
 
     Args:
@@ -113,7 +113,7 @@ def wait_worker_shutdown(worker, *, cancel=True, timeout=None):
     供对话框 reject 与主窗口锁定/关闭时复用，消除重复的 cancel()+wait() 模式。
     """
     if worker is None or not worker.isRunning():
-        return
+        return True
     if timeout is None:
         from ..resources.constants import WORKER_WAIT_TIMEOUT_MS
         timeout = WORKER_WAIT_TIMEOUT_MS
@@ -126,5 +126,8 @@ def wait_worker_shutdown(worker, *, cancel=True, timeout=None):
     # 正常情况下不会触发此告警。
     if worker.isRunning():
         logger.error(
-            "后台 worker 等待 %dms 后仍在运行，父对象析构可能崩溃", timeout,
+            "后台 worker 等待 %dms 后仍在运行，将继续等待以避免 QThread 析构崩溃",
+            timeout,
         )
+        worker.wait()
+    return not worker.isRunning()

@@ -232,7 +232,7 @@ class DetailPanel(QWidget):
                 and self._current_entry.id == entry.id
                 and self._current_entry.updated_at == entry.updated_at):
             return
-        logger.debug("显示条目详情: id=%d title=%r", entry.id, entry.title)
+        logger.debug("显示条目详情: id=%d", entry.id)
         self._current_entry = entry
         self._pwd_hide_timer.stop()
         self._totp_widget.stop()

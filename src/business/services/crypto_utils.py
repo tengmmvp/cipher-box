@@ -33,8 +33,7 @@ def encrypt_field(plaintext: str, key: bytes, crypto_id: str, field_name: str) -
     统一入口，替代 EntryManager._encrypt_field、VaultManager._encrypt_entry_field
     以及 backup_restore 中的内联 EncryptionEngine.encrypt 调用。
 
-    空字符串也经过 EncryptionEngine.encrypt，内部使用 _EMPTY_SENTINEL，
-    确保 AAD 始终参与认证，维持逐字段完整性保护的一致性。
+    空字符串也直接经过 AES-GCM 加密，确保 AAD 始终参与认证。
     """
     return EncryptionEngine.encrypt(
         plaintext, key, entry_aad(crypto_id, field_name)
@@ -77,20 +76,17 @@ def decrypt_field(
         return ''
 
 
-def matches_search(entry: Entry | RawEntry, query: str, *, username_override: str | None = None) -> bool:
+def matches_search(entry: Entry | RawEntry, query: str) -> bool:
     """检查条目是否匹配搜索关键词，大小写不敏感，搜索 title/username/url/tags。
 
     Args:
-        entry: 待匹配条目（明文 Entry 摘要或密文 RawEntry；title/url/tags 在两者
-            均为明文，username 在 RawEntry 为密文需经 username_override 传入解密值）。
+        entry: 待匹配的明文 Entry 摘要。生产路径不应传入 RawEntry。
         query: 搜索关键词，空字符串匹配所有条目。
-        username_override: 若提供，替代 entry.username 用于搜索。
-            用于 RawEntry 的 username 仍为密文时传入缓存解密值。
     """
     if not query:
         return True
     kw = query.lower()
-    username = username_override if username_override is not None else (entry.username or '')
+    username = entry.username or ''
     return (kw in (entry.title or '').lower()
             or kw in username.lower()
             or kw in (entry.url or '').lower()
@@ -181,6 +177,12 @@ def decrypt_entry_to_portable_dict(
         key: AES-256 密钥。
         include_secrets: 是否包含密码和 TOTP 密钥等敏感字段。
     """
+    if raw_entry.integrity_error:
+        logger.warning(
+            "拒绝转换元数据完整性失败的条目 crypto_id=%s",
+            raw_entry.crypto_id,
+        )
+        return None
     try:
         custom_json = decrypt_field(
             raw_entry.custom_fields_db_value,
@@ -193,7 +195,9 @@ def decrypt_entry_to_portable_dict(
         return {
             'id': raw_entry.id,
             'crypto_id': raw_entry.crypto_id,
-            'title': raw_entry.title,
+            'title': decrypt_field(
+                raw_entry.title, key, raw_entry.crypto_id, 'title', strict=True,
+            ),
             'username': decrypt_field(
                 raw_entry.username, key, raw_entry.crypto_id, 'username',
             ),
@@ -202,9 +206,13 @@ def decrypt_entry_to_portable_dict(
                     raw_entry.password, key, raw_entry.crypto_id, 'password',
                 ) if include_secrets else ''
             ),
-            'url': raw_entry.url,
+            'url': decrypt_field(
+                raw_entry.url, key, raw_entry.crypto_id, 'url', strict=True,
+            ),
             'category_id': raw_entry.category_id,
-            'tags': raw_entry.tags,
+            'tags': decrypt_field(
+                raw_entry.tags, key, raw_entry.crypto_id, 'tags', strict=True,
+            ),
             'notes': decrypt_field(
                 raw_entry.notes, key, raw_entry.crypto_id, 'notes',
             ),
@@ -234,8 +242,8 @@ def decrypt_entry_to_portable_dict(
 def build_encrypted_entry_fields(item: dict, key: bytes, crypto_id: str) -> dict:
     """加密条目的敏感字段，与 decrypt_entry_to_portable_dict 对称。
 
-    供备份恢复等需要从明文字典重建加密条目的场景使用，统一 5 个敏感字段
-    （username/password/notes/custom_fields/totp_secret）的加密序列，消除
+    供备份恢复等需要从明文字典重建加密条目的场景使用，统一敏感字段
+    的加密序列，消除
     恢复路径内联加密与解密辅助的双向映射漂移风险。
 
     Args:
@@ -249,8 +257,11 @@ def build_encrypted_entry_fields(item: dict, key: bytes, crypto_id: str) -> dict
     custom_fields = item.get('custom_fields', [])
     custom_json = json.dumps(custom_fields, ensure_ascii=False) if custom_fields else ''
     return {
+        'title': encrypt_field(item.get('title', ''), key, crypto_id, 'title'),
         'username': encrypt_field(item.get('username', ''), key, crypto_id, 'username'),
         'password': encrypt_field(item.get('password', ''), key, crypto_id, 'password'),
+        'url': encrypt_field(item.get('url', ''), key, crypto_id, 'url'),
+        'tags': encrypt_field(item.get('tags', ''), key, crypto_id, 'tags'),
         'notes': encrypt_field(item.get('notes', ''), key, crypto_id, 'notes'),
         'custom_fields': encrypt_field(custom_json, key, crypto_id, 'custom_fields'),
         'totp_secret': encrypt_field(item.get('totp_secret', ''), key, crypto_id, 'totp_secret'),

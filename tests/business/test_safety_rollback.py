@@ -21,6 +21,7 @@ from unittest.mock import patch
 import pytest
 
 from src.business.managers.backup_restore import (
+    BACKUP_HEADER_SIZE,
     BACKUP_MAGIC,
     BACKUP_SALT_SIZE,
     BackupRestoreManager,
@@ -208,7 +209,7 @@ class TestChangePasswordRollbackConsistency:
             return_value=[Path(self._tmp_dir) / 'occupied.cbox'],
         ):
             ok, msg = self._vault.change_master_password(
-                self._master_pwd, 'PurgeFail!2026'
+                self._master_pwd, 'PurgeFailure!2026'
             )
         assert ok  # 改密本身成功
         assert '未能删除' in msg  # 附带 purge 失败 warning
@@ -265,8 +266,8 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
         with open(valid_path, 'rb') as f:
             raw = f.read()
 
-        # 备份布局：MAGIC 占 16 字节、flags 占 1 字节、salt 占 32 字节，其后为 ciphertext
-        header_len = len(BACKUP_MAGIC) + 1 + BACKUP_SALT_SIZE
+        # v2 固定头后为 ciphertext。
+        header_len = BACKUP_HEADER_SIZE
         assert len(raw) > header_len + 16, '备份密文区过短，无法构造篡改'
 
         body = bytearray(raw[header_len:])
@@ -337,9 +338,11 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
 
         path = str(Path(self._tmp_dir) / 'bad_format.cbox')
         with open(path, 'wb') as f:
-            f.write(BACKUP_MAGIC)
-            f.write(struct.pack('<B', BackupFlag.SNAPSHOT))
-            f.write(os.urandom(BACKUP_SALT_SIZE))  # snapshot 模式不使用 salt，但格式仍占位
+            from src.crypto.master_key import DEFAULT_KDF_PARAMS
+            BackupRestoreManager._write_backup_header(
+                f, BackupFlag.SNAPSHOT, os.urandom(BACKUP_SALT_SIZE),
+                DEFAULT_KDF_PARAMS,
+            )
             f.write(encrypted)
 
         success, error = self._backup_mgr.restore_backup(path)
