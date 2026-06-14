@@ -17,7 +17,7 @@ def format_datetime(iso_str: str) -> str:
     优先使用 ``datetime.fromisoformat`` 严格解析，解析失败时原样返回。
 
     数据库时间戳由 ``utc_now_iso`` 生成，带 ``+00:00`` 偏移（aware UTC），
-    此处转为本地时区显示。naive 输入（如旧版或外部导入数据）按 UTC 解释，
+    此处转为本地时区显示。naive 输入（如外部导入数据）按 UTC 解释，
     避免与 aware 混用，与 ``security_analyzer`` 对时间戳的认知保持一致。
     """
     if not iso_str:

@@ -15,8 +15,6 @@ logger = logging.getLogger(__name__)
 # 索引定义：CREATE INDEX 与 _validate_current_schema 的单一事实来源。
 # 新增索引只需在此追加——建表循环与 schema 校验自动跟随，避免建表 SQL 与
 # 校验集合两份硬编码漂移（只改一处忘记另一处）。
-# 兼容性注意：新增索引会纳入 required_indexes，导致旧版创建的库（无此索引）
-# 启动时 schema 校验失败而拒绝打开。仅在可接受破坏旧库兼容性时才追加。
 # tuple 形式：(索引名, 表名, 列定义, 是否 UNIQUE)
 _INDEX_DEFINITIONS: list[tuple[str, str, tuple[str, ...], bool]] = [
     ('idx_entries_category', 'entries', ('category_id',), False),
@@ -78,7 +76,6 @@ class SchemaManager:
     """
 
     SCHEMA_FORMAT = 'cipherbox-schema'
-    SCHEMA_VERSION = 1
 
     def __init__(self, conn_provider):
         self._mgr = conn_provider
@@ -109,7 +106,6 @@ class SchemaManager:
         cursor = self._conn.cursor()
         is_new_database = self._check_is_new_database(cursor)
         if not is_new_database:
-            self._migrate_schema(cursor)
             # 缓存 schema 验证：同一连接生命周期内仅验证一次
             if not self._mgr.schema_validated:
                 self._validate_current_schema(cursor)
@@ -193,10 +189,6 @@ class SchemaManager:
             "INSERT INTO vault_meta (key, value) VALUES (?, ?)",
             ('schema_format', self.SCHEMA_FORMAT),
         )
-        cursor.execute(
-            "INSERT INTO vault_meta (key, value) VALUES (?, ?)",
-            ('schema_version', str(self.SCHEMA_VERSION)),
-        )
 
         self._auto_commit()
         self._validate_current_schema(cursor)
@@ -216,7 +208,7 @@ class SchemaManager:
         if not tables:
             return True
         if 'vault_meta' not in tables:
-            raise SchemaError('数据库缺少版本信息，不支持旧格式')
+            raise SchemaError('数据库格式无效')
         row = cursor.execute(
             "SELECT value FROM vault_meta WHERE key = 'schema_format'"
         ).fetchone()
@@ -226,35 +218,6 @@ class SchemaManager:
                 f'不支持的数据库格式：{actual}'
             )
         return False
-
-    def _migrate_schema(self, cursor) -> None:
-        """按版本执行原子迁移；无版本的历史库视为 v0。"""
-        row = cursor.execute(
-            "SELECT value FROM vault_meta WHERE key = 'schema_version'"
-        ).fetchone()
-        try:
-            version = int(row['value']) if row else 0
-        except (TypeError, ValueError) as exc:
-            raise SchemaError('数据库 schema 版本无效') from exc
-        if version > self.SCHEMA_VERSION:
-            raise SchemaError(f'数据库版本过新：{version}')
-        if version == self.SCHEMA_VERSION:
-            return
-
-        try:
-            cursor.execute('BEGIN IMMEDIATE')
-            if version == 0:
-                cursor.execute(
-                    "INSERT OR REPLACE INTO vault_meta (key, value) VALUES (?, ?)",
-                    ('schema_version', '1'),
-                )
-                version = 1
-            if version != self.SCHEMA_VERSION:
-                raise SchemaError(f'不支持从 schema v{version} 迁移')
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
-            raise
 
     @staticmethod
     def _validate_current_schema(cursor):

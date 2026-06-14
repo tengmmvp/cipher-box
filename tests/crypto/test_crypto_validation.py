@@ -44,12 +44,12 @@ class TestEncryptionValidation:
         """密钥长度不足 32 字节时拒绝解密，最终由 AESGCM 校验触发。"""
         # 短密钥会先触发 base64 解码错误，被包装为 ValueError。
         with pytest.raises(ValueError):
-            EncryptionEngine.decrypt("cb:abc", b'short', "aad")
+            EncryptionEngine.decrypt("cb2:abc", b'short', "aad")
 
     def test_decrypt_rejects_non_bytes_key(self):
         """密钥非 bytes 类型时拒绝解密，内部 TypeError 被包装为 ValueError。"""
         with pytest.raises(ValueError):
-            EncryptionEngine.decrypt("cb:abc", "not bytes", "aad")  # type: ignore[arg-type]
+            EncryptionEngine.decrypt("cb2:abc", "not bytes", "aad")  # type: ignore[arg-type]
 
     def test_decrypt_empty_string_raises(self):
         """空密文是非法输入，应抛出 ValueError。"""
@@ -97,7 +97,7 @@ class TestEncryptionValidation:
     def test_decrypt_bytes_rejects_short_key(self):
         """decrypt_bytes 拒绝短密钥，最终触发密文格式或长度无效错误。"""
         with pytest.raises(ValueError):
-            EncryptionEngine.decrypt_bytes(b"cb:abc", b'short', "aad")
+            EncryptionEngine.decrypt_bytes(b"cb2:abc", b'short', "aad")
 
     def test_encrypt_decrypt_bytes_roundtrip(self):
         """encrypt_bytes/decrypt_bytes 正确的往返加解密。"""

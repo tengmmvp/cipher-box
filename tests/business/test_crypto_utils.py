@@ -60,14 +60,14 @@ def raw_entry() -> RawEntry:
         id=1,
         crypto_id='cid-001',
         title='GitHub',
-        username='cb:encrypted',
-        password='cb:encrypted',
+        username='cb2:encrypted',
+        password='cb2:encrypted',
         url='https://github.com',
         tags='dev, coding',
-        notes='cb:encrypted',
-        custom_fields='cb:encrypted',
+        notes='cb2:encrypted',
+        custom_fields='cb2:encrypted',
         entry_type='login',
-        totp_secret='cb:encrypted',
+        totp_secret='cb2:encrypted',
     )
 
 
@@ -120,7 +120,7 @@ class TestDecryptFieldStrict:
         """空密文在 strict 模式下由 EncryptionEngine.decrypt 抛出 ValueError。"""
         # encrypt_field 对空串会加密哨兵值，此处直接传入无效字符串以触发 strict 路径
         with pytest.raises(ValueError):
-            decrypt_field('cb:!!!!', aes_key, 'cid-x', 'title', strict=True)
+            decrypt_field('cb2:!!!!', aes_key, 'cid-x', 'title', strict=True)
 
     def test_wrong_key_strict_raises(self, aes_key):
         wrong_key = os.urandom(32)
@@ -244,7 +244,7 @@ class TestCopyEntryFields:
 
     def test_password_present_auto_set(self):
         """有密文密码时 password_present 自动为 True。"""
-        raw = RawEntry(password='cb:secret')
+        raw = RawEntry(password='cb2:secret')
         copied = copy_entry_fields(raw)
         assert copied.password_present is True
 
@@ -254,7 +254,7 @@ class TestCopyEntryFields:
         assert copied.password_present is False
 
     def test_totp_present_auto_set(self):
-        raw = RawEntry(totp_secret='cb:JBSWY3DPEHPK3PXP')
+        raw = RawEntry(totp_secret='cb2:JBSWY3DPEHPK3PXP')
         copied = copy_entry_fields(raw)
         assert copied.totp_present is True
 
@@ -265,7 +265,7 @@ class TestCopyEntryFields:
 
     def test_explicit_override_takes_precedence(self):
         """调用方显式提供 password_present 时应覆盖自动推断。"""
-        raw = RawEntry(password='cb:secret')
+        raw = RawEntry(password='cb2:secret')
         copied = copy_entry_fields(raw, password_present=False)
         assert copied.password_present is False
 

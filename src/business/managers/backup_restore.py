@@ -73,14 +73,12 @@ def _user_friendly_error(exc: Exception) -> str:
         return str(exc)
     return f'操作失败（{type(exc).__name__}），请检查文件和磁盘空间'
 
-BACKUP_MAGIC_V1 = b'CipherBoxBackup\x00'
-BACKUP_MAGIC = b'CipherBoxBackup2\x00'
+BACKUP_MAGIC = b'CipherBoxBackup\x00'
 BACKUP_FORMAT = 'CipherBoxBackup'
 BACKUP_AAD = b'CipherBox:backup'
 BACKUP_SALT_SIZE = 32
-BACKUP_VERSION = 2
-# v2 固定头：version、flags、Argon2 time/memory/parallelism，随后为 32 字节 salt。
-BACKUP_HEADER_STRUCT = struct.Struct('<BBIII')
+# 固定头：flags、Argon2 time/memory/parallelism，随后为 32 字节 salt。
+BACKUP_HEADER_STRUCT = struct.Struct('<BIII')
 BACKUP_HEADER_SIZE = len(BACKUP_MAGIC) + BACKUP_HEADER_STRUCT.size + BACKUP_SALT_SIZE
 MAX_BACKUP_FILE_SIZE = 64 * 1024 * 1024
 MAX_BACKUP_PAYLOAD_SIZE = 32 * 1024 * 1024
@@ -117,13 +115,12 @@ class BackupRestoreManager:
 
     @staticmethod
     def _write_backup_header(file, flags: BackupFlag, salt: bytes, params: KdfParams) -> None:
-        """写入 v2 备份头，持久化实际 KDF 参数。"""
+        """写入备份头，持久化实际 KDF 参数。"""
         MasterKeyManager.validate_params(params)
         if len(salt) != BACKUP_SALT_SIZE:
             raise ValueError('备份盐长度无效')
         file.write(BACKUP_MAGIC)
         file.write(BACKUP_HEADER_STRUCT.pack(
-            BACKUP_VERSION,
             int(flags),
             params.time_cost,
             params.memory_cost,
@@ -132,37 +129,23 @@ class BackupRestoreManager:
         file.write(salt)
 
     @staticmethod
-    def _read_backup_header(file) -> tuple[BackupFlag, bytes, KdfParams, int]:
-        """读取 v2 或兼容的 v1 备份头。"""
+    def _read_backup_header(file) -> tuple[BackupFlag, bytes, KdfParams]:
+        """读取备份头，解析标志位与持久化的 KDF 参数。"""
         file.seek(0)
-        if file.read(len(BACKUP_MAGIC)) == BACKUP_MAGIC:
-            raw = file.read(BACKUP_HEADER_STRUCT.size)
-            salt = file.read(BACKUP_SALT_SIZE)
-            if len(raw) != BACKUP_HEADER_STRUCT.size or len(salt) != BACKUP_SALT_SIZE:
-                raise ValueError('备份文件头已损坏')
-            version, flag_value, time_cost, memory_cost, parallelism = (
-                BACKUP_HEADER_STRUCT.unpack(raw)
-            )
-            if version != BACKUP_VERSION:
-                raise ValueError('不支持的备份文件版本')
-            if flag_value not in (BackupFlag.PASSWORD, BackupFlag.SNAPSHOT):
-                raise ValueError('备份文件格式无效或已损坏')
-            params = KdfParams(time_cost, memory_cost, parallelism)
-            MasterKeyManager.validate_params(params)
-            return BackupFlag(flag_value), salt, params, version
-
-        # v1 兼容：旧格式仅保存 flags + salt，KDF 参数隐式使用当时默认值。
-        file.seek(0)
-        if file.read(len(BACKUP_MAGIC_V1)) != BACKUP_MAGIC_V1:
+        if file.read(len(BACKUP_MAGIC)) != BACKUP_MAGIC:
             raise ValueError('无效的备份文件格式')
-        flags_raw = file.read(1)
+        raw = file.read(BACKUP_HEADER_STRUCT.size)
         salt = file.read(BACKUP_SALT_SIZE)
-        if len(flags_raw) != 1 or len(salt) != BACKUP_SALT_SIZE:
+        if len(raw) != BACKUP_HEADER_STRUCT.size or len(salt) != BACKUP_SALT_SIZE:
             raise ValueError('备份文件头已损坏')
-        flag_value = struct.unpack('<B', flags_raw)[0]
+        flag_value, time_cost, memory_cost, parallelism = (
+            BACKUP_HEADER_STRUCT.unpack(raw)
+        )
         if flag_value not in (BackupFlag.PASSWORD, BackupFlag.SNAPSHOT):
             raise ValueError('备份文件格式无效或已损坏')
-        return BackupFlag(flag_value), salt, DEFAULT_KDF_PARAMS, 1
+        params = KdfParams(time_cost, memory_cost, parallelism)
+        MasterKeyManager.validate_params(params)
+        return BackupFlag(flag_value), salt, params
 
     def _collect_portable_data(
         self, cancel_check: Callable[[], bool] | None = None,
@@ -335,10 +318,9 @@ class BackupRestoreManager:
         if Path(filepath).stat().st_size > MAX_BACKUP_FILE_SIZE:
             raise ValueError('备份文件过大')
         with open(filepath, 'rb') as file:
-            flags, _salt, params, version = BackupRestoreManager._read_backup_header(file)
+            flags, _salt, params = BackupRestoreManager._read_backup_header(file)
             return {
                 'format': BACKUP_FORMAT,
-                'version': version,
                 'password_required': flags == BackupFlag.PASSWORD,
                 'snapshot_required': flags == BackupFlag.SNAPSHOT,
                 'kdf': {
@@ -374,7 +356,7 @@ class BackupRestoreManager:
             return False, _user_friendly_error(exc)
 
     def _restore_current(self, file, backup_password: str | None) -> tuple[bool, str]:
-        flags, salt, kdf_params, _version = self._read_backup_header(file)
+        flags, salt, kdf_params = self._read_backup_header(file)
         # 预声明 backup_key：PASSWORD 派生失败或 SNAPSHOT 路径前的提前 return 会使
         # backup_key 未在 with 块内赋值，方法级 finally 仍需引用它。预声明 None 避免
         # locals().get 反射（字段重命名时静态检查无法发现）。

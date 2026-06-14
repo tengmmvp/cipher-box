@@ -11,8 +11,6 @@ from typing import Any
 
 from .utils.file_security import secure_directory, secure_file
 
-# 仅用于迁移旧版固定密钥签名；新配置使用每个安装独立的随机密钥。
-_LEGACY_CONFIG_INTEGRITY_KEY = b'cipherbox:config-integrity-v1'
 _CONFIG_SIG_PREFIX = '#__sig__:'
 _CONFIG_KEY_SIZE = 32
 
@@ -178,23 +176,14 @@ class ConfigManager:
                         json_text.encode('utf-8'),
                         hashlib.sha256,
                     ).hexdigest()
-                    needs_resign = False
                     if stored_sig:
                         if not hmac.compare_digest(stored_sig, expected_sig):
-                            legacy_sig = hmac.new(
-                                _LEGACY_CONFIG_INTEGRITY_KEY,
-                                json_text.encode('utf-8'),
-                                hashlib.sha256,
-                            ).hexdigest()
-                            if hmac.compare_digest(stored_sig, legacy_sig):
-                                needs_resign = True
-                            else:
-                                logger.warning(
-                                    '配置文件完整性校验失败，可能已被篡改。'
-                                    '将使用默认配置覆盖异常值。'
-                                )
-                                self._integrity_warning = True
-                                self._integrity_reason = 'mismatch'
+                            logger.warning(
+                                '配置文件完整性校验失败，可能已被篡改。'
+                                '将使用默认配置覆盖异常值。'
+                            )
+                            self._integrity_warning = True
+                            self._integrity_reason = 'mismatch'
                     else:
                         # 无签名行：攻击者删除签名即可绕过 HMAC 校验。容错加载
                         # （避免配置损坏导致无法启动），但 check_integrity 反映此风险，
@@ -223,8 +212,6 @@ class ConfigManager:
                                 logger.warning('配置项 %s 值无效，已使用默认值', key)
                         else:
                             logger.debug('忽略未知配置项：%s', key)
-                    if needs_resign:
-                        self.save()
                 except (json.JSONDecodeError, OSError, ValueError):
                     logger.warning('配置文件无效，已使用默认配置', exc_info=True)
 

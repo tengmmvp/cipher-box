@@ -45,18 +45,6 @@ class EncryptionEngine:
     FORMAT_ID = 'aes-256-gcm-aad'
     TEXT_PREFIX = 'cb2:'
     BYTES_PREFIX = b'CB2'
-    LEGACY_TEXT_PREFIX = 'cb:'
-    LEGACY_BYTES_PREFIX = b'CBX'
-    # 旧格式使用空值哨兵。仅在解密旧 cb:/CBX 数据时保留识别，
-    # 新格式直接让 AES-GCM 加密空载荷，从根源消除真实输入与哨兵碰撞。
-    _EMPTY_UUID = '7f3a2b1c-4d5e-6f8a-9b0c-1d2e3f4a5b6c'
-    _EMPTY_SENTINEL = f'__CBX_EMPTY_{_EMPTY_UUID}__'
-    _EMPTY_BYTES_SENTINEL = f'__CBX_BE_{_EMPTY_UUID}__'.encode('ascii')
-
-    @classmethod
-    def is_encrypted_text(cls, value: str) -> bool:
-        """返回字符串是否带受支持的文本密文版本前缀。"""
-        return value.startswith((cls.TEXT_PREFIX, cls.LEGACY_TEXT_PREFIX))
 
     @classmethod
     def _get_cipher(cls, key: bytes) -> AESGCM:
@@ -144,15 +132,9 @@ class EncryptionEngine:
         if not encrypted_b64:
             raise ValueError('收到空密文')
         try:
-            if encrypted_b64.startswith(cls.TEXT_PREFIX):
-                prefix = cls.TEXT_PREFIX
-                legacy = False
-            elif encrypted_b64.startswith(cls.LEGACY_TEXT_PREFIX):
-                prefix = cls.LEGACY_TEXT_PREFIX
-                legacy = True
-            else:
+            if not encrypted_b64.startswith(cls.TEXT_PREFIX):
                 raise ValueError('不支持的密文格式')
-            encoded = encrypted_b64[len(prefix):]
+            encoded = encrypted_b64[len(cls.TEXT_PREFIX):]
             raw = base64.b64decode(encoded, validate=True)
             if len(raw) < cls.NONCE_SIZE + cls.TAG_SIZE:
                 raise ValueError('密文长度无效')
@@ -161,13 +143,7 @@ class EncryptionEngine:
             aesgcm = cls._get_cipher(key)
             aad = cls._aad_bytes(associated_data)
             plaintext = aesgcm.decrypt(nonce, ciphertext, aad)
-            result = plaintext.decode('utf-8')
-            # 非常量时间比较是有意设计：哨兵判定发生在 GCM 认证成功之后，
-            # 攻击者无法越过认证到达此处；哨兵本身不是密钥或敏感机密，
-            # 不存在通过时序差异泄漏密钥材料的途径。
-            if legacy and result == cls._EMPTY_SENTINEL:
-                return ''
-            return result
+            return plaintext.decode('utf-8')
         except (InvalidTag, ValueError, AttributeError, TypeError) as exc:
             logger.warning("解密失败: %s", type(exc).__name__)
             raise ValueError('解密失败，密钥或数据可能已损坏') from exc
@@ -181,8 +157,8 @@ class EncryptionEngine:
     ) -> bytes:
         """加密字节数据，返回带 ``CB2`` 字节前缀的密文。
 
-        与 encrypt 对称，区别在于处理 bytes 并以字节前缀返回；空数据同样
-        替换为哨兵值走正常加密流程，保证附加数据始终参与认证。
+        与 encrypt 对称，区别在于处理 bytes 并以字节前缀返回；空数据直接
+        经 AES-GCM 加密，保证附加数据始终参与认证。
         """
         nonce = os.urandom(cls.NONCE_SIZE)
         aesgcm = cls._get_cipher(key)
@@ -211,15 +187,9 @@ class EncryptionEngine:
         Raises:
             ValueError: 密文格式不符、长度不足或认证失败时抛出
         """
-        if data.startswith(cls.BYTES_PREFIX):
-            prefix = cls.BYTES_PREFIX
-            legacy = False
-        elif data.startswith(cls.LEGACY_BYTES_PREFIX):
-            prefix = cls.LEGACY_BYTES_PREFIX
-            legacy = True
-        else:
+        if not data.startswith(cls.BYTES_PREFIX):
             raise ValueError('不支持的密文字节格式')
-        payload = data[len(prefix):]
+        payload = data[len(cls.BYTES_PREFIX):]
         if not payload:
             raise ValueError('收到空密文字节')
         if len(payload) < cls.NONCE_SIZE + cls.TAG_SIZE:
@@ -229,10 +199,7 @@ class EncryptionEngine:
         aesgcm = cls._get_cipher(key)
         aad = cls._aad_bytes(associated_data)
         try:
-            result = aesgcm.decrypt(nonce, ciphertext, aad)
+            return aesgcm.decrypt(nonce, ciphertext, aad)
         except (InvalidTag, ValueError, AttributeError, TypeError) as exc:
             logger.warning("解密失败: %s", type(exc).__name__)
             raise ValueError('解密失败，密钥或数据可能已损坏') from exc
-        if legacy and result == cls._EMPTY_BYTES_SENTINEL:
-            return b''
-        return result

@@ -4,7 +4,6 @@
 锁定清理、登录窗口渲染等端到端场景，作为发布前的整体回归防线。
 """
 
-import dataclasses
 import json
 import sqlite3
 import tempfile
@@ -258,75 +257,6 @@ def test_vault_persists_kdf_parameters_and_ciphertext_format():
             for category in vault.db.get_categories()
         )
         vault.close()
-
-
-def test_unlock_migrates_legacy_plaintext_metadata_atomically():
-    with tempfile.TemporaryDirectory() as root:
-        config = _config(root)
-        vault = VaultManager(config)
-        password = 'MasterPassword!2026'
-        assert vault.initialize(password)[0]
-        manager = EntryManager(vault)
-        entry_id = manager.add_entry(
-            Entry(
-                title='Legacy Account',
-                url='https://legacy.example',
-                tags='legacy,work',
-                password='Secret!2026',
-            )
-        )
-        raw = vault.db.get_entry(entry_id)
-        assert raw is not None
-        legacy = dataclasses.replace(
-            raw,
-            title='Legacy Account',
-            url='https://legacy.example',
-            tags='legacy,work',
-        )
-        legacy.metadata_mac = vault._signer.sign(legacy)
-        vault.db.connection.execute(
-            'UPDATE entries SET title=?, url=?, tags=?, metadata_mac=? WHERE id=?',
-            (
-                legacy.title,
-                legacy.url,
-                legacy.tags,
-                legacy.metadata_mac,
-                entry_id,
-            ),
-        )
-        vault.db.connection.execute(
-            "DELETE FROM vault_meta WHERE key='sensitive_metadata_version'"
-        )
-        category = vault.db.get_categories()[0]
-        assert category.id is not None
-        vault.db.connection.execute(
-            'UPDATE categories SET name=? WHERE id=?',
-            ('Legacy Category', category.id),
-        )
-        vault.db.connection.commit()
-        vault.close()
-
-        reopened = VaultManager(config)
-        ok, error = reopened.unlock(password)
-        assert ok, error
-        migrated = reopened.db.get_entry(entry_id)
-        assert migrated is not None
-        assert migrated.title.startswith(EncryptionEngine.TEXT_PREFIX)
-        assert migrated.url.startswith(EncryptionEngine.TEXT_PREFIX)
-        assert migrated.tags.startswith(EncryptionEngine.TEXT_PREFIX)
-        assert all(
-            category.name.startswith(EncryptionEngine.TEXT_PREFIX)
-            for category in reopened.db.get_categories()
-        )
-        assert 'Legacy Category' in {
-            category.name for category in EntryManager(reopened).get_categories()
-        }
-        restored = EntryManager(reopened).get_entry(entry_id)
-        assert restored is not None
-        assert restored.title == 'Legacy Account'
-        assert restored.url == 'https://legacy.example'
-        assert restored.tags == 'legacy,work'
-        reopened.close()
 
 
 def test_selecting_first_entry_opens_detail_panel_without_crash():

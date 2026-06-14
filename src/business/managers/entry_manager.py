@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Callable, Optional
 if TYPE_CHECKING:
     from .vault_manager import VaultManager
 
-from ...crypto.encryption import EncryptionEngine
 from ...crypto.password_generator import PasswordGenerator
 from ...crypto.totp import TOTPGenerator
 from ...exceptions import DecryptionError, EntryIntegrityError, VaultKeyEpochMismatchError
@@ -53,8 +52,6 @@ from ..services.crypto_utils import (
 )
 
 logger = logging.getLogger(__name__)
-
-_SENSITIVE_METADATA_VERSION = '2'
 
 
 class EntryManager:
@@ -436,41 +433,24 @@ class EntryManager:
         summary.integrity_message = '、'.join(dict.fromkeys(messages))
         return summary
 
-    def migrate_sensitive_metadata(self) -> None:
-        """将旧库明文 title/url/tags 原子迁移为逐字段密文。"""
-        if self.db.get_meta('sensitive_metadata_version') == _SENSITIVE_METADATA_VERSION:
-            return
+    def _encrypt_plaintext_category_names(self) -> None:
+        """加密 data 层以明文写入的默认分类名。
+
+        init_tables 建表时插入默认分类（如"未分类"），但 data 层不持密钥无法
+        加密；首次初始化后在 business 层补加密，使全部 category.name 以密文
+        存储，满足改密时 re_encrypt_categories 的解密契约。已加密（cb2: 前缀）
+        的分类跳过，故重复调用幂等。
+        """
         with self.db.transaction():
             for category in self.db.get_categories():
-                if category.id is None:
+                if category.id is None or category.name.startswith('cb2:'):
                     continue
-                if not EncryptionEngine.is_encrypted_text(category.name):
-                    category.name = self._encrypt_field(
-                        category.name,
-                        self._category_crypto_id(category.id),
-                        'category_name',
-                    )
-                    self.db.update_category(category)
-            for raw in self.db.get_entries(include_deleted=True):
-                if raw.integrity_error:
-                    raise EntryIntegrityError(
-                        f'条目 {raw.id} 完整性校验失败，无法迁移敏感元数据'
-                    )
-                changed = False
-                for field_name in ('title', 'url', 'tags'):
-                    value = getattr(raw, field_name)
-                    if not EncryptionEngine.is_encrypted_text(value):
-                        setattr(
-                            raw,
-                            field_name,
-                            self._encrypt_field(value, raw.crypto_id, field_name),
-                        )
-                        changed = True
-                if changed:
-                    self.db.update_entry(raw, preserve_updated_at=True)
-            self.db.set_meta(
-                'sensitive_metadata_version', _SENSITIVE_METADATA_VERSION
-            )
+                category.name = self._encrypt_field(
+                    category.name,
+                    self._category_crypto_id(category.id),
+                    'category_name',
+                )
+                self.db.update_category(category)
 
     def add_entry(
         self, entry: Entry, *, notify: bool = True, skip_validation: bool = False,
@@ -615,23 +595,11 @@ class EntryManager:
         include_deleted: bool = False,
         category_id: Optional[int] = None,
         favorite_only: bool = False,
-        search: str = '',
     ) -> list[Entry]:
-        """获取并解密条目列表。
+        """获取并解密全部条目（含 password/totp_secret 等敏感字段）。
 
-        WARNING: 搜索场景下解密 title/username/url/tags 用于匹配，命中条目再
-        完整解密，减少未命中条目的 password、totp_secret 等敏感数据暴露在内存中。
-        对于列表展示等不需要密码的场景，优先使用 get_entry_summaries。
-
-        NOTE: search 参数不传递到 SQL 层，因为上述字段是加密字段，SQL LIKE
-        无法过滤。所有搜索匹配在 Python 层完成。
-
-        .. deprecated::
-            ``search`` 分支仅供测试使用。生产代码的列表展示应使用
-            :meth:`get_entry_summaries`，导出全字段场景应使用
-            :meth:`get_entries_for_export`。误用 ``get_entries`` 的 ``search``
-            分支会触发 O(n) 全量解密（命中条目逐条完整解密 password、
-            totp_secret 等高敏字段），不应出现在生产路径。
+        列表展示等不需要密码的场景应使用 :meth:`get_entry_summaries`；
+        按关键词过滤使用 ``get_entry_summaries(search=...)``。
         """
         raw_entries = self._vault.db.get_entries(
             deleted_only=deleted_only,
@@ -640,16 +608,7 @@ class EntryManager:
             favorite_only=favorite_only,
         )
 
-        if search:
-            # 搜索路径：解密摘要（title/username/url/tags）用于匹配，
-            # 复用会话内缓存避免重复解密；命中后再完整解密。
-            matched = []
-            for raw in raw_entries:
-                if matches_search(self._decrypt_summary(raw), search):
-                    matched.append(self.decrypt_entry(raw))
-            decrypted = matched
-        else:
-            decrypted = [self.decrypt_entry(e) for e in raw_entries]
+        decrypted = [self.decrypt_entry(e) for e in raw_entries]
 
         # 检查解密失败的条目并记录警告
         for dec_entry in decrypted:

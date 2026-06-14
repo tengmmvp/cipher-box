@@ -132,17 +132,17 @@ def test_search_by_username(entry_mgr_env):
     entry_mgr.add_entry(entry_b)
 
     # 2. 用 username 搜索
-    results = entry_mgr.get_entries(search='alice')
+    results = entry_mgr.get_entry_summaries(search='alice')
     assert len(results) == 1
     assert results[0].username == 'alice@wonderland.com'
 
     # 搜索另一个
-    results_b = entry_mgr.get_entries(search='bob')
+    results_b = entry_mgr.get_entry_summaries(search='bob')
     assert len(results_b) == 1
     assert results_b[0].username == 'bob@builder.com'
 
     # 搜索不存在的
-    results_none = entry_mgr.get_entries(search='charlie')
+    results_none = entry_mgr.get_entry_summaries(search='charlie')
     assert len(results_none) == 0
 
 

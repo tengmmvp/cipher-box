@@ -11,7 +11,6 @@ import pytest
 
 from src.crypto.totp import TOTPGenerator
 from src.database.db_manager import DatabaseManager
-from src.exceptions import SchemaError
 from src.models import ENTRY_TYPE_LOGIN, ENTRY_TYPES, Category, Entry, RawEntry
 
 
@@ -190,42 +189,8 @@ def test_schema_format_stored():
 
     schema_format = db.get_meta('schema_format')
     assert schema_format == 'cipherbox-schema'
-    assert db.get_meta('schema_version') == '1'
     db.close()
     db_path.unlink(missing_ok=True)
-
-
-@pytest.mark.usefixtures('_disable_encrypted_assertions')
-def test_missing_schema_version_is_migrated(tmp_path):
-    db_path = tmp_path / 'legacy.db'
-    db = DatabaseManager(db_path)
-    assert db.open()
-    db.init_tables()
-    db.connection.execute("DELETE FROM vault_meta WHERE key='schema_version'")
-    db.connection.commit()
-    db.close()
-
-    reopened = DatabaseManager(db_path)
-    assert reopened.open()
-    reopened.init_tables()
-    assert reopened.get_meta('schema_version') == '1'
-    reopened.close()
-
-
-@pytest.mark.usefixtures('_disable_encrypted_assertions')
-def test_future_schema_version_is_rejected(tmp_path):
-    db_path = tmp_path / 'future.db'
-    db = DatabaseManager(db_path)
-    assert db.open()
-    db.init_tables()
-    db.set_meta('schema_version', '999')
-    db.close()
-
-    reopened = DatabaseManager(db_path)
-    assert reopened.open()
-    with pytest.raises(SchemaError, match='版本过新'):
-        reopened.init_tables()
-    reopened.close()
 
 
 @pytest.mark.usefixtures('_disable_encrypted_assertions')

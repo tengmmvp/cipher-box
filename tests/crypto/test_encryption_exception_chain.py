@@ -25,7 +25,7 @@ class TestEncryptionExceptionChain:
         key = b'\x00' * 32
         # 使用正确前缀但无效的密文数据，触发内部 try/except 路径。
         with pytest.raises(ValueError) as exc_info:
-            EncryptionEngine.decrypt_bytes(b'CBX' + b'\x00' * 28, key, 'aad')
+            EncryptionEngine.decrypt_bytes(b'CB2' + b'\x00' * 28, key, 'aad')
         assert exc_info.value.__cause__ is not None
 
     def test_decrypt_tampered_ciphertext_raises(self):

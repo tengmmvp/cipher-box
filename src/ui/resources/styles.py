@@ -501,9 +501,6 @@ def get_style(theme: str) -> str:
         这是设计上的有意耦合，样式表生成与主题激活必须同步：
         样式中部分控件使用运行时 ``c()`` 解析的颜色（如 delegate），
         若样式表已切到新主题但全局活跃主题仍为旧值，会得到不一致配色。
-
-    保留以向后兼容现有调用方；新代码可显式分两步：
-    ``set_theme(theme)`` + ``render_style(theme)``。
     """
     from .theme_colors import set_theme
     set_theme(theme)

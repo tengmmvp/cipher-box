@@ -42,24 +42,6 @@ def test_empty_string():
         EncryptionEngine.decrypt('', key, AAD)
 
 
-def test_legacy_empty_sentinel_is_not_reserved_in_new_format():
-    key = os.urandom(32)
-    plaintext = EncryptionEngine._EMPTY_SENTINEL
-    encrypted = EncryptionEngine.encrypt(plaintext, key, AAD)
-
-    assert encrypted.startswith('cb2:')
-    assert EncryptionEngine.decrypt(encrypted, key, AAD) == plaintext
-
-
-def test_legacy_empty_bytes_sentinel_is_not_reserved_in_new_format():
-    key = os.urandom(32)
-    plaintext = EncryptionEngine._EMPTY_BYTES_SENTINEL
-    encrypted = EncryptionEngine.encrypt_bytes(plaintext, key, AAD)
-
-    assert encrypted.startswith(b'CB2')
-    assert EncryptionEngine.decrypt_bytes(encrypted, key, AAD) == plaintext
-
-
 def test_unicode():
     key = os.urandom(32)
     plaintext = '中文密码测试 <SEC> emojis <JOY>'
@@ -289,7 +271,7 @@ def test_decrypt_bytes_wrong_prefix():
 def test_decrypt_bytes_too_short():
     """decrypt_bytes 拒绝过短密文。"""
     with pytest.raises(ValueError, match='密文长度无效'):
-        EncryptionEngine.decrypt_bytes(b"CBX" + b'\x00' * 10, b'\x00' * 32, "aad")
+        EncryptionEngine.decrypt_bytes(b"CB2" + b'\x00' * 10, b'\x00' * 32, "aad")
 
 
 def test_decrypt_generic_no_internal_info():
@@ -297,7 +279,7 @@ def test_decrypt_generic_no_internal_info():
     key = b'\x00' * 32
     # 使用正确前缀但无效数据。
     with pytest.raises(ValueError) as exc_info:
-        EncryptionEngine.decrypt("cb:AAAA", key, "aad")
+        EncryptionEngine.decrypt("cb2:AAAA", key, "aad")
     msg = str(exc_info.value)
     # 不应包含 Python 异常类型名。
     assert "binascii" not in msg

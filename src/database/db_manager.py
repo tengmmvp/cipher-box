@@ -420,17 +420,16 @@ class DatabaseManager:
         update_entry 时明文静默落入加密列。空值允许通过，未填写字段存储为空字符串。
         读取实例级 _enforce_encrypted_fields，避免测试覆写泄漏到其他实例。
 
-        适用范围：接受新 ``cb2:`` 与兼容旧数据的 ``cb:`` 前缀；
+        适用范围：接受 ``cb2:`` 前缀的文本密文；
         ``encrypt_bytes`` 的字节前缀路径不经过此加密列断言。
         """
         if self._enforce_encrypted_fields and value:
-            prefixes = ('cb2:', 'cb:')
-            prefix = next((item for item in prefixes if value.startswith(item)), '')
+            prefix = 'cb2:' if value.startswith('cb2:') else ''
             tail = value[len(prefix):] if prefix else ''
             if not tail or not frozenset(tail).issubset(_B64_CHARS):
                 raise ValueError(
                     f'数据层收到未加密或格式异常的 {field_name}'
-                    f'（期望 cb2:/cb: 前缀的 base64 密文），请通过 EntryManager 操作条目'
+                    f'（期望 cb2: 前缀的 base64 密文），请通过 EntryManager 操作条目'
                 )
 
     def _sign_entry(self, entry: RawEntry) -> str:
@@ -462,11 +461,11 @@ class DatabaseManager:
         return self._schema_mgr
 
     # -- 委托透传：Schema / Categories --
-    # 以下方法为向后兼容的委托透传，新代码优先用 db.entries / db.categories /
-    # db.schema 直访 Repository。保留显式类型化委托而非 __getattr__ 动态委托：
+    # 以下方法为显式类型化委托透传。也可经 db.entries / db.categories /
+    # db.schema 直访 Repository。保留显式委托而非 __getattr__ 动态委托：
     # Pyright 严格模式下动态委托会让调用方丢失返回类型推断
     # （reportAttributeAccessIssue / object 退化）。上方 entries/categories/schema
-    # property 提供更直接的类型化访问路径，新代码可优先使用。
+    # property 提供更直接的类型化访问路径。
 
     def init_tables(self) -> None:
         return self._schema_mgr.init_tables()

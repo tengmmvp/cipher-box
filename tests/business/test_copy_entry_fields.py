@@ -73,10 +73,10 @@ class TestBuildEntrySummary:
 
     def test_summary_has_empty_sensitive_fields(self):
         raw = _make_entry(
-            password='cb:FIFSED/encrypted',
-            notes='cb:FIFSED/encrypted_notes',
-            totp_secret='cb:FIFSED/encrypted_totp',
-            custom_fields='cb:FIFSED/encrypted_fields',
+            password='cb2:FIFSED/encrypted',
+            notes='cb2:FIFSED/encrypted_notes',
+            totp_secret='cb2:FIFSED/encrypted_totp',
+            custom_fields='cb2:FIFSED/encrypted_fields',
         )
         summary = build_entry_summary(raw, username='decrypted_user')
         assert summary.password == ''
@@ -101,7 +101,7 @@ class TestBuildEntrySummary:
         assert summary.username == 'user1'
 
     def test_summary_default_username(self):
-        raw = _make_entry(username='cb:FIFSED/encrypted')
+        raw = _make_entry(username='cb2:FIFSED/encrypted')
         summary = build_entry_summary(raw)
         assert summary.username == ''
 

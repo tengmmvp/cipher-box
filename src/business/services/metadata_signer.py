@@ -135,7 +135,7 @@ class MetadataSigner:
             'password_changed_at': entry.password_changed_at,
         }
         # 绑定加密字段密文到签名，防止密文置换或回滚攻击。长度前缀拼接消除对
-        # 「密文不含分隔符」的隐式假设：固定分隔符（如 '|'）在当前 cb: base64 密文
+        # 「密文不含分隔符」的隐式假设：固定分隔符（如 '|'）在当前 cb2: base64 密文
         # 下安全，但未来加密格式若使密文含该字符会产生歧义载荷；长度前缀无歧义。
         enc_parts = [
             entry.username, entry.password, entry.notes,
