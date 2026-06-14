@@ -13,7 +13,6 @@ from src.database.db_manager import DatabaseManager
 from src.models import Category, CustomField, Entry, RawEntry
 
 
-# TODO: 迁移到 conftest.py make_entry fixture
 def _make_entry(**kwargs) -> RawEntry:
     kwargs.setdefault('username', 'x')
     kwargs.setdefault('password', 'x')

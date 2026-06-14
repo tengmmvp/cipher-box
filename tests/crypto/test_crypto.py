@@ -219,7 +219,7 @@ def _clear_aesgcm_cache():
 
 
 def test_same_key_reuses_cipher():
-    """相同密钥应复用同一 AESGCM 实例"""
+    """相同密钥应复用同一 AESGCM 实例。"""
     key = os.urandom(32)
     c1 = EncryptionEngine._get_cipher(key)
     c2 = EncryptionEngine._get_cipher(key)
@@ -227,7 +227,7 @@ def test_same_key_reuses_cipher():
 
 
 def test_different_key_creates_new_cipher():
-    """不同密钥应创建不同的 AESGCM 实例"""
+    """不同密钥应创建不同的 AESGCM 实例。"""
     key1 = os.urandom(32)
     key2 = os.urandom(32)
     c1 = EncryptionEngine._get_cipher(key1)
@@ -236,7 +236,7 @@ def test_different_key_creates_new_cipher():
 
 
 def test_cache_cleared_on_lock():
-    """缓存清除后旧条目不再命中"""
+    """缓存清除后旧条目不再命中。"""
     key = os.urandom(32)
     c1 = EncryptionEngine._get_cipher(key)
     EncryptionEngine.clear_cache()
@@ -245,7 +245,7 @@ def test_cache_cleared_on_lock():
 
 
 def test_cache_hit_after_encrypt():
-    """加密后再次获取同一 key 的 cipher 应命中缓存"""
+    """加密后再次获取同一 key 的 cipher 应命中缓存。"""
     key = os.urandom(32)
     EncryptionEngine.encrypt('test data', key, 'aad')
     cached = EncryptionEngine._get_cipher(key)
@@ -254,7 +254,7 @@ def test_cache_hit_after_encrypt():
 
 
 def test_encrypt_decrypt_with_cached_cipher():
-    """缓存 cipher 正确完成加解密"""
+    """缓存 cipher 正确完成加解密。"""
     key = os.urandom(32)
     plaintext = 'cache test 测试'
     encrypted = EncryptionEngine.encrypt(plaintext, key, 'aad')
@@ -291,7 +291,7 @@ def test_decrypt_generic_no_internal_info():
 # ---------------------------------------------------------------------------
 
 def test_constant_time_compare_correct_password():
-    """验证正确密码的验证流程"""
+    """验证正确密码的验证流程。"""
     salt, verify_token, derived_key = MasterKeyManager.create('test_password')
     result = MasterKeyManager.verify('test_password', salt, verify_token)
     assert result is not None
@@ -299,7 +299,7 @@ def test_constant_time_compare_correct_password():
 
 
 def test_constant_time_compare_wrong_password():
-    """验证错误密码返回 None"""
+    """验证错误密码返回 None。"""
     salt, verify_token, derived_key = MasterKeyManager.create('test_password')
     result = MasterKeyManager.verify('wrong_password', salt, verify_token)
     assert result is None

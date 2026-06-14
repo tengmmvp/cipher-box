@@ -1,4 +1,4 @@
-"""配置管理模块 — 管理 CipherBox 应用的所有配置项"""
+"""配置管理模块 — 管理 CipherBox 应用的所有配置项。"""
 
 import hashlib
 import hmac
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_data_dir() -> Path:
-    """获取应用数据目录"""
+    """获取应用数据目录。"""
     if os.name == 'nt':
         base = os.environ.get('APPDATA', os.path.expanduser('~'))
     else:
@@ -91,7 +91,7 @@ RATE_LIMITS: list[tuple[int, int]] = [(3, 10), (5, 30), (8, 60), (10, 120)]
 
 
 class ConfigManager:
-    """配置管理器 — 读写 JSON 配置文件"""
+    """配置管理器 — 读写 JSON 配置文件。"""
 
     def __init__(self):
         self._data_dir = get_data_dir()
@@ -131,7 +131,7 @@ class ConfigManager:
         return self._config_path
 
     def load(self):
-        """从文件加载配置"""
+        """从文件加载配置。"""
         with self._lock:
             self._integrity_warning = False
             self._integrity_reason = None
@@ -234,7 +234,7 @@ class ConfigManager:
             self._integrity_reason = None
 
     def get(self, key: str, default: Any = None) -> Any:
-        """获取配置项"""
+        """获取配置项。"""
         with self._lock:
             return self._config.get(key, default)
 
@@ -262,7 +262,7 @@ class ConfigManager:
         return value
 
     def set(self, key: str, value: Any):
-        """设置配置项"""
+        """设置配置项。"""
         with self._lock:
             if key not in DEFAULT_CONFIG:
                 raise KeyError(f'未知配置项：{key}')
@@ -305,6 +305,6 @@ class ConfigManager:
         return False
 
     def get_all(self) -> dict:
-        """获取所有配置"""
+        """获取所有配置。"""
         with self._lock:
             return dict(self._config)

@@ -65,7 +65,7 @@ class DetailPanel(QWidget):
     安全说明，受 CPython 运行时限制：
     - 明文密码以 Python str 形式存储在 self._current_password 及闭包中。
     - Python 字符串不可变，mark_secret_discarded 无法覆写原始对象内存。
-    - _clear_content 通过置空引用与 del 缩短敏感数据的驻留时间。
+    - _clear_content 通过置空引用缩短敏感数据的驻留时间。
     - 对主密码字段，_toggle 闭包从 self._current_password 读取而非直接
       捕获值，使 _clear_content 清空后闭包同样读到空值。
     """
@@ -333,7 +333,7 @@ class DetailPanel(QWidget):
         self._content_layout.addStretch()
 
     def _build_tags_section(self, entry: Entry) -> QHBoxLayout:
-        """构建分类、类型和标签区域"""
+        """构建分类、类型和标签区域。"""
         header_info = QHBoxLayout()
         header_info.setSpacing(8)
 
@@ -356,7 +356,7 @@ class DetailPanel(QWidget):
         return header_info
 
     def _build_strength_bar(self, entry: Entry):
-        """构建密码强度进度条"""
+        """构建密码强度进度条。"""
         score = entry.password_strength
         strength_color = get_strength_color(score)
 
@@ -385,7 +385,7 @@ class DetailPanel(QWidget):
         self._content_layout.addLayout(strength_row)
 
     def _build_meta_section(self, entry: Entry):
-        """构建时间元数据区域"""
+        """构建时间元数据区域。"""
         meta_form = QFormLayout()
         meta_form.setSpacing(4)
         if entry.created_at:
@@ -547,20 +547,20 @@ class DetailPanel(QWidget):
         return name_label, row_widget
 
     def _get_pwd_visible_ms(self) -> int:
-        """获取密码显示自动隐藏的毫秒数"""
+        """获取密码显示自动隐藏的毫秒数。"""
         seconds = PWD_VISIBLE_SECONDS_DEFAULT
         if self._config:
             seconds = self._config.get_safe('password_visible_seconds', PWD_VISIBLE_SECONDS_DEFAULT)
         return seconds * 1000
 
     def _auto_hide_password(self):
-        """自动隐藏密码"""
+        """自动隐藏密码。"""
         if self._pwd_label_ref and self._show_btn_ref:
             self._pwd_label_ref.setText('••••••••')
             set_icon(self._show_btn_ref, EYE)
 
     def _copy(self, text: str):
-        """复制文本"""
+        """复制文本。"""
         self._clipboard.copy_text(text)
 
     def _clear_content(self):
@@ -598,13 +598,13 @@ class DetailPanel(QWidget):
         clear_layout(layout)
 
     def hideEvent(self, a0):
-        """面板隐藏时停止 TOTP 定时器以节省资源"""
+        """面板隐藏时停止 TOTP 定时器以节省资源。"""
         super().hideEvent(a0)
         if hasattr(self, '_totp_widget'):
             self._totp_widget.stop()
 
     def showEvent(self, a0):
-        """面板显示时如果当前有条目含 TOTP 则重启定时器"""
+        """面板显示时如果当前有条目含 TOTP 则重启定时器。"""
         super().showEvent(a0)
         if (
             hasattr(self, '_totp_widget')
@@ -615,7 +615,7 @@ class DetailPanel(QWidget):
             self._totp_widget.resume_if_active()
 
     def show_empty(self):
-        """显示空状态"""
+        """显示空状态。"""
         self._clear_content()
         self._current_entry = None
         self._title_label.setText('选择一个条目查看详情')

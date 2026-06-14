@@ -107,7 +107,7 @@ _SORT_OPTIONS = SORT_OPTIONS
 
 
 class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
-    """CipherBox 主窗口"""
+    """CipherBox 主窗口。"""
 
     lock_requested = pyqtSignal()
 
@@ -362,7 +362,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._splitter.addWidget(self._sidebar)
 
     def _build_filter_list(self):
-        """重建侧边栏筛选项列表，主题切换时需要重建图标"""
+        """重建侧边栏筛选项列表，主题切换时需要重建图标。"""
         from ..resources.icons import (
             FILTER_ALL,
             FILTER_DUPLICATE,
@@ -641,7 +641,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
     # ========== 主题刷新 ==========
 
     def _apply_theme(self):
-        """应用当前主题，用于设置切换后刷新"""
+        """应用当前主题，用于设置切换后刷新。"""
         theme = self._config.get('theme', 'light')
         if theme != self._current_theme:
             self._current_theme = theme
@@ -741,7 +741,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         super().changeEvent(a0)
 
     def refresh_after_unlock(self):
-        """解锁后刷新界面"""
+        """解锁后刷新界面。"""
         self._locked_ui = False
         self._refresh_categories()
         self._refresh_tag_filter()
@@ -820,6 +820,6 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         # 此处不再显式调用，避免与信号链重复触发
 
     def _on_lock_tray(self):
-        """锁定时更新托盘图标状态"""
+        """锁定时更新托盘图标状态。"""
         if self._tray:
             self._tray.set_locked(True)

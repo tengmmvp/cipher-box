@@ -28,7 +28,7 @@ from tests.helpers import make_test_config
 
 @pytest.fixture()
 def entry_mgr_env():
-    """创建 VaultManager + EntryManager，返回 (entry_mgr, vault, tmp_dir)"""
+    """创建 VaultManager + EntryManager，返回 (entry_mgr, vault, tmp_dir)。"""
     tmp_dir = tempfile.mkdtemp()
     config = make_test_config(tmp_dir)
     vault = VaultManager(config)
@@ -40,7 +40,7 @@ def entry_mgr_env():
 
 
 def test_add_and_retrieve_entry(entry_mgr_env):
-    """添加条目→解密获取→验证所有字段"""
+    """添加条目→解密获取→验证所有字段。"""
     entry_mgr, _vault, _tmp_dir = entry_mgr_env
     entry = Entry(
         title='测试网站',
@@ -84,7 +84,7 @@ def test_add_and_retrieve_entry(entry_mgr_env):
 
 
 def test_update_preserves_password_history(entry_mgr_env):
-    """更新密码→密码历史记录归档→验证旧密码可查"""
+    """更新密码→密码历史记录归档→验证旧密码可查。"""
     entry_mgr, _vault, _tmp_dir = entry_mgr_env
     # 1. 添加条目
     entry = Entry(
@@ -115,7 +115,7 @@ def test_update_preserves_password_history(entry_mgr_env):
 
 
 def test_search_by_username(entry_mgr_env):
-    """搜索用户名能返回结果"""
+    """搜索用户名能返回结果。"""
     entry_mgr, _vault, _tmp_dir = entry_mgr_env
     # 1. 添加两个 username 不同的条目
     entry_a = Entry(
@@ -147,7 +147,7 @@ def test_search_by_username(entry_mgr_env):
 
 
 def test_toggle_favorite(entry_mgr_env):
-    """切换收藏状态"""
+    """切换收藏状态。"""
     entry_mgr, _vault, _tmp_dir = entry_mgr_env
     # 1. 添加条目
     entry = Entry(
@@ -178,7 +178,7 @@ def test_toggle_favorite(entry_mgr_env):
 
 
 def test_toggle_favorite_returns_new_state(entry_mgr_env):
-    """toggle_favorite 应返回新的收藏状态"""
+    """toggle_favorite 应返回新的收藏状态。"""
     entry_mgr, _vault, _tmp_dir = entry_mgr_env
     entry = Entry(title='收藏返回值测试', username='fav_user', password='Password123!')
     entry_id = entry_mgr.add_entry(entry)
@@ -193,14 +193,14 @@ def test_toggle_favorite_returns_new_state(entry_mgr_env):
 
 
 def test_toggle_favorite_nonexistent_returns_none(entry_mgr_env):
-    """切换不存在条目的收藏状态应返回 None"""
+    """切换不存在条目的收藏状态应返回 None。"""
     entry_mgr, _vault, _tmp_dir = entry_mgr_env
     result = entry_mgr.toggle_favorite(99999)
     assert result is None
 
 
 def test_get_all_tags(entry_mgr_env):
-    """获取标签频率统计"""
+    """获取标签频率统计。"""
     entry_mgr, _vault, _tmp_dir = entry_mgr_env
     # 1. 添加多个带标签的条目
     entries_data = [
@@ -226,7 +226,7 @@ def test_get_all_tags(entry_mgr_env):
 
 @pytest.fixture()
 def vault_lifecycle_env():
-    """创建临时目录和 config，返回 (config, tmp_dir)"""
+    """创建临时目录和 config，返回 (config, tmp_dir)。"""
     tmp_dir = tempfile.mkdtemp()
     config = make_test_config(tmp_dir)
     yield config, tmp_dir
@@ -234,7 +234,7 @@ def vault_lifecycle_env():
 
 
 def test_initialize_and_unlock(vault_lifecycle_env):
-    """初始化→锁定→解锁→验证数据可读"""
+    """初始化→锁定→解锁→验证数据可读。"""
     config, _tmp_dir = vault_lifecycle_env
     master_pwd = "test_password_123"
 
@@ -277,7 +277,7 @@ def test_initialize_and_unlock(vault_lifecycle_env):
 
 
 def test_change_password_re_encrypts(vault_lifecycle_env):
-    """改密后所有条目可用新密钥解密"""
+    """改密后所有条目可用新密钥解密。"""
     config, _tmp_dir = vault_lifecycle_env
     old_pwd = "old_password_123"
     new_pwd = "new_password_456"
@@ -329,7 +329,7 @@ def test_change_password_re_encrypts(vault_lifecycle_env):
 
 @pytest.fixture()
 def backup_restore_env():
-    """创建 VaultManager + EntryManager + BackupRestoreManager"""
+    """创建 VaultManager + EntryManager + BackupRestoreManager。"""
     tmp_dir = tempfile.mkdtemp()
     config = make_test_config(tmp_dir)
     vault = VaultManager(config)
@@ -342,7 +342,7 @@ def backup_restore_env():
 
 
 def test_backup_and_restore_preserves_all_fields(backup_restore_env):
-    """备份→恢复→验证 entry_type/totp/password_history 完整"""
+    """备份→恢复→验证 entry_type/totp/password_history 完整。"""
     entry_mgr, backup_mgr, _vault, tmp_dir = backup_restore_env
     # 1. 初始化并添加条目，包含 entry_type 与 totp_secret
     entry_id = entry_mgr.add_entry(Entry(
@@ -453,7 +453,7 @@ def test_snapshot_key_rotates_on_master_password_change(backup_restore_env):
 
 @pytest.fixture()
 def security_analyzer_env():
-    """创建 VaultManager + EntryManager + SecurityAnalyzer"""
+    """创建 VaultManager + EntryManager + SecurityAnalyzer。"""
     tmp_dir = tempfile.mkdtemp()
     config = make_test_config(tmp_dir)
     vault = VaultManager(config)
@@ -466,7 +466,7 @@ def security_analyzer_env():
 
 
 def test_full_analysis(security_analyzer_env):
-    """full_analysis 一次性返回所有指标"""
+    """full_analysis 一次性返回所有指标。"""
     entry_mgr, analyzer, _vault, _tmp_dir = security_analyzer_env
     shared_pwd = 'DuplicateP@ss!'
     # 弱密码
@@ -508,7 +508,7 @@ def test_full_analysis(security_analyzer_env):
 
 @pytest.fixture()
 def db_env():
-    """创建 DatabaseManager"""
+    """创建 DatabaseManager。"""
     tmp_dir = tempfile.mkdtemp()
     db_path = Path(tmp_dir) / 'test_vault.db'
     db = DatabaseManager(db_path)
@@ -521,7 +521,7 @@ def db_env():
 
 @pytest.mark.usefixtures('_disable_encrypted_assertions')
 def test_transaction_commit(db_env):
-    """begin→多个操作→commit，所有变更持久化"""
+    """begin→多个操作→commit，所有变更持久化。"""
     db, _tmp_dir = db_env
     initial_count = db.get_entry_count()
 
@@ -553,7 +553,7 @@ def test_transaction_commit(db_env):
 
 @pytest.mark.usefixtures('_disable_encrypted_assertions')
 def test_transaction_rollback(db_env):
-    """begin→多个操作→rollback，所有变更丢弃"""
+    """begin→多个操作→rollback，所有变更丢弃。"""
     db, _tmp_dir = db_env
     initial_count = db.get_entry_count()
 
@@ -585,7 +585,7 @@ def test_transaction_rollback(db_env):
 
 @pytest.fixture()
 def import_export_env():
-    """创建 VaultManager + EntryManager + ImportExportManager"""
+    """创建 VaultManager + EntryManager + ImportExportManager。"""
     tmpdir = tempfile.mkdtemp()
     config = make_test_config(tmpdir)
     vault = VaultManager(config)
@@ -598,7 +598,7 @@ def import_export_env():
 
 
 def test_json_roundtrip(import_export_env):
-    """JSON 导出→导入→数据完整"""
+    """JSON 导出→导入→数据完整。"""
     entry_mgr, import_export, _vault, tmpdir = import_export_env
     # 1. 添加条目
     entry = Entry(
@@ -640,7 +640,7 @@ def test_json_roundtrip(import_export_env):
 
 
 def test_csv_roundtrip(import_export_env):
-    """CSV 导出→导入→基本字段保留"""
+    """CSV 导出→导入→基本字段保留。"""
     entry_mgr, import_export, _vault, tmpdir = import_export_env
     # 1. 添加条目
     entry = Entry(
@@ -681,7 +681,7 @@ def test_csv_roundtrip(import_export_env):
 # ── TestErrorPaths ───────────────────────────────────────────────────────────
 
 def test_decrypt_with_wrong_key():
-    """用错误密钥解密应抛出 ValueError"""
+    """用错误密钥解密应抛出 ValueError。"""
     key1 = os.urandom(32)
     key2 = os.urandom(32)
 
@@ -695,7 +695,7 @@ def test_decrypt_with_wrong_key():
 
 
 def test_backup_with_locked_vault():
-    """锁定状态创建备份应失败"""
+    """锁定状态创建备份应失败。"""
     tmp_dir = tempfile.mkdtemp()
     config = make_test_config(tmp_dir)
     vault = VaultManager(config)
@@ -717,7 +717,7 @@ def test_backup_with_locked_vault():
 
 
 def test_change_password_wrong_old():
-    """旧密码错误时改密应失败"""
+    """旧密码错误时改密应失败。"""
     tmp_dir = tempfile.mkdtemp()
     config = make_test_config(tmp_dir)
     vault = VaultManager(config)
@@ -738,7 +738,7 @@ def test_change_password_wrong_old():
 
 
 def test_is_initialized_returns_false_when_db_cannot_open():
-    """is_initialized 在 DB 打开失败时应返回 False"""
+    """is_initialized 在 DB 打开失败时应返回 False。"""
     tmp_dir = tempfile.mkdtemp()
     config = make_test_config(tmp_dir)
     vault = VaultManager(config)

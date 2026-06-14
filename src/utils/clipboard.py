@@ -99,7 +99,7 @@ class ClipboardManager(QObject):
             self._last_selection_hash = b''
 
     def cancel(self):
-        """取消自动清空"""
+        """取消自动清空。"""
         self._timer.stop()
 
     def clear_now(self):

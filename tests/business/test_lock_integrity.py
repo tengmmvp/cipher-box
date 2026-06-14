@@ -11,8 +11,6 @@ import time
 
 import pytest
 
-# 此密钥必须与 src/ui/login_window.py 中的 _LOCK_KEY 保持同步。
-# 若 login_window.py 中的密钥变更，此处必须同步更新，否则测试会因签名不匹配而失败。
 _LOCK_KEY = b'cipherbox:lock-state-v1'
 
 

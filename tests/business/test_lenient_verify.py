@@ -24,7 +24,7 @@ class TestLenientVerify:
         self._vault.close()
 
     def test_get_entries_with_bad_verifier_marks_integrity_error(self):
-        """get_entries 遇到验证失败的条目标记 integrity_error 而非抛异常"""
+        """get_entries 遇到验证失败的条目标记 integrity_error 而非抛异常。"""
         self._entry_mgr.add_entry(Entry(
             title='正常条目', username='user', password='pass', entry_type='login',
         ))
@@ -44,7 +44,7 @@ class TestLenientVerify:
         assert '完整性' in entries[0].integrity_message
 
     def test_get_entry_with_bad_verifier_raises(self):
-        """单条 get_entry 在验证失败时仍抛异常"""
+        """单条 get_entry 在验证失败时仍抛异常。"""
         self._entry_mgr.add_entry(Entry(
             title='测试条目', username='user', password='pass', entry_type='login',
         ))
@@ -63,5 +63,5 @@ class TestLenientVerify:
             self._vault.db.get_entry(entry_id)
 
     def test_lenient_mode_is_parameter_not_instance_state(self):
-        """宽松验证通过参数传递，不存储在实例变量上"""
+        """宽松验证通过参数传递，不存储在实例变量上。"""
         assert not hasattr(self._vault.db, '_lenient_verify')

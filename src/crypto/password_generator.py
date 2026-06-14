@@ -37,7 +37,7 @@ _RE_SYMBOL = re.compile(r'[^A-Za-z0-9]')
 
 @dataclass
 class StrengthResult:
-    """密码强度检测结果"""
+    """密码强度检测结果。"""
     score: int          # 0-4 分
     label: str          # 非常弱 / 弱 / 一般 / 强 / 非常强
     length_ok: bool
@@ -65,7 +65,7 @@ def _build_charset(base_chars: str, exclude_ambiguous: bool) -> str:
 
 
 class PasswordGenerator:
-    """密码生成与强度检测"""
+    """密码生成与强度检测。"""
 
     @staticmethod
     def generate(

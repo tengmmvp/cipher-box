@@ -193,14 +193,14 @@ _current_colors = dict(LIGHT_COLORS)
 
 
 def get_colors(theme: str = '') -> dict:
-    """获取指定主题的颜色字典"""
+    """获取指定主题的颜色字典。"""
     if theme == 'dark':
         return dict(DARK_COLORS)
     return dict(LIGHT_COLORS)
 
 
 def set_theme(theme: str):
-    """设置当前主题"""
+    """设置当前主题。"""
     global _current_theme, _current_colors
     assert set(LIGHT_COLORS.keys()) == set(DARK_COLORS.keys()), '浅色/深色主题颜色 key 不一致'
     _current_theme = theme
@@ -213,5 +213,5 @@ def c(key: str) -> str:
 
 
 def get_strength_color(score: int) -> str:
-    """获取密码强度对应的颜色"""
+    """获取密码强度对应的颜色。"""
     return c(f'strength_{min(score, 4)}')

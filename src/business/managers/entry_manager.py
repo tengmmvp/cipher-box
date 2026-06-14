@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 
 class EntryManager:
-    """管理密码条目的加密、解密和 CRUD 操作"""
+    """管理密码条目的加密、解密和 CRUD 操作。"""
 
     def __init__(self, vault_manager: 'VaultManager'):
         self._vault = vault_manager
@@ -151,7 +151,7 @@ class EntryManager:
         )
 
     def _encrypt_field(self, plaintext: str, crypto_id: str, field_name: str) -> str:
-        """加密单个字段，委托给 crypto_utils.encrypt_field"""
+        """加密单个字段，委托给 crypto_utils.encrypt_field。"""
         return _encrypt_field_impl(plaintext, self._key, crypto_id, field_name)
 
     def _decrypt_field(
@@ -161,7 +161,7 @@ class EntryManager:
         field_name: str,
         strict: bool = False,
     ) -> str:
-        """解密单个字段，委托给 crypto_utils.decrypt_field"""
+        """解密单个字段，委托给 crypto_utils.decrypt_field。"""
         return _decrypt_field_impl(
             encrypted, self._key, crypto_id, field_name, strict=strict,
         )
@@ -260,7 +260,7 @@ class EntryManager:
         fields: list[CustomField] | str,
         crypto_id: str,
     ) -> str:
-        """加密自定义字段列表"""
+        """加密自定义字段列表。"""
         if not fields:
             return ''
         if not isinstance(fields, list) or not all(
@@ -271,7 +271,7 @@ class EntryManager:
         return self._encrypt_field(data, crypto_id, 'custom_fields')
 
     def _decrypt_custom_fields(self, encrypted: str, crypto_id: str) -> list[CustomField]:
-        """解密自定义字段列表"""
+        """解密自定义字段列表。"""
         if not encrypted:
             return []
         data = self._decrypt_field(
@@ -285,7 +285,7 @@ class EntryManager:
         return [CustomField.from_dict(item) for item in items]
 
     def decrypt_entry(self, raw_entry: RawEntry) -> Entry:
-        """解密条目的所有敏感字段，返回新的 Entry 对象"""
+        """解密条目的所有敏感字段，返回新的 Entry 对象。"""
         integrity_errors = []
 
         def decrypt(name: str, value: str) -> str:
@@ -480,14 +480,14 @@ class EntryManager:
         return True
 
     def permanent_delete_entry(self, entry_id: int):
-        """永久删除条目"""
+        """永久删除条目。"""
         self._vault.db.permanent_delete_entry(entry_id)
         with self._cache_lock:
             self._totp_secret_cache.pop(entry_id, None)
         self._notify_entry_change()
 
     def empty_trash(self):
-        """清空回收站"""
+        """清空回收站。"""
         self._vault.db.empty_trash()
         with self._cache_lock:
             self._totp_secret_cache.clear()
@@ -543,7 +543,7 @@ class EntryManager:
         return decrypted
 
     def get_entry(self, entry_id: int) -> Optional[Entry]:
-        """获取并解密单个条目"""
+        """获取并解密单个条目。"""
         raw = self._vault.db.get_entry(entry_id)
         if raw is None:
             return None
@@ -644,13 +644,11 @@ class EntryManager:
     # DELEGATE: see DatabaseManager.update_category
     def update_category(self, category: Category) -> None:
         self._vault.db.update_category(category)
-        # 分类变更不改变条目密码相关维度，仅失效 _tags_cache 等结构缓存。
         self._notify_entry_change(password_changed=False)
 
     # DELEGATE: see DatabaseManager.delete_category
     def delete_category(self, category_id: int) -> None:
         self._vault.db.delete_category(category_id)
-        # 分类变更不改变条目密码相关维度，仅失效 _tags_cache 等结构缓存。
         self._notify_entry_change(password_changed=False)
 
     def toggle_favorite(self, entry_id: int) -> bool | None:

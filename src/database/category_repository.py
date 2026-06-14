@@ -49,7 +49,7 @@ class CategoryRepository:
 
     @_db_operation
     def get_categories(self) -> list[Category]:
-        """获取所有分类"""
+        """获取所有分类。"""
         rows = self._conn.execute(
             "SELECT * FROM categories ORDER BY sort_order, name"
         ).fetchall()
@@ -57,7 +57,7 @@ class CategoryRepository:
 
     @_db_operation
     def get_category(self, category_id: int) -> Optional[Category]:
-        """获取单个分类"""
+        """获取单个分类。"""
         row = self._conn.execute(
             "SELECT * FROM categories WHERE id = ?", (category_id,)
         ).fetchone()
@@ -65,7 +65,7 @@ class CategoryRepository:
 
     @_db_write
     def add_category(self, category: Category) -> int:
-        """添加分类，返回 ID"""
+        """添加分类，返回 ID。"""
         cursor = self._conn.execute(
             "INSERT INTO categories (name, icon_char, color, sort_order, created_at) VALUES (?, ?, ?, ?, ?)",
             (category.name, category.icon_char, category.color, category.sort_order,
@@ -76,7 +76,7 @@ class CategoryRepository:
 
     @_db_write
     def update_category(self, category: Category) -> None:
-        """更新分类"""
+        """更新分类。"""
         self._conn.execute(
             "UPDATE categories SET name=?, icon_char=?, color=?, sort_order=? WHERE id=?",
             (category.name, category.icon_char, category.color, category.sort_order, category.id),
@@ -103,7 +103,7 @@ class CategoryRepository:
 
     @_db_operation
     def get_category_entry_count(self, category_id: int) -> int:
-        """获取分类下的条目数量"""
+        """获取分类下的条目数量。"""
         row = self._conn.execute(
             "SELECT COUNT(*) FROM entries WHERE category_id=? AND is_deleted=0",
             (category_id,),

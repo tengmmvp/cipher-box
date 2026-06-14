@@ -55,7 +55,7 @@ class _ColorDotButton(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(color)
         # 选中态由外层 CategoryDialog._on_color_dot_clicked 统一管理（遍历重算），
-        # 此处不再连接内部 _on_clicked，避免冗余设置被外层覆盖
+        # 本类不自连 clicked 信号，避免冗余设置被外层覆盖
         self._update_style()
 
     @property

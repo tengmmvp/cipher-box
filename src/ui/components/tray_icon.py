@@ -33,7 +33,7 @@ class TrayIcon(QSystemTrayIcon):
 
     @staticmethod
     def _create_icon(color: QColor, text: str) -> QIcon:
-        """根据背景色和文字生成托盘图标"""
+        """根据背景色和文字生成托盘图标。"""
         bg = color.name() if isinstance(color, QColor) else str(color)
         pixmap = draw_logo_pixmap(
             size=32,
@@ -45,7 +45,7 @@ class TrayIcon(QSystemTrayIcon):
         return QIcon(pixmap)
 
     def set_locked(self, locked: bool):
-        """切换锁定/解锁状态的托盘图标"""
+        """切换锁定/解锁状态的托盘图标。"""
         if locked:
             self.setIcon(TrayIcon._create_icon(QColor(c('text_muted')), 'LOCK'))
             self.setToolTip('CipherBox（已锁定）')

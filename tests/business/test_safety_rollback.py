@@ -431,7 +431,7 @@ class TestImportEpochGuard:
             with pytest.raises(VaultKeyEpochMismatchError):
                 self._import_export.import_from_json(self._json_path)
 
-        # 恢复原始 property；patch 上下文管理器已自动恢复，此处仅作防御
+        # patch 上下文管理器退出时已自动恢复 key_epoch property，无需手动还原
         _ = original_key_epoch_property
 
         # 导入被中止，数据保持一致：条目数不变

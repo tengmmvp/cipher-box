@@ -1,4 +1,4 @@
-"""TOTP 验证码生成器 — 基于 RFC 6238 实现"""
+"""TOTP 验证码生成器 — 基于 RFC 6238 实现。"""
 
 import base64
 import binascii
@@ -176,13 +176,14 @@ class TOTPGenerator:
 
     @staticmethod
     def get_remaining_seconds(period: int = DEFAULT_PERIOD, secret: str = '') -> int:
-        """获取当前时间步长剩余秒数"""
+        """获取当前时间步长剩余秒数。"""
         if secret:
             period = TOTPGenerator._extract_period(secret, period)
         return period - (int(time.time()) % period)
 
     @staticmethod
     def get_period(secret: str) -> int:
+        """获取 TOTP 时间步长，优先从 otpauth URI 的 period 参数提取。"""
         return TOTPGenerator._extract_period(secret, TOTPGenerator.DEFAULT_PERIOD)
 
     @staticmethod

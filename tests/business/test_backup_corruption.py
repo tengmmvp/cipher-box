@@ -46,7 +46,7 @@ class TestBackupCorruption:
         return filepath
 
     def test_rejects_truncated_backup(self):
-        """截断的备份文件应被拒绝"""
+        """截断的备份文件应被拒绝。"""
         path = os.path.join(self._tmp_dir, 'truncated.cbox')
         self._create_valid_backup(path)
         full_size = os.path.getsize(path)
@@ -67,7 +67,7 @@ class TestBackupCorruption:
         assert '过大' in error
 
     def test_rejects_corrupted_magic_bytes(self):
-        """损坏的 magic bytes 应被拒绝"""
+        """损坏的 magic bytes 应被拒绝。"""
         path = os.path.join(self._tmp_dir, 'bad_magic.cbox')
         with open(path, 'wb') as f:
             f.write(b'CORRUPTED_HEADER\x00')
@@ -76,35 +76,35 @@ class TestBackupCorruption:
         assert not success
 
     def test_rejects_empty_file(self):
-        """空文件应被拒绝"""
+        """空文件应被拒绝。"""
         path = os.path.join(self._tmp_dir, 'empty.cbox')
         Path(path).write_bytes(b'')
         success, error = self._backup_mgr.restore_backup(path)
         assert not success
 
     def test_rejects_random_bytes(self):
-        """随机字节数据应被拒绝"""
+        """随机字节数据应被拒绝。"""
         path = os.path.join(self._tmp_dir, 'random.cbox')
         Path(path).write_bytes(os.urandom(256))
         success, error = self._backup_mgr.restore_backup(path)
         assert not success
 
     def test_rejects_wrong_backup_password(self):
-        """错误的备份密码应被拒绝"""
+        """错误的备份密码应被拒绝。"""
         path = os.path.join(self._tmp_dir, 'wrong_pwd.cbox')
         self._create_valid_backup(path, 'correct_password')
         success, error = self._backup_mgr.restore_backup(path, 'wrong_password')
         assert not success
 
     def test_rejects_password_required_backup_without_password(self):
-        """需要密码的备份但未提供密码应被拒绝"""
+        """需要密码的备份但未提供密码应被拒绝。"""
         path = os.path.join(self._tmp_dir, 'no_pwd.cbox')
         self._create_valid_backup(path, 'some_password')
         success, error = self._backup_mgr.restore_backup(path, None)
         assert not success
 
     def test_inspect_backup_returns_correct_info(self):
-        """inspect_backup 应返回正确的备份信息"""
+        """inspect_backup 应返回正确的备份信息。"""
         path = os.path.join(self._tmp_dir, 'inspect.cbox')
         self._create_valid_backup(path, 'test_password')
         info = BackupRestoreManager.inspect_backup(path)
@@ -112,7 +112,7 @@ class TestBackupCorruption:
         assert not info['snapshot_required']
 
     def test_inspect_snapshot_backup(self):
-        """检查快照备份应标记为 snapshot_required"""
+        """检查快照备份应标记为 snapshot_required。"""
         path = os.path.join(self._tmp_dir, 'snapshot.cbox')
         success, error = self._backup_mgr.create_backup(path, use_snapshot_key=True)
         assert success, f'快照备份失败: {error}'
@@ -121,7 +121,7 @@ class TestBackupCorruption:
         assert info['snapshot_required']
 
     def test_restore_and_verify_data_integrity(self):
-        """恢复后数据应与原始数据一致"""
+        """恢复后数据应与原始数据一致。"""
         path = os.path.join(self._tmp_dir, 'verify.cbox')
         self._create_valid_backup(path, 'verify_pwd')
 
@@ -138,7 +138,7 @@ class TestBackupCorruption:
         assert restored.notes == original.notes
 
     def test_inspect_rejects_unknown_flags(self):
-        """包含未知标志的备份应被拒绝"""
+        """包含未知标志的备份应被拒绝。"""
         path = os.path.join(self._tmp_dir, 'bad_flags.cbox')
         with open(path, 'wb') as f:
             f.write(BACKUP_MAGIC)
@@ -147,7 +147,7 @@ class TestBackupCorruption:
             BackupRestoreManager.inspect_backup(path)
 
     def test_backup_with_snapshot_key(self):
-        """使用快照密钥的备份应可恢复"""
+        """使用快照密钥的备份应可恢复。"""
         path = os.path.join(self._tmp_dir, 'snapshot_restore.cbox')
         success, error = self._backup_mgr.create_backup(path, use_snapshot_key=True)
         assert success, f'快照备份失败: {error}'
@@ -156,7 +156,7 @@ class TestBackupCorruption:
         assert success, f'快照恢复失败: {error}'
 
     def test_backup_preserves_deleted_entries(self):
-        """备份应保留已删除的条目"""
+        """备份应保留已删除的条目。"""
         entry_id = self._entry_mgr.add_entry(Entry(
             title='将被删除', username='u', password='p', entry_type='login',
         ))
@@ -175,10 +175,10 @@ class TestBackupCorruption:
 
 
 class TestBackupSizeLimits:
-    """备份大小限制测试"""
+    """备份大小限制测试。"""
 
     def test_inspect_rejects_oversized_file(self):
-        """过大的备份文件应被拒绝"""
+        """过大的备份文件应被拒绝。"""
         path = os.path.join(tempfile.mkdtemp(), 'huge.cbox')
         try:
             # 仅写入正确的文件头，body 部分填充超过上限的随机字节

@@ -74,7 +74,7 @@ def test_derive_backup_key_isolated_from_master_key():
 
 
 def test_create_and_restore_non_password_backup(vault_and_key):
-    """端到端验证：非密码备份的创建和恢复"""
+    """端到端验证：非密码备份的创建和恢复。"""
     vault, _key, tmp_dir = vault_and_key
     from src.business.managers.backup_restore import BackupRestoreManager
     from src.business.managers.entry_manager import EntryManager

@@ -8,7 +8,7 @@ from src.ui.components.widgets import RATE_LIMITS, apply_rate_limit
 
 
 class TestApplyRateLimit:
-    """验证速率限制阶梯计算"""
+    """验证速率限制阶梯计算。"""
 
     def test_zero_failures_returns_zero(self):
         assert apply_rate_limit(0) == 0
@@ -41,6 +41,6 @@ class TestApplyRateLimit:
         assert apply_rate_limit(100) == 120
 
     def test_rate_limits_sorted_ascending(self):
-        """RATE_LIMITS 阈值应为升序"""
+        """RATE_LIMITS 阈值应为升序。"""
         thresholds = [t for t, _ in RATE_LIMITS]
         assert thresholds == sorted(thresholds)

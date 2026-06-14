@@ -14,7 +14,6 @@ from src.database.db_manager import DatabaseManager
 from src.models import ENTRY_TYPE_LOGIN, ENTRY_TYPES, Category, Entry, RawEntry
 
 
-# TODO: 迁移到 conftest.py make_entry fixture
 def _make_entry(**kwargs) -> RawEntry:
     kwargs.setdefault('password', 'x')
     kwargs.setdefault('notes', '')

@@ -28,8 +28,8 @@ MS_TOTP_REFRESH = 1000
 class TOTPWidget(QWidget):
     """TOTP 验证码显示与刷新组件。
 
-    通过注入的 EntryManager 引用获取 TOTP 状态。面板隐藏时自动暂停定时器，
-    重新显示时恢复刷新。
+    通过注入的 EntryManager 引用获取 TOTP 状态。定时器启停由父级 DetailPanel
+    在 hideEvent / showEvent 中调用 stop / resume_if_active 控制。
     """
 
     copy_requested = pyqtSignal(str)

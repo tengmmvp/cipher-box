@@ -17,7 +17,7 @@ from src.models import CustomField, Entry
 
 
 class TestReEncryptEdgeCases:
-    """_re_encrypt_all 边界条件"""
+    """_re_encrypt_all 边界条件。"""
 
     @pytest.fixture(autouse=True)
     def setup_vault(self, tmp_path, vault_config):
@@ -40,7 +40,7 @@ class TestReEncryptEdgeCases:
     # 1. 空字段：notes=''、totp_secret=''、username=''
     # ------------------------------------------------------------------
     def test_re_encrypt_empty_fields(self):
-        """空字符串字段在改密后保持空字符串"""
+        """空字符串字段在改密后保持空字符串。"""
         self._entry_mgr.add_entry(Entry(
             title='空字段测试',
             username='',
@@ -65,7 +65,7 @@ class TestReEncryptEdgeCases:
     # 2. 完整字段：所有 5 个敏感字段都有值
     # ------------------------------------------------------------------
     def test_re_encrypt_all_fields_populated(self):
-        """所有敏感字段都有值时改密后完整保留"""
+        """所有敏感字段都有值时改密后完整保留。"""
         custom = [CustomField(name='备注', value='测试值', field_type='text')]
         self._entry_mgr.add_entry(Entry(
             title='完整字段测试',
@@ -96,7 +96,7 @@ class TestReEncryptEdgeCases:
     # 3. 已删除条目在改密后仍可解密
     # ------------------------------------------------------------------
     def test_re_encrypt_deleted_entry(self):
-        """已软删除的条目在改密后仍可正确解密"""
+        """已软删除的条目在改密后仍可正确解密。"""
         eid = self._entry_mgr.add_entry(Entry(
             title='待删除条目',
             username='deleted_user',
@@ -120,7 +120,7 @@ class TestReEncryptEdgeCases:
     # 4. 密码历史在改密后仍可解密
     # ------------------------------------------------------------------
     def test_re_encrypt_password_history(self):
-        """密码历史在改密后仍可正确解密"""
+        """密码历史在改密后仍可正确解密。"""
         eid = self._entry_mgr.add_entry(Entry(
             title='密码历史测试',
             username='hist_user',
@@ -162,7 +162,7 @@ class TestReEncryptEdgeCases:
     # 5. 多条目混合：部分字段为空，部分字段有值
     # ------------------------------------------------------------------
     def test_re_encrypt_mixed_entries(self):
-        """多条目混合场景：空字段和完整字段交替"""
+        """多条目混合场景：空字段和完整字段交替。"""
         self._entry_mgr.add_entry(Entry(
             title='只有密码',
             password='pass1',
@@ -204,7 +204,7 @@ class TestReEncryptEdgeCases:
     # 6. 改密失败时事务回滚保护数据完整性
     # ------------------------------------------------------------------
     def test_re_encrypt_rollback_on_failure(self):
-        """解密失败时回滚事务，原数据仍可用"""
+        """解密失败时回滚事务，原数据仍可用。"""
         self._entry_mgr.add_entry(Entry(
             title='回滚保护测试',
             username='rollback_user',
@@ -236,7 +236,7 @@ class TestReEncryptEdgeCases:
     # 7. 多条目全部字段保留
     # ------------------------------------------------------------------
     def test_re_encrypt_preserves_all_entries(self):
-        """重新加密后所有条目数据完整"""
+        """重新加密后所有条目数据完整。"""
         for i in range(5):
             self._entry_mgr.add_entry(Entry(
                 title=f'条目{i}',
@@ -272,7 +272,7 @@ class TestReEncryptEdgeCases:
     # 8. 超过批次大小的条目也能正确重新加密
     # ------------------------------------------------------------------
     def test_re_encrypt_with_more_than_batch_size(self):
-        """超过批次大小的条目也能正确重新加密"""
+        """超过批次大小的条目也能正确重新加密。"""
         for i in range(10):
             self._entry_mgr.add_entry(Entry(
                 title=f'条目{i}',
@@ -299,7 +299,7 @@ class TestReEncryptEdgeCases:
     # 9. 自定义字段在改密后完整保留
     # ------------------------------------------------------------------
     def test_re_encrypt_preserves_custom_fields(self):
-        """重新加密保留自定义字段"""
+        """重新加密保留自定义字段。"""
         entry = Entry(
             title='带自定义字段',
             username='user',

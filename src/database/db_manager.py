@@ -289,7 +289,7 @@ class DatabaseManager:
     # ========== 连接管理 ==========
 
     def open(self) -> bool:
-        """打开数据库连接"""
+        """打开数据库连接。"""
         try:
             secure_directory(self._db_path.parent)
             # check_same_thread=False 允许跨线程共享连接；真正的并发保护由 _lock
@@ -336,7 +336,7 @@ class DatabaseManager:
 
     @_db_operation
     def get_meta(self, key: str) -> Optional[str]:
-        """获取元数据"""
+        """获取元数据。"""
         assert self._conn is not None
         row = self._conn.execute(
             "SELECT value FROM vault_meta WHERE key = ?", (key,)
@@ -368,7 +368,7 @@ class DatabaseManager:
 
     @_db_write
     def set_meta(self, key: str, value: str) -> None:
-        """设置元数据"""
+        """设置元数据。"""
         assert self._conn is not None
         self._conn.execute(
             "INSERT OR REPLACE INTO vault_meta (key, value) VALUES (?, ?)",

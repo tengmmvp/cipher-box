@@ -180,7 +180,7 @@ class EntryRepository:
 
     @_db_operation
     def get_entry(self, entry_id: int) -> Optional[RawEntry]:
-        """获取单个条目"""
+        """获取单个条目。"""
         row = self._conn.execute(
             """SELECT e.*, c.name as category_name
                FROM entries e
@@ -192,7 +192,7 @@ class EntryRepository:
 
     @_db_write
     def add_entry(self, entry: RawEntry, preserve_metadata: bool = False) -> int:
-        """添加条目，返回 ID"""
+        """添加条目，返回 ID。"""
         # 防御性断言，防止明文静默写入加密列
         self._assert_encrypted(entry.username, 'username')
         self._assert_encrypted(entry.password, 'password')
@@ -345,14 +345,14 @@ class EntryRepository:
 
     @_db_write
     def permanent_delete_entry(self, entry_id: int) -> None:
-        """永久删除条目"""
+        """永久删除条目。"""
         self._conn.execute("DELETE FROM entries WHERE id=?", (entry_id,))
         self._auto_commit()
         self.secure_checkpoint()
 
     @_db_write
     def empty_trash(self) -> None:
-        """清空回收站"""
+        """清空回收站。"""
         self._conn.execute("DELETE FROM entries WHERE is_deleted=1")
         self._auto_commit()
         self.secure_checkpoint()
@@ -373,7 +373,7 @@ class EntryRepository:
 
     @_db_operation
     def get_entry_count(self, include_deleted: bool = False) -> int:
-        """获取条目数量"""
+        """获取条目数量。"""
         query = "SELECT COUNT(*) FROM entries"
         if not include_deleted:
             query += " WHERE is_deleted = 0"
@@ -382,7 +382,7 @@ class EntryRepository:
 
     @_db_operation
     def get_all_tags(self) -> list[str]:
-        """获取所有未删除条目的标签字段，轻量查询，不加载加密列"""
+        """获取所有未删除条目的标签字段，轻量查询，不加载加密列。"""
         rows = self._conn.execute(
             "SELECT tags FROM entries WHERE is_deleted=0"
         ).fetchall()
@@ -430,7 +430,7 @@ class EntryRepository:
         old_password_enc: str,
         changed_at: str = '',
     ):
-        """添加密码历史记录"""
+        """添加密码历史记录。"""
         self._conn.execute(
             "INSERT INTO password_history (entry_id, old_password_enc, changed_at) VALUES (?, ?, ?)",
             (entry_id, old_password_enc, changed_at or utc_now_iso()),
@@ -485,7 +485,7 @@ class EntryRepository:
 
     @_db_operation
     def get_password_history(self, entry_id: int) -> list[PasswordHistory]:
-        """获取条目的密码历史"""
+        """获取条目的密码历史。"""
         rows = self._conn.execute(
             """SELECT h.*, e.crypto_id AS entry_crypto_id
                FROM password_history h JOIN entries e ON e.id=h.entry_id

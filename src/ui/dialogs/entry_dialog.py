@@ -403,7 +403,7 @@ class EntryDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _validate_card_fields(self) -> bool:
-        """校验信用卡字段，失败时弹出警告并返回 False"""
+        """校验信用卡字段，失败时弹出警告并返回 False。"""
         w = self._special_widgets
         card_number = cast(QLineEdit, w['card_number']).text().strip()
         card_expiry = cast(QLineEdit, w['card_expiry']).text().strip()

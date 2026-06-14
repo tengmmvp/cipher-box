@@ -1,4 +1,4 @@
-"""应用主控 — 管理应用生命周期、登录流程和窗口切换"""
+"""应用主控 — 管理应用生命周期、登录流程和窗口切换。"""
 
 import logging
 import sys
@@ -36,7 +36,7 @@ class CipherBoxApplication(QApplication):
 
 
 class CipherBoxApp:
-    """CipherBox 应用主控"""
+    """CipherBox 应用主控。"""
 
     def __init__(self):
         # sys.argv 传递给 QApplication 以支持 Qt 平台参数如 -style 和 -platform，
@@ -117,7 +117,7 @@ class CipherBoxApp:
             logger.warning("崩溃兜底：锁定保险库失败", exc_info=True)
 
     def run(self) -> int:
-        """启动应用"""
+        """启动应用。"""
         # 应用全局样式
         theme = self._config.get('theme', 'light')
         self._app.setStyleSheet(get_style(theme))  # type: ignore[attr-defined]
@@ -140,7 +140,7 @@ class CipherBoxApp:
             self._instance_lock.unlock()
 
     def _show_login(self):
-        """显示登录窗口"""
+        """显示登录窗口。"""
         if not self._running:
             return
 
@@ -179,7 +179,7 @@ class CipherBoxApp:
             self._app.quit()
 
     def _on_lock(self):
-        """锁定保险库"""
+        """锁定保险库。"""
         if self._main_window:
             self._main_window.prepare_for_lock()
             self._main_window.hide()
@@ -191,7 +191,7 @@ class CipherBoxApp:
 
 
 def main():
-    """应用入口"""
+    """应用入口。"""
     # 高 DPI 支持
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough,

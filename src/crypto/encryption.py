@@ -36,7 +36,7 @@ _cipher_cache: OrderedDict[bytes, AESGCM] = OrderedDict()
 
 
 class EncryptionEngine:
-    """使用 AES-256-GCM 进行数据加密和解密"""
+    """使用 AES-256-GCM 进行数据加密和解密。"""
 
     NONCE_SIZE = 12  # GCM 推荐 nonce 长度
     TAG_SIZE = 16    # GCM 认证标签长度，128 位
@@ -49,7 +49,7 @@ class EncryptionEngine:
 
     @classmethod
     def _get_cipher(cls, key: bytes) -> AESGCM:
-        """获取或创建 AESGCM 实例，按密钥 SHA-256 摘要缓存"""
+        """获取或创建 AESGCM 实例，按密钥 SHA-256 摘要缓存。"""
         # 密钥校验：类型与长度，防止意外降级为 AES-128
         if not isinstance(key, (bytes, bytearray)):
             raise TypeError(f'AES-256 密钥类型无效：期望 bytes，实际 {type(key).__name__}')

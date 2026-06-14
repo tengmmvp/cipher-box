@@ -44,7 +44,7 @@ ENTRY_TYPES = {
 
 @dataclass
 class CustomField:
-    """自定义字段"""
+    """自定义字段。"""
     name: str
     value: str
     field_type: str = 'text'  # text, password, url, email
@@ -103,7 +103,7 @@ class Sensitive(str):
 
 @dataclass
 class Category:
-    """密码分类"""
+    """密码分类。"""
     id: int | None = None
     name: str = ''
     icon_char: str = '[DIR]'
@@ -160,7 +160,7 @@ class Category:
 
 @dataclass
 class PasswordHistory:
-    """密码历史记录"""
+    """密码历史记录。"""
     id: int | None = None
     entry_id: int = 0
     old_password_enc: str = ''  # 加密后的旧密码
@@ -241,21 +241,21 @@ class Entry:
 
     @property
     def type_icon(self) -> str:
-        """获取条目类型图标"""
+        """获取条目类型图标。"""
         return ENTRY_TYPES.get(self.entry_type, ENTRY_TYPES[ENTRY_TYPE_LOGIN])['icon']
 
     @property
     def type_label(self) -> str:
-        """获取条目类型标签"""
+        """获取条目类型标签。"""
         return ENTRY_TYPES.get(self.entry_type, ENTRY_TYPES[ENTRY_TYPE_LOGIN])['label']
 
     @property
     def has_totp(self) -> bool:
-        """是否配置了 TOTP"""
+        """是否配置了 TOTP。"""
         return self.totp_present or bool(self.totp_secret)
 
     def get_tag_list(self) -> list[str]:
-        """获取标签列表"""
+        """获取标签列表。"""
         if not self.tags:
             return []
         return [t.strip() for t in self.tags.split(',') if t.strip()]

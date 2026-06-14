@@ -95,6 +95,8 @@ class KeyRotationService:
         UPDATE 减少为 N/200 次 executemany 调用。
 
         Args:
+            old_key: 改密前的旧 AES 密钥。
+            new_key: 改密后的新 AES 密钥。
             cancel_event: 可选的 threading.Event，设置时提前终止循环。
         """
         # 预计算域密钥，避免每条条目重复 HMAC 派生，每批 200 条可省 200 次 HMAC
@@ -170,6 +172,8 @@ class KeyRotationService:
         将 N 次单独 UPDATE 合并为 N/200 次 executemany 调用。
 
         Args:
+            old_key: 改密前的旧 AES 密钥。
+            new_key: 改密后的新 AES 密钥。
             cancel_event: 可选的 threading.Event，设置时提前终止循环。
         """
         last_history_id = 0

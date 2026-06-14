@@ -130,7 +130,7 @@ class _MainWindowFiltersMixin(QMainWindow):
     # ========== 排序 ==========
 
     def _get_sort_config(self) -> tuple[str, str]:
-        """获取当前排序字段和方向"""
+        """获取当前排序字段和方向。"""
         return self._entry_list_ctrl.get_sort_config(self._sort_combo.currentIndex())
 
     def _on_sort_changed(self):
@@ -142,7 +142,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         self._refresh_entries()
 
     def _sort_entries(self, entries: list) -> list:
-        """对条目列表排序"""
+        """对条目列表排序。"""
         return self._entry_list_ctrl.sort_entries(entries, self._sort_combo.currentIndex())
 
     # ========== 数据操作 ==========
@@ -508,7 +508,7 @@ class _MainWindowFiltersMixin(QMainWindow):
     # ======== 条目右键菜单 ========
 
     def _on_entry_context_menu(self, pos):
-        """条目右键菜单 — 路由到已删除/活跃条目子菜单"""
+        """条目右键菜单 — 路由到已删除/活跃条目子菜单。"""
         index = self._entry_list.indexAt(pos)
         if not index.isValid():
             return
@@ -522,7 +522,7 @@ class _MainWindowFiltersMixin(QMainWindow):
             self._show_active_entry_menu(summary, pos)
 
     def _show_deleted_entry_menu(self, entry, pos):
-        """回收站条目右键菜单"""
+        """回收站条目右键菜单。"""
         menu = QMenu(self)
         restore_act = QAction('恢复', self)
         restore_act.setIcon(icon(REFRESH))
@@ -548,7 +548,7 @@ class _MainWindowFiltersMixin(QMainWindow):
                 self._refresh_after_entry_change()
 
     def _show_active_entry_menu(self, summary, pos):
-        """活跃条目右键菜单 — dict dispatch，复制操作延迟解密"""
+        """活跃条目右键菜单 — dict dispatch，复制操作延迟解密。"""
         menu = QMenu(self)
 
         copy_user_act = QAction('复制账号', self)
@@ -636,7 +636,7 @@ class _MainWindowFiltersMixin(QMainWindow):
             handler()
 
     def _on_category_context_menu(self, pos):
-        """分类右键菜单"""
+        """分类右键菜单。"""
         item = self._category_list.itemAt(pos)
         if not item:
             return
@@ -692,7 +692,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         dialog.exec()
 
     def _edit_selected_entry(self):
-        """快捷键：编辑当前选中条目"""
+        """快捷键：编辑当前选中条目。"""
         idx = self._entry_list.currentIndex()
         if idx.isValid():
             entry = idx.data(Qt.ItemDataRole.UserRole)
@@ -733,7 +733,7 @@ class _MainWindowFiltersMixin(QMainWindow):
                        action_text='撤销', action_callback=undo)
 
     def _delete_selected_entry(self):
-        """快捷键：删除当前选中条目"""
+        """快捷键：删除当前选中条目。"""
         idx = self._entry_list.currentIndex()
         if idx.isValid():
             entry = idx.data(Qt.ItemDataRole.UserRole)
@@ -748,7 +748,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         self._status_bar.showMessage('已复制到剪贴板', MS_TOAST_DEFAULT)
 
     def _clear_search(self):
-        """快捷键：清空搜索"""
+        """快捷键：清空搜索。"""
         if self._search_edit.text():
             self._search_edit.clear()
         else:
@@ -786,6 +786,6 @@ class _MainWindowFiltersMixin(QMainWindow):
     # ========== 密码生成器回调 ==========
 
     def _on_password_selected(self, password: str):
-        """密码生成器独立打开时，选中密码后复制到剪贴板"""
+        """密码生成器独立打开时，选中密码后复制到剪贴板。"""
         self._clipboard.copy_text(password)
         Toast.show(self, '密码已复制到剪贴板', Toast.SUCCESS)

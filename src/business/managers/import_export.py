@@ -103,7 +103,7 @@ def _transactional_import(method):
 
 
 class ImportExportManager:
-    """密码条目的导入和导出"""
+    """密码条目的导入和导出。"""
 
     def __init__(self, entry_manager: 'EntryManager'):
         self._entry_mgr = entry_manager
@@ -134,7 +134,7 @@ class ImportExportManager:
 
     @staticmethod
     def _csv_safe(value):
-        """防护 CSV 注入：转义危险前缀，替换内部控制字符"""
+        """防护 CSV 注入：转义危险前缀，替换内部控制字符。"""
         text = str(value) if value is not None else ''
         # 替换嵌入的换行符为空格，防止 CSV 行断裂
         text = text.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
@@ -294,7 +294,7 @@ class ImportExportManager:
         entries: list[Entry],
         include_password: bool = False,
     ):
-        """导出为 JSON 文件"""
+        """导出为 JSON 文件。"""
         data = {
             'app': 'CipherBox',
             'exported_at': self._now(),
@@ -319,7 +319,7 @@ class ImportExportManager:
         entries: list[Entry],
         include_password: bool = False,
     ):
-        """导出为 CSV 文件"""
+        """导出为 CSV 文件。"""
         fieldnames = ['title', 'username', 'password', 'totp_secret', 'url',
                        'category', 'tags', 'notes', 'is_favorite',
                        'created_at', 'updated_at']

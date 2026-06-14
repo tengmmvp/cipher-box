@@ -202,7 +202,7 @@ class _MainWindowMenuMixin(QMainWindow):
     # ----- 快捷键 -----
 
     def _setup_shortcuts(self):
-        """注册全局快捷键"""
+        """注册全局快捷键。"""
         shortcuts = [
             ('Ctrl+F', lambda: self._search_edit.setFocus()),
             ('Ctrl+E', self._edit_selected_entry),
@@ -220,7 +220,7 @@ class _MainWindowMenuMixin(QMainWindow):
             self._shortcuts.append(shortcut)
 
     def _update_menu_icons(self):
-        """刷新菜单栏图标，主题切换时颜色需要更新"""
+        """刷新菜单栏图标，主题切换时颜色需要更新。"""
         from PyQt6.QtWidgets import QMenu
 
         menubar = self.menuBar()

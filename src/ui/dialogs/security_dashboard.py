@@ -114,7 +114,7 @@ class _HealthScoreWidget(QWidget):
 
 
 class _StatCard(QFrame):
-    """统计卡片"""
+    """统计卡片。"""
 
     def __init__(self, title: str, count: int, color: str, button_text: str, parent=None):
         super().__init__(parent)

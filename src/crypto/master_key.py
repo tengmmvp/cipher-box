@@ -57,7 +57,7 @@ VERIFY_AAD = "vault:master-verification"
 
 
 class MasterKeyManager:
-    """主密码密钥管理器"""
+    """主密码密钥管理器。"""
 
     @classmethod
     def _validate_params(cls, params: KdfParams) -> None:

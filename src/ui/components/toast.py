@@ -97,7 +97,7 @@ class ToastWidget(QFrame):
 
     # ------------------------------------------------------------------ UI
     def _setup_ui(self, message: str, toast_type: str, action_text: str):
-        """构建内部布局"""
+        """构建内部布局。"""
         self.setFixedWidth(TOAST_WIDTH)
         self.setMinimumHeight(20)
 
@@ -179,7 +179,7 @@ class ToastWidget(QFrame):
 
     # ------------------------------------------------------------- 样式
     def _apply_style(self, toast_type: str):
-        """根据类型应用样式"""
+        """根据类型应用样式。"""
         type_key = (
             toast_type
             if toast_type in (self.SUCCESS, self.ERROR, self.INFO, self.WARNING)
@@ -254,7 +254,7 @@ class ToastWidget(QFrame):
             self._auto_close_timer.start(self._duration)
 
     def _start_fade_out(self):
-        """开始淡出动画"""
+        """开始淡出动画。"""
         self._auto_close_timer.stop()
 
         # 启动新动画前停止旧动画，防止淡入/淡出动画重叠导致闪烁
@@ -271,19 +271,19 @@ class ToastWidget(QFrame):
         self._fade_out_anim = anim  # 保持引用防止 GC
 
     def _on_fade_out_finished(self):
-        """淡出完成后关闭并通知 Manager"""
+        """淡出完成后关闭并通知 Manager。"""
         self.hide()
         self.closed.emit(self)
 
     # ---------------------------------------------------------- 交互
     def _on_action_clicked(self):
-        """操作按钮点击"""
+        """操作按钮点击。"""
         if self._action_callback:
             self._action_callback()
         self._start_fade_out()
 
     def enterEvent(self, event):
-        """鼠标进入时暂停自动关闭"""
+        """鼠标进入时暂停自动关闭。"""
         self._auto_close_timer.stop()
         super().enterEvent(event)
 
@@ -314,13 +314,13 @@ class ToastManager:
 
     @staticmethod
     def get_manager(parent: QWidget) -> 'ToastManager':
-        """获取或创建 parent 对应的 ToastManager"""
+        """获取或创建 parent 对应的 ToastManager。"""
         if parent not in ToastManager._instances:
             ToastManager._instances[parent] = ToastManager(parent)
         return ToastManager._instances[parent]
 
     def add_toast(self, toast: ToastWidget):
-        """添加一个 Toast 并更新所有位置"""
+        """添加一个 Toast 并更新所有位置。"""
         # 阴影效果：QGraphicsDropShadowEffect 无法叠加在 QGraphicsOpacityEffect 上，
         # 因此使用同位的 QFrame 作为阴影层，详见下方 shadow_frame。
         shadow_color = c('toast_shadow')
@@ -388,7 +388,7 @@ class ToastManager:
         self._reposition_all()
 
     def _remove_toast(self, toast: ToastWidget):
-        """移除一个 Toast 并更新所有位置"""
+        """移除一个 Toast 并更新所有位置。"""
         if toast in self._toasts:
             self._toasts.remove(toast)
         # 移除阴影

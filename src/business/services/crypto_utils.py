@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def require_vault_key(vault_manager: 'VaultManager') -> bytes:
-    """获取保险库加密密钥，未解锁时抛出 VaultLockedError"""
+    """获取保险库加密密钥，未解锁时抛出 VaultLockedError。"""
     key = vault_manager.key
     if key is None:
         raise VaultLockedError("保险库未解锁")

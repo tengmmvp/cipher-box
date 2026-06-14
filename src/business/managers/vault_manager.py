@@ -173,7 +173,7 @@ class VaultManager:
             # 事务进行中跳过：写路径已在事务边界校验过 epoch，事务内重复比对
             # 无意义（get_meta 经 @_db_operation 重入 RLock 不会死锁，但属冗余）。
             # 代价是整个事务期间的写入不受此守卫保护，故每个事务化写路径
-            # 必须在事务开始时自行比对 epoch（见 _transactional_import 二次校验）。
+            # 必须在事务开始时自行比对 epoch（见 _run_import_transaction 二次校验）。
             return
         if not self.is_unlocked:
             raise VaultLockedError("保险库已锁定，不能写入数据")

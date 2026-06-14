@@ -13,7 +13,7 @@ from src.utils.clipboard import _CLIPBOARD_HMAC_KEY, ClipboardManager
 
 
 class TestClipboardManager:
-    """ClipboardManager 核心逻辑测试"""
+    """ClipboardManager 核心逻辑测试。"""
 
     @pytest.fixture(autouse=True)
     def _ensure_qapp(self, qapp):
@@ -30,7 +30,7 @@ class TestClipboardManager:
     # ---- 基础复制与获取 ----
 
     def test_copy_and_get(self):
-        """复制文本后剪贴板可以获取到相同内容"""
+        """复制文本后剪贴板可以获取到相同内容。"""
         text = "MySecretPassword123!"
         self.mgr.copy_text(text)
 
@@ -43,7 +43,7 @@ class TestClipboardManager:
     # ---- 自动清空计时器 ----
 
     def test_auto_clear_timer(self):
-        """设置自动清空后计时器正常启动"""
+        """设置自动清空后计时器正常启动。"""
         self.mgr.clear_seconds = 5
         self.mgr.copy_text("secret")
 
@@ -53,7 +53,7 @@ class TestClipboardManager:
     # ---- 取消清空 ----
 
     def test_cancel_clear(self):
-        """取消清空后计时器停止"""
+        """取消清空后计时器停止。"""
         self.mgr.clear_seconds = 10
         self.mgr.copy_text("secret")
 
@@ -64,7 +64,7 @@ class TestClipboardManager:
     # ---- 仅清空匹配内容 ----
 
     def test_clear_only_matching(self):
-        """只清空与上次复制匹配的内容"""
+        """只清空与上次复制匹配的内容。"""
         self.mgr.clear_seconds = 1
         self.mgr.copy_text("password_A")
 
@@ -82,7 +82,7 @@ class TestClipboardManager:
     # ---- 空字符串不触发 ----
 
     def test_empty_copy(self):
-        """复制空字符串不触发清空定时器"""
+        """复制空字符串不触发清空定时器。"""
         self.mgr.copy_text("")
 
         # _last_text_hash 应保持初始空值，未被设置

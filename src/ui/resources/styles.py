@@ -1,4 +1,4 @@
-"""QSS 样式表 — 使用动态颜色模板"""
+"""QSS 样式表 — 使用动态颜色模板。"""
 
 STYLE_TEMPLATE = """
 QMainWindow, QDialog {{
