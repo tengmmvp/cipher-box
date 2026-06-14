@@ -40,7 +40,7 @@ from ..resources.icons import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from PyQt6.QtCore import pyqtSignal, QTimer
+    from PyQt6.QtCore import QTimer, pyqtSignal
     from PyQt6.QtWidgets import QLineEdit
 
     from ...business.managers.backup_restore import BackupRestoreManager
