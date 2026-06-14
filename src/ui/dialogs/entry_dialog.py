@@ -141,6 +141,10 @@ class EntryDialog(QDialog):
     发出 ``saved`` 信号并关闭对话框。
     """
 
+    # 备注区域高度：默认紧凑，笔记类型切换为展开以提供更大编辑空间
+    _NOTES_HEIGHT_DEFAULT = 100
+    _NOTES_HEIGHT_EXPANDED = 300
+
     saved = pyqtSignal()
 
     def __init__(
@@ -313,7 +317,7 @@ class EntryDialog(QDialog):
         notes_group = QGroupBox('备注')
         notes_layout = QVBoxLayout(notes_group)
         self._notes_edit = QTextEdit()
-        self._notes_edit.setMaximumHeight(100)
+        self._notes_edit.setMaximumHeight(self._NOTES_HEIGHT_DEFAULT)
         self._notes_edit.setPlaceholderText('添加备注信息...')
         notes_layout.addWidget(self._notes_edit)
         return notes_group
@@ -420,6 +424,20 @@ class EntryDialog(QDialog):
             return False
         return True
 
+    def _compose_server_url(self) -> str:
+        """按 protocol://host[:port] 拼接服务器地址，作为单一拼接来源。
+
+        host 为空时返回空串，避免生成无意义的 ``ssh://``。供
+        ``_on_save`` 写入与 ``_validate_field_lengths`` 校验长度共用，
+        防止两处拼接逻辑漂移。
+        """
+        host = cast(QLineEdit, self._special_widgets['server_host']).text().strip()
+        if not host:
+            return ''
+        port = cast(QLineEdit, self._special_widgets['server_port']).text().strip()
+        protocol = cast(QComboBox, self._special_widgets['server_protocol']).currentText().lower()
+        return f'{protocol}://{host}' + (f':{port}' if port else '')
+
     def _validate_field_lengths(self, entry_type: str) -> bool:
         """校验无法在控件层硬限制的字段长度，失败时弹出警告并返回 False。
 
@@ -439,17 +457,13 @@ class EntryDialog(QDialog):
             return False
 
         if entry_type == ENTRY_TYPE_SERVER:
-            host = cast(QLineEdit, self._special_widgets['server_host']).text().strip()
-            port = cast(QLineEdit, self._special_widgets['server_port']).text().strip()
-            protocol = cast(QComboBox, self._special_widgets['server_protocol']).currentText().lower()
-            if host:
-                composed_url = f'{protocol}://{host}' + (f':{port}' if port else '')
-                if len(composed_url) > MAX_FIELD_URL:
-                    QMessageBox.warning(
-                        self, '输入有误',
-                        f'网址过长（最多 {MAX_FIELD_URL} 字符）。',
-                    )
-                    return False
+            composed_url = self._compose_server_url()
+            if composed_url and len(composed_url) > MAX_FIELD_URL:
+                QMessageBox.warning(
+                    self, '输入有误',
+                    f'网址过长（最多 {MAX_FIELD_URL} 字符）。',
+                )
+                return False
         return True
 
     @staticmethod
@@ -559,9 +573,9 @@ class EntryDialog(QDialog):
 
         # 笔记类型：放大备注区域
         if entry_type == ENTRY_TYPE_NOTE:
-            self._notes_edit.setMaximumHeight(300)
+            self._notes_edit.setMaximumHeight(self._NOTES_HEIGHT_EXPANDED)
         else:
-            self._notes_edit.setMaximumHeight(100)
+            self._notes_edit.setMaximumHeight(self._NOTES_HEIGHT_DEFAULT)
 
     # ------------------------------------------------------------------
     # 数据加载
@@ -624,17 +638,19 @@ class EntryDialog(QDialog):
     # 密码辅助
     # ------------------------------------------------------------------
 
+    def _cfg(self, key: str, default):
+        """读取配置值，config 为 None 时使用默认值。"""
+        return self._config.get(key, default) if self._config else default
+
     def _generate_password(self):
-        length = PWD_GENERATE_LENGTH_DEFAULT
-        if self._config:
-            length = self._config.get('default_password_length', PWD_GENERATE_LENGTH_DEFAULT)
+        length = self._cfg('default_password_length', PWD_GENERATE_LENGTH_DEFAULT)
         password = PasswordService.generate(
             length=length,
-            uppercase=self._config.get('default_uppercase', True) if self._config else True,
-            lowercase=self._config.get('default_lowercase', True) if self._config else True,
-            digits=self._config.get('default_digits', True) if self._config else True,
-            symbols=self._config.get('default_symbols', True) if self._config else True,
-            exclude_ambiguous=self._config.get('default_exclude_ambiguous', False) if self._config else False,
+            uppercase=self._cfg('default_uppercase', True),
+            lowercase=self._cfg('default_lowercase', True),
+            digits=self._cfg('default_digits', True),
+            symbols=self._cfg('default_symbols', True),
+            exclude_ambiguous=self._cfg('default_exclude_ambiguous', False),
         )
         self._password_edit.setText(password)
         # 通过按钮公共方法显示密码并按配置启动自动隐藏，替代反射式属性访问
@@ -713,15 +729,11 @@ class EntryDialog(QDialog):
         username = self._username_edit.text().strip()
         url = self._url_edit.text().strip()
 
-        # 服务器类型由 host 与 port 拼接出 url
+        # 服务器类型由 host 与 port 拼接出 url；username/password 已在上方统一读取
         if entry_type == ENTRY_TYPE_SERVER:
-            host = cast(QLineEdit, self._special_widgets['server_host']).text().strip()
-            port = cast(QLineEdit, self._special_widgets['server_port']).text().strip()
-            protocol = cast(QComboBox, self._special_widgets['server_protocol']).currentText().lower()
-            if host:
-                url = f'{protocol}://{host}' + (f':{port}' if port else '')
-            username = self._username_edit.text().strip()
-            password = self._password_edit.text()
+            composed = self._compose_server_url()
+            if composed:
+                url = composed
 
         # 合并专用字段 + 通用自定义字段
         all_custom = self._collect_type_specific_fields() + self._cf_editor.collect()
@@ -779,16 +791,15 @@ class EntryDialog(QDialog):
         self._url_edit.clear()
         self._tags_edit.clear()
         self._notes_edit.clear()
-        # 信用卡敏感字段，覆盖持卡人、卡号、有效期与 CVV
-        for key in ('card_holder', 'card_number', 'card_expiry', 'card_cvv'):
-            widget = self._special_widgets.get(key)
-            if isinstance(widget, QLineEdit):
-                widget.clear()
-        # 身份信息 PII 字段
-        for key in ('id_fullname', 'id_email', 'id_phone', 'id_address'):
-            widget = self._special_widgets.get(key)
-            if isinstance(widget, QLineEdit):
-                widget.clear()
+        # 专用字段统一清除：遍历 _SPECIAL_SCHEMA 全表，覆盖 card_*（卡号/CVV 等）、
+        # id_*（PII）以及 server_host 等所有专用字段。新增类型或字段时自动纳入清除
+        # 范围，避免硬编码 key 列表遗漏导致的安全回归。QComboBox（如协议选择）非
+        # 敏感输入，由 isinstance(QLineEdit) 守卫跳过。
+        for specs in _SPECIAL_SCHEMA.values():
+            for spec in specs:
+                widget = self._special_widgets.get(spec.field_key)
+                if isinstance(widget, QLineEdit):
+                    widget.clear()
         # 自定义字段中回显模式为 Password 的值视为敏感数据一并清除
         self._cf_editor.clear_sensitive_values()
 

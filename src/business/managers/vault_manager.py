@@ -422,10 +422,16 @@ class VaultManager:
 
             new_salt, new_verify_token, new_key = result
 
-            # 复用 MasterKeyManager.create 已派生的 new_key，省一次 Argon2id 派生
-            failed_purges = self._re_encrypt_all(
-                new_key, new_salt, new_verify_token, new_params=DEFAULT_KDF_PARAMS,
-            )
+            try:
+                # 复用 MasterKeyManager.create 已派生的 new_key，省一次 Argon2id 派生
+                failed_purges = self._re_encrypt_all(
+                    new_key, new_salt, new_verify_token, new_params=DEFAULT_KDF_PARAMS,
+                )
+            except BaseException:
+                # 重加密失败：new_key 未被 _key_mgr.activate 持有，原地清零收缩驻留，
+                # 避免 Argon2id 派生的新密钥在异常栈帧残留、依赖 GC 回收。
+                new_key[:] = b'\x00' * len(new_key)
+                raise
             if failed_purges:
                 # 改密成功但旧明文快照未能清理：明确反馈用户，避免误以为泄漏面已收缩
                 return True, (

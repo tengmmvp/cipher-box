@@ -20,8 +20,8 @@ FAVORITE_MARKER = '★ '
 def _resolve_font_family() -> str:
     """返回当前平台上第一个可用的字体族名称。
 
-    模块级惰性初始化：_RESOLVED_FONT_FAMILY 在首次 paint 时解析一次，
-    之后所有绘制调用复用已解析的值。
+    惰性初始化：由 EntryItemDelegate 在实例属性 ``_resolved_family`` 中缓存，
+    首次需要主字体时解析一次，之后所有绘制调用复用已解析的值。
 
     PyQt6 ≥ 6.5 不再支持 QFontDatabase() 构造，需使用静态方法 families()。
     """
@@ -35,8 +35,6 @@ def _resolve_font_family() -> str:
         if fallback in available:
             return fallback
     return available[0] if available else 'sans-serif'
-
-_RESOLVED_FONT_FAMILY: str | None = None  # 延迟解析，首次 paint 时确定
 
 
 class EntryListModel(QAbstractItemModel):
@@ -99,25 +97,32 @@ class EntryItemDelegate(QStyledItemDelegate):
     DELETE_BADGE_HEIGHT = 20
     _TEXT_RIGHT_MARGIN = 38           # 文本区域右侧保留宽度
     _DELETE_TEXT_RIGHT_EXTRA = 28     # 删除徽章额外保留宽度
+    # paint 内行内垂直坐标偏移（相对 rect.top()）
+    _TITLE_Y_OFFSET = 7       # 标题绘制基线 Y 偏移
+    _TITLE_HEIGHT = 22        # 标题绘制区域高度
+    _SUBTITLE_Y_OFFSET = 30   # 副标题绘制基线 Y 偏移
+    _SUBTITLE_HEIGHT = 19     # 副标题绘制区域高度
+    _MARKER_DOT_Y_OFFSET = 10 # 强度圆点 Y 偏移
+    _MARKER_DOT_WIDTH = 12    # 强度圆点绘制区域宽度
+    _MARKER_DOT_HEIGHT = 16   # 强度圆点绘制区域高度
+    _MARKER_BANG_Y_OFFSET = 30  # 完整性警示符 Y 偏移
+    _DELETE_BADGE_Y_OFFSET = 20  # 已删除徽章 Y 偏移
+    _DELETE_BADGE_X_BACK = 9   # 已删除徽章距右侧标记的回退量
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._color_cache: dict[str, str] = {}
         self._font_cache: dict[tuple, QFont] = {}
-        # 构造时即解析主字体族，避免 paint 路径惰性初始化在并发绘制时竞态
-        # （_RESOLVED_FONT_FAMILY 为模块级可变状态）。
-        global _RESOLVED_FONT_FAMILY
-        if _RESOLVED_FONT_FAMILY is None:
-            _RESOLVED_FONT_FAMILY = _resolve_font_family()
+        # 实例级缓存的主字体族，惰性解析：避免模块级可变状态，提升可测试性。
+        self._resolved_family: str | None = None
 
     def _get_font(self, family: str, size: int, weight: int = -1) -> QFont:
         """获取 QFont，带缓存避免 paint() 重复创建。"""
-        global _RESOLVED_FONT_FAMILY
         # 首次需要主字体时解析；用 None 标志避免解析结果恰为初始值时重复解析
         if family == FONT_FAMILY_PRIMARY:
-            if _RESOLVED_FONT_FAMILY is None:
-                _RESOLVED_FONT_FAMILY = _resolve_font_family()
-            actual_family = _RESOLVED_FONT_FAMILY
+            if self._resolved_family is None:
+                self._resolved_family = _resolve_font_family()
+            actual_family = self._resolved_family
         else:
             actual_family = family
         key = (actual_family, size, weight)
@@ -186,7 +191,7 @@ class EntryItemDelegate(QStyledItemDelegate):
                 title, Qt.TextElideMode.ElideRight, int(text_width)
             )
             painter.drawText(
-                QRectF(text_left, rect.top() + 7, text_width, 22),
+                QRectF(text_left, rect.top() + self._TITLE_Y_OFFSET, text_width, self._TITLE_HEIGHT),
                 Qt.AlignmentFlag.AlignVCenter,
                 title_text,
             )
@@ -207,7 +212,7 @@ class EntryItemDelegate(QStyledItemDelegate):
                 subtitle, Qt.TextElideMode.ElideRight, int(text_width)
             )
             painter.drawText(
-                QRectF(text_left, rect.top() + 30, text_width, 19),
+                QRectF(text_left, rect.top() + self._SUBTITLE_Y_OFFSET, text_width, self._SUBTITLE_HEIGHT),
                 Qt.AlignmentFlag.AlignVCenter,
                 subtitle_text,
             )
@@ -217,7 +222,8 @@ class EntryItemDelegate(QStyledItemDelegate):
                 painter.setPen(QColor(get_strength_color(entry.password_strength)))
                 painter.setFont(get_font(FONT_FAMILY_PRIMARY, 8))
                 painter.drawText(
-                    QRectF(marker_x, rect.top() + 10, 12, 16),
+                    QRectF(marker_x, rect.top() + self._MARKER_DOT_Y_OFFSET,
+                           self._MARKER_DOT_WIDTH, self._MARKER_DOT_HEIGHT),
                     Qt.AlignmentFlag.AlignCenter,
                     '●',
                 )
@@ -225,14 +231,16 @@ class EntryItemDelegate(QStyledItemDelegate):
                 painter.setPen(QColor(get_color('danger')))
                 painter.setFont(get_font(FONT_FAMILY_PRIMARY, 10, QFont.Weight.Bold))
                 painter.drawText(
-                    QRectF(marker_x, rect.top() + 30, 12, 16),
+                    QRectF(marker_x, rect.top() + self._MARKER_BANG_Y_OFFSET,
+                           self._MARKER_DOT_WIDTH, self._MARKER_DOT_HEIGHT),
                     Qt.AlignmentFlag.AlignCenter,
                     '!',
                 )
 
             if entry.is_deleted:
-                badge = QRectF(rect.right() - self.MARKER_RIGHT_MARGIN - self.DELETE_BADGE_WIDTH + 9,
-                               rect.top() + 20, self.DELETE_BADGE_WIDTH, self.DELETE_BADGE_HEIGHT)
+                badge = QRectF(rect.right() - self.MARKER_RIGHT_MARGIN - self.DELETE_BADGE_WIDTH + self._DELETE_BADGE_X_BACK,
+                               rect.top() + self._DELETE_BADGE_Y_OFFSET,
+                               self.DELETE_BADGE_WIDTH, self.DELETE_BADGE_HEIGHT)
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QColor(get_color('danger_light')))
                 painter.drawRoundedRect(badge, 4, 4)

@@ -22,11 +22,10 @@ class TestSecureDeleteFile:
         secure_delete_file(target)
         assert not target.exists()
 
-    def test_nonexistent_raises_oserror(self, tmp_path):
-        """文件不存在时 path.stat() 抛 FileNotFoundError（OSError 子类），与调用方
-        ``except OSError`` 契约一致——恢复点/快照清理路径据此计入失败清单或告警。"""
-        with pytest.raises(OSError):
-            secure_delete_file(tmp_path / 'missing.cbox')
+    def test_nonexistent_is_noop(self, tmp_path):
+        """文件不存在时视为已删除，静默返回不抛异常，避免中断批量清理循环
+        （恢复点/快照清理）；单文件缺失不计入失败清单或误报为清理失败。"""
+        secure_delete_file(tmp_path / 'missing.cbox')  # 不应抛异常
 
     def test_empty_file_deletes_without_overwrite(self, tmp_path):
         """size=0 时跳过覆写（无内容可覆写）仅 unlink。"""

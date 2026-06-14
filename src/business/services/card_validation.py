@@ -10,7 +10,7 @@ import re
 def validate_card_number(number: str) -> bool:
     """使用 Luhn 算法校验信用卡号是否合法。"""
     number = number.replace(' ', '').replace('-', '')
-    if not number.isdigit() or len(number) < 13:
+    if not number.isdigit() or len(number) < 13 or len(number) > 19:
         return False
     total = 0
     for i, ch in enumerate(reversed(number)):

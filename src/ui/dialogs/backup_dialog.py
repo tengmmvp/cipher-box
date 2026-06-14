@@ -243,6 +243,10 @@ class BackupDialog(QDialog):
         self._worker.finished.connect(self._on_backup_done)
         self._worker.error.connect(self._on_backup_error)
         self._worker.start()
+        # 删除局部变量引用以缩短密码驻留。注意：worker 闭包仍捕获 password，
+        # 真正释放需等 worker 执行结束并被 release_worker 释放，此处仅做局部清零，
+        # 与其他对话框的清零策略对齐（CPython 下字符串回收仍依赖 GC）。
+        del password
 
     def _on_backup_done(self, result):
         if self.sender() is not self._worker:

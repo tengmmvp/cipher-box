@@ -68,6 +68,10 @@ class TOTPWidget(QWidget):
     def clear(self):
         """清除所有状态并销毁已构建的 TOTP 区域。"""
         self._timer.stop()
+        # 先清空验证码明文再销毁：deleteLater 异步执行，销毁前 label 文本仍驻留
+        # Qt 对象，锁定瞬间内存转储可读到。显式 setText 立即擦除可见明文。
+        if self._code_label is not None:
+            self._code_label.setText('')
         self._entry_id = None
         self._period = 30
         self._code_label = None

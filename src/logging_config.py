@@ -20,7 +20,9 @@ def configure_logging(data_dir: Path):
     )
     secure_file(log_path)
     handler.setFormatter(logging.Formatter(
-        '%(asctime)s %(levelname)s %(name)s: %(message)s'
+        # 含 threadName：BackgroundWorker 在子线程执行，调试锁定时序、worker
+        # 与主线程日志交织问题时线程名是关键定位信息。
+        '%(asctime)s %(levelname)s %(name)s [%(threadName)s]: %(message)s'
     ))
     root = logging.getLogger()
     # 清理已有 handler，防止测试或多次调用导致重复

@@ -123,7 +123,11 @@ class ImportExportManager:
         if len(items) > MAX_IMPORT_ENTRIES:
             raise ValueError(f'导入条目过多，最大允许 {MAX_IMPORT_ENTRIES} 条')
         for item in items:
-            if sum(len(str(v).encode('utf-8')) for v in item.values()) > MAX_IMPORT_ENTRY_SIZE:
+            if sum(
+                len(v.encode('utf-8')) if isinstance(v, str)
+                else len(str(v).encode('utf-8'))
+                for v in item.values()
+            ) > MAX_IMPORT_ENTRY_SIZE:
                 raise ValueError('导入条目字段过大')
 
     @staticmethod
@@ -193,11 +197,14 @@ class ImportExportManager:
 
     @staticmethod
     def _merge_non_exported_secrets(entry: Entry, existing: Entry):
-        entry.password = existing.password
-        entry.totp_secret = existing.totp_secret
-        ImportExportManager._retain_password_custom_fields(
-            entry, existing, replace_all=True,
-        )
+        """JSON 导出未包含敏感字段时的合并。
+
+        ``secrets_included=False`` 路径下导入数据中 password/totp_secret 必为空，
+        故复用 ``_merge_csv_secrets`` 传 ``source_has_password=False``：源无密码列
+        时无条件保留 existing 的密码，totp_secret 仅在空时保留（此处数据流上等价
+        于无条件保留，因导入值本就为空）。
+        """
+        ImportExportManager._merge_csv_secrets(entry, existing, source_has_password=False)
 
     @staticmethod
     def _merge_csv_secrets(entry: Entry, existing: Entry, source_has_password: bool):
@@ -418,13 +425,18 @@ class ImportExportManager:
                         entry, preserve_password_changed_at=True, notify=False,
                     )
                 else:
-                    self._entry_mgr.add_entry(entry, notify=False)
+                    self._entry_mgr.add_entry(
+                        entry, notify=False, skip_validation=True,
+                    )
             except (ValueError, EntryIntegrityError) as exc:
-                # 字段长度违规或完整性错误，跳过该条目而非回滚整个导入
+                # 字段长度违规或完整性错误，跳过该条目而非回滚整个导入。
+                # 不打印 title：标题可能含敏感信息，落入日志会扩大泄漏面。
+                # 用条目序号（导入数据中的位置）替代，便于排查又不暴露内容。
                 skipped += 1
                 logger.warning(
-                    "跳过条目 '%s': %s",
-                    entry.title[:50] if entry.title else '(无标题)',
+                    "跳过第 %d 个条目（crypto_id=%s）: %s",
+                    i + 1,
+                    entry.crypto_id or '(未生成)',
                     exc,
                 )
                 continue
@@ -509,6 +521,16 @@ class ImportExportManager:
             return 0
         # 上方 type(...) is not bool 检查已保证 secrets_included 为 bool
         secrets_included = data['secrets_included']
+
+        # secrets_included=False 时导出本就不含 password/totp_secret，但对抗性构造
+        # 的文件可能仍带这些字段。主动清除，使“导入值必为空”成为代码保证而非
+        # 数据假设，避免 _merge_non_exported_secrets 在覆盖路径误保留对抗输入的
+        # totp_secret（原合并注释假设导入值为空，仅对正常文件成立）。
+        if not secrets_included:
+            for item in items:
+                if isinstance(item, dict):
+                    item.pop('password', None)
+                    item.pop('totp_secret', None)
 
         entries = [Entry.from_dict(item) for item in items]
         entries_data = [{'title': e.title, 'username': e.username} for e in entries]

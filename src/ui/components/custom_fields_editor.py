@@ -54,8 +54,10 @@ class CustomFieldsEditor:
         if field_type == 'password':
             value_edit.setEchoMode(QLineEdit.EchoMode.Password)
         type_combo.currentIndexChanged.connect(
-            lambda idx, ve=value_edit: ve.setEchoMode(
-                QLineEdit.EchoMode.Password if idx == 1 else QLineEdit.EchoMode.Normal
+            lambda idx, ve=value_edit, tmap=self._INDEX_TYPE_MAP: ve.setEchoMode(
+                QLineEdit.EchoMode.Password
+                if tmap.get(idx) == 'password'
+                else QLineEdit.EchoMode.Normal
             )
         )
         row_layout.addWidget(value_edit)
@@ -110,7 +112,10 @@ class CustomFieldsEditor:
         return fields
 
     def clear_sensitive_values(self) -> None:
-        """清除密码型自定义字段的值，缩短明文在控件中的驻留时间。"""
+        """清除所有自定义字段的值，缩短明文在控件中的驻留时间。
+
+        自定义字段值可能含密码、密钥、URL、邮箱、CVV 等各类敏感凭据，
+        统一清除避免仅清密码型而残留同等敏感的 url/email 等。
+        """
         for _name_edit, _type_combo, value_edit, _layout in self._rows:
-            if value_edit.echoMode() == QLineEdit.EchoMode.Password:
-                value_edit.clear()
+            value_edit.clear()

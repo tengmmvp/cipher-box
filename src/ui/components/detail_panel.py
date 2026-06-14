@@ -137,6 +137,11 @@ class DetailPanel(QWidget):
         self._add_copy_feedback_timer(timer)
 
         def _restore(btn=btn, t=timer):
+            # 定时器回调触发时 btn 可能已 deleteLater 但事件循环未处理，
+            # 守卫避免对已释放 C++ 对象调用 set_icon 抛 RuntimeError。
+            if sip.isdeleted(btn):
+                self._copy_feedback_timers.pop(t, None)
+                return
             set_icon(btn, COPY)
             self._copy_feedback_timers.pop(t, None)
 
@@ -585,6 +590,9 @@ class DetailPanel(QWidget):
         self._fields_renderer.clear()
         mark_secret_discarded(self._current_password)
         self._current_password = ''
+        # 先清空主密码 label 明文再置空引用，避免 deleteLater 异步销毁前明文驻留。
+        if self._pwd_label_ref is not None:
+            self._pwd_label_ref.setText('••••••••')
         self._pwd_label_ref = None
         self._show_btn_ref = None
         self._clear_layout(self._content_layout)

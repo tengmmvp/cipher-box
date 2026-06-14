@@ -309,10 +309,21 @@ class SecurityDashboard(QDialog):
         # _clear_layout 统一回收，此处仅清除属性引用，避免手动 deleteLater 造成双重回收。
         self._status_hint = None
 
+        import dataclasses
+
+        def _project(e):
+            # 清空敏感字段，仅保留展示所需（title/username/strength/时间戳/id），
+            # 避免仪表盘打开期间不必要地驻留完整明文 Entry。
+            return dataclasses.replace(
+                e, password='', totp_secret='', notes='', url='', custom_fields=[]
+            )
+
         try:
-            self._weak_entries = analysis['weak_entries']
-            self._duplicate_groups = analysis['duplicate_groups']
-            self._old_entries = analysis['old_entries']
+            self._weak_entries = [_project(e) for e in analysis['weak_entries']]
+            self._duplicate_groups = [
+                [_project(e) for e in g] for g in analysis['duplicate_groups']
+            ]
+            self._old_entries = [_project(e) for e in analysis['old_entries']]
         except Exception as exc:
             logger.error("加载安全报告失败: %s", type(exc).__name__, exc_info=True)
             # 异常出口也用 _clear_layout 回收 _status_hint，与成功路径一致，

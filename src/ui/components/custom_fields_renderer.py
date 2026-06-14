@@ -21,6 +21,16 @@ from ..resources.icons import COPY, set_icon
 from ..resources.theme_colors import c
 from .secret_field import make_secret_field_row
 
+# 模板字段名 → 显示标签，避免每次 render 重建字典
+_TEMPLATE_FIELD_LABELS = {
+    '_card_holder': '持卡人', '_card_number': '卡号',
+    '_card_expiry': '有效期', '_card_cvv': 'CVV',
+    '_id_fullname': '姓名', '_id_email': '邮箱',
+    '_id_phone': '电话', '_id_address': '地址',
+    '_server_host': '主机', '_server_port': '端口',
+    '_server_protocol': '协议',
+}
+
 
 class CustomFieldsRenderer:
     """自定义字段渲染器。
@@ -62,14 +72,6 @@ class CustomFieldsRenderer:
         cf_group = QGroupBox('自定义字段')
         cf_layout = QFormLayout(cf_group)
         cf_layout.setSpacing(6)
-        labels = {
-            '_card_holder': '持卡人', '_card_number': '卡号',
-            '_card_expiry': '有效期', '_card_cvv': 'CVV',
-            '_id_fullname': '姓名', '_id_email': '邮箱',
-            '_id_phone': '电话', '_id_address': '地址',
-            '_server_host': '主机', '_server_port': '端口',
-            '_server_protocol': '协议',
-        }
         custom_fields = entry.custom_fields
         if not isinstance(custom_fields, list):
             return timers
@@ -78,7 +80,7 @@ class CustomFieldsRenderer:
             if not cf.value:
                 continue
             icon = {'password': '[PWD]', 'url': '[URL]', 'email': '[MAIL]'}.get(cf.field_type, '[TXT]')
-            label = labels.get(cf.name, cf.name)
+            label = _TEMPLATE_FIELD_LABELS.get(cf.name, cf.name)
             if cf.field_type == 'password':
                 row = self._make_secret_field_row(f'{icon} {label}', cf.value, timers, parent_widget)
             else:

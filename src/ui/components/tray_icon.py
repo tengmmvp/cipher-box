@@ -33,8 +33,14 @@ class TrayIcon(QSystemTrayIcon):
 
     @staticmethod
     def _create_icon(color: QColor, text: str) -> QIcon:
-        """根据背景色和文字生成托盘图标。"""
+        """根据背景色和文字生成托盘图标。
+
+        长文本（len>2，如 'LOCK'）在 32px 画布会溢出裁剪，缩短为首字符
+        并使用与单字符一致的字号，保证图标清晰可读。
+        """
         bg = color.name() if isinstance(color, QColor) else str(color)
+        if len(text) > 2:
+            text = text[0]
         pixmap = draw_logo_pixmap(
             size=32,
             bg_color=bg,

@@ -157,6 +157,14 @@ class SecurityAnalyzer:
                 'old_entries': [], 'old': 0, '_summaries_with_dates': [],
             }
         with self._cache_lock:
+            # 双重检查锁：full_analysis 在 _cache_lock 外执行，期间可能已被并发
+            # 线程填充。持锁后重新校验缓存，若已被填充且仍有效（TTL 与 key_epoch
+            # 不变），直接复用以避免覆盖并消除本线程 full_analysis 的冗余写入。
+            cached = self._analysis_cache
+            if (cached is not None
+                    and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds
+                    and cached.get('_key_epoch') == current_epoch):
+                return self._refilter_cache(dict(cached), days)
             result['_key_epoch'] = current_epoch
             self._analysis_cache = result
             self._analysis_cache_time = time.monotonic()

@@ -38,17 +38,11 @@ from ...utils.format import format_datetime, utc_now_iso
 from ..services.crypto_utils import (
     build_entry_summary,
     copy_entry_fields,
-    matches_search,
-    require_vault_key,
-)
-from ..services.crypto_utils import (
     decrypt_field as _decrypt_field_impl,
-)
-from ..services.crypto_utils import (
     encrypt_field as _encrypt_field_impl,
-)
-from ..services.crypto_utils import (
+    matches_search,
     matches_tag as _matches_tag_impl,
+    require_vault_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -236,9 +230,12 @@ class EntryManager:
         即弱密码、重复、过期结果不变，订阅方可据此跳过昂贵的缓存重算。
         增删条目等结构性变更保持默认 True，因其改变 total 与重复分组。
         """
-        # 条目增删改可能改变 tags 分布，失效标签计数缓存，下次 get_all_tags 重算。
+        # 条目增删改可能改变 tags 分布与 username 缓存，失效相关缓存。
+        # _username_cache 统一失效：update_entry 改 username 后避免搜索命中旧值，
+        # permanent_delete / empty_trash 后避免已删条目明文驻留内存。
         with self._cache_lock:
             self._tags_cache = None
+            self._username_cache.clear()
         # 回调在锁外执行，避免回调重入 EntryManager 缓存方法时与持锁线程竞争
         for cb in self._on_entry_change_callbacks:
             try:
@@ -371,9 +368,18 @@ class EntryManager:
         summary.integrity_message = '账号' if integrity_error else ''
         return summary
 
-    def add_entry(self, entry: Entry, *, notify: bool = True) -> int:
-        """添加新条目，自动加密并检测强度。"""
-        self._validate_plain_entry(entry)
+    def add_entry(
+        self, entry: Entry, *, notify: bool = True, skip_validation: bool = False,
+    ) -> int:
+        """添加新条目，自动加密并检测强度。
+
+        Args:
+            entry: 待添加的明文条目。
+            notify: 是否触发条目变更通知。
+            skip_validation: 导入路径已由 Entry.from_dict 校验，传 True 跳过重复长度校验。
+        """
+        if not skip_validation:
+            self._validate_plain_entry(entry)
         strength = PasswordGenerator.check_strength(entry.password)
         entry.password_strength = strength.score
         crypto_id = entry.crypto_id or uuid.uuid4().hex

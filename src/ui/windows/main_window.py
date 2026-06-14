@@ -225,7 +225,9 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         if saved_geo:
             try:
                 geo_bytes = bytes.fromhex(saved_geo)
-                if len(geo_bytes) <= 64:
+                # 上限 512 字节留足余量：Qt saveGeometry 通常 40-60 字节，未来版本
+                # 可能增长；原 64 偏紧，Qt 升级后可能丢弃合法 geometry。
+                if len(geo_bytes) <= 512:
                     self.restoreGeometry(geo_bytes)
             except (ValueError, RuntimeError):
                 pass
@@ -629,8 +631,16 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._backup_worker = None
 
     def _quit_app(self):
-        # 托盘退出：等待后台 worker 退出（避免 QThread running 析构崩溃），
-        # 清剪贴板明文，再关闭 vault——与 closeEvent 退出分支的清理对齐
+        # 托盘退出：与 closeEvent 退出分支清理对齐——先移除事件过滤器，防止
+        # 已销毁对象仍被 QApplication 引用、排队的原生消息派发到已删闭包。
+        app = QApplication.instance()
+        if app:
+            app.removeEventFilter(self)
+            session_filter = getattr(self, '_session_filter', None)
+            if session_filter is not None:
+                app.removeNativeEventFilter(session_filter)
+        # 等待后台 worker 退出（避免 QThread running 析构崩溃），清剪贴板明文，
+        # 再关闭 vault
         self._shutdown_workers()
         self._clipboard.clear_now()
         self._vault.close()
@@ -703,6 +713,9 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             self._clipboard.clear_now()
             self._select_timer.stop()
             self._entry_change_timer.stop()
+            # 搜索防抖定时器也需停止：隐藏后 300ms 触发 _do_search 会无谓地
+            # 全量解密刷新已隐藏的列表，与 prepare_for_lock 的清理集对齐。
+            self._search_timer.stop()
             self._pending_selection = None
             from ..components.toast import ToastManager
             ToastManager.cancel_all_for(self)

@@ -159,7 +159,10 @@ class SchemaManager:
 
     def _check_is_new_database(self, cursor) -> bool:
         """检查是否为空数据库。返回 True 表示新库需初始化，False 表示已有数据。
-        非空但不兼容的数据库会抛出 SchemaError。"""
+
+        注意：方法名暗示返回布尔，但在返回前会对非空却不兼容的数据库
+        （缺 vault_meta、schema_format 不符）直接抛出 SchemaError，调用方
+        须同时处理 True / False / 异常三种结果。"""
         tables = {
             row['name'] for row in cursor.execute(
                 "SELECT name FROM sqlite_master "

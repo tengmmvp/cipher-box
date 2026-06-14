@@ -194,8 +194,12 @@ class LoginWindow(QDialog):
         """密码输入变化时更新强度提示。"""
         update_strength_label(self._strength_label, text, prefix='密码强度：')
 
-    def _on_auth_result(self, success: bool, error_msg: str = ''):
-        """处理初始化/解锁的结果。"""
+    def _on_auth_result(self, success: bool, error_msg: str = '', is_auth_failure: bool = True):
+        """处理初始化/解锁的结果。
+
+        is_auth_failure 为 False 时（如后台 worker 抛异常等系统错误）不计入
+        速率锁定，避免系统故障触发账户级递增锁定。
+        """
         if success:
             self._rate_limiter.record_success()
             # 登录成功后立即清除密码输入框，缩短明文在内存中的驻留时间
@@ -205,11 +209,12 @@ class LoginWindow(QDialog):
             self.login_success.emit()
             self.accept()
         else:
-            lock_seconds = self._rate_limiter.record_failure()
-            if lock_seconds > 0:
-                self._show_error(f'尝试次数过多，请等待 {lock_seconds} 秒后重试')
-            else:
-                self._show_error(error_msg or '操作失败，请重试')
+            if is_auth_failure:
+                lock_seconds = self._rate_limiter.record_failure()
+                if lock_seconds > 0:
+                    self._show_error(f'尝试次数过多，请等待 {lock_seconds} 秒后重试')
+                    return
+            self._show_error(error_msg or '操作失败，请重试')
 
     def _on_confirm(self):
         """处理确认按钮点击。"""
@@ -264,10 +269,11 @@ class LoginWindow(QDialog):
         self._on_auth_result(success, error_msg)
 
     def _on_auth_error(self, error_default: str):
-        """后台认证异常回调。"""
+        """后台认证异常回调（系统错误，非认证失败）。"""
         release_worker(self)
         self._reset_confirm_btn()
-        self._on_auth_result(False, error_default)
+        # 系统错误不计入速率锁定，避免故障触发账户级锁定
+        self._on_auth_result(False, error_default, is_auth_failure=False)
 
     def _reset_confirm_btn(self):
         self._confirm_btn.setEnabled(True)

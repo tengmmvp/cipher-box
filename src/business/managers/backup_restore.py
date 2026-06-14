@@ -496,7 +496,7 @@ class BackupRestoreManager:
         category_id = item['category_id']
         if category_id is not None and category_id not in category_ids:
             raise ValueError('备份条目引用了不存在的分类')
-        if type(item['is_favorite']) is not bool or type(item['is_deleted']) is not bool:
+        if not isinstance(item['is_favorite'], bool) or not isinstance(item['is_deleted'], bool):
             raise ValueError('备份条目布尔字段无效')
         strength = item['password_strength']
         if not isinstance(strength, int) or isinstance(strength, bool) or not 0 <= strength <= 4:

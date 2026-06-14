@@ -85,7 +85,13 @@ class ClipboardManager(QObject):
                 try:
                     clipboard.clear()
                 except RuntimeError:
-                    logger.warning("剪贴板清空失败（可能被占用）", exc_info=True)
+                    # clear 被占用时用空字符串覆盖明文兜底，缩短密码残留窗口
+                    try:
+                        clipboard.setText('')
+                    except RuntimeError:
+                        logger.error("剪贴板清空与覆盖均失败，明文可能残留", exc_info=True)
+                    else:
+                        logger.warning("剪贴板 clear 失败，已用空字符串覆盖明文", exc_info=True)
             self._last_text_hash = b''
         if self._last_selection_hash and clipboard.supportsSelection():
             if hmac.compare_digest(
@@ -95,7 +101,12 @@ class ClipboardManager(QObject):
                 try:
                     clipboard.clear(QClipboard.Mode.Selection)
                 except RuntimeError:
-                    logger.warning("Selection 清空失败（可能被占用）", exc_info=True)
+                    try:
+                        clipboard.setText('', QClipboard.Mode.Selection)
+                    except RuntimeError:
+                        logger.error("Selection 清空与覆盖均失败，明文可能残留", exc_info=True)
+                    else:
+                        logger.warning("Selection clear 失败，已用空字符串覆盖明文", exc_info=True)
             self._last_selection_hash = b''
 
     def cancel(self):

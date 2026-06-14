@@ -15,9 +15,6 @@ if TYPE_CHECKING:
     from ...business.services.security_analyzer import SecurityAnalyzer
     from ...config import ConfigManager
 
-# 排序选项来自共享常量，作为单一事实来源
-_SORT_OPTIONS = SORT_OPTIONS
-
 
 class EntryListController:
     """条目列表的纯数据逻辑控制器。
@@ -44,8 +41,8 @@ class EntryListController:
         Args:
             sort_index: 排序下拉框 ``QComboBox.currentIndex()`` 的值。
         """
-        if 0 <= sort_index < len(_SORT_OPTIONS):
-            _, field, order = _SORT_OPTIONS[sort_index]
+        if 0 <= sort_index < len(SORT_OPTIONS):
+            _, field, order = SORT_OPTIONS[sort_index]
             return field, order
         return 'updated_at', 'desc'
 

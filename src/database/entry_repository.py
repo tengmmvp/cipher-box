@@ -74,6 +74,10 @@ _SELECT_ENTRY_SIGN_SQL = (
     "FROM entries e LEFT JOIN categories c ON e.category_id = c.id WHERE e.id=?"
 )
 
+# get_entries_by_ids 的 ID 分批阈值：SQLite 默认限制 999 个主机变量，
+# 取 500 留出余量。提取为常量以便统一调整并避免魔法数字。
+_ID_BATCH_SIZE = 500
+
 
 class EntryRepository:
     """条目数据访问层 — 条目 CRUD、批量操作、密码历史。
@@ -404,10 +408,8 @@ class EntryRepository:
         if not entry_ids:
             return []
         results = []
-        # SQLite 默认限制 999 个变量；取 500 为分批阈值留出余量
-        batch_size = 500
-        for start in range(0, len(entry_ids), batch_size):
-            batch = entry_ids[start:start + batch_size]
+        for start in range(0, len(entry_ids), _ID_BATCH_SIZE):
+            batch = entry_ids[start:start + _ID_BATCH_SIZE]
             placeholders = ','.join('?' for _ in batch)
             rows = self._conn.execute(
                 f"""SELECT e.*, c.name as category_name
@@ -435,8 +437,9 @@ class EntryRepository:
             "INSERT INTO password_history (entry_id, old_password_enc, changed_at) VALUES (?, ?, ?)",
             (entry_id, old_password_enc, changed_at or utc_now_iso()),
         )
-        # 无条件截断：NOT IN 子查询对未超限条目不匹配任何行，幂等且高效。
-        # 比先 COUNT 再 DELETE 少一次数据库查询。
+        # 无条件截断：NOT IN 子查询对未超限条目不匹配任何行，幂等且高效，
+        # 比先 COUNT 再 DELETE 少一次查询。隐式依赖 id 为 INTEGER PRIMARY KEY
+        # （NOT NULL）：若子查询结果含 NULL，NOT IN 对所有行返回 UNKNOWN 而不删除。
         self._conn.execute(
             "DELETE FROM password_history WHERE entry_id = ? AND id NOT IN ("
             "  SELECT id FROM password_history WHERE entry_id = ?"

@@ -44,8 +44,12 @@ class EncryptionEngine:
     TEXT_PREFIX = 'cb:'
     BYTES_PREFIX = b'CBX'
     # 空值哨兵：使用 UUID 前缀降低碰撞概率，加密空输入时替换为哨兵走正常流程。
-    _EMPTY_SENTINEL = '__CBX_EMPTY_7f3a2b1c-4d5e-6f8a-9b0c-1d2e3f4a5b6c__'
-    _EMPTY_BYTES_SENTINEL = b'__CBX_BE_7f3a2b1c-4d5e-6f8a-9b0c-1d2e3f4a5b6c__'
+    # _EMPTY_UUID 作为唯一来源，两个哨兵均从其派生，避免 UUID 硬编码两份漂移。
+    # 注意：字符串与字节哨兵各自保留独立前缀（CBX_EMPTY / CBX_BE），二者字节值
+    # 不同，不能互相 encode/decode 替换，否则会破坏已存量数据的解密识别。
+    _EMPTY_UUID = '7f3a2b1c-4d5e-6f8a-9b0c-1d2e3f4a5b6c'
+    _EMPTY_SENTINEL = f'__CBX_EMPTY_{_EMPTY_UUID}__'
+    _EMPTY_BYTES_SENTINEL = f'__CBX_BE_{_EMPTY_UUID}__'.encode('ascii')
 
     @classmethod
     def _get_cipher(cls, key: bytes) -> AESGCM:
@@ -58,16 +62,16 @@ class EncryptionEngine:
                 f'AES-256 密钥长度无效：期望 32 字节，实际 {len(key)} 字节'
             )
         with _cache_lock:
-            ck = _cache_key(key)
-            cipher = _cipher_cache.get(ck)
+            cache_key = _cache_key(key)
+            cipher = _cipher_cache.get(cache_key)
             if cipher is None:
                 cipher = AESGCM(key)
-                _cipher_cache[ck] = cipher
+                _cipher_cache[cache_key] = cipher
                 # LRU：超限时淘汰最旧条目，而非全量清空（保留活跃密钥）
                 if len(_cipher_cache) > _MAX_CACHE_SIZE:
                     _cipher_cache.popitem(last=False)
             else:
-                _cipher_cache.move_to_end(ck)
+                _cipher_cache.move_to_end(cache_key)
             return cipher
 
     @classmethod

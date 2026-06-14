@@ -91,6 +91,7 @@ class ToastWidget(QFrame):
         self._action_btn: QPushButton | None = None  # 可选操作按钮，主题切换时刷新
         self._fade_in_anim = None
         self._fade_out_anim = None
+        self._stable_height: int | None = None  # 布局稳定后缓存的卡片高度，消除首次堆叠跳变
 
         self._setup_ui(message, toast_type, action_text)
         self._apply_style(toast_type)
@@ -133,9 +134,7 @@ class ToastWidget(QFrame):
         self._msg_label = QLabel(message)
         self._msg_label.setWordWrap(True)
         self._msg_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._msg_label.setStyleSheet(
-            f'font-size: 13px; color: {c("text_primary")}; background: transparent; border: none;'
-        )
+        self._msg_label.setStyleSheet(self._msg_label_style())
         top_row.addWidget(self._msg_label, 1)
 
         # 关闭按钮
@@ -155,20 +154,7 @@ class ToastWidget(QFrame):
             self._action_btn = QPushButton(action_text)
             self._action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             self._action_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            self._action_btn.setStyleSheet(f"""
-                QPushButton {{
-                    border: none;
-                    background: transparent;
-                    color: {c("accent")};
-                    font-size: 12px;
-                    font-weight: bold;
-                    padding: 2px 4px;
-                    border-radius: 3px;
-                }}
-                QPushButton:hover {{
-                    background: {c("accent_light")};
-                }}
-            """)
+            self._action_btn.setStyleSheet(self._action_btn_style())
             self._action_btn.clicked.connect(self._on_action_clicked)
             action_row = QHBoxLayout()
             action_row.addStretch()
@@ -205,28 +191,34 @@ class ToastWidget(QFrame):
             }}
         """)
 
+    def _msg_label_style(self) -> str:
+        """消息文本样式，构造与主题刷新共用。"""
+        return f'font-size: 13px; color: {c("text_primary")}; background: transparent; border: none;'
+
+    def _action_btn_style(self) -> str:
+        """操作按钮样式，构造与主题刷新共用。"""
+        return f"""
+            QPushButton {{
+                border: none;
+                background: transparent;
+                color: {c("accent")};
+                font-size: 12px;
+                font-weight: bold;
+                padding: 2px 4px;
+                border-radius: 3px;
+            }}
+            QPushButton:hover {{
+                background: {c("accent_light")};
+            }}
+        """
+
     def refresh_theme(self):
         """主题切换后重新烘焙配色：刷新背景、强调条、消息文本、操作按钮与类型图标。"""
         self._apply_style(self._toast_type)
         if getattr(self, '_msg_label', None) is not None:
-            self._msg_label.setStyleSheet(
-                f'font-size: 13px; color: {c("text_primary")}; background: transparent; border: none;'
-            )
+            self._msg_label.setStyleSheet(self._msg_label_style())
         if self._action_btn is not None:
-            self._action_btn.setStyleSheet(f"""
-                QPushButton {{
-                    border: none;
-                    background: transparent;
-                    color: {c("accent")};
-                    font-size: 12px;
-                    font-weight: bold;
-                    padding: 2px 4px;
-                    border-radius: 3px;
-                }}
-                QPushButton:hover {{
-                    background: {c("accent_light")};
-                }}
-            """)
+            self._action_btn.setStyleSheet(self._action_btn_style())
         # 类型图标颜色烘焙进 QPixmap，主题切换时需重建刷新
         if getattr(self, '_icon_label', None) is not None:
             self._icon_label.setPixmap(icon_pixmap(self._icon_name, size=SIZE_TOAST))
@@ -252,6 +244,10 @@ class ToastWidget(QFrame):
 
         if self._duration > 0:
             self._auto_close_timer.start(self._duration)
+
+        # 布局稳定后缓存卡片高度，_reposition_all 优先使用，
+        # 消除首次 sizeHint() 返回 0 导致的堆叠跳变。
+        self._stable_height = self.sizeHint().height() or self.height()
 
     def _start_fade_out(self):
         """开始淡出动画。"""
@@ -413,10 +409,13 @@ class ToastManager:
         # 从下往上堆叠
         y = parent_rect.height() - self._margin_bottom
         for toast in reversed(self._toasts):
-            # 高度回退链：首次布局前 sizeHint 可能返回 0，
-            # 此时回退到实际 height()，最终使用保守默认值 60px。
-            toast_height = toast.sizeHint().height()
-            if toast_height <= 20:
+            # 高度回退链：优先使用 show_toast 缓存的稳定高度，
+            # 首次布局前 sizeHint 可能返回 0，回退到 sizeHint/height()，
+            # 最终使用保守默认值 60px。
+            toast_height = toast._stable_height
+            if not toast_height or toast_height <= 0:
+                toast_height = toast.sizeHint().height()
+            if not toast_height or toast_height <= 20:
                 toast_height = toast.height()
             if toast_height <= 0:
                 toast_height = 60

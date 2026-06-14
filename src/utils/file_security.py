@@ -206,10 +206,13 @@ def secure_delete_file(path: Path) -> None:
     cipherbox_snapshot_*.cbox、临时备份），统一改密路径与其它清理路径的删除强度，
     避免敏感快照仅被 unlink 而明文扇区可被取证工具还原。
 
-    注意：SSD 的磨损均衡与写入放大使覆写并非密码学保证，但比单纯 unlink（仅
-    释放 inode 引用）显著更强。覆写或 unlink 失败均抛 OSError，由调用方计入
-    失败清单上报而非静默丢失。
+    文件不存在时直接返回（视为已删除）；覆写采用随机字节，SSD 磨损均衡下并非
+    密码学保证但显著强于单纯 unlink。unlink 使用 missing_ok 防御 TOCTOU。
     """
+    if not path.exists():
+        # 文件已不存在视为已删除，直接返回；避免 stat 抛 FileNotFoundError
+        # 中断调用方的批量清理循环，单文件缺失不被误报为清理失败。
+        return
     try:
         size = path.stat().st_size
         if size > 0:
@@ -218,4 +221,6 @@ def secure_delete_file(path: Path) -> None:
                 fp.flush()
                 os.fsync(fp.fileno())
     finally:
-        path.unlink()
+        # missing_ok=True 防御 stat 与 unlink 间的 TOCTOU（文件被外部删除），
+        # 避免此时抛 FileNotFoundError 中断清理循环。
+        path.unlink(missing_ok=True)

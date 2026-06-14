@@ -36,6 +36,9 @@ class PasswordHistoryWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._history_passwords: list[str] = []
+        # 已渲染的密码 QLabel 引用：clear() 时先 setText 掩码再销毁，
+        # 避免 deleteLater 异步销毁前明文驻留 Qt 对象（锁定时内存转储可读）。
+        self._pwd_labels: list[QLabel] = []
         self._entry_mgr = None
         # 外部 _field_hide_timers 引用，通过 set_hide_timers_ref 注入
         self._field_hide_timers: list[QTimer] = []
@@ -102,6 +105,10 @@ class PasswordHistoryWidget(QWidget):
 
     def clear(self):
         """安全清除所有状态和密码。"""
+        # 先掩码已渲染的明文 QLabel 再释放，避免 deleteLater 异步销毁前明文驻留。
+        for lbl in self._pwd_labels:
+            lbl.setText('••••••••')
+        self._pwd_labels.clear()
         for p in self._history_passwords:
             mark_secret_discarded(p)
         self._history_passwords.clear()
@@ -132,6 +139,7 @@ class PasswordHistoryWidget(QWidget):
                 f'font-family: {FONT_FAMILY_MONOSPACE}; font-size: 12px; color: {c("text_primary")};'
             )
             row.addWidget(pwd_label, 1)
+            self._pwd_labels.append(pwd_label)
 
             # 历史密码存入间接引用列表，闭包通过索引读取，
             # clear() 时清空列表即可释放明文。
@@ -163,7 +171,8 @@ class PasswordHistoryWidget(QWidget):
                 if lbl.text() == '••••••••':
                     lbl.setText(pwd)
                     set_icon(btn, LOCK)
-                    assert self._get_pwd_visible_ms is not None
+                    if self._get_pwd_visible_ms is None:
+                        return
                     timer.start(self._get_pwd_visible_ms())
                 else:
                     lbl.setText('••••••••')
@@ -182,7 +191,8 @@ class PasswordHistoryWidget(QWidget):
 
             def do_copy(_checked=False, idx=hist_idx, btn=copy_btn):
                 pwd = self._history_passwords[idx] if idx < len(self._history_passwords) else ''
-                assert self._copy_with_feedback is not None
+                if self._copy_with_feedback is None:
+                    return
                 self._copy_with_feedback(btn, pwd)
 
             copy_btn.clicked.connect(do_copy)

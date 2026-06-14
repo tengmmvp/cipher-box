@@ -260,8 +260,11 @@ class DatabaseManager:
             else:
                 logger.error("回滚事务失败，数据库可能不一致", exc_info=True)
                 raise
-        self._transaction_depth = 0
-        self._savepoint_counter = 0
+        finally:
+            # 即使 ROLLBACK 抛异常也归零事务深度，避免状态粘滞导致后续
+            # transaction() 误判仍处事务内而走 savepoint 分支。
+            self._transaction_depth = 0
+            self._savepoint_counter = 0
 
     def _auto_commit(self) -> None:
         """内部提交：仅在非事务模式下执行 commit。
@@ -409,6 +412,9 @@ class DatabaseManager:
         编程提示而非安全边界。防止绕过 EntryManager 直接调用 db.add_entry/
         update_entry 时明文静默落入加密列。空值允许通过，未填写字段存储为空字符串。
         读取实例级 _enforce_encrypted_fields，避免测试覆写泄漏到其他实例。
+
+        适用范围：当前仅校验 ``encrypt`` 产出的 ``cb:`` 前缀密文；
+        ``encrypt_bytes`` 走 ``CBX`` 字节前缀路径，不经过此加密列断言。
         """
         if self._enforce_encrypted_fields and value:
             tail = value[3:] if value.startswith('cb:') else ''
@@ -447,10 +453,11 @@ class DatabaseManager:
         return self._schema_mgr
 
     # -- 委托透传：Schema / Categories --
-    # 保留显式类型化委托而非 __getattr__ 动态委托：Pyright 严格模式下动态委托
-    # 会让调用方丢失返回类型推断（reportAttributeAccessIssue / object 退化）。
-    # 上方 entries/categories/schema property 提供更直接的类型化访问路径，
-    # 新代码可优先使用。
+    # 以下方法为向后兼容的委托透传，新代码优先用 db.entries / db.categories /
+    # db.schema 直访 Repository。保留显式类型化委托而非 __getattr__ 动态委托：
+    # Pyright 严格模式下动态委托会让调用方丢失返回类型推断
+    # （reportAttributeAccessIssue / object 退化）。上方 entries/categories/schema
+    # property 提供更直接的类型化访问路径，新代码可优先使用。
 
     def init_tables(self) -> None:
         return self._schema_mgr.init_tables()

@@ -28,6 +28,7 @@ MS_AUTO_BACKUP_CHECK = 10 * 60 * 1000  # 自动备份检查间隔
 MS_STATUS_BAR_DEBOUNCE = 100  # 状态栏安全分析防抖间隔
 MS_ENTRY_SELECT_DEBOUNCE = 80  # 条目选择防抖间隔
 MS_ENTRY_CHANGE_DEBOUNCE = 100  # 条目变更防抖间隔
+MS_INITIAL_BACKUP_DELAY = 1500  # 启动后首次备份检查延迟
 
 # ---------- 显示限制 ----------
 MAX_HISTORY_DISPLAY = 5     # 详情面板最多显示密码历史条数
@@ -41,7 +42,6 @@ WINDOW_DEFAULT_SIZE = (1180, 760)
 SIDEBAR_WIDTH = 220
 FILTER_MAX_HEIGHT = 240
 SPLITTER_SIZES = [200, 380, 420]
-MS_INITIAL_BACKUP_DELAY = 1500
 
 # ---------- 对话框最小尺寸 ----------
 DIALOG_BACKUP_MIN_SIZE = (460, 300)

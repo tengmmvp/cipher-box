@@ -147,6 +147,8 @@ def _make_icon(name: str, color_key: str | None = None) -> QIcon:
     主题切换时需重建所有图标，重建入口包括 _build_filter_list、_update_menu_icons 等，
     遗漏重建的图标将保留旧主题颜色。
     """
+    if name not in _ICON_MAP:
+        raise ValueError(f'未注册图标常量: {name}')
     glyph, default_color_key = _ICON_MAP[name]
     ck = color_key or default_color_key
     color = c(ck)

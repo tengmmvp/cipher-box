@@ -222,7 +222,9 @@ class ConfigManager:
                     os.fsync(f.fileno())
                 secure_file(temp_path)
                 os.replace(temp_path, self._config_path)
-                secure_file(self._config_path)
+                # os.replace 在 NTFS/Linux 下保留文件安全描述符（ACL/权限随文件
+                # 对象移动），故无需对 replace 后的 .json 再次 secure_file，省一次
+                # icacls 子进程调用。
             except Exception:
                 # 异常时清理临时文件，避免残留含明文配置的 .tmp 孤儿文件
                 temp_path.unlink(missing_ok=True)
