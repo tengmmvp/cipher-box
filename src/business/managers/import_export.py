@@ -577,6 +577,9 @@ class ImportExportManager:
                     item.pop('totp_secret', None)
 
         entries = [Entry.from_dict(item) for item in items]
+        # entries 构造完成后立即释放 JSON 解析树与原始条目列表，降低大文件导入
+        # 在事务执行期间的内存峰值（导入在 worker 线程不阻塞 UI，但低配机仍受益）。
+        del data, items
         entries_data = [{'title': e.title, 'username': e.username} for e in entries]
         categories = {c.name.casefold(): c for c in self._entry_mgr.get_categories()}
 

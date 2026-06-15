@@ -42,6 +42,9 @@ coverage.xml
 Thumbs.db
 desktop.ini
 
+# Bash 崩溃转储
+*.stackdump
+
 # 应用运行时（含敏感数据）
 vault.db
 config.json

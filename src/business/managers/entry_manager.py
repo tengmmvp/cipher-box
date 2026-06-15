@@ -850,10 +850,10 @@ class EntryManager:
             self._vault.db.update_entry(raw)
             result = raw.is_favorite
         # 收藏切换不影响密码相关分析维度，传 False 避免 SecurityAnalyzer 缓存
-        # 无谓失效触发整库重算。is_favorite 不在摘要/标签/分类名缓存中，按
-        # crypto_id 单条 pop 摘要缓存并跳过标签失效，避免全量重解密。
+        # 无谓失效触发整库重算。is_favorite 不在摘要/标签/分类名缓存中，三者
+        # 均无需失效；列表排序变化由回调触发 SQL 重查，复用摘要缓存避免重解密。
         self._notify_entry_change(
-            password_changed=False, crypto_id=raw.crypto_id, tags_changed=False,
+            password_changed=False, clear_summaries=False, tags_changed=False,
         )
         return result
 
