@@ -271,6 +271,12 @@ class ConfigManager:
         设计折衷：``auto_lock_minutes=0`` 是用户主动禁用自动锁定的合法语义，
         不受安全下限约束，直接返回 0。这优先尊重用户选择而非强制安全策略。
         负值等非法篡改值仍会被修正为安全下限。
+
+        威胁模型边界：完整性 HMAC 密钥（config.key）与配置文件同处数据目录，具备
+        该目录读写权限的本地攻击者可重算签名使 _integrity_warning 保持 False，
+        继而放行 auto_lock_minutes=0。此为本地威胁模型的固有限制——外层防御依赖
+        secure_file 将配置文件收紧到当前用户独占。彻底修复（如独立、签名强制保护
+        的「禁用自动锁定」开关）属 feature 级改动，不在本层处理。
         """
         value = self.get(key, default)
         if isinstance(value, int) and key in _SECURITY_MINIMUMS:

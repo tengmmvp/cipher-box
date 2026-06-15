@@ -719,7 +719,7 @@ class ImportExportManager:
         ))
 
     @staticmethod
-    def _bitwarden_entry_fields(item: dict) -> 'tuple[str, list[CustomField]]':
+    def _bitwarden_entry_fields(item: dict) -> tuple[str, list[CustomField]]:
         """解析 Bitwarden item 的条目类型与自定义字段。
 
         item_type: 1=login, 2=note, 3=card, 4=identity；未知类型按 login。
@@ -880,6 +880,8 @@ class ImportExportManager:
         Returns:
             由条目列表、去重摘要列表、是否存在密码列标志组成的三元组。
         """
+        if not rows:
+            return [], [], False
         headers = list(rows[0].keys())
         col_map = self._build_col_map(headers, aliases)
         password_present = 'password' in col_map

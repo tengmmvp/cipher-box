@@ -109,11 +109,9 @@ class EntryItemDelegate(QStyledItemDelegate):
     _TEXT_RIGHT_MARGIN = 38           # 文本区域右侧保留宽度
     _DELETE_TEXT_RIGHT_EXTRA = 28     # 删除徽章额外保留宽度
     # paint 内行内垂直坐标偏移（相对 rect.top()）。
-    # _TITLE_Y_OFFSET / _TITLE_HEIGHT / _SUBTITLE_Y_OFFSET 引用模块级
-    # 不变量常量，三者几何关系在模块加载时由 assert 校验。
-    _TITLE_Y_OFFSET = _TITLE_Y_OFFSET
-    _TITLE_HEIGHT = _TITLE_HEIGHT
-    _SUBTITLE_Y_OFFSET = _SUBTITLE_Y_OFFSET
+    # _TITLE_Y_OFFSET / _TITLE_HEIGHT / _SUBTITLE_Y_OFFSET 直接引用模块级不变量
+    # 常量（三者在模块加载时由 assert 校验几何关系），不再以类属性复制，消除
+    # 「改模块级常量而类属性不跟随」的双份真相源风险。
     _SUBTITLE_HEIGHT = 19     # 副标题绘制区域高度
     _MARKER_DOT_Y_OFFSET = 10 # 强度圆点 Y 偏移
     _MARKER_DOT_WIDTH = 12    # 强度圆点绘制区域宽度
@@ -211,7 +209,7 @@ class EntryItemDelegate(QStyledItemDelegate):
                 title, Qt.TextElideMode.ElideRight, int(text_width)
             )
             painter.drawText(
-                QRectF(text_left, rect.top() + self._TITLE_Y_OFFSET, text_width, self._TITLE_HEIGHT),
+                QRectF(text_left, rect.top() + _TITLE_Y_OFFSET, text_width, _TITLE_HEIGHT),
                 Qt.AlignmentFlag.AlignVCenter,
                 title_text,
             )
@@ -232,7 +230,7 @@ class EntryItemDelegate(QStyledItemDelegate):
                 subtitle, Qt.TextElideMode.ElideRight, int(text_width)
             )
             painter.drawText(
-                QRectF(text_left, rect.top() + self._SUBTITLE_Y_OFFSET, text_width, self._SUBTITLE_HEIGHT),
+                QRectF(text_left, rect.top() + _SUBTITLE_Y_OFFSET, text_width, self._SUBTITLE_HEIGHT),
                 Qt.AlignmentFlag.AlignVCenter,
                 subtitle_text,
             )

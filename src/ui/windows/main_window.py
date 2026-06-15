@@ -168,13 +168,13 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         管理器的创建与连线集中于此便于审计与调整。
         """
         self._entry_mgr = EntryManager(self._vault)
-        self._security = SecurityAnalyzer(self._vault, entry_manager=self._entry_mgr)
+        self._security = SecurityAnalyzer(self._vault)
         self._entry_list_ctrl = EntryListController(
             self._entry_mgr, self._security, self._config,
         )
         self._sidebar_ctrl = SidebarController(self._entry_mgr, self._config)
         self._import_export = ImportExportManager(self._entry_mgr)
-        self._backup = BackupRestoreManager(self._vault)
+        self._backup = BackupRestoreManager(self._vault, self._entry_mgr)
         self._clipboard = ClipboardManager(
             self._config.get_safe('clipboard_clear_seconds', CLIPBOARD_CLEAR_SECONDS_DEFAULT)
         )

@@ -31,6 +31,7 @@ from ._decorators import _db_operation, _db_write
 from .category_repository import CategoryRepository
 from .entry_repository import EntryRepository
 from .schema_manager import SchemaManager
+from .types import VerifyMode
 
 logger = logging.getLogger(__name__)
 
@@ -515,6 +516,7 @@ class DatabaseManager:
         limit: int | None = None,
         after_id: int | None = None,
         sort_by_updated: bool = False,
+        verify: VerifyMode = VerifyMode.LENIENT,
     ) -> list[RawEntry]:
         return self._entry_repo.get_entries(
             deleted_only=deleted_only,
@@ -524,6 +526,7 @@ class DatabaseManager:
             limit=limit,
             after_id=after_id,
             sort_by_updated=sort_by_updated,
+            verify=verify,
         )
 
     def get_entry(self, entry_id: int) -> Optional[RawEntry]:

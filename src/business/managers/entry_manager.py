@@ -38,17 +38,11 @@ from ...utils.format import format_datetime, utc_now_iso
 from ..services.crypto_utils import (
     build_entry_summary,
     copy_entry_fields,
-    matches_search,
-    require_vault_key,
-)
-from ..services.crypto_utils import (
     decrypt_field as _decrypt_field_impl,
-)
-from ..services.crypto_utils import (
     encrypt_field as _encrypt_field_impl,
-)
-from ..services.crypto_utils import (
+    matches_search,
     matches_tag as _matches_tag_impl,
+    require_vault_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -250,19 +244,42 @@ class EntryManager:
             self._tags_cache = None
             self._cache_epoch = None
 
-    def _notify_entry_change(self, password_changed: bool = True):
+    def _notify_entry_change(
+        self,
+        password_changed: bool = True,
+        *,
+        crypto_id: str | None = None,
+        tags_changed: bool = True,
+        category_changed: bool = False,
+        clear_summaries: bool = True,
+    ):
         """通知所有注册的条目变更回调，事件驱动缓存失效。
 
         password_changed 为 False，如仅修改标题或 URL 时，不涉及密码的分析维度，
         即弱密码、重复、过期结果不变，订阅方可据此跳过昂贵的缓存重算。
         增删条目等结构性变更保持默认 True，因其改变 total 与重复分组。
+
+        缓存失效粒度（避免单条编辑触发全量重解密）：
+        - crypto_id 提供（单条更新）：仅 pop 该条目的搜索摘要缓存，而非全清。
+        - crypto_id 为 None 且 clear_summaries=True（增删/批量）：清空全部摘要缓存。
+        - crypto_id 为 None 且 clear_summaries=False（分类 CRUD）：保留摘要缓存，
+          因分类变更不改变条目的 title/username/url/tags 摘要内容。
+        - tags_changed：仅当 tags 字段或条目增删改变标签分布时失效 _tags_cache，
+          标题/URL/密码等非 tags 编辑不再触发标签侧边栏无谓重算。
+        - category_changed：仅分类增删改改变分类名时失效 _category_name_cache；
+          普通条目变更不应清空分类名缓存。
         """
-        # 条目增删改可能改变搜索摘要与标签分布，统一失效相关缓存。
         with self._cache_lock:
-            self._tags_cache = None
-            self._search_metadata_cache.clear()
-            self._search_metadata_failed.clear()
-            self._category_name_cache.clear()
+            if crypto_id is not None:
+                self._search_metadata_cache.pop(crypto_id, None)
+                self._search_metadata_failed.pop(crypto_id, None)
+            elif clear_summaries:
+                self._search_metadata_cache.clear()
+                self._search_metadata_failed.clear()
+            if tags_changed:
+                self._tags_cache = None
+            if category_changed:
+                self._category_name_cache.clear()
         # 回调在锁外执行，避免回调重入 EntryManager 缓存方法时与持锁线程竞争
         for cb in self._on_entry_change_callbacks:
             try:
@@ -409,7 +426,10 @@ class EntryManager:
         epoch 变化、锁定或条目更新时缓存立即失效。
         """
         title, username, url, tags = self._cached_search_metadata(raw_entry)
-        failed = self._search_metadata_failed.get(raw_entry.crypto_id, set())
+        with self._cache_lock:
+            # 锁内采样失败字段集，避免与并发 invalidate_caches/_notify_entry_change
+            # 的 .clear() 竞态导致完整性标志被瞬时错误清除（语义竞态）。
+            failed = self._search_metadata_failed.get(raw_entry.crypto_id, set())
         summary = build_entry_summary(raw_entry, username)
         summary.title = title
         summary.url = url
@@ -557,7 +577,20 @@ class EntryManager:
                 )
             self.db.update_entry(enc_entry)
         if notify:
-            self._notify_entry_change(password_changed)
+            # 检测 tags 是否变更以决定是否失效标签缓存；摘要缓存按 crypto_id 单条
+            # 精细失效，避免标题/URL 编辑触发全量重解密。raw.tags 解密失败时保守
+            # 视为 tags 已变（None != 任意字符串），仍失效标签缓存。
+            try:
+                old_tags = self._decrypt_field(
+                    raw.tags, raw.crypto_id, 'tags', strict=True,
+                ) if raw.tags else ''
+            except Exception:
+                old_tags = None
+            self._notify_entry_change(
+                password_changed,
+                crypto_id=raw.crypto_id,
+                tags_changed=(old_tags != entry.tags),
+            )
 
     def delete_entry(self, entry_id: int) -> bool:
         """软删除条目，移入回收站。返回是否实际执行（条目存在）。"""
@@ -756,9 +789,13 @@ class EntryManager:
             self.db.update_category(stored)
         category.id = result
         category.name = plaintext_name
-        # 分类变更不改变条目密码相关维度，仅失效 _tags_cache 等结构缓存。
+        # 分类变更不改条目摘要内容（title/url/tags 不变），保留搜索摘要缓存；
+        # 仅失效分类名缓存并通知回调刷新侧边栏分类列表。
         if notify:
-            self._notify_entry_change(password_changed=False)
+            self._notify_entry_change(
+                password_changed=False, tags_changed=False,
+                category_changed=True, clear_summaries=False,
+            )
         return result
 
     def update_category(self, category: Category) -> None:
@@ -778,12 +815,21 @@ class EntryManager:
             created_at=category.created_at,
         )
         self._vault.db.update_category(stored)
-        self._notify_entry_change(password_changed=False)
+        # 分类名/icon 变更不影响条目摘要内容，仅失效分类名缓存。
+        self._notify_entry_change(
+            password_changed=False, tags_changed=False,
+            category_changed=True, clear_summaries=False,
+        )
 
     # DELEGATE: see DatabaseManager.delete_category
     def delete_category(self, category_id: int) -> None:
         self._vault.db.delete_category(category_id)
-        self._notify_entry_change(password_changed=False)
+        # 删除分类后关联条目 category_id 置 NULL，分类名缓存需失效；条目摘要
+        # 内容（title/url/tags）不变，保留搜索摘要缓存避免全量重解密。
+        self._notify_entry_change(
+            password_changed=False, tags_changed=False,
+            category_changed=True, clear_summaries=False,
+        )
 
     def toggle_favorite(self, entry_id: int) -> bool | None:
         """切换收藏状态，返回新的收藏状态；条目不存在时返回 None。
@@ -804,8 +850,11 @@ class EntryManager:
             self._vault.db.update_entry(raw)
             result = raw.is_favorite
         # 收藏切换不影响密码相关分析维度，传 False 避免 SecurityAnalyzer 缓存
-        # 无谓失效触发整库重算
-        self._notify_entry_change(password_changed=False)
+        # 无谓失效触发整库重算。is_favorite 不在摘要/标签/分类名缓存中，按
+        # crypto_id 单条 pop 摘要缓存并跳过标签失效，避免全量重解密。
+        self._notify_entry_change(
+            password_changed=False, crypto_id=raw.crypto_id, tags_changed=False,
+        )
         return result
 
     # DELEGATE: see DatabaseManager.get_entry_count

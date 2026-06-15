@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..managers.entry_manager import EntryManager
     from ..managers.vault_manager import VaultManager
 
 logger = logging.getLogger(__name__)
@@ -23,6 +22,13 @@ from .crypto_utils import build_entry_summary, decrypt_field, require_vault_key
 # 此 TTL 仅控制时间维度的淘汰。跨层时序常量未集中到 UI 层，以避免
 # 业务层反向依赖 UI 模块；本常量作为业务层时序参数的命名事实来源。
 SECURITY_ANALYSIS_CACHE_TTL_SECONDS = 120
+
+# 安全健康评分的惩罚系数：弱/重复/过期密码各自占总数的占比乘以对应系数，从满分
+# 100 扣减。属业务规则（非 UI 呈现参数），集中于此使评分算法可被非 UI 场景
+# （CLI/导出/告警）复用，权重调整无需触及 UI 资源包。
+HEALTH_PENALTY_WEAK = 15
+HEALTH_PENALTY_DUPLICATE = 10
+HEALTH_PENALTY_OLD = 5
 
 
 class SecurityAnalyzer:
@@ -41,14 +47,31 @@ class SecurityAnalyzer:
     ``invalidate_cache`` 失效，TTL 作为最终兜底，避免每次命中都查 DB 计数。
     """
 
-    def __init__(self, vault_manager: 'VaultManager', entry_manager: 'EntryManager | None' = None, cache_ttl_seconds: int = SECURITY_ANALYSIS_CACHE_TTL_SECONDS):
+    def __init__(self, vault_manager: 'VaultManager', cache_ttl_seconds: int = SECURITY_ANALYSIS_CACHE_TTL_SECONDS):
         self._vault = vault_manager
-        self._entry_mgr = entry_manager
         self._cache_ttl_seconds = cache_ttl_seconds
         self._analysis_cache: dict | None = None
         self._analysis_cache_time: float = 0
         self._analysis_cache_days: int = 0
         self._cache_lock = threading.Lock()
+
+    @staticmethod
+    def compute_health_score(weak_count: int, dup_count: int, old_count: int, total: int) -> int:
+        """按各类风险占比与对应惩罚系数计算 0 至 100 的安全健康评分。
+
+        评分算法与惩罚系数属于业务规则，集中于此供 UI 与潜在的非 UI 场景复用，
+        避免 UI 层持有业务权重导致的分层违反。
+        """
+        if total == 0:
+            return 100
+        weak_ratio = min(weak_count / total, 1.0)
+        dup_ratio = min(dup_count / total, 1.0)
+        old_ratio = min(old_count / total, 1.0)
+        return max(0, int(100 - (
+            weak_ratio * 100 * HEALTH_PENALTY_WEAK
+            + dup_ratio * 100 * HEALTH_PENALTY_DUPLICATE
+            + old_ratio * 100 * HEALTH_PENALTY_OLD
+        )))
 
     @property
     def _key(self) -> bytes:

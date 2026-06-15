@@ -66,10 +66,6 @@ TOAST_HOVER_RESTART_MS = 1000
 LOGIN_HEIGHT_FIRST = 520
 LOGIN_HEIGHT_LOGIN = 450
 
-# ---------- 安全评分惩罚权重 ----------
-HEALTH_PENALTY_WEAK = 15
-HEALTH_PENALTY_DUPLICATE = 10
-HEALTH_PENALTY_OLD = 5
 
 # ---------- 字体 ----------
 # 字体栈：Windows 优先 Microsoft YaHei，macOS 回退 PingFang SC，

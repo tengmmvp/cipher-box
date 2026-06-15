@@ -126,8 +126,17 @@ def wait_worker_shutdown(worker, *, cancel=True, timeout=None) -> bool:
     # 正常情况下不会触发此告警。
     if worker.isRunning():
         logger.error(
-            "后台 worker 等待 %dms 后仍在运行，将继续等待以避免 QThread 析构崩溃",
+            "后台 worker 等待 %dms 后仍在运行，再等待一个同等周期作为兜底",
             timeout,
         )
-        worker.wait()
+        worker.wait(timeout)
+    if worker.isRunning():
+        # 兜底超时后仍运行属极端异常（worker 卡死）。继续无限等待会让关闭永久
+        # 挂起，比 QThread 析构警告更影响体验；记录 critical 后放弃等待，由调用方
+        # 决定后续（接受可能的 Qt 警告）。不调用 terminate()，因其强制终止可能
+        # 留下未释放的资源与不一致状态。
+        logger.critical(
+            "后台 worker 兜底等待 %dms 后仍在运行，放弃等待以避免关闭永久卡死",
+            timeout,
+        )
     return not worker.isRunning()

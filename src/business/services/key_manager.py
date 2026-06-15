@@ -44,17 +44,39 @@ class KeyManager:
     def key_epoch(self):
         return self._key_epoch
 
+    def _set_key(self, key) -> None:
+        """装入主密钥前先安全清零旧 bytearray，避免改密后旧密钥残留待 GC 回收。
+
+        与 clear() 的清零语义对齐：旧密钥（bytearray）被新值覆盖前原地清零，
+        收缩改密/恢复后旧密钥仍可被进程内存 dump 读取的窗口。
+        old is not new 用于跳过“传入的正是当前持有的同一 bytearray”的情形
+        （_to_bytearray 对 bytearray 直接返回、所有权转移），避免清零掉将要使用的值。
+        """
+        old = self._key
+        new = self._to_bytearray(key)
+        if old is not None and old is not new and isinstance(old, bytearray):
+            secure_zero_buffer(old)
+        self._key = new
+
+    def _set_snapshot_key(self, snapshot_key) -> None:
+        """装入快照密钥前先安全清零旧 bytearray，理由同 _set_key。"""
+        old = self._snapshot_key
+        new = self._to_bytearray(snapshot_key)
+        if old is not None and old is not new and isinstance(old, bytearray):
+            secure_zero_buffer(old)
+        self._snapshot_key = new
+
     def activate(self, key, snapshot_key, epoch) -> None:
         """解锁或改密成功后，一次性设置全部密钥材料与版本。"""
-        self._key = self._to_bytearray(key)
-        self._snapshot_key = self._to_bytearray(snapshot_key)
+        self._set_key(key)
+        self._set_snapshot_key(snapshot_key)
         self._key_epoch = epoch
 
     def update_key(self, key) -> None:
-        self._key = self._to_bytearray(key)
+        self._set_key(key)
 
     def update_snapshot_key(self, snapshot_key) -> None:
-        self._snapshot_key = self._to_bytearray(snapshot_key)
+        self._set_snapshot_key(snapshot_key)
 
     def update_epoch(self, epoch) -> None:
         self._key_epoch = epoch

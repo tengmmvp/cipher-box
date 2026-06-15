@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from .entry_manager import EntryManager
     from .vault_manager import VaultManager
 
 from ...crypto.encryption import EncryptionEngine
@@ -102,8 +103,16 @@ class BackupFlag(enum.IntEnum):
 class BackupRestoreManager:
     """创建可移植的加密备份并以事务方式恢复。"""
 
-    def __init__(self, vault_manager: 'VaultManager'):
+    def __init__(
+        self,
+        vault_manager: 'VaultManager',
+        entry_manager: 'EntryManager | None' = None,
+    ):
         self._vault = vault_manager
+        # 复用调用方（MainWindow）持有的 EntryManager 单例，避免备份/恢复时新建
+        # 临时实例导致分类名重复解密与缓存双份明文驻留。未注入时回退临时实例
+        # （主要为兼容隔离测试）。
+        self._entry_mgr = entry_manager
 
     @property
     def _key(self) -> bytes:
@@ -160,10 +169,15 @@ class BackupRestoreManager:
         """
         db = self._vault.db
         key = self._key
-        from .entry_manager import EntryManager
+        # 优先复用注入的 EntryManager 单例（共享分类名缓存，避免备份时重复解密）；
+        # 未注入时回退临时实例（兼容隔离测试）。
+        entry_mgr = self._entry_mgr
+        if entry_mgr is None:
+            from .entry_manager import EntryManager
+            entry_mgr = EntryManager(self._vault)
         categories = [
             category.to_dict()
-            for category in EntryManager(self._vault).get_categories()
+            for category in entry_mgr.get_categories()
         ]
         entries = []
         raw_entries = db.get_entries(include_deleted=True)
@@ -253,63 +267,81 @@ class BackupRestoreManager:
         ``cancel_check`` 可选取消探针，在全量解密循环中周期性调用，返回真值
         时中止备份并返回 (False, '备份已取消')，避免后台备份在隐藏/锁定后
         继续持有密钥解密。
+
+        锁获取与核心逻辑分离：核心逻辑抽取到 :meth:`_create_backup_locked`，供
+        :meth:`_create_restore_point` 在已持锁上下文复用，避免经本方法再次获取
+        RLock 的嵌套重入（虽 RLock 可重入，但契约脆弱）。
         """
         try:
-            t0 = time.monotonic()
             filepath = str(validate_file_path(filepath))
-            salt = os.urandom(BACKUP_SALT_SIZE)
-            # 持 vault 锁与改密重加密串行：避免后台备份读全量明文期间密钥被
-            # 轮换，导致解密失败被静默跳过而产出残缺备份。
-            # 备份密钥也在锁内解析：snapshot_key 在锁内读取（KeyManager.snapshot_key
-            # property 已返回独立 bytes 副本），避免释放锁后、加密前主线程 lock()
-            # 清零 snapshot_key 的竞态窗口（锁定与自动备份后台线程竞态）。
+            # 持 vault 锁与改密重加密串行：避免后台备份读全量明文期间密钥被轮换，
+            # 导致解密失败被静默跳过而产出残缺备份。备份密钥也在锁内解析，避免
+            # snapshot_key 在释放锁后、加密前被主线程 lock() 清零的竞态。
             with self._vault.vault_write_lock():
-                data = self._collect_portable_data(cancel_check=cancel_check)
-                if data is None:
-                    return False, '备份已取消'
-                backup_key: bytes | bytearray
-                if backup_password:
-                    flags = BackupFlag.PASSWORD
-                    backup_key = MasterKeyManager.derive_backup_key(
-                        backup_password, salt, DEFAULT_KDF_PARAMS,
-                    )
-                elif use_snapshot_key:
-                    flags = BackupFlag.SNAPSHOT
-                    backup_key = self._vault.snapshot_key
-                else:
-                    raise ValueError('必须指定备份密码或使用快照密钥')
-                try:
-                    payload = json.dumps(data, ensure_ascii=False).encode('utf-8')
-                    del data
-                    if len(payload) > MAX_BACKUP_PAYLOAD_SIZE:
-                        raise ValueError('备份数据过大')
-                    encrypted = EncryptionEngine.encrypt_bytes(
-                        payload, backup_key, BACKUP_AAD
-                    )
-                    del payload
-                    target = Path(filepath)
-                    temp_path = target.with_name(target.name + '.tmp')
-                    try:
-                        with open(temp_path, 'wb') as file:
-                            self._write_backup_header(
-                                file, flags, salt, DEFAULT_KDF_PARAMS,
-                            )
-                            file.write(encrypted)
-                            file.flush()
-                            os.fsync(file.fileno())
-                        secure_file(temp_path, strict=True)
-                        os.replace(temp_path, target)
-                        secure_file(target, strict=True)
-                    except Exception:
-                        temp_path.unlink(missing_ok=True)
-                        raise
-                finally:
-                    self._zero_backup_key_if_owned(flags, backup_key)
-            logger.info("备份创建完成 (%.1fms)", (time.monotonic() - t0) * 1000)
-            return True, ''
+                return self._create_backup_locked(
+                    filepath, backup_password, use_snapshot_key, cancel_check,
+                )
         except Exception as exc:
             logger.error("备份失败: %s", exc, exc_info=True)
             return False, _user_friendly_error(exc)
+
+    def _create_backup_locked(
+        self,
+        filepath: str,
+        backup_password: str | None,
+        use_snapshot_key: bool,
+        cancel_check: Callable[[], bool] | None,
+    ) -> tuple[bool, str]:
+        """备份核心逻辑；调用方须已持有 ``vault_write_lock``。
+
+        持锁契约：snapshot_key 在锁内读取，备份密钥全程在锁内解析与清零，与
+        :meth:`_restore_current` 的「持锁才接触全量明文」契约统一。
+        """
+        t0 = time.monotonic()
+        salt = os.urandom(BACKUP_SALT_SIZE)
+        data = self._collect_portable_data(cancel_check=cancel_check)
+        if data is None:
+            return False, '备份已取消'
+        backup_key: bytes | bytearray
+        if backup_password:
+            flags = BackupFlag.PASSWORD
+            backup_key = MasterKeyManager.derive_backup_key(
+                backup_password, salt, DEFAULT_KDF_PARAMS,
+            )
+        elif use_snapshot_key:
+            flags = BackupFlag.SNAPSHOT
+            backup_key = self._vault.snapshot_key
+        else:
+            raise ValueError('必须指定备份密码或使用快照密钥')
+        try:
+            payload = json.dumps(data, ensure_ascii=False).encode('utf-8')
+            del data
+            if len(payload) > MAX_BACKUP_PAYLOAD_SIZE:
+                raise ValueError('备份数据过大')
+            encrypted = EncryptionEngine.encrypt_bytes(
+                payload, backup_key, BACKUP_AAD
+            )
+            del payload
+            target = Path(filepath)
+            temp_path = target.with_name(target.name + '.tmp')
+            try:
+                with open(temp_path, 'wb') as file:
+                    self._write_backup_header(
+                        file, flags, salt, DEFAULT_KDF_PARAMS,
+                    )
+                    file.write(encrypted)
+                    file.flush()
+                    os.fsync(file.fileno())
+                secure_file(temp_path, strict=True)
+                os.replace(temp_path, target)
+                secure_file(target, strict=True)
+            except Exception:
+                temp_path.unlink(missing_ok=True)
+                raise
+        finally:
+            self._zero_backup_key_if_owned(flags, backup_key)
+        logger.info("备份创建完成 (%.1fms)", (time.monotonic() - t0) * 1000)
+        return True, ''
 
     @staticmethod
     def inspect_backup(filepath: str) -> dict:
@@ -632,9 +664,10 @@ class BackupRestoreManager:
         secure_directory(directory)
         filename = f'pre_restore_{datetime.now(timezone.utc):%Y%m%d_%H%M%S_%f}_{uuid.uuid4().hex[:8]}.cbox'
         target_path = directory / filename
-        success, error = self.create_backup(
-            str(target_path),
-            use_snapshot_key=True,
+        # 已在 _restore_current 的 vault_write_lock 内，直接调用持锁版本，避免经
+        # create_backup 再次获取 RLock 的嵌套重入。
+        success, error = self._create_backup_locked(
+            str(target_path), None, True, None,
         )
         if not success:
             raise BackupError(f'无法创建恢复前安全快照：{error}')
@@ -705,8 +738,10 @@ class BackupRestoreManager:
 
     def _restore_categories(self, db, data: dict) -> dict:
         """重建分类，返回旧 ID 到新 ID 的映射。"""
-        from .entry_manager import EntryManager
-        entry_manager = EntryManager(self._vault)
+        entry_manager = self._entry_mgr
+        if entry_manager is None:
+            from .entry_manager import EntryManager
+            entry_manager = EntryManager(self._vault)
         category_map = {}
         for item in data.get('categories', []):
             category = Category.from_dict(item)

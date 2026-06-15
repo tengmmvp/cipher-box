@@ -25,14 +25,12 @@ from PyQt6.QtWidgets import (
 from ...utils.format import format_datetime
 from ..components.widgets import clear_layout, release_worker, setup_dialog_flags
 from ..components.workers import BackgroundWorker, wait_worker_shutdown
+from ...business.services.security_analyzer import SecurityAnalyzer
 from ..resources.constants import (
     BTN_DIALOG,
     BTN_FIX,
     DIALOG_SECURITY_DASHBOARD_MIN_SIZE,
     FONT_FAMILY_DISPLAY,
-    HEALTH_PENALTY_DUPLICATE,
-    HEALTH_PENALTY_OLD,
-    HEALTH_PENALTY_WEAK,
 )
 from ..resources.theme_colors import c, get_strength_color
 
@@ -344,7 +342,7 @@ class SecurityDashboard(QDialog):
         old_count = len(self._old_entries)
         total = analysis.get('total', 0)
 
-        score = self._compute_health_score(weak_count, dup_count, old_count, total)
+        score = SecurityAnalyzer.compute_health_score(weak_count, dup_count, old_count, total)
 
         # 更新评分圆环
         self._health_widget.set_score(score)
@@ -367,21 +365,6 @@ class SecurityDashboard(QDialog):
         self._status_hint = None
         logger.error("加载安全数据失败: %s", error_msg)
         QMessageBox.critical(self, '错误', '加载安全数据失败，请重试')
-
-    @staticmethod
-    def _compute_health_score(weak_count: int, dup_count: int, old_count: int, total: int) -> int:
-        """按各类风险占比与对应惩罚系数计算 0 至 100 的健康评分。"""
-        if total == 0:
-            return 100
-        max_total = total
-        weak_ratio = min(weak_count / max_total, 1.0)
-        dup_ratio = min(dup_count / max_total, 1.0)
-        old_ratio = min(old_count / max_total, 1.0)
-        return max(0, int(100 - (
-            weak_ratio * 100 * HEALTH_PENALTY_WEAK
-            + dup_ratio * 100 * HEALTH_PENALTY_DUPLICATE
-            + old_ratio * 100 * HEALTH_PENALTY_OLD
-        )))
 
     def _update_stat_card(self, card: _StatCard, count: int):
         """更新统计卡片显示的数字。"""

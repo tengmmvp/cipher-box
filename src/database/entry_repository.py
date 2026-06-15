@@ -139,11 +139,19 @@ class EntryRepository:
         limit: int | None = None,
         after_id: int | None = None,
         sort_by_updated: bool = False,
+        verify: VerifyMode = VerifyMode.LENIENT,
     ) -> list[RawEntry]:
         """获取密码条目列表
 
         sort_by_updated 为 True 时仅按 updated_at DESC 排序（不带 is_favorite），
         供「近期更新」视图下推 LIMIT 到 SQL，避免全量内存排序再截断。
+
+        Args:
+            verify: 完整性校验模式，默认 LENIENT（逐行 HMAC 验签并标记异常条目）。
+                列表/摘要等性能敏感路径可传 VerifyMode.SKIP 跳过逐行验签——这是与
+                全量解密并列的第二条 O(N) 热路径，跳过后大库列表/搜索显著加速。
+                篡改检测仍由 get_entry（单条详情，STRICT）与所有写路径兜底，不丢失
+                安全语义。
         """
         query = """
             SELECT e.*, c.name as category_name
@@ -182,7 +190,7 @@ class EntryRepository:
             rows = self._conn.execute(query, params).fetchall()
         # fetchall 后 sqlite3.Row 已脱离游标；完整性验签与 dataclass 构建不再
         # 持有数据库锁，避免大库后台搜索长期阻塞其他短查询。
-        return [self._row_to_entry(r, verify=VerifyMode.LENIENT) for r in rows]
+        return [self._row_to_entry(r, verify=verify) for r in rows]
 
     @_db_operation
     def get_entry(self, entry_id: int) -> Optional[RawEntry]:

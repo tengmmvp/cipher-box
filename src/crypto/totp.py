@@ -176,6 +176,10 @@ class TOTPGenerator:
         """获取当前时间步长剩余秒数。"""
         if secret:
             period = TOTPGenerator._extract_period(secret, period)
+        # 防御 period<=0（secret 为空且调用方误传非正值）导致取模除零或负倒计时，
+        # 与 _extract_period 的正数校验语义对齐。
+        if period <= 0:
+            period = TOTPGenerator.DEFAULT_PERIOD
         return period - (int(time.time()) % period)
 
     @staticmethod
