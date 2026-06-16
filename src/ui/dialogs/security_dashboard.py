@@ -22,10 +22,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ...business.services.security_analyzer import SecurityAnalyzer
 from ...utils.format import format_datetime
 from ..components.widgets import clear_layout, release_worker, setup_dialog_flags
 from ..components.workers import BackgroundWorker, wait_worker_shutdown
-from ...business.services.security_analyzer import SecurityAnalyzer
 from ..resources.constants import (
     BTN_DIALOG,
     BTN_FIX,

@@ -32,11 +32,16 @@ from ..resources.constants import (
     TOAST_SPACING,
     TOAST_WIDTH,
 )
-from ..resources.icons import CLOSE, SIZE_TOAST, icon_pixmap, set_icon
-from ..resources.icons import ERROR as ICON_ERROR
-from ..resources.icons import INFO as ICON_INFO
-from ..resources.icons import SUCCESS as ICON_SUCCESS
-from ..resources.icons import WARNING as ICON_WARNING
+from ..resources.icons import (
+    CLOSE,
+    ERROR as ICON_ERROR,
+    INFO as ICON_INFO,
+    SIZE_TOAST,
+    SUCCESS as ICON_SUCCESS,
+    WARNING as ICON_WARNING,
+    icon_pixmap,
+    set_icon,
+)
 from ..resources.theme_colors import c
 
 _TOAST_SHADOW_WIDTH = TOAST_WIDTH + 4

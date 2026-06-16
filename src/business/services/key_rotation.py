@@ -9,8 +9,7 @@ import logging
 from typing import TYPE_CHECKING, NamedTuple, Protocol, runtime_checkable
 
 from ...exceptions import DecryptionError, VaultError
-from .crypto_utils import decrypt_field as _decrypt_field_impl
-from .crypto_utils import encrypt_field as _encrypt_field_impl
+from .crypto_utils import decrypt_field as _decrypt_field_impl, encrypt_field as _encrypt_field_impl
 
 if TYPE_CHECKING:
     from .metadata_signer import MetadataSigner
