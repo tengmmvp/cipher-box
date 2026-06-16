@@ -8,6 +8,7 @@ import logging
 
 from ..exceptions import DatabaseError, SchemaError
 from ..utils.format import utc_now_iso
+from .types import ConnectionProvider
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,7 @@ class SchemaManager:
 
     SCHEMA_FORMAT = 'cipherbox-schema'
 
-    def __init__(self, conn_provider):
+    def __init__(self, conn_provider: ConnectionProvider):
         self._mgr = conn_provider
 
     # ======== 连接与锁代理 ========

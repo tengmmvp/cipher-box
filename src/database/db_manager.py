@@ -441,32 +441,9 @@ class DatabaseManager:
     # ==================== 委托与编排 ====================
     # DatabaseManager 作为统一数据访问入口。纯透传方法（get_entries、add_category
     # 等）在下方显式手写委托给子 Repository——保留显式委托而非 __getattr__ 动态
-    # 委托：Pyright 严格模式下动态委托会让调用方丢失返回类型推断。调用方既可
-    # 沿用 db.get_entries()（保留完整返回类型），也可经 db.entries /
-    # db.categories / db.schema 直接访问 Repository。仅当需要跨表事务编排
+    # 委托：Pyright 严格模式下动态委托会让调用方丢失返回类型推断。调用方一律经
+    # db.get_entries() 等透传方法访问（保留完整返回类型）。仅当需要跨表事务编排
     # （如 delete_category）时才在下方显式定义编排方法。
-
-    @property
-    def entries(self) -> EntryRepository:
-        """条目 Repository 的类型化直接访问入口。"""
-        return self._entry_repo
-
-    @property
-    def categories(self) -> CategoryRepository:
-        """分类 Repository 的类型化直接访问入口。"""
-        return self._category_repo
-
-    @property
-    def schema(self) -> SchemaManager:
-        """Schema 管理器的类型化直接访问入口。"""
-        return self._schema_mgr
-
-    # -- 委托透传：Schema / Categories --
-    # 以下方法为显式类型化委托透传。也可经 db.entries / db.categories /
-    # db.schema 直访 Repository。保留显式委托而非 __getattr__ 动态委托：
-    # Pyright 严格模式下动态委托会让调用方丢失返回类型推断
-    # （reportAttributeAccessIssue / object 退化）。上方 entries/categories/schema
-    # property 提供更直接的类型化访问路径。
 
     def init_tables(self) -> None:
         return self._schema_mgr.init_tables()

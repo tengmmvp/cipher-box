@@ -239,25 +239,28 @@ class BackupDialog(QDialog):
         # lambda 默认参数在定义时拷贝 password，避免 del 局部后闭包引用触发
         # pyflakes F821，且 worker 线程执行时 pwd 已就绪。
         # 传 cancel_check 使 reject() 真正中断全量解密循环，而非空转阻塞主线程。
-        self._worker = BackgroundWorker(
-            lambda pwd=password: self._backup_mgr.create_backup(
+        # worker_holder 列表解耦：cancel_check 经 holder[0] 引用 worker，而非闭包
+        # 捕获 self._worker（后者要求 self._worker 在 worker.start() 前赋值，时序
+        # 脆弱）。与 import_export._do_import 统一模式，消除两套解耦技巧。
+        holder: list[BackgroundWorker] = []
+
+        # 默认参数 pwd 在定义时拷贝 password，避免下方 del password 后闭包引用
+        # 触发 F821/运行时 NameError（与原 lambda pwd=password 同模式）。
+        def _run(pwd=password):
+            return self._backup_mgr.create_backup(
                 path, pwd,
-                # 守卫 None 仅为满足 Optional 类型静态检查；worker 线程执行时
-                # self._worker 必已赋值，cancel_check 使 reject() 真正中断解密循环。
-                cancel_check=(
-                    # is_cancelled 是 @property 返回 bool，须包成 lambda 提供
-                    # Callable[[], bool]，否则 create_backup 的 cancel_check() 对 bool
-                    # 调用会抛 TypeError（取消时）或永不检查（未取消时短路）。
-                    (lambda: self._worker.is_cancelled if self._worker is not None else False)
-                    if self._worker is not None
-                    else None
-                ),
-            ),
-            parent=self,
-        )
-        self._worker.finished.connect(self._on_backup_done)
-        self._worker.error.connect(self._on_backup_error)
-        self._worker.start()
+                # is_cancelled 是 @property 返回 bool，须包成 lambda 提供
+                # Callable[[], bool]，否则 create_backup 的 cancel_check() 对 bool
+                # 调用会抛 TypeError。holder[0] 在 worker.start() 前已 append。
+                cancel_check=lambda: holder[0].is_cancelled if holder else False,
+            )
+
+        worker = BackgroundWorker(_run, parent=self)
+        holder.append(worker)
+        self._worker = worker
+        worker.finished.connect(self._on_backup_done)
+        worker.error.connect(self._on_backup_error)
+        worker.start()
         # 删除局部变量引用以缩短密码驻留。注意：worker 闭包仍捕获 password，
         # 真正释放需等 worker 执行结束并被 release_worker 释放，此处仅做局部清零，
         # 与其他对话框的清零策略对齐（CPython 下字符串回收仍依赖 GC）。

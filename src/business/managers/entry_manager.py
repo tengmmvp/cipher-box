@@ -73,7 +73,7 @@ class EntryManager:
         # 约定：锁内不调用数据库方法或变更回调，避免与 db 事务锁构成顺序反转死锁。
         self._cache_lock = threading.RLock()
         # 条目变更回调列表，用于事件驱动的缓存失效，如 SecurityAnalyzer。
-        self._on_entry_change_callbacks: list = []
+        self._on_entry_change_callbacks: list[Callable[..., None]] = []
 
     def register_on_change(self, callback):
         """注册条目变更时自动调用的回调，用于缓存失效等。"""
@@ -505,10 +505,15 @@ class EntryManager:
     def update_entry(self, entry: Entry, *, preserve_password_changed_at: bool = False, notify: bool = True):
         """更新条目，自动加密并记录密码历史。
 
-        线程安全说明：此方法采用 read-modify-write 模式，先读取旧密码，
-        比较后再写入，未使用锁保护。在单用户桌面应用中，同一时刻只有
-        一个 UI 操作会修改同一条目，竞态窗口极小，可接受。若未来引入
-        并发写入场景，需在此方法外加锁。
+        线程安全说明：此方法采用 read-modify-write 模式，先在事务外读取旧条目
+        与旧密码、完成加解密与 enc_entry 构建，仅在最后写入时进入事务并复查
+        ``key_epoch``（事务内 ``_enforce_key_epoch`` 会跳过，故单条写路径须自行
+        复查）。这是有意为之：相比 ``toggle_favorite``（单字段、用事务内 read）
+        采用事务外 read 以缩短 ``db_lock`` 持有时间，避免加解密期间长时间阻塞
+        改密等长事务；epoch 复查保证若 read 到 commit 期间发生改密重加密，本
+        写入会中止而非把旧密钥密文落到已重写的历史表。单用户桌面应用中同一时
+        刻仅一个 UI 操作修改同一条目，竞态窗口极小；未来若引入并发写入，需在
+        调用方加锁串行化。
         """
         self._validate_plain_entry(entry)
         if entry.integrity_error:

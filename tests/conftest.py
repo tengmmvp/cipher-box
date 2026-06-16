@@ -4,6 +4,7 @@ import dataclasses
 
 import pytest
 
+from src.crypto.master_key import KdfParams
 from src.database.db_manager import DatabaseManager
 from src.models import Entry
 from tests.helpers import make_test_config
@@ -44,12 +45,31 @@ def vault_config(tmp_path):
     return make_test_config(tmp_path)
 
 
+# 测试用弱化但合法的 Argon2id 参数（仍过 MasterKeyManager.validate_params 的安全
+# 下限 time≥2 / mem≥16MB / par≥1），加速 vault fixture 的密钥派生。生产路径仍用
+# DEFAULT_KDF_PARAMS（time=3 / 64MB / parallelism=4），仅此 fixture 与显式注入弱
+# 参数的测试使用弱值；对真实 OWASP 参数的派生强度另有专门测试守护。
+_TEST_KDF_PARAMS = KdfParams(time_cost=2, memory_cost=16 * 1024, parallelism=1)
+
+
+@pytest.fixture(autouse=True)
+def _weak_kdf_for_tests(monkeypatch):
+    """测试全局注入弱 KDF，加速所有经 vault_manager.DEFAULT_KDF_PARAMS 的派生。
+
+    initialize / change_master_password 在测试中用弱参数（仍过 validate_params）。
+    生产无此 fixture；直接测 MasterKeyManager 真实参数的测试用 master_key 自身
+    常量，不受影响。
+    """
+    from src.business.managers import vault_manager
+    monkeypatch.setattr(vault_manager, 'DEFAULT_KDF_PARAMS', _TEST_KDF_PARAMS)
+
+
 @pytest.fixture
 def vault(vault_config):
     """已初始化的 VaultManager 实例。"""
     from src.business.managers.vault_manager import VaultManager
     v = VaultManager(vault_config)
-    v.initialize('TestPassword123!')
+    v.initialize('TestPassword123!', params=_TEST_KDF_PARAMS)
     yield v
     try:
         v.close()

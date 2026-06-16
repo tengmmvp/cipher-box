@@ -283,23 +283,30 @@ class RateLimiter:
                     "限流状态文件缺失但哨兵存在，判定为被删除，降级最高阶梯锁定"
                 )
                 self._fail_count = RATE_LIMITS[-1][0]
-                self._lock_until = time.time() + RATE_LIMITS[-1][1]
+                self._lock_until = time.monotonic() + RATE_LIMITS[-1][1]
                 self._save_state()
             return
         try:
             data = json.loads(self._state_path.read_text(encoding='utf-8'))
             fail_count = data.get('fail_count', 0)
-            lock_until = data.get('lock_until', 0.0)
+            remaining_seconds = data.get('remaining_seconds', 0)
             if type(fail_count) is not int or fail_count < 0:
                 raise ValueError('失败次数无效')
-            if not isinstance(lock_until, (int, float)) or lock_until < 0:
-                raise ValueError('锁定时间无效')
+            if not isinstance(remaining_seconds, (int, float)) or remaining_seconds < 0:
+                raise ValueError('剩余锁定时间无效')
             self._fail_count = fail_count
-            self._lock_until = float(lock_until)
+            # 单调时钟还原锁定到期：remaining_seconds 是保存时刻距到期的剩余秒数，
+            # 加载时基于当前 monotonic 重算到期点。单调时钟不受系统时钟回拨影响，
+            # 攻击者前推/回拨系统时间无法跳过锁定。无历史兼容：旧版以 time.time()
+            # 绝对时间戳持久化的状态文件不含 remaining_seconds 字段，落入 except
+            # 分支降级最高阶梯锁定后以新格式重写。
+            self._lock_until = (
+                time.monotonic() + remaining_seconds if remaining_seconds > 0 else 0.0
+            )
         except (OSError, ValueError, json.JSONDecodeError, AttributeError):
             # 状态损坏时按最高阶梯短暂锁定，避免删除/破坏状态文件直接绕过限流。
             self._fail_count = RATE_LIMITS[-1][0]
-            self._lock_until = time.time() + RATE_LIMITS[-1][1]
+            self._lock_until = time.monotonic() + RATE_LIMITS[-1][1]
             self._save_state()
 
     def _save_state(self) -> None:
@@ -307,9 +314,16 @@ class RateLimiter:
             return
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = self._state_path.with_name(self._state_path.name + '.tmp')
+        # 持久化「剩余锁定秒数」而非绝对时间戳：单调时钟在进程间不连续，
+        # 无法跨会话还原绝对到期点；存剩余秒数后加载时基于当前 monotonic 重算，
+        # 既保留跨会话退避阶梯（fail_count 一并持久化），又抵抗系统时钟回拨绕过。
+        remaining_seconds = (
+            max(0.0, self._lock_until - time.monotonic())
+            if self._lock_until else 0.0
+        )
         payload = json.dumps({
             'fail_count': self._fail_count,
-            'lock_until': self._lock_until,
+            'remaining_seconds': remaining_seconds,
         })
         try:
             with open(temp_path, 'w', encoding='utf-8') as file:
@@ -338,7 +352,7 @@ class RateLimiter:
         Returns:
             锁定提示消息，含剩余秒数；若可继续则返回 ``None``。
         """
-        now = time.time()
+        now = time.monotonic()
         if self._lock_until and now < self._lock_until:
             remaining = int(self._lock_until - now) + 1
             return f'尝试次数过多，请等待 {remaining} 秒后重试'
@@ -367,7 +381,7 @@ class RateLimiter:
         self._fail_count += 1
         lock_seconds = apply_rate_limit(self._fail_count)
         if lock_seconds > 0:
-            self._lock_until = time.time() + lock_seconds
+            self._lock_until = time.monotonic() + lock_seconds
         self._save_state()
         return lock_seconds
 

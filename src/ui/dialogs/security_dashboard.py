@@ -36,6 +36,9 @@ from ..resources.theme_colors import c, get_strength_color
 
 logger = logging.getLogger(__name__)
 
+# 徽章背景色透明度，用于 entry row 的 badge 背景叠层
+_BADGE_BG_ALPHA = 0.13
+
 
 class _HealthScoreWidget(QWidget):
     """以圆环进度形式绘制安全健康评分的自定义组件。"""
@@ -282,7 +285,7 @@ class SecurityDashboard(QDialog):
 
     def _load_data(self):
         """在后台线程加载安全分析数据，避免冻结 UI。"""
-        days = self._config.get('old_password_warning_days', 90)
+        days = self._config.get('old_password_warning_days')
 
         # 显示加载状态
         self._health_widget.set_score(0)
@@ -348,9 +351,9 @@ class SecurityDashboard(QDialog):
         self._health_widget.set_score(score)
 
         # 更新统计卡片
-        self._update_stat_card(self._weak_card, weak_count)
-        self._update_stat_card(self._dup_card, dup_count)
-        self._update_stat_card(self._old_card, old_count)
+        self._weak_card.update_count(weak_count)
+        self._dup_card.update_count(dup_count)
+        self._old_card.update_count(old_count)
 
         # 填充详细列表
         self._populate_weak_tab()
@@ -359,16 +362,16 @@ class SecurityDashboard(QDialog):
 
     def _on_data_error(self, error_msg: str):
         """后台分析失败（worker.error 信号路径，独立于 _on_data_loaded 的成功/异常出口）。"""
+        # 校验回调来源仍是当前 worker，与 _on_data_loaded 对称，防止 reject
+        # 后旧 worker 回调访问已销毁控件。
+        if self.sender() is not self._worker:
+            return
         release_worker(self)
         # 统一用 _clear_layout 回收 _status_hint，与 _on_data_loaded 出口一致
         self._clear_layout(self._weak_layout)
         self._status_hint = None
         logger.error("加载安全数据失败: %s", error_msg)
         QMessageBox.critical(self, '错误', '加载安全数据失败，请重试')
-
-    def _update_stat_card(self, card: _StatCard, count: int):
-        """更新统计卡片显示的数字。"""
-        card.update_count(count)
 
     def _populate_weak_tab(self):
         """填充弱密码列表。"""
@@ -428,7 +431,7 @@ class SecurityDashboard(QDialog):
             self._old_layout.addWidget(self._create_empty_hint('没有过期密码。'))
             return
 
-        days = self._config.get('old_password_warning_days', 90)
+        days = self._config.get('old_password_warning_days')
         for entry in self._old_entries:
             updated = entry.password_changed_at or entry.updated_at or entry.created_at or '未知'
             # format_datetime 统一处理 naive/aware 时间戳，[:10] 取日期部分
@@ -476,7 +479,7 @@ class SecurityDashboard(QDialog):
         # 徽章
         badge = QLabel(badge_text)
         bc = QColor(badge_color)
-        bc.setAlpha(int(255 * 0.13))
+        bc.setAlpha(int(255 * _BADGE_BG_ALPHA))
         badge.setStyleSheet(
             f"background-color: rgba({bc.red()},{bc.green()},{bc.blue()},{bc.alpha()});"
             f"color: {badge_color};"

@@ -14,6 +14,17 @@ from ...models import Entry, RawEntry
 logger = logging.getLogger(__name__)
 
 
+# 条目中需加密的敏感字段名（RawEntry/Entry 逻辑属性名，非 DB 列名）。单一事实
+# 来源：KeyRotationService 重加密、下方 decrypt_entry_to_portable_dict /
+# build_encrypted_entry_fields 的加解密字段集均与此一致。custom_fields 在加解密
+# 时序列化为 JSON 字符串再加密，字段名仍计入此集合。新增加密字段须同步更新
+# decrypt/build 的显式字段处理与 metadata_signer._payload 的 _enc_hash 绑定。
+SENSITIVE_ENCRYPTED_FIELDS: tuple[str, ...] = (
+    'title', 'username', 'password', 'url', 'tags', 'notes',
+    'totp_secret', 'custom_fields',
+)
+
+
 def require_vault_key(vault_manager: 'VaultManager') -> bytes:
     """获取保险库加密密钥，未解锁时抛出 VaultLockedError。"""
     key = vault_manager.key

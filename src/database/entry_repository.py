@@ -13,7 +13,7 @@ from ..exceptions import DatabaseError, VaultIntegrityError, VaultLockedError
 from ..models import MAX_PASSWORD_HISTORY, PasswordHistory, RawEntry
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation, _db_write
-from .types import VerifyMode
+from .types import ConnectionProvider, VerifyMode
 
 logger = logging.getLogger(__name__)
 
@@ -86,11 +86,10 @@ class EntryRepository:
     通常为 DatabaseManager 实例。
     """
 
-    def __init__(self, conn_provider):
-        # conn_provider 可以是返回 sqlite3.Connection 的可调用对象，
-        # 也可以直接是持有 _conn / _lock / transaction / _auto_commit /
-        # _guard_write / _sign_entry / _entry_verifier / _enforce_encrypted_fields
-        # 等属性的 DatabaseManager 实例。
+    def __init__(self, conn_provider: ConnectionProvider):
+        # conn_provider 为 DatabaseManager 实例（满足 ConnectionProvider 协议），
+        # 提供连接、锁与编排方法。以 Protocol 类型标注替代原先无注解，便于静态
+        # 校验 self._mgr.xxx 访问与测试替身。
         self._mgr = conn_provider
 
     # ======== 连接与锁代理 ========

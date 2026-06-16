@@ -11,6 +11,7 @@ from typing import Optional
 from ..models import Category
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation, _db_write
+from .types import ConnectionProvider
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ class CategoryRepository:
     通常为 DatabaseManager 实例。
     """
 
-    def __init__(self, conn_provider):
+    def __init__(self, conn_provider: ConnectionProvider):
         self._mgr = conn_provider
 
     # ======== 连接与锁代理 ========

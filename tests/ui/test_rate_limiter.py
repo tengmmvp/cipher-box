@@ -40,7 +40,7 @@ class TestRateLimiterBackoff:
         assert limiter._lock_until > 0
 
         # 推进时间到锁定到期之后
-        monkeypatch.setattr(time, 'time', lambda: limiter._lock_until + 1)
+        monkeypatch.setattr(time, 'monotonic', lambda: limiter._lock_until + 1)
         assert limiter.check() is None  # 到期允许重试
         assert limiter._fail_count == preserved  # 关键：未清零
         assert limiter._lock_until == 0.0
@@ -51,7 +51,7 @@ class TestRateLimiterBackoff:
         for _ in range(RATE_LIMITS[0][0]):
             limiter.record_failure()
         # 到期
-        monkeypatch.setattr(time, 'time', lambda: limiter._lock_until + 1)
+        monkeypatch.setattr(time, 'monotonic', lambda: limiter._lock_until + 1)
         limiter.check()
         # 再失败到第二档阈值：若计数已清零，则需再失败 5 次才到 30s；
         # 保留计数时仅需补足差额。

@@ -232,7 +232,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         self._pending_selection = None
         # 记录滚动位置和当前选中行，重建后恢复，提升列表刷新体验。
         # 仅在当前过滤器未变时恢复同一数据集的刷新；切换过滤器后数据集不同，不应恢复旧位置
-        saved_filter = getattr(self, '_last_refresh_filter', None)
+        saved_filter = self._last_refresh_filter
         current_filter = self._current_filter
         should_restore_position = (saved_filter == current_filter)
         self._last_refresh_filter = current_filter
@@ -242,9 +242,18 @@ class _MainWindowFiltersMixin(QMainWindow):
         )
         saved_row = self._entry_list.currentIndex().row() if should_restore_position else -1
 
+        # 异步刷新条件：条目数超阈值时移入后台线程，避免主线程全量解密卡顿。
+        # all/favorite/trash 无论是否搜索都需全量解密，大库下须异步；recent 仅在
+        # 有搜索时全量解密（无搜索走 SQL LIMIT，本身很快）；weak/duplicate 来自
+        # 缓存安全摘要，无需异步。原先要求「有搜索」才异步，导致无搜索时大库
+        # 切换分类/收藏在主线程同步解密卡顿。
+        filter_key = self._current_filter
+        needs_async = (
+            filter_key in ('all', 'favorite', 'trash')
+            or (filter_key == 'recent' and self._current_search)
+        )
         if (
-            self._current_search
-            and self._current_filter in ('all', 'favorite', 'recent', 'trash')
+            needs_async
             and self._entry_mgr.get_entry_count(include_deleted=True)
             >= ASYNC_SEARCH_THRESHOLD
         ):
@@ -295,7 +304,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         holder.append(worker)
         self._entry_worker = worker
         self._entry_workers.add(worker)
-        self._count_label.setText('搜索中...')
+        self._count_label.setText('加载中...')
 
         def _release() -> None:
             self._entry_workers.discard(worker)
@@ -410,13 +419,13 @@ class _MainWindowFiltersMixin(QMainWindow):
         if self._current_filter == 'weak':
             # 缓存未就绪时显示"分析中"，避免空列表被误读为"无弱密码"
             if self._security.get_cached_report(
-                self._config.get('old_password_warning_days', 90)
+                self._config.get('old_password_warning_days')
             ) is None:
                 return (EMPTY_GENERIC, '正在分析密码强度...', '请稍候', '', None)
             return (EMPTY_SUCCESS, '没有发现弱密码', '所有密码强度良好', '', None)
         if self._current_filter == 'duplicate':
             if self._security.get_cached_report(
-                self._config.get('old_password_warning_days', 90)
+                self._config.get('old_password_warning_days')
             ) is None:
                 return (EMPTY_GENERIC, '正在分析重复密码...', '请稍候', '', None)
             return (EMPTY_SUCCESS, '没有重复密码', '所有密码都是唯一的', '', None)
@@ -434,7 +443,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         return (EMPTY_GENERIC, '暂无条目', '', '', None)
 
     def _update_status_bar(self):
-        days = self._config.get('old_password_warning_days', 90)
+        days = self._config.get('old_password_warning_days')
         # 快速路径：缓存命中时直接更新 UI
         cached = self._security.get_cached_report(days)
         if cached is not None:
@@ -455,6 +464,10 @@ class _MainWindowFiltersMixin(QMainWindow):
             if self._locked_ui or self._status_worker is not worker:
                 return
             self._apply_status_summary(summary)
+            # worker 已结束，释放引用，与 _on_error 一致，避免 _status_worker
+            # 长期指向已结束 worker 而破坏生命周期不变量。
+            if self._status_worker is worker:
+                self._status_worker = None
 
         worker.finished.connect(_on_finished)
         # worker 线程抛异常时更新状态栏，避免永远卡在"安全分析中..."无反馈
@@ -462,6 +475,8 @@ class _MainWindowFiltersMixin(QMainWindow):
             if self._locked_ui or self._status_worker is not worker:
                 return
             self._status_bar.showMessage('安全分析暂时不可用')
+            if self._status_worker is worker:
+                self._status_worker = None
         worker.error.connect(_on_error)
         worker.start()
 

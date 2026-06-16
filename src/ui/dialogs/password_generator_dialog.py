@@ -217,11 +217,11 @@ class PasswordGeneratorDialog(QDialog):
             self._copy_feedback_timer = None
 
     def reject(self):
-        """取消/关闭前清除敏感输入。"""
+        """取消/关闭前清除敏感输入。
+
+        仅重写 reject（不重写 closeEvent）以避免双重清理：QDialog 默认
+        closeEvent 会触发 reject，故 X 关闭、Esc、close() 均经此单一入口，
+        与 entry_dialog 的既定实践一致。
+        """
         self._clear_sensitive()
         super().reject()
-
-    def closeEvent(self, a0):
-        """窗口关闭前清除敏感输入。"""
-        self._clear_sensitive()
-        super().closeEvent(a0)

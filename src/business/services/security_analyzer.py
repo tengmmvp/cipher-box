@@ -158,6 +158,10 @@ class SecurityAnalyzer:
                 [dataclasses.replace(e) for e in group]
                 for group in cache['duplicate_groups']
             ]
+        # _summaries_with_dates 同样出口复制：返回的 cache 若被调用方修改该列表
+        # 会污染缓存本体。元素为 (Entry, datetime) 元组，浅拷贝列表即可。
+        if '_summaries_with_dates' in cache:
+            cache['_summaries_with_dates'] = list(cache['_summaries_with_dates'])
         return cache
 
     def _cached_analysis(self, days: int = 90) -> dict:
@@ -242,6 +246,10 @@ class SecurityAnalyzer:
         with self._cache_lock:
             self._analysis_cache = None
             self._analysis_cache_time = 0
+            # 维持「cache 为 None 时 _analysis_cache_days 必为 0」不变量，与
+            # __init__ 初始值对齐，避免下次 _cached_analysis 的 days 比较基于
+            # 上次的残留值而误判是否需要重新过滤过期条目。
+            self._analysis_cache_days = 0
 
     def _parse_changed_utc(self, raw: RawEntry) -> datetime | None:
         """解析条目的密码变更时间为 UTC datetime，供过期检测。

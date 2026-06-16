@@ -236,14 +236,16 @@ def test_context_bound_ciphertext_rejects_cross_entry_swap():
 def test_vault_persists_kdf_parameters_and_ciphertext_format():
     with tempfile.TemporaryDirectory() as root:
         vault = VaultManager(_config(root))
-        assert vault.initialize('MasterPassword!2026')[0]
+        # 显式用生产级 DEFAULT_KDF_PARAMS，绕过测试全局弱 KDF monkeypatch——
+        # 本测试专门验证 OWASP 级参数被正确持久化到 vault_meta。
+        from src.crypto.master_key import DEFAULT_KDF_PARAMS
+        assert vault.initialize('MasterPassword!2026', params=DEFAULT_KDF_PARAMS)[0]
         manager = EntryManager(vault)
         entry_id = manager.add_entry(Entry(title='Account', password='Secret!2026'))
         raw = vault.db.get_entry(entry_id)
         assert raw is not None
 
         assert vault.db.get_meta('master_kdf') == 'argon2id'
-        from src.crypto.master_key import DEFAULT_KDF_PARAMS
         assert vault.db.get_meta('master_kdf_time_cost') == str(DEFAULT_KDF_PARAMS.time_cost)
         assert vault.db.get_meta('master_kdf_memory_cost') == str(DEFAULT_KDF_PARAMS.memory_cost)
         assert vault.db.get_meta('master_kdf_parallelism') == str(DEFAULT_KDF_PARAMS.parallelism)

@@ -8,6 +8,10 @@ styles.get_style() 或 MainWindow._apply_theme() 触发。
 无需额外同步。后台线程不应直接调用 c()。
 """
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 LIGHT_COLORS = {
     # 基础色
     'bg_primary': '#f7f9fb',
@@ -190,7 +194,9 @@ DARK_COLORS = {
 
 # 模块加载即校验浅色/深色主题颜色 key 集合一致，早失败而非等首次
 # set_theme 触发。新增颜色 token 时若遗漏某一主题会立刻报错。
-assert set(LIGHT_COLORS) == set(DARK_COLORS), '浅色/深色主题颜色 key 不一致'
+# 用显式 raise 而非 assert：python -O 会剔除 assert，导致该校验失效。
+if set(LIGHT_COLORS) != set(DARK_COLORS):
+    raise RuntimeError('浅色/深色主题颜色 key 不一致')
 
 _current_theme = 'light'
 _current_colors = dict(LIGHT_COLORS)
@@ -211,8 +217,16 @@ def set_theme(theme: str):
 
 
 def c(key: str) -> str:
-    """获取当前主题的颜色值。未知 key 返回中性灰色 '#888888'。"""
-    return _current_colors.get(key, '#888888')
+    """获取当前主题的颜色值。
+
+    未知 key 记录告警并回退中性灰色 '#888888'，便于开发期发现拼写错误，
+    同时避免运行期 raise 中断绘制。
+    """
+    color = _current_colors.get(key)
+    if color is None:
+        logger.warning("未知颜色 key：%s，回退中性灰", key)
+        return '#888888'
+    return color
 
 
 def get_strength_color(score: int) -> str:

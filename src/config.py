@@ -30,6 +30,11 @@ def get_data_dir() -> Path:
     return secure_directory(data_dir)
 
 
+# 密码过期警告天数默认值。单一真相源，供 DEFAULT_CONFIG 与各 UI 处的
+# config.get('old_password_warning_days')（依赖此默认）共享，避免字面量 90
+# 散落多处导致默认值修改漂移。
+OLD_PASSWORD_WARNING_DAYS_DEFAULT = 90
+
 # 默认配置
 DEFAULT_CONFIG = {
     'theme': 'light',
@@ -50,7 +55,7 @@ DEFAULT_CONFIG = {
     'show_tray_icon': True,
     'minimize_to_tray': True,
     'close_to_tray': False,
-    'old_password_warning_days': 90,
+    'old_password_warning_days': OLD_PASSWORD_WARNING_DAYS_DEFAULT,
     'sort_field': 'updated_at',       # title, updated_at, created_at, password_strength
     'sort_order': 'desc',             # asc, desc
     'window_geometry': None,
@@ -75,6 +80,10 @@ _INT_RANGES = {k: (lo, hi) for k, (lo, hi, _) in _INT_SPECS.items()}
 _SECURITY_MINIMUMS: dict[str, int] = {
     k: sm for k, (_, _, sm) in _INT_SPECS.items() if sm is not None
 }
+# 完整性校验失败（签名缺失/不符）时必须回退默认值的键集合：除安全下限相关
+# 整型键外，还包含 backup_directory——完整性失败时其值不可信（可能被定向篡改
+# 以诱导明文备份落入攻击者可读目录），与安全键同等回退默认。
+_INTEGRITY_SENSITIVE_KEYS: set[str] = set(_SECURITY_MINIMUMS) | {'backup_directory'}
 _BOOL_KEYS = {
     'default_uppercase', 'default_lowercase', 'default_digits',
     'default_symbols', 'default_exclude_ambiguous', 'auto_backup_enabled',
@@ -202,9 +211,9 @@ class ConfigManager:
                                 # 的安全配置值不可信，回退默认以收缩篡改面（如攻击者
                                 # 删除签名后将 auto_lock_minutes 改为 0 禁用自动锁定）。
                                 # 与 get_safe 的运行时钳制叠加，构成 load + 读取双层防御。
-                                if self._integrity_warning and key in _SECURITY_MINIMUMS:
+                                if self._integrity_warning and key in _INTEGRITY_SENSITIVE_KEYS:
                                     logger.warning(
-                                        '配置完整性失败，安全键 %s 回退默认值', key,
+                                        '配置完整性失败，敏感键 %s 回退默认值', key,
                                     )
                                     continue
                                 self._config[key] = value

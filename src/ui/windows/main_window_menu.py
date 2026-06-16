@@ -115,6 +115,7 @@ class _MainWindowMenuMixin(QMainWindow):
         add_act = QAction('新增条目', self)
         add_act.setShortcut('Ctrl+N')
         add_act.setIcon(icon(PLUS))
+        add_act.setData(PLUS)
         add_act.triggered.connect(self._add_entry)
         file_menu.addAction(add_act)
 
@@ -122,11 +123,13 @@ class _MainWindowMenuMixin(QMainWindow):
 
         import_act = QAction('导入 / 导出', self)
         import_act.setIcon(icon(UPLOAD))
+        import_act.setData(UPLOAD)
         import_act.triggered.connect(self._show_import_export)
         file_menu.addAction(import_act)
 
         backup_act = QAction('备份与恢复', self)
         backup_act.setIcon(icon(FOLDER))
+        backup_act.setData(FOLDER)
         backup_act.triggered.connect(self._show_backup)
         file_menu.addAction(backup_act)
 
@@ -135,12 +138,14 @@ class _MainWindowMenuMixin(QMainWindow):
         lock_act = QAction('锁定保险库', self)
         lock_act.setShortcut('Ctrl+L')
         lock_act.setIcon(icon(LOCK_SOLID))
+        lock_act.setData(LOCK_SOLID)
         lock_act.triggered.connect(lambda: self.lock_requested.emit())
         file_menu.addAction(lock_act)
 
         quit_act = QAction('退出', self)
         quit_act.setShortcut('Ctrl+Q')
         quit_act.setIcon(icon(CLOSE))
+        quit_act.setData(CLOSE)
         quit_act.triggered.connect(self.close)
         file_menu.addAction(quit_act)
 
@@ -151,11 +156,13 @@ class _MainWindowMenuMixin(QMainWindow):
 
         gen_act = QAction('密码生成器', self)
         gen_act.setIcon(icon(GENERATE))
+        gen_act.setData(GENERATE)
         gen_act.triggered.connect(self._show_password_generator)
         tools_menu.addAction(gen_act)
 
         security_act = QAction('安全仪表盘', self)
         security_act.setIcon(icon(SHIELD))
+        security_act.setData(SHIELD)
         security_act.triggered.connect(self._show_security_dashboard)
         tools_menu.addAction(security_act)
 
@@ -166,11 +173,13 @@ class _MainWindowMenuMixin(QMainWindow):
 
         prefs_act = QAction('偏好设置', self)
         prefs_act.setIcon(icon(SETTINGS))
+        prefs_act.setData(SETTINGS)
         prefs_act.triggered.connect(self._show_settings)
         settings_menu.addAction(prefs_act)
 
         change_pwd_act = QAction('修改主密码', self)
         change_pwd_act.setIcon(icon(KEY))
+        change_pwd_act.setData(KEY)
         change_pwd_act.triggered.connect(self._show_change_master)
         settings_menu.addAction(change_pwd_act)
 
@@ -181,6 +190,7 @@ class _MainWindowMenuMixin(QMainWindow):
 
         shortcuts_act = QAction('快捷键', self)
         shortcuts_act.setIcon(icon(SHORTCUT))
+        shortcuts_act.setData(SHORTCUT)
         shortcuts_act.triggered.connect(self._show_shortcuts)
         help_menu.addAction(shortcuts_act)
 
@@ -188,6 +198,7 @@ class _MainWindowMenuMixin(QMainWindow):
 
         about_act = QAction('关于 CipherBox', self)
         about_act.setIcon(icon(HELP))
+        about_act.setData(HELP)
         about_act.triggered.connect(self._show_about)
         help_menu.addAction(about_act)
 
@@ -212,31 +223,21 @@ class _MainWindowMenuMixin(QMainWindow):
             self._shortcuts.append(shortcut)
 
     def _update_menu_icons(self):
-        """刷新菜单栏图标，主题切换时颜色需要更新。"""
+        """刷新菜单栏图标，主题切换时颜色需要更新。
+
+        按 ``QAction.data()`` 存储的 icon name 重建，而非 ``action.text()`` 反查——
+        后者在菜单文案变更（如国际化）时会让图标丢失。
+        """
         from PyQt6.QtWidgets import QMenu
 
         menubar = self.menuBar()
         if menubar is None:
             return
-        icon_map = {
-            '新增条目': (PLUS, None),
-            '导入 / 导出': (UPLOAD, None),
-            '备份与恢复': (FOLDER, None),
-            '锁定保险库': (LOCK_SOLID, None),
-            '退出': (CLOSE, None),
-            '密码生成器': (GENERATE, None),
-            '安全仪表盘': (SHIELD, None),
-            '偏好设置': (SETTINGS, None),
-            '修改主密码': (KEY, None),
-            '快捷键': (SHORTCUT, None),
-            '关于 CipherBox': (HELP, None),
-        }
         for menu in menubar.findChildren(QMenu):
             for action in menu.actions():
-                text = action.text()
-                if text in icon_map:
-                    icon_name, color_key = icon_map[text]
-                    action.setIcon(icon(icon_name, color_key))
+                icon_name = action.data()
+                if icon_name:
+                    action.setIcon(icon(icon_name))
 
     # ----- 对话框 -----
 

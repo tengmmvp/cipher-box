@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...config import ConfigManager
+from ...config import OLD_PASSWORD_WARNING_DAYS_DEFAULT, ConfigManager
 from ..components.widgets import setup_dialog_flags
 from ..resources.constants import BTN_DIALOG, DIALOG_SETTINGS_MIN_SIZE
 
@@ -235,7 +235,7 @@ class SettingsDialog(QDialog):
         ('default_digits', '_default_digits_check', 'check', True),
         ('default_symbols', '_default_symbols_check', 'check', True),
         ('default_exclude_ambiguous', '_default_exclude_check', 'check', False),
-        ('old_password_warning_days', '_old_pwd_spin', 'spin', 90),
+        ('old_password_warning_days', '_old_pwd_spin', 'spin', OLD_PASSWORD_WARNING_DAYS_DEFAULT),
         ('auto_backup_enabled', '_auto_backup_check', 'check', False),
         ('auto_backup_interval_hours', '_backup_interval_spin', 'spin', 24),
         ('auto_backup_retention', '_backup_retention_spin', 'spin', 10),

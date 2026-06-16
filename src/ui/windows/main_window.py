@@ -136,6 +136,9 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._cached_categories = []
         self._cached_tag_names = []
         self._cached_total_entries = -1
+        # 上次刷新的过滤器键，用于判断滚动位置是否应恢复（仅同一过滤器刷新
+        # 时恢复）。显式初始化，避免依赖 filters.py 的 getattr 兜底。
+        self._last_refresh_filter: str | None = None
 
         # 条目变更防抖定时器，用于合并短时间内连续的刷新请求
         self._entry_change_timer = QTimer(self)

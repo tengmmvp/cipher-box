@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from ...business.managers.entry_manager import EntryManager
     from ...business.services.security_analyzer import SecurityAnalyzer
     from ...config import ConfigManager
+    from ...models import Entry
 
 
 class EntryListController:
@@ -46,7 +47,7 @@ class EntryListController:
             return field, order
         return 'updated_at', 'desc'
 
-    def sort_entries(self, entries: list, sort_index: int) -> list:
+    def sort_entries(self, entries: list[Entry], sort_index: int) -> list[Entry]:
         """对条目列表排序。
 
         Args:
@@ -59,7 +60,9 @@ class EntryListController:
             if field == 'title':
                 return (e.title or '').lower()
             elif field == 'password_strength':
-                return e.password_strength
+                # password_strength 可能为 None（未评估），统一回退 0，
+                # 避免与 int 混排时 Python3 抛 TypeError。
+                return e.password_strength or 0
             elif field == 'created_at':
                 return e.created_at or ''
             else:  # updated_at
@@ -96,13 +99,19 @@ class EntryListController:
             '收藏',
         )
 
-    def fetch_weak(self) -> tuple[list, str]:
-        """获取弱密码条目。"""
+    def fetch_weak(self, cancel_check: Callable[[], bool] | None = None) -> tuple[list, str]:
+        """获取弱密码条目。
+
+        ``cancel_check`` 仅为与其余 fetcher 统一签名而保留（弱密码来自已缓存的安全
+        摘要，无长循环可取消），当前忽略，消除异步入口放宽时抛 TypeError 的隐患。
+        """
+        del cancel_check  # 签名对齐，无实际用途
         summary = self.get_security_summary()
         return (summary or {}).get('weak_entries', []), '弱密码（全部分类）'
 
-    def fetch_duplicate(self) -> tuple[list, str]:
-        """获取重复密码条目。"""
+    def fetch_duplicate(self, cancel_check: Callable[[], bool] | None = None) -> tuple[list, str]:
+        """获取重复密码条目（``cancel_check`` 同 fetch_weak，仅签名对齐）。"""
+        del cancel_check
         summary = self.get_security_summary()
         groups = (summary or {}).get('duplicate_groups', [])
         return [e for group in groups for e in group], '重复密码（全部分类）'
@@ -175,5 +184,5 @@ class EntryListController:
         当缓存未就绪时返回 None，调用方应处理此情况。
         """
         return self._security.get_cached_report(
-            self._config.get('old_password_warning_days', 90)
+            self._config.get('old_password_warning_days')
         )

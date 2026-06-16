@@ -9,7 +9,11 @@ import logging
 from typing import TYPE_CHECKING, NamedTuple, Protocol, runtime_checkable
 
 from ...exceptions import DecryptionError, VaultError
-from .crypto_utils import decrypt_field as _decrypt_field_impl, encrypt_field as _encrypt_field_impl
+from .crypto_utils import (
+    SENSITIVE_ENCRYPTED_FIELDS,
+    decrypt_field as _decrypt_field_impl,
+    encrypt_field as _encrypt_field_impl,
+)
 
 if TYPE_CHECKING:
     from .metadata_signer import MetadataSigner
@@ -30,10 +34,9 @@ class KeyRotationDB(Protocol):
 
 
 _RE_ENCRYPT_BATCH_SIZE = 200
-_ENCRYPTED_ENTRY_FIELDS = (
-    'title', 'username', 'password', 'url', 'tags', 'notes',
-    'totp_secret', 'custom_fields',
-)
+# 重加密的敏感字段集，与 crypto_utils 的加解密字段集共用单一事实来源，
+# 避免两处独立列举导致新增加密字段时重加密漏列（该列保留旧密钥密文、改密后无法解密）。
+_ENCRYPTED_ENTRY_FIELDS = SENSITIVE_ENCRYPTED_FIELDS
 
 
 class ReEncryptedEntry(NamedTuple):

@@ -7,10 +7,9 @@ import os
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
-
-logger = logging.getLogger(__name__)
 
 from ...config import ConfigManager
 from ...crypto.encryption import EncryptionEngine
@@ -32,6 +31,8 @@ from ..services.key_manager import KeyManager
 from ..services.key_rotation import KeyRotationService
 from ..services.metadata_signer import MetadataSigner
 
+logger = logging.getLogger(__name__)
+
 _SNAPSHOT_KEY_AAD = 'vault:snapshot-key'
 
 # 改密时旧主密码验证失败的错误消息。供 change_master_dialog 判定是否计入速率
@@ -39,7 +40,6 @@ _SNAPSHOT_KEY_AAD = 'vault:snapshot-key'
 AUTH_FAILED_MESSAGE = '当前主密码错误'
 
 
-# TODO: 初始化/解锁/锁定/改密流程可进一步提取为独立的 VaultLifecycle。
 # 密钥持有与清零职责已拆出至 src/business/services/key_manager.py。
 
 class VaultManager:
@@ -64,7 +64,7 @@ class VaultManager:
         self._key_mgr = KeyManager()
         self._lock = threading.RLock()  # 保护改密和重加密等关键写操作串行化
         self._db_initialized = False  # 缓存标志，避免 is_initialized 重复打开数据库
-        self._on_lock_callbacks: list = []
+        self._on_lock_callbacks: list[Callable[[], None]] = []
         self._cancel_event = threading.Event()  # close() 时设置，通知长时间操作提前终止
 
     # 密钥材料由 KeyManager 持有，此处通过 property 代理，保持 VaultManager
@@ -208,15 +208,22 @@ class VaultManager:
             self._clear_vault_state()
             raise VaultKeyEpochMismatchError("保险库密钥已变更，请重新启动并解锁")
 
-    def initialize(self, master_password: str) -> tuple[bool, str]:
+    def initialize(
+        self, master_password: str, params: KdfParams | None = None,
+    ) -> tuple[bool, str]:
         """首次初始化保险库，设置主密码
 
         Args:
             master_password: 主密码
+            params: Argon2id 派生参数。None 时用模块级 DEFAULT_KDF_PARAMS——后者可
+                被测试经 monkeypatch 替换为弱参数加速，生产保持 OWASP 级强度。显式
+                传入的参数（须过 validate_params）优先于默认。
 
         Returns:
             由是否成功与错误信息组成的二元组，成功时错误信息为空字符串。
         """
+        if params is None:
+            params = DEFAULT_KDF_PARAMS
         try:
             valid, error = PasswordGenerator.validate_master_password(master_password)
             if not valid:
@@ -225,14 +232,14 @@ class VaultManager:
             if self._db.get_meta('master_salt') or self._db.get_meta('master_verify'):
                 raise VaultAlreadyInitializedError('保险库已经初始化，不能重复设置主密码')
             salt, verify_token, derived_key = MasterKeyManager.create(
-                master_password, DEFAULT_KDF_PARAMS
+                master_password, params
             )
             snapshot_key = os.urandom(32)
             key_epoch = uuid.uuid4().hex
             with self._db.transaction():
                 self._write_vault_metadata(
                     salt=salt, verify_token=verify_token, snapshot_key=snapshot_key,
-                    key=derived_key, key_epoch=key_epoch,
+                    key=derived_key, key_epoch=key_epoch, params=params,
                 )
             self._key_mgr.activate(derived_key, snapshot_key, key_epoch)
             self._signer.set_domain_key(MetadataSigner.compute_domain_key(derived_key))

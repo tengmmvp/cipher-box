@@ -34,5 +34,7 @@ def validate_card_expiry(expiry: str) -> bool:
 
 
 def validate_card_cvv(cvv: str) -> bool:
-    """校验 CVV 是否为 3 至 4 位数字。"""
-    return cvv.isdigit() and 3 <= len(cvv) <= 4
+    """校验 CVV 是否为 3 至 4 位 ASCII 数字。"""
+    # 限定 ASCII 数字，与 validate_card_number 一致：str.isdigit() 对全角数字
+    # （４ U+FF14）等也返回 True，虽能通过长度校验但存储后显示/提交异常。
+    return cvv.isascii() and cvv.isdigit() and 3 <= len(cvv) <= 4
