@@ -188,25 +188,6 @@ def test_nested_transaction_savepoint(db):
     assert db.get_meta('test_key') == 'inner'
 
 
-def test_get_all_tags_returns_only_tags(db):
-    """get_all_tags 轻量查询只返回标签字段。"""
-    # 写入带标签与不带标签的条目。
-    entry1 = _make_entry(title='A', tags='work,important')
-    entry2 = _make_entry(title='B', tags='personal')
-    entry3 = _make_entry(title='C', tags='')
-    db.add_entry(entry1)
-    db.add_entry(entry2)
-    db.add_entry(entry3)
-
-    tags_list = db.get_all_tags()
-    assert isinstance(tags_list, list)
-    assert all(isinstance(t, str) for t in tags_list)
-    assert len(tags_list) == 3
-    # 校验具体标签值存在。
-    assert 'work,important' in tags_list
-    assert 'personal' in tags_list
-
-
 def test_get_entries_with_limit(db):
     """get_entries limit 参数应限制返回数量。"""
     for i in range(10):

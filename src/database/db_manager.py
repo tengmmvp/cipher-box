@@ -566,9 +566,6 @@ class DatabaseManager:
     def get_entry_count(self, include_deleted: bool = False) -> int:
         return self._entry_repo.get_entry_count(include_deleted=include_deleted)
 
-    def get_all_tags(self) -> list[str]:
-        return self._entry_repo.get_all_tags()
-
     def get_entries_by_ids(self, entry_ids: list[int]) -> list[RawEntry]:
         return self._entry_repo.get_entries_by_ids(entry_ids)
 

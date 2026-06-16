@@ -298,7 +298,13 @@ class SecurityAnalyzer:
             skipped_count = 0
             # 循环外取一次主密钥副本，供重复检测的 HMAC 指纹复用。
             vault_key = self._key
-            for raw in entries:
+            for idx, raw in enumerate(entries):
+                # 周期性检查取消/锁定请求：用户点锁定时 lock() 会 set 取消事件并阻塞等
+                # vault 写锁；此处主动中止并抛 VaultLockedError（已被 _cached_analysis
+                # 捕获返回空报告），释放写锁让 lock() 尽快完成，避免 UI 冻结与明文驻留。
+                # 与改密/重加密/备份的取消探针模式对齐。
+                if (idx & 0x3F) == 0 and self._vault.is_cancel_requested():
+                    raise VaultLockedError('安全分析因锁定/取消请求而中止')
                 if raw.integrity_error:
                     logger.debug("安全分析跳过元数据完整性失败条目 id=%s", raw.id)
                     skipped_count += 1

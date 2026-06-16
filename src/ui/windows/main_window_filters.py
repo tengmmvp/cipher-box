@@ -540,14 +540,20 @@ class _MainWindowFiltersMixin(QMainWindow):
         self._search_timer.start()
 
     def _on_tag_changed(self):
+        if self._locked_ui:
+            return
         self._current_tag = self._tag_combo.currentData() or ''
         self._refresh_entries()
 
     def _do_search(self):
+        if self._locked_ui:
+            return
         self._current_search = self._search_edit.text().strip()
         self._refresh_entries()
 
     def _on_filter_changed(self, current, _previous):
+        if self._locked_ui:
+            return
         if current:
             self._current_filter = current.data(Qt.ItemDataRole.UserRole)
             self._current_category_id = None
@@ -559,6 +565,8 @@ class _MainWindowFiltersMixin(QMainWindow):
             self._refresh_entries()
 
     def _on_category_changed(self, current, _previous):
+        if self._locked_ui:
+            return
         if current:
             self._current_category_id = current.data(Qt.ItemDataRole.UserRole)
             self._current_filter = 'all'

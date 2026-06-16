@@ -10,7 +10,9 @@ import re
 def validate_card_number(number: str) -> bool:
     """使用 Luhn 算法校验信用卡号是否合法。"""
     number = number.replace(' ', '').replace('-', '')
-    if not number.isdigit() or len(number) < 13 or len(number) > 19:
+    # 限定 ASCII 数字：str.isdigit() 对全角数字（４ U+FF14）、阿拉伯-印度数字
+    # （٤ U+0664）等也返回 True，虽能通过 Luhn 但与卡号规范不符，存储后显示异常。
+    if not (number.isascii() and number.isdigit()) or len(number) < 13 or len(number) > 19:
         return False
     total = 0
     for i, ch in enumerate(reversed(number)):

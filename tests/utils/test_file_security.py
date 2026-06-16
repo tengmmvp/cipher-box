@@ -59,6 +59,27 @@ class TestSecureDeleteFile:
         # 清理：用真实 unlink 删除探测文件
         real_unlink(target)
 
+    def test_overwrite_failure_logs_plaintext_residue(self, tmp_path, monkeypatch, caplog):
+        """覆写失败时记录明文残留告警、抛 OSError，且 unlink 仍执行释放目录占用。"""
+        import logging
+        target = tmp_path / 'fragile.cbox'
+        target.write_bytes(b'sensitive-plaintext')
+
+        real_open = open
+
+        def _fail_overwrite(path, *args, **kwargs):
+            if args and args[0] == 'r+b':
+                raise OSError('disk full')
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr('builtins.open', _fail_overwrite)
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(OSError, match='disk full'):
+                secure_delete_file(target)
+        assert '明文残留' in caplog.text
+        # finally 仍 unlink，避免半成品文件残留于目录被直接打开
+        assert not target.exists()
+
 
 class TestSecureDirectory:
     """secure_directory 测试。"""

@@ -6,8 +6,11 @@ SecurityAnalyzer 在 full_analysis 中遇到解密失败的条目时应跳过而
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.business.services.crypto_utils import encrypt_field
 from src.business.services.security_analyzer import SecurityAnalyzer
+from src.exceptions import VaultLockedError
 from src.models import RawEntry
 
 
@@ -19,6 +22,7 @@ class TestSecurityAnalyzerSkipCorrupt:
         vault = MagicMock()
         vault.key = b'\x00' * 32
         vault.is_unlocked = True
+        vault.is_cancel_requested.return_value = False
 
         bad_entry = RawEntry(
             id=1,
@@ -50,6 +54,7 @@ class TestSecurityAnalyzerSkipCorrupt:
         vault = MagicMock()
         vault.key = b'\x00' * 32
         vault.is_unlocked = True
+        vault.is_cancel_requested.return_value = False
 
         corrupt_entry = RawEntry(
             id=1,
@@ -101,6 +106,7 @@ class TestSecurityAnalyzerSkipCorrupt:
         vault = MagicMock()
         vault.key = b'\x00' * 32
         vault.is_unlocked = True
+        vault.is_cancel_requested.return_value = False
 
         entry = RawEntry(
             id=1,
@@ -142,3 +148,42 @@ def test_cached_analysis_returns_independent_copy():
 
     result2 = analyzer._cached_analysis(90)
     assert 'polluted' not in result2['weak_entries']
+
+
+def test_full_analysis_aborts_on_cancel_request():
+    """锁定/取消请求到来时，full_analysis 主动中止抛 VaultLockedError。
+
+    回归守护：用户点锁定时 lock() 阻塞等 vault 写锁，full_analysis 须周期性
+    检查 is_cancel_requested 并主动抛出释放锁，避免 UI 冻结与明文驻留。
+    抛出的 VaultLockedError 由 _cached_analysis 捕获返回空报告。
+    """
+    vault = MagicMock()
+    vault.key = b'\x00' * 32
+    vault.is_unlocked = True
+    vault.is_cancel_requested.return_value = True  # 模拟锁定请求已到来
+
+    entry = RawEntry(
+        id=1, crypto_id='c', title='t', username='u',
+        password='', custom_fields='',
+    )
+    vault.db.get_entries.return_value = [entry]
+
+    analyzer = SecurityAnalyzer(vault)
+    with pytest.raises(VaultLockedError):
+        analyzer.full_analysis(90)
+    vault.is_cancel_requested.assert_called()
+
+
+def test_full_analysis_proceeds_when_not_cancelled():
+    """无取消请求时 full_analysis 正常完成，不因取消检查而误中止。"""
+    vault = MagicMock()
+    vault.key = b'\x00' * 32
+    vault.is_unlocked = True
+    vault.is_cancel_requested.return_value = False
+
+    vault.db.get_entries.return_value = []
+
+    analyzer = SecurityAnalyzer(vault)
+    result = analyzer.full_analysis(90)
+    assert isinstance(result, dict)
+    assert result['total'] == 0

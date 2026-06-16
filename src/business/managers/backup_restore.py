@@ -456,6 +456,18 @@ class BackupRestoreManager:
             # snapshot_key property，故无需持锁，减少锁持有时间。
             failed_purges = self._vault.purge_snapshot_backups()
             if failed_purges:
+                # 区分明文恢复点（pre_restore_*，含恢复前全部条目明文）与普通快照：
+                # 恢复点未能删除是更严重的明文泄漏面，需显著警告并指引重启清理，
+                # 而非笼统归并到「旧快照」让用户在「恢复完成」措辞下忽视风险。
+                restore_point_failed = any(
+                    p.name.startswith('pre_restore_') for p in failed_purges
+                )
+                if restore_point_failed:
+                    return True, (
+                        f'恢复完成，但 {len(failed_purges)} 个含恢复前明文的快照'
+                        '未能删除（可能被占用）。为避免明文泄漏，请关闭可能占用'
+                        '该文件的程序后重启应用以自动清理。'
+                    )
                 return True, (
                     f'恢复完成，但 {len(failed_purges)} 个旧快照未能删除'
                     '（可能被占用），建议在备份对话框手动清理以收缩泄漏面。'

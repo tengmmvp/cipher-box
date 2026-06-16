@@ -316,9 +316,19 @@ class ImportExportDialog(QDialog):
     def _on_export_done(self, count):
         if self.sender() is not self._worker:
             return
+        # 在 release_worker 前采样取消状态：取消时 export_to_json/csv 内部已清理
+        # temp 文件（未 os.replace），目标文件未生成/未更新，不应报「成功导出」
+        # 以免误导用户以为导出成功而留下空/损坏的明文文件。
+        # 守卫 `sender() is not self._worker` 已保证 self._worker 非 None；
+        # `is not None` 同时收窄类型满足静态检查。
+        cancelled = self._worker is not None and self._worker.is_cancelled
         release_worker(self)
         self._set_busy(False)
         self._progress.hide()
+        if cancelled:
+            self._status_label.setText('导出已取消')
+            set_label_severity(self._status_label, 'accent')
+            return
         # 防御性加保：即使业务层已对导出文件调用 secure_file，UI 层仍
         # 再次收紧权限。使用 _selected_path 而非文本框内容判空，避免
         # 用户编辑文本框导致路径不可靠。

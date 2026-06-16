@@ -217,6 +217,11 @@ class LoginWindow(QDialog):
             self.login_success.emit()
             self.accept()
         else:
+            # 失败后立即清除主密码明文，缩短敏感输入在控件中的驻留时间，
+            # 与成功路径及 change_master_dialog 的清零策略对齐。失败尝试的
+            # 主密码仍是用户真实密码，残留于 QLineEdit 会扩大肩窥/内存 dump 暴露面。
+            self._password_edit.clear()
+            self._confirm_edit.clear()
             if is_auth_failure:
                 lock_seconds = self._rate_limiter.record_failure()
                 if lock_seconds > 0:

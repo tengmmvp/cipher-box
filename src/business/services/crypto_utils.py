@@ -184,9 +184,15 @@ def decrypt_entry_to_portable_dict(
         )
         return None
     try:
+        # 全部加密字段统一 strict=True：任一字段损坏即抛 ValueError，由下方 except
+        # 捕获返回 None（跳过整条），消除原先 notes/password/custom_fields 容错
+        # （返回空串、条目仍导出）与 title/url/tags 严格的不一致契约。实际触发
+        # 极少——metadata_mac 的 _enc_hash 已覆盖全部加密字段密文，单字段损坏会
+        # 先触发元数据完整性失败使 raw_entry.integrity_error=True，在进入本函数前
+        # 即被上方 integrity_error 检查拦截返回 None。
         custom_json = decrypt_field(
             raw_entry.custom_fields_db_value,
-            key, raw_entry.crypto_id, 'custom_fields',
+            key, raw_entry.crypto_id, 'custom_fields', strict=True,
         )
         try:
             custom_fields = json.loads(custom_json) if custom_json else []
@@ -199,11 +205,11 @@ def decrypt_entry_to_portable_dict(
                 raw_entry.title, key, raw_entry.crypto_id, 'title', strict=True,
             ),
             'username': decrypt_field(
-                raw_entry.username, key, raw_entry.crypto_id, 'username',
+                raw_entry.username, key, raw_entry.crypto_id, 'username', strict=True,
             ),
             'password': (
                 decrypt_field(
-                    raw_entry.password, key, raw_entry.crypto_id, 'password',
+                    raw_entry.password, key, raw_entry.crypto_id, 'password', strict=True,
                 ) if include_secrets else ''
             ),
             'url': decrypt_field(
@@ -214,12 +220,12 @@ def decrypt_entry_to_portable_dict(
                 raw_entry.tags, key, raw_entry.crypto_id, 'tags', strict=True,
             ),
             'notes': decrypt_field(
-                raw_entry.notes, key, raw_entry.crypto_id, 'notes',
+                raw_entry.notes, key, raw_entry.crypto_id, 'notes', strict=True,
             ),
             'custom_fields': custom_fields,
             'totp_secret': (
                 decrypt_field(
-                    raw_entry.totp_secret, key, raw_entry.crypto_id, 'totp_secret',
+                    raw_entry.totp_secret, key, raw_entry.crypto_id, 'totp_secret', strict=True,
                 ) if include_secrets else ''
             ),
             'password_strength': raw_entry.password_strength,

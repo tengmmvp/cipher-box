@@ -683,6 +683,15 @@ class VaultManager:
         """
         self._cancel_event.set()
 
+    def is_cancel_requested(self) -> bool:
+        """是否有进行中的取消/锁定请求，供长操作轮询提前退出。
+
+        lock()/close()/request_cancel() 均会设置取消事件。全量安全分析等
+        长循环据此在锁定请求到来时主动中止并释放 vault 写锁，避免主线程
+        lock() 阻塞等锁导致 UI 冻结与明文驻留。
+        """
+        return self._cancel_event.is_set()
+
     def close(self):
         """关闭保险库。
 

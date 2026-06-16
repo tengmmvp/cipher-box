@@ -349,3 +349,66 @@ class TestRequireVaultKey:
 
         with pytest.raises(VaultLockedError):
             require_vault_key(cast(VaultManager, FakeVaultManager()))
+
+
+# ==================== decrypt_entry_to_portable_dict strict 统一 ====================
+
+
+class TestDecryptEntryToPortableDictStrict:
+    """验证字段 strict 策略统一：任一加密字段损坏即返回 None（跳过整条）。"""
+
+    def test_corrupt_notes_returns_none(self, aes_key):
+        """notes 密文损坏时整条返回 None，而非返回空 notes 的残缺字典。"""
+        from src.business.services.crypto_utils import (
+            decrypt_entry_to_portable_dict,
+        )
+        crypto_id = 'cid-bad-notes'
+        raw = RawEntry(
+            id=1, crypto_id=crypto_id,
+            title=encrypt_field('Title', aes_key, crypto_id, 'title'),
+            username=encrypt_field('user', aes_key, crypto_id, 'username'),
+            password=encrypt_field('pwd', aes_key, crypto_id, 'password'),
+            url=encrypt_field('url', aes_key, crypto_id, 'url'),
+            tags=encrypt_field('t', aes_key, crypto_id, 'tags'),
+            notes='cb2:invalidciphertext',  # 损坏的 notes 密文
+            custom_fields='',
+            totp_secret='',
+        )
+        assert decrypt_entry_to_portable_dict(raw, aes_key, include_secrets=True) is None
+
+    def test_corrupt_password_returns_none(self, aes_key):
+        """password 密文损坏时整条返回 None（统一 strict 后不再容错为空）。"""
+        from src.business.services.crypto_utils import (
+            decrypt_entry_to_portable_dict,
+        )
+        crypto_id = 'cid-bad-pwd'
+        raw = RawEntry(
+            id=1, crypto_id=crypto_id,
+            title=encrypt_field('Title', aes_key, crypto_id, 'title'),
+            username=encrypt_field('user', aes_key, crypto_id, 'username'),
+            password='cb2:brokenpasswordcipher',
+            url='', tags='', notes='', custom_fields='', totp_secret='',
+        )
+        assert decrypt_entry_to_portable_dict(raw, aes_key, include_secrets=True) is None
+
+    def test_all_valid_returns_full_dict(self, aes_key):
+        """全部字段有效时返回完整字典，notes 正常解密。"""
+        from src.business.services.crypto_utils import (
+            decrypt_entry_to_portable_dict,
+        )
+        crypto_id = 'cid-ok'
+        raw = RawEntry(
+            id=1, crypto_id=crypto_id,
+            title=encrypt_field('Title', aes_key, crypto_id, 'title'),
+            username=encrypt_field('user', aes_key, crypto_id, 'username'),
+            password=encrypt_field('pwd', aes_key, crypto_id, 'password'),
+            url=encrypt_field('url', aes_key, crypto_id, 'url'),
+            tags=encrypt_field('t', aes_key, crypto_id, 'tags'),
+            notes=encrypt_field('secret-note', aes_key, crypto_id, 'notes'),
+            custom_fields='',
+            totp_secret='',
+        )
+        result = decrypt_entry_to_portable_dict(raw, aes_key, include_secrets=True)
+        assert result is not None
+        assert result['notes'] == 'secret-note'
+        assert result['password'] == 'pwd'

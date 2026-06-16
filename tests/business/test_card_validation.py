@@ -54,6 +54,14 @@ class TestValidateCardNumber:
         """Luhn 校验失败的卡号。"""
         assert validate_card_number('1234567890123456') is False
 
+    def test_fullwidth_digits_rejected(self):
+        """全角数字（４而非 4）应被拒绝：isdigit() 通过但非 ASCII，与卡号规范不符。"""
+        assert validate_card_number('４１１１１１１１１１１１１１１１') is False
+
+    def test_arabic_indic_digits_rejected(self):
+        """阿拉伯-印度数字应被拒绝。"""
+        assert validate_card_number('٤١١١١١١١١١١١١١١') is False
+
 
 class TestValidateCardExpiry:
     """MM/YY 格式有效期校验。"""

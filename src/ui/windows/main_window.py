@@ -704,6 +704,23 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
 
     # ========== 窗口事件 ==========
 
+    def _secure_hide_to_tray(self):
+        """隐藏到托盘前的安全清理：清详情面板明文、清剪贴板、停 worker 与定时器。
+
+        close_to_tray 与 minimize_to_tray 共用：保持 vault 解锁与列表模型，
+        但清除瞬时明文（详情面板、剪贴板）并停止后台解密 worker，避免隐藏到
+        托盘后仍持有密钥/明文。_lock_timer 仍运行，托盘态空闲超时会自动锁定。
+        """
+        self._detail_panel.show_empty()
+        self._clipboard.clear_now()
+        self._select_timer.stop()
+        self._entry_change_timer.stop()
+        self._search_timer.stop()
+        self._pending_selection = None
+        from ..components.toast import ToastManager
+        ToastManager.cancel_all_for(self)
+        self._shutdown_workers()
+
     def closeEvent(self, a0: QCloseEvent | None):
         if a0 is None:
             return
@@ -720,22 +737,11 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             logger.debug("保存窗口状态失败", exc_info=True)
 
         if self._config.get('close_to_tray', False) and self._tray:
-            # 隐藏到托盘（非退出、非锁定）：清理详情面板瞬时明文并停选择定时器，
-            # 等待后台 worker 退出避免隐藏后继续持密钥解密（业务层已支持协作取消，
-            # wait 通常短暂）。保持 vault 解锁、列表模型与备份/状态定时器；
-            # _lock_timer 仍运行，托盘态空闲超时会自动锁定（安全设计）。
-            # 从托盘恢复时窗口立即可用；详情面板已清空，恢复后由用户重新选择条目。
-            self._detail_panel.show_empty()
-            self._clipboard.clear_now()
-            self._select_timer.stop()
-            self._entry_change_timer.stop()
-            # 搜索防抖定时器也需停止：隐藏后 300ms 触发 _do_search 会无谓地
-            # 全量解密刷新已隐藏的列表，与 prepare_for_lock 的清理集对齐。
-            self._search_timer.stop()
-            self._pending_selection = None
-            from ..components.toast import ToastManager
-            ToastManager.cancel_all_for(self)
-            self._shutdown_workers()
+            # 隐藏到托盘（非退出、非锁定）：安全清理后隐藏。保持 vault 解锁、
+            # 列表模型与备份/状态定时器；_lock_timer 仍运行，托盘态空闲超时会
+            # 自动锁定（安全设计）。从托盘恢复时窗口立即可用；详情面板已清空，
+            # 恢复后由用户重新选择条目。
+            self._secure_hide_to_tray()
             a0.ignore()
             self.hide()
         else:
@@ -766,6 +772,11 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         if a0.type() == a0.Type.WindowStateChange:
             if self.windowState() & Qt.WindowState.WindowMinimized:
                 if self._config.get('minimize_to_tray', True) and self._tray:
+                    # 最小化到托盘同样视为「离开交互」，执行与 close_to_tray 一致
+                    # 的安全清理，避免最小化比关闭更不安全（详情明文、剪贴板明文、
+                    # 后台解密 worker 继续运行）。hide 延迟到下一事件循环避免
+                    # 在 changeEvent 内直接 hide 的 Qt 重入问题。
+                    self._secure_hide_to_tray()
                     QTimer.singleShot(0, self.hide)
         super().changeEvent(a0)
 

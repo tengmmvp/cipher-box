@@ -240,8 +240,51 @@ class RateLimiter:
         self._state_path = Path(state_path) if state_path is not None else None
         self._load_state()
 
+    @property
+    def _sentinel_path(self) -> Path | None:
+        """哨兵文件路径，与状态文件配对，标记限流系统已正常初始化过。
+
+        用于区分状态文件「首次使用（哨兵缺失）」与「被恶意删除（哨兵存在）」，
+        关闭「删除 login_rate_limit.json 即归零计数」的绕过路径。
+        """
+        if self._state_path is None:
+            return None
+        return self._state_path.with_name(self._state_path.name + '.sentinel')
+
+    def _ensure_sentinel(self) -> None:
+        """首次成功持久化状态时创建哨兵，标记限流系统已初始化。
+
+        创建失败仅告警不中断——哨兵缺失最坏退化为「无法检测删除」，与改造前
+        行为一致，不会比原实现更弱。
+        """
+        sentinel = self._sentinel_path
+        if sentinel is None or sentinel.exists():
+            return
+        try:
+            sentinel.parent.mkdir(parents=True, exist_ok=True)
+            sentinel.write_bytes(b'1')
+            secure_file(sentinel)
+        except OSError:
+            logging.getLogger(__name__).warning(
+                "限流哨兵文件创建失败，删除检测将降级", exc_info=True,
+            )
+
     def _load_state(self) -> None:
-        if self._state_path is None or not self._state_path.exists():
+        if self._state_path is None:
+            return
+        if not self._state_path.exists():
+            # 状态文件缺失：区分「首次使用」与「被恶意删除」。首次成功持久化
+            # 状态时会同步写哨兵（见 _ensure_sentinel），故哨兵存在而状态文件
+            # 缺失意味着状态被外部删除——降级到最高阶梯锁定，与「文件损坏」
+            # 路径一致，避免删文件直接绕过限流。哨兵缺失则为首次正常使用，
+            # 计数保持 0，不误伤新用户。
+            if self._sentinel_path is not None and self._sentinel_path.exists():
+                logging.getLogger(__name__).warning(
+                    "限流状态文件缺失但哨兵存在，判定为被删除，降级最高阶梯锁定"
+                )
+                self._fail_count = RATE_LIMITS[-1][0]
+                self._lock_until = time.time() + RATE_LIMITS[-1][1]
+                self._save_state()
             return
         try:
             data = json.loads(self._state_path.read_text(encoding='utf-8'))
@@ -276,6 +319,8 @@ class RateLimiter:
             secure_file(temp_path)
             os.replace(temp_path, self._state_path)
             secure_file(self._state_path)
+            # 状态已成功落盘：确保哨兵存在，使后续「状态文件被删除」可被检测。
+            self._ensure_sentinel()
         except OSError:
             # 写盘失败（只读盘/磁盘满/权限）不应中断登录流程：RateLimiter 是
             # 内存限流，持久化仅为跨会话保留；失败时内存状态仍生效，仅记日志。
@@ -298,7 +343,11 @@ class RateLimiter:
             remaining = int(self._lock_until - now) + 1
             return f'尝试次数过多，请等待 {remaining} 秒后重试'
         if self._lock_until and now >= self._lock_until:
-            self._fail_count = 0
+            # 锁定到期：允许重试，但**保留 fail_count**，使下一轮失败仍能爬升到
+            # 更高退避档位。原先到期即清零会让攻击者每轮重置回最低档
+            # （3 次→10s→清零→3 次→10s…），递增退避名存实亡。保留计数后，持续
+            # 失败者会逐档爬升到 30/60/120 秒；合法用户最终成功登录时由
+            # record_success 清零，不受影响。
             self._lock_until = 0.0
             self._save_state()
         return None

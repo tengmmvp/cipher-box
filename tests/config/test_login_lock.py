@@ -26,8 +26,11 @@ class TestLoginLockPersistence:
         limiter._save_state()
 
         restarted = RateLimiter(lock_file)
-        assert restarted.check() is None
-        assert restarted._fail_count == 0
+        assert restarted.check() is None  # 到期允许重试
+        # 退避保留：到期后 fail_count 保留以使后续失败爬升退避档位，
+        # 仅 lock_until 清零解除锁定（原先到期清零会让退避退化为固定最低档）。
+        assert restarted._lock_until == 0.0
+        assert restarted._fail_count == 5
 
     def test_lock_state_survives_simulated_restart(self, tmp_path):
         lock_file = tmp_path / 'login_lock.json'

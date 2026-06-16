@@ -410,14 +410,6 @@ class EntryRepository:
         row = self._conn.execute(query).fetchone()
         return row[0]
 
-    @_db_operation
-    def get_all_tags(self) -> list[str]:
-        """获取所有未删除条目的标签字段，轻量查询，不加载加密列。"""
-        rows = self._conn.execute(
-            "SELECT tags FROM entries WHERE is_deleted=0"
-        ).fetchall()
-        return [row['tags'] or '' for row in rows]
-
     def get_entries_by_ids(self, entry_ids: list[int]) -> list[RawEntry]:
         """按 ID 列表批量获取条目。
 

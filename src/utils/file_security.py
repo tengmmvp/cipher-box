@@ -240,6 +240,17 @@ def secure_delete_file(path: Path) -> None:
                     remaining -= chunk
                 fp.flush()
                 os.fsync(fp.fileno())
+    except OSError:
+        # 覆写未完成：文件可能为「部分原始明文 + 部分随机字节」的混合，扇区上
+        # 仍有明文残留，取证还原面未完全收缩。明确记录 error 让运维知晓风险
+        # （磁盘满/权限/IO 错误），而非让异常被下方 finally 的 unlink 静默掩盖。
+        # 异常继续向上抛：调用方（如改密/恢复 purge）据此将文件计入 failed 列表
+        # 反馈用户；finally 仍 unlink 释放目录占用，避免半成品文件被直接打开。
+        logger.error(
+            "安全覆写失败，文件 %s 可能含部分明文残留，建议检查磁盘空间与权限",
+            path, exc_info=True,
+        )
+        raise
     finally:
         # missing_ok=True 防御 stat 与 unlink 间的 TOCTOU（文件被外部删除），
         # 避免此时抛 FileNotFoundError 中断清理循环。

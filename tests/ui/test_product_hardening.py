@@ -315,6 +315,16 @@ def test_visible_branding_uses_single_product_name():
     dialog.close()
 
 
+def test_login_failure_clears_password_input():
+    """认证失败后主密码明文须立即从输入框清除，缩短敏感驻留时间。"""
+    vault = type('LoginVault', (), {'is_initialized': True})()
+    dialog = LoginWindow(vault)
+    dialog._password_edit.setText('user-typed-secret')
+    dialog._on_auth_result(False, '主密码错误')
+    assert dialog._password_edit.text() == ''
+    dialog.close()
+
+
 def test_totp_accepts_standard_otpauth_uri():
     uri = (
         'otpauth://totp/CipherBox:test@example.com?'
