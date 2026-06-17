@@ -423,6 +423,24 @@ class VaultManager:
         with self._lock:
             yield
 
+    @contextmanager
+    def epoch_guarded_transaction(self, *, operation: str = '操作') -> Iterator[None]:
+        """事务 + epoch 守卫：进入时快照 key_epoch，事务内复查防并发改密。
+
+        收敛 entry_manager / import_export / backup_restore 的「pre_epoch 快照 →
+        开事务 → 事务内复查 key_epoch → 业务写入」重复样板，使新增长写操作不
+        漏掉 epoch 守卫。``db.transaction()`` 持有的 db_lock 已串行化改密（改密
+        ``_re_encrypt_all`` 同经该锁），epoch 复查是冗余纵深防御——check 置于
+        yield 前，yield 块内的写入由此获得「事务期间密钥未变」的保证。
+        """
+        pre_epoch = self.key_epoch
+        with self.db.transaction():
+            if self.key_epoch != pre_epoch:
+                raise VaultKeyEpochMismatchError(
+                    f'{operation}期间检测到密钥变更，已中止并回滚'
+                )
+            yield
+
     def change_master_password(
         self, old_password: str, new_password: str
     ) -> tuple[bool, str]:

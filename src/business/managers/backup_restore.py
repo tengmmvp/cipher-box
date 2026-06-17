@@ -776,17 +776,12 @@ class BackupRestoreManager:
     def _restore_data(self, data: dict[str, Any]) -> tuple[str, bytes]:
         db = self._vault.db
         key = self._key
-        pre_epoch = self._vault.key_epoch
         # snapshot_key 与 key_epoch 在同一事务内轮换：恢复整体替换数据后，旧 snapshot_key
         # 加密的快照含恢复前明文，轮换使其失效以收缩泄漏面，与改密路径语义一致。
         # 同事务写入消除事务外写库在崩溃时 epoch 已提交而
         # snapshot_key_enc 未写入的不一致窗口。
         new_snapshot_key = os.urandom(32)
-        with db.transaction():
-            # 事务边界二次校验 epoch，防止恢复期间并发改密导致密钥不一致，
-            # 兑现 _enforce_key_epoch 的事务化写路径契约
-            if self._vault.key_epoch != pre_epoch:
-                raise VaultKeyEpochMismatchError('恢复期间检测到密钥变更，已中止恢复')
+        with self._vault.epoch_guarded_transaction(operation='恢复'):
             db.clear_vault_data()
             category_map = self._restore_categories(db, data)
             entry_map, crypto_id_map = self._restore_entries(db, data, key, category_map)

@@ -15,7 +15,7 @@ from ...utils.format import utc_now_iso
 if TYPE_CHECKING:
     from .entry_manager import EntryManager
 
-from ...exceptions import EntryError, EntryIntegrityError, VaultKeyEpochMismatchError
+from ...exceptions import EntryError, EntryIntegrityError
 from ...models import (
     ENTRY_TYPE_CARD,
     ENTRY_TYPE_IDENTITY,
@@ -29,6 +29,14 @@ from ...models import (
     MAX_FIELD_TOTP_SECRET,
     MAX_FIELD_URL,
     MAX_FIELD_USERNAME,
+    SPECIAL_FIELD_CARD_CVV,
+    SPECIAL_FIELD_CARD_EXPIRY,
+    SPECIAL_FIELD_CARD_HOLDER,
+    SPECIAL_FIELD_CARD_NUMBER,
+    SPECIAL_FIELD_ID_ADDRESS,
+    SPECIAL_FIELD_ID_EMAIL,
+    SPECIAL_FIELD_ID_FULLNAME,
+    SPECIAL_FIELD_ID_PHONE,
     Category,
     CustomField,
     Entry,
@@ -496,11 +504,7 @@ class ImportExportManager:
         # 保证（改密 _re_encrypt_all 同样经该锁串行），不会与导入并发写库。此处二次
         # 校验 epoch 是纵深防御，避免未来若移除事务锁时静默引入竞态——切勿据此
         # 误以为去掉事务锁后仅靠此守卫仍安全。
-        pre_epoch = self._entry_mgr.key_epoch
-        with self._entry_mgr.db.transaction():
-            current_epoch = self._entry_mgr.key_epoch
-            if pre_epoch != current_epoch:
-                raise VaultKeyEpochMismatchError('导入期间检测到密钥变更，已中止导入')
+        with self._entry_mgr._vault.epoch_guarded_transaction(operation='导入'):
             return importer()
 
     # ======== 导入 ========
@@ -734,13 +738,13 @@ class ImportExportManager:
             if len(exp_year) == 4:
                 exp_year = exp_year[-2:]
             custom_fields.extend([
-                CustomField('_card_holder', str(card.get('cardholderName') or '')),
-                CustomField('_card_number', str(card.get('number') or ''), 'password'),
+                CustomField(SPECIAL_FIELD_CARD_HOLDER, str(card.get('cardholderName') or '')),
+                CustomField(SPECIAL_FIELD_CARD_NUMBER, str(card.get('number') or ''), 'password'),
                 CustomField(
-                    '_card_expiry',
+                    SPECIAL_FIELD_CARD_EXPIRY,
                     '/'.join(filter(None, [exp_month, exp_year])),
                 ),
-                CustomField('_card_cvv', str(card.get('code') or ''), 'password'),
+                CustomField(SPECIAL_FIELD_CARD_CVV, str(card.get('code') or ''), 'password'),
             ])
             return ENTRY_TYPE_CARD, custom_fields
         if item_type == 4:
@@ -750,10 +754,10 @@ class ImportExportManager:
                 str(identity.get('lastName') or ''),
             ]))
             custom_fields.extend([
-                CustomField('_id_fullname', fullname),
-                CustomField('_id_email', str(identity.get('email') or '')),
-                CustomField('_id_phone', str(identity.get('phone') or '')),
-                CustomField('_id_address', ' '.join(filter(None, [
+                CustomField(SPECIAL_FIELD_ID_FULLNAME, fullname),
+                CustomField(SPECIAL_FIELD_ID_EMAIL, str(identity.get('email') or '')),
+                CustomField(SPECIAL_FIELD_ID_PHONE, str(identity.get('phone') or '')),
+                CustomField(SPECIAL_FIELD_ID_ADDRESS, ' '.join(filter(None, [
                     str(identity.get('address1') or ''), str(identity.get('address2') or ''),
                     str(identity.get('city') or ''), str(identity.get('state') or ''),
                     str(identity.get('postalCode') or ''), str(identity.get('country') or ''),

@@ -767,12 +767,7 @@ class EntryManager:
         在单个事务内完成读-改-写，避免 TOCTOU 竞态。
         update_entry 会自动重签 metadata_mac，保证元数据完整性。
         """
-        pre_epoch = self.key_epoch
-        with self._vault.db.transaction():
-            if self.key_epoch != pre_epoch:
-                raise VaultKeyEpochMismatchError(
-                    '切换收藏期间检测到密钥变更（改密/锁定），已中止'
-                )
+        with self._vault.epoch_guarded_transaction(operation='切换收藏'):
             raw = self._vault.db.get_entry(entry_id)
             if raw is None:
                 return None

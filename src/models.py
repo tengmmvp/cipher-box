@@ -53,6 +53,23 @@ ENTRY_TYPES = {
     ENTRY_TYPE_SERVER: {'label': '服务器', 'icon': '[SRV]'},
 }
 
+# 专用字段 storage_name（带 ``_`` 前缀命名空间，与用户自定义字段隔离）。
+# entry_dialog 的 ``_SPECIAL_SCHEMA`` 与 import_export 的 Bitwarden/CSV 导入共用
+# 此单一事实源，防止字段重命名时导入路径写出与 UI schema 不匹配的 storage_name，
+# 导致导入的卡片/身份/服务器条目在编辑对话框无法回填（_ALL_SPECIAL_BY_STORAGE
+# 按 storage_name 精确匹配）。
+SPECIAL_FIELD_CARD_HOLDER = '_card_holder'
+SPECIAL_FIELD_CARD_NUMBER = '_card_number'
+SPECIAL_FIELD_CARD_EXPIRY = '_card_expiry'
+SPECIAL_FIELD_CARD_CVV = '_card_cvv'
+SPECIAL_FIELD_ID_FULLNAME = '_id_fullname'
+SPECIAL_FIELD_ID_EMAIL = '_id_email'
+SPECIAL_FIELD_ID_PHONE = '_id_phone'
+SPECIAL_FIELD_ID_ADDRESS = '_id_address'
+SPECIAL_FIELD_SERVER_HOST = '_server_host'
+SPECIAL_FIELD_SERVER_PORT = '_server_port'
+SPECIAL_FIELD_SERVER_PROTOCOL = '_server_protocol'
+
 
 @dataclass(repr=False)
 class CustomField:
