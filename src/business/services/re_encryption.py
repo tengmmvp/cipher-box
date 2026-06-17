@@ -1,8 +1,11 @@
-"""密钥轮换即重加密的编排服务。
+"""重加密编排服务。
 
 从 VaultManager 提取的职责：在主密码修改时，使用新密钥重新加密
 所有条目的敏感字段和密码历史记录。本服务只负责纯粹的加解密计算，
 事务管理和密钥状态更新仍然留在 VaultManager 中。
+
+命名说明：原名 KeyRotationService 易与 KeyManager（持密钥）、crypto_utils
+（加解密）混淆，其实际职责是「重加密编排」，故更名 ReEncryptionService。
 """
 
 import logging
@@ -11,6 +14,7 @@ from typing import TYPE_CHECKING, NamedTuple, Protocol, runtime_checkable
 from ...exceptions import DecryptionError, VaultError
 from .crypto_utils import (
     SENSITIVE_ENCRYPTED_FIELDS,
+    category_crypto_id,
     decrypt_field as _decrypt_field_impl,
     encrypt_field as _encrypt_field_impl,
 )
@@ -22,8 +26,8 @@ logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
-class KeyRotationDB(Protocol):
-    """KeyRotationService 所需的数据库接口协议。"""
+class ReEncryptionDB(Protocol):
+    """ReEncryptionService 所需的数据库接口协议。"""
 
     def get_entries(self, *, include_deleted: bool, limit: int, after_id: int) -> list: ...
     def update_entries_batch(self, rows: list) -> None: ...
@@ -70,8 +74,8 @@ class ReEncryptedHistory(NamedTuple):
     id: int
 
 
-class KeyRotationService:
-    """密钥轮换即重加密编排服务。
+class ReEncryptionService:
+    """重加密编排服务。
 
     在主密码修改时，将所有条目的加密字段和密码历史记录从旧密钥
     重新加密到新密钥。分批处理以控制内存峰值。
@@ -80,7 +84,7 @@ class KeyRotationService:
     调用方 VaultManager._re_encrypt_all 负责事务包裹和密钥轮换。
     """
 
-    def __init__(self, db: 'KeyRotationDB', metadata_signer: 'MetadataSigner'):
+    def __init__(self, db: 'ReEncryptionDB', metadata_signer: 'MetadataSigner'):
         """初始化重加密服务。
 
         Args:
@@ -175,7 +179,7 @@ class KeyRotationService:
         for category in self._db.get_categories():
             if category.id is None:
                 continue
-            crypto_id = f'category-{category.id}'
+            crypto_id = category_crypto_id(category.id)
             try:
                 plaintext = _decrypt_field_impl(
                     category.name, old_key, crypto_id, 'category_name', strict=True,

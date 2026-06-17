@@ -9,6 +9,7 @@ import sys
 import threading
 from collections import OrderedDict
 from pathlib import Path
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 _SECURED_WINDOWS_OBJECTS: OrderedDict[str, tuple[int, int]] = OrderedDict()
@@ -255,3 +256,102 @@ def secure_delete_file(path: Path) -> None:
         # missing_ok=True 防御 stat 与 unlink 间的 TOCTOU（文件被外部删除），
         # 避免此时抛 FileNotFoundError 中断清理循环。
         path.unlink(missing_ok=True)
+
+
+def atomic_write(
+    target: Path,
+    write_cb: Callable[[Any], bool],
+    *,
+    mode: str = 'wb',
+    encoding: str | None = None,
+    newline: str | None = None,
+) -> bool:
+    """原子写入文件：写临时文件 → fsync → secure_file → os.replace → secure_file。
+
+    write_cb 接收已打开的文件对象，完成写入并返回 True；返回 False 表示取消
+    （删除临时文件，不替换目标）。异常时删除临时文件并重新抛出。目标与临时
+    文件都经 secure_file 收紧权限。统一导出 JSON/CSV 与备份二进制的原子写契约，
+    消除三处逐字复制的「写临时 → fsync → replace → secure → 清理」模式。
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(target.name + '.tmp')
+    open_kwargs: dict = {}
+    if encoding is not None:
+        open_kwargs['encoding'] = encoding
+    if newline is not None:
+        open_kwargs['newline'] = newline
+    try:
+        with open(temp, mode, **open_kwargs) as f:
+            completed = write_cb(f)
+            if completed:
+                f.flush()
+                os.fsync(f.fileno())
+        if not completed:
+            temp.unlink(missing_ok=True)
+            return False
+        secure_file(temp, strict=True)
+        os.replace(temp, target)
+        secure_file(target, strict=True)
+        return True
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+
+
+# ======== Windows DPAPI 封装 ========
+# 用当前用户凭据封装敏感数据（如配置签名密钥），使封装后的 blob 即便被同权限
+# 进程读取也无法在别处（不同用户/会话）解密，收缩本地攻击者读取密钥文件后离线
+# 重算签名绕过完整性校验的攻击面。非 Windows 或调用失败时回退 None，由调用方
+# 降级到明文存储（靠文件权限保护），绝不阻断启动。
+
+def protect_with_dpapi(data: bytes) -> bytes | None:
+    """用 Windows DPAPI 封装数据，返回封装后的 blob；非 Windows 或失败返回 None。"""
+    if sys.platform != 'win32':
+        return None
+    return _dpapi_crypt(data, protect=True)
+
+
+def unprotect_with_dpapi(blob: bytes) -> bytes | None:
+    """解封 DPAPI 封装的数据；非 Windows、非 DPAPI 格式或失败返回 None。
+
+    返回 None 表示数据非 DPAPI 封装或解封失败，调用方据此尝试明文回退。
+    """
+    if sys.platform != 'win32':
+        return None
+    return _dpapi_crypt(blob, protect=False)
+
+
+def _dpapi_crypt(data: bytes, *, protect: bool) -> bytes | None:
+    """调用 CryptProtectData/CryptUnprotectData，任意失败返回 None。"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _DataBlob(ctypes.Structure):
+            _fields_ = [
+                ('cbData', wintypes.DWORD),
+                ('pbData', ctypes.POINTER(ctypes.c_char)),
+            ]
+
+        buffer = ctypes.create_string_buffer(data, len(data))
+        blob_in = _DataBlob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
+        blob_out = _DataBlob()
+        crypt32 = ctypes.windll.crypt32
+        if protect:
+            ok = crypt32.CryptProtectData(
+                ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out),
+            )
+        else:
+            # ppszDataDescr 传 None 表示不接收描述字符串
+            ok = crypt32.CryptUnprotectData(
+                ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out),
+            )
+        if not ok:
+            raise OSError('DPAPI 调用失败')
+        try:
+            return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+        finally:
+            ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+    except Exception:
+        logger.warning("DPAPI %s 失败，回退明文", '封装' if protect else '解封', exc_info=True)
+        return None

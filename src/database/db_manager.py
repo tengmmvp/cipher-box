@@ -236,9 +236,11 @@ class DatabaseManager:
         self._savepoint_counter = 0
         # 事务已成功提交；文件权限刷新是后续加固，失败不应让调用方误以为事务
         # 失败而重试写入（WAL/SHM 可能因 checkpoint 暂不存在）。参照 secure_checkpoint 降级。
+        # _secure_database_files 经 secure_file(strict=True) 仅可能抛 OSError（chmod/
+        # icacls/ACL 失败），缩窄为 OSError 避免吞掉未来引入的逻辑 bug。
         try:
             self._secure_database_files()
-        except Exception:
+        except OSError:
             logger.warning("提交后刷新数据库文件权限失败", exc_info=True)
 
     def rollback_transaction(self) -> None:
@@ -284,9 +286,10 @@ class DatabaseManager:
             now = _time.monotonic()
             if now - self._last_secure_ts >= SECURE_FILES_DEBOUNCE_SECONDS:
                 # 提交已成功；权限刷新失败仅告警，不污染已成功的事务。
+                # secure_file(strict=True) 仅可能抛 OSError，缩窄避免吞掉逻辑 bug。
                 try:
                     self._secure_database_files()
-                except Exception:
+                except OSError:
                     logger.warning("提交后刷新数据库文件权限失败", exc_info=True)
                 self._last_secure_ts = now
 
@@ -425,12 +428,20 @@ class DatabaseManager:
         ``encrypt_bytes`` 的字节前缀路径不经过此加密列断言。
         """
         if self._enforce_encrypted_fields and value:
-            prefix = 'cb2:' if value.startswith('cb2:') else ''
-            tail = value[len(prefix):] if prefix else ''
-            if not tail or not frozenset(tail).issubset(_B64_CHARS):
+            # EncryptionEngine.encrypt 始终产出 cb2: 前缀密文；强制要求此前缀，
+            # 使纯字母数字明文（如 abc123，恰为 base64 字符子集）无法再以「无前缀
+            # 合法密文」名义通过字符集校验。真正认证仍由 GCM 标签在解密时完成，
+            # 此处为防御性拦截，防止绕过 EntryManager 直接写库时明文静默落入加密列。
+            if not value.startswith('cb2:'):
                 raise ValueError(
-                    f'数据层收到未加密或格式异常的 {field_name}'
+                    f'数据层收到未加密的 {field_name}'
                     f'（期望 cb2: 前缀的 base64 密文），请通过 EntryManager 操作条目'
+                )
+            tail = value[len('cb2:'):]
+            if not frozenset(tail).issubset(_B64_CHARS):
+                raise ValueError(
+                    f'数据层收到格式异常的 {field_name}'
+                    f'（cb2: 前缀后须为 base64 密文），请通过 EntryManager 操作条目'
                 )
 
     def _sign_entry(self, entry: RawEntry) -> str:

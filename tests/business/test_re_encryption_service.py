@@ -1,4 +1,4 @@
-"""KeyRotationService 单元测试。
+"""ReEncryptionService 单元测试。
 
 使用 mock 数据库接口和真实加密引擎，验证密钥轮换服务在重加密条目
 和密码历史时的正确性，包括批处理、损坏中止等场景。
@@ -11,14 +11,14 @@ from typing import cast
 
 import pytest
 
-from src.business.services import key_rotation as kr_module
+from src.business.services import re_encryption as kr_module
 from src.business.services.crypto_utils import decrypt_field, encrypt_field
-from src.business.services.key_rotation import (
-    KeyRotationService,
+from src.business.services.metadata_signer import MetadataSigner
+from src.business.services.re_encryption import (
     ReEncryptedEntry,
     ReEncryptedHistory,
+    ReEncryptionService,
 )
-from src.business.services.metadata_signer import MetadataSigner
 from src.crypto.encryption import EncryptionEngine
 from src.exceptions import DecryptionError
 from src.models import PasswordHistory, RawEntry
@@ -74,11 +74,11 @@ def _make_raw_entry(
 
 
 # ---------------------------------------------------------------------------
-# MockDB：内存实现 KeyRotationDB Protocol
+# MockDB：内存实现 ReEncryptionDB Protocol
 # ---------------------------------------------------------------------------
 
 class MockDB:
-    """内存 mock，实现 KeyRotationDB Protocol 四个方法。"""
+    """内存 mock，实现 ReEncryptionDB Protocol 四个方法。"""
 
     def __init__(self):
         self._entries: list[RawEntry] = []
@@ -95,7 +95,7 @@ class MockDB:
     def add_history(self, history: PasswordHistory):
         self._history.append(history)
 
-    # -- KeyRotationDB Protocol 实现 --
+    # -- ReEncryptionDB Protocol 实现 --
 
     def get_entries(self, *, include_deleted: bool, limit: int, after_id: int) -> list:
         """按 id 升序分页返回条目。"""
@@ -137,7 +137,7 @@ def test_re_encrypt_entries_round_trip():
     db = MockDB()
     db.add_entry(entry)
     signer = MetadataSigner()
-    service = KeyRotationService(db, signer)
+    service = ReEncryptionService(db, signer)
 
     service.re_encrypt_entries(old_key, new_key)
 
@@ -188,7 +188,7 @@ def test_re_encrypt_entries_batching():
         db.add_entry(entry)
 
     signer = MetadataSigner()
-    service = KeyRotationService(db, signer)
+    service = ReEncryptionService(db, signer)
 
     service.re_encrypt_entries(old_key, new_key)
 
@@ -233,7 +233,7 @@ def test_re_encrypt_history_round_trip():
     ))
 
     signer = MetadataSigner()
-    service = KeyRotationService(db, signer)
+    service = ReEncryptionService(db, signer)
 
     service.re_encrypt_history(old_key, new_key)
 
@@ -261,7 +261,7 @@ def test_re_encrypt_entries_corruption_raises_decryption_error():
 
     crypto_utils.decrypt_field 默认容错模式会吞掉 ValueError，
     因此通过 patch 让 _decrypt_field_impl 在遇到损坏数据时重新抛出
-    ValueError，触发 KeyRotationService 中的 except ValueError 分支。
+    ValueError，触发 ReEncryptionService 中的 except ValueError 分支。
     """
     old_key = _random_key()
     new_key = _random_key()
@@ -277,7 +277,7 @@ def test_re_encrypt_entries_corruption_raises_decryption_error():
     db = MockDB()
     db.add_entry(entry)
     signer = MetadataSigner()
-    service = KeyRotationService(db, signer)
+    service = ReEncryptionService(db, signer)
 
     # patch 模块级引用，让解密失败时抛出 ValueError 而非静默返回空串
     original_decrypt = kr_module._decrypt_field_impl
@@ -328,7 +328,7 @@ def test_re_encrypt_history_corruption_raises_decryption_error():
     ))
 
     signer = MetadataSigner()
-    service = KeyRotationService(db, signer)
+    service = ReEncryptionService(db, signer)
 
     # patch 模块级引用，让解密失败时抛出 ValueError
     original_decrypt = kr_module._decrypt_field_impl

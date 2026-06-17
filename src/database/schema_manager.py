@@ -5,6 +5,8 @@
 """
 
 import logging
+import sqlite3
+import threading
 
 from ..exceptions import DatabaseError, SchemaError
 from ..utils.format import utc_now_iso
@@ -84,14 +86,14 @@ class SchemaManager:
     # ======== 连接与锁代理 ========
 
     @property
-    def _conn(self):
+    def _conn(self) -> sqlite3.Connection:
         return self._mgr.connection
 
     @property
-    def _lock(self):
+    def _lock(self) -> threading.RLock:
         return self._mgr.db_lock
 
-    def _auto_commit(self):
+    def _auto_commit(self) -> None:
         return self._mgr.auto_commit()
 
     # ==================== Schema 管理 ====================

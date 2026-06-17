@@ -12,6 +12,16 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
+
+def is_real_int(value) -> bool:
+    """判断是否为真正的 int，排除 bool（bool 是 int 子类，需显式排除）。
+
+    单一来源，供 models / backup_restore 等多处「排除 bool 的 int 校验」复用，
+    消除 ``isinstance(x, int) or isinstance(x, bool)`` 的重复与笔误风险。
+    """
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 # 字段最大长度常量，作为单一事实来源。
 # 明文长度上限（密文不受此限，base64 后更长）：这些常量约束加密前的明文输入，
 # 加密后存储的密文经 base64 编码 + nonce + tag，长度会显著超出上限。
@@ -157,7 +167,7 @@ class Category:
             raise ValueError('分类颜色过长')
         sort_order = data.get('sort_order', 0)
         # 排除 bool（bool 是 int 子类），与 Entry.from_dict 的严格类型校验风格对齐
-        if not isinstance(sort_order, int) or isinstance(sort_order, bool):
+        if not is_real_int(sort_order):
             raise ValueError('分类排序值类型无效，必须为整数')
         return cls(
             id=data.get('id'),

@@ -1,9 +1,11 @@
 """数据库层类型定义。"""
 
+from __future__ import annotations
+
 import sqlite3
 import threading
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, ContextManager, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Callable, ContextManager, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from ..models import RawEntry
@@ -23,7 +25,7 @@ class ConnectionProvider(Protocol):
     EntryRepository / CategoryRepository / SchemaManager 通过 ``conn_provider``
     访问 DatabaseManager 的连接、锁与编排方法。以 Protocol 显式声明所需成员，
     使 ``conn_provider`` 参数有明确类型（替代原先无注解的 Any），便于静态检查
-    与测试替身。DatabaseManager 满足此协议；仿 ``KeyRotationService.KeyRotationDB``。
+    与测试替身。DatabaseManager 满足此协议；仿 ``ReEncryptionService.ReEncryptionDB``。
     """
 
     @property
@@ -45,7 +47,7 @@ class ConnectionProvider(Protocol):
     def schema_validated(self, value: bool) -> None: ...
 
     @property
-    def entry_verifier(self) -> Any: ...
+    def entry_verifier(self) -> Callable[[RawEntry], None] | None: ...
 
     def auto_commit(self) -> None: ...
     def guard_write(self) -> None: ...

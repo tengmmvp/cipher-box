@@ -7,8 +7,9 @@ Qt 事件循环。工作函数完成后会主动释放闭包引用，防止其�
 
 import logging
 import threading
+from typing import Callable
 
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ class BackgroundWorker(QThread):
     cancelled = pyqtSignal()
     progress = pyqtSignal(int, int)
 
-    def __init__(self, func, parent=None):
+    def __init__(self, func: Callable[[], object], parent: QObject | None = None):
         """初始化后台工作线程。
 
         Args:
@@ -57,7 +58,7 @@ class BackgroundWorker(QThread):
                 即调用 cancel() + wait()，否则可能导致崩溃。
         """
         super().__init__(parent)
-        self._func = func
+        self._func: Callable[[], object] | None = func
         self._cancel_event = threading.Event()
 
     @property

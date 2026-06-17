@@ -32,13 +32,17 @@ class TestApplyRateLimit:
         # (8, 60)
         assert apply_rate_limit(8) == 60
 
-    def test_max_threshold(self):
+    def test_threshold_ten(self):
         # (10, 120)
         assert apply_rate_limit(10) == 120
 
+    def test_threshold_fifteen(self):
+        # (15, 600) — 累进锁定：持续失败封顶至 10 分钟，提高在线暴力破解成本
+        assert apply_rate_limit(15) == 600
+
     def test_beyond_max_threshold(self):
-        assert apply_rate_limit(20) == 120
-        assert apply_rate_limit(100) == 120
+        assert apply_rate_limit(20) == 600
+        assert apply_rate_limit(100) == 600
 
     def test_rate_limits_sorted_ascending(self):
         """RATE_LIMITS 阈值应为升序。"""

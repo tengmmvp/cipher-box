@@ -6,6 +6,7 @@
 
 import logging
 import sqlite3
+import threading
 from typing import Optional
 
 from ..models import Category
@@ -29,21 +30,21 @@ class CategoryRepository:
     # ======== 连接与锁代理 ========
 
     @property
-    def _conn(self):
+    def _conn(self) -> sqlite3.Connection:
         return self._mgr.connection
 
     @property
-    def _lock(self):
+    def _lock(self) -> threading.RLock:
         return self._mgr.db_lock
 
     @property
     def in_transaction(self) -> bool:
         return self._mgr.in_transaction
 
-    def _guard_write(self):
+    def _guard_write(self) -> None:
         return self._mgr.guard_write()
 
-    def _auto_commit(self):
+    def _auto_commit(self) -> None:
         return self._mgr.auto_commit()
 
     # ==================== 分类 ====================
@@ -118,9 +119,10 @@ class CategoryRepository:
         原子提交或回滚。入口断言将此契约从注释升级为运行期检查，防止未来
         误在无事务上下文中直接调用导致裸 DELETE。
         """
-        assert self.in_transaction, (
-            'delete_category 须在活动事务内调用（由 DatabaseManager.delete_category 编排）'
-        )
+        if not self.in_transaction:
+            raise RuntimeError(
+                'delete_category 须在活动事务内调用（由 DatabaseManager.delete_category 编排）'
+            )
         self._conn.execute("DELETE FROM categories WHERE id=?", (category_id,))
 
     @_db_operation

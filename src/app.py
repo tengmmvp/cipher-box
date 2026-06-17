@@ -45,6 +45,13 @@ class CipherBoxApp:
         self._config = ConfigManager()
         configure_logging(self._config.data_dir)
         self._vault = VaultManager(self._config)
+        # 启动时重试清理之前 purge 失败的恢复点（pre_restore_*.cbox，含恢复前全部
+        # 条目明文），收缩历史明文泄漏面。恢复点是临时安全快照，恢复成功后应删除；
+        # 之前因文件占用未删净的残留在此重试（重启后占用进程已释放）。
+        try:
+            self._vault.purge_restore_points()
+        except Exception:
+            logger.warning("启动清理恢复点失败", exc_info=True)
         self._main_window: MainWindow | None = None
         self._running = False
         self._instance_lock = QLockFile(str(self._config.data_dir / 'cipherbox.lock'))

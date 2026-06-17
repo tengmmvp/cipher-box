@@ -69,7 +69,7 @@ class TestChangePasswordRollbackConsistency:
     def test_change_password_rollback_preserves_vault(self):
         """重加密中途抛异常时，改密失败且回滚到原始状态。
 
-        安全属性：改密流程包裹在事务中；当 KeyRotationService 的重加密条目
+        安全属性：改密流程包裹在事务中；当 ReEncryptionService 的重加密条目
         或重加密历史任一步骤抛出异常时，_re_encrypt_all 必须回滚所有数据库
         变更并清除内存中的新密钥，保证两点：其一，原主密码仍可重新解锁
         保险库；其二，原条目的全部敏感字段含密码历史、TOTP、自定义字段，
@@ -90,7 +90,7 @@ class TestChangePasswordRollbackConsistency:
             raise RuntimeError('模拟重加密中途失败')
 
         with patch(
-            'src.business.managers.vault_manager.KeyRotationService'
+            'src.business.managers.vault_manager.ReEncryptionService'
             '.re_encrypt_entries',
             new=_failing_re_encrypt_entries,
         ):
@@ -140,7 +140,7 @@ class TestChangePasswordRollbackConsistency:
             raise RuntimeError('模拟历史重加密失败')
 
         with patch(
-            'src.business.managers.vault_manager.KeyRotationService'
+            'src.business.managers.vault_manager.ReEncryptionService'
             '.re_encrypt_history',
             new=_failing_re_encrypt_history,
         ):
@@ -165,16 +165,16 @@ class TestChangePasswordRollbackConsistency:
         """改密重加密期间通过 cancel_event 取消时，抛 VaultError 并事务回滚。
 
         安全属性：区别于 RuntimeError 触发的失败，cancel_event 由 request_cancel
-        或 close 设置，KeyRotationService 检测后抛 VaultError。该路径同样必须
+        或 close 设置，ReEncryptionService 检测后抛 VaultError。该路径同样必须
         回滚事务、清除新密钥，原主密码与数据保持匹配，不出现损坏窗口。
         """
-        from src.business.services.key_rotation import KeyRotationService
+        from src.business.services.re_encryption import ReEncryptionService
         from src.exceptions import VaultError
 
         original = self._original
         assert original is not None
         epoch_before = self._vault.db.get_meta('key_epoch')
-        real_re_encrypt = KeyRotationService.re_encrypt_entries
+        real_re_encrypt = ReEncryptionService.re_encrypt_entries
 
         def _cancel_then_re_encrypt(rotator, old_key, new_key, *, cancel_event=None):
             # 模拟改密已开始、重加密循环运行时收到取消请求：设置取消事件后
@@ -184,7 +184,7 @@ class TestChangePasswordRollbackConsistency:
             return real_re_encrypt(rotator, old_key, new_key, cancel_event=cancel_event)
 
         with patch(
-            'src.business.managers.vault_manager.KeyRotationService.re_encrypt_entries',
+            'src.business.managers.vault_manager.ReEncryptionService.re_encrypt_entries',
             new=_cancel_then_re_encrypt,
         ):
             with pytest.raises(VaultError):

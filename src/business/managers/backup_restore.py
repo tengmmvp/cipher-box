@@ -26,11 +26,12 @@ from ...models import (
     MAX_PASSWORD_HISTORY,
     Category,
     RawEntry,
+    is_real_int,
 )
 from ...utils.file_security import (
+    atomic_write,
     secure_delete_file,
     secure_directory,
-    secure_file,
     validate_file_path,
 )
 from ...utils.format import utc_now_iso
@@ -42,6 +43,7 @@ from ..services.crypto_utils import (
     encrypt_field,
     require_vault_key,
 )
+from ..services.metadata_signer import VAULT_META_SIGNED_KEYS, MetadataSigner
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +52,7 @@ def _user_friendly_error(exc: Exception) -> str:
     """将异常映射为用户友好的错误消息。
 
     按异常类型精确匹配映射，不依赖英文错误文本，避免子串误匹配。
-    未识别的异常类型返回包含 ``type(exc).__name__`` 的通用提示。
+    未识别的异常类型返回通用提示，不向用户暴露内部异常类名（类名经调用方日志记录）。
     """
     if isinstance(exc, FileNotFoundError):
         return '找不到指定的文件'
@@ -72,7 +74,7 @@ def _user_friendly_error(exc: Exception) -> str:
     if isinstance(exc, ValueError) and '过大' in str(exc):
         # _collect_portable_data 预估算或 payload 精确检查抛出，保留具体提示
         return str(exc)
-    return f'操作失败（{type(exc).__name__}），请检查文件和磁盘空间'
+    return '操作失败，请检查文件和磁盘空间'
 
 BACKUP_MAGIC = b'CipherBoxBackup\x00'
 BACKUP_FORMAT = 'CipherBoxBackup'
@@ -322,22 +324,12 @@ class BackupRestoreManager:
                 payload, backup_key, BACKUP_AAD
             )
             del payload
-            target = Path(filepath)
-            temp_path = target.with_name(target.name + '.tmp')
-            try:
-                with open(temp_path, 'wb') as file:
-                    self._write_backup_header(
-                        file, flags, salt, DEFAULT_KDF_PARAMS,
-                    )
-                    file.write(encrypted)
-                    file.flush()
-                    os.fsync(file.fileno())
-                secure_file(temp_path, strict=True)
-                os.replace(temp_path, target)
-                secure_file(target, strict=True)
-            except Exception:
-                temp_path.unlink(missing_ok=True)
-                raise
+            def _write_backup_file(file):
+                self._write_backup_header(file, flags, salt, DEFAULT_KDF_PARAMS)
+                file.write(encrypted)
+                return True
+
+            atomic_write(Path(filepath), _write_backup_file)
         finally:
             self._zero_backup_key_if_owned(flags, backup_key)
         logger.info("备份创建完成 (%.1fms)", (time.monotonic() - t0) * 1000)
@@ -527,7 +519,7 @@ class BackupRestoreManager:
                 '备份分类',
             )
             category_id = item['id']
-            if not isinstance(category_id, int) or isinstance(category_id, bool):
+            if not is_real_int(category_id):
                 raise ValueError('备份分类 ID 无效')
             if category_id in category_ids:
                 raise ValueError('备份分类 ID 重复')
@@ -536,7 +528,7 @@ class BackupRestoreManager:
             BackupRestoreManager._require_text(item['icon_char'], '分类图标', 32)
             BackupRestoreManager._require_text(item['color'], '分类颜色', 32)
             BackupRestoreManager._require_text(item['created_at'], '分类创建时间', 64)
-            if not isinstance(item['sort_order'], int) or isinstance(item['sort_order'], bool):
+            if not is_real_int(item['sort_order']):
                 raise ValueError('分类排序值无效')
         return category_ids
 
@@ -578,7 +570,7 @@ class BackupRestoreManager:
         if not isinstance(item['is_favorite'], bool) or not isinstance(item['is_deleted'], bool):
             raise ValueError('备份条目布尔字段无效')
         strength = item['password_strength']
-        if not isinstance(strength, int) or isinstance(strength, bool) or not 0 <= strength <= 4:
+        if not is_real_int(strength) or not 0 <= strength <= 4:
             raise ValueError('备份条目密码强度无效')
         if item['entry_type'] not in ENTRY_TYPES:
             raise ValueError('备份条目类型无效')
@@ -616,7 +608,7 @@ class BackupRestoreManager:
             BackupRestoreManager._validate_entry_fields(item, category_ids)
 
             entry_id = item['id']
-            if not isinstance(entry_id, int) or isinstance(entry_id, bool) or entry_id <= 0:
+            if not is_real_int(entry_id) or entry_id <= 0:
                 raise ValueError('备份条目 ID 无效')
             if entry_id in entry_ids:
                 raise ValueError('备份条目 ID 重复')
@@ -646,7 +638,7 @@ class BackupRestoreManager:
             )
             entry_id = item['entry_id']
             # 与 _validate_entries 的 ID 校验对齐：拒绝 bool/float 等伪装成 int 的类型
-            if not isinstance(entry_id, int) or isinstance(entry_id, bool):
+            if not is_real_int(entry_id):
                 raise ValueError('备份密码历史 entry_id 必须为整数')
             if entry_id not in entry_ids:
                 raise ValueError('备份密码历史引用了不存在的条目')
@@ -743,6 +735,13 @@ class BackupRestoreManager:
             new_epoch = uuid.uuid4().hex
             db.set_meta('key_epoch', new_epoch)
             db.set_meta('snapshot_key_enc', self._vault.encrypt_snapshot_key(new_snapshot_key))
+            # key_epoch 轮换后重算 vault_meta_mac（签名含 key_epoch），保持 unlock
+            # 校验一致；恢复不改凭据字段（salt/verify/KDF），故读回当前值重算即可。
+            meta_snapshot = db.get_meta_batch(list(VAULT_META_SIGNED_KEYS))
+            db.set_meta(
+                'vault_meta_mac',
+                MetadataSigner.compute_vault_meta_mac(meta_snapshot, key),
+            )
         # 事务提交后截断 WAL：clear_vault_data 删除的旧主密码密文残留在 WAL，
         # 事务内 secure_checkpoint 会跳过，须在事务外显式截断以收缩泄漏面。
         db.secure_checkpoint()

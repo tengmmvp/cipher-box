@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 # 条目中需加密的敏感字段名（RawEntry/Entry 逻辑属性名，非 DB 列名）。单一事实
-# 来源：KeyRotationService 重加密、下方 decrypt_entry_to_portable_dict /
+# 来源：ReEncryptionService 重加密、下方 decrypt_entry_to_portable_dict /
 # build_encrypted_entry_fields 的加解密字段集均与此一致。custom_fields 在加解密
 # 时序列化为 JSON 字符串再加密，字段名仍计入此集合。新增加密字段须同步更新
 # decrypt/build 的显式字段处理与 metadata_signer._payload 的 _enc_hash 绑定。
@@ -36,6 +36,16 @@ def require_vault_key(vault_manager: 'VaultManager') -> bytes:
 def entry_aad(crypto_id: str, field_name: str) -> str:
     """构造条目字段加密的标准 AAD 字符串。"""
     return f'entry:{crypto_id}:{field_name}'
+
+
+def category_crypto_id(category_id: int) -> str:
+    """构造分类名加密的 crypto_id。
+
+    统一此字面量（曾散落于 entry_manager._category_crypto_id、re_encryption、
+    security_analyzer），使分类名加解密 AAD 为单一真相源，避免漂移导致解密失败。
+    与 entry_aad 组合：``entry_aad(category_crypto_id(id), 'category_name')``。
+    """
+    return f'category-{category_id}'
 
 
 def encrypt_field(plaintext: str, key: bytes, crypto_id: str, field_name: str) -> str:

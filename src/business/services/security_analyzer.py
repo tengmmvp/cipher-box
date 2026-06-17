@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 from ...exceptions import VaultLockedError
 from ...models import Entry, RawEntry
-from .crypto_utils import build_entry_summary, decrypt_field, require_vault_key
+from .crypto_utils import build_entry_summary, category_crypto_id, decrypt_field, require_vault_key
 
 # 分析缓存存活时间，单位为秒。命中期内复用基础分析与密码指纹结果，
 # 避免重复执行 O(n) 解密与 HMAC 计算。条目增删或改密会立即失效缓存，
@@ -105,7 +105,7 @@ class SecurityAnalyzer:
             summary.category_name = decrypt_field(
                 raw.category_name,
                 key or self._key,
-                f'category-{raw.category_id}',
+                category_crypto_id(raw.category_id),
                 'category_name',
                 strict=True,
             )

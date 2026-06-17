@@ -9,7 +9,12 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from .utils.file_security import secure_directory, secure_file
+from .utils.file_security import (
+    protect_with_dpapi,
+    secure_directory,
+    secure_file,
+    unprotect_with_dpapi,
+)
 
 _CONFIG_SIG_PREFIX = '#__sig__:'
 _CONFIG_KEY_SIZE = 32
@@ -90,8 +95,10 @@ _BOOL_KEYS = {
     'show_tray_icon', 'minimize_to_tray', 'close_to_tray',
 }
 
-# 速率限制策略：每组为失败次数和对应锁定秒数
-RATE_LIMITS: list[tuple[int, int]] = [(3, 10), (5, 30), (8, 60), (10, 120)]
+# 速率限制策略：每组为失败次数和对应锁定秒数。最高阶梯封顶至 10 分钟，
+# 提高持续在线暴力破解的成本（配合 check() 到期保留 fail_count 的累进机制）。
+# 状态文件损坏/删除降级使用 RATE_LIMITS[-1]，故最高阶梯时长也是降级锁定时长。
+RATE_LIMITS: list[tuple[int, int]] = [(3, 10), (5, 30), (8, 60), (10, 120), (15, 600)]
 
 
 class ConfigManager:
@@ -127,20 +134,34 @@ class ConfigManager:
         return cfg
 
     def _load_or_create_integrity_key(self) -> bytes:
-        """加载安装级配置签名密钥；缺失或损坏时原子生成新密钥。"""
+        """加载安装级配置签名密钥；缺失或损坏时原子生成新密钥。
+
+        Windows 下密钥经 DPAPI（当前用户凭据）封装存储，使 config.key 即便被
+        同权限进程读取也无法在别处解密重算签名——收缩「本地攻击者读 config.key
+        重算签名绕过配置完整性校验」的攻击面。非 Windows 或 DPAPI 不可用时回退
+        明文存储（靠文件权限保护），绝不阻断启动。
+        """
         secure_directory(self._data_dir, strict=True)
         if self._integrity_key_path.exists():
-            key = self._integrity_key_path.read_bytes()
-            if len(key) == _CONFIG_KEY_SIZE:
+            blob = self._integrity_key_path.read_bytes()
+            key = unprotect_with_dpapi(blob)
+            if key is None:
+                # 非 DPAPI 封装：当作明文密钥（旧格式或非 Windows），长度校验
+                key = blob if len(blob) == _CONFIG_KEY_SIZE else None
+            if key is not None and len(key) == _CONFIG_KEY_SIZE:
                 secure_file(self._integrity_key_path, strict=True)
                 return key
             logger.warning('配置签名密钥损坏，将生成新密钥')
 
         key = os.urandom(_CONFIG_KEY_SIZE)
+        # 优先 DPAPI 封装；失败回退明文（不阻断启动）
+        stored = protect_with_dpapi(key)
+        if stored is None:
+            stored = key
         temp_path = self._integrity_key_path.with_suffix('.key.tmp')
         try:
             with open(temp_path, 'wb') as file:
-                file.write(key)
+                file.write(stored)
                 file.flush()
                 os.fsync(file.fileno())
             secure_file(temp_path, strict=True)

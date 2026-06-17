@@ -6,8 +6,9 @@
 
 import logging
 import sqlite3
+import threading
 import uuid
-from typing import Optional
+from typing import ContextManager, Optional
 
 from ..exceptions import DatabaseError, VaultIntegrityError, VaultLockedError
 from ..models import MAX_PASSWORD_HISTORY, PasswordHistory, RawEntry
@@ -95,17 +96,17 @@ class EntryRepository:
     # ======== 连接与锁代理 ========
 
     @property
-    def _conn(self):
+    def _conn(self) -> sqlite3.Connection:
         return self._mgr.connection
 
     @property
-    def _lock(self):
+    def _lock(self) -> threading.RLock:
         return self._mgr.db_lock
 
-    def _guard_write(self):
+    def _guard_write(self) -> None:
         return self._mgr.guard_write()
 
-    def _auto_commit(self):
+    def _auto_commit(self) -> None:
         return self._mgr.auto_commit()
 
     def _sign_entry(self, entry: RawEntry) -> str:
@@ -115,10 +116,10 @@ class EntryRepository:
     def in_transaction(self) -> bool:
         return self._mgr.in_transaction
 
-    def transaction(self):
+    def transaction(self) -> ContextManager[None]:
         return self._mgr.transaction()
 
-    def secure_checkpoint(self):
+    def secure_checkpoint(self) -> None:
         return self._mgr.secure_checkpoint()
 
     # ======== 防御性断言 ========
@@ -317,7 +318,7 @@ class EntryRepository:
         """批量更新条目，改密重加密专用。
 
         Args:
-            rows: ``ReEncryptedEntry`` NamedTuple 列表（key_rotation 产出）。
+            rows: ``ReEncryptedEntry`` NamedTuple 列表（re_encryption 产出）。
                 采样断言按 NamedTuple 属性访问加密列，故不支持普通 tuple；
                 NamedTuple 自动适配 executemany 的位置参数绑定。
         """
@@ -325,7 +326,7 @@ class EntryRepository:
             return
         # 采样首条的加密列做格式自检，防止重加密流程 bug 导致明文静默落入
         # 加密列。逐行断言开销不可接受（改密可达数万条），采样首条作护栏；
-        # rows 实际为 ReEncryptedEntry NamedTuple（key_rotation 产出）。
+        # rows 实际为 ReEncryptedEntry NamedTuple（re_encryption 产出）。
         first = rows[0]
         for enc_value in (
             first.title, first.username_enc, first.password_enc, first.url,
@@ -604,9 +605,10 @@ class EntryRepository:
         的原子性及跨表一致性。入口断言将此契约从注释升级为运行期检查，
         防止未来误在无事务上下文中直接调用。
         """
-        assert self.in_transaction, (
-            'clear_category_signatures 须在活动事务内调用（由 DatabaseManager.delete_category 编排）'
-        )
+        if not self.in_transaction:
+            raise RuntimeError(
+                'clear_category_signatures 须在活动事务内调用（由 DatabaseManager.delete_category 编排）'
+            )
         rows = self._conn.execute(
             "SELECT e.*, c.name as category_name "
             "FROM entries e LEFT JOIN categories c ON e.category_id = c.id "

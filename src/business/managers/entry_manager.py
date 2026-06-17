@@ -9,6 +9,7 @@ import json
 import logging
 import threading
 import uuid
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Callable, Optional
 
 if TYPE_CHECKING:
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
 
 from ...crypto.password_generator import PasswordGenerator
 from ...crypto.totp import TOTPGenerator
+from ...database.types import VerifyMode
 from ...exceptions import DecryptionError, EntryIntegrityError, VaultKeyEpochMismatchError
 from ...models import (
     ENTRY_TYPES,
@@ -37,6 +39,7 @@ from ...models import (
 from ...utils.format import format_datetime, utc_now_iso
 from ..services.crypto_utils import (
     build_entry_summary,
+    category_crypto_id,
     copy_entry_fields,
     decrypt_field as _decrypt_field_impl,
     encrypt_field as _encrypt_field_impl,
@@ -47,6 +50,10 @@ from ..services.crypto_utils import (
 
 logger = logging.getLogger(__name__)
 
+# 搜索摘要缓存容量上限：与 encryption.py 的 AESGCM LRU 对齐「有限容量」设计，
+# 避免大库下明文摘要 dict 以条目数为上界无界增长。LRU 淘汰最久未访问项。
+_MAX_SEARCH_METADATA_CACHE_SIZE = 2000
+
 
 class EntryManager:
     """管理密码条目的加密、解密和 CRUD 操作。"""
@@ -54,7 +61,8 @@ class EntryManager:
     def __init__(self, vault_manager: 'VaultManager'):
         self._vault = vault_manager
         # 搜索摘要缓存保存 title/username/url/tags 明文，减少重复搜索解密。
-        self._search_metadata_cache: dict[str, tuple[str, str, str, str]] = {}
+        # OrderedDict + LRU 上限，防止大库下明文摘要无界增长（对齐 AESGCM 缓存设计）。
+        self._search_metadata_cache: OrderedDict[str, tuple[str, str, str, str]] = OrderedDict()
         self._search_metadata_failed: dict[str, set[str]] = {}
         self._category_name_cache: dict[int, str] = {}
         self._cache_epoch: str | None = None
@@ -167,6 +175,7 @@ class EntryManager:
         with self._cache_lock:
             cached = self._search_metadata_cache.get(cid)
             if cached is not None:
+                self._search_metadata_cache.move_to_end(cid)
                 return cached
             entry_epoch = self._cache_epoch
 
@@ -190,13 +199,16 @@ class EntryManager:
         with self._cache_lock:
             if self._cache_epoch == entry_epoch:
                 self._search_metadata_cache[cid] = result
+                self._search_metadata_cache.move_to_end(cid)
+                if len(self._search_metadata_cache) > _MAX_SEARCH_METADATA_CACHE_SIZE:
+                    self._search_metadata_cache.popitem(last=False)
                 if failed:
                     self._search_metadata_failed[cid] = failed
         return result
 
     @staticmethod
     def _category_crypto_id(category_id: int) -> str:
-        return f'category-{category_id}'
+        return category_crypto_id(category_id)
 
     def _decrypt_category_name(self, category_id: int | None, value: str) -> str:
         if category_id is None or not value:
@@ -589,7 +601,7 @@ class EntryManager:
                 old_tags = self._decrypt_field(
                     raw.tags, raw.crypto_id, 'tags', strict=True,
                 ) if raw.tags else ''
-            except Exception:
+            except ValueError:
                 old_tags = None
             self._notify_entry_change(
                 password_changed,
@@ -683,11 +695,16 @@ class EntryManager:
         """
         # search 非空时不向 SQL 下推 limit，避免「先截断后过滤」导致命中失真。
         sql_limit = limit if not search else None
+        # 列表/搜索是高频只读路径，传 SKIP 跳过逐行 HMAC 验签（与全量解密并列的
+        # 第二条 O(N) 热路径）。篡改检测由 get_entry（单条 STRICT）与全部写路径
+        # 重签兜底；解密损坏仍由 _cached_search_metadata 的 strict 解密异常捕获并
+        # 标记 integrity_error，列表完整性展示语义不丢失。
         raw_entries = self.db.get_entries(
             deleted_only=deleted_only,
             category_id=category_id,
             favorite_only=favorite_only,
             limit=sql_limit,
+            verify=VerifyMode.SKIP,
         )
         if search:
             # 摘要字段首次搜索后进入会话缓存，后续搜索无重复解密成本。
@@ -721,7 +738,9 @@ class EntryManager:
         """
         if limit <= 0:
             return []
-        raw_entries = self.db.get_entries(sort_by_updated=True, limit=limit)
+        raw_entries = self.db.get_entries(
+            sort_by_updated=True, limit=limit, verify=VerifyMode.SKIP,
+        )
         return [self._decrypt_summary(entry) for entry in raw_entries]
 
     def get_entries_for_export(
@@ -1007,7 +1026,7 @@ class EntryManager:
             return cached
         tag_count: dict[str, int] = {}
         # 标签列为密文，逐条解密摘要字段后聚合；结果在会话内缓存。
-        for raw in self.db.get_entries(include_deleted=False):
+        for raw in self.db.get_entries(include_deleted=False, verify=VerifyMode.SKIP):
             tags_str = self._cached_search_metadata(raw)[3]
             for tag in (t.strip() for t in tags_str.split(',') if t.strip()):
                 tag_count[tag] = tag_count.get(tag, 0) + 1

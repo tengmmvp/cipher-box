@@ -4,14 +4,14 @@
 
 - ``Entry`` 与 ``RawEntry`` 字段名集合须一致——``crypto_utils.copy_entry_fields``
   手写逐字段映射，任一 dataclass 加字段需同步更新，否则映射遗漏导致字段丢失。
-- 加密字段集（``SENSITIVE_ENCRYPTED_FIELDS``）被 ``key_rotation`` 重加密与
+- 加密字段集（``SENSITIVE_ENCRYPTED_FIELDS``）被 ``re_encryption`` 重加密与
   ``crypto_utils`` 加解密引用，新增加密字段须三处同步。
 """
 
 import dataclasses
 
 from src.business.services.crypto_utils import SENSITIVE_ENCRYPTED_FIELDS
-from src.business.services.key_rotation import _ENCRYPTED_ENTRY_FIELDS
+from src.business.services.re_encryption import _ENCRYPTED_ENTRY_FIELDS
 from src.models import Entry, RawEntry
 
 
@@ -27,5 +27,5 @@ def test_entry_and_raw_entry_share_field_names():
 
 
 def test_encrypted_field_set_single_source():
-    """key_rotation._ENCRYPTED_ENTRY_FIELDS 须引用 crypto_utils 单一来源。"""
+    """re_encryption._ENCRYPTED_ENTRY_FIELDS 须引用 crypto_utils 单一来源。"""
     assert tuple(_ENCRYPTED_ENTRY_FIELDS) == SENSITIVE_ENCRYPTED_FIELDS

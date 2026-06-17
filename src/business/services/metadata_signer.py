@@ -11,8 +11,18 @@ import logging
 
 from ...exceptions import VaultIntegrityError, VaultLockedError
 from ...models import RawEntry
+from ...utils.memory import secure_zero_buffer
 
 logger = logging.getLogger(__name__)
+
+# vault_meta 完整性签名覆盖的安全相关键（密码派生与密钥版本元数据）。
+# 不含 snapshot_key_enc（已由主密钥加密保护，其篡改会在 _load_snapshot_key
+# 解密时失败）；不含 vault_meta_mac 自身（签名不能包含自身）。
+VAULT_META_SIGNED_KEYS = (
+    'master_salt', 'master_verify',
+    'master_kdf_time_cost', 'master_kdf_memory_cost', 'master_kdf_parallelism',
+    'ciphertext_format', 'key_epoch',
+)
 
 
 class MetadataSigner:
@@ -58,6 +68,26 @@ class MetadataSigner:
         """
         return bytearray(hmac.new(key, b'cipherbox:entry-metadata-key', hashlib.sha256).digest())
 
+    @staticmethod
+    def compute_vault_meta_mac(meta: dict, key: bytes) -> str:
+        """计算 vault_meta 安全相关字段的 HMAC-SHA256，用主密钥派生的域密钥签名。
+
+        检测 vault_meta 被外部篡改（如替换 master_salt、改写 KDF 参数、伪造
+        key_epoch）。用主密钥派生的域密钥签名：篡改 KDF 参数会使主密钥派生变化，
+        导致 unlock 的 verify_token 解密先行失败，故此 MAC 主要在 verify 通过后
+        对未导致派生失败的篡改提供统一的完整性校验与明确拒绝。域密钥为局部副本，
+        用后清零收缩驻留。
+        """
+        dk = MetadataSigner.compute_domain_key(key)
+        try:
+            payload = json.dumps(
+                {k: meta.get(k) for k in VAULT_META_SIGNED_KEYS},
+                sort_keys=True, ensure_ascii=False, separators=(',', ':'),
+            ).encode('utf-8')
+            return hmac.new(dk, payload, hashlib.sha256).hexdigest()
+        finally:
+            secure_zero_buffer(dk)
+
     def sign(self, entry: RawEntry) -> str:
         """计算条目元数据 HMAC 签名，使用预计算的域密钥。
 
@@ -75,15 +105,17 @@ class MetadataSigner:
             hashlib.sha256,
         ).hexdigest()
 
-    def sign_with_domain_key(self, entry: RawEntry, domain_key: bytes) -> str:
+    def sign_with_domain_key(self, entry: RawEntry, domain_key: bytes | bytearray) -> str:
         """直接使用预计算的域密钥签名，跳过密钥派生步骤。
 
-        用于 KeyRotationService 批量重加密场景，避免每条条目
+        用于 ReEncryptionService 批量重加密场景，避免每条条目
         重复调用 ``compute_domain_key`` 的 HMAC 开销。
 
         Args:
             entry: 条目对象。
-            domain_key: 预计算的域密钥，由 ``compute_domain_key`` 生成。
+            domain_key: 预计算的域密钥，由 ``compute_domain_key`` 生成
+                （返回 bytearray）。接受 bytes | bytearray，与 ``compute_domain_key``
+                的返回类型及清零语义统一。
         """
         return hmac.new(
             domain_key,

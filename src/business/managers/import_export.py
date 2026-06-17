@@ -4,7 +4,6 @@ import csv
 import inspect
 import json
 import logging
-import os
 from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
@@ -33,7 +32,7 @@ from ...models import (
     CustomField,
     Entry,
 )
-from ...utils.file_security import secure_file, validate_file_path
+from ...utils.file_security import atomic_write, validate_file_path
 
 logger = logging.getLogger(__name__)
 
@@ -136,12 +135,6 @@ class ImportExportManager:
                 for v in item.values()
             ) > MAX_IMPORT_ENTRY_SIZE:
                 raise ValueError('导入条目字段过大')
-
-    @staticmethod
-    def _atomic_target(filepath: str) -> tuple[Path, Path]:
-        target = Path(filepath)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        return target, target.with_name(target.name + '.tmp')
 
     @staticmethod
     def _csv_safe(value):
@@ -312,47 +305,39 @@ class ImportExportManager:
         cancel_check: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """导出为 JSON 文件。"""
-        target, temp = self._atomic_target(filepath)
-        try:
-            with open(temp, 'w', encoding='utf-8') as f:
-                header = {
-                    'app': 'CipherBox',
-                    'exported_at': self._now(),
-                    'secrets_included': include_password,
-                }
-                f.write('{\n')
-                for index, (key, value) in enumerate(header.items()):
-                    comma = ','  # header 后必跟 entries 数组，故每项后都加逗号
-                    f.write(
-                        f'  {json.dumps(key)}: '
-                        f'{json.dumps(value, ensure_ascii=False)}{comma}\n'
-                    )
-                f.write('  "entries": [')
-                first = True
-                for entry in entries:
-                    if cancel_check and cancel_check():
-                        return False
-                    if not first:
-                        f.write(',')
-                    f.write('\n')
-                    serialized = json.dumps(
-                        entry.to_dict(include_password=include_password),
-                        indent=2,
-                        ensure_ascii=False,
-                    )
-                    f.write('\n'.join(f'    {line}' for line in serialized.splitlines()))
-                    first = False
+        def write_cb(f):
+            header = {
+                'app': 'CipherBox',
+                'exported_at': self._now(),
+                'secrets_included': include_password,
+            }
+            f.write('{\n')
+            for key, value in header.items():
+                comma = ','  # header 后必跟 entries 数组，故每项后都加逗号
+                f.write(
+                    f'  {json.dumps(key)}: '
+                    f'{json.dumps(value, ensure_ascii=False)}{comma}\n'
+                )
+            f.write('  "entries": [')
+            first = True
+            for entry in entries:
+                if cancel_check and cancel_check():
+                    return False
                 if not first:
-                    f.write('\n')
-                f.write('  ]\n}\n')
-                f.flush()
-                os.fsync(f.fileno())
-            secure_file(temp, strict=True)
-            os.replace(temp, target)
-            secure_file(target, strict=True)
+                    f.write(',')
+                f.write('\n')
+                serialized = json.dumps(
+                    entry.to_dict(include_password=include_password),
+                    indent=2,
+                    ensure_ascii=False,
+                )
+                f.write('\n'.join(f'    {line}' for line in serialized.splitlines()))
+                first = False
+            if not first:
+                f.write('\n')
+            f.write('  ]\n}\n')
             return True
-        finally:
-            temp.unlink(missing_ok=True)
+        return atomic_write(Path(filepath), write_cb, mode='w', encoding='utf-8')
 
     def export_to_csv(
         self,
@@ -369,39 +354,33 @@ class ImportExportManager:
             fieldnames.remove('password')
             fieldnames.remove('totp_secret')
 
-        target, temp = self._atomic_target(filepath)
-        try:
-            with open(temp, 'w', encoding='utf-8-sig', newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
-                writer.writeheader()
-                for entry in entries:
-                    if cancel_check and cancel_check():
-                        return False
-                    if not entry.is_decrypted:
-                        continue
-                    row = entry.to_dict(include_password=include_password)
-                    cf = entry.custom_fields
-                    if not isinstance(cf, list):
-                        continue
-                    exported_fields = [
-                        field for field in cf
-                        if include_password or field.field_type != 'password'
-                    ]
-                    cf_str = '; '.join(f"{f.name}={f.value}" for f in exported_fields)
-                    if row.get('notes'):
-                        if cf_str:
-                            row['notes'] += f'\n[自定义字段] {cf_str}'
-                    elif cf_str:
-                        row['notes'] = f'[自定义字段] {cf_str}'
-                    writer.writerow({key: self._csv_safe(value) for key, value in row.items()})
-                f.flush()
-                os.fsync(f.fileno())
-            secure_file(temp, strict=True)
-            os.replace(temp, target)
-            secure_file(target, strict=True)
+        def write_cb(f):
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            writer.writeheader()
+            for entry in entries:
+                if cancel_check and cancel_check():
+                    return False
+                if not entry.is_decrypted:
+                    continue
+                row = entry.to_dict(include_password=include_password)
+                cf = entry.custom_fields
+                if not isinstance(cf, list):
+                    continue
+                exported_fields = [
+                    field for field in cf
+                    if include_password or field.field_type != 'password'
+                ]
+                cf_str = '; '.join(f"{f.name}={f.value}" for f in exported_fields)
+                if row.get('notes'):
+                    if cf_str:
+                        row['notes'] += f'\n[自定义字段] {cf_str}'
+                elif cf_str:
+                    row['notes'] = f'[自定义字段] {cf_str}'
+                writer.writerow({key: self._csv_safe(value) for key, value in row.items()})
             return True
-        finally:
-            temp.unlink(missing_ok=True)
+        return atomic_write(
+            Path(filepath), write_cb, mode='w', encoding='utf-8-sig', newline='',
+        )
 
     # ======== 导入辅助 ========
 

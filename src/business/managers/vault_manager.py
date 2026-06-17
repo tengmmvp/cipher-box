@@ -2,6 +2,7 @@
 
 import base64
 import gc
+import hmac
 import logging
 import os
 import threading
@@ -28,8 +29,8 @@ from ...exceptions import (
 from ...utils.file_security import secure_delete_file
 from ...utils.memory import secure_zero_buffer
 from ..services.key_manager import KeyManager
-from ..services.key_rotation import KeyRotationService
 from ..services.metadata_signer import MetadataSigner
+from ..services.re_encryption import ReEncryptionService
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ class VaultManager:
         )
 
         # 密钥轮换服务，仅负责纯加解密计算，事务仍由 VaultManager 管理
-        self._rotator = KeyRotationService(self._db, self._signer)
+        self._rotator = ReEncryptionService(self._db, self._signer)
 
         self._is_unlocked = False
         self._key_mgr = KeyManager()
@@ -293,7 +294,7 @@ class VaultManager:
                 'master_salt', 'master_verify', 'master_kdf_time_cost',
                 'master_kdf_memory_cost', 'master_kdf_parallelism',
                 'master_kdf', 'ciphertext_format', 'key_epoch',
-                'snapshot_key_enc',
+                'snapshot_key_enc', 'vault_meta_mac',
             ])
 
             salt_b64 = meta['master_salt']
@@ -326,6 +327,17 @@ class VaultManager:
             self._key = key
             self._key_epoch = key_epoch
             self._signer.set_domain_key(MetadataSigner.compute_domain_key(key))
+            # vault_meta 完整性校验（强制）：verify 通过已保证 KDF 参数未被篡改
+            # （否则派生密钥错致 verify 失败），此处统一校验其余安全字段
+            # （salt/verify/format/epoch）。mac 缺失亦拒绝——initialize、改密、恢复
+            # 均写入 mac，缺失意味着签名被删除篡改或为不兼容旧格式（开发阶段无历史
+            # 库，强制不破坏正常路径）。VaultIntegrityError 经 except 清零 key + lock。
+            stored_meta_mac = meta.get('vault_meta_mac')
+            if not stored_meta_mac:
+                raise VaultIntegrityError('保险库元数据完整性签名缺失')
+            expected_meta_mac = MetadataSigner.compute_vault_meta_mac(meta, key)
+            if not hmac.compare_digest(stored_meta_mac, expected_meta_mac):
+                raise VaultIntegrityError('保险库元数据完整性校验失败，可能已被篡改')
             self._load_snapshot_key(meta.get('snapshot_key_enc'))
             # 全部密钥材料（主密钥、epoch、domain_key、snapshot_key）就位后再标记解锁，
             # 缩小「主密钥已写入但 snapshot_key 尚未加载」的部分就位窗口：此窗口内
@@ -621,6 +633,29 @@ class VaultManager:
         """
         return self._purge_snapshot_backups()
 
+    def purge_restore_points(self) -> list:
+        """删除所有恢复前安全快照（pre_restore_*.cbox），返回未能删除的文件。
+
+        恢复点为恢复操作前的临时全量明文快照，恢复成功后应删除。启动时重试
+        清理之前因文件占用等原因 purge 失败的残留，收缩历史明文泄漏面。
+        仅清理 pre_restore_*（一次性恢复点），不动 cipherbox_snapshot_*（可能为
+        有效的定期自动快照）。
+        """
+        directories = [self.data_dir / 'backups']
+        backup_dir = self._config.get('backup_directory', '')
+        if backup_dir:
+            directories.append(Path(backup_dir))
+        failed = []
+        for directory in directories:
+            if not directory.is_dir():
+                continue
+            for f in directory.glob('pre_restore_*.cbox'):
+                try:
+                    secure_delete_file(f)
+                except OSError:
+                    failed.append(f)
+        return failed
+
     def _write_vault_metadata(
         self, *, salt: bytes, verify_token: str,
         snapshot_key: bytes, key: bytes, key_epoch: str,
@@ -647,6 +682,21 @@ class VaultManager:
             ),
         )
         self._db.set_meta('key_epoch', key_epoch)
+        # vault_meta 完整性签名：用当前 key 派生域密钥签安全相关字段，供 unlock 校验。
+        # 写入与上述字段同事务（调用方持事务），保证 mac 与被签字段原子一致。
+        meta_for_mac = {
+            'master_salt': base64.b64encode(salt).decode('ascii'),
+            'master_verify': verify_token,
+            'master_kdf_time_cost': str(params.time_cost),
+            'master_kdf_memory_cost': str(params.memory_cost),
+            'master_kdf_parallelism': str(params.parallelism),
+            'ciphertext_format': EncryptionEngine.FORMAT_ID,
+            'key_epoch': key_epoch,
+        }
+        self._db.set_meta(
+            'vault_meta_mac',
+            MetadataSigner.compute_vault_meta_mac(meta_for_mac, key),
+        )
 
     def _update_vault_metadata(
         self, new_key: bytes, new_salt: bytes, new_verify_token: str,
