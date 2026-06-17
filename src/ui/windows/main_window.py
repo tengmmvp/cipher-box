@@ -25,7 +25,6 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QStatusBar,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )

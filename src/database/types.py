@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Callable, ContextManager, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, NamedTuple, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from ..models import RawEntry
@@ -51,7 +53,40 @@ class ConnectionProvider(Protocol):
 
     def auto_commit(self) -> None: ...
     def guard_write(self) -> None: ...
-    def sign_entry(self, entry: 'RawEntry') -> str: ...
+    def sign_entry(self, entry: RawEntry) -> str: ...
     def assert_encrypted(self, value: str, field_name: str) -> None: ...
     def secure_checkpoint(self) -> None: ...
-    def transaction(self) -> ContextManager[None]: ...
+    def transaction(self) -> AbstractContextManager[None]: ...
+
+
+class ReEncryptedEntry(NamedTuple):
+    """重加密后条目的批量更新 DTO（数据库行结构）。
+
+    归属数据层：字段顺序与 ``EntryRepository._RE_ENCRYPT_BATCH_UPDATE_SQL``
+    一一对应，供改密重加密批量 executemany 写入。业务层 ``ReEncryptionService``
+    构造、``EntryRepository`` 消费，故定义在数据层类型模块，避免业务层 DTO 被
+    数据层反向依赖。
+    """
+    crypto_id: str
+    title: str
+    username_enc: str
+    password_enc: str
+    url: str
+    category_id: int | None
+    tags: str
+    notes_enc: str
+    custom_fields_enc: str
+    is_favorite: int  # 0 or 1
+    password_strength: int
+    entry_type: str
+    totp_secret_enc: str
+    updated_at: str
+    password_changed_at: str
+    metadata_mac: str
+    id: int
+
+
+class ReEncryptedHistory(NamedTuple):
+    """重加密后密码历史的批量更新 DTO（密文, id）。"""
+    ciphertext: str
+    id: int

@@ -261,6 +261,7 @@ class TestReEncryptEdgeCases:
         for orig, rest in zip(
             sorted(originals, key=lambda e: e.title),
             sorted(restored, key=lambda e: e.title),
+            strict=True,
         ):
             assert rest.title == orig.title
             assert rest.username == orig.username

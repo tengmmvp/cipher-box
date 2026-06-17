@@ -7,8 +7,9 @@
 import json
 import sqlite3
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, cast
+from typing import cast
 from unittest.mock import patch
 
 from PyQt6.QtTest import QTest
@@ -676,7 +677,7 @@ def test_existing_database_missing_table_is_rejected_without_repair():
         # schema 损坏（缺表）时 is_initialized 传播 SchemaError 而非静默 False，
         # 避免 UI 误判为未初始化后在损坏库上初始化覆盖既有数据。
         try:
-            reopened.is_initialized
+            _ = reopened.is_initialized
             raise AssertionError('缺表的库 is_initialized 应抛 SchemaError')
         except SchemaError:
             pass

@@ -39,7 +39,16 @@ target-version = "py310"
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E9", "F63", "F7", "F82", "F811", "W292", "I"]
+# E9/F*/W292/I：基础（语法错误、未用导入/变量、文件末尾换行、import 排序）
+# F401：未用导入（UP045 把 Optional[X] 改为 X|None 后，自动清理残留 Optional 导入）
+# UP：pyupgrade，推动 PEP 604（X | None）、内置泛型等现代化语法（多可自动修复）
+# B：flake8-bugbear，捕获可变默认参数、裸 except、assert 用于运行期校验等真问题
+select = ["E9", "F401", "F63", "F7", "F82", "F811", "W292", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Qt Model 子类的 rowCount/columnCount/index 等重写方法以 QModelIndex() 作默认
+# 参数是 PyQt6 官方推荐签名，B008（默认参数函数调用）对此误报，整文件豁免。
+"src/ui/components/entry_list_widget.py" = ["B008"]
 
 [tool.ruff.lint.isort]
 # 合并 as 重命名 import 到主块，匹配项目既有的单块 import 风格，避免同一模块
@@ -52,6 +61,18 @@ python_version = "3.10"
 ignore_missing_imports = true
 check_untyped_defs = true
 warn_unused_ignores = true
+# 收紧类型检查：要求显式标注，禁止隐式 Optional 与返回 Any
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+# UI 层 PyQt6 信号槽与 __init__ 参数历史欠债较多，单独放宽未标注定义要求，
+# 后续逐步补全后再收紧。crypto/business/database 三层保持严格。
+module = "src.ui.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
 
 [tool.pyright]
 # 密钥以 bytearray 持有以便 secure_zero_buffer 真正清零；bytearray 是 bytes-like，

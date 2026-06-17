@@ -104,7 +104,7 @@ RATE_LIMITS: list[tuple[int, int]] = [(3, 10), (5, 30), (8, 60), (10, 120), (15,
 class ConfigManager:
     """配置管理器 — 读写 JSON 配置文件。"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._data_dir = get_data_dir()
         self._config_path = self._data_dir / 'config.json'
         self._integrity_key_path = self._data_dir / 'config.key'
@@ -116,7 +116,7 @@ class ConfigManager:
         self.load()
 
     @classmethod
-    def for_testing(cls, data_dir) -> 'ConfigManager':
+    def for_testing(cls, data_dir: str | Path) -> 'ConfigManager':
         """创建用于测试的 ConfigManager 实例。
 
         使用指定目录作为数据目录，不加载真实配置文件。
@@ -184,7 +184,7 @@ class ConfigManager:
     def config_path(self) -> Path:
         return self._config_path
 
-    def load(self):
+    def load(self) -> None:
         """从文件加载配置。"""
         with self._lock:
             self._integrity_warning = False
@@ -257,7 +257,7 @@ class ConfigManager:
         """
         return self._integrity_reason
 
-    def save(self):
+    def save(self) -> None:
         """原子保存配置，避免异常退出留下半个 JSON 文件。"""
         with self._lock:
             self._config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -292,7 +292,7 @@ class ConfigManager:
         with self._lock:
             return self._config.get(key, default)
 
-    def get_safe(self, key: str, default=None):
+    def get_safe(self, key: str, default: Any = None) -> Any:
         """获取配置值，对安全关键键强制运行时下限。
 
         与 get() 相同，但对模块级 ``_SECURITY_MINIMUMS`` 中定义的键，
@@ -321,7 +321,7 @@ class ConfigManager:
                 return minimum
         return value
 
-    def set(self, key: str, value: Any):
+    def set(self, key: str, value: Any) -> None:
         """设置配置项。"""
         with self._lock:
             if key not in DEFAULT_CONFIG:

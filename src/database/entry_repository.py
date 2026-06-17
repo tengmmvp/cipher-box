@@ -8,13 +8,13 @@ import logging
 import sqlite3
 import threading
 import uuid
-from typing import ContextManager, Optional
+from contextlib import AbstractContextManager
 
 from ..exceptions import DatabaseError, VaultIntegrityError, VaultLockedError
 from ..models import MAX_PASSWORD_HISTORY, PasswordHistory, RawEntry
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation, _db_write
-from .types import ConnectionProvider, VerifyMode
+from .types import ConnectionProvider, ReEncryptedEntry, ReEncryptedHistory, VerifyMode
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +56,14 @@ _RE_ENCRYPT_COLUMNS = list(_UPDATE_ENTRY_COLUMNS)
 
 # 运行时断言：所有加密列（_enc 后缀）必须被改密重写，否则该列保留旧密钥密文
 # 将导致改密后无法解密。模块加载时执行，捕获未来 _ENTRY_COLUMNS 扩展漏配。
-assert all(
+if not all(
     col in _RE_ENCRYPT_COLUMNS
     for col in _ENTRY_COLUMNS
     if col.endswith('_enc')
-), '加密列未被纳入改密重写集合，将导致改密后数据损坏'
+):
+    raise RuntimeError(
+        '加密列未被纳入改密重写集合，将导致改密后数据损坏'
+    )
 
 _RE_ENCRYPT_BATCH_UPDATE_SQL = (
     f"UPDATE entries SET {', '.join(f'{column}=?' for column in _RE_ENCRYPT_COLUMNS)} "  # nosec B608 - 参数绑定
@@ -116,7 +119,7 @@ class EntryRepository:
     def in_transaction(self) -> bool:
         return self._mgr.in_transaction
 
-    def transaction(self) -> ContextManager[None]:
+    def transaction(self) -> AbstractContextManager[None]:
         return self._mgr.transaction()
 
     def secure_checkpoint(self) -> None:
@@ -134,7 +137,7 @@ class EntryRepository:
         self,
         deleted_only: bool = False,
         include_deleted: bool = False,
-        category_id: Optional[int] = None,
+        category_id: int | None = None,
         favorite_only: bool = False,
         limit: int | None = None,
         after_id: int | None = None,
@@ -193,7 +196,7 @@ class EntryRepository:
         return [self._row_to_entry(r, verify=verify) for r in rows]
 
     @_db_operation
-    def get_entry(self, entry_id: int) -> Optional[RawEntry]:
+    def get_entry(self, entry_id: int) -> RawEntry | None:
         """获取单个条目。"""
         row = self._conn.execute(
             """SELECT e.*, c.name as category_name
@@ -266,7 +269,7 @@ class EntryRepository:
         self,
         entry: RawEntry,
         preserve_updated_at: bool = False,
-    ):
+    ) -> None:
         """更新条目。
 
         注意：此方法不写入 is_deleted 和 deleted_at 字段，这两个字段
@@ -314,7 +317,7 @@ class EntryRepository:
         self._auto_commit()
 
     @_db_write
-    def update_entries_batch(self, rows: list) -> None:
+    def update_entries_batch(self, rows: list[ReEncryptedEntry]) -> None:
         """批量更新条目，改密重加密专用。
 
         Args:
@@ -408,7 +411,7 @@ class EntryRepository:
         if not include_deleted:
             query += " WHERE is_deleted = 0"
         row = self._conn.execute(query).fetchone()
-        return row[0]
+        return int(row[0]) if row else 0
 
     def get_entries_by_ids(self, entry_ids: list[int]) -> list[RawEntry]:
         """按 ID 列表批量获取条目。
@@ -452,7 +455,7 @@ class EntryRepository:
         entry_id: int,
         old_password_enc: str,
         changed_at: str = '',
-    ):
+    ) -> None:
         """添加密码历史记录。"""
         self._assert_encrypted(old_password_enc, 'password_history')
         self._conn.execute(
@@ -476,7 +479,7 @@ class EntryRepository:
         self,
         entry_id: int,
         items: list[tuple[str, str]],
-    ):
+    ) -> None:
         """批量添加密码历史，末尾统一截断到 MAX_PASSWORD_HISTORY 条。
 
         相比逐条调用 add_password_history，避免每条记录触发一次截断 DELETE。
@@ -559,7 +562,7 @@ class EntryRepository:
         return row[0] if row else 0
 
     @_db_write
-    def update_password_history_batch(self, rows: list) -> None:
+    def update_password_history_batch(self, rows: list[ReEncryptedHistory]) -> None:
         """批量更新密码历史记录的密文。
 
         改密重加密时将逐条 UPDATE 合并为单次 executemany，减少数据库往返次数。

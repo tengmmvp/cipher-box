@@ -1,17 +1,56 @@
 """业务层共享加密工具函数。"""
 
+from __future__ import annotations
+
 import json
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
+    from typing_extensions import Unpack
+
     from ..managers.vault_manager import VaultManager
 
 from ...crypto.encryption import EncryptionEngine
 from ...exceptions import DecryptionError, VaultLockedError
-from ...models import Entry, RawEntry
+from ...models import CustomField, Entry, RawEntry
 
 logger = logging.getLogger(__name__)
+
+
+class EntryOverrides(TypedDict, total=False):
+    """copy_entry_fields 的可选覆盖字段，键集合与 :class:`Entry` 字段一一对应。
+
+    total=False：所有字段均可选，调用方按需覆盖子集。custom_fields 在解密路径
+    传入 ``list[CustomField]``；password 运行时可为 :class:`Sensitive`（str 子类），
+    标注为 str 兼容二者。
+    """
+
+    id: int | None
+    crypto_id: str
+    title: str
+    username: str
+    password: str
+    url: str
+    category_id: int | None
+    category_name: str
+    tags: str
+    notes: str
+    custom_fields: list[CustomField]
+    is_favorite: bool
+    is_deleted: bool
+    password_strength: int
+    entry_type: str
+    totp_secret: str
+    created_at: str
+    updated_at: str
+    deleted_at: str
+    password_changed_at: str
+    metadata_mac: str
+    integrity_error: bool
+    integrity_message: str
+    password_present: bool
+    totp_present: bool
 
 
 # 条目中需加密的敏感字段名（RawEntry/Entry 逻辑属性名，非 DB 列名）。单一事实
@@ -31,7 +70,7 @@ STRING_ENCRYPTED_FIELDS: tuple[str, ...] = tuple(
 )
 
 
-def require_vault_key(vault_manager: 'VaultManager') -> bytes:
+def require_vault_key(vault_manager: VaultManager) -> bytes:
     """获取保险库加密密钥，未解锁时抛出 VaultLockedError。"""
     key = vault_manager.key
     if key is None:
@@ -133,7 +172,7 @@ def matches_tag(entry: Entry, tag: str) -> bool:
     return tag_lower in entry_tags
 
 
-def copy_entry_fields(raw: RawEntry, **overrides) -> Entry:
+def copy_entry_fields(raw: RawEntry, **overrides: Unpack[EntryOverrides]) -> Entry:
     """从密文态 RawEntry 构建明文 Entry，按需覆盖字段。
 
     RawEntry 与 Entry 是不同 dataclass，不能用 ``dataclasses.replace`` 跨类型

@@ -70,7 +70,7 @@ class EncryptionEngine:
             return cipher
 
     @classmethod
-    def clear_cache(cls):
+    def clear_cache(cls) -> None:
         """清除 AESGCM 实例缓存。
 
         密钥失效后调用，例如锁定或改密。清除引用后依赖 GC 回收，

@@ -229,7 +229,7 @@ class SecurityAnalyzer:
         """返回缓存报告，若无效则重新计算并缓存。"""
         return self._cached_analysis(days)
 
-    def invalidate_cache(self, password_changed: bool = True):
+    def invalidate_cache(self, password_changed: bool = True) -> None:
         """清除分析缓存，下次访问时将重新计算。
 
         password_changed 为 False，即非密码字段变更时直接返回：弱密码、重复、过期

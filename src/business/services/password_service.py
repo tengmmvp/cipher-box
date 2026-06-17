@@ -8,7 +8,7 @@
 是为了切断 UI → Crypto 的跨层依赖，而非在 Business 内部再增加一层间接。
 """
 
-from ...crypto.password_generator import PasswordGenerator
+from ...crypto.password_generator import PasswordGenerator, StrengthResult
 from ...crypto.totp import TOTPGenerator
 
 
@@ -30,12 +30,12 @@ class PasswordService:
         )
 
     @staticmethod
-    def check_strength(password: str):
+    def check_strength(password: str) -> StrengthResult:
         """检测密码强度，返回 StrengthResult。"""
         return PasswordGenerator.check_strength(password)
 
     @staticmethod
-    def validate_master_password(password: str, label: str = '主密码'):
+    def validate_master_password(password: str, label: str = '主密码') -> tuple[bool, str]:
         """验证主密码强度要求，返回由是否有效与错误信息组成的二元组。"""
         return PasswordGenerator.validate_master_password(password, label)
 

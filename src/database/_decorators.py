@@ -6,7 +6,8 @@
 
 import functools
 import logging
-from typing import Any, Callable, ParamSpec, TypeVar
+from collections.abc import Callable
+from typing import Any, ParamSpec, TypeVar
 
 from ..exceptions import DatabaseError
 

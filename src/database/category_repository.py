@@ -7,7 +7,6 @@
 import logging
 import sqlite3
 import threading
-from typing import Optional
 
 from ..models import Category
 from ..utils.format import utc_now_iso
@@ -59,7 +58,7 @@ class CategoryRepository:
         return [self._row_to_category(r) for r in rows]
 
     @_db_operation
-    def get_category(self, category_id: int) -> Optional[Category]:
+    def get_category(self, category_id: int) -> Category | None:
         """获取单个分类。"""
         row = self._conn.execute(
             "SELECT * FROM categories WHERE id = ?", (category_id,)
@@ -132,7 +131,7 @@ class CategoryRepository:
             "SELECT COUNT(*) FROM entries WHERE category_id=? AND is_deleted=0",
             (category_id,),
         ).fetchone()
-        return row[0]
+        return int(row[0]) if row else 0
 
     @_db_operation
     def get_category_entry_counts(self) -> dict[int, int]:

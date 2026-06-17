@@ -47,10 +47,10 @@ class ClipboardManager(QObject):
         return self._clear_seconds
 
     @clear_seconds.setter
-    def clear_seconds(self, value: int):
+    def clear_seconds(self, value: int) -> None:
         self._clear_seconds = max(0, value)
 
-    def copy_text(self, text: str):
+    def copy_text(self, text: str) -> None:
         """复制文本到剪贴板，并设置自动清空定时器。
 
         同时设置 X11 Primary Selection 中键粘贴缓冲区，
@@ -71,7 +71,7 @@ class ClipboardManager(QObject):
             if self._clear_seconds > 0:
                 self._timer.start(self._clear_seconds * 1000)
 
-    def _clear_clipboard(self):
+    def _clear_clipboard(self) -> None:
         """清空剪贴板，仅当对应缓冲区内容仍为上次复制的文本时才清空。
 
         text() 与 Selection 独立校验：用户可能只替换了其中一方，独立判断
@@ -112,11 +112,11 @@ class ClipboardManager(QObject):
                         logger.warning("Selection clear 失败，已用空字符串覆盖明文", exc_info=True)
             self._last_selection_hash = b''
 
-    def cancel(self):
+    def cancel(self) -> None:
         """取消自动清空。"""
         self._timer.stop()
 
-    def clear_now(self):
+    def clear_now(self) -> None:
         """立即清理应用写入的敏感剪贴板内容。"""
         self._timer.stop()
         self._clear_clipboard()

@@ -10,6 +10,7 @@ import logging
 import re
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from types import TracebackType
 
 from .utils.file_security import secure_directory, secure_file
 
@@ -82,12 +83,15 @@ class RedactingFormatter(logging.Formatter):
     覆盖 :meth:`formatException` 对 traceback 文本应用同一打码正则，闭合该缺口。
     """
 
-    def formatException(self, ei):
+    def formatException(
+        self,
+        ei: tuple[type[BaseException], BaseException, TracebackType | None] | tuple[None, None, None],
+    ) -> str:
         # 参数名 ei 与 logging.Formatter.formatException 签名一致（typeshed 定义）
         return SensitiveDataFilter.redact(super().formatException(ei))
 
 
-def configure_logging(data_dir: Path):
+def configure_logging(data_dir: Path) -> None:
     """配置应用日志，使用轮转文件 handler，仅记录运行状态。"""
     log_dir = data_dir / 'logs'
     secure_directory(log_dir)

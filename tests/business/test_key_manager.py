@@ -10,7 +10,6 @@
 - key/snapshot_key property 返回 bytes 副本，不暴露内部 bytearray 身份
 """
 
-import pytest
 
 from src.business.services import key_manager as key_manager_module
 from src.business.services.key_manager import KeyManager

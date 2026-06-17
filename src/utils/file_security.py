@@ -8,8 +8,9 @@ import subprocess
 import sys
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 _SECURED_WINDOWS_OBJECTS: OrderedDict[str, tuple[int, int]] = OrderedDict()
@@ -141,7 +142,7 @@ def secure_directory(path: Path, *, strict: bool = False) -> Path:
     return path
 
 
-def validate_file_path(path, base_dir: Path | None = None) -> Path:
+def validate_file_path(path: str | Path, base_dir: Path | None = None) -> Path:
     """验证文件路径，用于导入/导出/备份操作。
 
     解析路径并拒绝可能允许目录遍历的路径组件，

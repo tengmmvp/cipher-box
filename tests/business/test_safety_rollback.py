@@ -13,8 +13,6 @@
 
 import json
 import os
-import struct
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,7 +20,6 @@ import pytest
 
 from src.business.managers.backup_restore import (
     BACKUP_HEADER_SIZE,
-    BACKUP_MAGIC,
     BACKUP_SALT_SIZE,
     BackupRestoreManager,
 )

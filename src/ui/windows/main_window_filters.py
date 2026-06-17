@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from ...business.managers.entry_manager import EntryManager
     from ...business.services.security_analyzer import SecurityAnalyzer
     from ...config import ConfigManager
+    from ...models import Category
     from ...utils.clipboard import ClipboardManager
     from ..components.detail_panel import DetailPanel
     from ..components.entry_list_widget import EntryListModel
@@ -110,7 +111,7 @@ class _MainWindowFiltersMixin(QMainWindow):
     _current_search: str
     _current_tag: str
     _pending_selection: int | None
-    _cached_categories: list
+    _cached_categories: list[Category]
     _cached_tag_names: list[str]
     _cached_total_entries: int
     _status_worker: BackgroundWorker | None

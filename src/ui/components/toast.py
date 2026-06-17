@@ -6,6 +6,7 @@
 """
 
 import weakref
+from typing import cast
 
 from PyQt6.QtCore import (
     QEasingCurve,
@@ -318,7 +319,7 @@ class ToastManager:
         """获取或创建 parent 对应的 ToastManager。"""
         if parent not in ToastManager._instances:
             ToastManager._instances[parent] = ToastManager(parent)
-        return ToastManager._instances[parent]
+        return cast('ToastManager', ToastManager._instances[parent])
 
     def add_toast(self, toast: ToastWidget):
         """添加一个 Toast 并更新所有位置。"""

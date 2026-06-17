@@ -42,7 +42,7 @@ def test_entry_json_roundtrip():
         json.dump({'entries': [d]}, f, ensure_ascii=False)
         filepath = f.name
 
-    with open(filepath, 'r', encoding='utf-8') as f:
+    with open(filepath, encoding='utf-8') as f:
         data = json.load(f)
 
     restored = Entry.from_dict(data['entries'][0])
@@ -69,7 +69,7 @@ def test_entry_csv_export():
             writer.writerow(e.to_dict(include_password=True))
         filepath = f.name
 
-    with open(filepath, 'r', encoding='utf-8-sig', newline='') as f:
+    with open(filepath, encoding='utf-8-sig', newline='') as f:
         reader = csv.DictReader(f)
         rows = list(reader)
 

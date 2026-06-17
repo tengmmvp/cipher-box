@@ -6,6 +6,8 @@
     act.setIcon(icon(COPY))  # 菜单项图标
 """
 
+from typing import cast
+
 import qtawesome as qta
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
@@ -152,7 +154,7 @@ def _make_icon(name: str, color_key: str | None = None) -> QIcon:
     glyph, default_color_key = _ICON_MAP[name]
     ck = color_key or default_color_key
     color = c(ck)
-    return qta.icon(glyph, color=color)
+    return cast(QIcon, qta.icon(glyph, color=color))
 
 
 def icon(name: str, color_key: str | None = None) -> QIcon:

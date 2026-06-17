@@ -2,9 +2,14 @@
 
 import logging
 import sys
+from types import TracebackType
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QLockFile, Qt
 from PyQt6.QtWidgets import QApplication, QMessageBox
+
+if TYPE_CHECKING:
+    from PyQt6.QtCore import QEvent, QObject
 
 from . import __version__
 from .business.managers.vault_manager import VaultManager
@@ -27,7 +32,7 @@ class CipherBoxApplication(QApplication):
     路径（见 ``_install_crash_handlers``）。
     """
 
-    def notify(self, receiver, event):  # pyright: ignore[reportIncompatibleMethodOverride]
+    def notify(self, receiver: 'QObject | None', event: 'QEvent | None') -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
         try:
             return super().notify(receiver, event)
         except Exception:
@@ -38,7 +43,7 @@ class CipherBoxApplication(QApplication):
 class CipherBoxApp:
     """CipherBox 应用主控。"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         # sys.argv 传递给 QApplication 以支持 Qt 平台参数如 -style 和 -platform，
         # CipherBox 自身不处理命令行参数。
         self._app = QApplication.instance() or CipherBoxApplication(sys.argv)
@@ -74,7 +79,11 @@ class CipherBoxApp:
         """
         original_excepthook = sys.excepthook
 
-        def _excepthook(exc_type, exc_value, exc_tb):
+        def _excepthook(
+            exc_type: type[BaseException],
+            exc_value: BaseException,
+            exc_tb: TracebackType | None,
+        ) -> None:
             try:
                 self._emergency_cleanup(full=True)
             except Exception:
@@ -150,14 +159,14 @@ class CipherBoxApp:
         finally:
             self._instance_lock.unlock()
 
-    def _show_login(self):
+    def _show_login(self) -> None:
         """显示登录窗口。"""
         if not self._running:
             return
 
         login = LoginWindow(self._vault)
 
-        def on_login():
+        def on_login() -> None:
             first_show = self._main_window is None
             if self._main_window is None:
                 # MainWindow 构造涉及 UI 组件、托盘、定时器、WTS 注册等多个子系统，
@@ -178,7 +187,10 @@ class CipherBoxApp:
                     self._app.quit()
                     return
                 self._main_window.lock_requested.connect(self._on_lock)
-            assert self._main_window is not None
+            # 逻辑不可达：_main_window 为 None 时上方 if 分支已 return。
+            # 显式检查替代 assert，确保 python -O 下仍捕获意外状态。
+            if self._main_window is None:
+                raise RuntimeError('主窗口未初始化')
             self._main_window.refresh_after_unlock()
             self._main_window.show()
             # 配置完整性校验失败时提示用户，首次显示时检查一次。
@@ -205,7 +217,7 @@ class CipherBoxApp:
             self._running = False
             self._app.quit()
 
-    def _on_lock(self):
+    def _on_lock(self) -> None:
         """锁定保险库。"""
         if self._main_window:
             self._main_window.prepare_for_lock()
@@ -217,7 +229,7 @@ class CipherBoxApp:
         self._show_login()
 
 
-def main():
+def main() -> None:
     """应用入口。"""
     # 高 DPI 支持
     QApplication.setHighDpiScaleFactorRoundingPolicy(

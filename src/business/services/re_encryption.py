@@ -8,10 +8,15 @@
 （加解密）混淆，其实际职责是「重加密编排」，故更名 ReEncryptionService。
 """
 
-import logging
-from typing import TYPE_CHECKING, NamedTuple, Protocol, runtime_checkable
+from __future__ import annotations
 
+import logging
+from threading import Event
+from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
+
+from ...database.types import ReEncryptedEntry, ReEncryptedHistory
 from ...exceptions import DecryptionError, VaultError
+from ...models import Category, PasswordHistory, RawEntry
 from .crypto_utils import (
     SENSITIVE_ENCRYPTED_FIELDS,
     category_crypto_id,
@@ -29,49 +34,22 @@ logger = logging.getLogger(__name__)
 class ReEncryptionDB(Protocol):
     """ReEncryptionService 所需的数据库接口协议。"""
 
-    def get_entries(self, *, include_deleted: bool, limit: int, after_id: int) -> list: ...
-    def update_entries_batch(self, rows: list) -> None: ...
-    def get_all_password_history_batch(self, after_id: int, limit: int) -> list: ...
-    def update_password_history_batch(self, rows: list) -> None: ...
-    def get_categories(self) -> list: ...
-    def update_category(self, category) -> None: ...
+    def get_entries(
+        self, *, include_deleted: bool, limit: int, after_id: int,
+    ) -> list[RawEntry]: ...
+    def update_entries_batch(self, rows: list[ReEncryptedEntry]) -> None: ...
+    def get_all_password_history_batch(
+        self, after_id: int, limit: int,
+    ) -> list[PasswordHistory]: ...
+    def update_password_history_batch(self, rows: list[ReEncryptedHistory]) -> None: ...
+    def get_categories(self) -> list[Category]: ...
+    def update_category(self, category: Category) -> None: ...
 
 
 _RE_ENCRYPT_BATCH_SIZE = 200
 # 重加密的敏感字段集，与 crypto_utils 的加解密字段集共用单一事实来源，
 # 避免两处独立列举导致新增加密字段时重加密漏列（该列保留旧密钥密文、改密后无法解密）。
 _ENCRYPTED_ENTRY_FIELDS = SENSITIVE_ENCRYPTED_FIELDS
-
-
-class ReEncryptedEntry(NamedTuple):
-    """重加密后条目的批量更新 DTO。
-
-    字段顺序与 ``EntryRepository._RE_ENCRYPT_BATCH_UPDATE_SQL`` 一一对应，
-    消除了调用方需要了解 SQL 列布局的耦合。
-    """
-    crypto_id: str
-    title: str
-    username_enc: str
-    password_enc: str
-    url: str
-    category_id: int | None
-    tags: str
-    notes_enc: str
-    custom_fields_enc: str
-    is_favorite: int  # 0 or 1
-    password_strength: int
-    entry_type: str
-    totp_secret_enc: str
-    updated_at: str
-    password_changed_at: str
-    metadata_mac: str
-    id: int
-
-
-class ReEncryptedHistory(NamedTuple):
-    """重加密后密码历史的批量更新 DTO。"""
-    ciphertext: str
-    id: int
 
 
 class ReEncryptionService:
@@ -84,7 +62,7 @@ class ReEncryptionService:
     调用方 VaultManager._re_encrypt_all 负责事务包裹和密钥轮换。
     """
 
-    def __init__(self, db: 'ReEncryptionDB', metadata_signer: 'MetadataSigner'):
+    def __init__(self, db: ReEncryptionDB, metadata_signer: MetadataSigner):
         """初始化重加密服务。
 
         Args:
@@ -95,7 +73,7 @@ class ReEncryptionService:
         self._signer = metadata_signer
 
     def re_encrypt_entries(self, old_key: bytes, new_key: bytes, *,
-                           cancel_event=None):
+                           cancel_event: Event | None = None) -> None:
         """分批重新加密所有条目的敏感字段。
 
         逐字段解密→加密，减少同时驻留内存的明文数量。
@@ -124,7 +102,7 @@ class ReEncryptionService:
             )
             if not batch:
                 break
-            last_id = batch[-1].id
+            last_id = cast(int, batch[-1].id)
             rows = []
             for raw_entry in batch:
                 try:
@@ -169,7 +147,7 @@ class ReEncryptionService:
                     updated_at=raw_entry.updated_at,
                     password_changed_at=raw_entry.password_changed_at,
                     metadata_mac=mac,
-                    id=raw_entry.id,
+                    id=cast(int, raw_entry.id),
                 ))
             self._db.update_entries_batch(rows)
             del batch, rows
@@ -194,7 +172,7 @@ class ReEncryptionService:
             self._db.update_category(category)
 
     def re_encrypt_history(self, old_key: bytes, new_key: bytes, *,
-                           cancel_event=None):
+                           cancel_event: Event | None = None) -> None:
         """分批重新加密密码历史记录。
 
         密码历史分批拉取，使用游标分页与条目批处理对齐，
@@ -218,7 +196,7 @@ class ReEncryptionService:
             if not history_batch:
                 break
             last_history_id = history_batch[-1].id or 0
-            rows: list[tuple] = []
+            rows: list[ReEncryptedHistory] = []
             for history in history_batch:
                 if history.id is None:
                     continue  # 跳过无 ID 的历史记录，不应出现，防御性编程

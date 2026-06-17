@@ -23,9 +23,10 @@ _TITLE_HEIGHT = 22         # 标题绘制区域高度
 # 副标题紧接标题区域之后留 1px 间隔，由前两个不变量派生，
 # 改标题区几何时副标题自动跟随，杜绝两段文本重叠的回归。
 _SUBTITLE_Y_OFFSET = _TITLE_Y_OFFSET + _TITLE_HEIGHT + 1
-assert _TITLE_Y_OFFSET + _TITLE_HEIGHT <= _SUBTITLE_Y_OFFSET, (
-    '标题区域与副标题区域重叠：paint 垂直布局不变量被破坏'
-)
+if _TITLE_Y_OFFSET + _TITLE_HEIGHT > _SUBTITLE_Y_OFFSET:
+    raise RuntimeError(
+        '标题区域与副标题区域重叠：paint 垂直布局不变量被破坏'
+    )
 
 
 def _resolve_font_family() -> str:

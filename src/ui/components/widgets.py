@@ -43,7 +43,7 @@ def create_password_toggle_btn(
     lock_icon: str = LOCK,
     *,
     auto_hide_seconds: int | None = None,
-) -> 'PasswordToggleBtn':
+) -> PasswordToggleBtn:
     """创建密码显示/隐藏切换按钮。
 
     返回 :class:`PasswordToggleBtn`，调用方可通过其 ``show_password`` /

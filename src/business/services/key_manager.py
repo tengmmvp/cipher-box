@@ -20,10 +20,10 @@ logger = logging.getLogger(__name__)
 class KeyManager:
     """主密钥、快照密钥与密钥版本的集中持有与安全清零。"""
 
-    def __init__(self):
-        self._key = None
-        self._snapshot_key = None
-        self._key_epoch = None
+    def __init__(self) -> None:
+        self._key: bytearray | None = None
+        self._snapshot_key: bytearray | None = None
+        self._key_epoch: str | None = None
 
     @property
     def key(self) -> bytes | None:
@@ -41,10 +41,10 @@ class KeyManager:
         return bytes(self._snapshot_key) if self._snapshot_key is not None else None
 
     @property
-    def key_epoch(self):
+    def key_epoch(self) -> str | None:
         return self._key_epoch
 
-    def _set_key(self, key) -> None:
+    def _set_key(self, key: bytearray | bytes | None) -> None:
         """装入主密钥前先安全清零旧 bytearray，避免改密后旧密钥残留待 GC 回收。
 
         与 clear() 的清零语义对齐：旧密钥（bytearray）被新值覆盖前原地清零，
@@ -58,7 +58,7 @@ class KeyManager:
             secure_zero_buffer(old)
         self._key = new
 
-    def _set_snapshot_key(self, snapshot_key) -> None:
+    def _set_snapshot_key(self, snapshot_key: bytearray | bytes | None) -> None:
         """装入快照密钥前先安全清零旧 bytearray，理由同 _set_key。"""
         old = self._snapshot_key
         new = self._to_bytearray(snapshot_key)
@@ -66,23 +66,25 @@ class KeyManager:
             secure_zero_buffer(old)
         self._snapshot_key = new
 
-    def activate(self, key, snapshot_key, epoch) -> None:
+    def activate(
+        self, key: bytearray | bytes, snapshot_key: bytearray | bytes, epoch: str,
+    ) -> None:
         """解锁或改密成功后，一次性设置全部密钥材料与版本。"""
         self._set_key(key)
         self._set_snapshot_key(snapshot_key)
         self._key_epoch = epoch
 
-    def update_key(self, key) -> None:
+    def update_key(self, key: bytearray | bytes) -> None:
         self._set_key(key)
 
-    def update_snapshot_key(self, snapshot_key) -> None:
+    def update_snapshot_key(self, snapshot_key: bytearray | bytes) -> None:
         self._set_snapshot_key(snapshot_key)
 
-    def update_epoch(self, epoch) -> None:
+    def update_epoch(self, epoch: str) -> None:
         self._key_epoch = epoch
 
     @staticmethod
-    def _to_bytearray(value):
+    def _to_bytearray(value: bytearray | bytes | None) -> bytearray | None:
         """确保密钥以 bytearray 持有，使 secure_zero_buffer 能真正原地清零。
 
         所有权契约：传入的 bytearray 直接返回，所有权转移给 KeyManager——后续

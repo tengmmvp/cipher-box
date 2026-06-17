@@ -15,14 +15,16 @@ DatabaseManager 作为统一数据访问入口，将所有公共方法委托给�
 为调用方提供简化的单一接口。
 """
 
+from __future__ import annotations
+
 import logging
 import sqlite3
 import threading
 import time as _time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from ..exceptions import DatabaseError, TransactionError
 from ..models import Category, PasswordHistory, RawEntry
@@ -31,7 +33,7 @@ from ._decorators import _db_operation, _db_write
 from .category_repository import CategoryRepository
 from .entry_repository import EntryRepository
 from .schema_manager import SchemaManager
-from .types import VerifyMode
+from .types import ReEncryptedEntry, ReEncryptedHistory, VerifyMode
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +70,7 @@ class DatabaseManager:
 
     def __init__(self, db_path: Path, *, test_mode: bool = False):
         self._db_path = db_path
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
         self._lock = threading.RLock()
         self._transaction_depth = 0
         self._savepoint_counter = 0
@@ -138,7 +140,7 @@ class DatabaseManager:
         self,
         signer: EntrySigner,
         verifier: EntryVerifier,
-    ):
+    ) -> None:
         """设置条目元数据签名与校验函数。"""
         self._entry_signer = signer
         self._entry_verifier = verifier
@@ -158,7 +160,7 @@ class DatabaseManager:
         return self._conn is not None
 
     @contextmanager
-    def transaction(self):
+    def transaction(self) -> Iterator[None]:
         """事务上下文；嵌套事务使用 SAVEPOINT 独立回滚。
 
         线程安全契约：
@@ -349,16 +351,15 @@ class DatabaseManager:
     # ==================== 元数据 ====================
 
     @_db_operation
-    def get_meta(self, key: str) -> Optional[str]:
+    def get_meta(self, key: str) -> str | None:
         """获取元数据。"""
-        assert self._conn is not None
-        row = self._conn.execute(
+        row = self.connection.execute(
             "SELECT value FROM vault_meta WHERE key = ?", (key,)
         ).fetchone()
         return row['value'] if row else None
 
     @_db_operation
-    def get_meta_batch(self, keys: list[str]) -> dict[str, Optional[str]]:
+    def get_meta_batch(self, keys: list[str]) -> dict[str, str | None]:
         """批量获取多条元数据，单次查询返回。
 
         Args:
@@ -370,12 +371,11 @@ class DatabaseManager:
         if not keys:
             return {}
         placeholders = ','.join('?' for _ in keys)
-        assert self._conn is not None
-        rows = self._conn.execute(
+        rows = self.connection.execute(
             f"SELECT key, value FROM vault_meta WHERE key IN ({placeholders})",  # nosec B608 - 参数化占位符
             keys,
         ).fetchall()
-        result: dict[str, Optional[str]] = {k: None for k in keys}
+        result: dict[str, str | None] = {k: None for k in keys}
         for row in rows:
             result[row['key']] = row['value']
         return result
@@ -383,8 +383,7 @@ class DatabaseManager:
     @_db_write
     def set_meta(self, key: str, value: str) -> None:
         """设置元数据。"""
-        assert self._conn is not None
-        self._conn.execute(
+        self.connection.execute(
             "INSERT OR REPLACE INTO vault_meta (key, value) VALUES (?, ?)",
             (key, value),
         )
@@ -462,7 +461,7 @@ class DatabaseManager:
     def get_categories(self) -> list[Category]:
         return self._category_repo.get_categories()
 
-    def get_category(self, category_id: int) -> Optional[Category]:
+    def get_category(self, category_id: int) -> Category | None:
         return self._category_repo.get_category(category_id)
 
     def add_category(self, category: Category) -> int:
@@ -499,7 +498,7 @@ class DatabaseManager:
         self,
         deleted_only: bool = False,
         include_deleted: bool = False,
-        category_id: Optional[int] = None,
+        category_id: int | None = None,
         favorite_only: bool = False,
         limit: int | None = None,
         after_id: int | None = None,
@@ -517,7 +516,7 @@ class DatabaseManager:
             verify=verify,
         )
 
-    def get_entry(self, entry_id: int) -> Optional[RawEntry]:
+    def get_entry(self, entry_id: int) -> RawEntry | None:
         return self._entry_repo.get_entry(entry_id)
 
     def add_entry(self, entry: RawEntry, preserve_metadata: bool = False) -> int:
@@ -527,13 +526,13 @@ class DatabaseManager:
         self,
         entry: RawEntry,
         preserve_updated_at: bool = False,
-    ):
+    ) -> None:
         return self._entry_repo.update_entry(
             entry,
             preserve_updated_at=preserve_updated_at,
         )
 
-    def update_entries_batch(self, rows: list[tuple]) -> None:
+    def update_entries_batch(self, rows: list[ReEncryptedEntry]) -> None:
         return self._entry_repo.update_entries_batch(rows)
 
     def soft_delete_entry(self, entry_id: int) -> bool:
@@ -564,14 +563,14 @@ class DatabaseManager:
         entry_id: int,
         old_password_enc: str,
         changed_at: str = '',
-    ):
+    ) -> None:
         return self._entry_repo.add_password_history(entry_id, old_password_enc, changed_at)
 
     def add_password_history_batch(
         self,
         entry_id: int,
         items: list[tuple[str, str]],
-    ):
+    ) -> None:
         return self._entry_repo.add_password_history_batch(entry_id, items)
 
     def get_password_history(self, entry_id: int) -> list[PasswordHistory]:
@@ -588,5 +587,5 @@ class DatabaseManager:
     def get_password_history_count(self, entry_id: int) -> int:
         return self._entry_repo.get_password_history_count(entry_id)
 
-    def update_password_history_batch(self, rows: list[tuple]) -> None:
+    def update_password_history_batch(self, rows: list[ReEncryptedHistory]) -> None:
         return self._entry_repo.update_password_history_batch(rows)

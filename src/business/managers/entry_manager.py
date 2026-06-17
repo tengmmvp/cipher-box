@@ -8,9 +8,11 @@
 import json
 import logging
 import uuid
-from typing import TYPE_CHECKING, Callable, Optional
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from ...database.db_manager import DatabaseManager
     from .vault_manager import VaultManager
 
 from ...crypto.password_generator import PasswordGenerator
@@ -62,12 +64,12 @@ class EntryManager:
         # 条目变更回调列表，用于事件驱动的缓存失效，如 SecurityAnalyzer。
         self._on_entry_change_callbacks: list[Callable[..., None]] = []
 
-    def register_on_change(self, callback):
+    def register_on_change(self, callback: Callable[[bool], None]) -> None:
         """注册条目变更时自动调用的回调，用于缓存失效等。"""
         self._on_entry_change_callbacks.append(callback)
 
     @property
-    def db(self):
+    def db(self) -> 'DatabaseManager':
         return self._vault.db
 
     @property
@@ -159,11 +161,11 @@ class EntryManager:
         """解密分类名并缓存。委托 cache。"""
         return self._cache.decrypt_category_name(category_id, value)
 
-    def _invalidate_if_epoch_changed(self):
+    def _invalidate_if_epoch_changed(self) -> None:
         """检测 vault.key_epoch 变化，变化则清空所有明文缓存。委托 cache。"""
         self._cache.invalidate_if_epoch_changed()
 
-    def invalidate_caches(self):
+    def invalidate_caches(self) -> None:
         """外部调用：锁定或改密后显式清空明文缓存。委托 cache。"""
         self._cache.invalidate_all()
 
@@ -175,7 +177,7 @@ class EntryManager:
         tags_changed: bool = True,
         category_changed: bool = False,
         clear_summaries: bool = True,
-    ):
+    ) -> None:
         """通知所有注册的条目变更回调，事件驱动缓存失效。
 
         password_changed 为 False，如仅修改标题或 URL 时，不涉及密码的分析维度，
@@ -203,7 +205,7 @@ class EntryManager:
             except Exception:
                 logger.debug("条目变更回调执行失败", exc_info=True)
 
-    def notify_batch_change(self, password_changed: bool = True):
+    def notify_batch_change(self, password_changed: bool = True) -> None:
         """批量变更后的统一通知入口，供导入等批量操作在全部完成后触发一次。
 
         与单条 ``_notify_entry_change`` 一致地失效缓存并通知回调，但作为公共 API
@@ -416,7 +418,13 @@ class EntryManager:
             self._notify_entry_change()
         return result
 
-    def update_entry(self, entry: Entry, *, preserve_password_changed_at: bool = False, notify: bool = True):
+    def update_entry(
+        self,
+        entry: Entry,
+        *,
+        preserve_password_changed_at: bool = False,
+        notify: bool = True,
+    ) -> None:
         """更新条目，自动加密并记录密码历史。
 
         线程安全说明：此方法采用 read-modify-write 模式，先在事务外读取旧条目
@@ -525,13 +533,13 @@ class EntryManager:
         self._notify_entry_change()
         return True
 
-    def permanent_delete_entry(self, entry_id: int):
+    def permanent_delete_entry(self, entry_id: int) -> None:
         """永久删除条目。"""
         self._vault.db.permanent_delete_entry(entry_id)
         self._cache.pop_totp(entry_id)
         self._notify_entry_change()
 
-    def empty_trash(self):
+    def empty_trash(self) -> None:
         """清空回收站。"""
         self._vault.db.empty_trash()
         self._cache.clear_totp()
@@ -541,7 +549,7 @@ class EntryManager:
         self,
         deleted_only: bool = False,
         include_deleted: bool = False,
-        category_id: Optional[int] = None,
+        category_id: int | None = None,
         favorite_only: bool = False,
     ) -> list[Entry]:
         """获取并解密全部条目（含 password/totp_secret 等敏感字段）。
@@ -565,7 +573,7 @@ class EntryManager:
 
         return decrypted
 
-    def get_entry(self, entry_id: int) -> Optional[Entry]:
+    def get_entry(self, entry_id: int) -> Entry | None:
         """获取并解密单个条目。"""
         raw = self._vault.db.get_entry(entry_id)
         if raw is None:
@@ -575,7 +583,7 @@ class EntryManager:
     def get_entry_summaries(
         self,
         deleted_only: bool = False,
-        category_id: Optional[int] = None,
+        category_id: int | None = None,
         favorite_only: bool = False,
         search: str = '',
         limit: int | None = None,
@@ -891,7 +899,7 @@ class EntryManager:
         return self._cache.get_all_tags()
 
     @staticmethod
-    def _validate_plain_entry(entry: Entry):
+    def _validate_plain_entry(entry: Entry) -> None:
         if entry.entry_type not in ENTRY_TYPES:
             raise ValueError('条目类型无效')
         for field_name in STRING_ENCRYPTED_FIELDS:
@@ -920,7 +928,7 @@ class EntryManager:
             )
 
     @staticmethod
-    def matches_search(entry, query: str) -> bool:
+    def matches_search(entry: Entry, query: str) -> bool:
         """检查条目是否匹配搜索关键词，大小写不敏感，匹配 title、username、url、tags。
 
         此方法作为 EntryManager 的公共 API 委托给 ``crypto_utils.matches_search``，
@@ -934,7 +942,7 @@ class EntryManager:
         return matches_search(entry, query)
 
     @staticmethod
-    def matches_tag(entry, tag: str) -> bool:
+    def matches_tag(entry: Entry, tag: str) -> bool:
         """检查条目是否包含指定标签。
 
         标签匹配为大小写不敏感的精确匹配：条目 tags 字段以逗号分隔后，

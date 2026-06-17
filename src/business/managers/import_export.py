@@ -4,9 +4,10 @@ import csv
 import inspect
 import json
 import logging
+from collections.abc import Callable
 from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import IO, TYPE_CHECKING, Any, TypeVar
 
 from ...crypto.totp import TOTPGenerator
 from ...utils.format import utc_now_iso
@@ -35,6 +36,10 @@ from ...models import (
 from ...utils.file_security import atomic_write, validate_file_path
 
 logger = logging.getLogger(__name__)
+
+# 导入方法返回类型 TypeVar：@_transactional_import 装饰的导入方法均返回 int（导入条目数），
+# 用 TypeVar 透传返回类型而非硬编码 int，保留装饰器对返回类型签名的通用透传契约。
+T = TypeVar('T')
 
 MAX_IMPORT_FILE_SIZE = 25 * 1024 * 1024
 MAX_IMPORT_ENTRIES = 50_000
@@ -65,7 +70,7 @@ _KEE_PASS_COLUMN_ALIASES = {
 }
 
 
-def _transactional_import(method):
+def _transactional_import(method: Callable[..., T]) -> Callable[..., T]:
     """导入路径校验装饰器。
 
     通过 inspect 绑定被装饰方法的签名，从任意调用方式（位置或关键字）稳健
@@ -80,12 +85,13 @@ def _transactional_import(method):
     method_sig = inspect.signature(method)
     # 装饰器应用即校验被装饰方法含 filepath 参数，让重命名/漏参在导入时立即暴露，
     # 而非延迟到运行时 bound.arguments['filepath'] 抛 KeyError（栈帧远离原因）。
-    assert 'filepath' in method_sig.parameters, (
-        f'@_transactional_import 装饰的方法 {method.__qualname__} 必须含 filepath 参数'
-    )
+    if 'filepath' not in method_sig.parameters:
+        raise RuntimeError(
+            f'@_transactional_import 装饰的方法 {method.__qualname__} 必须含 filepath 参数'
+        )
 
     @wraps(method)
-    def wrapper(self, *args, **kwargs):
+    def wrapper(self: 'ImportExportManager', *args: Any, **kwargs: Any) -> T:
         # 按方法签名绑定参数，无论位置或关键字调用都能正确定位 filepath
         bound = method_sig.bind(self, *args, **kwargs)
         bound.apply_defaults()
@@ -123,7 +129,7 @@ class ImportExportManager:
         return resolved
 
     @staticmethod
-    def _validate_items(items: list):
+    def _validate_items(items: list[dict[str, Any]]) -> None:
         """逐项验证导入数据大小。使用字段长度估算防止恶意构造的巨大字段
         在后续处理中引发内存问题。"""
         if len(items) > MAX_IMPORT_ENTRIES:
@@ -137,7 +143,7 @@ class ImportExportManager:
                 raise ValueError('导入条目字段过大')
 
     @staticmethod
-    def _csv_safe(value):
+    def _csv_safe(value: Any) -> str:
         """防护 CSV 注入：转义危险前缀，替换内部控制字符。"""
         text = str(value) if value is not None else ''
         # 替换嵌入的换行符为空格，防止 CSV 行断裂
@@ -181,7 +187,7 @@ class ImportExportManager:
             entry.custom_fields = entry.custom_fields + missing
 
     @staticmethod
-    def _merge_bitwarden_secrets(entry: Entry, existing: Entry):
+    def _merge_bitwarden_secrets(entry: Entry, existing: Entry) -> None:
         """Bitwarden JSON 覆盖导入的敏感字段合并。
 
         Bitwarden JSON 可完整表达 password、totp_secret 和密码型自定义字段，
@@ -196,7 +202,7 @@ class ImportExportManager:
         )
 
     @staticmethod
-    def _merge_non_exported_secrets(entry: Entry, existing: Entry):
+    def _merge_non_exported_secrets(entry: Entry, existing: Entry) -> None:
         """JSON 导出未包含敏感字段时的合并。
 
         ``secrets_included=False`` 路径下导入数据中 password/totp_secret 必为空，
@@ -207,7 +213,7 @@ class ImportExportManager:
         ImportExportManager._merge_csv_secrets(entry, existing, source_has_password=False)
 
     @staticmethod
-    def _merge_csv_secrets(entry: Entry, existing: Entry, source_has_password: bool):
+    def _merge_csv_secrets(entry: Entry, existing: Entry, source_has_password: bool) -> None:
         """CSV 覆盖导入的敏感字段合并。
 
         CSV 是不可靠的往返格式，密码型自定义字段无法可靠映射，因此对源文件
@@ -223,10 +229,10 @@ class ImportExportManager:
 
     def _duplicate_plan(
         self,
-        entries_data: list[dict],
+        entries_data: list[dict[str, Any]],
         duplicate_action: str,
         source_label: str,
-        existing_entries: list | None = None,
+        existing_entries: list[Entry] | None = None,
     ) -> tuple[set[int], dict[int, Entry]]:
         if duplicate_action not in {'import_all', 'skip', 'overwrite'}:
             raise ValueError('无效的重复项处理策略')
@@ -278,9 +284,9 @@ class ImportExportManager:
     def _resolve_category(
         self,
         name: str,
-        categories: dict,
-        default_category_id: Optional[int],
-    ) -> Optional[int]:
+        categories: dict[str, Category],
+        default_category_id: int | None,
+    ) -> int | None:
         """匹配来源分类；不存在时创建，尽量保留导入结构。"""
         clean_name = (name or '').strip()
         if not clean_name:
@@ -302,10 +308,10 @@ class ImportExportManager:
         filepath: str,
         entries: list[Entry],
         include_password: bool = False,
-        cancel_check: Optional[Callable[[], bool]] = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> bool:
         """导出为 JSON 文件。"""
-        def write_cb(f):
+        def write_cb(f: IO[str]) -> bool:
             header = {
                 'app': 'CipherBox',
                 'exported_at': self._now(),
@@ -344,7 +350,7 @@ class ImportExportManager:
         filepath: str,
         entries: list[Entry],
         include_password: bool = False,
-        cancel_check: Optional[Callable[[], bool]] = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> bool:
         """导出为 CSV 文件。"""
         fieldnames = ['title', 'username', 'password', 'totp_secret', 'url',
@@ -354,7 +360,7 @@ class ImportExportManager:
             fieldnames.remove('password')
             fieldnames.remove('totp_secret')
 
-        def write_cb(f):
+        def write_cb(f: IO[str]) -> bool:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
             writer.writeheader()
             for entry in entries:
@@ -387,14 +393,14 @@ class ImportExportManager:
     def _import_entries(
         self,
         entries: list[Entry],
-        entries_data: list[dict],
-        categories: dict,
-        default_category_id: Optional[int],
+        entries_data: list[dict[str, Any]],
+        categories: dict[str, Category],
+        default_category_id: int | None,
         duplicate_action: str,
         source_label: str,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
-        overwrite_merger: Optional[Callable[[Entry, Entry], None]] = None,
-        cancel_check: Optional[Callable[[], bool]] = None,
+        progress_callback: Callable[[int, int], None] | None = None,
+        overwrite_merger: Callable[[Entry, Entry], None] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> int:
         """统一的导入循环：去重、分类解析、覆盖/新增、进度回调。
 
@@ -503,10 +509,10 @@ class ImportExportManager:
     def import_from_json(
         self,
         filepath: str,
-        default_category_id: Optional[int] = None,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
+        default_category_id: int | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
         duplicate_action: str = 'import_all',
-        cancel_check: Optional[Callable[[], bool]] = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> int:
         """从 JSON 文件导入。
 
@@ -519,7 +525,7 @@ class ImportExportManager:
                 - 'overwrite': 覆盖匹配的已有条目
                 - 'import_all': 全部导入，默认行为
         """
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, encoding='utf-8') as f:
             data = json.load(f)
 
         if not isinstance(data, dict) or data.get('app') != 'CipherBox':
@@ -562,7 +568,7 @@ class ImportExportManager:
         entries_data = [{'title': e.title, 'username': e.username} for e in entries]
         categories = {c.name.casefold(): c for c in self._entry_mgr.get_categories()}
 
-        def _merge(entry: Entry, existing: Entry):
+        def _merge(entry: Entry, existing: Entry) -> None:
             if not secrets_included:
                 self._merge_non_exported_secrets(entry, existing)
 
@@ -577,10 +583,10 @@ class ImportExportManager:
     def import_from_csv(
         self,
         filepath: str,
-        default_category_id: Optional[int] = None,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
+        default_category_id: int | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
         duplicate_action: str = 'import_all',
-        cancel_check: Optional[Callable[[], bool]] = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> int:
         """从 CSV 文件导入，支持多种列名格式。
 
@@ -593,7 +599,7 @@ class ImportExportManager:
                 - 'overwrite': 覆盖匹配的已有条目
                 - 'import_all': 全部导入，默认行为
         """
-        with open(filepath, 'r', encoding='utf-8-sig', newline='') as f:
+        with open(filepath, encoding='utf-8-sig', newline='') as f:
             reader = csv.DictReader(f)
             rows = list(reader)
 
@@ -614,7 +620,7 @@ class ImportExportManager:
             },
         )
 
-        def _merge(entry: Entry, existing: Entry):
+        def _merge(entry: Entry, existing: Entry) -> None:
             self._merge_csv_secrets(entry, existing, password_present)
 
         return self._run_import_transaction(lambda: self._import_entries(
@@ -630,10 +636,10 @@ class ImportExportManager:
     def import_from_chrome_csv(
         self,
         filepath: str,
-        default_category_id: Optional[int] = None,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
+        default_category_id: int | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
         duplicate_action: str = 'import_all',
-        cancel_check: Optional[Callable[[], bool]] = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> int:
         """从 Chrome/Edge 导出的 CSV 导入。
 
@@ -652,10 +658,10 @@ class ImportExportManager:
     def import_from_keepass_csv(
         self,
         filepath: str,
-        default_category_id: Optional[int] = None,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
+        default_category_id: int | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
         duplicate_action: str = 'import_all',
-        cancel_check: Optional[Callable[[], bool]] = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> int:
         """从 KeePass 导出的 CSV 文件导入。
 
@@ -670,7 +676,7 @@ class ImportExportManager:
                 - 'overwrite': 覆盖匹配的已有条目
                 - 'import_all': 全部导入，默认行为
         """
-        with open(filepath, 'r', encoding='utf-8-sig', newline='') as f:
+        with open(filepath, encoding='utf-8-sig', newline='') as f:
             reader = csv.DictReader(f)
             rows = list(reader)
 
@@ -690,7 +696,7 @@ class ImportExportManager:
             },
         )
 
-        def _merge(entry: Entry, existing: Entry):
+        def _merge(entry: Entry, existing: Entry) -> None:
             self._merge_csv_secrets(entry, existing, password_present)
 
         return self._run_import_transaction(lambda: self._import_entries(
@@ -760,10 +766,10 @@ class ImportExportManager:
     def import_from_bitwarden_json(
         self,
         filepath: str,
-        default_category_id: Optional[int] = None,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
+        default_category_id: int | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
         duplicate_action: str = 'import_all',
-        cancel_check: Optional[Callable[[], bool]] = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> int:
         """从 Bitwarden JSON 导出文件导入。
 
@@ -776,7 +782,7 @@ class ImportExportManager:
                 - 'overwrite': 覆盖匹配的已有条目
                 - 'import_all': 全部导入，默认行为
         """
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, encoding='utf-8') as f:
             data = json.load(f)
 
         items = data.get('items', [])

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 
-def is_real_int(value) -> bool:
+def is_real_int(value: object) -> bool:
     """判断是否为真正的 int，排除 bool（bool 是 int 子类，需显式排除）。
 
     单一来源，供 models / backup_restore 等多处「排除 bool 的 int 校验」复用，

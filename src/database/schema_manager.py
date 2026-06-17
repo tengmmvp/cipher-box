@@ -196,7 +196,7 @@ class SchemaManager:
         self._auto_commit()
         self._validate_current_schema(cursor)
 
-    def _check_is_new_database(self, cursor) -> bool:
+    def _check_is_new_database(self, cursor: sqlite3.Cursor) -> bool:
         """检查是否为空数据库。返回 True 表示新库需初始化，False 表示已有数据。
 
         注意：方法名暗示返回布尔，但在返回前会对非空却不兼容的数据库
@@ -223,7 +223,7 @@ class SchemaManager:
         return False
 
     @staticmethod
-    def _validate_current_schema(cursor):
+    def _validate_current_schema(cursor: sqlite3.Cursor) -> None:
         """校验当前数据库的表结构和索引是否符合预期。"""
         for table, expected_columns in _TABLE_COLUMNS.items():
             # table 来自上方硬编码的 required 字典键，安全无注入风险。

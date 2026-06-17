@@ -5,7 +5,7 @@
 读取，清除时统一释放明文。
 """
 
-from typing import Callable
+from collections.abc import Callable
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (

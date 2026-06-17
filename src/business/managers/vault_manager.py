@@ -8,7 +8,7 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -71,30 +71,30 @@ class VaultManager:
     # 密钥材料由 KeyManager 持有，此处通过 property 代理，保持 VaultManager
     # 内部 self._key / self._snapshot_key / self._key_epoch 访问接口不变。
     @property
-    def _key(self):
+    def _key(self) -> bytes | None:
         return self._key_mgr.key
 
     @_key.setter
-    def _key(self, value):
+    def _key(self, value: bytes | bytearray) -> None:
         self._key_mgr.update_key(value)
 
     @property
-    def _snapshot_key(self):
+    def _snapshot_key(self) -> bytes | None:
         return self._key_mgr.snapshot_key
 
     @_snapshot_key.setter
-    def _snapshot_key(self, value):
+    def _snapshot_key(self, value: bytes | bytearray) -> None:
         self._key_mgr.update_snapshot_key(value)
 
     @property
-    def _key_epoch(self):
+    def _key_epoch(self) -> str | None:
         return self._key_mgr.key_epoch
 
     @_key_epoch.setter
-    def _key_epoch(self, value):
+    def _key_epoch(self, value: str) -> None:
         self._key_mgr.update_epoch(value)
 
-    def register_on_lock(self, callback):
+    def register_on_lock(self, callback: Callable[[], None]) -> None:
         """注册锁定时自动调用的回调，用于清除缓存等。"""
         self._on_lock_callbacks.append(callback)
 
@@ -144,7 +144,7 @@ class VaultManager:
                 logger.debug("关闭数据库连接失败", exc_info=True)
         self._db_initialized = False
 
-    def _ensure_db_open(self):
+    def _ensure_db_open(self) -> None:
         """确保数据库已打开且表已初始化。幂等方法，已打开则跳过。"""
         if self._db_initialized:
             return
@@ -172,7 +172,7 @@ class VaultManager:
         """当前主密钥版本，改密时自动轮换，用于缓存失效判定。"""
         return self._key_epoch
 
-    def update_key_epoch(self, new_epoch: str):
+    def update_key_epoch(self, new_epoch: str) -> None:
         """更新 key_epoch，用于备份恢复后同步状态。
 
         恢复会整体替换数据，触发缓存失效回调清除恢复前的明文缓存。例如
@@ -186,7 +186,7 @@ class VaultManager:
             except Exception:
                 logger.debug("恢复后缓存失效回调失败", exc_info=True)
 
-    def _enforce_key_epoch(self):
+    def _enforce_key_epoch(self) -> None:
         """拒绝锁定状态或主密钥已轮换的旧会话写入数据库。
 
         每次写入都比对 key_epoch，不做时间缓存，避免改密后旧会话在窗口内
@@ -361,7 +361,7 @@ class VaultManager:
             logger.warning("解锁失败", exc_info=True)
             return False, msg
 
-    def _clear_vault_state(self):
+    def _clear_vault_state(self) -> None:
         """清除密钥材料和加密缓存，不触发回调，也不执行 gc。
 
         用于 _enforce_key_epoch 中需要安全清除状态但不能触发回调的场景，
@@ -381,7 +381,7 @@ class VaultManager:
         self._db_initialized = False
         EncryptionEngine.clear_cache()
 
-    def lock(self):
+    def lock(self) -> None:
         """锁定保险库，清除内存中的密钥材料。
 
         安全注意事项：
@@ -411,7 +411,7 @@ class VaultManager:
                 logger.debug("锁定回调执行失败", exc_info=True)
 
     @contextmanager
-    def vault_write_lock(self):
+    def vault_write_lock(self) -> Iterator[None]:
         """获取保险库写锁，串行化接触全量明文的长操作（改密/重加密/备份/恢复）。
 
         外部协作者（如 BackupRestoreManager）须通过此公共上下文访问锁，而非直接
@@ -497,7 +497,7 @@ class VaultManager:
             return False, str(exc) or '修改主密码失败'
 
     def _re_encrypt_all(self, new_key: bytes, new_salt: bytes, new_verify_token: str,
-                        new_params: KdfParams = DEFAULT_KDF_PARAMS):
+                        new_params: KdfParams = DEFAULT_KDF_PARAMS) -> list[Path]:
         """使用新密钥重新加密所有条目，含已删除条目，受事务保护。
 
         调用方须已持有 self._lock，当前唯一调用方 _change_master_password_locked
@@ -579,7 +579,7 @@ class VaultManager:
             # CPython 下 bytes 不可变，del 后仍依赖 GC 回收，此为固有限制下的尽力而为。
             del old_key
 
-    def _purge_snapshot_backups(self) -> list:
+    def _purge_snapshot_backups(self) -> list[Path]:
         """删除所有 snapshot_key 加密的快照与恢复前安全快照，返回未能删除的文件。
 
         改密时 snapshot_key 随主密钥轮换，旧 snapshot_key 加密的文件无法用新密钥
@@ -626,14 +626,14 @@ class VaultManager:
         """
         self._key_mgr.update_snapshot_key(snapshot_key)
 
-    def purge_snapshot_backups(self) -> list:
+    def purge_snapshot_backups(self) -> list[Path]:
         """删除所有 snapshot_key 加密的快照与恢复前安全快照，返回未能删除的文件。
 
         供改密/恢复流程在轮换 snapshot_key 后清理旧明文快照以收缩泄漏面。
         """
         return self._purge_snapshot_backups()
 
-    def purge_restore_points(self) -> list:
+    def purge_restore_points(self) -> list[Path]:
         """删除所有恢复前安全快照（pre_restore_*.cbox），返回未能删除的文件。
 
         恢复点为恢复操作前的临时全量明文快照，恢复成功后应删除。启动时重试
@@ -660,7 +660,7 @@ class VaultManager:
         self, *, salt: bytes, verify_token: str,
         snapshot_key: bytes, key: bytes, key_epoch: str,
         params: KdfParams = DEFAULT_KDF_PARAMS,
-    ):
+    ) -> None:
         """将保险库元数据写入 vault_meta，包含盐、验证令牌、KDF 参数、快照密钥和 epoch。
 
         initialize 与改密共用此序列，避免两处逐字重复。params 为实际派生所用的
@@ -702,7 +702,7 @@ class VaultManager:
         self, new_key: bytes, new_salt: bytes, new_verify_token: str,
         new_epoch: str, *, snapshot_key: bytes | None,
         params: KdfParams = DEFAULT_KDF_PARAMS,
-    ):
+    ) -> None:
         """更新 vault_meta 表中的验证信息和密钥元数据。
 
         snapshot_key 由调用方传入，改密时轮换为全新值，不再复用旧值。
@@ -716,7 +716,7 @@ class VaultManager:
             params=params,
         )
 
-    def _load_snapshot_key(self, encrypted: str | None = None):
+    def _load_snapshot_key(self, encrypted: str | None = None) -> None:
         key = self._key
         if key is None:
             raise VaultLockedError('保险库未解锁')
@@ -727,11 +727,12 @@ class VaultManager:
         encoded = EncryptionEngine.decrypt(
             encrypted, key, _SNAPSHOT_KEY_AAD
         )
-        self._snapshot_key = base64.b64decode(encoded)
-        if len(self._snapshot_key) != 32:
+        snapshot_key = base64.b64decode(encoded)
+        if len(snapshot_key) != 32:
             raise VaultIntegrityError('自动快照密钥损坏')
+        self._snapshot_key = snapshot_key
 
-    def request_cancel(self):
+    def request_cancel(self) -> None:
         """请求中止进行中的重加密（改密取消或关闭应用时调用）。
 
         设置取消事件，重加密循环检测后抛出异常并回滚事务，避免提交
@@ -749,7 +750,7 @@ class VaultManager:
         """
         return self._cancel_event.is_set()
 
-    def close(self):
+    def close(self) -> None:
         """关闭保险库。
 
         设置取消事件通知正在进行的密钥轮换等长时间操作提前终止，

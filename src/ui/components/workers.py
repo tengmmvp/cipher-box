@@ -7,7 +7,7 @@ Qt 事件循环。工作函数完成后会主动释放闭包引用，防止其�
 
 import logging
 import threading
-from typing import Callable
+from collections.abc import Callable
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
