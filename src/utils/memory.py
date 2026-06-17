@@ -27,7 +27,7 @@ def secure_zero_buffer(data: bytes | bytearray) -> None:
             (ctypes.c_char * len(mutable)).from_buffer(mutable), 0, len(mutable)
         )
     except Exception:
-        logger.debug("安全清零失败（CPython 限制）", exc_info=True)
+        logger.warning("安全清零失败（CPython 限制），密钥可能未被清零", exc_info=True)
 
 
 def mark_secret_discarded(value: str) -> None:
@@ -46,4 +46,4 @@ def mark_secret_discarded(value: str) -> None:
         buf[:] = b'\x00' * len(buf)
         del buf
     except Exception:
-        logger.debug("字符串副本清零失败（CPython 限制）", exc_info=True)
+        logger.warning("字符串副本清零失败（CPython 限制）", exc_info=True)

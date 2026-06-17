@@ -54,11 +54,14 @@ _TEST_KDF_PARAMS = KdfParams(time_cost=2, memory_cost=16 * 1024, parallelism=1)
 
 @pytest.fixture(autouse=True)
 def _weak_kdf_for_tests(monkeypatch):
-    """测试全局注入弱 KDF，加速所有经 vault_manager.DEFAULT_KDF_PARAMS 的派生。
+    """测试全局注入弱 KDF，加速 vault_manager 的主密钥派生（initialize / change_master）。
 
-    initialize / change_master_password 在测试中用弱参数（仍过 validate_params）。
-    生产无此 fixture；直接测 MasterKeyManager 真实参数的测试用 master_key 自身
-    常量，不受影响。
+    覆盖范围：仅 ``vault_manager.DEFAULT_KDF_PARAMS``（initialize / change_master
+    经此派生）。**有意不覆盖** ``backup_restore.DEFAULT_KDF_PARAMS``——备份密码
+    派生用 backup_restore 模块自有的导入副本，保持真实 OWASP 参数：
+    ``test_rejects_downgraded_kdf_params`` 需创建真实参数备份再篡改为更弱值以验证
+    防降级守卫；若一并弱化会使创建出的备份已是最低合法参数，无法测试降级拒绝。
+    故涉及备份密码派生的少数测试较慢（真实 Argon2id 64MB），属可接受取舍。
     """
     from src.business.managers import vault_manager
     monkeypatch.setattr(vault_manager, 'DEFAULT_KDF_PARAMS', _TEST_KDF_PARAMS)

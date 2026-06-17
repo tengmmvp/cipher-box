@@ -1,5 +1,10 @@
 """UI 层共享常量 — 按钮尺寸、动画时长、显示限制等。"""
 
+from ...config import DEFAULT_CONFIG
+
+# 密码可见秒数、剪贴板清除秒数、生成密码长度等默认值从 config.DEFAULT_CONFIG
+# 派生为单一真相源，避免与配置默认双源漂移；其余为本模块独有的 UI 常量。
+
 # ---------- 按钮尺寸 ----------
 BTN_DIALOG = (90, 34)       # 对话框主操作按钮
 BTN_DIALOG_WIDE = (100, 34)  # 宽对话框按钮，适配中文文本
@@ -20,8 +25,8 @@ MS_FEEDBACK = 1500          # 复制按钮反馈持续时间
 MS_TOAST_SHORT = 2000       # 短 Toast 显示
 MS_TOAST_DEFAULT = 3000     # 默认 Toast 显示
 MS_TOAST_LONG = 5000        # 长 Toast 显示，用于需用户注意的消息
-PWD_VISIBLE_SECONDS_DEFAULT = 10  # 密码可见默认秒数
-CLIPBOARD_CLEAR_SECONDS_DEFAULT = 30  # 剪贴板自动清除默认秒数
+PWD_VISIBLE_SECONDS_DEFAULT: int = int(DEFAULT_CONFIG['password_visible_seconds'])
+CLIPBOARD_CLEAR_SECONDS_DEFAULT: int = int(DEFAULT_CONFIG['clipboard_clear_seconds'])
 WORKER_WAIT_TIMEOUT_MS = 3000     # 后台 Worker 等待超时
 MS_SEARCH_DEBOUNCE = 300    # 搜索输入防抖间隔
 MS_AUTO_BACKUP_CHECK = 10 * 60 * 1000  # 自动备份检查间隔
@@ -80,7 +85,7 @@ FONT_FAMILY_CSS = '"Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Segoe 
 
 # ---------- 密码相关默认值 ----------
 PWD_TOGGLE_AUTO_HIDE_SECONDS = 30    # 密码切换按钮自动隐藏秒数
-PWD_GENERATE_LENGTH_DEFAULT = 16     # 默认生成密码长度
+PWD_GENERATE_LENGTH_DEFAULT: int = int(DEFAULT_CONFIG['default_password_length'])  # 默认生成密码长度（单一源）
 
 # ---------- 等宽字体，用于 QSS 样式表 ----------
 FONT_FAMILY_MONOSPACE = 'Consolas, Courier New, monospace'

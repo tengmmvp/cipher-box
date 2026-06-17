@@ -559,9 +559,9 @@ class DetailPanel(QWidget):
 
     def _get_pwd_visible_ms(self) -> int:
         """获取密码显示自动隐藏的毫秒数。"""
-        seconds = PWD_VISIBLE_SECONDS_DEFAULT
+        seconds: int = PWD_VISIBLE_SECONDS_DEFAULT
         if self._config:
-            seconds = self._config.get_safe('password_visible_seconds', PWD_VISIBLE_SECONDS_DEFAULT)
+            seconds = int(self._config.get_safe('password_visible_seconds', PWD_VISIBLE_SECONDS_DEFAULT))
         return seconds * 1000
 
     def _auto_hide_password(self):

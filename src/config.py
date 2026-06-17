@@ -41,7 +41,7 @@ def get_data_dir() -> Path:
 OLD_PASSWORD_WARNING_DAYS_DEFAULT = 90
 
 # 默认配置
-DEFAULT_CONFIG = {
+DEFAULT_CONFIG: dict[str, Any] = {
     'theme': 'light',
     'auto_lock_minutes': 5,
     'clipboard_clear_seconds': 30,
