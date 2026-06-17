@@ -336,9 +336,10 @@ def _dpapi_crypt(data: bytes, *, protect: bool) -> bytes | None:
         buffer = ctypes.create_string_buffer(data, len(data))
         blob_in = _DataBlob(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_char)))
         blob_out = _DataBlob()
-        # WinDLL 为跨平台类型；非 Windows 运行时加载 crypt32 失败由下方 except 回退 None。
-        # 标注 Any 使动态 API（CryptProtectData 等）访问不触发 attr-defined，跨平台一致。
-        crypt32: Any = ctypes.WinDLL('crypt32')
+        # ctypes 在非 Windows 既无 windll 也无 WinDLL；经 Any 访问避免平台 attr-defined。
+        # Linux 运行时 ctypes.WinDLL 抛 AttributeError → 由下方 except 回退明文。
+        ctypes_any: Any = ctypes
+        crypt32: Any = ctypes_any.WinDLL('crypt32')
         if protect:
             ok = crypt32.CryptProtectData(
                 ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out),
@@ -353,7 +354,7 @@ def _dpapi_crypt(data: bytes, *, protect: bool) -> bytes | None:
         try:
             return ctypes.string_at(blob_out.pbData, blob_out.cbData)
         finally:
-            kernel32: Any = ctypes.WinDLL('kernel32')
+            kernel32: Any = ctypes_any.WinDLL('kernel32')
             kernel32.LocalFree(blob_out.pbData)
     except Exception:
         logger.warning("DPAPI %s 失败，回退明文", '封装' if protect else '解封', exc_info=True)
