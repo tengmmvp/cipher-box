@@ -41,7 +41,7 @@ class TestBackupCorruption:
         yield
         self._vault.close()
 
-    def _create_valid_backup(self, filepath: str, password: str = 'backup_pwd'):
+    def _create_valid_backup(self, filepath: str, password: str = 'BackupTest!2026'):
         """创建一个有效的密码保护备份。"""
         success, error = self._backup_mgr.create_backup(filepath, password)
         assert success, f'创建备份失败: {error}'
@@ -55,7 +55,7 @@ class TestBackupCorruption:
         with open(path, 'r+b') as f:
             # 截断到原文件一半长度，破坏 GCM 认证标签
             f.truncate(full_size // 2)
-        success, error = self._backup_mgr.restore_backup(path, 'backup_pwd')
+        success, error = self._backup_mgr.restore_backup(path, 'BackupTest!2026')
         assert not success
         assert '损坏' in error
 
@@ -64,7 +64,7 @@ class TestBackupCorruption:
         import src.business.managers.backup_restore as br
         monkeypatch.setattr(br, 'MAX_BACKUP_PAYLOAD_SIZE', 10)
         path = os.path.join(self._tmp_dir, 'oversized.cbox')
-        success, error = self._backup_mgr.create_backup(path, 'backup_pwd')
+        success, error = self._backup_mgr.create_backup(path, 'BackupTest!2026')
         assert not success
         assert '过大' in error
 
@@ -95,20 +95,20 @@ class TestBackupCorruption:
         """错误的备份密码应被拒绝。"""
         path = os.path.join(self._tmp_dir, 'wrong_pwd.cbox')
         self._create_valid_backup(path, 'correct_password')
-        success, error = self._backup_mgr.restore_backup(path, 'wrong_password')
+        success, error = self._backup_mgr.restore_backup(path, 'WrongPassword!99')
         assert not success
 
     def test_rejects_password_required_backup_without_password(self):
         """需要密码的备份但未提供密码应被拒绝。"""
         path = os.path.join(self._tmp_dir, 'no_pwd.cbox')
-        self._create_valid_backup(path, 'some_password')
+        self._create_valid_backup(path, 'SomePassword!99')
         success, error = self._backup_mgr.restore_backup(path, None)
         assert not success
 
     def test_inspect_backup_returns_correct_info(self):
         """inspect_backup 应返回正确的备份信息。"""
         path = os.path.join(self._tmp_dir, 'inspect.cbox')
-        self._create_valid_backup(path, 'test_password')
+        self._create_valid_backup(path, 'TestPassword!99')
         info = BackupRestoreManager.inspect_backup(path)
         assert info['password_required']
         assert not info['snapshot_required']
@@ -126,11 +126,11 @@ class TestBackupCorruption:
     def test_restore_and_verify_data_integrity(self):
         """恢复后数据应与原始数据一致。"""
         path = os.path.join(self._tmp_dir, 'verify.cbox')
-        self._create_valid_backup(path, 'verify_pwd')
+        self._create_valid_backup(path, 'Verify_Pwd!2026')
 
         original = self._entry_mgr.get_entries()[0]
 
-        success, error = self._backup_mgr.restore_backup(path, 'verify_pwd')
+        success, error = self._backup_mgr.restore_backup(path, 'Verify_Pwd!2026')
         assert success, f'恢复失败: {error}'
 
         restored = self._entry_mgr.get_entries()[0]
@@ -186,15 +186,58 @@ class TestBackupCorruption:
         self._entry_mgr.delete_entry(entry_id)
 
         path = os.path.join(self._tmp_dir, 'with_deleted.cbox')
-        self._create_valid_backup(path, 'pwd')
+        self._create_valid_backup(path, 'DeletedEntry!26')
 
-        success, error = self._backup_mgr.restore_backup(path, 'pwd')
+        success, error = self._backup_mgr.restore_backup(path, 'DeletedEntry!26')
         assert success, f'恢复失败: {error}'
 
         # 验证已删除条目也被恢复
         all_entries = self._entry_mgr.get_entries(include_deleted=True)
         deleted = [e for e in all_entries if e.is_deleted]
         assert len(deleted) >= 1
+
+    def test_rejects_weak_backup_password(self):
+        """业务层应拒绝极弱备份密码，作为 UI 之外的兜底防御。"""
+        path = os.path.join(self._tmp_dir, 'weak.cbox')
+        success, error = self._backup_mgr.create_backup(path, 'pwd')
+        assert not success
+        assert '备份密码' in error
+        assert not os.path.exists(path)
+
+    def test_rejects_downgraded_kdf_params(self):
+        """备份头 KDF 参数被篡改为更弱值时应拒绝恢复（防降级加速离线破解）。"""
+        path = os.path.join(self._tmp_dir, 'downgraded.cbox')
+        self._create_valid_backup(path, 'BackupTest!2026')
+        # 篡改头部 KDF 参数为更弱的合法值（time=2 / memory=16MB / parallelism=1）
+        with open(path, 'r+b') as f:
+            f.seek(len(BACKUP_MAGIC))
+            f.write(struct.pack('<BIII', 1, 2, 16 * 1024, 1))
+        success, error = self._backup_mgr.restore_backup(path, 'BackupTest!2026')
+        assert not success
+        assert 'KDF' in error or '篡改' in error
+
+    def test_restore_point_cleaned_on_creation_exception(self, monkeypatch):
+        """恢复点创建抛异常时应触发清理，避免含明文的恢复点残留。"""
+        path = os.path.join(self._tmp_dir, 'rp.cbox')
+        self._create_valid_backup(path, 'BackupTest!2026')
+
+        cleaned: list[str] = []
+
+        def _spy(path_arg):
+            cleaned.append(str(path_arg))
+
+        monkeypatch.setattr(
+            BackupRestoreManager, '_safe_delete_restore_point', staticmethod(_spy),
+        )
+
+        def _raise(*_args, **_kwargs):
+            raise OSError('simulated write failure')
+
+        monkeypatch.setattr(self._backup_mgr, '_create_backup_locked', _raise)
+
+        success, _error = self._backup_mgr.restore_backup(path, 'BackupTest!2026')
+        assert not success
+        assert cleaned, '恢复点创建异常时应调用 _safe_delete_restore_point 清理'
 
 
 class TestBackupSizeLimits:

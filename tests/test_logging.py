@@ -6,7 +6,7 @@
 
 import logging
 
-from src.logging_config import SensitiveDataFilter
+from src.logging_config import RedactingFormatter, SensitiveDataFilter
 
 
 def _make_record(msg, args=None):
@@ -61,3 +61,36 @@ class TestSensitiveDataFilter:
         message = record.getMessage()
         assert 'supersecret' not in message
         assert '[REDACTED]' in message
+
+
+class TestRedactingFormatter:
+    """验证异常 traceback 中的敏感模式被打码（闭合 exc_info=True 的缺口）。
+
+    SensitiveDataFilter 仅作用于 record.getMessage()，标准 Formatter 在 format()
+    末尾拼接的 traceback 不经 filter；RedactingFormatter 覆盖 formatException
+    对 traceback 应用同一打码正则。
+    """
+
+    def _format_with_exception(self, exc):
+        import sys
+        try:
+            raise exc
+        except Exception:
+            record = logging.LogRecord(
+                'test', logging.ERROR, __file__, 1,
+                'operation failed', None, sys.exc_info(),
+            )
+            return RedactingFormatter('%(message)s').format(record)
+
+    def test_redacts_cb2_ciphertext_in_traceback(self):
+        """traceback 中的 cb2 密文标记应被打码。"""
+        ciphertext = 'cb2:ABCDEFGHabcdefgh0123456789+/=='
+        output = self._format_with_exception(ValueError(f'decrypt failed: {ciphertext}'))
+        assert ciphertext not in output
+        assert 'cb2:[REDACTED]' in output
+
+    def test_redacts_password_assignment_in_traceback(self):
+        """traceback 中的 password= 赋值应被打码。"""
+        secret = 'supersecret_value_99'
+        output = self._format_with_exception(ValueError(f'auth failed password={secret}'))
+        assert secret not in output

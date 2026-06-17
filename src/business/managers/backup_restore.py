@@ -44,6 +44,7 @@ from ..services.crypto_utils import (
     require_vault_key,
 )
 from ..services.metadata_signer import VAULT_META_SIGNED_KEYS, MetadataSigner
+from ..services.password_service import PasswordService
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,25 @@ class BackupRestoreManager:
         params = KdfParams(time_cost, memory_cost, parallelism)
         MasterKeyManager.validate_params(params)
         return BackupFlag(flag_value), salt, params
+
+    @staticmethod
+    def _enforce_kdf_floor(params: KdfParams) -> None:
+        """拒绝低于创建默认值的 Argon2id 参数，防备份头被篡改降级。
+
+        备份头明文存 KDF 参数且无 MAC 覆盖，攻击者可改写为合法下限内的更弱值
+        加速离线破解。:meth:`inspect_backup` 仅展示参数不强制（供用户查看），
+        降级校验只在 :meth:`_restore_current` 派生密钥前执行。
+
+        合法备份均以 ``DEFAULT_KDF_PARAMS`` 创建，故本检查仅拒绝被篡改降级的
+        备份，不影响任何正常恢复。
+        """
+        floor = DEFAULT_KDF_PARAMS
+        if (
+            params.time_cost < floor.time_cost
+            or params.memory_cost < floor.memory_cost
+            or params.parallelism < floor.parallelism
+        ):
+            raise ValueError('备份文件 KDF 参数异常，可能已被篡改')
 
     def _collect_portable_data(
         self, cancel_check: Callable[[], bool] | None = None,
@@ -274,6 +294,15 @@ class BackupRestoreManager:
         """
         try:
             filepath = str(validate_file_path(filepath))
+            # 备份密码是离线攻击（窃取 .cbox 后暴力破解）的唯一屏障，须与主密码
+            # 同等强度。UI 已校验，业务层兜底防止绕过 UI（如未来 CLI/自动化入口）
+            # 直接调用 create_backup 设置极弱备份密码。
+            if backup_password:
+                valid, error = PasswordService.validate_master_password(
+                    backup_password, label='备份密码',
+                )
+                if not valid:
+                    return False, error
             # 持 vault 锁与改密重加密串行：避免后台备份读全量明文期间密钥被轮换，
             # 导致解密失败被静默跳过而产出残缺备份。备份密钥也在锁内解析，避免
             # snapshot_key 在释放锁后、加密前被主线程 lock() 清零的竞态。
@@ -379,6 +408,8 @@ class BackupRestoreManager:
 
     def _restore_current(self, file, backup_password: str | None) -> tuple[bool, str]:
         flags, salt, kdf_params = self._read_backup_header(file)
+        # 防 KDF 参数降级：在派生密钥前拒绝被篡改为更弱参数的备份头
+        BackupRestoreManager._enforce_kdf_floor(kdf_params)
         # 预声明 backup_key：PASSWORD 派生失败或 SNAPSHOT 路径前的提前 return 会使
         # backup_key 未在 with 块内赋值，方法级 finally 仍需引用它。预声明 None 避免
         # locals().get 反射（字段重命名时静态检查无法发现）。
@@ -668,9 +699,17 @@ class BackupRestoreManager:
         target_path = directory / filename
         # 已在 _restore_current 的 vault_write_lock 内，直接调用持锁版本，避免经
         # create_backup 再次获取 RLock 的嵌套重入。
-        success, error = self._create_backup_locked(
-            str(target_path), None, True, None,
-        )
+        try:
+            success, error = self._create_backup_locked(
+                str(target_path), None, True, None,
+            )
+        except Exception:
+            # _create_backup_locked 的 atomic_write 在 os.replace 成功后若
+            # secure_file 失败会抛异常；此时 target_path 可能已写出含恢复前全部
+            # 明文的文件（atomic_write 仅清理 .tmp，不清理已 replace 到位的目标）。
+            # 立即安全删除避免明文泄漏面扩大，再向上抛出原异常。
+            self._safe_delete_restore_point(target_path)
+            raise
         if not success:
             raise BackupError(f'无法创建恢复前安全快照：{error}')
         # 按文件名排序比 st_mtime 更精确，避免秒级精度问题
@@ -685,6 +724,19 @@ class BackupRestoreManager:
             except OSError:
                 logger.warning('清理过期恢复点失败：%s', expired, exc_info=True)
         return target_path
+
+    @staticmethod
+    def _safe_delete_restore_point(path: Path) -> None:
+        """异常路径清理恢复点：删除失败仅告警，绝不掩盖向上抛出的原异常。
+
+        恢复点含恢复前全部条目明文，删除失败意味着泄漏面未收缩，需可见日志；
+        但调用方（如 _create_restore_point）的原异常更需向上传递，故此处吞掉
+        删除异常仅记录。
+        """
+        try:
+            secure_delete_file(path)
+        except OSError:
+            logger.warning('异常路径清理恢复点失败：%s', path, exc_info=True)
 
     def clear_restore_points(self) -> int:
         """删除所有恢复前安全快照 pre_restore_*.cbox，返回删除数量。

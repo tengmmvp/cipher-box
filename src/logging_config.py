@@ -28,6 +28,10 @@ class SensitiveDataFilter(logging.Filter):
     打码作用于 ``record.getMessage()`` 的结果：改写后的文本回填 ``record.msg``
     并清空 ``record.args``，避免 handler 二次 ``%`` 插值还原原值。getMessage
     异常时不打码（保留原始 record 以免丢失日志）。
+
+    注意：filter 仅覆盖 message，异常 traceback 由 :class:`RedactingFormatter`
+    的 :meth:`RedactingFormatter.formatException` 单独打码——标准 Formatter 在
+    format() 末尾拼接 traceback，该文本不经 filter。
     """
 
     _PATTERNS = (
@@ -43,18 +47,44 @@ class SensitiveDataFilter(logging.Filter):
         ),
     )
 
+    @staticmethod
+    def redact(text: str) -> str:
+        """对文本应用敏感模式打码。
+
+        供 :meth:`filter`（message）与 :class:`RedactingFormatter`（traceback）
+        复用同一打码逻辑，确保日志的两类敏感来源被一致处理。
+        """
+        for pattern, replacement in SensitiveDataFilter._PATTERNS:
+            text = pattern.sub(replacement, text)
+        return text
+
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             message = record.getMessage()
         except Exception:
             return True
-        redacted = message
-        for pattern, replacement in self._PATTERNS:
-            redacted = pattern.sub(replacement, redacted)
+        redacted = self.redact(message)
         if redacted != message:
             record.msg = redacted
             record.args = None
         return True
+
+
+class RedactingFormatter(logging.Formatter):
+    """对异常 traceback 应用与 message 相同的敏感打码。
+
+    标准 ``logging.Formatter`` 在 ``format()`` 末尾拼接 ``record.exc_info`` 产生
+    的 traceback，该文本不经过 ``SensitiveDataFilter``（filter 仅作用于
+    ``record.getMessage()``）。于是 ``logger.error(..., exc_info=True)`` 在异常
+    ``str(exc)`` 或栈帧变量 repr 中含 ``cb2:`` 密文 / ``password=...`` 赋值时，
+    会以明文落入日志文件。
+
+    覆盖 :meth:`formatException` 对 traceback 文本应用同一打码正则，闭合该缺口。
+    """
+
+    def formatException(self, ei):
+        # 参数名 ei 与 logging.Formatter.formatException 签名一致（typeshed 定义）
+        return SensitiveDataFilter.redact(super().formatException(ei))
 
 
 def configure_logging(data_dir: Path):
@@ -69,7 +99,7 @@ def configure_logging(data_dir: Path):
         encoding='utf-8',
     )
     secure_file(log_path)
-    handler.setFormatter(logging.Formatter(
+    handler.setFormatter(RedactingFormatter(
         # 含 threadName：BackgroundWorker 在子线程执行，调试锁定时序、worker
         # 与主线程日志交织问题时线程名是关键定位信息。
         '%(asctime)s %(levelname)s %(name)s [%(threadName)s]: %(message)s'
