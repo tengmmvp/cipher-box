@@ -17,6 +17,7 @@ __all__ = [
     'EntryError',
     'EntryIntegrityError',
     'BackupError',
+    'PayloadTooLargeError',
     'DatabaseError',
     'TransactionError',
     'SchemaError',
@@ -69,6 +70,15 @@ class EntryIntegrityError(EntryError):
 
 class BackupError(CipherBoxError):
     """备份/恢复操作异常。"""
+
+
+class PayloadTooLargeError(BackupError, ValueError):
+    """数据/文件/字段超出大小上限。
+
+    双重继承 ``BackupError`` 与 ``ValueError``：上层既可经 ``except BackupError``
+    归入备份错误映射，也可被 ``except ValueError`` 兜底。替代原先以
+    ``'过大' in str(exc)`` 字符串匹配判别大小超限的脆弱方式。
+    """
 
 
 # ==================== Database ====================

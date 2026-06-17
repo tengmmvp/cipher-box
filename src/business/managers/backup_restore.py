@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 from ...crypto.encryption import EncryptionEngine
 from ...crypto.master_key import DEFAULT_KDF_PARAMS, KdfParams, MasterKeyManager
-from ...exceptions import BackupError, VaultKeyEpochMismatchError
+from ...exceptions import BackupError, PayloadTooLargeError, VaultKeyEpochMismatchError
 from ...models import (
     ENTRY_TYPES,
     MAX_CUSTOM_FIELDS_PER_ENTRY,
@@ -71,9 +71,7 @@ def _user_friendly_error(exc: Exception) -> str:
         return '文件读写失败，请检查路径和磁盘'
     if isinstance(exc, json.JSONDecodeError):
         return '备份文件格式无效或已损坏'
-    if isinstance(exc, ValueError) and '过大' in str(exc):
-        # _collect_portable_data 预估算或 payload 精确检查抛出，保留具体提示
-        return str(exc)
+    # PayloadTooLargeError(BackupError 子类)已由上方 BackupError 分支捕获并返回 str
     return '操作失败，请检查文件和磁盘空间'
 
 BACKUP_MAGIC = b'CipherBoxBackup\x00'
@@ -215,7 +213,7 @@ class BackupRestoreManager:
                 + 512
             )
             if estimated_size > MAX_BACKUP_PAYLOAD_SIZE:
-                raise ValueError('备份数据过大')
+                raise PayloadTooLargeError('备份数据过大')
             entries.append(portable_item)
 
         history = []
@@ -245,7 +243,7 @@ class BackupRestoreManager:
                 + 64
             )
             if estimated_size > MAX_BACKUP_PAYLOAD_SIZE:
-                raise ValueError('备份数据过大')
+                raise PayloadTooLargeError('备份数据过大')
             history.append(history_item)
 
         return {
@@ -319,7 +317,7 @@ class BackupRestoreManager:
             payload = json.dumps(data, ensure_ascii=False).encode('utf-8')
             del data
             if len(payload) > MAX_BACKUP_PAYLOAD_SIZE:
-                raise ValueError('备份数据过大')
+                raise PayloadTooLargeError('备份数据过大')
             encrypted = EncryptionEngine.encrypt_bytes(
                 payload, backup_key, BACKUP_AAD
             )
@@ -340,7 +338,7 @@ class BackupRestoreManager:
         """读取备份头，不解密内容。"""
         filepath = str(validate_file_path(filepath))
         if Path(filepath).stat().st_size > MAX_BACKUP_FILE_SIZE:
-            raise ValueError('备份文件过大')
+            raise PayloadTooLargeError('备份文件过大')
         with open(filepath, 'rb') as file:
             flags, _salt, params = BackupRestoreManager._read_backup_header(file)
             return {
@@ -660,7 +658,7 @@ class BackupRestoreManager:
         if not allow_empty and not value.strip():
             raise ValueError(f'{label}不能为空')
         if len(value.encode('utf-8')) > max_bytes:
-            raise ValueError(f'{label}过大')
+            raise PayloadTooLargeError(f'{label}过大')
 
     def _create_restore_point(self) -> Path | None:
         """创建恢复前安全快照，返回快照文件路径用于失败时清理，创建失败返回 None。"""

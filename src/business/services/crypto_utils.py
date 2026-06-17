@@ -24,6 +24,12 @@ SENSITIVE_ENCRYPTED_FIELDS: tuple[str, ...] = (
     'totp_secret', 'custom_fields',
 )
 
+# 字符串型加密字段（custom_fields 为 list[CustomField]，单独校验）。
+# 供 EntryManager._validate_plain_entry 等明文条目校验复用，单一来源。
+STRING_ENCRYPTED_FIELDS: tuple[str, ...] = tuple(
+    f for f in SENSITIVE_ENCRYPTED_FIELDS if f != 'custom_fields'
+)
+
 
 def require_vault_key(vault_manager: 'VaultManager') -> bytes:
     """获取保险库加密密钥，未解锁时抛出 VaultLockedError。"""

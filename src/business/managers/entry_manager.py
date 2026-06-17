@@ -36,6 +36,7 @@ from ...models import (
 )
 from ...utils.format import format_datetime, utc_now_iso
 from ..services.crypto_utils import (
+    STRING_ENCRYPTED_FIELDS,
     build_entry_summary,
     category_crypto_id,
     copy_entry_fields,
@@ -893,9 +894,7 @@ class EntryManager:
     def _validate_plain_entry(entry: Entry):
         if entry.entry_type not in ENTRY_TYPES:
             raise ValueError('条目类型无效')
-        for field_name in (
-            'title', 'username', 'password', 'url', 'tags', 'notes', 'totp_secret'
-        ):
+        for field_name in STRING_ENCRYPTED_FIELDS:
             if not isinstance(getattr(entry, field_name), str):
                 raise ValueError(f'条目字段 {field_name} 类型无效')
         field_limits = {
