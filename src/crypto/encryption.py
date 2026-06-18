@@ -24,7 +24,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 logger = logging.getLogger(__name__)
 
 
-def _cache_key(key: bytes) -> bytes:
+def _cache_key(key: bytes | bytearray) -> bytes:
     """返回密钥的 SHA-256 摘要用作缓存键，避免缓存持有原始密钥材料。"""
     return hashlib.sha256(key).digest()
 
@@ -51,7 +51,7 @@ class EncryptionEngine:
     BYTES_PREFIX = b'CB2'
 
     @classmethod
-    def _get_cipher(cls, key: bytes) -> AESGCM:
+    def _get_cipher(cls, key: bytes | bytearray) -> AESGCM:
         """获取或创建 AESGCM 实例，按密钥 SHA-256 摘要缓存。"""
         # 密钥校验：类型与长度，防止意外降级为 AES-128
         if not isinstance(key, (bytes, bytearray)):
@@ -91,7 +91,7 @@ class EncryptionEngine:
     def encrypt(
         cls,
         plaintext: str,
-        key: bytes,
+        key: bytes | bytearray,
         associated_data: str | bytes,
     ) -> str:
         """加密明文，返回带前缀的 base64 密文。
@@ -117,7 +117,7 @@ class EncryptionEngine:
     def decrypt(
         cls,
         encrypted_b64: str,
-        key: bytes,
+        key: bytes | bytearray,
         associated_data: str | bytes,
     ) -> str:
         """解密由 encrypt 产生的密文，返回明文字符串。
@@ -156,7 +156,7 @@ class EncryptionEngine:
     def encrypt_bytes(
         cls,
         data: bytes,
-        key: bytes,
+        key: bytes | bytearray,
         associated_data: str | bytes,
     ) -> bytes:
         """加密字节数据，返回带 ``CB2`` 字节前缀的密文。
@@ -175,7 +175,7 @@ class EncryptionEngine:
     def decrypt_bytes(
         cls,
         data: bytes,
-        key: bytes,
+        key: bytes | bytearray,
         associated_data: str | bytes,
     ) -> bytes:
         """解密由 encrypt_bytes 产生的字节密文。

@@ -36,12 +36,12 @@ class MetadataSigner:
     或在 ``sign()`` / ``verify()`` 时传入显式 key 临时派生。
     """
 
-    def __init__(self, domain_key: bytes | bytearray | None = None):
+    def __init__(self, domain_key: bytes | bytearray | bytearray | None = None):
         self._domain_key = (
             bytearray(domain_key) if domain_key is not None else None
         )
 
-    def set_domain_key(self, key: bytes | bytearray) -> None:
+    def set_domain_key(self, key: bytes | bytearray | bytearray) -> None:
         """设置预计算的域密钥，解锁或改密成功后调用。
 
         统一以 bytearray 持有，使 _clear_vault_state 的 secure_zero_buffer 能
@@ -60,7 +60,7 @@ class MetadataSigner:
         self._domain_key = value
 
     @staticmethod
-    def compute_domain_key(key: bytes) -> bytearray:
+    def compute_domain_key(key: bytes | bytearray) -> bytearray:
         """从主密钥派生 metadata 签名域密钥，返回 bytearray 以便真正清零。
 
         返回 bytearray（而非 bytes）使 _clear_vault_state 的 secure_zero_buffer
@@ -69,7 +69,7 @@ class MetadataSigner:
         return bytearray(hmac.new(key, b'cipherbox:entry-metadata-key', hashlib.sha256).digest())
 
     @staticmethod
-    def compute_vault_meta_mac(meta: dict, key: bytes) -> str:
+    def compute_vault_meta_mac(meta: dict, key: bytes | bytearray) -> str:
         """计算 vault_meta 安全相关字段的 HMAC-SHA256，用主密钥派生的域密钥签名。
 
         检测 vault_meta 被外部篡改（如替换 master_salt、改写 KDF 参数、伪造
@@ -105,7 +105,7 @@ class MetadataSigner:
             hashlib.sha256,
         ).hexdigest()
 
-    def sign_with_domain_key(self, entry: RawEntry, domain_key: bytes | bytearray) -> str:
+    def sign_with_domain_key(self, entry: RawEntry, domain_key: bytes | bytearray | bytearray) -> str:
         """直接使用预计算的域密钥签名，跳过密钥派生步骤。
 
         用于 ReEncryptionService 批量重加密场景，避免每条条目

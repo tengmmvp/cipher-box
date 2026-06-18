@@ -72,7 +72,7 @@ class ReEncryptionService:
         self._db = db
         self._signer = metadata_signer
 
-    def re_encrypt_entries(self, old_key: bytes, new_key: bytes, *,
+    def re_encrypt_entries(self, old_key: bytes | bytearray, new_key: bytes | bytearray, *,
                            cancel_event: Event | None = None) -> None:
         """分批重新加密所有条目的敏感字段。
 
@@ -152,7 +152,7 @@ class ReEncryptionService:
             self._db.update_entries_batch(rows)
             del batch, rows
 
-    def re_encrypt_categories(self, old_key: bytes, new_key: bytes) -> None:
+    def re_encrypt_categories(self, old_key: bytes | bytearray, new_key: bytes | bytearray) -> None:
         """使用分类 ID 绑定的 AAD 重加密全部分类名称。"""
         for category in self._db.get_categories():
             if category.id is None:
@@ -171,7 +171,7 @@ class ReEncryptionService:
             )
             self._db.update_category(category)
 
-    def re_encrypt_history(self, old_key: bytes, new_key: bytes, *,
+    def re_encrypt_history(self, old_key: bytes | bytearray, new_key: bytes | bytearray, *,
                            cancel_event: Event | None = None) -> None:
         """分批重新加密密码历史记录。
 

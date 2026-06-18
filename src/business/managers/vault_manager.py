@@ -523,7 +523,7 @@ class VaultManager:
             logger.warning("修改主密码失败", exc_info=True)
             return False, str(exc) or '修改主密码失败'
 
-    def _re_encrypt_all(self, new_key: bytes, new_salt: bytes, new_verify_token: str,
+    def _re_encrypt_all(self, new_key: bytes | bytearray | bytearray, new_salt: bytes, new_verify_token: str,
                         new_params: KdfParams = DEFAULT_KDF_PARAMS) -> list[Path]:
         """使用新密钥重新加密所有条目，含已删除条目，受事务保护。
 
@@ -629,7 +629,7 @@ class VaultManager:
                         failed.append(f)
         return failed
 
-    def encrypt_snapshot_key(self, snapshot_key: bytes) -> str:
+    def encrypt_snapshot_key(self, snapshot_key: bytes | bytearray) -> str:
         """加密 snapshot_key 以写入 vault_meta，供恢复流程在事务内复用。
 
         恢复流程不改主密钥，故用当前 self._key 加密（与 initialize/改密路径传入
@@ -645,7 +645,7 @@ class VaultManager:
             _SNAPSHOT_KEY_AAD,
         )
 
-    def apply_snapshot_key(self, snapshot_key: bytes) -> None:
+    def apply_snapshot_key(self, snapshot_key: bytes | bytearray) -> None:
         """仅同步内存中的 snapshot_key，不写库。
 
         供恢复流程在事务提交后同步内存状态——库内 snapshot_key_enc 已在事务内
@@ -685,7 +685,7 @@ class VaultManager:
 
     def _write_vault_metadata(
         self, *, salt: bytes, verify_token: str,
-        snapshot_key: bytes, key: bytes, key_epoch: str,
+        snapshot_key: bytes | bytearray, key: bytes | bytearray, key_epoch: str,
         params: KdfParams = DEFAULT_KDF_PARAMS,
     ) -> None:
         """将保险库元数据写入 vault_meta，包含盐、验证令牌、KDF 参数、快照密钥和 epoch。
@@ -726,8 +726,8 @@ class VaultManager:
         )
 
     def _update_vault_metadata(
-        self, new_key: bytes, new_salt: bytes, new_verify_token: str,
-        new_epoch: str, *, snapshot_key: bytes | None,
+        self, new_key: bytes | bytearray | bytearray, new_salt: bytes, new_verify_token: str,
+        new_epoch: str, *, snapshot_key: bytes | bytearray | None,
         params: KdfParams = DEFAULT_KDF_PARAMS,
     ) -> None:
         """更新 vault_meta 表中的验证信息和密钥元数据。

@@ -71,7 +71,7 @@ class ImportExportDialog(QDialog):
         self._import_export = import_export_manager
         self._entry_mgr = entry_manager
         self._is_export = True
-        self._worker = None
+        self._worker: BackgroundWorker | None = None
         # 记录 worker 启动时的模式，避免 reject 时读取已被切换的按钮状态
         self._worker_is_export: bool = True
         self._selected_path: str | None = None

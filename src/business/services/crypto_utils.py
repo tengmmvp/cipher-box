@@ -94,7 +94,7 @@ def category_crypto_id(category_id: int) -> str:
     return f'category-{category_id}'
 
 
-def encrypt_field(plaintext: str, key: bytes, crypto_id: str, field_name: str) -> str:
+def encrypt_field(plaintext: str, key: bytes | bytearray, crypto_id: str, field_name: str) -> str:
     """加密单个条目字段。
 
     统一入口，替代各处内联的 EncryptionEngine.encrypt 调用（EntryManager、
@@ -109,7 +109,7 @@ def encrypt_field(plaintext: str, key: bytes, crypto_id: str, field_name: str) -
 
 def decrypt_field(
     encrypted: str,
-    key: bytes,
+    key: bytes | bytearray,
     crypto_id: str,
     field_name: str,
     *,
@@ -228,7 +228,7 @@ def build_entry_summary(raw: RawEntry, username: str = '') -> Entry:
 
 def decrypt_entry_to_portable_dict(
     raw_entry: RawEntry,
-    key: bytes,
+    key: bytes | bytearray,
     *,
     include_secrets: bool = True,
 ) -> dict | None:
@@ -311,7 +311,7 @@ def decrypt_entry_to_portable_dict(
         return None
 
 
-def build_encrypted_entry_fields(item: dict, key: bytes, crypto_id: str) -> dict:
+def build_encrypted_entry_fields(item: dict, key: bytes | bytearray, crypto_id: str) -> dict:
     """加密条目的敏感字段，与 decrypt_entry_to_portable_dict 对称。
 
     供备份恢复等需要从明文字典重建加密条目的场景使用。加密字段集与
