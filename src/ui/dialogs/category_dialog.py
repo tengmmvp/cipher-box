@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 
 from ...models import Category
 from ..components.widgets import setup_dialog_flags
+from ..error_messages import to_user_message
 from ..resources.constants import BTN_DIALOG, DIALOG_CATEGORY_MIN_SIZE
 from ..resources.theme_colors import c
 
@@ -267,5 +268,7 @@ class CategoryDialog(QDialog):
             self.saved.emit()
             self.accept()
         except Exception as exc:
-            logger.error("保存分类失败: %s", type(exc).__name__, exc_info=True)
-            QMessageBox.critical(self, '错误', '保存失败，请重试')
+            logger.error(
+                "保存分类失败: %s: %s", type(exc).__name__, exc, exc_info=True,
+            )
+            QMessageBox.critical(self, '错误', to_user_message(exc))

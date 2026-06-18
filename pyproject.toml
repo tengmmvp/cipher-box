@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cipher-box"
-version = "1.0.0"
+dynamic = ["version"]
 description = "Local-first encrypted password manager built with PyQt6"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,6 +29,10 @@ cipherbox = "src.app:main"
 
 [tool.setuptools.packages.find]
 include = ["src*"]
+
+[tool.setuptools.dynamic]
+# 版本号单一源：从 src.__version__ 读取，消除 pyproject 与 src/__init__.py 双源漂移。
+version = {attr = "src.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

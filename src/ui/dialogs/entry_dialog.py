@@ -68,6 +68,7 @@ from ..components.widgets import (
     setup_dialog_flags,
     update_strength_label,
 )
+from ..error_messages import to_user_message
 from ..resources.constants import (
     BTN_DIALOG,
     BTN_ICON,
@@ -664,12 +665,9 @@ class EntryDialog(QDialog):
             exclude_ambiguous=self._cfg('default_exclude_ambiguous', False),
         )
         self._password_edit.setText(password)
-        # 通过按钮公共方法显示密码并按配置启动自动隐藏，替代反射式属性访问
-        # 注意此处用 _cfg（非 get_safe）：password_visible_seconds 的运行时安全下限
-        # 对"显示多久"无安全意义（最长仅是用户多看几秒明文），get_safe 的钳制用于
-        # 防篡改类键（auto_lock/clipboard_clear），visible_seconds 不在
-        # _SECURITY_MINIMUMS 需要强制下限的语义范围内。与 _generate_password 中
-        # 其他 _cfg 调用保持一致，统一走无钳制路径。
+        # 通过按钮公共方法显示密码并按配置启动自动隐藏。
+        # visible_seconds 用 _cfg 而非 get_safe：「显示多久」无安全下限语义（多看几
+        # 秒明文不构成篡改风险），get_safe 钳制仅用于防篡改类键（auto_lock 等）。
         visible_seconds = self._cfg('password_visible_seconds', PWD_VISIBLE_SECONDS_DEFAULT)
         self._toggle_pwd_btn.show_password(seconds=visible_seconds)
 
@@ -785,8 +783,10 @@ class EntryDialog(QDialog):
             logger.warning("条目校验失败: %s", exc)
             QMessageBox.warning(self, '输入有误', str(exc))
         except Exception as exc:
-            logger.error("保存条目失败: %s", type(exc).__name__, exc_info=True)
-            QMessageBox.critical(self, '错误', '保存失败，请重试')
+            logger.error(
+                "保存条目失败: %s: %s", type(exc).__name__, exc, exc_info=True,
+            )
+            QMessageBox.critical(self, '错误', to_user_message(exc))
 
     def _clear_sensitive_inputs(self):
         """清除所有敏感输入框中的明文。

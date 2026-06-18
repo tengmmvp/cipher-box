@@ -2,7 +2,7 @@
 
 日志只记录运行状态，不记录密码等敏感字段。为防御未来误写或第三方库
 （cryptography/argon2 等）意外输出敏感信息，对 handler 挂载
-:class:`SensitiveDataFilter`，对常见敏感模式（cb2 密文标记、password=/key=/
+:class:`SensitiveDataFilter`，对常见敏感模式（cb2: 前缀的密文、password=/key=/
 secret= 等赋值）做正则打码，作为纵深防御。
 """
 

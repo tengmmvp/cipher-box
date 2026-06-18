@@ -33,7 +33,10 @@ _cache_lock = threading.RLock()
 # AESGCM 实例缓存：按密钥摘要索引，通常仅含当前活跃密钥。
 # 模块级缓存会跨 VaultManager 实例共享（如同一进程内的测试创建多个实例），
 # 经 SHA-256 摘要索引，缓存键不持有也不泄漏明文密钥材料。
-_MAX_CACHE_SIZE = 16
+# AESGCM 实例缓存容量上限。正常使用仅 1 个活跃主密钥；改密瞬间旧+新两个密钥
+# 并存，取 3 留余量。上限过大（原 16）会使更多历史密钥的 AESGCM 副本（内部持有
+# C 层密钥拷贝）长期驻留进程内存，扩大内存 dump 攻击面。
+_MAX_CACHE_SIZE = 3
 _cipher_cache: OrderedDict[bytes, AESGCM] = OrderedDict()
 
 
@@ -42,6 +45,7 @@ class EncryptionEngine:
 
     NONCE_SIZE = 12  # GCM 推荐 nonce 长度
     TAG_SIZE = 16    # GCM 认证标签长度，128 位
+    KEY_SIZE = 32    # AES-256 密钥长度
     FORMAT_ID = 'aes-256-gcm-aad'
     TEXT_PREFIX = 'cb2:'
     BYTES_PREFIX = b'CB2'
@@ -52,9 +56,9 @@ class EncryptionEngine:
         # 密钥校验：类型与长度，防止意外降级为 AES-128
         if not isinstance(key, (bytes, bytearray)):
             raise TypeError(f'AES-256 密钥类型无效：期望 bytes，实际 {type(key).__name__}')
-        if len(key) != 32:
+        if len(key) != cls.KEY_SIZE:
             raise ValueError(
-                f'AES-256 密钥长度无效：期望 32 字节，实际 {len(key)} 字节'
+                f'AES-256 密钥长度无效：期望 {cls.KEY_SIZE} 字节，实际 {len(key)} 字节'
             )
         with _cache_lock:
             cache_key = _cache_key(key)

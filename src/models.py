@@ -412,8 +412,8 @@ class Entry:
 class RawEntry:
     """从数据库读取的密文态条目。
 
-    加密字段（title/username/password/url/tags/notes/totp_secret/custom_fields）
-    为密文字符串；
+    以下字段（title/username/password/url/tags/notes/totp_secret/custom_fields）
+    为密文字符串——这些是 RawEntry/Entry 共享的逻辑字段名，DB 层对应 ``*_enc`` 列；
     ``custom_fields`` 为密文 JSON 字符串（区别于明文态 :class:`Entry` 的
     ``list[CustomField]``）。经 ``EntryManager.decrypt_entry`` /
     ``build_entry_summary`` 解密为明文 Entry。

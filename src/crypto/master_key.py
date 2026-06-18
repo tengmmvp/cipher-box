@@ -56,6 +56,15 @@ VERIFY_PLAINTEXT = "CipherBox::MasterKey::Verification"
 VERIFY_AAD = "vault:master-verification"
 
 
+def _secure_zero(key: bytearray) -> None:
+    """原地清零 bytearray 密钥，收缩其在内存/swap 的驻留窗口。
+
+    统一 create / verify / change_password 三处密钥失效点的清零逻辑。bytearray
+    可变，切片赋值真正覆写底层缓冲（区别于不可变 bytes 只能清零副本）。
+    """
+    key[:] = b'\x00' * len(key)
+
+
 class MasterKeyManager:
     """主密码密钥管理器。"""
 
@@ -114,7 +123,7 @@ class MasterKeyManager:
 
         Returns:
             32 字节密钥 bytearray。返回 bytearray 而非 bytes，以便
-            secure_zero_buffer 真正清零。
+            _secure_zero 原地覆写底层缓冲（bytes 不可变只能清零副本）。
         """
         if not isinstance(password, str):
             raise TypeError(f'密码类型无效：期望 str，实际 {type(password).__name__}')
@@ -152,7 +161,7 @@ class MasterKeyManager:
         except Exception:
             # 验证令牌加密失败时 key 不再返回，原地清零已派生密钥，收缩驻留，
             # 避免异常路径泄漏派生密钥到调用栈帧后依赖 GC 回收。
-            key[:] = b'\x00' * len(key)
+            _secure_zero(key)
             raise
         logger.info("主密钥凭据已生成")
         return salt, verify_token, key
@@ -191,7 +200,7 @@ class MasterKeyManager:
             logger.debug("主密码验证失败：验证令牌明文不匹配（令牌可能损坏）")
         # 验证失败：派生密钥不再返回，原地清零收缩驻留。
         # 登录是最频繁的错误密码入口，避免每次输错都把 Argon2id 派生的密钥留给 GC。
-        key[:] = b'\x00' * len(key)
+        _secure_zero(key)
         return None
 
     @classmethod
@@ -232,4 +241,4 @@ class MasterKeyManager:
         finally:
             # old_key 为 verify 返回的 bytearray（旧密钥派生结果），仅用于验证旧密码，
             # 验证通过后不再需要。原地清零收缩其在内存/swap 的驻留。
-            old_key[:] = b'\x00' * len(old_key)
+            _secure_zero(old_key)

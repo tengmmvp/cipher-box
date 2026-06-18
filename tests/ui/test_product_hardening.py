@@ -535,7 +535,7 @@ def test_entry_metadata_tampering_is_rejected():
 
         connection = sqlite3.connect(Path(root) / 'vault.db')
         connection.execute(
-            "UPDATE entries SET title='Tampered' WHERE id=?",
+            "UPDATE entries SET title_enc='Tampered' WHERE id=?",
             (entry_id,),
         )
         connection.commit()

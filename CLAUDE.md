@@ -9,14 +9,14 @@ CipherBox（密匣）是一个本地优先的加密密码管理器，使用 Pyth
 ## 常用命令
 
 ```bash
-# 安装依赖
-pip install -r requirements.lock
+# 安装依赖（uv 按 uv.lock 同步完整传递闭包）
+uv sync
 
 # 启动应用
-python main.py
+uv run python main.py
 
 # 运行全部测试
-python -m pytest tests/
+uv run pytest tests/
 
 # 运行单个测试文件
 python -m pytest tests/test_crypto.py
@@ -44,7 +44,10 @@ SQLite WAL 模式，手动事务管理（begin/commit/rollback）。启动时校
 - `services/`（无状态服务）：`crypto_utils` 统一字段加解密入口与 `SENSITIVE_ENCRYPTED_FIELDS` 单一事实源；`key_manager` 持有/清零主密钥与快照密钥；`metadata_signer` 提供条目元数据与 `vault_meta` 的 HMAC 完整性签名；`re_encryption` 编排改密时的全量重加密；`security_analyzer` 弱密码/重复/过期分析；`password_service`/`card_validation` 作为切断 UI→Crypto 跨层依赖的业务门面
 
 ### UI 层 (`src/ui/`)
-PyQt6 桌面 GUI。`MainWindow` 是中心编排器，创建所有 Business 层管理器和子组件。主题系统通过 `theme_colors.py` 定义 80+ 颜色 token（浅色/深色），QSS 样式表在 `styles.py` 中。图标通过 QtAwesome 语义化常量管理（`icons.py`）。
+PyQt6 桌面 GUI。`MainWindow` 是中心编排器，创建所有 Business 层管理器和子组件；为控制单文件规模，其实现拆分为三个文件：`main_window.py`（组装与生命周期）、`main_window_menu.py`（菜单）、`main_window_filters.py`（搜索/分类/标签/排序过滤）。`controllers/`（`entry_list_controller`/`sidebar_controller`）承载数据到控件的映射逻辑，`components/` 承载可复用控件（详情面板、条目列表、TOTP、密码历史等）。主题系统通过 `theme_colors.py` 定义 80+ 颜色 token（浅色/深色），QSS 样式表在 `styles.py` 中。图标通过 QtAwesome 语义化常量管理（`icons.py`）。
+
+### 共享层
+`src/models.py`（`Entry`/`Category`/`CustomField`/`PasswordHistory` 数据模型与字段常量）、`src/exceptions.py`（领域异常层次）、`src/config.py`（配置管理与完整性校验）、`src/logging_config.py`（脱敏日志）、`src/utils/`（`clipboard`/`file_security`/`memory`/`format` 工具）均为零上层依赖的共享基础设施，供 UI/Business/Database 三层引用。
 
 ### 应用入口
 `CipherBoxApp`（`src/app.py`）管理生命周期：登录 → 主窗口 → 锁定 → 重新登录。`VaultManager` 实例贯穿整个生命周期。

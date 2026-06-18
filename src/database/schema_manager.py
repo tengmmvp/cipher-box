@@ -24,6 +24,15 @@ _INDEX_DEFINITIONS: list[tuple[str, str, tuple[str, ...], bool]] = [
     ('idx_entries_deleted', 'entries', ('is_deleted',), False),
     ('idx_entries_favorite', 'entries', ('is_favorite',), False),
     ('idx_entries_updated', 'entries', ('updated_at',), False),
+    # 复合索引：服务列表默认视图与「近期更新」视图的 WHERE is_deleted=0 +
+    # ORDER BY updated_at DESC，免内存排序。单列 is_deleted/updated_at 索引无法
+    # 同时满足过滤与排序，组合后才能让 SQLite 走索引扫描而非全表 + filesort。
+    (
+        'idx_entries_active_updated',
+        'entries',
+        ('is_deleted', 'updated_at DESC'),
+        False,
+    ),
     ('idx_entries_type', 'entries', ('entry_type',), False),
     ('idx_entries_password_changed', 'entries', ('password_changed_at',), False),
     ('idx_entries_crypto_id', 'entries', ('crypto_id',), True),
@@ -48,9 +57,9 @@ _TABLE_COLUMNS = {
     },
     'entries': {
         'id': ('INTEGER', 0, 1), 'crypto_id': ('TEXT', 1, 0),
-        'title': ('TEXT', 1, 0), 'username_enc': ('TEXT', 0, 0),
-        'password_enc': ('TEXT', 0, 0), 'url': ('TEXT', 0, 0),
-        'category_id': ('INTEGER', 0, 0), 'tags': ('TEXT', 0, 0),
+        'title_enc': ('TEXT', 1, 0), 'username_enc': ('TEXT', 0, 0),
+        'password_enc': ('TEXT', 0, 0), 'url_enc': ('TEXT', 0, 0),
+        'category_id': ('INTEGER', 0, 0), 'tags_enc': ('TEXT', 0, 0),
         'notes_enc': ('TEXT', 0, 0), 'custom_fields_enc': ('TEXT', 0, 0),
         'is_favorite': ('INTEGER', 0, 0), 'is_deleted': ('INTEGER', 0, 0),
         'password_strength': ('INTEGER', 0, 0), 'entry_type': ('TEXT', 0, 0),
@@ -133,12 +142,12 @@ class SchemaManager:
             CREATE TABLE IF NOT EXISTS entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 crypto_id TEXT NOT NULL DEFAULT '',
-                title TEXT NOT NULL DEFAULT '',
+                title_enc TEXT NOT NULL DEFAULT '',
                 username_enc TEXT DEFAULT '',
                 password_enc TEXT DEFAULT '',
-                url TEXT DEFAULT '',
+                url_enc TEXT DEFAULT '',
                 category_id INTEGER,
-                tags TEXT DEFAULT '',
+                tags_enc TEXT DEFAULT '',
                 notes_enc TEXT DEFAULT '',
                 custom_fields_enc TEXT DEFAULT '',
                 is_favorite INTEGER DEFAULT 0,

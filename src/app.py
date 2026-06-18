@@ -231,7 +231,8 @@ class CipherBoxApp:
 
 def main() -> None:
     """应用入口。"""
-    # 高 DPI 支持
+    # 高 DPI 缩放在 Qt6 默认启用且无法关闭；此处仅设置取整策略为 PassThrough，
+    # 避免半像素缩放导致的模糊。
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough,
     )

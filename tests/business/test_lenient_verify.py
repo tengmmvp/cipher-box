@@ -24,12 +24,10 @@ class TestLenientVerify:
         self._vault.close()
 
     def test_get_entries_lenient_marks_integrity_error(self):
-        """get_entries（LENIENT）遇到签名失败的条目标记 integrity_error 而非抛异常。
+        """列表摘要路径与全量 get_entries 均 LENIENT，签名失败标记 integrity_error。
 
-        列表摘要路径 get_entry_summaries 为性能改用 VerifyMode.SKIP 跳过逐行
-        HMAC 验签（与全量解密并列的第二条 O(N) 热路径），签名层篡改不再在列表
-        标记；全量 get_entries 仍 LENIENT，签名失败标记 integrity_error。
-        篡改检测最终由 get_entry（单条 STRICT）兜底，安全语义不丢失。
+        列表/搜索/近期更新路径统一用 LENIENT 逐行 HMAC 验签（不抛异常），使列表
+        能检测非加密元数据篡改并展示完整性警示；单条详情用 STRICT 抛异常。
         """
         self._entry_mgr.add_entry(Entry(
             title='正常条目', username='user', password='pass', entry_type='login',
@@ -41,22 +39,22 @@ class TestLenientVerify:
 
         self._vault.db._entry_verifier = bad_verifier
 
-        # 列表摘要路径 SKIP 验签：签名层篡改不在列表标记（性能优化）
+        # 列表摘要路径 LENIENT 验签：签名层篡改在列表标记 integrity_error
         summaries = self._entry_mgr.get_entry_summaries()
         assert len(summaries) == 1
-        assert summaries[0].integrity_error is False
+        assert summaries[0].integrity_error is True
 
-        # 全量 get_entries 仍 LENIENT：签名失败标记 integrity_error
+        # 全量 get_entries 同样 LENIENT：签名失败标记 integrity_error
         decrypted = self._entry_mgr.get_entries()
         assert decrypted[0].integrity_error is True
         assert '完整性' in decrypted[0].integrity_message
 
-    def test_summary_skip_still_marks_decryption_corruption(self):
-        """列表摘要路径虽 SKIP HMAC 验签，密文损坏导致的解密失败仍标记。
+    def test_summary_marks_decryption_corruption(self):
+        """列表摘要路径在密文损坏时标记 integrity_error。
 
-        SKIP 模式的安全契约：跳过 HMAC（性能）不丢失解密层面的损坏检测——
-        _cached_search_metadata 对 title/username/url/tags 做 strict 解密，失败时
-        计入 failed 集合并反映到 integrity_error，使列表仍能提示损坏条目。
+        密文损坏（GCM 认证失败）被两层机制捕获：LENIENT 逐行验签因 title 密文与
+        metadata_mac 不匹配而标记，且 _cached_search_metadata 的 strict 解密失败
+        计入 failed 集合，二者都反映到 integrity_error，使列表能提示损坏条目。
         """
         self._entry_mgr.add_entry(Entry(
             title='正常条目', username='user', password='pass', entry_type='login',
@@ -68,7 +66,7 @@ class TestLenientVerify:
         conn = self._vault.db._conn
         assert conn is not None
         conn.execute(
-            "UPDATE entries SET title=? WHERE id=?",
+            "UPDATE entries SET title_enc=? WHERE id=?",
             ('cb2:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', entry_id),
         )
         conn.commit()

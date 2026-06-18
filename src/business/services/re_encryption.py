@@ -132,12 +132,12 @@ class ReEncryptionService:
                 mac = self._signer.sign_with_domain_key(raw_entry, precomputed_domain_key)
                 rows.append(ReEncryptedEntry(
                     crypto_id=raw_entry.crypto_id,
-                    title=raw_entry.title,
+                    title_enc=raw_entry.title,
                     username_enc=raw_entry.username,
                     password_enc=raw_entry.password,
-                    url=raw_entry.url,
+                    url_enc=raw_entry.url,
                     category_id=raw_entry.category_id,
-                    tags=raw_entry.tags,
+                    tags_enc=raw_entry.tags,
                     notes_enc=raw_entry.notes,
                     custom_fields_enc=raw_entry.custom_fields_db_value,
                     is_favorite=1 if raw_entry.is_favorite else 0,

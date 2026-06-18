@@ -601,16 +601,16 @@ class EntryManager:
         """
         # search 非空时不向 SQL 下推 limit，避免「先截断后过滤」导致命中失真。
         sql_limit = limit if not search else None
-        # 列表/搜索是高频只读路径，传 SKIP 跳过逐行 HMAC 验签（与全量解密并列的
-        # 第二条 O(N) 热路径）。篡改检测由 get_entry（单条 STRICT）与全部写路径
-        # 重签兜底；解密损坏仍由 _cached_search_metadata 的 strict 解密异常捕获并
-        # 标记 integrity_error，列表完整性展示语义不丢失。
+        # 列表/搜索传 LENIENT：逐行 HMAC 验签并标记篡改条目（不抛异常），使列表
+        # 能检测非加密元数据篡改（is_favorite/category_id/password_strength/deleted_at）。
+        # _decrypt_summary 将 raw.integrity_error 透传到 summary，列表 delegate 据此
+        # 显示完整性警示。HMAC 开销远小于摘要解密，性能影响可忽略。
         raw_entries = self.db.get_entries(
             deleted_only=deleted_only,
             category_id=category_id,
             favorite_only=favorite_only,
             limit=sql_limit,
-            verify=VerifyMode.SKIP,
+            verify=VerifyMode.LENIENT,
         )
         if search:
             # 摘要字段首次搜索后进入会话缓存，后续搜索无重复解密成本。
@@ -645,7 +645,7 @@ class EntryManager:
         if limit <= 0:
             return []
         raw_entries = self.db.get_entries(
-            sort_by_updated=True, limit=limit, verify=VerifyMode.SKIP,
+            sort_by_updated=True, limit=limit, verify=VerifyMode.LENIENT,
         )
         return [self._decrypt_summary(entry) for entry in raw_entries]
 
@@ -664,10 +664,10 @@ class EntryManager:
             )
         return entries
 
-    # ==================== 委托方法 ====================
-    # 以下方法直接委托给 DatabaseManager，无额外业务逻辑。
-    # 委托层存在的理由：为 UI 层提供单一入口点，允许未来在此层添加
-    # 验证或日志逻辑，防止 UI 直接依赖 DatabaseManager。
+    # ==================== 分类与查询 ====================
+    # 以下方法经 EntryManager 暴露给 UI，部分含加解密/缓存失效等业务逻辑
+    # （如分类名解密、收藏切换重算签名），非纯透传。统一入口便于未来在此层
+    # 加验证或日志，避免 UI 直接依赖 DatabaseManager。
     def get_categories(self) -> list[Category]:
         categories = self._vault.db.get_categories()
         for category in categories:
@@ -889,6 +889,16 @@ class EntryManager:
             'period': TOTPGenerator.get_period(secret),
         }
 
+    def evict_totp_cache(self, entry_id: int) -> None:
+        """清理指定条目的 TOTP secret 明文缓存。
+
+        供详情面板在切换条目或清空时调用，避免用户离开条目后 TOTP secret
+        （双因子凭证）长期驻留缓存——泄露可独立生成验证码绕过 2FA。锁定/改密
+        由缓存层整体失效（invalidate_all）兜底，此处覆盖「保险库仍解锁但用户
+        已离开该条目」的窗口。
+        """
+        self._cache.pop_totp(entry_id)
+
     def get_all_tags(self) -> list[tuple[str, int]]:
         """获取所有标签及其使用频率。委托 cache。"""
         return self._cache.get_all_tags()
@@ -926,13 +936,8 @@ class EntryManager:
     def matches_search(entry: Entry, query: str) -> bool:
         """检查条目是否匹配搜索关键词，大小写不敏感，匹配 title、username、url、tags。
 
-        此方法作为 EntryManager 的公共 API 委托给 ``crypto_utils.matches_search``，
-        供 UI 层使用，避免 UI 直接依赖 ``business.crypto_utils`` 模块，
-        同时消除两份相同实现必须手动同步的维护负担。
-
-        Note:
-            内部实现委托给 ``crypto_utils.matches_search``。UI 层应通过
-            此公共方法调用，避免直接依赖 ``crypto_utils`` 模块。
+        EntryManager 的公共 API，委托给 ``crypto_utils.matches_search``。UI 层应通过
+        此方法调用，避免直接依赖 ``business.crypto_utils`` 模块。
         """
         return matches_search(entry, query)
 

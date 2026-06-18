@@ -65,11 +65,11 @@
 ## 🚀 快速开始
 
 ```bash
-# 安装依赖
-pip install -r requirements.lock
+# 安装依赖（uv 按 uv.lock 同步完整传递闭包）
+uv sync
 
 # 启动应用
-python main.py
+uv run python main.py
 ```
 
 首次启动将引导设置主密码，之后每次启动需输入主密码解锁。
@@ -99,6 +99,8 @@ python main.py
 | `argon2-cffi >= 25.1.0` | Argon2id 密钥派生 |
 | `QtAwesome >= 1.3.0` | 统一矢量图标系统 |
 
+> 上表为声明下限；实际安装版本以 `uv.lock` 为准（锁定完整传递闭包）。
+
 </details>
 
 ---
@@ -106,7 +108,7 @@ python main.py
 ## 🧪 测试
 
 ```bash
-python -m pytest tests/          # pytest
+uv run pytest tests/             # pytest（经 uv 运行锁定环境）
 python -m unittest discover tests/  # unittest
 ```
 

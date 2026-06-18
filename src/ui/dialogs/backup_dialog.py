@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ...business.services.password_service import PasswordService
+from ...exceptions import BackupError
 from ..components.widgets import (
     format_status,
     release_worker,
@@ -82,7 +83,7 @@ class BackupDialog(QDialog):
         mode_layout.addWidget(self._restore_radio)
 
         # 警告文本：去掉 ASCII [!]（屏幕阅读器会朗读该符号），改用语义化 objectName
-        # 供 QSS 控制颜色；内联色下沉到 QSS 的工作并入主题重构。
+        # 供 QSS 控制颜色；颜色暂保留内联。
         info2 = QLabel('恢复将覆盖当前所有数据！请谨慎操作')
         info2.setObjectName('warningText')
         info2.setStyleSheet(f'color: {c("danger")}; font-size: 12px;')
@@ -305,7 +306,7 @@ class BackupDialog(QDialog):
 
         try:
             info = self._backup_mgr.inspect_backup(path)
-        except (OSError, ValueError) as exc:
+        except (OSError, BackupError, ValueError) as exc:
             QMessageBox.critical(self, '错误', str(exc))
             return
         password = None

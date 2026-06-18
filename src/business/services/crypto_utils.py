@@ -79,7 +79,8 @@ def require_vault_key(vault_manager: VaultManager) -> bytes:
 
 
 def entry_aad(crypto_id: str, field_name: str) -> str:
-    """构造条目字段加密的标准 AAD 字符串。"""
+    """构造条目字段加密的标准 AAD：将 crypto_id 与 field_name 纳入 AAD，绑定密文到
+    具体条目与字段，防密文在条目间或字段间置换。"""
     return f'entry:{crypto_id}:{field_name}'
 
 
@@ -96,8 +97,8 @@ def category_crypto_id(category_id: int) -> str:
 def encrypt_field(plaintext: str, key: bytes, crypto_id: str, field_name: str) -> str:
     """加密单个条目字段。
 
-    统一入口，替代 EntryManager._encrypt_field、VaultManager._encrypt_entry_field
-    以及 backup_restore 中的内联 EncryptionEngine.encrypt 调用。
+    统一入口，替代各处内联的 EncryptionEngine.encrypt 调用（EntryManager、
+    backup_restore 等），保证 AAD 构造一致。
 
     空字符串也直接经过 AES-GCM 加密，确保 AAD 始终参与认证。
     """
@@ -116,8 +117,8 @@ def decrypt_field(
 ) -> str:
     """解密单个条目字段。
 
-    统一入口，替代 EntryManager._decrypt_field、VaultManager._decrypt_entry_field
-    以及 backup_restore/security_analyzer 中的内联解密调用。
+    统一入口，替代各处内联的 EncryptionEngine.decrypt 调用（EntryManager、
+    backup_restore、security_analyzer 等），保证 AAD 与容错策略一致。
 
     Args:
         encrypted: 密文字符串。
@@ -251,11 +252,10 @@ def decrypt_entry_to_portable_dict(
         return None
     try:
         # 全部加密字段统一 strict=True：任一字段损坏即抛 ValueError，由下方 except
-        # 捕获返回 None（跳过整条），消除原先 notes/password/custom_fields 容错
-        # （返回空串、条目仍导出）与 title/url/tags 严格的不一致契约。实际触发
-        # 极少——metadata_mac 的 _enc_hash 已覆盖全部加密字段密文，单字段损坏会
-        # 先触发元数据完整性失败使 raw_entry.integrity_error=True，在进入本函数前
-        # 即被上方 integrity_error 检查拦截返回 None。
+        # 捕获返回 None（跳过整条），保证「部分损坏即整条不可用」的一致契约。
+        # 实际触发极少——metadata_mac 的 _enc_hash 已覆盖全部加密字段密文，单字段
+        # 损坏会先触发元数据完整性失败使 raw_entry.integrity_error=True，在进入本
+        # 函数前即被上方检查拦截返回 None。
         custom_json = decrypt_field(
             raw_entry.custom_fields_db_value,
             key, raw_entry.crypto_id, 'custom_fields', strict=True,
@@ -314,9 +314,9 @@ def decrypt_entry_to_portable_dict(
 def build_encrypted_entry_fields(item: dict, key: bytes, crypto_id: str) -> dict:
     """加密条目的敏感字段，与 decrypt_entry_to_portable_dict 对称。
 
-    供备份恢复等需要从明文字典重建加密条目的场景使用，统一敏感字段
-    的加密序列，消除
-    恢复路径内联加密与解密辅助的双向映射漂移风险。
+    供备份恢复等需要从明文字典重建加密条目的场景使用。加密字段集与
+    decrypt_entry_to_portable_dict 的解密字段集保持一致，避免加/解密两侧
+    字段集漂移。
 
     Args:
         item: 含明文字段的字典（来自备份 JSON）。

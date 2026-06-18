@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from .models import is_real_int
 from .utils.file_security import (
     protect_with_dpapi,
     secure_directory,
@@ -40,7 +41,11 @@ def get_data_dir() -> Path:
 # 散落多处导致默认值修改漂移。
 OLD_PASSWORD_WARNING_DAYS_DEFAULT = 90
 
-# 默认配置
+# 窗口几何位置(hex 字符串)允许的最大字节数。Qt saveGeometry 实际输出约 40-60
+# 字节，256 字节留足余量供未来 Qt 版本增长。config._is_valid（hex 字符数 = 字节数 × 2）
+# 与 MainWindow 窗口位置恢复（解码后字节数）共用此单一常量，消除校验端与消费端
+# 各自硬编码导致上限不一致、合法 geometry 被静默丢弃的问题。
+MAX_WINDOW_GEOMETRY_BYTES = 256
 DEFAULT_CONFIG: dict[str, Any] = {
     'theme': 'light',
     'auto_lock_minutes': 5,
@@ -334,7 +339,7 @@ class ConfigManager:
     def _is_valid(key: str, value: Any) -> bool:
         if key in _INT_RANGES:
             minimum, maximum = _INT_RANGES[key]
-            return type(value) is int and minimum <= value <= maximum
+            return is_real_int(value) and minimum <= value <= maximum
         if key in _BOOL_KEYS:
             return type(value) is bool
         if key == 'theme':
@@ -348,7 +353,7 @@ class ConfigManager:
         if key == 'window_geometry':
             if value is None:
                 return True
-            if not isinstance(value, str) or len(value) > 16384:
+            if not isinstance(value, str) or len(value) > MAX_WINDOW_GEOMETRY_BYTES * 2:
                 return False
             try:
                 bytes.fromhex(value)
@@ -359,7 +364,7 @@ class ConfigManager:
             return value is None or (
                 isinstance(value, list)
                 and len(value) == 3
-                and all(type(item) is int and 1 <= item <= 10000 for item in value)
+                and all(is_real_int(item) and 1 <= item <= 10000 for item in value)
             )
         logger.debug("配置键 %s 无验证规则，已拒绝", key)
         return False

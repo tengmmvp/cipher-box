@@ -128,7 +128,10 @@ def _restrict_windows_acl(
 
 
 def secure_directory(path: Path, *, strict: bool = False) -> Path:
-    """创建目录并设置最小权限，仅当前用户可访问。"""
+    """创建目录并设置最小权限，仅当前用户可访问。
+
+    ``strict=True`` 时权限设置失败抛异常，否则仅记录告警；返回 ``path`` 便于链式调用。
+    """
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     if sys.platform != 'win32':
         try:
@@ -198,7 +201,10 @@ def validate_file_path(path: str | Path, base_dir: Path | None = None) -> Path:
 
 
 def secure_file(path: Path, *, strict: bool = False) -> Path:
-    """设置文件最小权限，仅当前用户可读写。"""
+    """设置文件最小权限，仅当前用户可读写。
+
+    文件不存在时直接返回 ``path``；``strict=True`` 时权限设置失败抛异常，否则仅记录告警。
+    """
     if not path.exists():
         return path
     if sys.platform != 'win32':

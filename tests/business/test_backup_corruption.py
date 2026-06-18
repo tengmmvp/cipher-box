@@ -21,6 +21,7 @@ from src.business.managers.backup_restore import (
 from src.business.managers.entry_manager import EntryManager
 from src.business.managers.vault_manager import VaultManager
 from src.crypto.master_key import DEFAULT_KDF_PARAMS, MasterKeyManager
+from src.exceptions import BackupError
 from src.models import Entry
 
 
@@ -148,7 +149,7 @@ class TestBackupCorruption:
             # flags=0xFF 非法；time/memory/parallelism 取合法值以越过结构校验
             f.write(struct.pack('<BIII', 0xFF, 3, 65536, 4))
             f.write(b'\x00' * BACKUP_SALT_SIZE)
-        with pytest.raises(ValueError):
+        with pytest.raises(BackupError):
             BackupRestoreManager.inspect_backup(path)
 
     def test_backup_uses_persisted_kdf_params(self, monkeypatch):

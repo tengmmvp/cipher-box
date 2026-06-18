@@ -68,12 +68,12 @@ class ReEncryptedEntry(NamedTuple):
     数据层反向依赖。
     """
     crypto_id: str
-    title: str
+    title_enc: str
     username_enc: str
     password_enc: str
-    url: str
+    url_enc: str
     category_id: int | None
-    tags: str
+    tags_enc: str
     notes_enc: str
     custom_fields_enc: str
     is_favorite: int  # 0 or 1

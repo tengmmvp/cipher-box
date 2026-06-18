@@ -9,6 +9,7 @@ DetailPanel 的主密码字段因使用全局自动隐藏定时器（``_pwd_hide
 
 from __future__ import annotations
 
+from PyQt6 import sip
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
@@ -83,6 +84,9 @@ def make_secret_field_row(
     timers.append(field_timer)
 
     def _toggle(_checked=False, lbl=val_label, btn=show_btn, key=store_key, timer=field_timer):
+        # 控件可能已被 deleteLater，异步回调（定时器/点击）触发前守卫，避免 RuntimeError
+        if sip.isdeleted(lbl) or sip.isdeleted(btn):
+            return
         pwd = store.get(key, '')
         if lbl.text() == '••••••••':
             lbl.setText(pwd)

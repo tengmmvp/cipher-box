@@ -40,7 +40,7 @@ MAX_HISTORY_DISPLAY = 5     # 详情面板最多显示密码历史条数
 MAX_TAG_DISPLAY = 5         # 详情面板最多显示标签数
 MAX_TAG_AUTOCOMPLETE = 20   # 标签自动补全最大数量
 RECENT_ENTRY_LIMIT = 20     # 「近期更新」筛选最多显示条目数
-ASYNC_SEARCH_THRESHOLD = 500  # 超过该条目数时搜索移入后台线程
+ASYNC_SEARCH_THRESHOLD = 200  # 超过该条目数时列表/搜索移入后台线程
 
 # ---------- 窗口尺寸 ----------
 WINDOW_MIN_SIZE = (980, 640)

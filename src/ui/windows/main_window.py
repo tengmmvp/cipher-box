@@ -34,7 +34,7 @@ from ...business.managers.entry_manager import EntryManager
 from ...business.managers.import_export import ImportExportManager
 from ...business.managers.vault_manager import VaultManager
 from ...business.services.security_analyzer import SecurityAnalyzer
-from ...config import ConfigManager
+from ...config import MAX_WINDOW_GEOMETRY_BYTES, ConfigManager
 from ...utils.clipboard import ClipboardManager
 from ..components.detail_panel import DetailPanel
 from ..components.entry_list_widget import EntryItemDelegate, EntryListModel
@@ -230,12 +230,12 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         if saved_geo:
             try:
                 geo_bytes = bytes.fromhex(saved_geo)
-                # 上限 512 字节留足余量：Qt saveGeometry 通常 40-60 字节，未来版本
-                # 可能增长；原 64 偏紧，Qt 升级后可能丢弃合法 geometry。
-                if len(geo_bytes) <= 512:
+                # 上限与 config._is_valid 共用 MAX_WINDOW_GEOMETRY_BYTES 单一常量，
+                # 消除校验端与消费端各自硬编码导致合法 geometry 被静默丢弃。
+                if len(geo_bytes) <= MAX_WINDOW_GEOMETRY_BYTES:
                     self.restoreGeometry(geo_bytes)
             except (ValueError, RuntimeError):
-                pass
+                logger.debug("窗口几何位置恢复失败，已忽略", exc_info=True)
 
         # 连接详情面板信号
         self._detail_panel.edit_requested.connect(self._edit_entry)
@@ -811,7 +811,9 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             try:
                 clipboard.clear_now()
             except Exception:
-                logger.debug("紧急剪贴板清理失败", exc_info=True)
+                # 崩溃兜底路径清空的是可能残留的明文密码，属最严重的安全事件；
+                # 用 error 级确保生产默认 INFO 输出仍可见，便于发现静默失效。
+                logger.error("崩溃兜底紧急清空剪贴板失败，明文可能残留", exc_info=True)
 
     def emergency_cancel_workers(self) -> None:
         """紧急取消后台 worker（不等待），供 app 层 aboutToQuit 等不阻塞退出路径。

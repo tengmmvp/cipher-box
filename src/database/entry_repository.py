@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 # 会自动跟随；同时须同步纳入 MetadataSigner._payload 的签名载荷
 # （由 test_entry_signature_coverage 断言守护，防止漏签）。
 _ENTRY_COLUMNS = [
-    'crypto_id', 'title', 'username_enc', 'password_enc', 'url',
-    'category_id', 'tags', 'notes_enc', 'custom_fields_enc',
+    'crypto_id', 'title_enc', 'username_enc', 'password_enc', 'url_enc',
+    'category_id', 'tags_enc', 'notes_enc', 'custom_fields_enc',
     'is_favorite', 'is_deleted', 'password_strength', 'entry_type',
     'totp_secret_enc', 'created_at', 'updated_at', 'deleted_at',
     'password_changed_at', 'metadata_mac',
@@ -131,6 +131,21 @@ class EntryRepository:
         """防御性断言：加密列的值应为受支持格式的密文，或空字符串。"""
         self._mgr.assert_encrypted(value, field_name)
 
+    def _assert_entry_encrypted_fields(self, entry: RawEntry) -> None:
+        """防御性断言：条目的全部加密字段应为受支持格式的密文或空字符串。
+
+        统一 add_entry / update_entry 的加密字段断言，新增加密字段只需在此
+        追加一处，消除两处复制粘贴漏改的风险。
+        """
+        self._assert_encrypted(entry.title, 'title')
+        self._assert_encrypted(entry.username, 'username')
+        self._assert_encrypted(entry.password, 'password')
+        self._assert_encrypted(entry.url, 'url')
+        self._assert_encrypted(entry.tags, 'tags')
+        self._assert_encrypted(entry.notes, 'notes')
+        self._assert_encrypted(entry.totp_secret, 'totp_secret')
+        self._assert_encrypted(entry.custom_fields_db_value, 'custom_fields')
+
     # ==================== 条目 ====================
 
     def get_entries(
@@ -150,11 +165,10 @@ class EntryRepository:
         供「近期更新」视图下推 LIMIT 到 SQL，避免全量内存排序再截断。
 
         Args:
-            verify: 完整性校验模式，默认 LENIENT（逐行 HMAC 验签并标记异常条目）。
-                列表/摘要等性能敏感路径可传 VerifyMode.SKIP 跳过逐行验签——这是与
-                全量解密并列的第二条 O(N) 热路径，跳过后大库列表/搜索显著加速。
-                篡改检测仍由 get_entry（单条详情，STRICT）与所有写路径兜底，不丢失
-                安全语义。
+            verify: 完整性校验模式，默认 LENIENT（逐行 HMAC 验签并标记异常条目，
+                不抛异常）。列表/搜索/标签等只读路径沿用默认 LENIENT 以检测元数据
+                篡改；SKIP 仅用于签名计算前的原始读取（_select_entry_for_sign 等，
+                不能先验签再算签名）。单条详情用 STRICT 在校验失败时抛异常。
         """
         query = """
             SELECT e.*, c.name as category_name
@@ -211,14 +225,7 @@ class EntryRepository:
     def add_entry(self, entry: RawEntry, preserve_metadata: bool = False) -> int:
         """添加条目，返回 ID。"""
         # 防御性断言，防止明文静默写入加密列
-        self._assert_encrypted(entry.title, 'title')
-        self._assert_encrypted(entry.username, 'username')
-        self._assert_encrypted(entry.password, 'password')
-        self._assert_encrypted(entry.url, 'url')
-        self._assert_encrypted(entry.tags, 'tags')
-        self._assert_encrypted(entry.notes, 'notes')
-        self._assert_encrypted(entry.totp_secret, 'totp_secret')
-        self._assert_encrypted(entry.custom_fields_db_value, 'custom_fields')
+        self._assert_entry_encrypted_fields(entry)
         now = utc_now_iso()
         entry.crypto_id = entry.crypto_id or uuid.uuid4().hex
         entry.created_at = entry.created_at or now
@@ -277,14 +284,7 @@ class EntryRepository:
         请使用上述专用方法。
         """
         # 防御性断言，防止明文静默写入加密列
-        self._assert_encrypted(entry.title, 'title')
-        self._assert_encrypted(entry.username, 'username')
-        self._assert_encrypted(entry.password, 'password')
-        self._assert_encrypted(entry.url, 'url')
-        self._assert_encrypted(entry.tags, 'tags')
-        self._assert_encrypted(entry.notes, 'notes')
-        self._assert_encrypted(entry.totp_secret, 'totp_secret')
-        self._assert_encrypted(entry.custom_fields_db_value, 'custom_fields')
+        self._assert_entry_encrypted_fields(entry)
         entry.updated_at = (
             entry.updated_at
             if preserve_updated_at and entry.updated_at
@@ -328,12 +328,11 @@ class EntryRepository:
         if not rows:
             return
         # 采样首条的加密列做格式自检，防止重加密流程 bug 导致明文静默落入
-        # 加密列。逐行断言开销不可接受（改密可达数万条），采样首条作护栏；
-        # rows 实际为 ReEncryptedEntry NamedTuple（re_encryption 产出）。
+        # 加密列。逐行断言开销不可接受（改密可达数万条），采样首条作护栏。
         first = rows[0]
         for enc_value in (
-            first.title, first.username_enc, first.password_enc, first.url,
-            first.tags, first.notes_enc,
+            first.title_enc, first.username_enc, first.password_enc, first.url_enc,
+            first.tags_enc, first.notes_enc,
             first.custom_fields_enc, first.totp_secret_enc,
         ):
             if enc_value:
@@ -643,13 +642,13 @@ class EntryRepository:
         entry = RawEntry(
             id=row['id'],
             crypto_id=row['crypto_id'],
-            title=row['title'],
+            title=row['title_enc'],
             username=row['username_enc'],
             password=row['password_enc'],
-            url=row['url'] or '',
+            url=row['url_enc'] or '',
             category_id=row['category_id'],
             category_name=row['category_name'],
-            tags=row['tags'] or '',
+            tags=row['tags_enc'] or '',
             notes=row['notes_enc'],
             custom_fields=row['custom_fields_enc'] or '',
             is_favorite=bool(row['is_favorite']),

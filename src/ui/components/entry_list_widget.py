@@ -111,8 +111,8 @@ class EntryItemDelegate(QStyledItemDelegate):
     _DELETE_TEXT_RIGHT_EXTRA = 28     # 删除徽章额外保留宽度
     # paint 内行内垂直坐标偏移（相对 rect.top()）。
     # _TITLE_Y_OFFSET / _TITLE_HEIGHT / _SUBTITLE_Y_OFFSET 直接引用模块级不变量
-    # 常量（三者在模块加载时由 assert 校验几何关系），不再以类属性复制，消除
-    # 「改模块级常量而类属性不跟随」的双份真相源风险。
+    # 常量（三者在模块加载时由 raise RuntimeError 校验几何关系），不再以类属性
+    # 复制，消除「改模块级常量而类属性不跟随」的双份真相源风险。
     _SUBTITLE_HEIGHT = 19     # 副标题绘制区域高度
     _MARKER_DOT_Y_OFFSET = 10 # 强度圆点 Y 偏移
     _MARKER_DOT_WIDTH = 12    # 强度圆点绘制区域宽度

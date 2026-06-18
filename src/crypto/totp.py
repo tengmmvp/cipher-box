@@ -24,9 +24,9 @@ class TOTPGenerator:
         'SHA512': 'sha512',
     }
 
-    # 密钥前缀 -> 算法。SHA1 不入表：它是默认算法，显式 ``SHA1:`` 前缀不被识别
-    # （_parse_secret 对无匹配前缀的密钥返回默认 'SHA1'，由 URI/调用方 algorithm 生效）。
-    # 从 ALGO_MAP 派生，消除手动两表同步漂移：新增算法仅需改 ALGO_MAP，此表自动跟随。
+    # 密钥前缀 -> 算法。SHA1 是默认算法故不设 ``SHA1:`` 前缀识别：若密钥以 ``SHA1:``
+    # 开头，该前缀不会被剥离，而是当作 secret 的一部分原样保留（后续 base32 解码
+    # 时 ':' 为非法字符会报错）。从 ALGO_MAP 派生，新增算法仅需改 ALGO_MAP，此表自动跟随。
     _PREFIX_MAP = {f'{a}:': a for a in ALGO_MAP if a != 'SHA1'}
 
     @staticmethod

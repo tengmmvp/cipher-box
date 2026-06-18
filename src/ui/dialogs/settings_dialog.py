@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...config import OLD_PASSWORD_WARNING_DAYS_DEFAULT, ConfigManager
+from ...config import DEFAULT_CONFIG, ConfigManager
 from ..components.widgets import setup_dialog_flags
 from ..resources.constants import BTN_DIALOG, DIALOG_SETTINGS_MIN_SIZE
 
@@ -221,24 +221,26 @@ class SettingsDialog(QDialog):
 
     # 配置项映射表，每个元素为四元组，依次是配置键、控件属性、访问类型与默认值。
     # 访问类型取值为 combo、check 或 spin，决定读写控件的方式
+    # 默认值统一引用 DEFAULT_CONFIG（单一事实源），消除此处字面量与 config 双源
+    # 漂移——改某项默认值只需改 config.DEFAULT_CONFIG 一处。
     _SETTINGS_MAP = [
-        ('theme', '_theme_combo', 'combo', 'light'),
-        ('show_tray_icon', '_show_tray_check', 'check', True),
-        ('minimize_to_tray', '_minimize_tray_check', 'check', True),
-        ('close_to_tray', '_close_tray_check', 'check', False),
-        ('auto_lock_minutes', '_auto_lock_spin', 'spin', 5),
-        ('clipboard_clear_seconds', '_clipboard_spin', 'spin', 30),
-        ('password_visible_seconds', '_pwd_visible_spin', 'spin', 10),
-        ('default_password_length', '_default_length_spin', 'spin', 16),
-        ('default_uppercase', '_default_upper_check', 'check', True),
-        ('default_lowercase', '_default_lower_check', 'check', True),
-        ('default_digits', '_default_digits_check', 'check', True),
-        ('default_symbols', '_default_symbols_check', 'check', True),
-        ('default_exclude_ambiguous', '_default_exclude_check', 'check', False),
-        ('old_password_warning_days', '_old_pwd_spin', 'spin', OLD_PASSWORD_WARNING_DAYS_DEFAULT),
-        ('auto_backup_enabled', '_auto_backup_check', 'check', False),
-        ('auto_backup_interval_hours', '_backup_interval_spin', 'spin', 24),
-        ('auto_backup_retention', '_backup_retention_spin', 'spin', 10),
+        ('theme', '_theme_combo', 'combo', DEFAULT_CONFIG['theme']),
+        ('show_tray_icon', '_show_tray_check', 'check', DEFAULT_CONFIG['show_tray_icon']),
+        ('minimize_to_tray', '_minimize_tray_check', 'check', DEFAULT_CONFIG['minimize_to_tray']),
+        ('close_to_tray', '_close_tray_check', 'check', DEFAULT_CONFIG['close_to_tray']),
+        ('auto_lock_minutes', '_auto_lock_spin', 'spin', DEFAULT_CONFIG['auto_lock_minutes']),
+        ('clipboard_clear_seconds', '_clipboard_spin', 'spin', DEFAULT_CONFIG['clipboard_clear_seconds']),
+        ('password_visible_seconds', '_pwd_visible_spin', 'spin', DEFAULT_CONFIG['password_visible_seconds']),
+        ('default_password_length', '_default_length_spin', 'spin', DEFAULT_CONFIG['default_password_length']),
+        ('default_uppercase', '_default_upper_check', 'check', DEFAULT_CONFIG['default_uppercase']),
+        ('default_lowercase', '_default_lower_check', 'check', DEFAULT_CONFIG['default_lowercase']),
+        ('default_digits', '_default_digits_check', 'check', DEFAULT_CONFIG['default_digits']),
+        ('default_symbols', '_default_symbols_check', 'check', DEFAULT_CONFIG['default_symbols']),
+        ('default_exclude_ambiguous', '_default_exclude_check', 'check', DEFAULT_CONFIG['default_exclude_ambiguous']),
+        ('old_password_warning_days', '_old_pwd_spin', 'spin', DEFAULT_CONFIG['old_password_warning_days']),
+        ('auto_backup_enabled', '_auto_backup_check', 'check', DEFAULT_CONFIG['auto_backup_enabled']),
+        ('auto_backup_interval_hours', '_backup_interval_spin', 'spin', DEFAULT_CONFIG['auto_backup_interval_hours']),
+        ('auto_backup_retention', '_backup_retention_spin', 'spin', DEFAULT_CONFIG['auto_backup_retention']),
     ]
 
     def _set_widget_value(self, widget, accessor_type: str, value):

@@ -274,8 +274,8 @@ class DatabaseManager:
     def _auto_commit(self) -> None:
         """内部提交：仅在非事务模式下执行 commit。
 
-        文件权限刷新附加 ``SECURE_FILES_DEBOUNCE_SECONDS`` 秒防抖，避免批量写入时
-        每行操作都触发三次文件权限设置，仅在距上次刷新达到该间隔后才执行。
+        权限刷新按 ``SECURE_FILES_DEBOUNCE_SECONDS`` 防抖（理由见该常量定义），
+        仅在距上次刷新达到间隔后才执行。
         """
         if not self.in_transaction and self._conn:
             try:

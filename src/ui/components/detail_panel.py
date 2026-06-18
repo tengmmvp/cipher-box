@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...models import Entry, Sensitive
+from ...models import ENTRY_TYPE_LOGIN, Entry, Sensitive
 from ...utils.format import format_datetime
 from ...utils.memory import mark_secret_discarded
 from ..resources.constants import (
@@ -233,6 +233,9 @@ class DetailPanel(QWidget):
                 and self._current_entry.updated_at == entry.updated_at):
             return
         logger.debug("显示条目详情: id=%d", entry.id)
+        # 切换到不同条目前，清理上一条目的 TOTP secret 明文缓存
+        if self._current_entry is not None and self._current_entry.id != entry.id:
+            self._evict_current_totp()
         self._current_entry = entry
         self._pwd_hide_timer.stop()
         self._totp_widget.stop()
@@ -353,7 +356,7 @@ class DetailPanel(QWidget):
             cat_tag.setObjectName('tag')
             header_info.addWidget(cat_tag)
 
-        if entry.entry_type and entry.entry_type != 'login':
+        if entry.entry_type and entry.entry_type != ENTRY_TYPE_LOGIN:
             type_tag = QLabel(f'  {entry.type_label}  ')
             type_tag.setObjectName('typeTag')
             header_info.addWidget(type_tag)
@@ -574,6 +577,18 @@ class DetailPanel(QWidget):
         """复制文本。"""
         self._clipboard.copy_text(text)
 
+    def _evict_current_totp(self) -> None:
+        """清理当前条目的 TOTP secret 明文缓存（委托 EntryManager）。
+
+        切换条目或清空详情时调用，避免离开条目后 TOTP secret（双因子凭证）
+        长期驻留缓存——泄露可独立生成验证码绕过 2FA。锁定/改密由缓存层整体
+        失效兜底，此处覆盖「保险库仍解锁但用户已离开该条目」的窗口。
+        """
+        prev = self._current_entry
+        if (self._entry_mgr is not None and prev is not None
+                and prev.id is not None and prev.has_totp):
+            self._entry_mgr.evict_totp_cache(prev.id)
+
     def _clear_content(self):
         """清除详情面板内容，安全擦除敏感数据。"""
         # 停止所有自动掩码定时器，避免清除后对已销毁控件触发回调。
@@ -632,6 +647,7 @@ class DetailPanel(QWidget):
 
     def show_empty(self):
         """显示空状态。"""
+        self._evict_current_totp()
         self._clear_content()
         self._current_entry = None
         self._title_label.setText('选择一个条目查看详情')

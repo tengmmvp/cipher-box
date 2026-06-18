@@ -234,7 +234,7 @@ class EntryCacheManager:
         if cached is not None:
             return cached
         tag_count: dict[str, int] = {}
-        for raw in self._vault.db.get_entries(include_deleted=False, verify=VerifyMode.SKIP):
+        for raw in self._vault.db.get_entries(include_deleted=False, verify=VerifyMode.LENIENT):
             tags_str = self.cached_search_metadata(raw)[3]
             for tag in (t.strip() for t in tags_str.split(',') if t.strip()):
                 tag_count[tag] = tag_count.get(tag, 0) + 1

@@ -31,6 +31,11 @@ from ...utils.memory import secure_zero_buffer
 from ..services.key_manager import KeyManager
 from ..services.metadata_signer import MetadataSigner
 from ..services.re_encryption import ReEncryptionService
+from .backup_restore import (
+    BACKUPS_DIR_NAME,
+    PRE_RESTORE_GLOB,
+    SNAPSHOT_GLOB,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -191,8 +196,10 @@ class VaultManager:
 
         每次写入都比对 key_epoch，不做时间缓存，避免改密后旧会话在窗口内
         用旧密钥写入导致数据按旧密钥落盘、新会话解密失败的损坏窗口。
-        检测到 epoch 不匹配时调用 _clear_vault_state 而非 lock，
-        避免在持有数据库锁时触发回调导致死锁。
+        检测到 epoch 不匹配时调用 _clear_vault_state 而非 lock：本守卫经 _db_write
+        在持有 db_lock 时调用，lock 会触发业务回调（清缓存等），回调中访问数据库
+        形成 db_lock 重入与潜在锁顺序风险；_clear_vault_state 仅清密钥状态、不
+        触发回调，更可控。
         """
         if self._key_epoch is None:
             return
@@ -362,10 +369,12 @@ class VaultManager:
             return False, msg
 
     def _clear_vault_state(self) -> None:
-        """清除密钥材料和加密缓存，不触发回调，也不执行 gc。
+        """清除密钥材料和加密缓存，并触发 gc 回收 AESGCM 缓存副本。
 
-        用于 _enforce_key_epoch 中需要安全清除状态但不能触发回调的场景，
-        避免在持有数据库锁时回调中再获取数据库锁导致死锁。
+        用于 lock 与 _enforce_key_epoch 等需要安全清除密钥状态的场景。末尾
+        gc.collect() 尽快回收 EncryptionEngine.clear_cache 释放的 AESGCM 实例
+        （其内部 C 层持有密钥拷贝），缩短密钥材料在内存/swap 的驻留窗口。不触发
+        业务回调，避免在持有数据库锁时回调中再获取数据库锁导致死锁。
         """
         # 密钥材料由 KeyManager 集中清零，含主密钥、快照密钥与 epoch
         self._key_mgr.clear()
@@ -380,6 +389,7 @@ class VaultManager:
         # 但 _db_initialized=False 确保 init_tables 在下次访问时重新运行。
         self._db_initialized = False
         EncryptionEngine.clear_cache()
+        gc.collect()
 
     def lock(self) -> None:
         """锁定保险库，清除内存中的密钥材料。
@@ -398,11 +408,10 @@ class VaultManager:
             # 避免备份用密钥副本在 lock 后继续解密。回调在锁外执行，避免回调获取锁导致死锁。
             with self._lock:
                 self._clear_vault_state()
-                gc.collect()
         finally:
             # 复位取消事件，避免残留影响后续改密
             self._cancel_event.clear()
-        # gc.collect() 缩短密钥材料驻留时间；lock 属低频操作，GC 暂停可接受。
+        # gc.collect() 已在 _clear_vault_state 内执行，缩短密钥材料驻留时间。
         # 随后通知依赖方清除缓存，不依赖调用方纪律。
         for cb in self._on_lock_callbacks:
             try:
@@ -604,7 +613,7 @@ class VaultManager:
         解密，且含历史明文，清理以收缩泄漏面。同时覆盖默认目录与用户自定义目录。
         返回因占用或权限等原因未能删除的文件清单，供调用方明确上报而非静默丢失。
         """
-        directories = [self.data_dir / 'backups']
+        directories = [self.data_dir / BACKUPS_DIR_NAME]
         backup_dir = self._config.get('backup_directory', '')
         if backup_dir:
             directories.append(Path(backup_dir))
@@ -612,7 +621,7 @@ class VaultManager:
         for directory in directories:
             if not directory.is_dir():
                 continue
-            for pattern in ('pre_restore_*.cbox', 'cipherbox_snapshot_*.cbox'):
+            for pattern in (PRE_RESTORE_GLOB, SNAPSHOT_GLOB):
                 for f in directory.glob(pattern):
                     try:
                         secure_delete_file(f)
@@ -659,7 +668,7 @@ class VaultManager:
         仅清理 pre_restore_*（一次性恢复点），不动 cipherbox_snapshot_*（可能为
         有效的定期自动快照）。
         """
-        directories = [self.data_dir / 'backups']
+        directories = [self.data_dir / BACKUPS_DIR_NAME]
         backup_dir = self._config.get('backup_directory', '')
         if backup_dir:
             directories.append(Path(backup_dir))
@@ -667,7 +676,7 @@ class VaultManager:
         for directory in directories:
             if not directory.is_dir():
                 continue
-            for f in directory.glob('pre_restore_*.cbox'):
+            for f in directory.glob(PRE_RESTORE_GLOB):
                 try:
                     secure_delete_file(f)
                 except OSError:
