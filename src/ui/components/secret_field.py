@@ -9,6 +9,8 @@ DetailPanel 的主密码字段因使用全局自动隐藏定时器（``_pwd_hide
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PyQt6 import sip
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
@@ -22,12 +24,12 @@ def make_secret_field_row(
     value: str,
     *,
     store: dict,
-    store_key,
+    store_key: object,
     timers: list[QTimer],
-    parent_widget,
-    get_pwd_visible_ms,
-    on_copy,
-    on_copy_feedback,
+    parent_widget: QWidget,
+    get_pwd_visible_ms: Callable[[], int],
+    on_copy: Callable[[QPushButton, str], None],
+    on_copy_feedback: Callable[[], None],
     name_label_style: str = '',
     val_label_style: str = '',
 ) -> tuple[QLabel, QWidget]:
@@ -76,14 +78,15 @@ def make_secret_field_row(
     store[store_key] = value
     field_timer = QTimer(parent_widget)
     field_timer.setSingleShot(True)
-    field_timer.timeout.connect(
-        lambda lbl=val_label, btn=show_btn: (
-            lbl.setText('••••••••'), set_icon(btn, EYE),
-        )
-    )
+
+    def _auto_mask(lbl: QLabel = val_label, btn: QPushButton = show_btn) -> None:
+        lbl.setText('••••••••')
+        set_icon(btn, EYE)
+
+    field_timer.timeout.connect(_auto_mask)
     timers.append(field_timer)
 
-    def _toggle(_checked=False, lbl=val_label, btn=show_btn, key=store_key, timer=field_timer):
+    def _toggle(_checked: bool = False, lbl: QLabel = val_label, btn: QPushButton = show_btn, key: object = store_key, timer: QTimer = field_timer) -> None:
         # 控件可能已被 deleteLater，异步回调（定时器/点击）触发前守卫，避免 RuntimeError
         if sip.isdeleted(lbl) or sip.isdeleted(btn):
             return
@@ -106,7 +109,7 @@ def make_secret_field_row(
     copy_btn.setFixedSize(*BTN_COPY)
     copy_btn.setToolTip('复制密码')
 
-    def _copy_secret(_checked=False, key=store_key, btn=copy_btn):
+    def _copy_secret(_checked: bool = False, key: object = store_key, btn: QPushButton = copy_btn) -> None:
         on_copy(btn, store.get(key, ''))
 
     copy_btn.clicked.connect(_copy_secret)

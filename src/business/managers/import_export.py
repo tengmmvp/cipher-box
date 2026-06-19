@@ -47,6 +47,14 @@ MAX_IMPORT_FILE_SIZE = 25 * 1024 * 1024
 MAX_IMPORT_ENTRIES = 50_000
 MAX_IMPORT_ENTRY_SIZE = 2 * 1024 * 1024
 
+# 限制 csv 解析器单字段最大长度。Python csv 默认 field_size_limit=128KB，但该默认
+# 值是隐式的且与本项目的逐项大小策略脱节。显式设为 MAX_IMPORT_ENTRY_SIZE 后，单字段
+# 超过 2MB 会在 csv 解析阶段即抛 csv.Error，先于 ``list(reader)`` 把整行物化进内存——
+# 否则攻击者可构造「单行无换行的巨大字段」文件（受 25MB 文件上限约束），在逐项校验
+# 运行前就撑出一整段连续内存。csv.field_size_limit 是进程级全局设置，本应用导入
+# 串行执行，设此防御性上限对其他 csv 路径无负面影响。
+csv.field_size_limit(MAX_IMPORT_ENTRY_SIZE)
+
 # CSV 导入列名别名映射：每个字段对应一组可能的列名，匹配时不区分大小写。
 # 由 _parse_csv_like 经 _build_col_map 用于 import_from_csv。
 _CSV_COLUMN_ALIASES = {

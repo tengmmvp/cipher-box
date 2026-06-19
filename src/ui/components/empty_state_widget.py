@@ -33,7 +33,7 @@ class EmptyStateWidget(QWidget):
         super().__init__(parent)
         self._setup_ui(icon_name, title, subtitle, action_text)
 
-    def _setup_ui(self, icon_name: str, title: str, subtitle: str, action_text: str):
+    def _setup_ui(self, icon_name: str, title: str, subtitle: str, action_text: str) -> None:
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.setSpacing(8)

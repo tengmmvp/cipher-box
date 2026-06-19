@@ -226,7 +226,7 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
         self._master_pwd = 'test_password_123'
         self._vault.initialize(self._master_pwd)
         self._entry_mgr = make_entry_manager(self._vault)
-        self._backup_mgr = BackupRestoreManager(self._vault)
+        self._backup_mgr = BackupRestoreManager(self._vault, self._entry_mgr)
         # 写入两条条目作为恢复失败时“不应被清空”的存量数据
         self._entry_mgr.add_entry(Entry(
             title='存量条目A', username='keep_user_a',
@@ -476,12 +476,12 @@ def test_restore_rotates_snapshot_key(tmp_path):
         Entry(title='Incoming', password='IncomingSecret!2026')
     )
     portable = str(Path(source_dir) / 'portable.cbox')
-    assert BackupRestoreManager(source).create_backup(portable, 'PortableBackup!2026')[0]
+    assert BackupRestoreManager(source, make_entry_manager(source)).create_backup(portable, 'PortableBackup!2026')[0]
 
     target = VaultManager(make_test_config(target_dir))
     target.initialize('TargetMaster!2026')
     old_snapshot_key = bytes(target.snapshot_key)
-    backup_mgr = BackupRestoreManager(target)
+    backup_mgr = BackupRestoreManager(target, make_entry_manager(target))
     assert backup_mgr.restore_backup(portable, 'PortableBackup!2026')[0]
 
     # 恢复后 snapshot_key 应轮换为全新值

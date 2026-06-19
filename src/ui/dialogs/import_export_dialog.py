@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -78,7 +79,7 @@ class ImportExportDialog(QDialog):
         import_export_manager: ImportExportManager,
         entry_manager: EntryManager,
         parent: QWidget | None = None,
-    ):
+    ) -> None:
         super().__init__(parent)
         self._import_export = import_export_manager
         self._entry_mgr = entry_manager
@@ -89,7 +90,7 @@ class ImportExportDialog(QDialog):
         self._selected_path: str | None = None
         self._setup_ui()
 
-    def closeEvent(self, a0):
+    def closeEvent(self, a0: QCloseEvent | None) -> None:
         # 导入 worker 运行时拒绝关闭，避免 QThread 销毁警告与数据不一致
         if a0 is not None and self._worker and self._worker.isRunning() and not self._worker_is_export:
             self._status_label.setText('导入进行中，请等待完成后再关闭')
@@ -97,7 +98,7 @@ class ImportExportDialog(QDialog):
             return
         super().closeEvent(a0)
 
-    def reject(self):
+    def reject(self) -> None:
         """关闭对话框前等待后台 worker 完成。
 
         导入操作有数据库写入副作用，不取消 worker 以确保数据一致性；
@@ -108,7 +109,7 @@ class ImportExportDialog(QDialog):
         release_worker(self)
         super().reject()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         self.setWindowTitle('导入 / 导出')
         self.setMinimumSize(*DIALOG_IMPORT_EXPORT_MIN_SIZE)
         setup_dialog_flags(self)
@@ -212,7 +213,7 @@ class ImportExportDialog(QDialog):
 
         layout.addLayout(btn_layout)
 
-    def _on_mode_changed(self):
+    def _on_mode_changed(self) -> None:
         self._is_export = self._mode_group.checkedId() == 0
         self._password_container.setVisible(self._is_export)
         self._duplicate_container.setVisible(not self._is_export)
@@ -231,7 +232,7 @@ class ImportExportDialog(QDialog):
         self._path_edit.setText('未选择')
         self._path_edit.setStyleSheet(f'color: {c("text_muted")};')
 
-    def _browse_file(self):
+    def _browse_file(self) -> None:
         if self._is_export:
             fmt = self._format_combo.currentText().lower()
             path, _ = QFileDialog.getSaveFileName(
@@ -251,7 +252,7 @@ class ImportExportDialog(QDialog):
             self._path_edit.setText(path)
             self._path_edit.setStyleSheet(f'color: {c("text_primary")};')
 
-    def _execute(self):
+    def _execute(self) -> None:
         if not self._selected_path:
             QMessageBox.warning(self, '提示', '请先选择文件')
             return
@@ -261,7 +262,7 @@ class ImportExportDialog(QDialog):
         else:
             self._do_import(self._selected_path)
 
-    def _set_busy(self, busy: bool):
+    def _set_busy(self, busy: bool) -> None:
         """设置操作进行中状态。"""
         self._action_btn.setEnabled(not busy)
         if busy:
@@ -270,7 +271,7 @@ class ImportExportDialog(QDialog):
         else:
             self._status_label.setText('')
 
-    def _do_export(self, path: str):
+    def _do_export(self, path: str) -> None:
         include_pwd = self._include_pwd_check.isChecked()
         fmt = self._format_combo.currentText()
 
@@ -300,7 +301,7 @@ class ImportExportDialog(QDialog):
 
         worker_holder: list[BackgroundWorker] = []
 
-        def _export_task():
+        def _export_task() -> int:
             worker = worker_holder[0]
             cancel_check = lambda: worker.is_cancelled
             entries = self._entry_mgr.get_entries_for_export(
@@ -325,7 +326,7 @@ class ImportExportDialog(QDialog):
         self._worker.error.connect(self._on_export_error)
         self._worker.start()
 
-    def _on_export_done(self, count):
+    def _on_export_done(self, count: int) -> None:
         if self.sender() is not self._worker:
             return
         # 在 release_worker 前采样取消状态：取消时 export_to_json/csv 内部已清理
@@ -359,7 +360,7 @@ class ImportExportDialog(QDialog):
         self._status_label.setText(format_status(True, message))
         set_label_severity(self._status_label, 'success')
 
-    def _on_export_error(self, error_msg: str):
+    def _on_export_error(self, error_msg: str) -> None:
         if self.sender() is not self._worker:
             return
         release_worker(self)
@@ -369,7 +370,7 @@ class ImportExportDialog(QDialog):
         self._status_label.setText(format_status(False, f'导出失败：{error_msg}'))
         set_label_severity(self._status_label, 'error')
 
-    def _do_import(self, path: str):
+    def _do_import(self, path: str) -> None:
         fmt_index = self._format_combo.currentIndex()
         duplicate_action = self._duplicate_combo.currentData() or 'skip'
 
@@ -393,7 +394,7 @@ class ImportExportDialog(QDialog):
 
         worker_holder: list = []
 
-        def _import_task():
+        def _import_task() -> int:
             # worker_holder 解耦：闭包经 holder[0] 访问 worker，消除对
             # self._worker 赋值时序的依赖（原读 self._worker 依赖赋值先于 start，
             # 是脆弱的隐式契约）。同时取 cancel_check 使 reject() 真正中断导入循环。
@@ -405,12 +406,12 @@ class ImportExportDialog(QDialog):
             method_name = self._IMPORT_HANDLERS.get(fmt_name)
             if method_name:
                 handler = getattr(self._import_export, method_name)
-                return handler(
+                return cast(int, handler(
                     path,
                     progress_callback=progress_cb,
                     duplicate_action=duplicate_action,
                     cancel_check=cancel_check,
-                )
+                ))
             return 0
 
         self._worker = BackgroundWorker(_import_task, parent=self)
@@ -420,12 +421,12 @@ class ImportExportDialog(QDialog):
         self._worker.error.connect(self._on_import_error)
         self._worker.start()
 
-    def _on_import_progress(self, current: int, total: int):
+    def _on_import_progress(self, current: int, total: int) -> None:
         """导入进度回调：切换到确定范围并更新进度条。"""
         self._progress.setRange(0, total)
         self._progress.setValue(current)
 
-    def _on_import_done(self, count):
+    def _on_import_done(self, count: int) -> None:
         if self.sender() is not self._worker:
             return
         release_worker(self)
@@ -436,7 +437,7 @@ class ImportExportDialog(QDialog):
         if count > 0:
             self.import_completed.emit()
 
-    def _on_import_error(self, error_msg: str):
+    def _on_import_error(self, error_msg: str) -> None:
         if self.sender() is not self._worker:
             return
         release_worker(self)

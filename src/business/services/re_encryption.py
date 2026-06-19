@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from threading import Event
-from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from ...database.types import ReEncryptedEntry, ReEncryptedHistory
 from ...exceptions import DecryptionError, VaultError
@@ -102,9 +102,16 @@ class ReEncryptionService:
             )
             if not batch:
                 break
-            last_id = cast(int, batch[-1].id)
+            # batch 来自 DB get_entries，主键 id 必非 None；守卫锚定契约，避免
+            # None 作分页游标导致死循环或写入空主键（运行时不应触发）。
+            last_raw = batch[-1]
+            if last_raw.id is None:
+                raise VaultError('重加密分页遇到空主键，违反 RawEntry 主键非空契约')
+            last_id = last_raw.id
             rows = []
             for raw_entry in batch:
+                if raw_entry.id is None:
+                    raise VaultError('重加密遇到空主键条目，违反 RawEntry 主键非空契约')
                 try:
                     for field in _ENCRYPTED_ENTRY_FIELDS:
                         # custom_fields 在 RawEntry 态为密文字符串，显式取 db_value
@@ -147,7 +154,7 @@ class ReEncryptionService:
                     updated_at=raw_entry.updated_at,
                     password_changed_at=raw_entry.password_changed_at,
                     metadata_mac=mac,
-                    id=cast(int, raw_entry.id),
+                    id=raw_entry.id,
                 ))
             self._db.update_entries_batch(rows)
             del batch, rows

@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from ...business.services.crypto_utils import matches_search, matches_tag
 from ..resources.constants import RECENT_ENTRY_LIMIT, SORT_OPTIONS
 
 if TYPE_CHECKING:
@@ -57,7 +58,7 @@ class EntryListController:
         """
         field, order = self.get_sort_config(sort_index)
 
-        def sort_key(e):
+        def sort_key(e: Entry) -> Any:
             if field == 'title':
                 return (e.title or '').lower()
             elif field == 'password_strength':
@@ -168,14 +169,12 @@ class EntryListController:
     @staticmethod
     def filter_by_search(entries: list[Entry], search: str) -> list[Entry]:
         """在弱密码/重复密码过滤器中对结果施加搜索过滤。"""
-        from ...business.managers.entry_manager import EntryManager
-        return [e for e in entries if EntryManager.matches_search(e, search)]
+        return [e for e in entries if matches_search(e, search)]
 
     @staticmethod
     def filter_by_tag(entries: list[Entry], tag: str) -> list[Entry]:
         """按标签过滤条目。"""
-        from ...business.managers.entry_manager import EntryManager
-        return [e for e in entries if EntryManager.matches_tag(e, tag)]
+        return [e for e in entries if matches_tag(e, tag)]
 
     # ========== 安全摘要 ==========
 

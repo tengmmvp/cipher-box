@@ -36,7 +36,7 @@ class TestBackupCorruption:
         self._vault = VaultManager(vault_config)
         self._vault.initialize("test_password_12345")
         self._entry_mgr = make_entry_manager(self._vault)
-        self._backup_mgr = BackupRestoreManager(self._vault)
+        self._backup_mgr = BackupRestoreManager(self._vault, self._entry_mgr)
         self._entry_mgr.add_entry(Entry(
             title='测试条目', username='user1', password='pass123',
             url='https://example.com', notes='备注', entry_type='login',

@@ -11,6 +11,7 @@ from typing import cast
 import qtawesome as qta
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+from PyQt6.QtWidgets import QPushButton
 
 from .theme_colors import c
 
@@ -172,7 +173,7 @@ def icon_pixmap(name: str, color_key: str | None = None, size: int = SIZE_BTN) -
     return qicon.pixmap(QSize(size, size))
 
 
-def set_icon(widget, name: str, color_key: str | None = None, size: int = SIZE_BTN):
+def set_icon(widget: QPushButton, name: str, color_key: str | None = None, size: int = SIZE_BTN) -> None:
     """给 QPushButton 设置图标并自动清除文字。"""
     qicon = _make_icon(name, color_key)
     widget.setIcon(qicon)
@@ -181,7 +182,7 @@ def set_icon(widget, name: str, color_key: str | None = None, size: int = SIZE_B
     widget.setAccessibleName(name.replace('_', ' '))
 
 
-def set_icon_with_text(widget, text: str, name: str, color_key: str | None = None, size: int = SIZE_BTN):
+def set_icon_with_text(widget: QPushButton, text: str, name: str, color_key: str | None = None, size: int = SIZE_BTN) -> None:
     """给 QPushButton 同时设置图标和文字。"""
     qicon = _make_icon(name, color_key)
     widget.setIcon(qicon)

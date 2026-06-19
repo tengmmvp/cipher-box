@@ -149,7 +149,7 @@ class CustomFieldsRenderer:
             copy_btn.setFixedSize(*BTN_COPY)
             copy_btn.setToolTip('复制')
 
-            def _copy_value(_checked=False, rid=row_id, btn=copy_btn):
+            def _copy_value(_checked: bool = False, rid: int = row_id, btn: QPushButton = copy_btn) -> None:
                 v = self._plain_values.get(rid, '')
                 self._copy_callback(btn, v)
 
@@ -159,7 +159,7 @@ class CustomFieldsRenderer:
         return name_label, row_widget
 
     def _make_secret_field_row(
-        self, label: str, value: str, timers: list[QTimer], parent_widget,
+        self, label: str, value: str, timers: list[QTimer], parent_widget: QWidget,
     ) -> tuple[QLabel, QWidget]:
         """创建敏感字段行，默认掩码，附带显示/隐藏与复制按钮。
 

@@ -61,7 +61,7 @@ class TrayIcon(QSystemTrayIcon):
             self.setIcon(TrayIcon._create_icon(QColor(c('brand')), 'C'))
             self.setToolTip('CipherBox')
 
-    def _create_menu(self):
+    def _create_menu(self) -> None:
         menu = QMenu()
 
         show_action = QAction('显示主窗口', self)
@@ -80,7 +80,7 @@ class TrayIcon(QSystemTrayIcon):
 
         self.setContextMenu(menu)
 
-    def _on_activated(self, reason):
+    def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         """托盘图标激活事件处理，仅响应双击以唤出主窗口。"""
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self.show_window.emit()

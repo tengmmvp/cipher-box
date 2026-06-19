@@ -100,7 +100,7 @@ class PasswordHistoryWidget(QWidget):
         """)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        def _expand(_checked=False, eid=entry_id, button=btn):
+        def _expand(_checked: bool = False, eid: int = entry_id, button: QPushButton = btn) -> None:
             mgr = self._entry_mgr
             if not mgr:
                 return
@@ -132,7 +132,7 @@ class PasswordHistoryWidget(QWidget):
 
     # ---- 内部方法 ----
 
-    def _build_history(self, history: list[dict], content_layout):
+    def _build_history(self, history: list[dict], content_layout: QVBoxLayout) -> None:
         """构建密码历史折叠区。"""
         group = QGroupBox('密码历史')
         group_layout = QVBoxLayout(group)
@@ -174,7 +174,7 @@ class PasswordHistoryWidget(QWidget):
             hist_timer.setSingleShot(True)
             self._own_timers.append(hist_timer)
 
-            def _on_hist_timeout(lbl=pwd_label, btn=show_btn):
+            def _on_hist_timeout(lbl: QLabel = pwd_label, btn: QPushButton = show_btn) -> None:
                 # 仅重置显示，不清空槽位：历史密码需支持显示→隐藏→再显示，
                 # 与主密码字段一致；明文释放统一交给 clear() 的 mark_secret_discarded。
                 lbl.setText('••••••••')
@@ -182,7 +182,7 @@ class PasswordHistoryWidget(QWidget):
 
             hist_timer.timeout.connect(_on_hist_timeout)
 
-            def toggle_pwd(_checked=False, lbl=pwd_label, btn=show_btn, idx=hist_idx, timer=hist_timer):
+            def toggle_pwd(_checked: bool = False, lbl: QLabel = pwd_label, btn: QPushButton = show_btn, idx: int = hist_idx, timer: QTimer = hist_timer) -> None:
                 pwd = self._history_passwords[idx] if idx < len(self._history_passwords) else ''
                 if lbl.text() == '••••••••':
                     lbl.setText(pwd)
@@ -205,7 +205,7 @@ class PasswordHistoryWidget(QWidget):
             copy_btn.setFixedSize(*BTN_COPY)
             copy_btn.setToolTip('复制密码')
 
-            def do_copy(_checked=False, idx=hist_idx, btn=copy_btn):
+            def do_copy(_checked: bool = False, idx: int = hist_idx, btn: QPushButton = copy_btn) -> None:
                 pwd = self._history_passwords[idx] if idx < len(self._history_passwords) else ''
                 if self._copy_with_feedback is None:
                     return

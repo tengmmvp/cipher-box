@@ -77,7 +77,7 @@ class BackgroundWorker(QThread):
         """
         self.progress.emit(current, total)
 
-    def run(self):
+    def run(self) -> None:
         func = self._func
         if func is None:
             return

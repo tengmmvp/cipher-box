@@ -490,7 +490,9 @@ class VaultManager:
             valid, error = PasswordGenerator.validate_master_password(new_password)
             if not valid:
                 return False, error
-            if old_password == new_password:
+            # 常量时间比较新旧主密码，避免明文密码比较的时序侧信道
+            # （短路比较会随首个不同字符提前返回，泄露前缀信息）。
+            if hmac.compare_digest(old_password, new_password):
                 return False, '新密码不能与当前主密码相同'
             meta = self._db.get_meta_batch([
                 'master_salt', 'master_verify', 'master_kdf_time_cost',

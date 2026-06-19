@@ -9,13 +9,14 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from ..managers.entry_cache import EntryCacheManager
     from ..managers.vault_manager import VaultManager
 
 logger = logging.getLogger(__name__)
 
 from ...exceptions import VaultLockedError
 from ...models import Entry, RawEntry
-from .crypto_utils import build_entry_summary, category_crypto_id, decrypt_field, require_vault_key
+from .crypto_utils import build_entry_summary, decrypt_field, require_vault_key
 
 # 分析缓存存活时间，单位为秒。命中期内复用基础分析与密码指纹结果，
 # 避免重复执行 O(n) 解密与 HMAC 计算。条目增删或改密会立即失效缓存，
@@ -47,8 +48,17 @@ class SecurityAnalyzer:
     ``invalidate_cache`` 失效，TTL 作为最终兜底，避免每次命中都查 DB 计数。
     """
 
-    def __init__(self, vault_manager: 'VaultManager', cache_ttl_seconds: int = SECURITY_ANALYSIS_CACHE_TTL_SECONDS):
+    def __init__(
+        self,
+        vault_manager: 'VaultManager',
+        entry_cache: 'EntryCacheManager',
+        cache_ttl_seconds: int = SECURITY_ANALYSIS_CACHE_TTL_SECONDS,
+    ):
         self._vault = vault_manager
+        # 复用 EntryCacheManager 的摘要缓存：title/username/url/tags/category_name
+        # 经单一解密源获取，避免本分析器独立解密产生与列表路径重复的明文字符串副本
+        # （str 不可变，复用后 summary Entry 与缓存引用同一字符串对象，收缩明文驻留面）。
+        self._cache = entry_cache
         self._cache_ttl_seconds = cache_ttl_seconds
         self._analysis_cache: dict | None = None
         self._analysis_cache_time: float = 0
@@ -87,27 +97,27 @@ class SecurityAnalyzer:
             value, key or self._key, raw.crypto_id, field_name, strict=strict
         )
 
-    def _make_summary(self, raw: RawEntry, key: bytes | None = None) -> Entry:
+    def _make_summary(self, raw: RawEntry) -> Entry:
         """只返回分析界面所需字段，避免缓存敏感明文。
 
-        Summary Entry 不含 password/notes/totp_secret/custom_fields 明文，
-        仅解密列表展示所需 title/username/url/tags。所有摘要字段使用 strict=True，
-        损坏时抛 ValueError 供调用方计入 skipped_count。
+        摘要字段（title/username/url/tags）复用 EntryCacheManager 的缓存解密结果，
+        分类名复用其 ``decrypt_category_name``，避免在此独立解密产生与列表路径
+        重复的明文字符串副本。cache 以 strict 解密，损坏字段返回 ``''`` 并记入
+        failed 集合；此处检测到任一字段失败即抛 ValueError，供 full_analysis 计入
+        ``skipped_count``，保持「损坏即跳过」语义与原 strict 解密一致。
         """
-        username = self._decrypt(raw, 'username', raw.username, strict=True, key=key)
+        # 批量路径：full_analysis 循环外已 invalidate_if_epoch_changed，此处用
+        # no_check 避免每条重复加锁+查 epoch（持 vault_write_lock 期间 epoch 不变）。
+        title, username, url, tags = self._cache._cached_search_metadata_no_check(raw)
+        if self._cache.get_failed_fields(raw.crypto_id):
+            raise ValueError(f'条目 {raw.crypto_id} 摘要字段解密失败')
         summary = build_entry_summary(raw, username)
-        summary.title = self._decrypt(
-            raw, 'title', raw.title, strict=True, key=key,
-        )
-        summary.url = self._decrypt(raw, 'url', raw.url, strict=True, key=key)
-        summary.tags = self._decrypt(raw, 'tags', raw.tags, strict=True, key=key)
+        summary.title = title
+        summary.url = url
+        summary.tags = tags
         if raw.category_id is not None and raw.category_name:
-            summary.category_name = decrypt_field(
-                raw.category_name,
-                key or self._key,
-                category_crypto_id(raw.category_id),
-                'category_name',
-                strict=True,
+            summary.category_name = self._cache.decrypt_category_name(
+                raw.category_id, raw.category_name,
             )
         return summary
 
@@ -306,6 +316,10 @@ class SecurityAnalyzer:
             skipped_count = 0
             # 循环外取一次主密钥副本，供重复检测的 HMAC 指纹复用。
             vault_key = self._key
+            # 批量路径：循环外一次性 epoch 校验，循环内 _make_summary 经
+            # _cached_search_metadata_no_check 避免每条重复加锁（持 vault_write_lock
+            # 期间 key_epoch 不变，逐条校验冗余）。
+            self._cache.invalidate_if_epoch_changed()
             for idx, raw in enumerate(entries):
                 # 周期性检查取消/锁定请求：用户点锁定时 lock() 会 set 取消事件并阻塞等
                 # vault 写锁；此处主动中止并抛 VaultLockedError（已被 _cached_analysis
@@ -318,7 +332,7 @@ class SecurityAnalyzer:
                     skipped_count += 1
                     continue
                 try:
-                    summary = self._make_summary(raw, vault_key)
+                    summary = self._make_summary(raw)
                 except ValueError:
                     logger.debug("安全分析跳过损坏条目 id=%s", raw.id, exc_info=True)
                     skipped_count += 1

@@ -16,12 +16,14 @@ from urllib.parse import quote, urlparse
 
 from PyQt6 import sip
 from PyQt6.QtCore import Qt, QTimer, pyqtBoundSignal, pyqtSignal
+from PyQt6.QtGui import QHideEvent, QShowEvent
 from PyQt6.QtWidgets import (
     QFormLayout,
     QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -134,7 +136,7 @@ class DetailPanel(QWidget):
 
         self._setup_ui()
 
-    def _add_copy_feedback_timer(self, timer: QTimer):
+    def _add_copy_feedback_timer(self, timer: QTimer) -> None:
         """注册复制反馈定时器，超出上限时回收最旧的（FIFO）。"""
         if len(self._copy_feedback_timers) >= self._COPY_FEEDBACK_TIMERS_MAX:
             # OrderedDict popitem(last=False) 移除最旧（首个），实现真正 FIFO
@@ -142,7 +144,7 @@ class DetailPanel(QWidget):
             oldest.stop()
         self._copy_feedback_timers[timer] = None
 
-    def _copy_with_feedback(self, btn: QPushButton, text: str):
+    def _copy_with_feedback(self, btn: QPushButton, text: str) -> None:
         """复制文本到剪贴板并显示图标反馈，定时恢复为复制图标。"""
         self._copy(text)
         set_icon(btn, CHECK, 'success')
@@ -150,7 +152,7 @@ class DetailPanel(QWidget):
         timer.setSingleShot(True)
         self._add_copy_feedback_timer(timer)
 
-        def _restore(btn=btn, t=timer):
+        def _restore(btn: QPushButton = btn, t: QTimer = timer) -> None:
             # 定时器回调触发时 btn 可能已 deleteLater 但事件循环未处理，
             # 守卫避免对已释放 C++ 对象调用 set_icon 抛 RuntimeError。
             if sip.isdeleted(btn):
@@ -162,7 +164,7 @@ class DetailPanel(QWidget):
         timer.timeout.connect(_restore)
         timer.start(MS_FEEDBACK)
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -384,7 +386,7 @@ class DetailPanel(QWidget):
         header_info.addStretch()
         return header_info
 
-    def _build_strength_bar(self, entry: Entry):
+    def _build_strength_bar(self, entry: Entry) -> None:
         """构建密码强度进度条。"""
         score = entry.password_strength
         strength_color = get_strength_color(score)
@@ -413,7 +415,7 @@ class DetailPanel(QWidget):
 
         self._content_layout.addLayout(strength_row)
 
-    def _build_meta_section(self, entry: Entry):
+    def _build_meta_section(self, entry: Entry) -> None:
         """构建时间元数据区域。"""
         meta_form = QFormLayout()
         meta_form.setSpacing(4)
@@ -483,7 +485,7 @@ class DetailPanel(QWidget):
             copy_btn.setToolTip('复制')
 
             # 使用闭包捕获当前值，主条目字段无需间接引用，其生命周期与面板同步
-            def _copy_value(_checked=False, v=value, btn=copy_btn):
+            def _copy_value(_checked: bool = False, v: str = value, btn: QPushButton = copy_btn) -> None:
                 if sip.isdeleted(btn):
                     return
                 self._copy_with_feedback(btn, v)
@@ -539,7 +541,7 @@ class DetailPanel(QWidget):
         self._show_btn_ref = show_btn
         self._current_password = value
 
-        def _toggle(_checked=False, lbl=val_label, btn=show_btn):
+        def _toggle(_checked: bool = False, lbl: QLabel = val_label, btn: QPushButton = show_btn) -> None:
             # _clear_content 经 deleteLater 异步销毁控件；销毁窗口期内若仍有挂起的
             # clicked 事件触发闭包，操作已删除的 C++ 对象会抛 RuntimeError。守卫
             # 避免该竞态，与 _signal_connections 在 secure_clear 时显式断开的设计互补。
@@ -564,7 +566,7 @@ class DetailPanel(QWidget):
         copy_btn.setFixedSize(*BTN_COPY)
         copy_btn.setToolTip('复制密码')
 
-        def _copy_secret(_checked=False, btn=copy_btn):
+        def _copy_secret(_checked: bool = False, btn: QPushButton = copy_btn) -> None:
             if sip.isdeleted(btn):
                 return
             self._copy_with_feedback(btn, self._current_password)
@@ -582,13 +584,13 @@ class DetailPanel(QWidget):
             seconds = int(self._config.get_safe('password_visible_seconds', PWD_VISIBLE_SECONDS_DEFAULT))
         return seconds * 1000
 
-    def _auto_hide_password(self):
+    def _auto_hide_password(self) -> None:
         """自动隐藏密码。"""
         if self._pwd_label_ref and self._show_btn_ref:
             self._pwd_label_ref.setText('••••••••')
             set_icon(self._show_btn_ref, EYE)
 
-    def _copy(self, text: str):
+    def _copy(self, text: str) -> None:
         """复制文本。"""
         self._clipboard.copy_text(text)
 
@@ -604,7 +606,7 @@ class DetailPanel(QWidget):
                 and prev.id is not None and prev.has_totp):
             self._entry_mgr.totp.evict(prev.id)
 
-    def _clear_content(self):
+    def _clear_content(self) -> None:
         """清除详情面板内容，安全擦除敏感数据。"""
         # 停止所有自动掩码定时器，避免清除后对已销毁控件触发回调。
         self._totp_widget.stop()
@@ -640,16 +642,16 @@ class DetailPanel(QWidget):
         logger.debug("详情面板内容已清除")
 
     @staticmethod
-    def _clear_layout(layout):
+    def _clear_layout(layout: QLayout) -> None:
         clear_layout(layout)
 
-    def hideEvent(self, a0):
+    def hideEvent(self, a0: QHideEvent | None) -> None:
         """面板隐藏时停止 TOTP 定时器以节省资源。"""
         super().hideEvent(a0)
         if hasattr(self, '_totp_widget'):
             self._totp_widget.stop()
 
-    def showEvent(self, a0):
+    def showEvent(self, a0: QShowEvent | None) -> None:
         """面板显示时如果当前有条目含 TOTP 则重启定时器。"""
         super().showEvent(a0)
         if (

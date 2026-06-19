@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -38,7 +40,7 @@ class SettingsDialog(QDialog):
         self._setup_ui()
         self._load_settings()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         self.setWindowTitle('设置')
         self.setMinimumSize(*DIALOG_SETTINGS_MIN_SIZE)
         setup_dialog_flags(self)
@@ -216,7 +218,7 @@ class SettingsDialog(QDialog):
         layout.addStretch()
         return widget
 
-    def _browse_backup_dir(self):
+    def _browse_backup_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, '选择备份目录')
         if path:
             self._backup_path_edit.setText(path)
@@ -245,38 +247,46 @@ class SettingsDialog(QDialog):
         ('auto_backup_retention', '_backup_retention_spin', 'spin', DEFAULT_CONFIG['auto_backup_retention']),
     ]
 
-    def _set_widget_value(self, widget, accessor_type: str, value):
-        if accessor_type == 'combo':
+    def _set_widget_value(
+        self,
+        widget: QComboBox | QCheckBox | QSpinBox,
+        accessor_type: str,
+        value: Any,
+    ) -> None:
+        # accessor_type 与 widget 子类型在 _SETTINGS_MAP 中一一配对；isinstance 既
+        # 满足类型 narrowing，又与运行时契约一致（不配对属编程错误，静默跳过）。
+        if accessor_type == 'combo' and isinstance(widget, QComboBox):
             widget.setCurrentIndex(0 if value == 'light' else 1)
-        elif accessor_type == 'check':
+        elif accessor_type == 'check' and isinstance(widget, QCheckBox):
             widget.setChecked(value)
-        elif accessor_type == 'spin':
+        elif accessor_type == 'spin' and isinstance(widget, QSpinBox):
             widget.setValue(value)
 
-    def _get_widget_value(self, widget, accessor_type: str):
-        if accessor_type == 'combo':
+    def _get_widget_value(self, widget: QComboBox | QCheckBox | QSpinBox, accessor_type: str) -> Any:
+        if accessor_type == 'combo' and isinstance(widget, QComboBox):
             return 'light' if widget.currentIndex() == 0 else 'dark'
-        elif accessor_type == 'check':
+        if accessor_type == 'check' and isinstance(widget, QCheckBox):
             return widget.isChecked()
-        elif accessor_type == 'spin':
+        if accessor_type == 'spin' and isinstance(widget, QSpinBox):
             return widget.value()
+        return None
 
-    def _load_settings(self):
+    def _load_settings(self) -> None:
         for key, attr, atype, default in self._SETTINGS_MAP:
             self._set_widget_value(getattr(self, attr), atype, self._config.get(key, default))
         self._backup_path_edit.setText(self._config.get('backup_directory', ''))
         self._update_tray_options(self._show_tray_check.isChecked())
         self._update_backup_options(self._auto_backup_check.isChecked())
 
-    def _update_tray_options(self, enabled: bool):
+    def _update_tray_options(self, enabled: bool) -> None:
         self._minimize_tray_check.setEnabled(enabled)
         self._close_tray_check.setEnabled(enabled)
 
-    def _update_backup_options(self, enabled: bool):
+    def _update_backup_options(self, enabled: bool) -> None:
         self._backup_interval_spin.setEnabled(enabled)
         self._backup_retention_spin.setEnabled(enabled)
 
-    def _save_settings(self):
+    def _save_settings(self) -> None:
         # 密码生成至少需要一种字符集，否则无法生成密码
         if not any((
             self._default_upper_check.isChecked(),
@@ -299,7 +309,7 @@ class SettingsDialog(QDialog):
             return
         self.accept()
 
-    def _reset_to_defaults(self):
+    def _reset_to_defaults(self) -> None:
         """将所有配置控件恢复为默认值，不立即保存。"""
         for _key, attr, atype, default in self._SETTINGS_MAP:
             self._set_widget_value(getattr(self, attr), atype, default)

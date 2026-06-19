@@ -110,12 +110,11 @@ class BackupRestoreManager:
     def __init__(
         self,
         vault_manager: 'VaultManager',
-        entry_manager: 'EntryManager | None' = None,
+        entry_manager: 'EntryManager',
     ) -> None:
         self._vault = vault_manager
-        # 复用调用方（MainWindow）持有的 EntryManager 单例，避免备份/恢复时新建
-        # 临时实例导致分类名重复解密与缓存双份明文驻留。未注入时回退临时实例
-        # （主要为兼容隔离测试）。
+        # 复用调用方（MainWindow）持有的 EntryManager 单例，共享分类名缓存，
+        # 避免备份/恢复时新建临时实例导致分类名重复解密与缓存双份明文驻留。
         self._entry_mgr = entry_manager
         self._restore_points = RestorePointManager(vault_manager)
 
@@ -145,15 +144,7 @@ class BackupRestoreManager:
         """
         db = self._vault.db
         key = self._key
-        # 优先复用注入的 EntryManager 单例（共享分类名缓存，避免备份时重复解密）；
-        # 未注入时回退临时实例（兼容隔离测试）。
         entry_mgr = self._entry_mgr
-        if entry_mgr is None:
-            from .entry_cache import EntryCacheManager
-            from .entry_change_bus import EntryChangeBus
-            from .entry_manager import EntryManager
-            cache = EntryCacheManager(self._vault)
-            entry_mgr = EntryManager(self._vault, cache, EntryChangeBus(cache))
         categories = [
             category.to_dict()
             for category in entry_mgr.categories.get_categories()
@@ -491,7 +482,7 @@ class BackupRestoreManager:
         new_snapshot_key = os.urandom(32)
         with self._vault.epoch_guarded_transaction(operation='恢复'):
             db.clear_vault_data()
-            category_map = self._restore_categories(db, data)
+            category_map = self._restore_categories(data)
             entry_map, crypto_id_map = self._restore_entries(db, data, key, category_map)
             self._restore_history(db, data, key, entry_map, crypto_id_map)
             # 轮换 key_epoch 防止旧会话写入恢复后的数据
@@ -510,15 +501,9 @@ class BackupRestoreManager:
         db.secure_checkpoint()
         return new_epoch, new_snapshot_key
 
-    def _restore_categories(self, db: 'DatabaseManager', data: dict[str, Any]) -> dict[int, int]:
+    def _restore_categories(self, data: dict[str, Any]) -> dict[int, int]:
         """重建分类，返回旧 ID 到新 ID 的映射。"""
         entry_manager = self._entry_mgr
-        if entry_manager is None:
-            from .entry_cache import EntryCacheManager
-            from .entry_change_bus import EntryChangeBus
-            from .entry_manager import EntryManager
-            cache = EntryCacheManager(self._vault)
-            entry_manager = EntryManager(self._vault, cache, EntryChangeBus(cache))
         category_map = {}
         for item in data.get('categories', []):
             category = Category.from_dict(item)

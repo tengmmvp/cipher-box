@@ -56,7 +56,7 @@ class ChangeMasterDialog(QDialog):
         self._worker: BackgroundWorker | None = None
         self._setup_ui()
 
-    def reject(self):
+    def reject(self) -> None:
         """关闭对话框前取消并等待后台 worker 完成，并清除密码输入。"""
         if self._worker and self._worker.isRunning():
             # 桥接取消：设 vault 取消事件以中断重加密循环（worker.cancel 仅设
@@ -70,7 +70,7 @@ class ChangeMasterDialog(QDialog):
         self._confirm_pwd.clear()
         super().reject()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         self.setWindowTitle('修改主密码')
         self.setMinimumSize(*DIALOG_CHANGE_MASTER_MIN_SIZE)
         setup_dialog_flags(self)
@@ -154,10 +154,10 @@ class ChangeMasterDialog(QDialog):
 
         layout.addLayout(btn_layout)
 
-    def _on_pwd_changed(self, text: str):
+    def _on_pwd_changed(self, text: str) -> None:
         update_strength_label(self._strength_label, text)
 
-    def _on_change(self):
+    def _on_change(self) -> None:
         msg = self._rate_limiter.check()
         if msg:
             self._msg_label.setText(msg)
@@ -205,7 +205,7 @@ class ChangeMasterDialog(QDialog):
         self._worker.error.connect(self._on_change_error)
         self._worker.start()
 
-    def _on_change_done(self, result: tuple[bool, str]):
+    def _on_change_done(self, result: tuple[bool, str]) -> None:
         release_worker(self)
         self._change_btn.setEnabled(True)
         set_label_severity(self._msg_label, 'error')
@@ -236,7 +236,7 @@ class ChangeMasterDialog(QDialog):
             else:
                 self._msg_label.setText(display_msg)
 
-    def _on_change_error(self, error_msg: str):
+    def _on_change_error(self, error_msg: str) -> None:
         release_worker(self)
         self._change_btn.setEnabled(True)
         set_label_severity(self._msg_label, 'error')

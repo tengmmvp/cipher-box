@@ -85,14 +85,14 @@ def test_portable_backup_restores_into_different_vault():
         source_manager.update_entry(edited)
         source_manager.delete_entry(entry_id)
         backup_path = str(Path(source_root) / 'portable.cbox')
-        success, error = BackupRestoreManager(source).create_backup(
+        success, error = BackupRestoreManager(source, make_entry_manager(source)).create_backup(
             backup_path, 'IndependentBackupPassword!2026'
         )
         assert success, error
 
         target = VaultManager(_config(target_root))
         assert target.initialize('DifferentMasterPassword!2026')[0]
-        success, error = BackupRestoreManager(target).restore_backup(
+        success, error = BackupRestoreManager(target, make_entry_manager(target)).restore_backup(
             backup_path, 'IndependentBackupPassword!2026'
         )
         assert success, error
@@ -157,6 +157,45 @@ def test_lock_preparation_clears_decrypted_ui_and_clipboard():
         assert clipboard is not None
         assert clipboard.text() != 'VisibleSecret!2026'
         window.close()
+
+
+def test_change_master_success_triggers_force_backup(monkeypatch):
+    """改密成功触发强制快照（force=True）。
+
+    回归守护 P0：``_show_change_master`` 应委托 ``AutoBackupController.trigger_check``，
+    而非已迁移删除的 ``_run_backup_async``（后者会导致改密成功 AttributeError）。
+    """
+    from src.ui.components.toast import Toast
+    from src.ui.dialogs.change_master_dialog import ChangeMasterDialog
+
+    with tempfile.TemporaryDirectory() as root:
+        config = _config(root)
+        vault = VaultManager(config)
+        assert vault.initialize('MasterPassword!2026')[0]
+        make_entry_manager(vault).add_entry(Entry(title='t', password='p'))
+        window = MainWindow(config, vault)
+        try:
+            # mock 改密对话框直接返回 Accepted，跳过真实改密 UI 与 Argon2id 派生
+            monkeypatch.setattr(
+                ChangeMasterDialog, 'exec',
+                lambda self: ChangeMasterDialog.DialogCode.Accepted,
+            )
+            # 屏蔽改密成功路径的 UI 副作用，聚焦 trigger_check 调用断言
+            monkeypatch.setattr(Toast, 'show', lambda *args, **kwargs: None)
+            monkeypatch.setattr(window, '_refresh_all_data', lambda: None)
+            monkeypatch.setattr(window._detail_panel, 'show_empty', lambda: None)
+            called: list[bool] = []
+            monkeypatch.setattr(
+                window._auto_backup, 'trigger_check',
+                lambda force=False: called.append(force),
+            )
+
+            window._show_change_master()
+
+            assert called == [True]
+        finally:
+            window.close()
+            vault.close()
 
 
 def test_lock_closes_and_scrubs_open_entry_dialog():
@@ -632,7 +671,7 @@ def test_pre_restore_snapshot_purged_on_master_password_change():
             Entry(title='Incoming', password='IncomingSecret!2026')
         )
         portable = str(Path(source_root) / 'portable.cbox')
-        success, error = BackupRestoreManager(source).create_backup(
+        success, error = BackupRestoreManager(source, make_entry_manager(source)).create_backup(
             portable, 'PortableBackup!2026'
         )
         assert success, error
@@ -643,7 +682,7 @@ def test_pre_restore_snapshot_purged_on_master_password_change():
         target_manager.add_entry(
             Entry(title='Before restore', password='OriginalSecret!2026')
         )
-        backup_manager = BackupRestoreManager(target)
+        backup_manager = BackupRestoreManager(target, target_manager)
         success, error = backup_manager.restore_backup(
             portable, 'PortableBackup!2026'
         )

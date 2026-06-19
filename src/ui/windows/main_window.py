@@ -6,10 +6,16 @@ _MainWindowFiltersMixin 与 _MainWindowMenuMixin 多重继承拆分方法实现�
 """
 
 import logging
-import sys
+from typing import cast
 
-from PyQt6.QtCore import QAbstractNativeEventFilter, QEvent, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QCloseEvent
+from PyQt6.QtCore import (
+    QEvent,
+    QObject,
+    Qt,
+    QTimer,
+    pyqtSignal,
+)
+from PyQt6.QtGui import QCloseEvent, QKeyEvent, QShowEvent
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -41,15 +47,15 @@ from ..components.detail_panel import DetailPanel
 from ..components.entry_list_widget import EntryItemDelegate, EntryListModel
 from ..components.tray_icon import TrayIcon
 from ..components.workers import BackgroundWorker, wait_worker_shutdown
+from ..controllers.auto_backup_controller import AutoBackupController
+from ..controllers.auto_lock_controller import AutoLockController
 from ..controllers.entry_list_controller import EntryListController
 from ..controllers.sidebar_controller import SidebarController
 from ..resources.constants import (
     CLIPBOARD_CLEAR_SECONDS_DEFAULT,
     FILTER_MAX_HEIGHT,
-    MS_AUTO_BACKUP_CHECK,
     MS_ENTRY_CHANGE_DEBOUNCE,
     MS_ENTRY_SELECT_DEBOUNCE,
-    MS_INITIAL_BACKUP_DELAY,
     MS_SEARCH_DEBOUNCE,
     MS_STATUS_BAR_DEBOUNCE,
     SIDEBAR_WIDTH,
@@ -73,43 +79,12 @@ from .main_window_menu import _MainWindowMenuMixin
 
 logger = logging.getLogger(__name__)
 
-# Windows 会话锁屏通知消息常量。系统锁屏（Win+L）时立即锁定保险库（1Password/
-# Bitwarden 等行业惯例），而非等应用内 QTimer 到期。非 Windows 平台不注册
-# （nativeEvent 中以 sys.platform 短路），降级为仅超时锁定。
-_WM_WTSSESSION_CHANGE = 0x02B1
-_WTS_SESSION_LOCK = 0x7
-
-
-class _SessionLockFilter(QAbstractNativeEventFilter):
-    """Windows 会话锁屏事件过滤器，捕获 WM_WTSSESSION_CHANGE 触发保险库锁定。
-
-    用 QAbstractNativeEventFilter 挂载 QApplication，而非重写 MainWindow.nativeEvent：
-    后者在 MainWindow 多继承（FiltersMixin/MenuMixin/QMainWindow）MRO 下会触发
-    C 层 access violation；独立过滤器规避该问题，是 Qt 推荐的原生消息拦截方式。
-    """
-
-    def __init__(self, on_lock):
-        super().__init__()
-        self._on_lock = on_lock
-
-    def nativeEventFilter(self, eventType, message):  # pyright: ignore[reportIncompatibleMethodOverride]
-        try:
-            if bytes(eventType) == b'windows_generic_MSG':  # pyright: ignore[reportArgumentType]
-                from ctypes import wintypes
-                msg = wintypes.MSG.from_address(int(message))  # pyright: ignore[reportArgumentType]
-                if msg.message == _WM_WTSSESSION_CHANGE and msg.wParam == _WTS_SESSION_LOCK:
-                    self._on_lock()
-        except Exception:
-            logger.debug("会话锁屏过滤器处理消息失败", exc_info=True)
-        return False, 0
-
-
 class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
     """CipherBox 主窗口。"""
 
     lock_requested = pyqtSignal()
 
-    def __init__(self, config: ConfigManager, vault: VaultManager):
+    def __init__(self, config: ConfigManager, vault: VaultManager) -> None:
         super().__init__()
         self._config = config
         self._vault = vault
@@ -127,7 +102,6 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._status_timer.setInterval(MS_STATUS_BAR_DEBOUNCE)
         self._status_timer.timeout.connect(self._update_status_bar)
         self._status_worker: BackgroundWorker | None = None
-        self._backup_worker: BackgroundWorker | None = None
         self._entry_worker: BackgroundWorker | None = None
         self._entry_workers: set[BackgroundWorker] = set()
         self._entry_refresh_generation = 0
@@ -162,7 +136,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             app.installEventFilter(self)
         self._refresh_entries()
 
-    def _create_managers(self):
+    def _create_managers(self) -> None:
         """组装业务层管理器与控制器。
 
         将依赖组装从 __init__ 提取，使构造函数聚焦于初始化顺序编排，
@@ -171,25 +145,27 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._cache = EntryCacheManager(self._vault)
         self._change_bus = EntryChangeBus(self._cache)
         self._entry_mgr = EntryManager(self._vault, self._cache, self._change_bus)
-        self._security = SecurityAnalyzer(self._vault)
+        self._security = SecurityAnalyzer(self._vault, self._cache)
         self._entry_list_ctrl = EntryListController(
             self._entry_mgr, self._security, self._config,
         )
         self._sidebar_ctrl = SidebarController(self._entry_mgr, self._config)
         self._import_export = ImportExportManager(self._entry_mgr)
         self._backup = BackupRestoreManager(self._vault, self._entry_mgr)
+        self._auto_backup = AutoBackupController(self._vault, self._backup, self._config)
+        self._auto_lock = AutoLockController(self._vault, self._config, self.lock_requested.emit)
         self._clipboard = ClipboardManager(
             self._config.get_safe('clipboard_clear_seconds', CLIPBOARD_CLEAR_SECONDS_DEFAULT)
         )
 
-    def _register_callbacks(self):
+    def _register_callbacks(self) -> None:
         """注册锁定与条目变更回调，事件驱动地失效相关缓存。"""
         # 注册锁定回调，确保 lock() 时自动清除 entry 缓存
         self._vault.register_on_lock(self._entry_mgr.invalidate_caches)
         # 条目变更时自动失效安全分析缓存，通过事件驱动取代手动调用
         self._entry_mgr.register_on_change(self._security.invalidate_cache)
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         self.setWindowTitle('CipherBox')
         self.setMinimumSize(*WINDOW_MIN_SIZE)
         self.resize(*WINDOW_DEFAULT_SIZE)
@@ -251,7 +227,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self.setStatusBar(self._status_bar)
         self._update_status_bar()
 
-    def _build_sidebar(self):
+    def _build_sidebar(self) -> None:
         self._sidebar = QWidget()
         self._sidebar.setObjectName('sidebar')
         self._sidebar.setFixedWidth(SIDEBAR_WIDTH)
@@ -369,7 +345,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
 
         self._splitter.addWidget(self._sidebar)
 
-    def _build_filter_list(self):
+    def _build_filter_list(self) -> None:
         """重建侧边栏筛选项列表，主题切换时需要重建图标。"""
         from ..resources.icons import (
             FILTER_ALL,
@@ -402,7 +378,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             self._filter_list.setCurrentRow(0)
         self._filter_list.blockSignals(False)
 
-    def _build_entry_list(self):
+    def _build_entry_list(self) -> None:
         list_container = QWidget()
         list_container.setObjectName('listPane')
         list_layout = QVBoxLayout(list_container)
@@ -460,7 +436,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
 
         self._splitter.addWidget(list_container)
 
-    def _setup_tray(self):
+    def _setup_tray(self) -> None:
         if not self._config.get('show_tray_icon', True):
             return
         # 与 _apply_runtime_settings 的 disable 分支对称：若已存在旧托盘实例
@@ -482,122 +458,21 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._tray.show()
         self.lock_requested.connect(self._on_lock_tray)
 
-    def _setup_auto_lock(self):
-        self._lock_timer = QTimer(self)
-        self._lock_timer.setSingleShot(True)
-        self._lock_timer.timeout.connect(lambda: self.lock_requested.emit())
-        self._reset_lock_timer()
+    def _setup_auto_lock(self) -> None:
+        self._auto_lock.setup(self)
 
-    def showEvent(self, event):  # pyright: ignore[reportIncompatibleMethodOverride]
+    def showEvent(self, event: QShowEvent | None) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
         super().showEvent(event)
         # WTS 注册须在窗口 show 后（HWND 有效）；__init__ 时未 show 会触发 C 层
-        # access violation。showEvent 守卫使注册仅在实际显示时发生。测试环境
-        # （pytest）_setup_session_notification 直接跳过，不安装过滤器。
-        if not getattr(self, '_wts_setup_attempted', False):
-            self._wts_setup_attempted = True
-            self._setup_session_notification()
+        # access violation。注册逻辑由 AutoLockController 负责（内部幂等，仅首次显示时注册）。
+        self._auto_lock.setup_session_notification(self)
 
-    def _setup_session_notification(self) -> None:
-        """注册 Windows 会话锁屏通知，系统锁屏时立即触发保险库锁定。
+    def _setup_auto_backup(self) -> None:
+        # 定时器创建与 worker 生命周期由 AutoBackupController 管理；不在此启动
+        # （vault 未解锁时空转），由 refresh_after_unlock 在解锁后启动。
+        self._auto_backup.setup(self)
 
-        仅 Windows 平台启用；注册失败（如远程会话、权限受限、wtsapi32 不可用）
-        静默降级为仅 QTimer 超时锁定，不影响其他功能。winId 须在窗口创建后调用，
-        故置于 __init__ 的 _setup_ui 之后。
-        """
-        self._wts_registered = False
-        # 仅 Windows 交互会话注册。测试环境（pytest 驱动 QApplication）的窗口未进入
-        # 真实消息循环，WTSRegisterSessionNotification 会触发 C 层 access violation
-        # （无法 try/except 捕获）；真实交互运行时窗口进入消息循环，WTS 正常工作。
-        if sys.platform != 'win32' or 'pytest' in sys.modules:
-            return
-        try:
-            import ctypes
-            from ctypes import wintypes
-            # 显式声明 argtypes/restype：HWND 是指针类型，64 位下默认 c_int 推断会使
-            # HWND 传参截断，触发 access violation（C 层崩溃，try/except 无法捕获）。
-            wts = ctypes.windll.wtsapi32
-            wts.WTSRegisterSessionNotification.argtypes = [
-                wintypes.HWND, wintypes.DWORD,
-            ]
-            wts.WTSRegisterSessionNotification.restype = wintypes.BOOL
-            hwnd = int(self.winId())
-            # NOTIFY_FOR_THIS_SESSION = 0：仅当前会话的锁屏/解锁通知
-            if wts.WTSRegisterSessionNotification(hwnd, 0):
-                self._wts_registered = True
-                self._session_filter = _SessionLockFilter(self.lock_requested.emit)
-                app = QApplication.instance()
-                if app is not None:
-                    app.installNativeEventFilter(self._session_filter)
-            else:
-                logger.debug("WTSRegisterSessionNotification 返回 0，会话锁屏联动降级")
-        except Exception:
-            logger.debug("WTS 会话通知注册失败，降级为仅 QTimer 超时锁定", exc_info=True)
-
-    def _setup_auto_backup(self):
-        # 仅创建定时器，不启动：__init__ 时 vault 尚未解锁，启动会使首次
-        # singleShot 在未解锁状态空转。定时器与首次延迟检查统一由
-        # refresh_after_unlock 在解锁后启动。
-        self._backup_timer = QTimer(self)
-        self._backup_timer.setInterval(MS_AUTO_BACKUP_CHECK)
-        self._backup_timer.timeout.connect(self._maybe_auto_backup)
-
-    def _maybe_auto_backup(self, force: bool = False):
-        """按设置创建当前保险库的本地快速快照，后台执行以避免阻塞 UI。"""
-        if not self._vault.is_unlocked:
-            return
-        # 未启用自动备份时直接返回，避免每 10 分钟空转一个 worker 线程。
-        # force=True 表示设置变更后立即触发，绕过开关以兑现用户意图。
-        if not force and not self._config.get_safe('auto_backup_enabled', False):
-            return
-        self._run_backup_async(force=force)
-
-    def _run_backup_async(self, force: bool = False):
-        """异步执行自动备份。
-
-        始终在 BackgroundWorker 中运行：maybe_auto_backup 在间隔到期时会执行
-        全量解密 + 备份密钥 Argon2id 派生 + 加密，同步执行会阻塞 UI 主线程数秒。
-        """
-        if not self._vault.is_unlocked:
-            return
-        # 上一个备份仍在运行则跳过，避免覆盖引用导致孤儿线程在锁定后访问已清零密钥
-        if self._backup_worker is not None and self._backup_worker.isRunning():
-            return
-
-        # cancel_check 经显式容器引用 worker，避免闭包延迟绑定局部变量 worker：
-        # _task 在 worker 构造前定义，若直接引用 worker 则依赖「start 后 worker 已
-        # 赋值」的隐式执行顺序，未来把 start 内联进构造会触发 NameError。容器在
-        # start 前赋值，使依赖显式且与执行顺序解耦。
-        worker_holder: list[BackgroundWorker] = []
-
-        def _task():
-            # 接入 worker 的协作取消探针：锁定/隐藏到托盘时 wait_worker_shutdown
-            # 设置取消标志，maybe_auto_backup 的全量解密循环据此及时退出，
-            # 避免锁定后继续持密钥解密并推迟密钥清零。
-            return self._backup.maybe_auto_backup(
-                self._config, force=force,
-                cancel_check=lambda: worker_holder[0].is_cancelled,
-            )
-
-        def _on_backup_error(msg):
-            # 守卫：仅当当前备份 worker 仍是本 worker 时记录，避免被后续备份替换后
-            # 旧 worker 的延迟错误信号触发误导性日志（与 _status_worker 守卫对齐）。
-            if self._backup_worker is worker_holder[0]:
-                logger.warning("自动快照失败: %s", msg)
-
-        worker = BackgroundWorker(_task, parent=self)
-        worker_holder.append(worker)
-        worker.error.connect(_on_backup_error)
-        self._backup_worker = worker
-        worker.start()
-
-    def _reset_lock_timer(self):
-        minutes = self._config.get_safe('auto_lock_minutes', 5)
-        if not self._vault.is_unlocked or minutes <= 0:
-            self._lock_timer.stop()
-            return
-        self._lock_timer.start(minutes * 60 * 1000)
-
-    def eventFilter(self, watched, event):  # pyright: ignore[reportIncompatibleMethodOverride]
+    def eventFilter(self, watched: QObject | None, event: QEvent | None) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
         """捕获整个应用的用户活动，重置自动锁定计时器。
 
         排除修饰键即 Shift/Ctrl/Alt/Meta，仅有意义的按键才重置。
@@ -606,25 +481,26 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         超时锁定被无限推迟，违背密码管理器的安全预期。
         此过滤器替代了 keyPressEvent/mousePressEvent 的双重功能。
         """
-        if event.type() == QEvent.Type.KeyPress:
-            if event.key() not in (
+        if event is not None and event.type() == QEvent.Type.KeyPress:
+            key_event = cast(QKeyEvent, event)
+            if key_event.key() not in (
                 Qt.Key.Key_Shift, Qt.Key.Key_Control,
                 Qt.Key.Key_Alt, Qt.Key.Key_Meta,
             ):
-                self._reset_lock_timer()
-        elif event.type() in (
+                self._auto_lock.reset_timer()
+        elif event is not None and event.type() in (
             QEvent.Type.MouseButtonPress,
             QEvent.Type.Wheel,
             QEvent.Type.TouchBegin,
         ):
-            self._reset_lock_timer()
+            self._auto_lock.reset_timer()
         return super().eventFilter(watched, event)
 
-    def _apply_runtime_settings(self):
+    def _apply_runtime_settings(self) -> None:
         """立即应用无需重启的安全和托盘设置。"""
         self._clipboard.clear_seconds = self._config.get_safe('clipboard_clear_seconds', CLIPBOARD_CLEAR_SECONDS_DEFAULT)
-        self._reset_lock_timer()
-        self._maybe_auto_backup()
+        self._auto_lock.reset_timer()
+        self._auto_backup.trigger_check()
         should_show = self._config.get('show_tray_icon', True)
         if should_show and self._tray is None:
             self._setup_tray()
@@ -642,22 +518,21 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         """
         wait_worker_shutdown(self._status_worker)
         self._status_worker = None
-        wait_worker_shutdown(self._backup_worker)
-        self._backup_worker = None
+        self._auto_backup.shutdown()
         for worker in tuple(self._entry_workers):
             wait_worker_shutdown(worker)
         self._entry_workers.clear()
         self._entry_worker = None
 
-    def _quit_app(self):
+    def _quit_app(self) -> None:
         # 托盘退出：与 closeEvent 退出分支清理对齐——先移除事件过滤器，防止
         # 已销毁对象仍被 QApplication 引用、排队的原生消息派发到已删闭包。
         app = QApplication.instance()
         if app:
             app.removeEventFilter(self)
-            session_filter = getattr(self, '_session_filter', None)
-            if session_filter is not None:
-                app.removeNativeEventFilter(session_filter)
+        # 移除会话锁屏原生事件过滤器（与 removeEventFilter 对称），解除
+        # QApplication 对其闭包（绑定 lock_requested）的引用。
+        self._auto_lock.remove_session_filter()
         # 等待后台 worker 退出（避免 QThread running 析构崩溃），清剪贴板明文，
         # 再关闭 vault
         self._shutdown_workers()
@@ -669,7 +544,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
 
     # ========== 主题刷新 ==========
 
-    def _apply_theme(self):
+    def _apply_theme(self) -> None:
         """应用当前主题，用于设置切换后刷新。"""
         theme = self._config.get('theme', 'light')
         if theme != self._current_theme:
@@ -707,7 +582,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
 
     # ========== 窗口事件 ==========
 
-    def _secure_hide_to_tray(self):
+    def _secure_hide_to_tray(self) -> None:
         """隐藏到托盘前的安全清理：清详情面板明文、清剪贴板、停 worker 与定时器。
 
         close_to_tray 与 minimize_to_tray 共用：保持 vault 解锁与列表模型，
@@ -724,7 +599,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         ToastManager.cancel_all_for(self)
         self._shutdown_workers()
 
-    def closeEvent(self, a0: QCloseEvent | None):
+    def closeEvent(self, a0: QCloseEvent | None) -> None:
         if a0 is None:
             return
         try:
@@ -752,13 +627,9 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             app = QApplication.instance()
             if app:
                 app.removeEventFilter(self)
-                # 移除会话锁屏原生事件过滤器，与 removeEventFilter(self) 对称：
-                # 完全退出时解除 QApplication 对 _session_filter 的引用，避免其闭包
-                # （绑定 lock_requested）在窗口销毁后仍被原生消息派发调用。
-                # _session_filter 仅 Windows 实际显示时才安装，未注册时为缺失属性。
-                session_filter = getattr(self, '_session_filter', None)
-                if session_filter is not None:
-                    app.removeNativeEventFilter(session_filter)
+            # 移除会话锁屏原生事件过滤器（与 removeEventFilter 对称），解除
+            # QApplication 对其闭包（绑定 lock_requested）的引用。
+            self._auto_lock.remove_session_filter()
             # 统一用 _shutdown_workers 取消并等待后台 worker 结束，
             # 与 prepare_for_lock 的关闭模式一致，确保退出前 worker 不再持有密钥。
             self._shutdown_workers()
@@ -769,7 +640,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
                 self._tray.hide()
             a0.accept()
 
-    def changeEvent(self, a0: QEvent | None):
+    def changeEvent(self, a0: QEvent | None) -> None:
         if a0 is None:
             return
         if a0.type() == a0.Type.WindowStateChange:
@@ -790,14 +661,13 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._refresh_tag_filter()
         self._refresh_entries()
         self._detail_panel.show_empty()
-        self._reset_lock_timer()
+        self._auto_lock.reset_timer()
         # 解锁后刷新状态栏安全摘要，避免停留在锁定前的陈旧或空白状态
         self._status_timer.start()
         # 重启自动备份定时器：prepare_for_lock 已停止它，解锁后须恢复，
         # 否则任意一次锁定→解锁后本地自动快照将永久失效。
-        self._backup_timer.start()
-        # 解锁后延迟首次备份检查，与解锁刷新错峰避免争用主线程
-        QTimer.singleShot(MS_INITIAL_BACKUP_DELAY, self._maybe_auto_backup)
+        self._auto_backup.start_timer()
+        self._auto_backup.schedule_initial_check()
         if self._tray:
             self._tray.set_locked(False)
 
@@ -822,8 +692,8 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         与 ``_shutdown_workers`` 的区别：仅取消不等待，避免阻塞退出；worker 收到
         取消标志后尽快退出协作循环，缩短持密钥解密的残留窗口。
         """
+        self._auto_backup.cancel()
         for worker in (
-            getattr(self, '_backup_worker', None),
             getattr(self, '_status_worker', None),
             getattr(self, '_entry_worker', None),
         ):
@@ -836,7 +706,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
     def prepare_for_lock(self) -> None:
         """在清除主密钥前销毁界面和剪贴板中的明文副本。"""
         self._locked_ui = True
-        self._lock_timer.stop()
+        self._auto_lock.stop_timer()
         # 清除活跃 Toast 的回调，防止锁定后撤销操作触发异常。
         from ..components.toast import ToastManager
         ToastManager.cancel_all_for(self)
@@ -866,7 +736,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         # 清除剪贴板中的明文
         self._clipboard.clear_now()
         # 停止后台定时器
-        self._backup_timer.stop()
+        self._auto_backup.stop_timer()
         self._status_timer.stop()
         # 取消后台 worker（状态分析/备份/列表刷新），避免锁定后仍运行、对已锁定
         # vault 发信号或继续解密条目
@@ -881,7 +751,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         # 托盘锁定状态由 lock_requested 信号驱动（_setup_tray 连接 _on_lock_tray），
         # 此处不再显式调用，避免与信号链重复触发
 
-    def _on_lock_tray(self):
+    def _on_lock_tray(self) -> None:
         """锁定时更新托盘图标状态。"""
         if self._tray:
             self._tray.set_locked(True)

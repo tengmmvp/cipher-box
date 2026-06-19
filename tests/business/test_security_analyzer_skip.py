@@ -4,10 +4,11 @@ SecurityAnalyzer 在 full_analysis 中遇到解密失败的条目时应跳过而
 确保单个损坏条目不影响整体分析结果。
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
+from src.business.managers.entry_cache import EntryCacheManager
 from src.business.services.crypto_utils import encrypt_field
 from src.business.services.security_analyzer import SecurityAnalyzer
 from src.exceptions import VaultLockedError
@@ -38,12 +39,13 @@ class TestSecurityAnalyzerSkipCorrupt:
 
         vault.db.get_entries.return_value = [bad_entry]
 
-        analyzer = SecurityAnalyzer(vault)
+        analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
 
-        # _decrypt 对 bad_entry 抛出 ValueError 以模拟解密失败，
-        # full_analysis 应跳过损坏条目并返回结果而非抛异常
-        with patch.object(analyzer, '_decrypt', side_effect=ValueError("字段解密失败")):
-            result = analyzer.full_analysis(90)
+        # bad_entry 的 title/username 为非密文明文（无 cb2: 前缀），经
+        # EntryCacheManager.cached_search_metadata 解密时抛 ValueError →
+        # _make_summary 检测 failed_fields 抛错 → full_analysis 跳过该条目，
+        # 返回结果而非抛异常（复用 _make_summary 经 cache 解密的真实路径）。
+        result = analyzer.full_analysis(90)
 
         assert isinstance(result, dict)
         assert result['total'] == 1  # 条目仍计入总数
@@ -68,10 +70,10 @@ class TestSecurityAnalyzerSkipCorrupt:
 
         vault.db.get_entries.return_value = [corrupt_entry]
 
-        analyzer = SecurityAnalyzer(vault)
+        analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
 
-        with patch.object(analyzer, '_decrypt', side_effect=ValueError("解密失败")):
-            result = analyzer.full_analysis(90)
+        # corrupt_entry 字段为明文，经 cache 解密失败 → _make_summary 抛错 → 跳过。
+        result = analyzer.full_analysis(90)
 
         assert isinstance(result, dict)
         assert result['total'] == 1
@@ -84,7 +86,7 @@ class TestSecurityAnalyzerSkipCorrupt:
 
         vault.db.get_entries.return_value = []
 
-        analyzer = SecurityAnalyzer(vault)
+        analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
         result = analyzer.full_analysis(90)
 
         assert isinstance(result, dict)
@@ -120,7 +122,7 @@ class TestSecurityAnalyzerSkipCorrupt:
         )
         vault.db.get_entries.return_value = [entry]
 
-        analyzer = SecurityAnalyzer(vault)
+        analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
         result = analyzer.full_analysis(90)
 
         assert isinstance(result, dict)
@@ -141,7 +143,7 @@ def test_cached_analysis_returns_independent_copy():
     vault.db.get_entries.return_value = []
     vault.db.get_entry_count.return_value = 0
 
-    analyzer = SecurityAnalyzer(vault)
+    analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
     result1 = analyzer._cached_analysis(90)
     # 模拟调用方修改返回对象（如 UI 排序/追加）
     result1['weak_entries'].append('polluted')
@@ -168,7 +170,7 @@ def test_full_analysis_aborts_on_cancel_request():
     )
     vault.db.get_entries.return_value = [entry]
 
-    analyzer = SecurityAnalyzer(vault)
+    analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
     with pytest.raises(VaultLockedError):
         analyzer.full_analysis(90)
     vault.is_cancel_requested.assert_called()
@@ -183,7 +185,7 @@ def test_full_analysis_proceeds_when_not_cancelled():
 
     vault.db.get_entries.return_value = []
 
-    analyzer = SecurityAnalyzer(vault)
+    analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
     result = analyzer.full_analysis(90)
     assert isinstance(result, dict)
     assert result['total'] == 0

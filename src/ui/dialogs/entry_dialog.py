@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QIntValidator
@@ -88,6 +88,8 @@ if TYPE_CHECKING:
     from ...config import ConfigManager
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar('_T')
 
 
 @dataclass(frozen=True)
@@ -192,7 +194,7 @@ class EntryDialog(QDialog):
     # UI 构建
     # ------------------------------------------------------------------
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         self.setWindowTitle('编辑条目' if self._entry else '新增条目')
         self.setMinimumSize(*DIALOG_ENTRY_MIN_SIZE)
         setup_dialog_flags(self)
@@ -373,7 +375,7 @@ class EntryDialog(QDialog):
 
         return btn_layout
 
-    def _build_type_fields(self, form: QFormLayout):
+    def _build_type_fields(self, form: QFormLayout) -> None:
         """按 schema 创建各条目类型的专用字段并注册到 _special_widgets。
 
         所有字段初始隐藏，由 _apply_type_visibility 按当前类型切换显隐。
@@ -411,7 +413,7 @@ class EntryDialog(QDialog):
             edit.setMaxLength(spec.max_length)
         return edit
 
-    def _add_field_row(self, form: QFormLayout, key: str, label_text: str, widget: QWidget, visible: bool = True):
+    def _add_field_row(self, form: QFormLayout, key: str, label_text: str, widget: QWidget, visible: bool = True) -> None:
         """添加一行表单字段，并按 key 记录到 _field_rows 以便后续控制显隐。"""
         label = QLabel(label_text)
         if not visible:
@@ -485,7 +487,7 @@ class EntryDialog(QDialog):
         return True
 
     @staticmethod
-    def _safe_set_formatted(widget, original: str, formatted: str, cursor_at_end: bool = False):
+    def _safe_set_formatted(widget: QLineEdit, original: str, formatted: str, cursor_at_end: bool = False) -> None:
         """阻塞信号地写入格式化文本，并尽量保留原光标位置。
 
         格式化回调本身由 textChanged 触发，若直接 setText 会再次引发回调，
@@ -503,16 +505,16 @@ class EntryDialog(QDialog):
             widget.setText(formatted)
             widget.setCursorPosition(cursor_pos + offset)
 
-    def _format_card_number(self, text: str):
+    def _format_card_number(self, text: str) -> None:
         """卡号输入时按每 4 位插入空格分组显示。"""
         w = self._special_widgets['card_number']
         w.blockSignals(True)
         digits = text.replace(' ', '')
         formatted = ' '.join(digits[i:i+4] for i in range(0, len(digits), 4))
-        self._safe_set_formatted(w, text, formatted)
+        self._safe_set_formatted(cast(QLineEdit, w), text, formatted)
         w.blockSignals(False)
 
-    def _format_card_expiry(self, text: str):
+    def _format_card_expiry(self, text: str) -> None:
         """有效期输入时自动补入分隔符，整理为 MM/YY 形态。"""
         w = self._special_widgets['card_expiry']
         w.blockSignals(True)
@@ -521,14 +523,14 @@ class EntryDialog(QDialog):
             formatted = digits[:2] + '/' + digits[2:4]
         else:
             formatted = digits
-        self._safe_set_formatted(w, text, formatted, cursor_at_end=True)
+        self._safe_set_formatted(cast(QLineEdit, w), text, formatted, cursor_at_end=True)
         w.blockSignals(False)
 
     # ------------------------------------------------------------------
     # 类型切换
     # ------------------------------------------------------------------
 
-    def _on_type_changed(self, index: int):
+    def _on_type_changed(self, index: int) -> None:
         """条目类型变更，刷新字段可见性。
 
         若当前类型已有用户输入，先二次确认以免静默丢弃专用字段数据，
@@ -573,7 +575,7 @@ class EntryDialog(QDialog):
         self._current_type = new_type
         self._apply_type_visibility(new_type)
 
-    def _apply_type_visibility(self, entry_type: str):
+    def _apply_type_visibility(self, entry_type: str) -> None:
         """按条目类型刷新字段显隐，本身不触发类型切换确认。"""
         visible_keys = set(_TYPE_FIELDS.get(entry_type, _TYPE_FIELDS['login']))
 
@@ -599,7 +601,7 @@ class EntryDialog(QDialog):
     # 数据加载
     # ------------------------------------------------------------------
 
-    def _load_entry(self, entry: Entry):
+    def _load_entry(self, entry: Entry) -> None:
         """将已有条目数据回填到表单。"""
         self._title_edit.setText(entry.title)
         self._username_edit.setText(entry.username)
@@ -656,11 +658,11 @@ class EntryDialog(QDialog):
     # 密码辅助
     # ------------------------------------------------------------------
 
-    def _cfg(self, key: str, default):
+    def _cfg(self, key: str, default: _T) -> _T:
         """读取配置值，config 为 None 时使用默认值。"""
         return self._config.get(key, default) if self._config else default
 
-    def _generate_password(self):
+    def _generate_password(self) -> None:
         length = self._cfg('default_password_length', PWD_GENERATE_LENGTH_DEFAULT)
         password = PasswordService.generate(
             length=length,
@@ -677,14 +679,14 @@ class EntryDialog(QDialog):
         visible_seconds = self._cfg('password_visible_seconds', PWD_VISIBLE_SECONDS_DEFAULT)
         self._toggle_pwd_btn.show_password(seconds=visible_seconds)
 
-    def _on_password_changed(self, text: str):
+    def _on_password_changed(self, text: str) -> None:
         update_strength_label(self._strength_label, text, font_size='11px')
 
     # ------------------------------------------------------------------
     # TOTP
     # ------------------------------------------------------------------
 
-    def _test_totp(self):
+    def _test_totp(self) -> None:
         """校验 TOTP 密钥有效性并尝试生成一次验证码。"""
         secret = self._totp_edit.text().strip()
         if not secret:
@@ -723,7 +725,7 @@ class EntryDialog(QDialog):
     # 保存
     # ------------------------------------------------------------------
 
-    def _on_save(self):
+    def _on_save(self) -> None:
         title = self._title_edit.text().strip()
         if not title:
             QMessageBox.warning(self, '提示', '请输入标题')
@@ -794,7 +796,7 @@ class EntryDialog(QDialog):
             )
             QMessageBox.critical(self, '错误', to_user_message(exc))
 
-    def _clear_sensitive_inputs(self):
+    def _clear_sensitive_inputs(self) -> None:
         """清除所有敏感输入框中的明文。
 
         在保存成功、用户取消或关闭对话框时调用。QLineEdit.clear() 会重置
@@ -823,7 +825,7 @@ class EntryDialog(QDialog):
         # 自定义字段中回显模式为 Password 的值视为敏感数据一并清除
         self._cf_editor.clear_sensitive_values()
 
-    def reject(self):
+    def reject(self) -> None:
         """取消/关闭前清除敏感输入框。
 
         QDialog 通过窗口关闭按钮（X）、Esc、调用 reject() 或 done(Rejected) 退出时

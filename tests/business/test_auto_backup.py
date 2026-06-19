@@ -14,7 +14,7 @@ def _snapshots(config) -> list:
 
 def test_maybe_auto_backup_disabled(vault, vault_config):
     """未启用自动备份时直接成功返回，不创建快照。"""
-    mgr = BackupRestoreManager(vault)
+    mgr = BackupRestoreManager(vault, make_entry_manager(vault))
     vault_config.set('auto_backup_enabled', False)
 
     ok, err = mgr.maybe_auto_backup(vault_config, force=False)
@@ -25,7 +25,7 @@ def test_maybe_auto_backup_disabled(vault, vault_config):
 
 def test_maybe_auto_backup_force_bypasses_disabled_setting(vault, vault_config):
     """force=True 必须真正绕过自动备份开关，供改密后强制快照使用。"""
-    mgr = BackupRestoreManager(vault)
+    mgr = BackupRestoreManager(vault, make_entry_manager(vault))
     vault_config.set('auto_backup_enabled', False)
 
     ok, err = mgr.maybe_auto_backup(vault_config, force=True)
@@ -36,7 +36,7 @@ def test_maybe_auto_backup_force_bypasses_disabled_setting(vault, vault_config):
 
 def test_maybe_auto_backup_force_creates_snapshot(vault, vault_config):
     """force=True 忽略间隔检查，创建一份快照。"""
-    mgr = BackupRestoreManager(vault)
+    mgr = BackupRestoreManager(vault, make_entry_manager(vault))
     vault_config.set('auto_backup_enabled', True)
 
     ok, err = mgr.maybe_auto_backup(vault_config, force=True)
@@ -47,7 +47,7 @@ def test_maybe_auto_backup_force_creates_snapshot(vault, vault_config):
 
 def test_maybe_auto_backup_interval_skip(vault, vault_config):
     """间隔内的非强制调用应跳过，不新增快照。"""
-    mgr = BackupRestoreManager(vault)
+    mgr = BackupRestoreManager(vault, make_entry_manager(vault))
     vault_config.set('auto_backup_enabled', True)
     vault_config.set('auto_backup_interval_hours', 24)
 
@@ -63,7 +63,7 @@ def test_maybe_auto_backup_interval_skip(vault, vault_config):
 
 def test_maybe_auto_backup_retention(vault, vault_config):
     """超出保留数的旧快照被清理，总数收敛到 retention。"""
-    mgr = BackupRestoreManager(vault)
+    mgr = BackupRestoreManager(vault, make_entry_manager(vault))
     backup_dir = vault_config.data_dir / 'backups'
     backup_dir.mkdir(parents=True, exist_ok=True)
     vault_config.set('auto_backup_enabled', True)
@@ -87,7 +87,7 @@ def test_maybe_auto_backup_cancelled(vault, vault_config):
     """
     from src.models import Entry
 
-    mgr = BackupRestoreManager(vault)
+    mgr = BackupRestoreManager(vault, make_entry_manager(vault))
     vault_config.set('auto_backup_enabled', True)
     # 添加条目使全量解密循环执行，cancel_check 才有机会被检查触发
     make_entry_manager(vault).add_entry(Entry(title='t', username='u', password='p'))

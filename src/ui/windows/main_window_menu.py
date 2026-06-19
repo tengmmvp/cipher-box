@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from ...business.services.security_analyzer import SecurityAnalyzer
     from ...config import ConfigManager
     from ..components.detail_panel import DetailPanel
+    from ..controllers.auto_backup_controller import AutoBackupController
     from ..utils.clipboard import ClipboardManager
 
 # 快捷键定义：每个条目由按键序列和显示描述组成，供 _setup_shortcuts 与 _show_shortcuts 共享。
@@ -80,6 +81,7 @@ class _MainWindowMenuMixin(QMainWindow):
         _security: SecurityAnalyzer
         _import_export: ImportExportManager
         _backup: BackupRestoreManager
+        _auto_backup: AutoBackupController
         _clipboard: ClipboardManager
         _detail_panel: DetailPanel
         _locked_ui: bool
@@ -98,11 +100,10 @@ class _MainWindowMenuMixin(QMainWindow):
         def _refresh_after_entry_change(self) -> None: ...
         def _apply_theme(self) -> None: ...
         def _apply_runtime_settings(self) -> None: ...
-        def _run_backup_async(self, force: bool = False) -> None: ...
 
     # ----- 菜单栏 -----
 
-    def _setup_menubar(self):
+    def _setup_menubar(self) -> None:
         menubar = self.menuBar()
         if menubar is None:
             return
@@ -204,7 +205,7 @@ class _MainWindowMenuMixin(QMainWindow):
 
     # ----- 快捷键 -----
 
-    def _setup_shortcuts(self):
+    def _setup_shortcuts(self) -> None:
         """注册全局快捷键。"""
         shortcuts = [
             ('Ctrl+F', lambda: self._search_edit.setFocus()),
@@ -222,7 +223,7 @@ class _MainWindowMenuMixin(QMainWindow):
             shortcut.activated.connect(callback)
             self._shortcuts.append(shortcut)
 
-    def _update_menu_icons(self):
+    def _update_menu_icons(self) -> None:
         """刷新菜单栏图标，主题切换时颜色需要更新。
 
         按 ``QAction.data()`` 存储的 icon name 重建，而非 ``action.text()`` 反查——
@@ -241,23 +242,23 @@ class _MainWindowMenuMixin(QMainWindow):
 
     # ----- 对话框 -----
 
-    def _show_password_generator(self):
+    def _show_password_generator(self) -> None:
         dialog = PasswordGeneratorDialog(self._clipboard, self, config=self._config)
         dialog.password_selected.connect(self._on_password_selected)
         dialog.exec()
 
-    def _show_settings(self):
+    def _show_settings(self) -> None:
         dialog = SettingsDialog(self._config, self)
         if dialog.exec() == SettingsDialog.DialogCode.Accepted:
             self._apply_theme()
             self._apply_runtime_settings()
 
-    def _show_import_export(self):
+    def _show_import_export(self) -> None:
         dialog = ImportExportDialog(self._import_export, self._entry_mgr, self)
         dialog.import_completed.connect(self._refresh_all_data)
         dialog.exec()
 
-    def _show_backup(self):
+    def _show_backup(self) -> None:
         dialog = BackupDialog(self._backup, self, config=self._config)
         dialog.exec()
         # 仅在对话框实际执行了备份/恢复操作时才全量刷新
@@ -265,7 +266,7 @@ class _MainWindowMenuMixin(QMainWindow):
             self._refresh_all_data()
             self._detail_panel.show_empty()
 
-    def _show_change_master(self):
+    def _show_change_master(self) -> None:
         dialog = ChangeMasterDialog(self._vault, self)
         result = dialog.exec()
         if result == ChangeMasterDialog.DialogCode.Accepted:
@@ -274,7 +275,7 @@ class _MainWindowMenuMixin(QMainWindow):
             # 改密后强制创建当前保险库快照（force=True 绕过自动备份开关）。
             # 即使用户已禁用自动备份，改密快照仍会创建以保留改密前的可回滚点；
             # 显式 Toast 告知，避免用户误以为禁用自动备份后没有任何快照产生。
-            self._run_backup_async(force=True)
+            self._auto_backup.trigger_check(force=True)
             from ..components.toast import Toast
             from ..resources.constants import MS_TOAST_DEFAULT
             # 备份异步进行，文案不谎称"已创建"（force=True 绕过开关，可能被并发跳过
@@ -285,11 +286,11 @@ class _MainWindowMenuMixin(QMainWindow):
             )
             logger.info("改密成功，已触发强制快照")
 
-    def _show_about(self):
+    def _show_about(self) -> None:
         dialog = AboutDialog(self)
         dialog.exec()
 
-    def _show_security_dashboard(self):
+    def _show_security_dashboard(self) -> None:
         dialog = SecurityDashboard(self._security, self._entry_mgr, self._config, self)
         # fix_requested 经仪表盘 singleShot(0) 延迟 emit 触发 _edit_entry；
         # 实际刷新由 _edit_entry 内部连接的 EntryDialog.saved 信号驱动，
@@ -297,7 +298,7 @@ class _MainWindowMenuMixin(QMainWindow):
         dialog.fix_requested.connect(self._edit_entry)
         dialog.exec()
 
-    def _show_shortcuts(self):
+    def _show_shortcuts(self) -> None:
         rows = ''.join(
             f'<tr><td>{key}</td><td style="padding-left:12px">{desc}</td></tr>'
             for key, desc in _SHORTCUT_DISPLAY
@@ -309,7 +310,7 @@ class _MainWindowMenuMixin(QMainWindow):
         msg.setText(text)
         msg.exec()
 
-    def _show_from_tray(self):
+    def _show_from_tray(self) -> None:
         if not self._vault.is_unlocked or self._locked_ui:
             # 锁定时主窗口已隐藏，激活登录窗（由 app 创建并显示）供用户解锁
             from ..dialogs.login_window import LoginWindow

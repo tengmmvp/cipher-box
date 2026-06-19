@@ -19,6 +19,35 @@
 
 **反向依赖禁止**：Crypto 层绝不依赖 Business/Data；Data 层不了解密钥（只处理密文）。
 
+### 1.1 Business 层的 SRP 拆分
+
+Business 层按「有状态编排」与「无状态服务」分为两个子包，模块清单如下（详细职责见
+各模块 docstring 与 `CLAUDE.md`）：
+
+- **`managers/`（有状态编排，持有 vault/密钥/缓存引用）**
+  - `VaultManager`：安全边界核心，持有主密钥与数据库连接，生命周期贯穿登录→主窗口→
+    锁定；改密/恢复在其 `vault_write_lock` 下串行化。
+  - `EntryManager`：条目 CRUD，透明加解密；经 property 暴露子服务 `categories`
+    （`CategoryManager`）/ `totp`（`TotpService`）/ `password_history`
+    （`PasswordHistoryService`）。
+  - `EntryCacheManager`：摘要/分类名/标签/TOTP secret 多级缓存（LRU + epoch 失效）。
+  - `EntryChangeBus`：统一「变更→缓存失效→回调」管线，支持 crypto_id 单条精细失效。
+  - `ImportExportManager`：CSV/JSON/浏览器导入导出，经 `@_transactional_import`
+    保证写入原子性。
+  - `BackupRestoreManager`：可移植二进制加密备份格式；经 `restore_points` property
+    暴露 `RestorePointManager`（恢复点统计/清理）。
+- **`services/`（无状态业务服务：加解密、校验、分析等，密钥经 vault 引用现取）**
+  - 加解密与字段：`crypto_utils`（`SENSITIVE_ENCRYPTED_FIELDS` 单一事实源、统一加解密
+    入口）、`entry_validation`、`password_service`、`card_validation`。
+  - 条目子域：`totp_service`、`password_history_service`。
+  - 完整性与重加密：`metadata_signer`（HMAC 签名）、`re_encryption`（改密全量重加密）、
+    `security_analyzer`（弱密码/重复/过期分析）、`key_manager`（主密钥/快照密钥集中
+    持有与清零）。
+  - 备份无状态模块：`backup_header_codec`、`backup_validator`、`backup_paths`。
+
+拆分原则：跨管理器协作走显式依赖注入（构造函数传入），不使用函数内延迟 import 规避
+循环依赖；UI→business.services 纯函数模块是合法分层方向，无需经 manager 门面转发。
+
 ## 2. 加密设计
 
 ### 2.1 主密钥派生

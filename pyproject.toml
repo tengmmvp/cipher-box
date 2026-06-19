@@ -80,13 +80,6 @@ disallow_incomplete_defs = true
 warn_return_any = true
 no_implicit_optional = true
 
-[[tool.mypy.overrides]]
-# UI 层 PyQt6 信号槽与 __init__ 参数历史欠债较多，单独放宽未标注定义要求，
-# 后续逐步补全后再收紧。crypto/business/database 三层保持严格。
-module = "src.ui.*"
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-
 [tool.pyright]
 # 指向项目 venv 解析 PyQt6 等第三方依赖；pyright CLI 默认不用 .venv，会误报
 # reportMissingImports（PyQt6 未解析），并连带触发 reportOptionalMemberAccess。

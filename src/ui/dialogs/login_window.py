@@ -61,13 +61,13 @@ class LoginWindow(QDialog):
         self._worker: BackgroundWorker | None = None
         self._setup_ui()
 
-    def reject(self):
+    def reject(self) -> None:
         """关闭前等待后台 worker 完成，避免窗口销毁后 worker 发信号。"""
         wait_worker_shutdown(self._worker)
         release_worker(self)
         super().reject()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         self.setWindowTitle('CipherBox - 登录')
         self.setFixedWidth(500)
         setup_dialog_flags(self)
@@ -204,11 +204,11 @@ class LoginWindow(QDialog):
         btn_layout.addStretch()
         return btn_layout
 
-    def _on_password_changed(self, text: str):
+    def _on_password_changed(self, text: str) -> None:
         """密码输入变化时更新强度提示。"""
         update_strength_label(self._strength_label, text, prefix='密码强度：')
 
-    def _on_auth_result(self, success: bool, error_msg: str = '', is_auth_failure: bool = True):
+    def _on_auth_result(self, success: bool, error_msg: str = '', is_auth_failure: bool = True) -> None:
         """处理初始化/解锁的结果。
 
         is_auth_failure 为 False 时（如后台 worker 抛异常等系统错误）不计入
@@ -236,7 +236,7 @@ class LoginWindow(QDialog):
                     return
             self._show_error(error_msg or '操作失败，请重试')
 
-    def _on_confirm(self):
+    def _on_confirm(self) -> None:
         """处理确认按钮点击。"""
         msg = self._rate_limiter.check()
         if msg:
@@ -271,7 +271,7 @@ class LoginWindow(QDialog):
         # 主密码派生使用 Argon2id（内存硬化 KDF），耗时较高，需在后台线程执行避免冻结 UI
         self._start_auth(action, password, error_default)
 
-    def _start_auth(self, action, password: str, error_default: str):
+    def _start_auth(self, action: Callable[[str], tuple[bool, str]], password: str, error_default: str) -> None:
         """在后台线程执行 KDF 并完成解锁或初始化。"""
         self._confirm_btn.setEnabled(False)
         self._confirm_btn.setText('正在解锁...')
@@ -283,14 +283,14 @@ class LoginWindow(QDialog):
         self._worker.error.connect(lambda msg: self._on_auth_error(msg, error_default))
         self._worker.start()
 
-    def _on_auth_done(self, result: tuple[bool, str]):
+    def _on_auth_done(self, result: tuple[bool, str]) -> None:
         """后台认证完成回调，result 为来自 VaultManager 的元组。"""
         release_worker(self)
         self._reset_confirm_btn()
         success, error_msg = result
         self._on_auth_result(success, error_msg)
 
-    def _on_auth_error(self, error_msg: str, error_default: str):
+    def _on_auth_error(self, error_msg: str, error_default: str) -> None:
         """后台认证异常回调（系统错误，非认证失败）。
 
         优先展示 worker 抛出的真实异常信息（如 IO 错误、KDF 失败），
@@ -301,10 +301,10 @@ class LoginWindow(QDialog):
         self._reset_confirm_btn()
         self._on_auth_result(False, error_msg or error_default, is_auth_failure=False)
 
-    def _reset_confirm_btn(self):
+    def _reset_confirm_btn(self) -> None:
         self._confirm_btn.setEnabled(True)
         self._confirm_btn.setText('确认')
 
-    def _show_error(self, msg: str):
+    def _show_error(self, msg: str) -> None:
         self._message_label.setText(msg)
         set_label_severity(self._message_label, 'error')

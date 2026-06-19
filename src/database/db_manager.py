@@ -437,7 +437,7 @@ class DatabaseManager:
                     f'（期望 cb2: 前缀的 base64 密文），请通过 EntryManager 操作条目'
                 )
             tail = value[len('cb2:'):]
-            if not frozenset(tail).issubset(_B64_CHARS):
+            if not _B64_CHARS.issuperset(tail):
                 raise ValueError(
                     f'数据层收到格式异常的 {field_name}'
                     f'（cb2: 前缀后须为 base64 密文），请通过 EntryManager 操作条目'

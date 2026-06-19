@@ -5,6 +5,8 @@
 并在主题切换时清空颜色缓存以重新解析。
 """
 
+from typing import Any
+
 from PyQt6.QtCore import QAbstractItemModel, QModelIndex, QObject, QRectF, QSize, Qt
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import QStyle, QStyledItemDelegate, QStyleOptionViewItem
@@ -74,7 +76,7 @@ class EntryListModel(QAbstractItemModel):
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: ARG002
         return 1
 
-    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
         if not index.isValid() or role != Qt.ItemDataRole.UserRole:
             return None
         row = index.row()
@@ -154,7 +156,7 @@ class EntryItemDelegate(QStyledItemDelegate):
         """清空颜色缓存，主题切换时调用。"""
         self._color_cache.clear()
 
-    def sizeHint(self, option, index):
+    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:  # noqa: ARG002
         return QSize(option.rect.width(), self.ROW_HEIGHT)
 
     def paint(
@@ -162,7 +164,7 @@ class EntryItemDelegate(QStyledItemDelegate):
         painter: QPainter | None,
         option: QStyleOptionViewItem,
         index: QModelIndex,
-    ):
+    ) -> None:
         if painter is None:
             return
         entry = index.data(Qt.ItemDataRole.UserRole)

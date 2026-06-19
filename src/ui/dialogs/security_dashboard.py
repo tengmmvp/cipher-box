@@ -8,15 +8,16 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any
 
 from PyQt6.QtCore import QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen
+from PyQt6.QtGui import QColor, QFont, QPainter, QPaintEvent, QPen
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -63,7 +64,7 @@ class _HealthScoreWidget(QWidget):
         self._score = max(0, min(100, score))
         self.update()
 
-    def paintEvent(self, a0):
+    def paintEvent(self, a0: QPaintEvent | None) -> None:
         painter = QPainter(self)
         try:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -133,7 +134,7 @@ class _StatCard(QFrame):
         """更新卡片显示的数字。"""
         self._count_label.setText(str(count))
 
-    def _setup_ui(self, title: str, count: int, color: str, button_text: str):
+    def _setup_ui(self, title: str, count: int, color: str, button_text: str) -> None:
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setObjectName('statCard')
 
@@ -191,7 +192,7 @@ class SecurityDashboard(QDialog):
         self._setup_ui()
         self._load_data()
 
-    def reject(self):
+    def reject(self) -> None:
         """关闭前等待后台 worker 完成，并清空已解密的明文条目引用。"""
         wait_worker_shutdown(self._worker)
         release_worker(self)
@@ -202,7 +203,7 @@ class SecurityDashboard(QDialog):
         self._old_entries = []
         super().reject()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         self.setWindowTitle('安全仪表盘')
         self.setMinimumSize(*DIALOG_SECURITY_DASHBOARD_MIN_SIZE)
         setup_dialog_flags(self)
@@ -297,7 +298,7 @@ class SecurityDashboard(QDialog):
         self._old_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         return widget
 
-    def _load_data(self):
+    def _load_data(self) -> None:
         """在后台线程加载安全分析数据，避免冻结 UI。"""
         days = self._config.get('old_password_warning_days')
 
@@ -316,7 +317,7 @@ class SecurityDashboard(QDialog):
         self._worker.error.connect(self._on_data_error)
         self._worker.start()
 
-    def _on_data_loaded(self, analysis):
+    def _on_data_loaded(self, analysis: dict[str, Any]) -> None:
         """后台分析完成，更新 UI。"""
         # 校验回调来源仍是当前 worker，防止 reject 后旧 worker 回调访问已销毁控件
         if self.sender() is not self._worker:
@@ -327,7 +328,7 @@ class SecurityDashboard(QDialog):
 
         import dataclasses
 
-        def _project(e):
+        def _project(e: Entry) -> Entry:
             # 清空敏感字段，仅保留展示所需（title/username/strength/时间戳/id），
             # 避免仪表盘打开期间不必要地驻留完整明文 Entry。
             return dataclasses.replace(
@@ -374,7 +375,7 @@ class SecurityDashboard(QDialog):
         self._populate_duplicate_tab()
         self._populate_old_tab()
 
-    def _on_data_error(self, error_msg: str):
+    def _on_data_error(self, error_msg: str) -> None:
         """后台分析失败（worker.error 信号路径，独立于 _on_data_loaded 的成功/异常出口）。"""
         # 校验回调来源仍是当前 worker，与 _on_data_loaded 对称，防止 reject
         # 后旧 worker 回调访问已销毁控件。
@@ -387,7 +388,7 @@ class SecurityDashboard(QDialog):
         logger.error("加载安全数据失败: %s", error_msg)
         QMessageBox.critical(self, '错误', '加载安全数据失败，请重试')
 
-    def _populate_weak_tab(self):
+    def _populate_weak_tab(self) -> None:
         """填充弱密码列表。"""
         self._clear_layout(self._weak_layout)
 
@@ -396,16 +397,18 @@ class SecurityDashboard(QDialog):
             return
 
         for entry in self._weak_entries:
+            if entry.id is None:
+                continue
             row = self._create_entry_row(
                 title=entry.title or '未命名',
                 subtitle=f'用户名: {entry.username}' if entry.username else '',
                 badge_text=f'强度 {entry.password_strength}',
                 badge_color=get_strength_color(entry.password_strength),
-                entry_id=cast(int, entry.id),
+                entry_id=entry.id,
             )
             self._weak_layout.addWidget(row)
 
-    def _populate_duplicate_tab(self):
+    def _populate_duplicate_tab(self) -> None:
         """填充重复密码分组列表。"""
         self._clear_layout(self._dup_layout)
 
@@ -426,18 +429,20 @@ class SecurityDashboard(QDialog):
 
             # 组内条目
             for entry in group:
+                if entry.id is None:
+                    continue
                 entry_row = self._create_entry_row(
                     title=entry.title or '未命名',
                     subtitle=f'用户名: {entry.username}' if entry.username else '',
                     badge_text='重复使用',
                     badge_color=c('warning_orange'),
-                    entry_id=cast(int, entry.id),
+                    entry_id=entry.id,
                 )
                 group_layout.addWidget(entry_row)
 
             self._dup_layout.addWidget(group_widget)
 
-    def _populate_old_tab(self):
+    def _populate_old_tab(self) -> None:
         """填充过期密码列表。"""
         self._clear_layout(self._old_layout)
 
@@ -447,6 +452,8 @@ class SecurityDashboard(QDialog):
 
         days = self._config.get('old_password_warning_days')
         for entry in self._old_entries:
+            if entry.id is None:
+                continue
             updated = entry.password_changed_at or entry.updated_at or entry.created_at or '未知'
             # format_datetime 统一处理 naive/aware 时间戳，[:10] 取日期部分
             formatted = format_datetime(updated)[:10]
@@ -455,7 +462,7 @@ class SecurityDashboard(QDialog):
                 subtitle=f'上次更新: {formatted}',
                 badge_text=f'> {days}天',
                 badge_color=c('warning'),
-                entry_id=cast(int, entry.id),
+                entry_id=entry.id,
             )
             self._old_layout.addWidget(row)
 
@@ -523,14 +530,14 @@ class SecurityDashboard(QDialog):
         return label
 
     @staticmethod
-    def _clear_layout(layout):
+    def _clear_layout(layout: QLayout) -> None:
         clear_layout(layout)
 
-    def _on_fix_weak(self):
+    def _on_fix_weak(self) -> None:
         """点击弱密码卡片的立即修复按钮，切换到弱密码标签页。"""
         self._tabs.setCurrentIndex(0)
 
-    def _request_fix(self, entry_id: int):
+    def _request_fix(self, entry_id: int) -> None:
         # 先 accept 关闭仪表盘，再延迟到下一个事件循环 emit，确保仪表盘
         # 模态事件循环已退出，避免在其内嵌套打开编辑对话框形成双层模态。
         # emit 由 _show_security_dashboard 连接到 _edit_entry，在仪表盘关闭后打开。

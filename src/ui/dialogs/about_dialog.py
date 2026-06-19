@@ -26,7 +26,7 @@ class AboutDialog(QDialog):
         super().__init__(parent)
         self._setup_ui()
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         self.setWindowTitle(f'关于 {__app_name__}')
         self.setMinimumSize(*DIALOG_ABOUT_MIN_SIZE)
         setup_dialog_flags(self)

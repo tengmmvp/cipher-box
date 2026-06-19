@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -65,11 +65,11 @@ class PasswordGeneratorDialog(QDialog):
         self._setup_ui()
         self._generate()
 
-    def _cfg(self, key: str, default):
+    def _cfg(self, key: str, default: Any) -> Any:
         """读取配置值，config 为 None 时使用默认值。"""
         return self._config.get(key, default) if self._config else default
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         self.setWindowTitle('密码生成器')
         self.setMinimumSize(*DIALOG_PASSWORD_GEN_MIN_SIZE)
         setup_dialog_flags(self)
@@ -166,7 +166,7 @@ class PasswordGeneratorDialog(QDialog):
 
         layout.addLayout(btn_layout)
 
-    def _generate(self):
+    def _generate(self) -> None:
         # 至少需要一种字符集，否则无法生成密码
         if not any((
             self._upper_check.isChecked(), self._lower_check.isChecked(),
@@ -185,16 +185,16 @@ class PasswordGeneratorDialog(QDialog):
         self._password_display.setText(password)
         self._update_strength(password)
 
-    def _update_strength(self, password: str):
+    def _update_strength(self, password: str) -> None:
         strength = PasswordService.check_strength(password)
         color = get_strength_color(strength.score)
         self._strength_label.setText(f'强度：{strength.label} ({strength.score}/4)')
         self._strength_label.setStyleSheet(f'color: {color}; font-size: 13px; font-weight: bold;')
 
-    def _on_length_changed(self, value: int):
+    def _on_length_changed(self, value: int) -> None:
         self._length_label.setText(str(value))
 
-    def _copy_password(self):
+    def _copy_password(self) -> None:
         password = self._password_display.text()
         if not password:
             return
@@ -216,21 +216,21 @@ class PasswordGeneratorDialog(QDialog):
             )
         self._copy_feedback_timer.start()
 
-    def _use_password(self):
+    def _use_password(self) -> None:
         password = self._password_display.text()
         if password:
             self.password_selected.emit(password)
             self._clear_sensitive()
             self.close()
 
-    def _clear_sensitive(self):
+    def _clear_sensitive(self) -> None:
         """关闭前清除生成的密码，减少明文在内存中的驻留时间。"""
         self._password_display.clear()
         if self._copy_feedback_timer is not None:
             self._copy_feedback_timer.stop()
             self._copy_feedback_timer = None
 
-    def reject(self):
+    def reject(self) -> None:
         """取消/关闭前清除敏感输入。
 
         仅重写 reject（不重写 closeEvent）以避免双重清理：QDialog 默认

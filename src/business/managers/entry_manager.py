@@ -14,6 +14,7 @@
 通过 property 暴露分类/TOTP/历史子服务供 UI 属性访问。
 """
 
+import hmac
 import json
 import logging
 import uuid
@@ -40,7 +41,6 @@ from ..services.crypto_utils import (
     decrypt_field as _decrypt_field_impl,
     encrypt_field as _encrypt_field_impl,
     matches_search,
-    matches_tag as _matches_tag_impl,
     require_vault_key,
 )
 from ..services.entry_validation import validate_plain_entry
@@ -445,7 +445,8 @@ class EntryManager:
             old_pwd_enc, raw.crypto_id, 'password', strict=True
         ) if old_pwd_enc else ''
         new_pwd_enc = self._encrypt_field(entry.password, raw.crypto_id, 'password')
-        password_changed = (old_password != entry.password)
+        # 常量时间比较，避免明文密码比较的时序侧信道（短路比较按首个不同字符提前返回）。
+        password_changed = not hmac.compare_digest(old_password, entry.password)
         del old_password  # 尽快释放明文引用
         if preserve_password_changed_at:
             # 导入覆盖等同步场景：保留原 password_changed_at，避免批量导入
@@ -681,25 +682,3 @@ class EntryManager:
     def get_all_tags(self) -> list[tuple[str, int]]:
         """获取所有标签及其使用频率。委托 cache。"""
         return self._cache.get_all_tags()
-
-    @staticmethod
-    def matches_search(entry: Entry, query: str) -> bool:
-        """检查条目是否匹配搜索关键词，大小写不敏感，匹配 title、username、url、tags。
-
-        EntryManager 的公共 API，委托给 ``crypto_utils.matches_search``。UI 层应通过
-        此方法调用，避免直接依赖 ``business.crypto_utils`` 模块。
-        """
-        return matches_search(entry, query)
-
-    @staticmethod
-    def matches_tag(entry: Entry, tag: str) -> bool:
-        """检查条目是否包含指定标签。
-
-        标签匹配为大小写不敏感的精确匹配：条目 tags 字段以逗号分隔后，
-        逐个与目标 tag 比对。即 ``tag="work"`` 匹配 ``"Work,Personal"``
-        但不匹配 ``"network"``。
-
-        此方法作为 EntryManager 的公共 API 委托给 ``crypto_utils.matches_tag``，
-        供 UI 层使用，避免 UI 直接依赖 ``crypto_utils`` 模块。
-        """
-        return _matches_tag_impl(entry, tag)

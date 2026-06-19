@@ -75,11 +75,11 @@ class _ColorDotButton(QPushButton):
         return self._selected
 
     @selected.setter
-    def selected(self, value: bool):
+    def selected(self, value: bool) -> None:
         self._selected = value
         self._update_style()
 
-    def _update_style(self):
+    def _update_style(self) -> None:
         border_color = c('accent') if self._selected else 'transparent'
         border_width = 3 if self._selected else 0
         self.setStyleSheet(
@@ -120,7 +120,7 @@ class CategoryDialog(QDialog):
         if category:
             self._load_category(category)
 
-    def _setup_ui(self):
+    def _setup_ui(self) -> None:
         is_edit = self._category is not None
         self.setWindowTitle('编辑分类' if is_edit else '新增分类')
         self.setMinimumSize(*DIALOG_CATEGORY_MIN_SIZE)
@@ -214,7 +214,7 @@ class CategoryDialog(QDialog):
 
         layout.addLayout(btn_layout)
 
-    def _load_category(self, category: Category):
+    def _load_category(self, category: Category) -> None:
         """将已有分类数据回填到表单。"""
         self._name_edit.setText(category.name)
 
@@ -229,12 +229,12 @@ class CategoryDialog(QDialog):
                 f"background-color: {self._selected_color}; border-radius: 2px;"
             )
 
-    def _on_color_dot_clicked(self, index: int):
+    def _on_color_dot_clicked(self, index: int) -> None:
         """点击预设颜色圆点时更新选中色。"""
         self._selected_color = PRESET_COLORS[index]
         self._update_color_selection()
 
-    def _update_color_selection(self):
+    def _update_color_selection(self) -> None:
         """同步刷新各圆点选中态与预览条颜色。"""
         for dot in self._color_dots:
             dot.selected = (dot.color == self._selected_color)
@@ -242,7 +242,7 @@ class CategoryDialog(QDialog):
             f"background-color: {self._selected_color}; border-radius: 2px;"
         )
 
-    def _on_custom_color(self):
+    def _on_custom_color(self) -> None:
         """打开系统颜色选择器，允许用户选取调色板外的颜色。"""
         initial = QColor(self._selected_color)
         color = QColorDialog.getColor(initial, self, '选择自定义颜色')
@@ -254,7 +254,7 @@ class CategoryDialog(QDialog):
                 f"background-color: {self._selected_color}; border-radius: 2px;"
             )
 
-    def _on_save(self):
+    def _on_save(self) -> None:
         """校验名称后写入分类，成功则发出信号并关闭。"""
         name = self._name_edit.text().strip()
         if not name:

@@ -11,11 +11,13 @@ from typing import cast
 
 from PyQt6.QtCore import (
     QEasingCurve,
+    QEvent,
     QPropertyAnimation,
     Qt,
     QTimer,
     pyqtSignal,
 )
+from PyQt6.QtGui import QEnterEvent
 from PyQt6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
@@ -104,7 +106,7 @@ class ToastWidget(QFrame):
         self._apply_style(toast_type)
 
     # ------------------------------------------------------------------ UI
-    def _setup_ui(self, message: str, toast_type: str, action_text: str):
+    def _setup_ui(self, message: str, toast_type: str, action_text: str) -> None:
         """构建内部布局。"""
         self.setFixedWidth(TOAST_WIDTH)
         self.setMinimumHeight(20)
@@ -171,7 +173,7 @@ class ToastWidget(QFrame):
         root_layout.addWidget(content_widget, 1)
 
     # ------------------------------------------------------------- 样式
-    def _apply_style(self, toast_type: str):
+    def _apply_style(self, toast_type: str) -> None:
         """根据类型应用样式。"""
         type_key = (
             toast_type
@@ -256,7 +258,7 @@ class ToastWidget(QFrame):
         # 消除首次 sizeHint() 返回 0 导致的堆叠跳变。
         self._stable_height = self.sizeHint().height() or self.height()
 
-    def _start_fade_out(self):
+    def _start_fade_out(self) -> None:
         """开始淡出动画。"""
         self._auto_close_timer.stop()
 
@@ -273,24 +275,24 @@ class ToastWidget(QFrame):
         anim.start()
         self._fade_out_anim = anim  # 保持引用防止 GC
 
-    def _on_fade_out_finished(self):
+    def _on_fade_out_finished(self) -> None:
         """淡出完成后关闭并通知 Manager。"""
         self.hide()
         self.closed.emit(self)
 
     # ---------------------------------------------------------- 交互
-    def _on_action_clicked(self):
+    def _on_action_clicked(self) -> None:
         """操作按钮点击。"""
         if self._action_callback:
             self._action_callback()
         self._start_fade_out()
 
-    def enterEvent(self, event):
+    def enterEvent(self, event: QEnterEvent | None) -> None:
         """鼠标进入时暂停自动关闭。"""
         self._auto_close_timer.stop()
         super().enterEvent(event)
 
-    def leaveEvent(self, a0):
+    def leaveEvent(self, a0: QEvent | None) -> None:
         """鼠标离开时重启自动关闭，等待时长缩短但不超过原 duration。"""
         if self._duration > 0:
             self._auto_close_timer.start(min(self._duration, TOAST_HOVER_RESTART_MS))
@@ -390,7 +392,7 @@ class ToastManager:
                 """)
         self._reposition_all()
 
-    def _remove_toast(self, toast: ToastWidget):
+    def _remove_toast(self, toast: ToastWidget) -> None:
         """移除一个 Toast 并更新所有位置。"""
         if toast in self._toasts:
             self._toasts.remove(toast)
@@ -405,7 +407,7 @@ class ToastManager:
         if not self._toasts:
             ToastManager._instances.pop(self._parent, None)
 
-    def _reposition_all(self):
+    def _reposition_all(self) -> None:
         """重新计算所有 Toast 的位置，从右下角向上堆叠。"""
         if not self._parent:
             return

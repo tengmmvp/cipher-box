@@ -202,14 +202,14 @@ _current_theme = 'light'
 _current_colors = dict(LIGHT_COLORS)
 
 
-def get_colors(theme: str = '') -> dict:
+def get_colors(theme: str = '') -> dict[str, str]:
     """获取指定主题的颜色字典。"""
     if theme == 'dark':
         return dict(DARK_COLORS)
     return dict(LIGHT_COLORS)
 
 
-def set_theme(theme: str):
+def set_theme(theme: str) -> None:
     """设置当前主题。"""
     global _current_theme, _current_colors
     _current_theme = theme

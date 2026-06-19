@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QLayout,
     QLineEdit,
     QPushButton,
+    QWidget,
 )
 
 from ...business.services.password_service import PasswordService
@@ -79,8 +80,8 @@ class PasswordToggleBtn(QPushButton):
         lock_icon: str = LOCK,
         *,
         auto_hide_seconds: int | None = None,
-        parent=None,
-    ):
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._target = target_edit
         self._eye_icon = eye_icon
@@ -100,7 +101,7 @@ class PasswordToggleBtn(QPushButton):
 
         self.clicked.connect(self._toggle)
 
-    def _toggle(self):
+    def _toggle(self) -> None:
         if self._target.echoMode() == QLineEdit.EchoMode.Password:
             self.show_password()
         else:

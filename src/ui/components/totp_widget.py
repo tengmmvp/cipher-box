@@ -100,7 +100,7 @@ class TOTPWidget(QWidget):
 
     # ---- 内部方法 ----
 
-    def _build(self, entry_id: int):
+    def _build(self, entry_id: int) -> None:
         """构建 TOTP 区域并启动刷新。"""
         if not self._entry_mgr:
             return
@@ -168,7 +168,7 @@ class TOTPWidget(QWidget):
         # 启动每秒一次的定时刷新
         self._timer.start(MS_TOTP_REFRESH)
 
-    def _refresh(self):
+    def _refresh(self) -> None:
         """刷新 TOTP 验证码，调用 totp.generate_cached 复用缓存的 period。
 
         _build 启动时已通过 totp.get_state 预热会话内 secret 缓存，
@@ -187,7 +187,7 @@ class TOTPWidget(QWidget):
             remaining = self._period - (int(_time.time()) % self._period)
             self._bar.setValue(remaining)
 
-    def _copy_code(self):
+    def _copy_code(self) -> None:
         """复制当前 TOTP 验证码，始终取最新值。"""
         if self._code_label:
             self.copy_requested.emit(self._code_label.text())
