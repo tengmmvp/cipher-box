@@ -5,11 +5,11 @@
 并在主题切换时清空颜色缓存以重新解析。
 """
 
-from PyQt6.QtCore import QAbstractItemModel, QModelIndex, QRectF, QSize, Qt
+from PyQt6.QtCore import QAbstractItemModel, QModelIndex, QObject, QRectF, QSize, Qt
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
-from ...models import ENTRY_TYPE_LOGIN, ENTRY_TYPES
+from ...models import ENTRY_TYPE_LOGIN, ENTRY_TYPES, Entry
 from ..resources.constants import FONT_FAMILY_FALLBACKS, FONT_FAMILY_PRIMARY
 from ..resources.theme_colors import c, get_strength_color
 
@@ -58,11 +58,11 @@ class EntryListModel(QAbstractItemModel):
     无法 SQL 过滤，需内存匹配），但 item 对象开销与逐项 setData 消除。
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
-        self._entries: list = []
+        self._entries: list[Entry] = []
 
-    def set_entries(self, entries: list) -> None:
+    def set_entries(self, entries: list[Entry]) -> None:
         """整体替换条目数据，触发视图按需重绘。"""
         self.beginResetModel()
         self._entries = list(entries)
@@ -121,7 +121,7 @@ class EntryItemDelegate(QStyledItemDelegate):
     _DELETE_BADGE_Y_OFFSET = 20  # 已删除徽章 Y 偏移
     _DELETE_BADGE_X_BACK = 9   # 已删除徽章距右侧标记的回退量
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self._color_cache: dict[str, str] = {}
         self._font_cache: dict[tuple, QFont] = {}
@@ -150,7 +150,7 @@ class EntryItemDelegate(QStyledItemDelegate):
             self._color_cache[key] = c(key)
         return self._color_cache[key]
 
-    def clear_color_cache(self):
+    def clear_color_cache(self) -> None:
         """清空颜色缓存，主题切换时调用。"""
         self._color_cache.clear()
 

@@ -13,7 +13,7 @@ import pytest
 
 from src.business.managers.vault_manager import VaultManager
 from src.crypto.master_key import MasterKeyManager
-from tests.helpers import make_test_config
+from tests.helpers import make_entry_manager, make_test_config
 
 
 def _make_config(tmp_dir: str):
@@ -77,10 +77,9 @@ def test_create_and_restore_non_password_backup(vault_and_key):
     """端到端验证：非密码备份的创建和恢复。"""
     vault, _key, tmp_dir = vault_and_key
     from src.business.managers.backup_restore import BackupRestoreManager
-    from src.business.managers.entry_manager import EntryManager
     from src.models import Entry
 
-    entry_mgr = EntryManager(vault)
+    entry_mgr = make_entry_manager(vault)
     entry = Entry(title='备份测试', username='user', password='secret123')
     entry_id = entry_mgr.add_entry(entry)
 
@@ -90,7 +89,9 @@ def test_create_and_restore_non_password_backup(vault_and_key):
     assert success, f'备份创建失败: {msg}'
     assert backup_path.exists()
 
-    info = backup_mgr.inspect_backup(str(backup_path))
+    from src.business.services.backup_header_codec import inspect_backup
+
+    info = inspect_backup(str(backup_path))
     assert info is not None
     # 快照密钥备份不要求用户提供密码
     assert not info.get('password_required', True)

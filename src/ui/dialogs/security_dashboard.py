@@ -5,7 +5,10 @@
 修复，由对话框发出携带 entry_id 的信号交由主窗口处理。
 """
 
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING, cast
 
 from PyQt6.QtCore import QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
@@ -34,6 +37,11 @@ from ..resources.constants import (
 )
 from ..resources.theme_colors import c, get_strength_color
 
+if TYPE_CHECKING:
+    from ...business.managers.entry_manager import EntryManager
+    from ...config import ConfigManager
+    from ...models import Entry
+
 logger = logging.getLogger(__name__)
 
 # 徽章背景色透明度，用于 entry row 的 badge 背景叠层
@@ -43,7 +51,7 @@ _BADGE_BG_ALPHA = 0.13
 class _HealthScoreWidget(QWidget):
     """以圆环进度形式绘制安全健康评分的自定义组件。"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._score = 100
         self.setFixedSize(160, 160)
@@ -51,7 +59,7 @@ class _HealthScoreWidget(QWidget):
         self._score_font = QFont(FONT_FAMILY_DISPLAY, 28, QFont.Weight.Bold)
         self._label_font = QFont(FONT_FAMILY_DISPLAY, 9)
 
-    def set_score(self, score: int):
+    def set_score(self, score: int) -> None:
         self._score = max(0, min(100, score))
         self.update()
 
@@ -117,11 +125,11 @@ class _HealthScoreWidget(QWidget):
 class _StatCard(QFrame):
     """统计卡片。"""
 
-    def __init__(self, title: str, count: int, color: str, button_text: str, parent=None):
+    def __init__(self, title: str, count: int, color: str, button_text: str, parent: QWidget | None = None):
         super().__init__(parent)
         self._setup_ui(title, count, color, button_text)
 
-    def update_count(self, count: int):
+    def update_count(self, count: int) -> None:
         """更新卡片显示的数字。"""
         self._count_label.setText(str(count))
 
@@ -164,15 +172,21 @@ class SecurityDashboard(QDialog):
 
     fix_requested = pyqtSignal(int)  # 请求修复条目，参数为对应 entry_id
 
-    def __init__(self, security_analyzer, entry_manager, config, parent=None):
+    def __init__(
+        self,
+        security_analyzer: SecurityAnalyzer,
+        entry_manager: EntryManager,
+        config: ConfigManager,
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self._analyzer = security_analyzer
         self._entry_manager = entry_manager
         self._config = config
-        self._weak_entries = []
-        self._duplicate_groups = []
-        self._old_entries = []
-        self._worker = None  # 预先声明，确保 reject 时可安全判空
+        self._weak_entries: list[Entry] = []
+        self._duplicate_groups: list[list[Entry]] = []
+        self._old_entries: list[Entry] = []
+        self._worker: BackgroundWorker | None = None  # 预先声明，确保 reject 时可安全判空
         self._status_hint: QLabel | None = None
         self._setup_ui()
         self._load_data()
@@ -387,7 +401,7 @@ class SecurityDashboard(QDialog):
                 subtitle=f'用户名: {entry.username}' if entry.username else '',
                 badge_text=f'强度 {entry.password_strength}',
                 badge_color=get_strength_color(entry.password_strength),
-                entry_id=entry.id,
+                entry_id=cast(int, entry.id),
             )
             self._weak_layout.addWidget(row)
 
@@ -417,7 +431,7 @@ class SecurityDashboard(QDialog):
                     subtitle=f'用户名: {entry.username}' if entry.username else '',
                     badge_text='重复使用',
                     badge_color=c('warning_orange'),
-                    entry_id=entry.id,
+                    entry_id=cast(int, entry.id),
                 )
                 group_layout.addWidget(entry_row)
 
@@ -441,7 +455,7 @@ class SecurityDashboard(QDialog):
                 subtitle=f'上次更新: {formatted}',
                 badge_text=f'> {days}天',
                 badge_color=c('warning'),
-                entry_id=entry.id,
+                entry_id=cast(int, entry.id),
             )
             self._old_layout.addWidget(row)
 

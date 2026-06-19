@@ -5,6 +5,8 @@
 后才提交，完成或失败后立即清除旧密码输入以缩短明文驻留时间。
 """
 
+from __future__ import annotations
+
 import logging
 from pathlib import Path
 
@@ -17,9 +19,10 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
-from ...business.managers.vault_manager import AUTH_FAILED_MESSAGE
+from ...business.managers.vault_manager import AUTH_FAILED_MESSAGE, VaultManager
 from ...business.services.password_service import PasswordService
 from ..components.widgets import (
     RateLimiter,
@@ -41,7 +44,7 @@ logger = logging.getLogger(__name__)
 class ChangeMasterDialog(QDialog):
     """主密码修改对话框，含旧密码校验与新密码强度校验。"""
 
-    def __init__(self, vault_manager, parent=None):
+    def __init__(self, vault_manager: VaultManager, parent: QWidget | None = None):
         super().__init__(parent)
         self._vault = vault_manager
         data_dir = getattr(self._vault, 'data_dir', None)
@@ -50,7 +53,7 @@ class ChangeMasterDialog(QDialog):
             if isinstance(data_dir, (str, Path)) else None
         )
         self._rate_limiter = RateLimiter(state_path)
-        self._worker = None
+        self._worker: BackgroundWorker | None = None
         self._setup_ui()
 
     def reject(self):

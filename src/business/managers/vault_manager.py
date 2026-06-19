@@ -26,16 +26,17 @@ from ...exceptions import (
     VaultKeyEpochMismatchError,
     VaultLockedError,
 )
-from ...utils.file_security import secure_delete_file
 from ...utils.memory import secure_zero_buffer
-from ..services.key_manager import KeyManager
-from ..services.metadata_signer import MetadataSigner
-from ..services.re_encryption import ReEncryptionService
-from .backup_restore import (
+from ...utils.purge_files import secure_purge
+from ..services.backup_paths import (
     BACKUPS_DIR_NAME,
     PRE_RESTORE_GLOB,
     SNAPSHOT_GLOB,
 )
+from ..services.crypto_utils import encrypt_plaintext_category_names
+from ..services.key_manager import KeyManager
+from ..services.metadata_signer import MetadataSigner
+from ..services.re_encryption import ReEncryptionService
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +52,11 @@ AUTH_FAILED_MESSAGE = '当前主密码错误'
 class VaultManager:
     """管理保险库的创建、解锁、锁定等操作。"""
 
-    def __init__(self, config: ConfigManager):
+    def __init__(self, config: ConfigManager, *, db: DatabaseManager | None = None):
         self._config = config
-        self._db = DatabaseManager(config.db_path)
+        # 允许注入 DatabaseManager（测试注入 test_mode=True 关闭密文断言以适配
+        # 直接构造的非密文数据）；None 时内部创建生产实例（断言启用）。
+        self._db = db if db is not None else DatabaseManager(config.db_path)
         self._db.set_write_guard(self._enforce_key_epoch)
 
         # 元数据签名器
@@ -110,6 +113,20 @@ class VaultManager:
     @property
     def data_dir(self) -> Path:
         return self._config.data_dir
+
+    @property
+    def backup_directories(self) -> list[Path]:
+        """备份相关目录列表：默认目录 + 用户自定义 backup_directory（若配置）。
+
+        作为 purge/清理路径的目录单一真相源，统一默认目录（``data_dir/backups``）
+        与用户自定义 ``backup_directory``，避免部分清理路径漏扫自定义目录导致含
+        明文的恢复点/快照残留（如启动时仅清理默认目录而旧目录残留历史明文）。
+        """
+        directories = [self.data_dir / BACKUPS_DIR_NAME]
+        custom = self._config.get('backup_directory', '')
+        if custom:
+            directories.append(Path(custom))
+        return directories
 
     @property
     def is_initialized(self) -> bool:
@@ -252,8 +269,7 @@ class VaultManager:
             self._key_mgr.activate(derived_key, snapshot_key, key_epoch)
             self._signer.set_domain_key(MetadataSigner.compute_domain_key(derived_key))
             self._is_unlocked = True
-            from .entry_manager import EntryManager
-            EntryManager(self)._encrypt_plaintext_category_names()
+            encrypt_plaintext_category_names(self._db, derived_key)
             return True, ''
         except VaultAlreadyInitializedError as exc:
             return False, str(exc)
@@ -508,7 +524,9 @@ class VaultManager:
             except BaseException:
                 # 重加密失败：new_key 未被 _key_mgr.activate 持有，原地清零收缩驻留，
                 # 避免 Argon2id 派生的新密钥在异常栈帧残留、依赖 GC 回收。
-                new_key[:] = b'\x00' * len(new_key)
+                # secure_zero_buffer 类型安全：new_key 为 bytearray（change_password
+                # → derive_key 返回 bytearray），原地覆写底层缓冲。
+                secure_zero_buffer(new_key)
                 raise
             if failed_purges:
                 # 改密成功但旧明文快照未能清理：明确反馈用户，避免误以为泄漏面已收缩
@@ -523,7 +541,7 @@ class VaultManager:
             logger.warning("修改主密码失败", exc_info=True)
             return False, str(exc) or '修改主密码失败'
 
-    def _re_encrypt_all(self, new_key: bytes | bytearray | bytearray, new_salt: bytes, new_verify_token: str,
+    def _re_encrypt_all(self, new_key: bytes | bytearray, new_salt: bytes, new_verify_token: str,
                         new_params: KdfParams = DEFAULT_KDF_PARAMS) -> list[Path]:
         """使用新密钥重新加密所有条目，含已删除条目，受事务保护。
 
@@ -610,24 +628,12 @@ class VaultManager:
         """删除所有 snapshot_key 加密的快照与恢复前安全快照，返回未能删除的文件。
 
         改密时 snapshot_key 随主密钥轮换，旧 snapshot_key 加密的文件无法用新密钥
-        解密，且含历史明文，清理以收缩泄漏面。同时覆盖默认目录与用户自定义目录。
-        返回因占用或权限等原因未能删除的文件清单，供调用方明确上报而非静默丢失。
+        解密且含历史明文，清理以收缩泄漏面。覆盖默认与自定义备份目录，返回因占用
+        或权限等原因未能删除的文件清单，供调用方明确上报而非静默丢失。
         """
-        directories = [self.data_dir / BACKUPS_DIR_NAME]
-        backup_dir = self._config.get('backup_directory', '')
-        if backup_dir:
-            directories.append(Path(backup_dir))
-        failed = []
-        for directory in directories:
-            if not directory.is_dir():
-                continue
-            for pattern in (PRE_RESTORE_GLOB, SNAPSHOT_GLOB):
-                for f in directory.glob(pattern):
-                    try:
-                        secure_delete_file(f)
-                    except OSError:
-                        failed.append(f)
-        return failed
+        return secure_purge(
+            self.backup_directories, [PRE_RESTORE_GLOB, SNAPSHOT_GLOB],
+        )
 
     def encrypt_snapshot_key(self, snapshot_key: bytes | bytearray) -> str:
         """加密 snapshot_key 以写入 vault_meta，供恢复流程在事务内复用。
@@ -663,25 +669,12 @@ class VaultManager:
     def purge_restore_points(self) -> list[Path]:
         """删除所有恢复前安全快照（pre_restore_*.cbox），返回未能删除的文件。
 
-        恢复点为恢复操作前的临时全量明文快照，恢复成功后应删除。启动时重试
-        清理之前因文件占用等原因 purge 失败的残留，收缩历史明文泄漏面。
-        仅清理 pre_restore_*（一次性恢复点），不动 cipherbox_snapshot_*（可能为
-        有效的定期自动快照）。
+        恢复点为恢复操作前的临时全量明文快照，恢复成功后应删除。启动时重试清理
+        之前因文件占用等原因 purge 失败的残留，覆盖默认与自定义备份目录以彻底
+        收缩泄漏面。仅清理 pre_restore_*（一次性恢复点），不动 cipherbox_snapshot_*
+        （可能为有效的定期自动快照）。
         """
-        directories = [self.data_dir / BACKUPS_DIR_NAME]
-        backup_dir = self._config.get('backup_directory', '')
-        if backup_dir:
-            directories.append(Path(backup_dir))
-        failed = []
-        for directory in directories:
-            if not directory.is_dir():
-                continue
-            for f in directory.glob(PRE_RESTORE_GLOB):
-                try:
-                    secure_delete_file(f)
-                except OSError:
-                    failed.append(f)
-        return failed
+        return secure_purge(self.backup_directories, [PRE_RESTORE_GLOB])
 
     def _write_vault_metadata(
         self, *, salt: bytes, verify_token: str,
@@ -726,7 +719,7 @@ class VaultManager:
         )
 
     def _update_vault_metadata(
-        self, new_key: bytes | bytearray | bytearray, new_salt: bytes, new_verify_token: str,
+        self, new_key: bytes | bytearray, new_salt: bytes, new_verify_token: str,
         new_epoch: str, *, snapshot_key: bytes | bytearray | None,
         params: KdfParams = DEFAULT_KDF_PARAMS,
     ) -> None:

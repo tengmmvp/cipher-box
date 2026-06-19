@@ -5,7 +5,10 @@
 读取，清除时统一释放明文。
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -22,6 +25,9 @@ from ..resources.constants import BTN_COPY, FONT_FAMILY_MONOSPACE, MAX_HISTORY_D
 from ..resources.icons import COPY, EYE, LOCK, set_icon
 from ..resources.theme_colors import c
 
+if TYPE_CHECKING:
+    from ...business.managers.entry_manager import EntryManager
+
 
 class PasswordHistoryWidget(QWidget):
     """密码历史折叠区组件。
@@ -33,13 +39,13 @@ class PasswordHistoryWidget(QWidget):
     copy_requested = pyqtSignal(str)
     copy_feedback = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self._history_passwords: list[str] = []
         # 已渲染的密码 QLabel 引用：clear() 时先 setText 掩码再销毁，
         # 避免 deleteLater 异步销毁前明文驻留 Qt 对象（锁定时内存转储可读）。
         self._pwd_labels: list[QLabel] = []
-        self._entry_mgr = None
+        self._entry_mgr: EntryManager | None = None
         # 本组件自管的密码显示超时定时器：clear() 时停止，所有权清晰，
         # 不再依赖外层 DetailPanel 的调用顺序兜底。
         self._own_timers: list[QTimer] = []
@@ -50,7 +56,11 @@ class PasswordHistoryWidget(QWidget):
 
     # ---- 公开接口 ----
 
-    def set_callbacks(self, get_pwd_visible_ms, copy_with_feedback):
+    def set_callbacks(
+        self,
+        get_pwd_visible_ms: Callable[[], int],
+        copy_with_feedback: Callable[..., None],
+    ) -> None:
         """注入回调函数。
 
         Args:
@@ -60,7 +70,12 @@ class PasswordHistoryWidget(QWidget):
         self._get_pwd_visible_ms = get_pwd_visible_ms
         self._copy_with_feedback = copy_with_feedback
 
-    def build_stub(self, entry_id: int, entry_manager, content_layout):
+    def build_stub(
+        self,
+        entry_id: int,
+        entry_manager: EntryManager,
+        content_layout: QVBoxLayout,
+    ) -> None:
         """构建密码历史占位摘要，点击时才加载完整历史。
 
         Args:
@@ -71,7 +86,7 @@ class PasswordHistoryWidget(QWidget):
         self._entry_mgr = entry_manager
         if not entry_manager:
             return
-        count = entry_manager.get_password_history_count(entry_id)
+        count = entry_manager.password_history.get_count(entry_id)
         if not count:
             return
         btn = QPushButton(f'密码历史（{count} 条记录）— 点击展开')
@@ -89,8 +104,8 @@ class PasswordHistoryWidget(QWidget):
             mgr = self._entry_mgr
             if not mgr:
                 return
-            decrypted = mgr.decrypt_password_history(
-                mgr.get_password_history(eid)
+            decrypted = mgr.password_history.decrypt(
+                mgr.password_history.get(eid)
             )
             if decrypted:
                 content_layout.removeWidget(button)
@@ -100,7 +115,7 @@ class PasswordHistoryWidget(QWidget):
         btn.clicked.connect(_expand)
         content_layout.addWidget(btn)
 
-    def clear(self):
+    def clear(self) -> None:
         """安全清除所有状态和密码。"""
         # 停止本组件自管的定时器，避免到期回调访问已销毁控件。
         for timer in self._own_timers:

@@ -35,4 +35,9 @@ jobs:
       - run: uv sync --locked --extra dev
       - run: uv run ruff check src tests
       - run: uv run mypy src
-      - run: uv run pytest --cov=src --cov-report=term-missing --cov-report=xml --cov-fail-under=62
+      - run: uv run pytest --cov=src --cov-report=term-missing --cov-report=xml
+      # 分层覆盖率门槛：非 UI 层（crypto/business/database/utils/config/models 等）85%，
+      # UI 层 30%。一次 pytest 生成 .coverage，再用 coverage report 按 include/omit
+      # 分层校验，避免非 UI 回退且不卡 UI 迭代。
+      - run: uv run coverage report --omit="*/src/ui/*" --fail-under=85
+      - run: uv run coverage report --include="*/src/ui/*" --fail-under=30

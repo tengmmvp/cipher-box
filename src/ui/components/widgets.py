@@ -15,7 +15,9 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
+    QDialog,
     QLabel,
+    QLayout,
     QLineEdit,
     QPushButton,
 )
@@ -104,7 +106,7 @@ class PasswordToggleBtn(QPushButton):
         else:
             self.hide_password()
 
-    def show_password(self, *, seconds: int | None = None):
+    def show_password(self, *, seconds: int | None = None) -> None:
         """显示密码明文，并按指定秒数启动自动隐藏定时器。
 
         Args:
@@ -118,7 +120,7 @@ class PasswordToggleBtn(QPushButton):
             if delay is not None:
                 self._auto_timer.start(delay * 1000)
 
-    def hide_password(self):
+    def hide_password(self) -> None:
         """隐藏密码并恢复 eye 图标，停止自动隐藏定时器。"""
         self._target.setEchoMode(QLineEdit.EchoMode.Password)
         set_icon(self, self._eye_icon)
@@ -160,7 +162,7 @@ def update_strength_label(
 
 # ======== 移除 WindowContextHelpButtonHint ========
 
-def setup_dialog_flags(dialog) -> None:
+def setup_dialog_flags(dialog: QDialog) -> None:
     """移除对话框标题栏上的「?» 帮助按钮。
 
     等价于::
@@ -177,7 +179,7 @@ def setup_dialog_flags(dialog) -> None:
 
 # ======== 布局清空工具 ========
 
-def clear_layout(layout, disconnect_signals: bool = True) -> None:
+def clear_layout(layout: QLayout, disconnect_signals: bool = True) -> None:
     """递归清除布局中的所有控件和子布局。
 
     Args:
@@ -187,13 +189,17 @@ def clear_layout(layout, disconnect_signals: bool = True) -> None:
     """
     while layout.count():
         item = layout.takeAt(0)
+        if item is None:
+            continue
         widget = item.widget()
         if widget:
             if disconnect_signals:
                 # 断开常见的可点击控件信号，减少 deleteLater 窗口期风险
                 if hasattr(widget, 'clicked'):
                     try:
-                        widget.clicked.disconnect()
+                        # widget 运行时为带 clicked 信号的可点击控件（QPushButton 等），
+                        # hasattr 已动态确认；QWidget 基类静态无该属性，故抑制类型告警。
+                        widget.clicked.disconnect()  # pyright: ignore[reportAttributeAccessIssue]
                     except (TypeError, RuntimeError):
                         pass
             widget.deleteLater()
@@ -388,7 +394,7 @@ class RateLimiter:
 
 # ======== Worker 释放工具 ========
 
-def release_worker(dialog) -> None:
+def release_worker(dialog: QDialog) -> None:
     """安全释放对话框持有的 BackgroundWorker。
 
     断开所有信号并将 ``dialog._worker`` 置 None，防止对话框关闭后
@@ -405,10 +411,11 @@ def release_worker(dialog) -> None:
             getattr(worker, sig_name).disconnect()
         except (TypeError, RuntimeError):
             pass
-    dialog._worker = None
+    # _worker 为对话框运行时动态属性（非 QDialog 类型成员），mypy 无法静态识别
+    dialog._worker = None  # type: ignore[attr-defined]
 
 
-def set_label_severity(label, severity):
+def set_label_severity(label: QLabel, severity: str) -> None:
     """设置消息/状态标签的 severity 动态属性并刷新 QSS。
 
     severity 取 'error'/'accent'/'success'，对应 QSS 的
@@ -421,5 +428,6 @@ def set_label_severity(label, severity):
     """
     label.setProperty('severity', severity)
     style = label.style()
-    style.unpolish(label)
-    style.polish(label)
+    if style is not None:
+        style.unpolish(label)
+        style.polish(label)

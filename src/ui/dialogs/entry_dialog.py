@@ -5,9 +5,11 @@
 卡号、TOTP 密钥等敏感输入，保存或关闭时统一清除以缩短明文驻留时间。
 """
 
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QIntValidator
@@ -80,6 +82,10 @@ from ..resources.constants import (
 )
 from ..resources.icons import GENERATE, set_icon
 from ..resources.theme_colors import c
+
+if TYPE_CHECKING:
+    from ...business.managers.entry_manager import EntryManager
+    from ...config import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -161,12 +167,12 @@ class EntryDialog(QDialog):
 
     def __init__(
         self,
-        entry_manager,
+        entry_manager: EntryManager,
         categories: list[Category],
         all_tags: list[str] | None = None,
         entry: Entry | None = None,
-        parent=None,
-        config=None,
+        parent: QWidget | None = None,
+        config: ConfigManager | None = None,
     ):
         super().__init__(parent)
         self._entry_mgr = entry_manager
@@ -391,7 +397,7 @@ class EntryDialog(QDialog):
         )
 
     @staticmethod
-    def _create_special_widget(spec: '_SpecialFieldSpec') -> QWidget:
+    def _create_special_widget(spec: _SpecialFieldSpec) -> QWidget:
         """按 schema 创建单个专用字段控件。"""
         if spec.kind == 'combo':
             combo = QComboBox()

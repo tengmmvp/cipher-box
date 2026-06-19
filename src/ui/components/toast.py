@@ -6,6 +6,7 @@
 """
 
 import weakref
+from collections.abc import Callable
 from typing import cast
 
 from PyQt6.QtCore import (
@@ -78,8 +79,8 @@ class ToastWidget(QFrame):
         toast_type: str = 'info',
         duration: int = 3000,
         action_text: str = '',
-        action_callback=None,
-        parent=None,
+        action_callback: Callable[[], None] | None = None,
+        parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self._toast_type = toast_type
@@ -218,7 +219,7 @@ class ToastWidget(QFrame):
             }}
         """
 
-    def refresh_theme(self):
+    def refresh_theme(self) -> None:
         """主题切换后重新烘焙配色：刷新背景、强调条、消息文本、操作按钮与类型图标。"""
         self._apply_style(self._toast_type)
         if getattr(self, '_msg_label', None) is not None:
@@ -230,7 +231,7 @@ class ToastWidget(QFrame):
             self._icon_label.setPixmap(icon_pixmap(self._icon_name, size=SIZE_TOAST))
 
     # ------------------------------------------------------------- 动画
-    def show_toast(self):
+    def show_toast(self) -> None:
         """显示 Toast，播放淡入动画并启动自动关闭计时器。"""
         self.show()
         self.raise_()
@@ -321,7 +322,7 @@ class ToastManager:
             ToastManager._instances[parent] = ToastManager(parent)
         return cast('ToastManager', ToastManager._instances[parent])
 
-    def add_toast(self, toast: ToastWidget):
+    def add_toast(self, toast: ToastWidget) -> None:
         """添加一个 Toast 并更新所有位置。"""
         # 阴影效果：QGraphicsDropShadowEffect 无法叠加在 QGraphicsOpacityEffect 上，
         # 因此使用同位的 QFrame 作为阴影层，详见下方 shadow_frame。
@@ -350,14 +351,14 @@ class ToastManager:
         # sizeHint 可能尚未稳定，延迟到事件循环空闲时重算消除堆叠跳变。
         QTimer.singleShot(0, self._reposition_all)
 
-    def cancel_all(self):
+    def cancel_all(self) -> None:
         """取消所有活跃 Toast，清空回调并淡出，在锁定前调用此方法。"""
         for toast in list(self._toasts):
             toast._action_callback = None
             toast._start_fade_out()
 
     @staticmethod
-    def cancel_all_for(parent: QWidget):
+    def cancel_all_for(parent: QWidget) -> None:
         """取消指定 parent 窗口的所有活跃 Toast，作为公共 API 暴露。
 
         替代直接访问 ``ToastManager._instances`` 私有属性的模式，
@@ -368,13 +369,13 @@ class ToastManager:
             mgr.cancel_all()
 
     @staticmethod
-    def refresh_for(parent: QWidget):
+    def refresh_for(parent: QWidget) -> None:
         """主题切换后刷新指定 parent 窗口所有活跃 Toast 的烘焙配色。"""
         mgr = ToastManager._instances.get(parent)
         if mgr:
             mgr.refresh_active_themes()
 
-    def refresh_active_themes(self):
+    def refresh_active_themes(self) -> None:
         """重新烘焙所有活跃 Toast 的配色并重定位（阴影颜色随主题变化）。"""
         for toast in list(self._toasts):
             toast.refresh_theme()
@@ -461,8 +462,8 @@ class Toast:
         toast_type: str = 'info',
         duration: int = 3000,
         action_text: str = '',
-        action_callback=None,
-    ):
+        action_callback: Callable[[], None] | None = None,
+    ) -> ToastWidget:
         """显示 Toast 通知。
 
         Args:

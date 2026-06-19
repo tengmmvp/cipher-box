@@ -5,13 +5,17 @@
 机制，并在锁定前由主窗口调用 secure_clear 安全擦除内存中的明文。
 """
 
+from __future__ import annotations
+
 import logging
 from collections import OrderedDict
+from collections.abc import Callable
 from html import escape
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, urlparse
 
 from PyQt6 import sip
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtBoundSignal, pyqtSignal
 from PyQt6.QtWidgets import (
     QFormLayout,
     QFrame,
@@ -28,6 +32,11 @@ from PyQt6.QtWidgets import (
 from ...models import ENTRY_TYPE_LOGIN, Entry, Sensitive
 from ...utils.format import format_datetime
 from ...utils.memory import mark_secret_discarded
+
+if TYPE_CHECKING:
+    from ...business.managers.entry_manager import EntryManager
+    from ...config import ConfigManager
+    from ..utils.clipboard import ClipboardManager
 from ..resources.constants import (
     BTN_COPY,
     BTN_ICON,
@@ -75,19 +84,25 @@ class DetailPanel(QWidget):
     favorite_toggled = pyqtSignal(int)
     copy_feedback = pyqtSignal()
 
-    def __init__(self, clipboard_manager, entry_manager=None, config=None, parent=None):
+    def __init__(
+        self,
+        clipboard_manager: ClipboardManager,
+        entry_manager: EntryManager | None = None,
+        config: ConfigManager | None = None,
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self.setObjectName('detailPanel')
         self._clipboard = clipboard_manager
         self._entry_mgr = entry_manager
         self._config = config
-        self._signal_connections = []
+        self._signal_connections: list[tuple[pyqtBoundSignal, Callable[..., Any]]] = []
         self._current_entry: Entry | None = None
         self._pwd_hide_timer = QTimer(self)
         self._pwd_hide_timer.setSingleShot(True)
         self._pwd_hide_timer.timeout.connect(self._auto_hide_password)
-        self._pwd_label_ref = None
-        self._show_btn_ref = None
+        self._pwd_label_ref: QLabel | None = None
+        self._show_btn_ref: QPushButton | None = None
         self._current_password = ''
         # 主条目中非主密码敏感字段的间接引用字典，自定义字段由 renderer 管理
         self._secret_values_main: dict[str, str] = {}
@@ -215,11 +230,11 @@ class DetailPanel(QWidget):
         layout.addWidget(scroll)
 
     @property
-    def current_entry(self):
+    def current_entry(self) -> Entry | None:
         """当前展示的条目，只读访问。"""
         return self._current_entry
 
-    def show_entry(self, entry: Entry, *, force: bool = False):
+    def show_entry(self, entry: Entry, *, force: bool = False) -> None:
         """显示条目详情。
 
         Args:
@@ -320,7 +335,7 @@ class DetailPanel(QWidget):
             self._build_strength_bar(entry)
 
         # ===== TOTP 区域 =====
-        if entry.has_totp and entry.id:
+        if entry.has_totp and entry.id and self._entry_mgr is not None:
             self._totp_widget.start(entry.id, self._entry_mgr, self._content_layout)
 
         # ===== 密码历史，延迟加载：仅显示摘要，点击展开后才解密 =====
@@ -587,7 +602,7 @@ class DetailPanel(QWidget):
         prev = self._current_entry
         if (self._entry_mgr is not None and prev is not None
                 and prev.id is not None and prev.has_totp):
-            self._entry_mgr.evict_totp_cache(prev.id)
+            self._entry_mgr.totp.evict(prev.id)
 
     def _clear_content(self):
         """清除详情面板内容，安全擦除敏感数据。"""
@@ -645,7 +660,7 @@ class DetailPanel(QWidget):
         ):
             self._totp_widget.resume_if_active()
 
-    def show_empty(self):
+    def show_empty(self) -> None:
         """显示空状态。"""
         self._evict_current_totp()
         self._clear_content()
@@ -660,7 +675,7 @@ class DetailPanel(QWidget):
         self._content_layout.addWidget(self._empty_label)
         self._empty_label.show()
 
-    def secure_clear(self):
+    def secure_clear(self) -> None:
         """安全清除所有敏感数据和信号连接，由主窗口在锁定时调用。"""
         for signal, slot in self._signal_connections:
             try:

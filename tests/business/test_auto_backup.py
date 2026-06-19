@@ -1,3 +1,5 @@
+from tests.helpers import make_entry_manager
+
 """自动快照 ``maybe_auto_backup`` 测试。
 
 覆盖间隔跳过、强制备份与保留数清理三条主路径，该方法此前无测试覆盖。
@@ -83,13 +85,12 @@ def test_maybe_auto_backup_cancelled(vault, vault_config):
     覆盖 close_to_tray / 锁定场景下后台备份的协作取消：业务层在全量解密循环
     中检查 cancel_check，及时退出避免隐藏/锁定后继续持密钥解密。
     """
-    from src.business.managers.entry_manager import EntryManager
     from src.models import Entry
 
     mgr = BackupRestoreManager(vault)
     vault_config.set('auto_backup_enabled', True)
     # 添加条目使全量解密循环执行，cancel_check 才有机会被检查触发
-    EntryManager(vault).add_entry(Entry(title='t', username='u', password='p'))
+    make_entry_manager(vault).add_entry(Entry(title='t', username='u', password='p'))
 
     ok, err = mgr.maybe_auto_backup(vault_config, force=True, cancel_check=lambda: True)
 

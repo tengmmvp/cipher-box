@@ -4,7 +4,10 @@
 面板隐藏时暂停定时器以节省资源，重新显示时恢复刷新。
 """
 
+from __future__ import annotations
+
 import time as _time
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -21,6 +24,9 @@ from ..resources.constants import BTN_TOTP_COPY, FONT_FAMILY_MONOSPACE
 from ..resources.icons import COPY, set_icon_with_text
 from ..resources.theme_colors import c
 
+if TYPE_CHECKING:
+    from ...business.managers.entry_manager import EntryManager
+
 # TOTP 验证码刷新间隔，单位毫秒
 MS_TOTP_REFRESH = 1000
 
@@ -35,9 +41,9 @@ class TOTPWidget(QWidget):
     copy_requested = pyqtSignal(str)
     copy_feedback = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self._entry_mgr = None
+        self._entry_mgr: EntryManager | None = None
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._code_label: QLabel | None = None
@@ -45,11 +51,16 @@ class TOTPWidget(QWidget):
         self._totp_frame: QFrame | None = None
         self._entry_id: int | None = None
         self._period: int = 30
-        self._content_layout = None
+        self._content_layout: QVBoxLayout | None = None
 
     # ---- 公开接口 ----
 
-    def start(self, entry_id: int, entry_manager, content_layout):
+    def start(
+        self,
+        entry_id: int,
+        entry_manager: EntryManager,
+        content_layout: QVBoxLayout,
+    ) -> None:
         """启动 TOTP 刷新。
 
         Args:
@@ -61,11 +72,11 @@ class TOTPWidget(QWidget):
         self._content_layout = content_layout
         self._build(entry_id)
 
-    def stop(self):
+    def stop(self) -> None:
         """停止定时器。"""
         self._timer.stop()
 
-    def clear(self):
+    def clear(self) -> None:
         """清除所有状态并销毁已构建的 TOTP 区域。"""
         self._timer.stop()
         # 先清空验证码明文再销毁：deleteLater 异步执行，销毁前 label 文本仍驻留
@@ -82,7 +93,7 @@ class TOTPWidget(QWidget):
             self._totp_frame.deleteLater()
             self._totp_frame = None
 
-    def resume_if_active(self):
+    def resume_if_active(self) -> None:
         """面板显示时若当前有条目含 TOTP 则重启定时器。"""
         if self._entry_id:
             self._timer.start(MS_TOTP_REFRESH)
@@ -93,7 +104,7 @@ class TOTPWidget(QWidget):
         """构建 TOTP 区域并启动刷新。"""
         if not self._entry_mgr:
             return
-        state = self._entry_mgr.get_totp_state(entry_id)
+        state = self._entry_mgr.totp.get_state(entry_id)
         if not state:
             return
         self._entry_id = entry_id
@@ -158,16 +169,16 @@ class TOTPWidget(QWidget):
         self._timer.start(MS_TOTP_REFRESH)
 
     def _refresh(self):
-        """刷新 TOTP 验证码，调用 generate_totp_cached 复用缓存的 period。
+        """刷新 TOTP 验证码，调用 totp.generate_cached 复用缓存的 period。
 
-        _build 启动时已通过 get_totp_state 预热 EntryManager 的 secret 缓存，
+        _build 启动时已通过 totp.get_state 预热会话内 secret 缓存，
         此处仅做纯 HOTP 计算，不再每秒查 DB 与 AESGCM 解密。当 key_epoch 因
         改密或锁定而变化，或条目更新、删除时缓存自动失效，下次刷新重新解密。
         """
         if not self._entry_id or not self._code_label or not self._entry_mgr:
             self._timer.stop()
             return
-        code = self._entry_mgr.generate_totp_cached(self._entry_id)
+        code = self._entry_mgr.totp.generate_cached(self._entry_id)
         if not code:
             self._timer.stop()
             return

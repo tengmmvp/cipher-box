@@ -38,6 +38,15 @@ version = {attr = "src.__version__"}
 testpaths = ["tests"]
 addopts = "-q"
 
+[tool.coverage.run]
+source = ["src"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+]
+
 [tool.ruff]
 target-version = "py310"
 line-length = 100
@@ -79,6 +88,13 @@ disallow_untyped_defs = false
 disallow_incomplete_defs = false
 
 [tool.pyright]
+# 指向项目 venv 解析 PyQt6 等第三方依赖；pyright CLI 默认不用 .venv，会误报
+# reportMissingImports（PyQt6 未解析），并连带触发 reportOptionalMemberAccess。
+venvPath = "."
+venv = ".venv"
 # 密钥以 bytearray 持有以便 secure_zero_buffer 真正清零；bytearray 是 bytes-like，
 # 启用类型提升以避免在加密/哈希调用处产生大量 bytes|bytearray 注解噪音。
 disableBytesTypePromotions = false
+# 未用局部变量（``_`` 前缀为 Python「故意未用」惯例）不作诊断项；pyright 本就不
+# 检查未用参数（参数用于接口/信号槽签名匹配），未用变量由代码审查把关。
+reportUnusedVariable = "none"

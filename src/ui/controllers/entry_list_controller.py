@@ -30,7 +30,7 @@ class EntryListController:
         entry_manager: EntryManager,
         security: SecurityAnalyzer,
         config: ConfigManager,
-    ):
+    ) -> None:
         self._entry_mgr = entry_manager
         self._security = security
         self._config = config
@@ -79,7 +79,7 @@ class EntryListController:
         category_id: int | None,
         search: str,
         cancel_check: Callable[[], bool] | None = None,
-    ) -> tuple[list, str]:
+    ) -> tuple[list[Entry], str]:
         """获取全部条目，可按分类和搜索过滤。"""
         return self._entry_mgr.get_entry_summaries(
             category_id=category_id,
@@ -91,7 +91,7 @@ class EntryListController:
         self,
         search: str,
         cancel_check: Callable[[], bool] | None = None,
-    ) -> tuple[list, str]:
+    ) -> tuple[list[Entry], str]:
         """获取收藏条目。"""
         return (
             self._entry_mgr.get_entry_summaries(
@@ -100,7 +100,7 @@ class EntryListController:
             '收藏',
         )
 
-    def fetch_weak(self, cancel_check: Callable[[], bool] | None = None) -> tuple[list, str]:
+    def fetch_weak(self, cancel_check: Callable[[], bool] | None = None) -> tuple[list[Entry], str]:
         """获取弱密码条目。
 
         ``cancel_check`` 仅为与其余 fetcher 统一签名而保留（弱密码来自已缓存的安全
@@ -110,7 +110,7 @@ class EntryListController:
         summary = self.get_security_summary()
         return (summary or {}).get('weak_entries', []), '弱密码（全部分类）'
 
-    def fetch_duplicate(self, cancel_check: Callable[[], bool] | None = None) -> tuple[list, str]:
+    def fetch_duplicate(self, cancel_check: Callable[[], bool] | None = None) -> tuple[list[Entry], str]:
         """获取重复密码条目（``cancel_check`` 同 fetch_weak，仅签名对齐）。"""
         del cancel_check
         summary = self.get_security_summary()
@@ -121,7 +121,7 @@ class EntryListController:
         self,
         search: str,
         cancel_check: Callable[[], bool] | None = None,
-    ) -> tuple[list, str]:
+    ) -> tuple[list[Entry], str]:
         """获取近期更新条目，按 updated_at 降序取最近 N 条。
 
         无搜索时下推 ORDER BY updated_at DESC LIMIT 到 SQL（经
@@ -142,7 +142,7 @@ class EntryListController:
         self,
         search: str,
         cancel_check: Callable[[], bool] | None = None,
-    ) -> tuple[list, str]:
+    ) -> tuple[list[Entry], str]:
         """获取回收站条目。"""
         return (
             self._entry_mgr.get_entry_summaries(
@@ -151,9 +151,9 @@ class EntryListController:
             '回收站',
         )
 
-    def get_fetcher(self, filter_key: str) -> Callable[..., tuple[list, str]]:
+    def get_fetcher(self, filter_key: str) -> Callable[..., tuple[list[Entry], str]]:
         """获取过滤器对应的数据获取方法。"""
-        fetchers: dict[str, Callable[..., tuple[list, str]]] = {
+        fetchers: dict[str, Callable[..., tuple[list[Entry], str]]] = {
             'all': self.fetch_all,
             'favorite': self.fetch_favorite,
             'weak': self.fetch_weak,
@@ -166,13 +166,13 @@ class EntryListController:
     # ========== 搜索与标签过滤 ==========
 
     @staticmethod
-    def filter_by_search(entries: list, search: str) -> list:
+    def filter_by_search(entries: list[Entry], search: str) -> list[Entry]:
         """在弱密码/重复密码过滤器中对结果施加搜索过滤。"""
         from ...business.managers.entry_manager import EntryManager
         return [e for e in entries if EntryManager.matches_search(e, search)]
 
     @staticmethod
-    def filter_by_tag(entries: list, tag: str) -> list:
+    def filter_by_tag(entries: list[Entry], tag: str) -> list[Entry]:
         """按标签过滤条目。"""
         from ...business.managers.entry_manager import EntryManager
         return [e for e in entries if EntryManager.matches_tag(e, tag)]

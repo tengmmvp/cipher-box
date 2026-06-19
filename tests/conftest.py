@@ -10,25 +10,6 @@ from src.models import Entry
 from tests.helpers import make_test_config
 
 
-@pytest.fixture
-def _disable_encrypted_assertions():
-    """关闭 db_manager 的密文前缀断言。
-
-    通过 monkey-patch DatabaseManager，使本 fixture 活跃期间创建的
-    实例默认 test_mode=True，即 _enforce_encrypted_fields=False。
-    需要此 fixture 的测试类或方法应使用 @pytest.mark.usefixtures 装饰器。
-    生产环境断言仍生效，默认 _enforce_encrypted_fields=True。
-    """
-    original_init = DatabaseManager.__init__
-
-    def _patched_init(self, db_path, *, test_mode=False):
-        original_init(self, db_path, test_mode=True)
-
-    DatabaseManager.__init__ = _patched_init
-    yield
-    DatabaseManager.__init__ = original_init
-
-
 @pytest.fixture(scope='session')
 def qapp():
     """确保测试会话中有一个 QApplication 实例。"""
@@ -69,9 +50,14 @@ def _weak_kdf_for_tests(monkeypatch):
 
 @pytest.fixture
 def vault(vault_config):
-    """已初始化的 VaultManager 实例。"""
+    """已初始化的 VaultManager 实例。
+
+    注入 test_mode=True 的 DatabaseManager 关闭密文前缀断言（_enforce_encrypted_fields），
+    适配测试直接构造的非密文数据；生产路径不传 db，默认断言启用。
+    """
     from src.business.managers.vault_manager import VaultManager
-    v = VaultManager(vault_config)
+    db = DatabaseManager(vault_config.db_path, test_mode=True)
+    v = VaultManager(vault_config, db=db)
     v.initialize('TestPassword123!', params=_TEST_KDF_PARAMS)
     yield v
     try:
@@ -83,8 +69,11 @@ def vault(vault_config):
 @pytest.fixture
 def entry_mgr(vault):
     """已初始化的 EntryManager 实例。"""
+    from src.business.managers.entry_cache import EntryCacheManager
+    from src.business.managers.entry_change_bus import EntryChangeBus
     from src.business.managers.entry_manager import EntryManager
-    return EntryManager(vault)
+    cache = EntryCacheManager(vault)
+    return EntryManager(vault, cache, EntryChangeBus(cache))
 
 
 @pytest.fixture

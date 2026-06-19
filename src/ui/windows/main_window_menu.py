@@ -49,8 +49,8 @@ if TYPE_CHECKING:
     from ...business.managers.vault_manager import VaultManager
     from ...business.services.security_analyzer import SecurityAnalyzer
     from ...config import ConfigManager
-    from ...utils.clipboard import ClipboardManager
     from ..components.detail_panel import DetailPanel
+    from ..utils.clipboard import ClipboardManager
 
 # 快捷键定义：每个条目由按键序列和显示描述组成，供 _setup_shortcuts 与 _show_shortcuts 共享。
 _SHORTCUT_DISPLAY = [

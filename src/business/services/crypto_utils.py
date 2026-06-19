@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
+    from ...database.db_manager import DatabaseManager
     from ..managers.vault_manager import VaultManager
 
 from ...crypto.encryption import EncryptionEngine
@@ -64,7 +65,7 @@ SENSITIVE_ENCRYPTED_FIELDS: tuple[str, ...] = (
 )
 
 # 字符串型加密字段（custom_fields 为 list[CustomField]，单独校验）。
-# 供 EntryManager._validate_plain_entry 等明文条目校验复用，单一来源。
+# 供 entry_validation.validate_plain_entry 等明文条目校验复用，单一来源。
 STRING_ENCRYPTED_FIELDS: tuple[str, ...] = tuple(
     f for f in SENSITIVE_ENCRYPTED_FIELDS if f != 'custom_fields'
 )
@@ -338,3 +339,22 @@ def build_encrypted_entry_fields(item: dict, key: bytes | bytearray, crypto_id: 
         'custom_fields': encrypt_field(custom_json, key, crypto_id, 'custom_fields'),
         'totp_secret': encrypt_field(item.get('totp_secret', ''), key, crypto_id, 'totp_secret'),
     }
+
+
+def encrypt_plaintext_category_names(db: DatabaseManager, key: bytes | bytearray) -> None:
+    """加密 data 层以明文写入的默认分类名（首次初始化后补加密）。
+
+    ``SchemaManager.init_tables`` 建表时插入默认分类（如"未分类"），但 data 层不持
+    密钥无法加密；首次初始化后在 business 层补加密，使全部 category.name 以密文存储，
+    满足改密时 ``re_encrypt_categories`` 的解密契约。已加密（cb2: 前缀）的分类跳过，
+    故重复调用幂等。从 EntryManager 提取为纯函数，供 VaultManager.initialize 直接
+    调用，消除二者间的循环依赖（原经延迟 import 调用 EntryManager 方法）。
+    """
+    with db.transaction():
+        for category in db.get_categories():
+            if category.id is None or category.name.startswith(EncryptionEngine.TEXT_PREFIX):
+                continue
+            category.name = encrypt_field(
+                category.name, key, category_crypto_id(category.id), 'category_name',
+            )
+            db.update_category(category)

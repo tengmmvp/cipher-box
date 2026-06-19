@@ -244,9 +244,11 @@ class TOTPGenerator:
         except (binascii.Error, ValueError):
             logger.debug("TOTP 密钥验证失败", exc_info=True)
             return False
-        # 解码字节数 < 10 视为无效：截断密钥会被静默接受，但生成的验证码
-        # 永不匹配，用户难以察觉密钥已损坏。RFC 6238 起码要求 160 位（20 字节），
-        # 此处放宽到 10 字节仅拦截明显损坏的极短输入。
+        # 拒绝解码后过短的 secret：RFC 6238 建议 ≥160 位（20 字节），但实践中
+        # Google Authenticator 等广泛使用 10 字节（80 位，16 个 base32 字符）secret，
+        # 30s 窗口 + 6 位码下在线爆破 80 位 secret 仍不可行（需 ~2^80/10^6 次尝试）。
+        # 故下限放宽到 10 字节，仅拦截明显损坏/截断的极短输入（其生成的码永不匹配，
+        # 用户难以察觉）。
         if len(decoded) < 10:
             logger.debug("TOTP 密钥解码后长度不足：%d 字节", len(decoded))
             return False

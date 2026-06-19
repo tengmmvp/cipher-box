@@ -28,7 +28,7 @@ class EmptyStateWidget(QWidget):
         title: str = '暂无数据',
         subtitle: str = '',
         action_text: str = '',
-        parent=None,
+        parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self._setup_ui(icon_name, title, subtitle, action_text)

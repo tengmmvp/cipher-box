@@ -5,7 +5,11 @@
 与失败锁定，登录成功后立即清除输入框中的明文。
 """
 
+from __future__ import annotations
+
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -22,6 +26,9 @@ from PyQt6.QtWidgets import (
 )
 
 from ...business.services.password_service import PasswordService
+
+if TYPE_CHECKING:
+    from ...business.managers.vault_manager import VaultManager
 from ..components.widgets import (
     RateLimiter,
     create_password_toggle_btn,
@@ -41,7 +48,7 @@ class LoginWindow(QDialog):
 
     login_success = pyqtSignal()
 
-    def __init__(self, vault_manager, parent=None):
+    def __init__(self, vault_manager: VaultManager, parent: QWidget | None = None):
         super().__init__(parent)
         self._vault = vault_manager
         self._is_first_time = not vault_manager.is_initialized
@@ -51,7 +58,7 @@ class LoginWindow(QDialog):
             if isinstance(data_dir, (str, Path)) else None
         )
         self._rate_limiter = RateLimiter(state_path)
-        self._worker = None
+        self._worker: BackgroundWorker | None = None
         self._setup_ui()
 
     def reject(self):
@@ -255,7 +262,7 @@ class LoginWindow(QDialog):
             if not valid:
                 self._show_error(error)
                 return
-            action = self._vault.initialize
+            action: Callable[[str], tuple[bool, str]] = self._vault.initialize
             error_default = '初始化失败，请重试'
         else:
             action = self._vault.unlock

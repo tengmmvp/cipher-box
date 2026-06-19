@@ -25,7 +25,7 @@ def db():
     """创建一个临时数据库并初始化表结构，关闭加密断言。"""
     _tmp_dir = tempfile.mkdtemp()
     _db_path = Path(_tmp_dir) / 'test_vault.db'
-    _db = DatabaseManager(_db_path)
+    _db = DatabaseManager(_db_path, test_mode=True)
     _db.open()
     _db.init_tables()
     yield _db
@@ -36,7 +36,6 @@ def db():
         pass
 
 
-@pytest.mark.usefixtures('_disable_encrypted_assertions')
 def test_count_zero_when_no_history(db):
     """条目无密码历史时计数为 0。"""
     entry = _make_entry(title='No History')
@@ -45,7 +44,6 @@ def test_count_zero_when_no_history(db):
     assert count == 0
 
 
-@pytest.mark.usefixtures('_disable_encrypted_assertions')
 def test_count_after_adding_history(db):
     """添加历史记录后计数随记录数增长。"""
     entry = _make_entry(title='With History')
@@ -57,7 +55,6 @@ def test_count_after_adding_history(db):
     assert count == 3
 
 
-@pytest.mark.usefixtures('_disable_encrypted_assertions')
 def test_count_per_entry_isolation(db):
     """不同条目的密码历史计数相互隔离。"""
     e1 = _make_entry(title='Entry 1')

@@ -4,6 +4,8 @@
 该映射完成，新增配置只需扩展映射表。保存时执行原子写入。
 """
 
+from __future__ import annotations
+
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -30,7 +32,7 @@ from ..resources.constants import BTN_DIALOG, DIALOG_SETTINGS_MIN_SIZE
 class SettingsDialog(QDialog):
     """应用设置对话框，编辑并持久化用户偏好。"""
 
-    def __init__(self, config: ConfigManager, parent=None):
+    def __init__(self, config: ConfigManager, parent: QWidget | None = None):
         super().__init__(parent)
         self._config = config
         self._setup_ui()

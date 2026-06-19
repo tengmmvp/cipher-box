@@ -1,11 +1,16 @@
-"""CipherBox 固定格式的加密备份与恢复。"""
+"""CipherBox 固定格式的加密备份与恢复。
 
-import enum
+模块拆分后仅承载备份创建/恢复的核心编排逻辑：
+- 头部编解码、检视、密钥派生 → :mod:`..services.backup_header_codec`
+- 恢复前数据校验 → :mod:`..services.backup_validator`
+- 命名常量 → :mod:`..services.backup_paths`
+- 恢复点统计/清理 → :class:`.restore_point_manager.RestorePointManager`
+"""
+
 import errno
 import json
 import logging
 import os
-import struct
 import time
 import uuid
 from collections.abc import Callable
@@ -20,15 +25,11 @@ if TYPE_CHECKING:
     from .vault_manager import VaultManager
 
 from ...crypto.encryption import EncryptionEngine
-from ...crypto.master_key import DEFAULT_KDF_PARAMS, KdfParams, MasterKeyManager
+from ...crypto.master_key import DEFAULT_KDF_PARAMS, MasterKeyManager
 from ...exceptions import BackupError, PayloadTooLargeError, VaultKeyEpochMismatchError
 from ...models import (
-    ENTRY_TYPES,
-    MAX_CUSTOM_FIELDS_PER_ENTRY,
-    MAX_PASSWORD_HISTORY,
     Category,
     RawEntry,
-    is_real_int,
 )
 from ...utils.file_security import (
     atomic_write,
@@ -37,7 +38,31 @@ from ...utils.file_security import (
     validate_file_path,
 )
 from ...utils.format import utc_now_iso
-from ...utils.memory import secure_zero_buffer
+from ...utils.purge_files import secure_purge
+from ..services.backup_header_codec import (
+    BACKUP_FORMAT,
+    MAX_BACKUP_FILE_SIZE,
+    MAX_BACKUP_PAYLOAD_SIZE,
+    BackupFlag,
+    enforce_kdf_floor,
+    header_aad,
+    read_backup_header,
+    write_backup_header,
+    zero_backup_key_if_owned,
+)
+from ..services.backup_paths import (
+    BACKUP_EXT,
+    BACKUPS_DIR_NAME,
+    PRE_RESTORE_GLOB,
+    PRE_RESTORE_PREFIX,
+    SNAPSHOT_GLOB,
+    SNAPSHOT_PREFIX,
+)
+from ..services.backup_validator import (
+    MAX_BACKUP_ENTRIES,
+    MAX_HISTORY_PER_ENTRY,
+    validate_restore_data,
+)
 from ..services.crypto_utils import (
     build_encrypted_entry_fields,
     decrypt_entry_to_portable_dict,
@@ -47,6 +72,7 @@ from ..services.crypto_utils import (
 )
 from ..services.metadata_signer import VAULT_META_SIGNED_KEYS, MetadataSigner
 from ..services.password_service import PasswordService
+from .restore_point_manager import MAX_RESTORE_POINTS, RestorePointManager
 
 logger = logging.getLogger(__name__)
 
@@ -75,43 +101,7 @@ def _user_friendly_error(exc: Exception) -> str:
     if isinstance(exc, json.JSONDecodeError):
         return '备份文件格式无效或已损坏'
     # PayloadTooLargeError(BackupError 子类)已由上方 BackupError 分支捕获并返回 str
-    return '操作失败，请检查文件和磁盘空间'
-
-BACKUP_MAGIC = b'CipherBoxBackup\x00'
-BACKUP_FORMAT = 'CipherBoxBackup'
-BACKUP_AAD = b'CipherBox:backup'
-BACKUP_SALT_SIZE = 32
-
-# 备份/恢复点文件命名约定。集中定义供 BackupRestoreManager 与 VaultManager 的
-# 清理路径共用，避免目录名或 glob 模式漂移导致 purge 找不到旧文件——尤其
-# pre_restore_* 含恢复前全部条目明文，残留即放大泄漏面。
-BACKUPS_DIR_NAME = 'backups'
-BACKUP_EXT = '.cbox'
-PRE_RESTORE_PREFIX = 'pre_restore_'
-PRE_RESTORE_GLOB = 'pre_restore_*.cbox'
-SNAPSHOT_PREFIX = 'cipherbox_snapshot_'
-SNAPSHOT_GLOB = 'cipherbox_snapshot_*.cbox'
-
-# 固定头：flags、Argon2 time/memory/parallelism，随后为 32 字节 salt。
-BACKUP_HEADER_STRUCT = struct.Struct('<BIII')
-BACKUP_HEADER_SIZE = len(BACKUP_MAGIC) + BACKUP_HEADER_STRUCT.size + BACKUP_SALT_SIZE
-MAX_BACKUP_FILE_SIZE = 64 * 1024 * 1024
-MAX_BACKUP_PAYLOAD_SIZE = 32 * 1024 * 1024
-MAX_BACKUP_ENTRIES = 50_000
-MAX_RESTORE_POINTS = 10
-MAX_ENTRY_JSON_SIZE = 2 * 1024 * 1024
-MAX_TEXT_FIELD_SIZE = 1024 * 1024
-MAX_HISTORY_PER_ENTRY = MAX_PASSWORD_HISTORY * 2  # 每条目历史上限，2 倍余量
-
-
-class BackupFlag(enum.IntEnum):
-    """备份类型标志，用于二进制头部标识加密方式。
-
-    使用 IntEnum 而非 IntFlag，因为 IntFlag 的 ~ 运算仅翻转已定义位，
-    无法检测未知标志位。IntEnum 的 ~ 返回标准 int 按位取反，可正确检测非法组合。
-    """
-    PASSWORD = 1     # 使用独立备份密码加密
-    SNAPSHOT = 2     # 使用快照密钥加密
+    return '操作失败，请检查文件和磁盘'
 
 
 class BackupRestoreManager:
@@ -127,83 +117,16 @@ class BackupRestoreManager:
         # 临时实例导致分类名重复解密与缓存双份明文驻留。未注入时回退临时实例
         # （主要为兼容隔离测试）。
         self._entry_mgr = entry_manager
+        self._restore_points = RestorePointManager(vault_manager)
 
     @property
     def _key(self) -> bytes:
         return require_vault_key(self._vault)
 
-    @staticmethod
-    def _derive_backup_key(password: str, salt: bytes) -> bytearray:
-        return MasterKeyManager.derive_backup_key(password, salt, DEFAULT_KDF_PARAMS)
-
-    @staticmethod
-    def _write_backup_header(file: IO[bytes], flags: BackupFlag, salt: bytes, params: KdfParams) -> None:
-        """写入备份头，持久化实际 KDF 参数。"""
-        MasterKeyManager.validate_params(params)
-        if len(salt) != BACKUP_SALT_SIZE:
-            raise BackupError('备份盐长度无效')
-        file.write(BACKUP_MAGIC)
-        file.write(BACKUP_HEADER_STRUCT.pack(
-            int(flags),
-            params.time_cost,
-            params.memory_cost,
-            params.parallelism,
-        ))
-        file.write(salt)
-
-    @staticmethod
-    def _read_backup_header(file: IO[bytes]) -> tuple[BackupFlag, bytes, KdfParams]:
-        """读取备份头，解析标志位与持久化的 KDF 参数。"""
-        file.seek(0)
-        if file.read(len(BACKUP_MAGIC)) != BACKUP_MAGIC:
-            raise BackupError('无效的备份文件格式')
-        raw = file.read(BACKUP_HEADER_STRUCT.size)
-        salt = file.read(BACKUP_SALT_SIZE)
-        if len(raw) != BACKUP_HEADER_STRUCT.size or len(salt) != BACKUP_SALT_SIZE:
-            raise BackupError('备份文件头已损坏')
-        flag_value, time_cost, memory_cost, parallelism = (
-            BACKUP_HEADER_STRUCT.unpack(raw)
-        )
-        if flag_value not in (BackupFlag.PASSWORD, BackupFlag.SNAPSHOT):
-            raise BackupError('备份文件格式无效或已损坏')
-        params = KdfParams(time_cost, memory_cost, parallelism)
-        MasterKeyManager.validate_params(params)
-        return BackupFlag(flag_value), salt, params
-
-    @staticmethod
-    def _header_aad(flags: BackupFlag, salt: bytes, params: KdfParams) -> bytes:
-        """构造备份 payload 的 AAD：固定域前缀 + 完整头字节（magic + KDF 参数 + salt）。
-
-        将明文头纳入 GCM 认证，使对头（尤其 KDF 参数）的任何篡改都导致 payload
-        解密失败，彻底关闭「改写头到 floor 以上的合法值以规避降级检查」的篡改路径
-        （原先仅靠 _enforce_kdf_floor 拒绝弱于默认值的降级）。读备份时用读到的头
-        重建同一 AAD，故头与 payload 绑定、不可独立篡改。
-        """
-        return (
-            BACKUP_AAD
-            + BACKUP_MAGIC
-            + BACKUP_HEADER_STRUCT.pack(
-                int(flags), params.time_cost, params.memory_cost, params.parallelism,
-            )
-            + salt
-        )
-
-    @staticmethod
-    def _enforce_kdf_floor(params: KdfParams) -> None:
-        """拒绝低于创建默认值的 Argon2id 参数，作 GCM 认证之外的纵深防御。
-
-        备份头已通过 :meth:`_header_aad` 纳入 payload 的 GCM 认证（头任何篡改都会
-        使解密失败），故头篡改降级在解密阶段即被拦截。本方法保留为派生前早期校验：
-        在投入 Argon2id 派生（64MB 内存）之前即拒绝异常参数，避免对必定解密失败的
-        备份浪费派生开销。合法备份均以 ``DEFAULT_KDF_PARAMS`` 创建，不影响正常恢复。
-        """
-        floor = DEFAULT_KDF_PARAMS
-        if (
-            params.time_cost < floor.time_cost
-            or params.memory_cost < floor.memory_cost
-            or params.parallelism < floor.parallelism
-        ):
-            raise BackupError('备份文件 KDF 参数异常，可能已被篡改')
+    @property
+    def restore_points(self) -> RestorePointManager:
+        """恢复点统计/清理管理器，供 UI 与清理路径访问。"""
+        return self._restore_points
 
     def _collect_portable_data(
         self, cancel_check: Callable[[], bool] | None = None,
@@ -213,7 +136,7 @@ class BackupRestoreManager:
         使用 crypto_utils.decrypt_entry_to_portable_dict 共享解密逻辑，
         本方法保留备份特有的增量大小估算和密码历史收集。
 
-        返回 JSON 可移植载荷（结构由 :meth:`_validate_restore_data` 校验），
+        返回 JSON 可移植载荷（结构由 :func:`validate_restore_data` 校验），
         嵌套 entries/categories/password_history 项值类型混合，故标注
         dict[str, Any]。
 
@@ -226,11 +149,14 @@ class BackupRestoreManager:
         # 未注入时回退临时实例（兼容隔离测试）。
         entry_mgr = self._entry_mgr
         if entry_mgr is None:
+            from .entry_cache import EntryCacheManager
+            from .entry_change_bus import EntryChangeBus
             from .entry_manager import EntryManager
-            entry_mgr = EntryManager(self._vault)
+            cache = EntryCacheManager(self._vault)
+            entry_mgr = EntryManager(self._vault, cache, EntryChangeBus(cache))
         categories = [
             category.to_dict()
-            for category in entry_mgr.get_categories()
+            for category in entry_mgr.categories.get_categories()
         ]
         entries = []
         raw_entries = db.get_entries(include_deleted=True)
@@ -360,7 +286,7 @@ class BackupRestoreManager:
         :meth:`_restore_current` 的「持锁才接触全量明文」契约统一。
         """
         t0 = time.monotonic()
-        salt = os.urandom(BACKUP_SALT_SIZE)
+        salt = os.urandom(32)
         data = self._collect_portable_data(cancel_check=cancel_check)
         if data is None:
             return False, '备份已取消'
@@ -381,43 +307,19 @@ class BackupRestoreManager:
             if len(payload) > MAX_BACKUP_PAYLOAD_SIZE:
                 raise PayloadTooLargeError('备份数据过大')
             encrypted = EncryptionEngine.encrypt_bytes(
-                payload, backup_key, self._header_aad(flags, salt, DEFAULT_KDF_PARAMS)
+                payload, backup_key, header_aad(flags, salt, DEFAULT_KDF_PARAMS)
             )
             del payload
             def _write_backup_file(file: IO[bytes]) -> bool:
-                self._write_backup_header(file, flags, salt, DEFAULT_KDF_PARAMS)
+                write_backup_header(file, flags, salt, DEFAULT_KDF_PARAMS)
                 file.write(encrypted)
                 return True
 
             atomic_write(Path(filepath), _write_backup_file)
         finally:
-            self._zero_backup_key_if_owned(flags, backup_key)
+            zero_backup_key_if_owned(flags, backup_key)
         logger.info("备份创建完成 (%.1fms)", (time.monotonic() - t0) * 1000)
         return True, ''
-
-    @staticmethod
-    def inspect_backup(filepath: str) -> dict[str, Any]:
-        """读取备份头，不解密内容。
-
-        返回值键固定（format/password_required/snapshot_required/kdf），但值类型
-        混合（str/bool/dict），故标注 dict[str, Any]。
-        """
-        filepath = str(validate_file_path(filepath))
-        if Path(filepath).stat().st_size > MAX_BACKUP_FILE_SIZE:
-            raise PayloadTooLargeError('备份文件过大')
-        with open(filepath, 'rb') as file:
-            flags, _salt, params = BackupRestoreManager._read_backup_header(file)
-            return {
-                'format': BACKUP_FORMAT,
-                'password_required': flags == BackupFlag.PASSWORD,
-                'snapshot_required': flags == BackupFlag.SNAPSHOT,
-                'kdf': {
-                    'name': 'argon2id',
-                    'time_cost': params.time_cost,
-                    'memory_cost': params.memory_cost,
-                    'parallelism': params.parallelism,
-                },
-            }
 
     def restore_backup(
         self,
@@ -444,9 +346,9 @@ class BackupRestoreManager:
             return False, _user_friendly_error(exc)
 
     def _restore_current(self, file: IO[bytes], backup_password: str | None) -> tuple[bool, str]:
-        flags, salt, kdf_params = self._read_backup_header(file)
+        flags, salt, kdf_params = read_backup_header(file)
         # 防 KDF 参数降级：在派生密钥前拒绝被篡改为更弱参数的备份头
-        BackupRestoreManager._enforce_kdf_floor(kdf_params)
+        enforce_kdf_floor(kdf_params)
         # 预声明 backup_key：PASSWORD 派生失败或 SNAPSHOT 路径前的提前 return 会使
         # backup_key 未在 with 块内赋值，方法级 finally 仍需引用它。预声明 None 避免
         # locals().get 反射（字段重命名时静态检查无法发现）。
@@ -477,7 +379,7 @@ class BackupRestoreManager:
                     if len(encrypted) > MAX_BACKUP_FILE_SIZE:
                         return False, '备份文件过大'
                     plaintext = EncryptionEngine.decrypt_bytes(
-                        encrypted, backup_key, self._header_aad(flags, salt, kdf_params)
+                        encrypted, backup_key, header_aad(flags, salt, kdf_params)
                     )
                     if len(plaintext) > MAX_BACKUP_PAYLOAD_SIZE:
                         return False, '备份解密数据过大'
@@ -487,7 +389,7 @@ class BackupRestoreManager:
                     return False, '备份密码错误或文件已损坏'
                 if not isinstance(data, dict) or not isinstance(data.get('entries'), list):
                     return False, '备份数据结构无效'
-                self._validate_restore_data(data)
+                validate_restore_data(data)
                 restore_path = self._create_restore_point()
                 try:
                     new_epoch, new_snapshot_key = self._restore_data(data)
@@ -534,199 +436,8 @@ class BackupRestoreManager:
         finally:
             # 确保 PASSWORD 派生的 backup_key 在所有退出路径（含密钥派生失败、文件
             # 过大、解密异常）都清零；SNAPSHOT 路径借用 snapshot_key 不清零。
-            # backup_key 已在方法级预声明，派生异常时为 None，_zero_backup_key_if_owned 对 None 跳过。
-            self._zero_backup_key_if_owned(flags, backup_key)
-
-    @staticmethod
-    def _zero_backup_key_if_owned(flags: BackupFlag, key: bytearray | bytes | None) -> None:
-        """清零 PASSWORD 路径派生的 backup_key；SNAPSHOT 路径借用 snapshot_key 不清零。
-
-        集中「是否应清零」判定，使 create_backup 与 _restore_current 的清零逻辑共用
-        单一来源，避免未来新增备份加密 flag 时漏改其中一处。key 为 None 时跳过
-        （派生阶段异常致 backup_key 未定义的兜底）。
-        """
-        if flags == BackupFlag.PASSWORD and key is not None:
-            secure_zero_buffer(key)
-
-    @staticmethod
-    def _validate_restore_data(data: dict[str, Any]) -> None:
-        if data.get('format') != BACKUP_FORMAT:
-            raise BackupError('备份格式标识无效')
-        # 版本检查：仅支持 v1 格式。
-        version = data.get('version')
-        if version != 1:
-            raise BackupError(f'不支持的备份格式版本：{version}（当前支持 v1）')
-        entries = data.get('entries', [])
-        categories = data.get('categories', [])
-        history = data.get('password_history', [])
-        if not all(isinstance(items, list) for items in (entries, categories, history)):
-            raise BackupError('备份数据结构无效')
-        if len(entries) > MAX_BACKUP_ENTRIES:
-            raise PayloadTooLargeError('备份条目数量超出限制')
-        if len(history) > len(entries) * MAX_HISTORY_PER_ENTRY:
-            raise PayloadTooLargeError('密码历史数量超出限制')
-        if len(categories) > 10_000:
-            raise PayloadTooLargeError('备份分类数量超出限制')
-
-        category_ids = BackupRestoreManager._validate_categories(categories)
-        entry_ids = BackupRestoreManager._validate_entries(entries, category_ids)
-        BackupRestoreManager._validate_history(history, entry_ids)
-
-    @staticmethod
-    def _validate_categories(categories: list[dict[str, Any]]) -> set[int]:
-        """验证备份分类数据，返回有效的分类 ID 集合。"""
-        category_ids: set[int] = set()
-        for item in categories:
-            if not isinstance(item, dict):
-                raise BackupError('备份分类格式无效')
-            BackupRestoreManager._require_keys(
-                item,
-                {'id', 'name', 'icon_char', 'color', 'sort_order', 'created_at'},
-                '备份分类',
-            )
-            category_id = item['id']
-            if not is_real_int(category_id):
-                raise BackupError('备份分类 ID 无效')
-            if category_id in category_ids:
-                raise BackupError('备份分类 ID 重复')
-            category_ids.add(category_id)
-            BackupRestoreManager._require_text(item['name'], '分类名称', 256, allow_empty=False)
-            BackupRestoreManager._require_text(item['icon_char'], '分类图标', 32)
-            BackupRestoreManager._require_text(item['color'], '分类颜色', 32)
-            BackupRestoreManager._require_text(item['created_at'], '分类创建时间', 64)
-            if not is_real_int(item['sort_order']):
-                raise BackupError('分类排序值无效')
-        return category_ids
-
-    @staticmethod
-    def _validate_entry_fields(item: dict[str, Any], category_ids: set[int]) -> None:
-        """验证单条备份条目的必填键、字段类型和文本长度。"""
-        required_entry_keys = {
-            'id', 'crypto_id', 'title', 'username', 'password', 'url',
-            'category_id', 'tags', 'notes', 'custom_fields', 'is_favorite',
-            'is_deleted', 'password_strength', 'entry_type', 'totp_secret',
-            'created_at', 'updated_at', 'deleted_at', 'password_changed_at',
-        }
-        if sum(len(str(v).encode('utf-8')) for v in item.values()) > MAX_ENTRY_JSON_SIZE:
-            raise BackupError('备份条目格式或大小无效')
-        BackupRestoreManager._require_keys(item, required_entry_keys, '备份条目')
-
-        for field in (
-            'title', 'username', 'password', 'url', 'tags', 'notes',
-            'totp_secret', 'created_at', 'updated_at', 'deleted_at',
-            'password_changed_at',
-        ):
-            limit = 64 if field.endswith('_at') else MAX_TEXT_FIELD_SIZE
-            BackupRestoreManager._require_text(item[field], f'条目字段 {field}', limit)
-        # 基本 ISO 8601 格式校验
-        for key in ('created_at', 'updated_at', 'deleted_at', 'password_changed_at'):
-            val = item.get(key, '')
-            if val and isinstance(val, str):
-                try:
-                    datetime.fromisoformat(val)
-                except (ValueError, TypeError):
-                    logger.warning(
-                        "条目 %s 字段 %s 日期格式无效: %s",
-                        item.get('id', '?'), key, val[:32],
-                    )
-
-        category_id = item['category_id']
-        if category_id is not None and category_id not in category_ids:
-            raise BackupError('备份条目引用了不存在的分类')
-        if not isinstance(item['is_favorite'], bool) or not isinstance(item['is_deleted'], bool):
-            raise BackupError('备份条目布尔字段无效')
-        strength = item['password_strength']
-        if not is_real_int(strength) or not 0 <= strength <= 4:
-            raise BackupError('备份条目密码强度无效')
-        if item['entry_type'] not in ENTRY_TYPES:
-            raise BackupError('备份条目类型无效')
-
-    @staticmethod
-    def _validate_entry_custom_fields(fields: list[dict[str, Any]]) -> None:
-        """验证自定义字段列表结构，包含数量、键完整性与类型。
-
-        数量上限与 ``Entry.from_dict`` 保持一致，为 100，确保恢复后
-        条目能通过 ``from_dict`` 的校验。
-        """
-        if not isinstance(fields, list) or len(fields) > MAX_CUSTOM_FIELDS_PER_ENTRY:
-            raise BackupError('备份自定义字段结构无效')
-        for field in fields:
-            if not isinstance(field, dict):
-                raise BackupError('备份自定义字段格式无效')
-            BackupRestoreManager._require_keys(
-                field, {'name', 'value', 'field_type'}, '备份自定义字段'
-            )
-            BackupRestoreManager._require_text(field['name'], '自定义字段名称', 1024)
-            BackupRestoreManager._require_text(
-                field['value'], '自定义字段值', MAX_TEXT_FIELD_SIZE
-            )
-            if field['field_type'] not in {'text', 'password', 'url', 'email'}:
-                raise BackupError('备份自定义字段类型无效')
-
-    @staticmethod
-    def _validate_entries(entries: list[dict[str, Any]], category_ids: set[int]) -> set[int]:
-        """验证备份条目数据，返回有效的 entry_ids 集合。"""
-        entry_ids: set[int] = set()
-        crypto_ids: set[str] = set()
-        for item in entries:
-            if not isinstance(item, dict):
-                raise BackupError('备份条目格式无效')
-            BackupRestoreManager._validate_entry_fields(item, category_ids)
-
-            entry_id = item['id']
-            if not is_real_int(entry_id) or entry_id <= 0:
-                raise BackupError('备份条目 ID 无效')
-            if entry_id in entry_ids:
-                raise BackupError('备份条目 ID 重复')
-            entry_ids.add(entry_id)
-            crypto_id = item['crypto_id']
-            if (
-                not isinstance(crypto_id, str)
-                or len(crypto_id) != 32
-                or any(char not in '0123456789abcdef' for char in crypto_id)
-            ):
-                raise BackupError('备份条目加密标识无效')
-            if crypto_id in crypto_ids:
-                raise BackupError('备份条目加密标识重复')
-            crypto_ids.add(crypto_id)
-
-            BackupRestoreManager._validate_entry_custom_fields(item['custom_fields'])
-        return entry_ids
-
-    @staticmethod
-    def _validate_history(history: list[dict[str, Any]], entry_ids: set[int]) -> None:
-        """验证备份密码历史数据。"""
-        for item in history:
-            if not isinstance(item, dict):
-                raise BackupError('备份密码历史格式无效')
-            BackupRestoreManager._require_keys(
-                item, {'entry_id', 'password', 'changed_at'}, '备份密码历史'
-            )
-            entry_id = item['entry_id']
-            # 与 _validate_entries 的 ID 校验对齐：拒绝 bool/float 等伪装成 int 的类型
-            if not is_real_int(entry_id):
-                raise BackupError('备份密码历史 entry_id 必须为整数')
-            if entry_id not in entry_ids:
-                raise BackupError('备份密码历史引用了不存在的条目')
-            BackupRestoreManager._require_text(
-                item['password'], '密码历史密码', MAX_TEXT_FIELD_SIZE
-            )
-            BackupRestoreManager._require_text(item['changed_at'], '密码历史时间', 64)
-
-    @staticmethod
-    def _require_keys(item: dict[str, Any], expected: set[str], label: str) -> None:
-        """验证 item 是否恰好包含所需的键集合，拒绝多余或缺失的键。"""
-        if set(item) != expected:
-            raise BackupError(f'{label}字段不完整')
-
-    @staticmethod
-    def _require_text(value: Any, label: str, max_bytes: int, allow_empty: bool = True) -> None:
-        if not isinstance(value, str):
-            raise BackupError(f'{label}类型无效')
-        if not allow_empty and not value.strip():
-            raise BackupError(f'{label}不能为空')
-        if len(value.encode('utf-8')) > max_bytes:
-            raise PayloadTooLargeError(f'{label}过大')
+            # backup_key 已在方法级预声明，派生异常时为 None，zero_backup_key_if_owned 对 None 跳过。
+            zero_backup_key_if_owned(flags, backup_key)
 
     def _create_restore_point(self) -> Path | None:
         """创建恢复前安全快照，返回快照文件路径用于失败时清理，创建失败返回 None。"""
@@ -749,17 +460,12 @@ class BackupRestoreManager:
             raise
         if not success:
             raise BackupError(f'无法创建恢复前安全快照：{error}')
-        # 按文件名排序比 st_mtime 更精确，避免秒级精度问题
-        restore_points = sorted(
-            directory.glob(PRE_RESTORE_GLOB),
-            key=lambda p: p.name,
-            reverse=True,
+        # 按文件名降序保留最新 MAX_RESTORE_POINTS 个恢复点，删除过期项；删除失败
+        # 仅告警（恢复点含全量明文，残留由调用方据创建结果决定是否重试清理）。
+        secure_purge(
+            [directory], [PRE_RESTORE_GLOB],
+            keep=MAX_RESTORE_POINTS, collect_failures=False,
         )
-        for expired in restore_points[MAX_RESTORE_POINTS:]:
-            try:
-                secure_delete_file(expired)
-            except OSError:
-                logger.warning('清理过期恢复点失败：%s', expired, exc_info=True)
         return target_path
 
     @staticmethod
@@ -774,31 +480,6 @@ class BackupRestoreManager:
             secure_delete_file(path)
         except OSError:
             logger.warning('异常路径清理恢复点失败：%s', path, exc_info=True)
-
-    def clear_restore_points(self) -> int:
-        """删除所有恢复前安全快照 pre_restore_*.cbox，返回删除数量。
-
-        供 UI 手动清理；改密时由 VaultManager 自动清理。恢复点含恢复前全部
-        条目明文，定期清理可收缩泄漏面。
-        """
-        directory = self._vault.data_dir / BACKUPS_DIR_NAME
-        if not directory.is_dir():
-            return 0
-        count = 0
-        for f in directory.glob(PRE_RESTORE_GLOB):
-            try:
-                secure_delete_file(f)
-                count += 1
-            except OSError:
-                logger.warning('清理恢复点失败：%s', f, exc_info=True)
-        return count
-
-    def count_restore_points(self) -> int:
-        """统计恢复前安全快照数量，供 UI 决定清理按钮的可用性。"""
-        directory = self._vault.data_dir / BACKUPS_DIR_NAME
-        if not directory.is_dir():
-            return 0
-        return sum(1 for _ in directory.glob(PRE_RESTORE_GLOB))
 
     def _restore_data(self, data: dict[str, Any]) -> tuple[str, bytes]:
         db = self._vault.db
@@ -833,14 +514,17 @@ class BackupRestoreManager:
         """重建分类，返回旧 ID 到新 ID 的映射。"""
         entry_manager = self._entry_mgr
         if entry_manager is None:
+            from .entry_cache import EntryCacheManager
+            from .entry_change_bus import EntryChangeBus
             from .entry_manager import EntryManager
-            entry_manager = EntryManager(self._vault)
+            cache = EntryCacheManager(self._vault)
+            entry_manager = EntryManager(self._vault, cache, EntryChangeBus(cache))
         category_map = {}
         for item in data.get('categories', []):
             category = Category.from_dict(item)
             if not category.name:
                 continue
-            new_id = entry_manager.add_category(category, notify=False)
+            new_id = entry_manager.categories.add_category(category, notify=False)
             if item.get('id') is not None:
                 category_map[item['id']] = new_id
         return category_map
@@ -857,7 +541,7 @@ class BackupRestoreManager:
         crypto_id_map = {}  # 旧 entry_id 到 crypto_id 的映射
         for item in data.get('entries', []):
             old_category = item.get('category_id')
-            crypto_id = item['crypto_id']  # 已由 _validate_entries 校验
+            crypto_id = item['crypto_id']  # 已由 validate_entries 校验
             enc = build_encrypted_entry_fields(item, key, crypto_id)
             entry = RawEntry(
                 crypto_id=crypto_id,
@@ -971,12 +655,8 @@ class BackupRestoreManager:
         config.save()
 
         retention = config.get('auto_backup_retention', 10)
-        snapshots = sorted(directory.glob(SNAPSHOT_GLOB), reverse=True)
-        for old_file in snapshots[retention:]:
-            try:
-                secure_delete_file(old_file)
-            except OSError:
-                # 过期自动快照含全量明文，清理失败会扩大泄漏面；记录以便人工处理。
-                logger.warning('清理过期自动快照失败：%s', old_file, exc_info=True)
+        # 按文件名降序保留最新 retention 个自动快照；过期快照含全量明文，删除失败
+        # 会扩大泄漏面，secure_purge 收集失败仅告警以便人工处理。
+        secure_purge([directory], [SNAPSHOT_GLOB], keep=retention, collect_failures=False)
 
         return True, ''

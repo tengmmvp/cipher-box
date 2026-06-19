@@ -7,7 +7,10 @@
 引用以缩短密码驻留时间。
 """
 
+from __future__ import annotations
+
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -23,8 +26,10 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QRadioButton,
     QVBoxLayout,
+    QWidget,
 )
 
+from ...business.services.backup_header_codec import inspect_backup
 from ...business.services.password_service import PasswordService
 from ...exceptions import BackupError
 from ..components.widgets import (
@@ -41,15 +46,24 @@ from ..resources.constants import (
 )
 from ..resources.theme_colors import c
 
+if TYPE_CHECKING:
+    from ...business.managers.backup_restore import BackupRestoreManager
+    from ...config import ConfigManager
+
 
 class BackupDialog(QDialog):
     """备份创建与恢复的统一对话框，按模式切换操作与文案。"""
 
-    def __init__(self, backup_manager, parent=None, config=None):
+    def __init__(
+        self,
+        backup_manager: BackupRestoreManager,
+        parent: QWidget | None = None,
+        config: ConfigManager | None = None,
+    ):
         super().__init__(parent)
         self._backup_mgr = backup_manager
         self._config = config
-        self._worker = None
+        self._worker: BackgroundWorker | None = None
         # 记录 worker 启动时的模式，避免 reject 时读取已切换的按钮状态
         self._worker_is_backup: bool = True
         self._selected_path: str | None = None
@@ -144,7 +158,7 @@ class BackupDialog(QDialog):
     def _update_purge_button(self):
         """根据是否存在恢复前快照启用或禁用清理按钮。"""
         try:
-            has_points = self._backup_mgr.count_restore_points() > 0
+            has_points = self._backup_mgr.restore_points.count() > 0
         except Exception:
             has_points = True  # 统计出错时保持可点，避免误锁功能
         self._purge_btn.setEnabled(has_points)
@@ -305,7 +319,7 @@ class BackupDialog(QDialog):
             return
 
         try:
-            info = self._backup_mgr.inspect_backup(path)
+            info = inspect_backup(path)
         except (OSError, BackupError, ValueError) as exc:
             QMessageBox.critical(self, '错误', str(exc))
             return
@@ -364,7 +378,7 @@ class BackupDialog(QDialog):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        count = self._backup_mgr.clear_restore_points()
+        count = self._backup_mgr.restore_points.clear_all()
         self._update_purge_button()
         if count:
             QMessageBox.information(self, '完成', f'已清理 {count} 个恢复点。')

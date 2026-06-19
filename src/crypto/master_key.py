@@ -28,8 +28,11 @@ SALT_SIZE = 32
 MIN_SALT_SIZE = 16
 KEY_SIZE = 32  # AES-256
 
-# KDF 参数校验范围：防 vault_meta 被篡改为极弱参数（如 memory_cost=8）后仍被接受，
-# 导致后续派生强度静默降级。下限对齐 OWASP 推荐的保守量级。
+# KDF 参数校验范围：防 vault_meta 被篡改为明显异常的参数（如 memory_cost=8）后
+# 仍被接受。下限为「格式校验」量级，故意低于 DEFAULT_KDF_PARAMS（time=3/64MB/p=4），
+# 以兼容测试弱化参数与未来调参灵活性——派生强度的真正保证依赖 vault_meta_mac
+# 完整性签名：攻击者无主密钥无法重算 MAC，故无法在保持解密可行的前提下篡改 KDF
+# 参数（篡改会使派生密钥变化，verify_token 解密先行失败）。
 MIN_ARGON2_TIME_COST = 2
 MAX_ARGON2_TIME_COST = 10
 MIN_ARGON2_MEMORY_COST = 16 * 1024  # 16 MB
@@ -102,6 +105,11 @@ class MasterKeyManager:
         先独立校验原始盐长度再拼接域前缀派生。若直接把 ``b'backup:' + salt``
         交给 derive_key，其内部 _validate_salt 校验的是拼接后的 7+len(salt)，
         调用方传 9 字节盐即可绕过 MIN_SALT_SIZE 下限，实际熵不足。
+
+        域分离用 ``b'backup:'`` 字符串前缀混入 Argon2id 的 salt 字段，而非独立
+        HKDF info——功能上正确（不同 salt → 不同密钥），且经独立盐校验规避了前缀
+        绕过。未来若新增第三域（如导出密钥），可演进为显式 HKDF domain separation
+        以消除前缀碰撞的隐式假设。
         """
         cls._validate_params(params)
         cls._validate_salt(salt)

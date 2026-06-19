@@ -1,3 +1,5 @@
+from tests.helpers import make_entry_manager
+
 """_re_encrypt_all 边界条件测试，覆盖空字段、custom_fields 类型、密码历史与事务回滚。
 
 通过 change_master_password 触发全量重加密，验证空字段保持空、
@@ -11,7 +13,6 @@ from unittest.mock import patch
 
 import pytest
 
-from src.business.managers.entry_manager import EntryManager
 from src.business.managers.vault_manager import VaultManager
 from src.models import CustomField, Entry
 
@@ -24,7 +25,7 @@ class TestReEncryptEdgeCases:
         self._tmp_dir = str(tmp_path)
         self._vault = VaultManager(vault_config)
         self._vault.initialize('original_pwd_123')
-        self._entry_mgr = EntryManager(self._vault)
+        self._entry_mgr = make_entry_manager(self._vault)
         yield
         self._vault.close()
         db_path = Path(self._tmp_dir) / 'vault.db'
@@ -134,8 +135,8 @@ class TestReEncryptEdgeCases:
         self._entry_mgr.update_entry(entry)
 
         # 验证密码历史存在
-        history = self._entry_mgr.decrypt_password_history(
-            self._entry_mgr.get_password_history(eid)
+        history = self._entry_mgr.password_history.decrypt(
+            self._entry_mgr.password_history.get(eid)
         )
         assert len(history) == 1
         assert history[0]['password'] == 'first_password'
@@ -147,8 +148,8 @@ class TestReEncryptEdgeCases:
         assert ok
 
         # 验证改密后密码历史仍可解密
-        history2 = self._entry_mgr.decrypt_password_history(
-            self._entry_mgr.get_password_history(eid)
+        history2 = self._entry_mgr.password_history.decrypt(
+            self._entry_mgr.password_history.get(eid)
         )
         assert len(history2) == 1
         assert history2[0]['password'] == 'first_password'
@@ -226,7 +227,7 @@ class TestReEncryptEdgeCases:
 
         # 改密失败后旧密钥仍有效，会话保留；事务回滚保障数据完好
         assert self._vault.unlock('original_pwd_123')[0]
-        entry_mgr = EntryManager(self._vault)
+        entry_mgr = make_entry_manager(self._vault)
         entries = entry_mgr.get_entries()
         assert len(entries) == 1
         assert entries[0].username == 'rollback_user'

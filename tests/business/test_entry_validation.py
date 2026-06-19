@@ -2,8 +2,88 @@
 
 import pytest
 
-from src.business.managers.entry_manager import EntryManager
-from src.models import MAX_CUSTOM_FIELDS_PER_ENTRY, CustomField, Entry
+from src.business.services.entry_validation import validate_plain_entry
+from src.models import (
+    ENTRY_FIELD_LIMITS,
+    MAX_CUSTOM_FIELDS_PER_ENTRY,
+    CustomField,
+    Entry,
+)
+
+
+def _make_entry(**overrides) -> Entry:
+    """构造合法默认 Entry，调用方覆盖特定字段。"""
+    return Entry(
+        title='t', username='u', password='p',
+        custom_fields=[],
+        **overrides,
+    )
+
+
+class TestValidatePlainEntry:
+    """validate_plain_entry 的合法通过与各类非法拒绝。"""
+
+    def test_valid_login_entry_passes(self):
+        validate_plain_entry(_make_entry())  # 不抛即通过
+
+    def test_valid_each_entry_type_passes(self):
+        for entry_type in ('login', 'card', 'identity', 'note', 'server'):
+            validate_plain_entry(_make_entry(entry_type=entry_type))
+
+    def test_invalid_entry_type_rejected(self):
+        with pytest.raises(ValueError, match='类型'):
+            validate_plain_entry(_make_entry(entry_type='unknown'))
+
+    def test_string_field_non_string_rejected(self):
+        """加密字符串字段类型非 str 应拒绝（title 为 int）。"""
+        entry = _make_entry()
+        entry.title = 123  # type: ignore[assignment]
+        with pytest.raises(ValueError, match='类型'):
+            validate_plain_entry(entry)
+
+    def test_password_non_string_rejected(self):
+        entry = _make_entry()
+        entry.password = None  # type: ignore[assignment]
+        with pytest.raises(ValueError, match='类型'):
+            validate_plain_entry(entry)
+
+    @pytest.mark.parametrize(
+        ('field_name', 'max_len'),
+        [(name, max_len) for name, _label, max_len in ENTRY_FIELD_LIMITS],
+    )
+    def test_field_too_long_rejected(self, field_name, max_len):
+        """每个长度受限字段超出上限应被拒绝。"""
+        entry = _make_entry()
+        setattr(entry, field_name, 'x' * (max_len + 1))
+        with pytest.raises(ValueError, match='过长'):
+            validate_plain_entry(entry)
+
+    @pytest.mark.parametrize(
+        ('field_name', 'max_len'),
+        [(name, max_len) for name, _label, max_len in ENTRY_FIELD_LIMITS],
+    )
+    def test_field_at_limit_passes(self, field_name, max_len):
+        """恰等于上限应通过（边界守护）。"""
+        entry = _make_entry()
+        setattr(entry, field_name, 'x' * max_len)
+        validate_plain_entry(entry)
+
+    def test_custom_fields_non_list_rejected(self):
+        """custom_fields 非 list 时 assert_decrypted 先拒绝（仍未解密态）。
+
+        validate_plain_entry 在结构校验前调用 entry.assert_decrypted()，
+        非 list 的 custom_fields 使 is_decrypted 为 False，应被拒绝。
+        """
+        entry = _make_entry()
+        entry.custom_fields = 'not-a-list'  # type: ignore[assignment]
+        with pytest.raises(ValueError):
+            validate_plain_entry(entry)
+
+    def test_custom_fields_contains_non_custom_field_rejected(self):
+        entry = _make_entry()
+        entry.custom_fields = [CustomField(name='n', value='v'), 'x']  # type: ignore[list-item]
+        with pytest.raises(ValueError, match='自定义字段'):
+            validate_plain_entry(entry)
 
 
 def test_validate_plain_entry_rejects_too_many_custom_fields():
@@ -21,7 +101,7 @@ def test_validate_plain_entry_rejects_too_many_custom_fields():
         ],
     )
     with pytest.raises(ValueError, match='自定义字段过多'):
-        EntryManager._validate_plain_entry(entry)
+        validate_plain_entry(entry)
 
 
 def test_validate_plain_entry_accepts_within_limit():
@@ -34,4 +114,4 @@ def test_validate_plain_entry_accepts_within_limit():
         ],
     )
     # 不抛异常即通过
-    EntryManager._validate_plain_entry(entry)
+    validate_plain_entry(entry)

@@ -5,6 +5,10 @@
 缩短明文驻留时间。
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -20,10 +24,15 @@ from PyQt6.QtWidgets import (
     QSlider,
     QSpacerItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from ...business.services.password_service import PasswordService
 from ..components.widgets import setup_dialog_flags
+
+if TYPE_CHECKING:
+    from ...config import ConfigManager
+    from ..utils.clipboard import ClipboardManager
 from ..resources.constants import (
     BTN_COMPACT,
     BTN_GENERATE,
@@ -43,7 +52,12 @@ class PasswordGeneratorDialog(QDialog):
 
     password_selected = pyqtSignal(str)
 
-    def __init__(self, clipboard_manager=None, parent=None, config=None):
+    def __init__(
+        self,
+        clipboard_manager: ClipboardManager | None = None,
+        parent: QWidget | None = None,
+        config: ConfigManager | None = None,
+    ):
         super().__init__(parent)
         self._clipboard = clipboard_manager
         self._config = config

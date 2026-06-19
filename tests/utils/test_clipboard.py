@@ -9,7 +9,7 @@ import hmac
 import pytest
 from PyQt6.QtWidgets import QApplication
 
-from src.utils.clipboard import _CLIPBOARD_HMAC_KEY, ClipboardManager
+from src.ui.utils.clipboard import _CLIPBOARD_HMAC_KEY, ClipboardManager
 
 
 class TestClipboardManager:
@@ -21,6 +21,12 @@ class TestClipboardManager:
         self._qapp = qapp
 
     def setup_method(self):
+        # 清空全局剪贴板，隔离前序测试 copy_text 的残留。QApplication 剪贴板是
+        # 进程级共享状态，若不清，前序测试写入的文本会干扰本测试 _clear_clipboard
+        # 的匹配判定（compare_digest 比对 clipboard.text() 与 _last_text_hash）。
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.clear()
         self.mgr = ClipboardManager(clear_seconds=30)
 
     def teardown_method(self):

@@ -15,14 +15,13 @@ from unittest.mock import PropertyMock, patch
 import pytest
 
 from src.business.managers.backup_restore import BackupRestoreManager
-from src.business.managers.entry_manager import EntryManager
 from src.business.managers.import_export import ImportExportManager
 from src.business.managers.vault_manager import VaultManager
 from src.business.services.security_analyzer import SecurityAnalyzer
 from src.crypto.encryption import EncryptionEngine
 from src.database.db_manager import DatabaseManager
 from src.models import Category, CustomField, Entry, RawEntry
-from tests.helpers import make_test_config
+from tests.helpers import make_entry_manager, make_test_config
 
 # ── TestEntryManagerIntegration ──────────────────────────────────────────────
 
@@ -33,7 +32,7 @@ def entry_mgr_env():
     config = make_test_config(tmp_dir)
     vault = VaultManager(config)
     vault.initialize("test_password_123")
-    entry_mgr = EntryManager(vault)
+    entry_mgr = make_entry_manager(vault)
     yield entry_mgr, vault, tmp_dir
     vault.close()
     shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -100,11 +99,11 @@ def test_update_preserves_password_history(entry_mgr_env):
     entry_mgr.update_entry(entry)
 
     # 3. 查询密码历史，验证旧密码存在
-    history = entry_mgr.get_password_history(entry_id)
+    history = entry_mgr.password_history.get(entry_id)
     assert len(history) == 1
 
     # 解密历史记录中的旧密码
-    decrypted_history = entry_mgr.decrypt_password_history(history)
+    decrypted_history = entry_mgr.password_history.decrypt(history)
     assert len(decrypted_history) == 1
     assert decrypted_history[0]['password'] == 'OldPassword123!'
 
@@ -243,7 +242,7 @@ def test_initialize_and_unlock(vault_lifecycle_env):
     assert vault.initialize(master_pwd)[0]
     assert vault.is_unlocked
 
-    entry_mgr = EntryManager(vault)
+    entry_mgr = make_entry_manager(vault)
     entry_id = entry_mgr.add_entry(Entry(
         title='持久化测试',
         username='persistent_user',
@@ -262,7 +261,7 @@ def test_initialize_and_unlock(vault_lifecycle_env):
     assert vault.key is not None
 
     # 4. 验证数据可读
-    entry_mgr2 = EntryManager(vault)
+    entry_mgr2 = make_entry_manager(vault)
     entries = entry_mgr2.get_entries()
     assert len(entries) == 1
     assert entries[0].title == '持久化测试'
@@ -285,7 +284,7 @@ def test_change_password_re_encrypts(vault_lifecycle_env):
     # 1. 初始化 + 添加条目
     vault = VaultManager(config)
     vault.initialize(old_pwd)
-    entry_mgr = EntryManager(vault)
+    entry_mgr = make_entry_manager(vault)
 
     totp_secret = 'JBSWY3DPEHPK3PXP'
     entry_id = entry_mgr.add_entry(Entry(
@@ -299,7 +298,7 @@ def test_change_password_re_encrypts(vault_lifecycle_env):
     assert vault.change_master_password(old_pwd, new_pwd)[0]
 
     # 3. 验证 get_entries 仍能正确解密
-    entry_mgr2 = EntryManager(vault)
+    entry_mgr2 = make_entry_manager(vault)
     entries = entry_mgr2.get_entries()
     assert len(entries) == 1
     assert entries[0].username == 'rekey_user'
@@ -311,7 +310,7 @@ def test_change_password_re_encrypts(vault_lifecycle_env):
     # 5. 锁定后用新密码解锁，验证仍然可用
     vault.lock()
     assert vault.unlock(new_pwd)[0]
-    entry_mgr3 = EntryManager(vault)
+    entry_mgr3 = make_entry_manager(vault)
     entry = entry_mgr3.get_entry(entry_id)
     assert entry is not None
     assert entry.username == 'rekey_user'
@@ -334,7 +333,7 @@ def backup_restore_env():
     config = make_test_config(tmp_dir)
     vault = VaultManager(config)
     vault.initialize("test_password_123")
-    entry_mgr = EntryManager(vault)
+    entry_mgr = make_entry_manager(vault)
     backup_mgr = BackupRestoreManager(vault)
     yield entry_mgr, backup_mgr, vault, tmp_dir
     vault.close()
@@ -395,8 +394,8 @@ def test_backup_and_restore_preserves_all_fields(backup_restore_env):
 
     # 验证密码历史恢复
     assert restored.id is not None
-    history = entry_mgr.get_password_history(restored.id)
-    decrypted_history = entry_mgr.decrypt_password_history(history)
+    history = entry_mgr.password_history.get(restored.id)
+    decrypted_history = entry_mgr.password_history.decrypt(history)
     assert len(decrypted_history) == 1
     assert decrypted_history[0]['password'] == 'OriginalP@ss!'
 
@@ -458,7 +457,7 @@ def security_analyzer_env():
     config = make_test_config(tmp_dir)
     vault = VaultManager(config)
     vault.initialize("test_password_123")
-    entry_mgr = EntryManager(vault)
+    entry_mgr = make_entry_manager(vault)
     analyzer = SecurityAnalyzer(vault)
     yield entry_mgr, analyzer, vault, tmp_dir
     vault.close()
@@ -511,7 +510,7 @@ def db_env():
     """创建 DatabaseManager。"""
     tmp_dir = tempfile.mkdtemp()
     db_path = Path(tmp_dir) / 'test_vault.db'
-    db = DatabaseManager(db_path)
+    db = DatabaseManager(db_path, test_mode=True)
     db.open()
     db.init_tables()
     yield db, tmp_dir
@@ -519,7 +518,6 @@ def db_env():
     shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-@pytest.mark.usefixtures('_disable_encrypted_assertions')
 def test_transaction_commit(db_env):
     """begin→多个操作→commit，所有变更持久化。"""
     db, _tmp_dir = db_env
@@ -551,7 +549,6 @@ def test_transaction_commit(db_env):
     assert '事务分类' in cat_names
 
 
-@pytest.mark.usefixtures('_disable_encrypted_assertions')
 def test_transaction_rollback(db_env):
     """begin→多个操作→rollback，所有变更丢弃。"""
     db, _tmp_dir = db_env
@@ -590,7 +587,7 @@ def import_export_env():
     config = make_test_config(tmpdir)
     vault = VaultManager(config)
     vault.initialize("test_password_123")
-    entry_mgr = EntryManager(vault)
+    entry_mgr = make_entry_manager(vault)
     import_export = ImportExportManager(entry_mgr)
     yield entry_mgr, import_export, vault, tmpdir
     vault.close()

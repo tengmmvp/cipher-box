@@ -5,6 +5,11 @@
 DetailPanel 统一持有，以便在清除内容时一并停止。
 """
 
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import TYPE_CHECKING
+
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import (
     QFormLayout,
@@ -12,6 +17,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -20,6 +26,9 @@ from ..resources.constants import BTN_COPY, FONT_FAMILY_MONOSPACE
 from ..resources.icons import COPY, set_icon
 from ..resources.theme_colors import c
 from .secret_field import make_secret_field_row
+
+if TYPE_CHECKING:
+    from ...models import Entry
 
 # 模板字段名 → 显示标签，避免每次 render 重建字典
 _TEMPLATE_FIELD_LABELS = {
@@ -39,7 +48,12 @@ class CustomFieldsRenderer:
     到目标布局，返回需要管理的 QTimer 列表。
     """
 
-    def __init__(self, copy_callback, copy_feedback_callback, hide_timer_callback):
+    def __init__(
+        self,
+        copy_callback: Callable[[QPushButton, str], None],
+        copy_feedback_callback: Callable[[], None],
+        hide_timer_callback: Callable[[], int],
+    ):
         """初始化渲染器。
 
         Args:
@@ -57,7 +71,12 @@ class CustomFieldsRenderer:
 
     # ---- 公开接口 ----
 
-    def render(self, entry, layout, parent_widget) -> list[QTimer]:
+    def render(
+        self,
+        entry: Entry,
+        layout: QVBoxLayout,
+        parent_widget: QWidget,
+    ) -> list[QTimer]:
         """渲染所有自定义字段。
 
         Args:
@@ -89,7 +108,7 @@ class CustomFieldsRenderer:
         layout.addWidget(cf_group)
         return timers
 
-    def clear(self):
+    def clear(self) -> None:
         """安全清除所有值。"""
         for k in list(self._plain_values):
             mark_secret_discarded(self._plain_values[k])

@@ -4,7 +4,10 @@
 并允许通过颜色选择器自定义颜色。保存结果交由 EntryManager 写入。
 """
 
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -19,6 +22,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from ...models import Category
@@ -26,6 +30,9 @@ from ..components.widgets import setup_dialog_flags
 from ..error_messages import to_user_message
 from ..resources.constants import BTN_DIALOG, DIALOG_CATEGORY_MIN_SIZE
 from ..resources.theme_colors import c
+
+if TYPE_CHECKING:
+    from ...business.managers.entry_manager import EntryManager
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +55,7 @@ PRESET_COLORS = [
 class _ColorDotButton(QPushButton):
     """圆形颜色选择按钮，点击即选中对应颜色。"""
 
-    def __init__(self, color: str, selected: bool = False, parent=None):
+    def __init__(self, color: str, selected: bool = False, parent: QWidget | None = None):
         super().__init__(parent)
         self._color = color
         self._selected = selected
@@ -98,7 +105,12 @@ class CategoryDialog(QDialog):
 
     saved = pyqtSignal()
 
-    def __init__(self, entry_manager, category=None, parent=None):
+    def __init__(
+        self,
+        entry_manager: EntryManager,
+        category: Category | None = None,
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self._entry_mgr = entry_manager
         self._category = category  # None 表示新增模式，否则编辑该分类
@@ -256,14 +268,14 @@ class CategoryDialog(QDialog):
                 self._category.name = name
                 self._category.icon_char = icon_char
                 self._category.color = self._selected_color
-                self._entry_mgr.update_category(self._category)
+                self._entry_mgr.categories.update_category(self._category)
             else:
                 category = Category(
                     name=name,
                     icon_char=icon_char,
                     color=self._selected_color,
                 )
-                self._entry_mgr.add_category(category)
+                self._entry_mgr.categories.add_category(category)
 
             self.saved.emit()
             self.accept()

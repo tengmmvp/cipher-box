@@ -79,10 +79,10 @@ class TestBuildDeleteMessage:
     def _ctrl_with_category(name, count):
         # 直接持有 MagicMock 引用，避免通过类型为 EntryManager 的属性访问 return_value
         entry_mgr = MagicMock()
-        entry_mgr.get_category.return_value = (
+        entry_mgr.categories.get_category.return_value = (
             SimpleNamespace(name=name) if name else None
         )
-        entry_mgr.get_category_entry_count.return_value = count
+        entry_mgr.categories.get_category_entry_count.return_value = count
         return SidebarController(entry_mgr, MagicMock())
 
     def test_missing_category_returns_empty(self):

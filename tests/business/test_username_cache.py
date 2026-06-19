@@ -1,8 +1,8 @@
+from tests.helpers import make_entry_manager
+
 """测试 EntryManager 搜索元数据缓存的 epoch 失效行为。"""
 
 from unittest.mock import MagicMock, PropertyMock
-
-from src.business.managers.entry_manager import EntryManager
 
 
 class TestSearchMetadataCacheEpochInvalidation:
@@ -14,7 +14,7 @@ class TestSearchMetadataCacheEpochInvalidation:
         vault.is_unlocked = True
         type(vault).key_epoch = PropertyMock(return_value='epoch_v2')
 
-        mgr = EntryManager(vault)
+        mgr = make_entry_manager(vault)
         mgr._cache._search_metadata_cache = {
             'id1': ('title1', 'user1', 'url1', 'tags1'),
             'id2': ('title2', 'user2', '', ''),
@@ -36,7 +36,7 @@ class TestSearchMetadataCacheEpochInvalidation:
         vault.is_unlocked = True
         type(vault).key_epoch = PropertyMock(return_value=None)
 
-        mgr = EntryManager(vault)
+        mgr = make_entry_manager(vault)
         mgr._cache._search_metadata_cache = {'id1': ('title1', 'user1', 'url1', 'tags1')}
         mgr._cache._cache_epoch = None
 
@@ -50,7 +50,7 @@ class TestSearchMetadataCacheEpochInvalidation:
         vault.is_unlocked = True
         type(vault).key_epoch = PropertyMock(return_value='same_epoch')
 
-        mgr = EntryManager(vault)
+        mgr = make_entry_manager(vault)
         mgr._cache._search_metadata_cache = {'id1': ('title1', 'user1', 'url1', 'tags1')}
         mgr._cache._cache_epoch = 'same_epoch'
 
@@ -64,7 +64,7 @@ class TestSearchMetadataCacheEpochInvalidation:
         vault.is_unlocked = True
         vault.key_epoch = 'some_epoch'
 
-        mgr = EntryManager(vault)
+        mgr = make_entry_manager(vault)
         mgr._cache._search_metadata_cache = {'id1': ('title1', 'user1', 'url1', 'tags1')}
         mgr._cache._search_metadata_failed = {'id2': {'username'}}
 

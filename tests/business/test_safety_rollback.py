@@ -18,17 +18,16 @@ from unittest.mock import patch
 
 import pytest
 
-from src.business.managers.backup_restore import (
-    BACKUP_HEADER_SIZE,
-    BACKUP_SALT_SIZE,
-    BackupRestoreManager,
-)
-from src.business.managers.entry_manager import EntryManager
+from src.business.managers.backup_restore import BackupRestoreManager
 from src.business.managers.import_export import ImportExportManager
 from src.business.managers.vault_manager import VaultManager
+from src.business.services.backup_header_codec import (
+    BACKUP_HEADER_SIZE,
+    BACKUP_SALT_SIZE,
+)
 from src.exceptions import VaultKeyEpochMismatchError
 from src.models import CustomField, Entry
-from tests.helpers import make_test_config
+from tests.helpers import make_entry_manager, make_test_config
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. 改密回滚一致性：重加密中途失败时，原密钥与数据仍匹配
@@ -44,7 +43,7 @@ class TestChangePasswordRollbackConsistency:
         self._vault = VaultManager(config)
         self._master_pwd = 'OriginalMaster!2026'
         self._vault.initialize(self._master_pwd)
-        self._entry_mgr = EntryManager(self._vault)
+        self._entry_mgr = make_entry_manager(self._vault)
         # 写入一条含全部敏感字段的条目，验证回滚后密钥/数据匹配
         self._entry_id = self._entry_mgr.add_entry(Entry(
             title='改密回滚测试',
@@ -108,7 +107,7 @@ class TestChangePasswordRollbackConsistency:
         assert epoch_after == epoch_before, '回滚后数据库 epoch 不应变化'
 
         # 原条目全部字段仍可用原密钥正确解密
-        entry_mgr = EntryManager(self._vault)
+        entry_mgr = make_entry_manager(self._vault)
         entry = entry_mgr.get_entry(self._entry_id)
         assert entry is not None
         assert entry.title == original.title
@@ -153,7 +152,7 @@ class TestChangePasswordRollbackConsistency:
         epoch_after = self._vault.db.get_meta('key_epoch')
         assert epoch_after == epoch_before
 
-        entry_mgr = EntryManager(self._vault)
+        entry_mgr = make_entry_manager(self._vault)
         entry = entry_mgr.get_entry(self._entry_id)
         assert entry is not None
         assert entry.password == original.password
@@ -194,7 +193,7 @@ class TestChangePasswordRollbackConsistency:
         assert self._vault.unlock(self._master_pwd)[0]
         assert self._vault.db.get_meta('key_epoch') == epoch_before
 
-        entry_mgr = EntryManager(self._vault)
+        entry_mgr = make_entry_manager(self._vault)
         entry = entry_mgr.get_entry(self._entry_id)
         assert entry is not None
         assert entry.password == original.password
@@ -226,7 +225,7 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
         self._vault = VaultManager(config)
         self._master_pwd = 'test_password_123'
         self._vault.initialize(self._master_pwd)
-        self._entry_mgr = EntryManager(self._vault)
+        self._entry_mgr = make_entry_manager(self._vault)
         self._backup_mgr = BackupRestoreManager(self._vault)
         # 写入两条条目作为恢复失败时“不应被清空”的存量数据
         self._entry_mgr.add_entry(Entry(
@@ -327,7 +326,11 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
             ensure_ascii=False,
         ).encode('utf-8')
         snapshot_key = self._vault.snapshot_key
-        from src.business.managers.backup_restore import BACKUP_AAD, BackupFlag
+        from src.business.services.backup_header_codec import (
+            BACKUP_AAD,
+            BackupFlag,
+            write_backup_header,
+        )
         from src.crypto.encryption import EncryptionEngine
         encrypted = EncryptionEngine.encrypt_bytes(
             invalid_data, snapshot_key, BACKUP_AAD
@@ -336,7 +339,7 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
         path = str(Path(self._tmp_dir) / 'bad_format.cbox')
         with open(path, 'wb') as f:
             from src.crypto.master_key import DEFAULT_KDF_PARAMS
-            BackupRestoreManager._write_backup_header(
+            write_backup_header(
                 f, BackupFlag.SNAPSHOT, os.urandom(BACKUP_SALT_SIZE),
                 DEFAULT_KDF_PARAMS,
             )
@@ -371,7 +374,7 @@ class TestImportEpochGuard:
         self._vault = VaultManager(config)
         self._master_pwd = 'test_password_123'
         self._vault.initialize(self._master_pwd)
-        self._entry_mgr = EntryManager(self._vault)
+        self._entry_mgr = make_entry_manager(self._vault)
         self._import_export = ImportExportManager(self._entry_mgr)
 
         # 写入一份合法的 CipherBox JSON 导出文件供导入
@@ -469,7 +472,7 @@ def test_restore_rotates_snapshot_key(tmp_path):
 
     source = VaultManager(make_test_config(source_dir))
     source.initialize('SourceMaster!2026')
-    EntryManager(source).add_entry(
+    make_entry_manager(source).add_entry(
         Entry(title='Incoming', password='IncomingSecret!2026')
     )
     portable = str(Path(source_dir) / 'portable.cbox')

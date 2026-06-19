@@ -124,7 +124,7 @@ def db_history():
     """创建一个临时数据库并初始化表结构，供密码历史测试使用。"""
     _tmp_dir = tempfile.mkdtemp()
     _db_path = Path(_tmp_dir) / 'test_vault.db'
-    _db = DatabaseManager(_db_path)
+    _db = DatabaseManager(_db_path, test_mode=True)
     _db.open()
     _db.init_tables()
     yield _db
@@ -135,7 +135,6 @@ def db_history():
         pass
 
 
-@pytest.mark.usefixtures('_disable_encrypted_assertions')
 def test_add_password_history(db_history):
     """添加密码历史记录。"""
     entry = _make_entry(title='Test')
@@ -148,7 +147,6 @@ def test_add_password_history(db_history):
     assert len(history) == 2
 
 
-@pytest.mark.usefixtures('_disable_encrypted_assertions')
 def test_password_history_limit(db_history):
     """密码历史最多保留 10 条。"""
     entry = _make_entry(title='Test')
@@ -161,7 +159,6 @@ def test_password_history_limit(db_history):
     assert len(history) == 10
 
 
-@pytest.mark.usefixtures('_disable_encrypted_assertions')
 def test_password_history_order(db_history):
     """密码历史按时间倒序排列。"""
     entry = _make_entry(title='Test')
@@ -178,12 +175,11 @@ def test_password_history_order(db_history):
 # --- TestDatabaseFormat ---
 
 
-@pytest.mark.usefixtures('_disable_encrypted_assertions')
 def test_schema_format_stored():
     """数据库保存固定格式标识。"""
     tmp_dir = tempfile.mkdtemp()
     db_path = Path(tmp_dir) / 'test.db'
-    db = DatabaseManager(db_path)
+    db = DatabaseManager(db_path, test_mode=True)
     db.open()
     db.init_tables()
 
@@ -193,12 +189,11 @@ def test_schema_format_stored():
     db_path.unlink(missing_ok=True)
 
 
-@pytest.mark.usefixtures('_disable_encrypted_assertions')
 def test_entry_type_column():
     """新条目落库后保留 entry_type 与 totp_secret 字段。"""
     tmp_dir = tempfile.mkdtemp()
     db_path = Path(tmp_dir) / 'test.db'
-    db = DatabaseManager(db_path)
+    db = DatabaseManager(db_path, test_mode=True)
     db.open()
     db.init_tables()
 
@@ -221,7 +216,7 @@ def db_category():
     """创建一个临时数据库并初始化表结构，供分类管理测试使用。"""
     _tmp_dir = tempfile.mkdtemp()
     _db_path = Path(_tmp_dir) / 'test.db'
-    _db = DatabaseManager(_db_path)
+    _db = DatabaseManager(_db_path, test_mode=True)
     _db.open()
     _db.init_tables()
     yield _db
@@ -232,7 +227,6 @@ def db_category():
         pass
 
 
-@pytest.mark.usefixtures('_disable_encrypted_assertions')
 def test_get_category_entry_count(db_category):
     """获取分类下的条目数量。"""
     categories = db_category.get_categories()
@@ -246,7 +240,6 @@ def test_get_category_entry_count(db_category):
     assert count == 1
 
 
-@pytest.mark.usefixtures('_disable_encrypted_assertions')
 def test_delete_category_nullifies_entries(db_category):
     """删除分类后，该分类下条目的 category_id 被置空。"""
     cat = Category(name='临时分类', icon_char='🔧', color='#FF0000')

@@ -10,7 +10,8 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from datetime import datetime
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from PyQt6.QtCore import QModelIndex, Qt
 from PyQt6.QtGui import QAction
@@ -60,17 +61,35 @@ if TYPE_CHECKING:
     from ...business.managers.entry_manager import EntryManager
     from ...business.services.security_analyzer import SecurityAnalyzer
     from ...config import ConfigManager
-    from ...models import Category
-    from ...utils.clipboard import ClipboardManager
+    from ...models import Category, Entry
     from ..components.detail_panel import DetailPanel
     from ..components.entry_list_widget import EntryListModel
     from ..controllers.entry_list_controller import EntryListController as _EntryListController
     from ..controllers.sidebar_controller import SidebarController as _SidebarController
+    from ..utils.clipboard import ClipboardManager
 
 logger = logging.getLogger(__name__)
 
 # 搜索结果渲染上限：超大库下避免一次性渲染过多条目卡死 UI
 _MAX_SEARCH_RESULTS_DISPLAY = 1000
+
+
+class SecurityReport(TypedDict):
+    """安全分析报告结构，对应 ``SecurityAnalyzer.full_analysis`` 返回值。
+
+    业务层 ``get_cached_report`` / ``get_or_compute_report`` 返回的是宽松 ``dict``，
+    此处 TypedDict 仅用于 UI 侧消费时提升键访问的类型安全。
+    """
+
+    total: int
+    weak_count: int
+    weak_entries: list[Entry]
+    duplicate_groups: list[list[Entry]]
+    duplicate_count: int
+    old_entries: list[Entry]
+    old: int
+    _summaries_with_dates: list[tuple[Entry, datetime | None]]
+    _key_epoch: int
 
 
 class _MainWindowFiltersMixin(QMainWindow):
@@ -448,7 +467,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         # 快速路径：缓存命中时直接更新 UI
         cached = self._security.get_cached_report(days)
         if cached is not None:
-            self._apply_status_summary(cached)
+            self._apply_status_summary(cast(SecurityReport, cached))
             return
         # 缓存未命中：显示占位文本，异步执行分析
         self._status_bar.showMessage('安全分析中...')
@@ -460,11 +479,11 @@ class _MainWindowFiltersMixin(QMainWindow):
         )
         self._status_worker = worker
 
-        def _on_finished(summary):
+        def _on_finished(summary: object) -> None:
             # 锁定后或非当前 worker 的延迟回调均不应用，避免访问已清零状态
             if self._locked_ui or self._status_worker is not worker:
                 return
-            self._apply_status_summary(summary)
+            self._apply_status_summary(cast(SecurityReport, summary))
             # worker 已结束，释放引用，与 _on_error 一致，避免 _status_worker
             # 长期指向已结束 worker 而破坏生命周期不变量。
             if self._status_worker is worker:
@@ -481,7 +500,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         worker.error.connect(_on_error)
         worker.start()
 
-    def _apply_status_summary(self, summary: dict):
+    def _apply_status_summary(self, summary: SecurityReport) -> None:
         try:
             total = summary['total']
             self._stats_label.setText(f'共 {total} 项')
@@ -732,7 +751,7 @@ class _MainWindowFiltersMixin(QMainWindow):
             if self._locked_ui:
                 return
             # 通过 EntryManager 生成验证码，UI 层不接触明文 TOTP secret
-            code = self._entry_mgr.generate_totp(summary.id)
+            code = self._entry_mgr.totp.generate(summary.id)
             if code:
                 self._clipboard.copy_text(code)
                 Toast.show(self, '验证码已复制', Toast.SUCCESS, duration=MS_TOAST_SHORT)
@@ -786,7 +805,7 @@ class _MainWindowFiltersMixin(QMainWindow):
     # ========== 操作方法 ==========
 
     def _add_entry(self):
-        categories = self._cached_categories or self._entry_mgr.get_categories()
+        categories = self._cached_categories or self._entry_mgr.categories.get_categories()
         tag_names = self._cached_tag_names
         dialog = EntryDialog(self._entry_mgr, categories, tag_names, parent=self, config=self._config)
         dialog.saved.connect(self._refresh_after_entry_change)
@@ -808,7 +827,7 @@ class _MainWindowFiltersMixin(QMainWindow):
                 '为避免覆盖原始密文，当前禁止编辑。请先创建备份并检查数据文件。',
             )
             return
-        categories = self._cached_categories or self._entry_mgr.get_categories()
+        categories = self._cached_categories or self._entry_mgr.categories.get_categories()
         tag_names = self._cached_tag_names
         dialog = EntryDialog(self._entry_mgr, categories, tag_names, entry=entry, parent=self, config=self._config)
         dialog.saved.connect(self._refresh_after_entry_change)
@@ -886,7 +905,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         dialog.exec()
 
     def _edit_category(self, category_id: int):
-        category = self._entry_mgr.get_category(category_id)
+        category = self._entry_mgr.categories.get_category(category_id)
         if not category:
             return
         dialog = CategoryDialog(self._entry_mgr, category=category, parent=self)

@@ -38,6 +38,20 @@ MAX_CUSTOM_FIELD_VALUE = 65536
 MAX_CATEGORY_NAME = 256
 MAX_PASSWORD_HISTORY = 10
 
+# 字段名 → (中文标签, 最大字符数)。表驱动长度校验的单一事实源，供
+# Entry.from_dict / entry_validation.validate_plain_entry / ImportExportManager._parse_csv_like
+# 复用，避免三处手工拼装字典漂移。仅含长度受限的字符串型字段（custom_fields 另有
+# 数量与结构校验，category_name 有独立上限 MAX_CATEGORY_NAME）。
+ENTRY_FIELD_LIMITS: tuple[tuple[str, str, int], ...] = (
+    ('title', '标题', MAX_FIELD_TITLE),
+    ('username', '用户名', MAX_FIELD_USERNAME),
+    ('password', '密码', MAX_FIELD_PASSWORD),
+    ('url', 'URL', MAX_FIELD_URL),
+    ('tags', '标签', MAX_FIELD_TAGS),
+    ('notes', '备注', MAX_FIELD_NOTES),
+    ('totp_secret', 'TOTP 密钥', MAX_FIELD_TOTP_SECRET),
+)
+
 # 条目类型常量
 ENTRY_TYPE_LOGIN = 'login'
 ENTRY_TYPE_CARD = 'card'
@@ -355,16 +369,8 @@ class Entry:
         if entry_type not in ENTRY_TYPES:
             raise ValueError(f'无效的条目类型: {entry_type}')
 
-        # 表驱动长度校验，单一循环替代 7 段重复的 if len > MAX 模板
-        field_limits = [
-            ('title', '标题', MAX_FIELD_TITLE),
-            ('url', 'URL', MAX_FIELD_URL),
-            ('notes', '备注', MAX_FIELD_NOTES),
-            ('username', '用户名', MAX_FIELD_USERNAME),
-            ('password', '密码', MAX_FIELD_PASSWORD),
-            ('tags', '标签', MAX_FIELD_TAGS),
-            ('totp_secret', 'TOTP 密钥', MAX_FIELD_TOTP_SECRET),
-        ]
+        # 表驱动长度校验，单一事实源见 models.ENTRY_FIELD_LIMITS
+        field_limits = ENTRY_FIELD_LIMITS
         values = {}
         for key, label, max_len in field_limits:
             value = d.get(key, '')

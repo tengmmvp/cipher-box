@@ -72,7 +72,7 @@ class CategoryRepository:
         名称在数据层以加密形态存储（每次 nonce 不同），故同名明文加密后互异，
         categories.name 的 UNIQUE 约束与本处查重均无法对加密名触发。本查重仅
         对直接传入明文名的调用方（含本层测试）作防御性兜底；生产路径的真正
-        明文查重在 EntryManager.add_category 完成。
+        明文查重在 CategoryManager.add_category 完成。
         """
         if self._conn.execute(
             "SELECT 1 FROM categories WHERE name=? LIMIT 1", (category.name,)
@@ -92,7 +92,7 @@ class CategoryRepository:
 
         名称在数据层以加密形态存储（每次 nonce 不同），同名明文加密后互异，
         故本查重无法对加密名触发，仅对直接传入明文名的调用方作防御性兜底；
-        生产路径的真正明文查重在 EntryManager.update_category 完成。
+        生产路径的真正明文查重在 CategoryManager.update_category 完成。
         """
         if category.id is not None and self._conn.execute(
             "SELECT 1 FROM categories WHERE name=? AND id!=? LIMIT 1",

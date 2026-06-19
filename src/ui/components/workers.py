@@ -66,11 +66,11 @@ class BackgroundWorker(QThread):
         """工作函数可定期检查此属性以实现提前退出。"""
         return self._cancel_event.is_set()
 
-    def cancel(self):
+    def cancel(self) -> None:
         """请求协作取消。工作函数需自行检查 is_cancelled 并提前返回。"""
         self._cancel_event.set()
 
-    def emit_progress(self, current: int, total: int):
+    def emit_progress(self, current: int, total: int) -> None:
         """从工作函数内部发射进度信号，线程安全。
 
         从工作线程调用时，信号通过 Qt 的队列连接安全传递到主线程。
@@ -102,7 +102,12 @@ class BackgroundWorker(QThread):
             self._func = None
 
 
-def wait_worker_shutdown(worker, *, cancel=True, timeout=None) -> bool:
+def wait_worker_shutdown(
+    worker: BackgroundWorker | None,
+    *,
+    cancel: bool = True,
+    timeout: int | None = None,
+) -> bool:
     """取消并等待后台 worker 结束，统一关闭时的取消-等待模式。
 
     Args:

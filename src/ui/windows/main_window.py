@@ -30,12 +30,13 @@ from PyQt6.QtWidgets import (
 )
 
 from ...business.managers.backup_restore import BackupRestoreManager
+from ...business.managers.entry_cache import EntryCacheManager
+from ...business.managers.entry_change_bus import EntryChangeBus
 from ...business.managers.entry_manager import EntryManager
 from ...business.managers.import_export import ImportExportManager
 from ...business.managers.vault_manager import VaultManager
 from ...business.services.security_analyzer import SecurityAnalyzer
 from ...config import MAX_WINDOW_GEOMETRY_BYTES, ConfigManager
-from ...utils.clipboard import ClipboardManager
 from ..components.detail_panel import DetailPanel
 from ..components.entry_list_widget import EntryItemDelegate, EntryListModel
 from ..components.tray_icon import TrayIcon
@@ -66,6 +67,7 @@ from ..resources.icons import (
     set_icon_with_text,
 )
 from ..resources.styles import get_style
+from ..utils.clipboard import ClipboardManager
 from .main_window_filters import _MainWindowFiltersMixin
 from .main_window_menu import _MainWindowMenuMixin
 
@@ -100,9 +102,6 @@ class _SessionLockFilter(QAbstractNativeEventFilter):
         except Exception:
             logger.debug("会话锁屏过滤器处理消息失败", exc_info=True)
         return False, 0
-
-# 排序选项来自共享常量，作为单一事实来源
-_SORT_OPTIONS = SORT_OPTIONS
 
 
 class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
@@ -169,7 +168,9 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         将依赖组装从 __init__ 提取，使构造函数聚焦于初始化顺序编排，
         管理器的创建与连线集中于此便于审计与调整。
         """
-        self._entry_mgr = EntryManager(self._vault)
+        self._cache = EntryCacheManager(self._vault)
+        self._change_bus = EntryChangeBus(self._cache)
+        self._entry_mgr = EntryManager(self._vault, self._cache, self._change_bus)
         self._security = SecurityAnalyzer(self._vault)
         self._entry_list_ctrl = EntryListController(
             self._entry_mgr, self._security, self._config,
@@ -348,12 +349,12 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         sidebar_layout.addWidget(self._sort_label)
 
         self._sort_combo = QComboBox()
-        for label, _, _ in _SORT_OPTIONS:
+        for label, _, _ in SORT_OPTIONS:
             self._sort_combo.addItem(label)
         sort_field = self._config.get('sort_field', 'updated_at')
         sort_order = self._config.get('sort_order', 'desc')
         sort_idx = next(
-            (i for i, (_, f, o) in enumerate(_SORT_OPTIONS) if f == sort_field and o == sort_order),
+            (i for i, (_, f, o) in enumerate(SORT_OPTIONS) if f == sort_field and o == sort_order),
             0,
         )
         self._sort_combo.setCurrentIndex(sort_idx)
@@ -782,7 +783,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
                     QTimer.singleShot(0, self.hide)
         super().changeEvent(a0)
 
-    def refresh_after_unlock(self):
+    def refresh_after_unlock(self) -> None:
         """解锁后刷新界面。"""
         self._locked_ui = False
         self._refresh_categories()
@@ -832,7 +833,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
                 except RuntimeError:
                     pass
 
-    def prepare_for_lock(self):
+    def prepare_for_lock(self) -> None:
         """在清除主密钥前销毁界面和剪贴板中的明文副本。"""
         self._locked_ui = True
         self._lock_timer.stop()

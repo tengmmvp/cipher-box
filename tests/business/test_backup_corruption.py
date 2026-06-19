@@ -1,3 +1,5 @@
+from tests.helpers import make_entry_manager
+
 """备份恢复边界场景测试。
 
 覆盖损坏文件、截断数据、超大备份、错误密码等异常输入下
@@ -12,14 +14,14 @@ from pathlib import Path
 
 import pytest
 
-from src.business.managers.backup_restore import (
+from src.business.managers.backup_restore import BackupRestoreManager
+from src.business.managers.vault_manager import VaultManager
+from src.business.services.backup_header_codec import (
     BACKUP_MAGIC,
     BACKUP_SALT_SIZE,
     MAX_BACKUP_FILE_SIZE,
-    BackupRestoreManager,
+    inspect_backup,
 )
-from src.business.managers.entry_manager import EntryManager
-from src.business.managers.vault_manager import VaultManager
 from src.crypto.master_key import DEFAULT_KDF_PARAMS, MasterKeyManager
 from src.exceptions import BackupError
 from src.models import Entry
@@ -33,7 +35,7 @@ class TestBackupCorruption:
         self._tmp_dir = str(tmp_path)
         self._vault = VaultManager(vault_config)
         self._vault.initialize("test_password_12345")
-        self._entry_mgr = EntryManager(self._vault)
+        self._entry_mgr = make_entry_manager(self._vault)
         self._backup_mgr = BackupRestoreManager(self._vault)
         self._entry_mgr.add_entry(Entry(
             title='测试条目', username='user1', password='pass123',
@@ -110,7 +112,7 @@ class TestBackupCorruption:
         """inspect_backup 应返回正确的备份信息。"""
         path = os.path.join(self._tmp_dir, 'inspect.cbox')
         self._create_valid_backup(path, 'TestPassword!99')
-        info = BackupRestoreManager.inspect_backup(path)
+        info = inspect_backup(path)
         assert info['password_required']
         assert not info['snapshot_required']
         assert info['kdf']['memory_cost'] == DEFAULT_KDF_PARAMS.memory_cost
@@ -120,7 +122,7 @@ class TestBackupCorruption:
         path = os.path.join(self._tmp_dir, 'snapshot.cbox')
         success, error = self._backup_mgr.create_backup(path, use_snapshot_key=True)
         assert success, f'快照备份失败: {error}'
-        info = BackupRestoreManager.inspect_backup(path)
+        info = inspect_backup(path)
         assert not info['password_required']
         assert info['snapshot_required']
 
@@ -150,7 +152,7 @@ class TestBackupCorruption:
             f.write(struct.pack('<BIII', 0xFF, 3, 65536, 4))
             f.write(b'\x00' * BACKUP_SALT_SIZE)
         with pytest.raises(BackupError):
-            BackupRestoreManager.inspect_backup(path)
+            inspect_backup(path)
 
     def test_backup_uses_persisted_kdf_params(self, monkeypatch):
         """恢复必须使用文件头参数，而不是进程当前默认参数。"""
@@ -253,7 +255,7 @@ class TestBackupSizeLimits:
                 f.write(BACKUP_MAGIC)
                 f.write(b'\x00' * (MAX_BACKUP_FILE_SIZE + 1))
             with pytest.raises(ValueError):
-                BackupRestoreManager.inspect_backup(path)
+                inspect_backup(path)
         finally:
             Path(path).unlink(missing_ok=True)
             os.rmdir(os.path.dirname(path))

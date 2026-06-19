@@ -6,8 +6,11 @@
 统一加做权限收紧处理。
 """
 
+from __future__ import annotations
+
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -39,6 +42,10 @@ from ..resources.constants import (
 )
 from ..resources.theme_colors import c
 
+if TYPE_CHECKING:
+    from ...business.managers.entry_manager import EntryManager
+    from ...business.managers.import_export import ImportExportManager
+
 logger = logging.getLogger(__name__)
 
 # 支持的导入导出格式定义
@@ -66,7 +73,12 @@ class ImportExportDialog(QDialog):
         'KeePass CSV': 'import_from_keepass_csv',
     }
 
-    def __init__(self, import_export_manager, entry_manager, parent=None):
+    def __init__(
+        self,
+        import_export_manager: ImportExportManager,
+        entry_manager: EntryManager,
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self._import_export = import_export_manager
         self._entry_mgr = entry_manager

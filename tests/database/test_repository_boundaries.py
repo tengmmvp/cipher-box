@@ -25,7 +25,7 @@ def _make_entry(**kwargs) -> RawEntry:
 def db():
     _tmp_dir = tempfile.mkdtemp()
     _db_path = Path(_tmp_dir) / 'test_boundary.db'
-    _db = DatabaseManager(_db_path)
+    _db = DatabaseManager(_db_path, test_mode=True)
     _db.open()
     _db.init_tables()
     yield _db
@@ -36,7 +36,6 @@ def db():
         pass
 
 
-@pytest.mark.usefixtures('_disable_encrypted_assertions')
 def test_password_history_truncated_to_max(db):
     """密码历史超过 MAX_PASSWORD_HISTORY 时截断为最新 N 条（off-by-one 边界）。"""
     entry = _make_entry(title='Truncated')
@@ -50,7 +49,6 @@ def test_password_history_truncated_to_max(db):
     assert history[0].old_password_enc == f'enc_{total - 1}'
 
 
-@pytest.mark.usefixtures('_disable_encrypted_assertions')
 def test_get_entries_by_ids_batches_large_id_lists(db, monkeypatch):
     """ID 数超过 _ID_BATCH_SIZE 时分批查询，全部返回且无错位/无遗漏。"""
     monkeypatch.setattr(entry_repository, '_ID_BATCH_SIZE', 2)

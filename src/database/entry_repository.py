@@ -377,31 +377,33 @@ class EntryRepository:
 
     @_db_write
     def permanent_delete_entry(self, entry_id: int) -> None:
-        """永久删除条目。"""
+        """永久删除条目。
+
+        不在此触发 secure_checkpoint：单条删除后 WAL 由 autocheckpoint（默认
+        1000 页）兜底，频繁的 TRUNCATE+fsync 会拖慢批量永久删除。需即时收缩 WAL
+        的场景（清空回收站、改密、恢复）由调用方在批量结束后统一 checkpoint。
+        """
         self._conn.execute("DELETE FROM entries WHERE id=?", (entry_id,))
         self._auto_commit()
-        self.secure_checkpoint()
 
     @_db_write
     def empty_trash(self) -> None:
-        """清空回收站。"""
+        """清空回收站（仅 DELETE；WAL 收缩与文件权限刷新由调用方 checkpoint）。"""
         self._conn.execute("DELETE FROM entries WHERE is_deleted=1")
         self._auto_commit()
-        self.secure_checkpoint()
 
     @_db_write
     def clear_vault_data(self) -> None:
         """清空领域数据，供事务化恢复使用。
 
-        删除后截断 WAL 以清除旧密文残留，与 permanent_delete_entry/empty_trash
-        一致。事务内调用时 secure_checkpoint 静默跳过，调用方须在事务提交后
-        显式 checkpoint 以保证旧密文被清除（见 restore_backup）。
+        不在此 secure_checkpoint：恢复路径在事务内调用本方法（checkpoint 会在
+        事务内静默跳过），调用方 ``restore_backup`` 已在事务提交后显式 checkpoint
+        以清除旧密文残留并刷新 -wal/-shm 文件权限。
         """
         self._conn.execute("DELETE FROM password_history")
         self._conn.execute("DELETE FROM entries")
         self._conn.execute("DELETE FROM categories")
         self._auto_commit()
-        self.secure_checkpoint()
 
     @_db_operation
     def get_entry_count(self, include_deleted: bool = False) -> int:

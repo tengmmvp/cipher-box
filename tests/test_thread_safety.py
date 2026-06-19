@@ -6,19 +6,16 @@
 
 import threading
 
-import pytest
-
 from src.database.db_manager import DatabaseManager
 from src.models import Category, RawEntry
 
 
-@pytest.mark.usefixtures('_disable_encrypted_assertions')
 class TestDatabaseThreadSafety:
     """测试 DatabaseManager 在并发访问下的行为。"""
 
     def test_concurrent_reads(self, tmp_path):
         """多个线程同时读取不应崩溃。"""
-        db = DatabaseManager(tmp_path / 'test.db')
+        db = DatabaseManager(tmp_path / 'test.db', test_mode=True)
         db.open()
         db.init_tables()
 
@@ -43,7 +40,7 @@ class TestDatabaseThreadSafety:
 
     def test_concurrent_writes(self, tmp_path):
         """多个线程同时写入不应崩溃，且数据不丢失。"""
-        db = DatabaseManager(tmp_path / 'test.db')
+        db = DatabaseManager(tmp_path / 'test.db', test_mode=True)
         db.open()
         db.init_tables()
 
@@ -76,7 +73,7 @@ class TestDatabaseThreadSafety:
 
     def test_concurrent_read_write(self, tmp_path):
         """同时读写不应崩溃。"""
-        db = DatabaseManager(tmp_path / 'test.db')
+        db = DatabaseManager(tmp_path / 'test.db', test_mode=True)
         db.open()
         db.init_tables()
 

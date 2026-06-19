@@ -17,18 +17,12 @@ if TYPE_CHECKING:
 
 from ...exceptions import EntryError, EntryIntegrityError
 from ...models import (
+    ENTRY_FIELD_LIMITS,
     ENTRY_TYPE_CARD,
     ENTRY_TYPE_IDENTITY,
     ENTRY_TYPE_LOGIN,
     ENTRY_TYPE_NOTE,
     MAX_CATEGORY_NAME,
-    MAX_FIELD_NOTES,
-    MAX_FIELD_PASSWORD,
-    MAX_FIELD_TAGS,
-    MAX_FIELD_TITLE,
-    MAX_FIELD_TOTP_SECRET,
-    MAX_FIELD_URL,
-    MAX_FIELD_USERNAME,
     SPECIAL_FIELD_CARD_CVV,
     SPECIAL_FIELD_CARD_EXPIRY,
     SPECIAL_FIELD_CARD_HOLDER,
@@ -109,7 +103,7 @@ def _transactional_import(method: Callable[..., T]) -> Callable[..., T]:
         default_category_id = bound.arguments.get('default_category_id')
         if (
             default_category_id is not None
-            and self._entry_mgr.get_category(default_category_id) is None
+            and self._entry_mgr.categories.get_category(default_category_id) is None
         ):
             raise ValueError('默认分类不存在或已被删除')
         try:
@@ -305,7 +299,7 @@ class ImportExportManager:
         if key in categories:
             return categories[key].id
         category = Category(name=clean_name, icon_char='[IMPORT]', color='#0f766e')
-        category.id = self._entry_mgr.add_category(category)
+        category.id = self._entry_mgr.categories.add_category(category)
         categories[key] = category
         return category.id
 
@@ -570,7 +564,7 @@ class ImportExportManager:
         # 在事务执行期间的内存峰值（导入在 worker 线程不阻塞 UI，但低配机仍受益）。
         del data, items
         entries_data = [{'title': e.title, 'username': e.username} for e in entries]
-        categories = {c.name.casefold(): c for c in self._entry_mgr.get_categories()}
+        categories = {c.name.casefold(): c for c in self._entry_mgr.categories.get_categories()}
 
         def _merge(entry: Entry, existing: Entry) -> None:
             if not secrets_included:
@@ -612,7 +606,7 @@ class ImportExportManager:
         if not rows:
             return 0
 
-        categories = {c.name.casefold(): c for c in self._entry_mgr.get_categories()}
+        categories = {c.name.casefold(): c for c in self._entry_mgr.categories.get_categories()}
 
         entries, entries_data, password_present = self._parse_csv_like(
             rows,
@@ -689,7 +683,7 @@ class ImportExportManager:
         if not rows:
             return 0
 
-        categories = {c.name.casefold(): c for c in self._entry_mgr.get_categories()}
+        categories = {c.name.casefold(): c for c in self._entry_mgr.categories.get_categories()}
 
         entries, entries_data, password_present = self._parse_csv_like(
             rows,
@@ -796,7 +790,7 @@ class ImportExportManager:
         if not items:
             return 0
 
-        categories = {c.name.casefold(): c for c in self._entry_mgr.get_categories()}
+        categories = {c.name.casefold(): c for c in self._entry_mgr.categories.get_categories()}
         folder_map = {
             folder.get('id'): folder.get('name', '')
             for folder in data.get('folders', [])
@@ -877,17 +871,9 @@ class ImportExportManager:
         headers = list(rows[0].keys())
         col_map = self._build_col_map(headers, aliases)
         password_present = 'password' in col_map
-        # 内部字段名到最大长度的映射，与 Entry.from_dict 的 MAX_FIELD_* 校验一致。
+        # 长度受限字段的内部名→上限映射，单一事实源见 models.ENTRY_FIELD_LIMITS。
         # category_name 非长度受限字段，不在此校验；它对应 CSV 的 category 或 KeePass 的 group。
-        field_limits = {
-            'title': MAX_FIELD_TITLE,
-            'username': MAX_FIELD_USERNAME,
-            'password': MAX_FIELD_PASSWORD,
-            'url': MAX_FIELD_URL,
-            'tags': MAX_FIELD_TAGS,
-            'notes': MAX_FIELD_NOTES,
-            'totp_secret': MAX_FIELD_TOTP_SECRET,
-        }
+        field_limits = {name: limit for name, _label, limit in ENTRY_FIELD_LIMITS}
         entries: list = []
         entries_data: list = []
         for row in rows:

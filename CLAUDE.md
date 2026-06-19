@@ -40,14 +40,14 @@ SQLite WAL 模式，手动事务管理（begin/commit/rollback）。启动时校
 
 ### Business 层 (`src/business/`)
 编排 Crypto 和 Data 层，分为两个子包：
-- `managers/`（有状态编排）：`VaultManager` 持有加密密钥和数据库连接，是安全边界的核心；`EntryManager` 透明地在写入时加密、读取时解密，因加密字段无法在数据库层面搜索，`get_entries()` 先拉取全部条目解密后在内存中过滤，配套 `EntryCacheManager` 提供摘要/分类名/标签/TOTP secret 多级缓存；`ImportExportManager` 使用 `@_transactional_import` 装饰器确保导入操作的原子性；`BackupRestoreManager` 实现可移植的二进制加密备份格式，使用独立的备份密码派生密钥，支持跨主密码恢复
-- `services/`（无状态服务）：`crypto_utils` 统一字段加解密入口与 `SENSITIVE_ENCRYPTED_FIELDS` 单一事实源；`key_manager` 持有/清零主密钥与快照密钥；`metadata_signer` 提供条目元数据与 `vault_meta` 的 HMAC 完整性签名；`re_encryption` 编排改密时的全量重加密；`security_analyzer` 弱密码/重复/过期分析；`password_service`/`card_validation` 作为切断 UI→Crypto 跨层依赖的业务门面
+- `managers/`（有状态编排）：`VaultManager` 持有加密密钥和数据库连接，是安全边界的核心；`EntryManager` 透明地在写入时加密、读取时解密，因加密字段无法在数据库层面搜索，`get_entries()` 先拉取全部条目解密后在内存中过滤，配套 `EntryCacheManager` 提供摘要/分类名/标签/TOTP secret 多级缓存，经 `EntryChangeBus` 统一「变更→缓存失效→回调」管线，并经 property 暴露 `categories`(`CategoryManager`)/`totp`(`TotpService`)/`password_history`(`PasswordHistoryService`) 子服务（SRP 拆分自原 EntryManager）；`ImportExportManager` 使用 `@_transactional_import` 装饰器确保导入操作的原子性；`BackupRestoreManager` 实现可移植的二进制加密备份格式（持锁核心：创建/恢复/可移植数据采集），使用独立的备份密码派生密钥，支持跨主密码恢复，经 `restore_points` property 暴露 `RestorePointManager`
+- `services/`（无状态服务）：`crypto_utils` 统一字段加解密入口与 `SENSITIVE_ENCRYPTED_FIELDS` 单一事实源；`entry_validation` 明文条目校验；`totp_service`/`password_history_service` 条目子域服务；`backup_header_codec`（备份二进制头编解码/检视）、`backup_validator`（恢复前载荷校验）、`backup_paths`（备份文件命名约定）为 `BackupRestoreManager` 的无状态纯函数模块；`key_manager` 持有/清零主密钥与快照密钥；`metadata_signer` 提供条目元数据与 `vault_meta` 的 HMAC 完整性签名；`re_encryption` 编排改密时的全量重加密；`security_analyzer` 弱密码/重复/过期分析；`password_service`/`card_validation` 作为切断 UI→Crypto 跨层依赖的业务门面
 
 ### UI 层 (`src/ui/`)
-PyQt6 桌面 GUI。`MainWindow` 是中心编排器，创建所有 Business 层管理器和子组件；为控制单文件规模，其实现拆分为三个文件：`main_window.py`（组装与生命周期）、`main_window_menu.py`（菜单）、`main_window_filters.py`（搜索/分类/标签/排序过滤）。`controllers/`（`entry_list_controller`/`sidebar_controller`）承载数据到控件的映射逻辑，`components/` 承载可复用控件（详情面板、条目列表、TOTP、密码历史等）。主题系统通过 `theme_colors.py` 定义 80+ 颜色 token（浅色/深色），QSS 样式表在 `styles.py` 中。图标通过 QtAwesome 语义化常量管理（`icons.py`）。
+PyQt6 桌面 GUI。`MainWindow` 是中心编排器，创建所有 Business 层管理器和子组件；为控制单文件规模，其实现拆分为三个文件：`main_window.py`（组装与生命周期）、`main_window_menu.py`（菜单）、`main_window_filters.py`（搜索/分类/标签/排序过滤）。`controllers/`（`entry_list_controller`/`sidebar_controller`）承载数据到控件的映射逻辑，`components/` 承载可复用控件（详情面板、条目列表、TOTP、密码历史等）。主题系统通过 `theme_colors.py` 定义 80+ 颜色 token（浅色/深色），QSS 样式表在 `styles.py` 中。图标通过 QtAwesome 语义化常量管理（`icons.py`）。`error_messages.py` 统一领域异常→用户文案翻译。`ui/utils/` 承载依赖 PyQt6 的 UI 专用工具（如 `clipboard`），与跨层共享的 `src/utils/` 区分以保持共享层零上层依赖。
 
 ### 共享层
-`src/models.py`（`Entry`/`Category`/`CustomField`/`PasswordHistory` 数据模型与字段常量）、`src/exceptions.py`（领域异常层次）、`src/config.py`（配置管理与完整性校验）、`src/logging_config.py`（脱敏日志）、`src/utils/`（`clipboard`/`file_security`/`memory`/`format` 工具）均为零上层依赖的共享基础设施，供 UI/Business/Database 三层引用。
+`src/models.py`（`Entry`/`Category`/`CustomField`/`PasswordHistory` 数据模型与字段常量）、`src/exceptions.py`（领域异常层次）、`src/config.py`（配置管理与完整性校验）、`src/logging_config.py`（脱敏日志）、`src/utils/`（`file_security`/`memory`/`format`/`purge_files` 工具）均为零上层依赖的共享基础设施，供 UI/Business/Database 三层引用（依赖 PyQt6 的 UI 工具归 `src/ui/utils/`，如 `clipboard`，不放入 `src/utils/`）。
 
 ### 应用入口
 `CipherBoxApp`（`src/app.py`）管理生命周期：登录 → 主窗口 → 锁定 → 重新登录。`VaultManager` 实例贯穿整个生命周期。

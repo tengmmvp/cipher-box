@@ -1,3 +1,5 @@
+from tests.helpers import make_entry_manager
+
 """宽松完整性校验测试，验证列表操作容忍损坏条目。
 
 覆盖 get_entries 的宽容模式与 get_entry 的严格模式差异：
@@ -6,7 +8,6 @@
 """
 import pytest
 
-from src.business.managers.entry_manager import EntryManager
 from src.business.managers.vault_manager import VaultManager
 from src.exceptions import VaultIntegrityError
 from src.models import Entry, RawEntry
@@ -19,7 +20,7 @@ class TestLenientVerify:
     def setup_vault(self, vault_config):
         self._vault = VaultManager(vault_config)
         self._vault.initialize("test_password_12345")
-        self._entry_mgr = EntryManager(self._vault)
+        self._entry_mgr = make_entry_manager(self._vault)
         yield
         self._vault.close()
 

@@ -118,8 +118,23 @@ class EntryCacheManager:
     def cached_search_metadata(
         self, raw_entry: RawEntry,
     ) -> tuple[str, str, str, str]:
-        """解密并缓存列表/搜索所需的 title、username、url、tags。"""
+        """解密并缓存列表/搜索所需的 title、username、url、tags（单条路径）。
+
+        取缓存前校验 epoch。批量循环路径应改用 :meth:`_cached_search_metadata_no_check`
+        并在循环外调用一次 :meth:`invalidate_if_epoch_changed`，避免每条目重复
+        加锁取 epoch——同一批 raw 在单次列表/搜索调用内 epoch 不可能变化
+        （调用方事务内已固定），逐条校验属冗余的 N 次 RLock + epoch 查询。
+        """
         self.invalidate_if_epoch_changed()
+        return self._cached_search_metadata_no_check(raw_entry)
+
+    def _cached_search_metadata_no_check(
+        self, raw_entry: RawEntry,
+    ) -> tuple[str, str, str, str]:
+        """cached_search_metadata 的无 epoch 校验版本，供批量循环复用。
+
+        调用方须保证循环外已调用 ``invalidate_if_epoch_changed``。
+        """
         cid = raw_entry.crypto_id
         with self._cache_lock:
             cached = self._search_metadata_cache.get(cid)
@@ -186,8 +201,8 @@ class EntryCacheManager:
 
         Args:
             entry_id: 条目 ID。
-            use_cache: 是否读写会话内 totp_secret 缓存。generate_totp_cached
-                传 True 复用缓存；generate_totp 传 False 仅解密不落缓存。
+            use_cache: 是否读写会话内 totp_secret 缓存。TotpService.generate_cached
+                传 True 复用缓存；TotpService.generate 传 False 仅解密不落缓存。
         """
         if use_cache:
             with self._cache_lock:
@@ -209,7 +224,7 @@ class EntryCacheManager:
         return secret
 
     def store_totp(self, entry_id: int, secret: str) -> None:
-        """预热 TOTP secret 缓存（供 get_totp_state 首次展示后预热）。"""
+        """预热 TOTP secret 缓存（供 TotpService.get_state 首次展示后预热）。"""
         with self._cache_lock:
             self._totp_secret_cache[entry_id] = secret
 
@@ -235,7 +250,7 @@ class EntryCacheManager:
             return cached
         tag_count: dict[str, int] = {}
         for raw in self._vault.db.get_entries(include_deleted=False, verify=VerifyMode.LENIENT):
-            tags_str = self.cached_search_metadata(raw)[3]
+            tags_str = self._cached_search_metadata_no_check(raw)[3]
             for tag in (t.strip() for t in tags_str.split(',') if t.strip()):
                 tag_count[tag] = tag_count.get(tag, 0) + 1
         result = sorted(tag_count.items(), key=lambda x: -x[1])

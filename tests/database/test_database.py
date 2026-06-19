@@ -26,14 +26,14 @@ def _make_entry(**kwargs) -> RawEntry:
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def db(_disable_encrypted_assertions):
+def db():
     """创建一个临时数据库并初始化表结构。
 
-    _disable_encrypted_assertions 来自 conftest.py，通过依赖注入自动激活。
+    test_mode=True 关闭密文前缀断言，适配测试直接构造的非密文数据。
     """
     tmp_dir = tempfile.mkdtemp()
     db_path = Path(tmp_dir) / 'test_vault.db'
-    database = DatabaseManager(db_path)
+    database = DatabaseManager(db_path, test_mode=True)
     database.open()
     database.init_tables()
     yield database

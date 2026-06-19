@@ -4,7 +4,9 @@
 图标根据锁定状态切换颜色与文字，无外部图标文件，统一通过代码绘制生成。
 """
 
-from PyQt6.QtCore import pyqtSignal
+from __future__ import annotations
+
+from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QIcon
 from PyQt6.QtWidgets import QMenu, QSystemTrayIcon
 
@@ -19,7 +21,7 @@ class TrayIcon(QSystemTrayIcon):
     lock_vault = pyqtSignal()
     quit_app = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
 
         # 使用文字作为图标，不依赖外部图标文件
@@ -50,7 +52,7 @@ class TrayIcon(QSystemTrayIcon):
         )
         return QIcon(pixmap)
 
-    def set_locked(self, locked: bool):
+    def set_locked(self, locked: bool) -> None:
         """切换锁定/解锁状态的托盘图标。"""
         if locked:
             self.setIcon(TrayIcon._create_icon(QColor(c('text_muted')), 'LOCK'))
