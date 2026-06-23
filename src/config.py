@@ -26,7 +26,17 @@ logger = logging.getLogger(__name__)
 def get_data_dir() -> Path:
     """获取应用数据目录。"""
     if os.name == 'nt':
-        base = os.environ.get('APPDATA', os.path.expanduser('~'))
+        # APPDATA 正常存在；极端缺失（环境异常/被清空）时逐级回退 LOCALAPPDATA →
+        # USERPROFILE\AppData\Roaming，避免直接回退裸 ~ 把 vault.db 写到主目录根，
+        # 破坏 %APPDATA%\CipherBox 的路径约定并与已有数据不一致。
+        base = (
+            os.environ.get('APPDATA')
+            or os.environ.get('LOCALAPPDATA')
+            or os.path.join(
+                os.environ.get('USERPROFILE', os.path.expanduser('~')),
+                'AppData', 'Roaming',
+            )
+        )
     else:
         base = os.environ.get(
             'XDG_DATA_HOME',
@@ -198,13 +208,17 @@ class ConfigManager:
             if self._config_path.exists():
                 try:
                     raw_text = self._config_path.read_text(encoding='utf-8')
-                    # 分离签名行，若存在
+                    # 分离末尾签名行：按行 splitlines 取最后一行判断是否签名行，比
+                    # rsplit('\n',1) 更鲁棒——后者按最后一个换行盲切，若 JSON 体内恰好
+                    # 有以签名前缀开头的行会误切；此处明确取末行，并按长度截断还原
+                    # json_text（与 save 写入的 json_text + '\n' + sig 结构对称，HMAC 一致）。
                     json_text = raw_text
                     stored_sig = ''
-                    lines = raw_text.rstrip().rsplit('\n', 1)
-                    if len(lines) == 2 and lines[1].startswith(_CONFIG_SIG_PREFIX):
-                        json_text = lines[0]
-                        stored_sig = lines[1][len(_CONFIG_SIG_PREFIX):]
+                    text = raw_text.rstrip()
+                    lines = text.splitlines()
+                    if len(lines) >= 2 and lines[-1].startswith(_CONFIG_SIG_PREFIX):
+                        stored_sig = lines[-1][len(_CONFIG_SIG_PREFIX):]
+                        json_text = text[: -(len(lines[-1]) + 1)]
                     # 验证完整性签名
                     expected_sig = hmac.new(
                         self._integrity_key,

@@ -13,9 +13,7 @@ from src.crypto.encryption import EncryptionEngine
 from src.crypto.master_key import MasterKeyManager
 from src.crypto.password_generator import PasswordGenerator
 
-# ---------------------------------------------------------------------------
 # TestEncryptionEngine
-# ---------------------------------------------------------------------------
 
 AAD = 'test:secret'
 
@@ -82,9 +80,7 @@ def test_rejects_ciphertext_without_current_prefix():
         EncryptionEngine.decrypt_bytes(b'legacy', key, AAD)
 
 
-# ---------------------------------------------------------------------------
 # TestMasterKeyManager
-# ---------------------------------------------------------------------------
 
 def test_create_and_verify():
     salt, verify_token, derived_key = MasterKeyManager.create('test_password_123')
@@ -131,9 +127,7 @@ def test_change_wrong_old_password():
     assert result is None
 
 
-# ---------------------------------------------------------------------------
 # TestPasswordGenerator
-# ---------------------------------------------------------------------------
 
 def test_generate_default():
     pwd = PasswordGenerator.generate()
@@ -187,16 +181,13 @@ def test_exclude_ambiguous():
     assert not any(c in ambiguous for c in pwd)
 
 
-# ---------------------------------------------------------------------------
 # TestEncryptionEdgeCases
-# ---------------------------------------------------------------------------
 
 def test_encrypt_empty_string_no_aad():
     """空字符串现在通过 sentinel 加密，AAD 参与认证。"""
     result = EncryptionEngine.encrypt("", b'\x00' * 32, "any_aad")
     assert result != ''
     assert result.startswith(EncryptionEngine.TEXT_PREFIX)
-    # 解密后应返回空字符串
     decrypted = EncryptionEngine.decrypt(result, b'\x00' * 32, "any_aad")
     assert decrypted == ''
 
@@ -207,9 +198,7 @@ def test_decrypt_empty_string_raises():
         EncryptionEngine.decrypt("", b'\x00' * 32, "any_aad")
 
 
-# ---------------------------------------------------------------------------
 # TestAESGCMCache
-# ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
 def _clear_aesgcm_cache():
@@ -262,6 +251,20 @@ def test_encrypt_decrypt_with_cached_cipher():
     assert decrypted == plaintext
 
 
+def test_cache_respects_max_size():
+    """_cipher_cache 不超过 _MAX_CACHE_SIZE，超限 LRU 淘汰最旧。
+
+    A6：缓存降容收缩崩溃 dump 攻击面（AESGCM 内含 C 层 key schedule 副本），
+    容量上限须有测试守护，防止后续误调大。
+    """
+    from src.crypto.encryption import _MAX_CACHE_SIZE, _cipher_cache
+    # 用 _MAX_CACHE_SIZE + 3 个不同 key 各获取 cipher，触发 LRU 淘汰
+    keys = [bytes([i]) + b'\x00' * 31 for i in range(_MAX_CACHE_SIZE + 3)]
+    for key in keys:
+        EncryptionEngine._get_cipher(key)
+    assert len(_cipher_cache) == _MAX_CACHE_SIZE
+
+
 def test_decrypt_bytes_wrong_prefix():
     """decrypt_bytes 拒绝错误前缀。"""
     with pytest.raises(ValueError, match='不支持的密文字节格式'):
@@ -286,9 +289,7 @@ def test_decrypt_generic_no_internal_info():
     assert "Error" not in msg or "解密失败" in msg
 
 
-# ---------------------------------------------------------------------------
 # TestConstantTimeComparison
-# ---------------------------------------------------------------------------
 
 def test_constant_time_compare_correct_password():
     """验证正确密码的验证流程。"""

@@ -28,8 +28,6 @@ class CipherBoxError(Exception):
     """CipherBox 所有自定义异常的基类。"""
 
 
-# ==================== Vault ====================
-
 class VaultError(CipherBoxError, RuntimeError):
     """保险库操作异常，可被 ``except RuntimeError`` 捕获。"""
 
@@ -50,13 +48,9 @@ class VaultAlreadyInitializedError(VaultError):
     """保险库已初始化，不能重复设置主密码。"""
 
 
-# ==================== Crypto ====================
-
 class DecryptionError(CipherBoxError, ValueError):
     """解密失败。"""
 
-
-# ==================== Entry ====================
 
 class EntryError(CipherBoxError):
     """条目操作异常。"""
@@ -65,8 +59,6 @@ class EntryError(CipherBoxError):
 class EntryIntegrityError(EntryError):
     """条目完整性异常，字段解密失败或元数据签名校验不通过。"""
 
-
-# ==================== Backup ====================
 
 class BackupError(CipherBoxError):
     """备份/恢复操作异常。"""
@@ -80,8 +72,6 @@ class PayloadTooLargeError(BackupError, ValueError):
     ``'过大' in str(exc)`` 字符串匹配判别大小超限的脆弱方式。
     """
 
-
-# ==================== Database ====================
 
 class DatabaseError(CipherBoxError, RuntimeError):
     """数据库操作异常，可被 ``except RuntimeError`` 捕获。"""

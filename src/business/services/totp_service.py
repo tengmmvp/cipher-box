@@ -1,23 +1,61 @@
 """TOTP 服务 — 从 EntryManager 抽离的 TOTP 生成与状态查询。
 
 UI→Business 迁移，调用方不接触明文 TOTP secret。secret 解密与缓存复用
-EntryCacheManager 的单一解密路径（resolve_totp_secret/store_totp/pop_totp），
-避免与 EntryManager 其它缓存失效逻辑耦合。
+缓存层（EntryCacheManager）的单一解密路径（resolve_totp_secret/store_totp/
+pop_totp），避免与 EntryManager 其它缓存失效逻辑耦合。
+
+依赖 :class:`TotpCacheProtocol` 而非具体 ``EntryCacheManager``：services 子包保持
+「无状态服务」契约，运行时不依赖 managers 子包，由 ``EntryCacheManager`` 作为协议
+的实现者在构造时注入，守住分层方向。
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, TypedDict
 
 if TYPE_CHECKING:
     from ..managers.vault_manager import VaultManager
 
 from ...crypto.totp import TOTPGenerator
-from ..managers.entry_cache import EntryCacheManager
+
+
+class TotpState(TypedDict):
+    """TOTP 完整状态：验证码、剩余秒数、周期，供 detail_panel 显示与刷新定时器。"""
+
+    code: str
+    remaining: int
+    period: int
+
+
+class TotpCacheProtocol(Protocol):
+    """TOTP secret 缓存的最小协议，解耦 TotpService 与 EntryCacheManager。
+
+    ``EntryCacheManager`` 自然满足此协议（鸭子类型），构造时作为 ``cache`` 注入。
+    定义协议使 services/ 不必运行时 import managers/，守住「services 无状态、
+    managers 有状态编排」的分层方向。
+    """
+
+    def invalidate_if_epoch_changed(self) -> None:
+        """key_epoch 变化时清空缓存；TotpService 读取前调用以守卫过期数据。"""
+        ...
+
+    def resolve_totp_secret(
+        self, entry_id: int, *, use_cache: bool = False,
+    ) -> str | None:
+        """解析条目 totp_secret 明文；use_cache 为真时读写会话内缓存。"""
+        ...
+
+    def store_totp(self, entry_id: int, secret: str) -> None:
+        """预热 TOTP secret 缓存。"""
+        ...
+
+    def pop_totp(self, entry_id: int) -> None:
+        """失效单条 TOTP secret 缓存。"""
+        ...
 
 
 class TotpService:
     """条目 TOTP 验证码生成与状态查询。"""
 
-    def __init__(self, vault: 'VaultManager', cache: EntryCacheManager):
+    def __init__(self, vault: 'VaultManager', cache: TotpCacheProtocol):
         self._vault = vault
         self._cache = cache
 
@@ -59,24 +97,20 @@ class TotpService:
             return None
         return TOTPGenerator.generate(secret)
 
-    def get_state(self, entry_id: int) -> dict | None:
+    def get_state(self, entry_id: int) -> TotpState | None:
         """获取指定条目的 TOTP 完整状态，含验证码、倒计时和周期。
 
-        仅解密 totp_secret 字段，供 detail_panel 的 TOTP 显示和刷新定时器使用。
-        首次调用时将解密后的 secret 写入 totp_secret 缓存，使后续
-        generate_cached 命中缓存，避免定时器每秒重复解密。
+        经 ``_resolve_totp_secret`` 的单一解密路径取 secret（与 generate/
+        generate_cached 统一），供 detail_panel 的 TOTP 显示和刷新定时器使用。
+        首次调用后将 secret 写入 totp_secret 缓存，使后续 generate_cached 命中缓存，
+        避免定时器每秒重复解密。
 
         Returns:
             包含验证码 code、剩余秒数 remaining、周期 period 三个键的字典；
             条目不存在或无 TOTP 密钥时返回 None。
         """
         self._cache.invalidate_if_epoch_changed()
-        raw = self._vault.db.get_entry(entry_id)
-        if raw is None or not raw.totp_secret:
-            return None
-        from .crypto_utils import decrypt_field, require_vault_key
-
-        secret = decrypt_field(raw.totp_secret, require_vault_key(self._vault), raw.crypto_id, 'totp_secret')
+        secret = self._resolve_totp_secret(entry_id)
         if not secret:
             return None
         # 预热缓存，供 generate_cached 复用。

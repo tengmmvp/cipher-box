@@ -15,6 +15,7 @@ from unittest.mock import patch
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QLabel, QLineEdit, QWidget
 
+from src.business.composition import build_business_context
 from src.business.managers.backup_restore import BackupRestoreManager
 from src.business.managers.import_export import ImportExportManager
 from src.business.managers.vault_manager import VaultManager
@@ -143,7 +144,7 @@ def test_lock_preparation_clears_decrypted_ui_and_clipboard():
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         manager.add_entry(Entry(title='Secret', password='VisibleSecret!2026'))
-        window = MainWindow(config, vault)
+        window = MainWindow(build_business_context(config, vault))
         assert window._entry_model.rowCount() == 1
         window._clipboard.copy_text('VisibleSecret!2026')
 
@@ -173,7 +174,7 @@ def test_change_master_success_triggers_force_backup(monkeypatch):
         vault = VaultManager(config)
         assert vault.initialize('MasterPassword!2026')[0]
         make_entry_manager(vault).add_entry(Entry(title='t', password='p'))
-        window = MainWindow(config, vault)
+        window = MainWindow(build_business_context(config, vault))
         try:
             # mock 改密对话框直接返回 Accepted，跳过真实改密 UI 与 Argon2id 派生
             monkeypatch.setattr(
@@ -205,7 +206,7 @@ def test_lock_closes_and_scrubs_open_entry_dialog():
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         entry_id = manager.add_entry(Entry(title='Secret', password='DialogSecret!2026'))
-        window = MainWindow(config, vault)
+        window = MainWindow(build_business_context(config, vault))
         window.show()
         dialog = EntryDialog(
             manager,
@@ -308,7 +309,7 @@ def test_selecting_first_entry_opens_detail_panel_without_crash():
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         entry_id = manager.add_entry(Entry(title='Selectable', password='Strong!2026Password'))
-        window = MainWindow(config, vault)
+        window = MainWindow(build_business_context(config, vault))
         window._entry_list.setCurrentIndex(window._entry_model.index(0))
         # 等待 80ms 选择防抖定时器触发并处理事件
         # PyQt6 QtTest.pyi 将 qWait 误标为实例方法，首个形参为 self，
@@ -534,7 +535,7 @@ def test_main_window_filters_entries_by_tag():
         manager = make_entry_manager(vault)
         manager.add_entry(Entry(title='Work', tags='工作,重要'))
         manager.add_entry(Entry(title='Personal', tags='个人'))
-        window = MainWindow(config, vault)
+        window = MainWindow(build_business_context(config, vault))
         index = window._tag_combo.findData('工作')
         assert index >= 0
         window._tag_combo.setCurrentIndex(index)

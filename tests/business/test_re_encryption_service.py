@@ -11,8 +11,11 @@ from typing import cast
 
 import pytest
 
-from src.business.services import re_encryption as kr_module
-from src.business.services.crypto_utils import decrypt_field, encrypt_field
+from src.business.services.crypto_utils import (
+    category_crypto_id,
+    decrypt_field,
+    encrypt_field,
+)
 from src.business.services.metadata_signer import MetadataSigner
 from src.business.services.re_encryption import (
     ReEncryptedEntry,
@@ -21,19 +24,17 @@ from src.business.services.re_encryption import (
 )
 from src.crypto.encryption import EncryptionEngine
 from src.exceptions import DecryptionError
-from src.models import PasswordHistory, RawEntry
+from src.models import Category, PasswordHistory, RawEntry
 
-# ---------------------------------------------------------------------------
 # 辅助函数：生成随机 AES-256 密钥
-# ---------------------------------------------------------------------------
+
 
 def _random_key() -> bytes:
     return os.urandom(32)
 
 
-# ---------------------------------------------------------------------------
 # 辅助函数：构建数据库原始状态的 Entry，加密字段为密文字符串
-# ---------------------------------------------------------------------------
+
 
 def _make_raw_entry(
     entry_id: int,
@@ -52,10 +53,10 @@ def _make_raw_entry(
     return RawEntry(
         id=entry_id,
         crypto_id=crypto_id,
-        title=f'条目{entry_id}',
+        title=encrypt_field(f'条目{entry_id}', key, crypto_id, 'title'),
         username=encrypt_field(username, key, crypto_id, 'username') if username else '',
         password=encrypt_field(password, key, crypto_id, 'password') if password else '',
-        url=f'https://example.com/{entry_id}',
+        url=encrypt_field(f'https://example.com/{entry_id}', key, crypto_id, 'url'),
         category_id=None,
         tags='',
         notes=encrypt_field(notes, key, crypto_id, 'notes') if notes else '',
@@ -73,9 +74,8 @@ def _make_raw_entry(
     )
 
 
-# ---------------------------------------------------------------------------
 # MockDB：内存实现 ReEncryptionDB Protocol
-# ---------------------------------------------------------------------------
+
 
 class MockDB:
     """内存 mock，实现 ReEncryptionDB Protocol 四个方法。"""
@@ -83,11 +83,13 @@ class MockDB:
     def __init__(self):
         self._entries: list[RawEntry] = []
         self._history: list[PasswordHistory] = []
+        self._categories: list[Category] = []
         # 记录调用参数供断言
         self.updated_entry_batches: list[list] = []
         self.updated_history_batches: list[list] = []
+        self.updated_categories: list[Category] = []
 
-    # -- 填充接口 --
+    # 填充接口
 
     def add_entry(self, entry: RawEntry):
         self._entries.append(entry)
@@ -95,30 +97,46 @@ class MockDB:
     def add_history(self, history: PasswordHistory):
         self._history.append(history)
 
-    # -- ReEncryptionDB Protocol 实现 --
+    def add_category(self, category: Category):
+        self._categories.append(category)
 
-    def get_entries(self, *, include_deleted: bool, limit: int, after_id: int) -> list:
+    # ReEncryptionDB Protocol 实现
+
+    def get_entries(
+        self, *, include_deleted: bool = False, limit: int | None = None,
+        after_id: int | None = None,
+    ) -> list[RawEntry]:
         """按 id 升序分页返回条目。"""
-        filtered = [e for e in self._entries if cast(int, e.id) > after_id]
-        return filtered[:limit]
+        after = after_id or 0
+        filtered = [e for e in self._entries if cast(int, e.id) > after]
+        return filtered[:limit] if limit is not None else filtered
 
-    def update_entries_batch(self, rows: list) -> None:
+    def update_entries_batch(self, rows: list[ReEncryptedEntry]) -> None:
         """记录批量更新行。"""
         self.updated_entry_batches.append(rows)
 
-    def get_all_password_history_batch(self, after_id: int, limit: int) -> list:
+    def get_all_password_history_batch(
+        self, after_id: int = 0, limit: int = 200,
+    ) -> list[PasswordHistory]:
         """按 id 升序分页返回密码历史。"""
         filtered = [h for h in self._history if (h.id or 0) > after_id]
         return filtered[:limit]
 
-    def update_password_history_batch(self, rows: list) -> None:
+    def update_password_history_batch(self, rows: list[ReEncryptedHistory]) -> None:
         """记录批量更新行。"""
         self.updated_history_batches.append(rows)
 
+    def get_categories(self) -> list[Category]:
+        """返回填充的分类，供 re_encrypt_categories 测试。"""
+        return list(self._categories)
 
-# ---------------------------------------------------------------------------
-# 测试：re_encrypt_entries，旧密钥加密的条目用新密钥重加密后可正确解密
-# ---------------------------------------------------------------------------
+    def update_category(self, category: Category) -> None:
+        """记录重加密后的分类，供断言新密钥密文。"""
+        self.updated_categories.append(category)
+
+
+# re_encrypt_entries：旧密钥加密的条目用新密钥重加密后可正确解密
+
 
 def test_re_encrypt_entries_round_trip():
     """旧密钥加密的条目用新密钥重加密后，用新密钥可正确解密所有敏感字段。"""
@@ -167,9 +185,8 @@ def test_re_encrypt_entries_round_trip():
     EncryptionEngine.clear_cache()
 
 
-# ---------------------------------------------------------------------------
-# 测试：re_encrypt_entries 批处理，多批次正确处理
-# ---------------------------------------------------------------------------
+# re_encrypt_entries 批处理：多批次正确处理
+
 
 def test_re_encrypt_entries_batching():
     """超过批次大小时正确分批处理，所有条目都被重加密。"""
@@ -210,9 +227,8 @@ def test_re_encrypt_entries_batching():
     EncryptionEngine.clear_cache()
 
 
-# ---------------------------------------------------------------------------
-# 测试：re_encrypt_history，密码历史重加密正确
-# ---------------------------------------------------------------------------
+# re_encrypt_history：密码历史重加密正确
+
 
 def test_re_encrypt_history_round_trip():
     """密码历史记录用新密钥重加密后可正确解密。"""
@@ -252,22 +268,22 @@ def test_re_encrypt_history_round_trip():
     EncryptionEngine.clear_cache()
 
 
-# ---------------------------------------------------------------------------
-# 测试：re_encrypt_entries 损坏中止，解密失败时抛出 DecryptionError
-# ---------------------------------------------------------------------------
+# re_encrypt_entries 损坏中止：解密失败时抛出 DecryptionError
+
 
 def test_re_encrypt_entries_corruption_raises_decryption_error():
-    """条目解密失败时抛出 DecryptionError 并中止重加密。
+    """条目解密失败时抛出 DecryptionError 并中止重加密（strict=True 真实路径）。
 
-    crypto_utils.decrypt_field 默认容错模式会吞掉 ValueError，
-    因此通过 patch 让 _decrypt_field_impl 在遇到损坏数据时重新抛出
-    ValueError，触发 ReEncryptionService 中的 except ValueError 分支。
+    用错误密钥加密的条目，用 old_key 解密必然失败；strict=True 使 decrypt_field
+    直接抛 ValueError，被 re_encrypt_entries 的 except 捕获转为 DecryptionError，
+    中止改密以保护数据完整性——而非 strict=False 下静默解密为空串再用新密钥
+    加密写入（不可逆的数据丢失）。
     """
     old_key = _random_key()
     new_key = _random_key()
     wrong_key = _random_key()
 
-    # 用一个错误的密钥加密数据，导致用 old_key 解密时失败
+    # 用错误密钥加密，导致用 old_key 解密时失败
     entry = _make_raw_entry(
         1, wrong_key,
         username='corrupted_user',
@@ -279,20 +295,8 @@ def test_re_encrypt_entries_corruption_raises_decryption_error():
     signer = MetadataSigner()
     service = ReEncryptionService(db, signer)
 
-    # patch 模块级引用，让解密失败时抛出 ValueError 而非静默返回空串
-    original_decrypt = kr_module._decrypt_field_impl
-
-    def strict_decrypt(encrypted, key, crypto_id, field_name, **kwargs):
-        result = original_decrypt(encrypted, key, crypto_id, field_name, **kwargs)
-        # decrypt_field 容错模式下返回空串表示解密失败
-        if not result and encrypted:
-            raise ValueError('模拟解密失败：密钥不匹配或数据损坏')
-        return result
-
     with pytest.raises(DecryptionError):
-        with pytest.MonkeyPatch().context() as m:
-            m.setattr(kr_module, '_decrypt_field_impl', strict_decrypt)
-            service.re_encrypt_entries(old_key, new_key)
+        service.re_encrypt_entries(old_key, new_key)
 
     # 中止在第一条损坏条目，不应有更新操作
     assert len(db.updated_entry_batches) == 0
@@ -300,15 +304,15 @@ def test_re_encrypt_entries_corruption_raises_decryption_error():
     EncryptionEngine.clear_cache()
 
 
-# ---------------------------------------------------------------------------
-# 测试：re_encrypt_history 损坏中止，密码历史解密失败时抛出 DecryptionError
-# ---------------------------------------------------------------------------
+# re_encrypt_history 损坏中止：密码历史解密失败时抛出 DecryptionError
+
 
 def test_re_encrypt_history_corruption_raises_decryption_error():
-    """密码历史解密失败时抛出 DecryptionError 并中止重加密。
+    """密码历史解密失败时抛出 DecryptionError 并中止重加密（strict=True 真实路径）。
 
-    同 test_re_encrypt_entries_corruption_raises_decryption_error，
-    通过 patch 让解密失败时抛出 ValueError 以触发错误处理路径。
+    同 test_re_encrypt_entries_corruption_raises_decryption_error，用错误密钥
+    加密的密码历史，用 old_key 解密必然失败，strict=True 触发 DecryptionError
+    中止改密。
     """
     old_key = _random_key()
     new_key = _random_key()
@@ -330,21 +334,72 @@ def test_re_encrypt_history_corruption_raises_decryption_error():
     signer = MetadataSigner()
     service = ReEncryptionService(db, signer)
 
-    # patch 模块级引用，让解密失败时抛出 ValueError
-    original_decrypt = kr_module._decrypt_field_impl
-
-    def strict_decrypt(encrypted, key, crypto_id, field_name, **kwargs):
-        result = original_decrypt(encrypted, key, crypto_id, field_name, **kwargs)
-        if not result and encrypted:
-            raise ValueError('模拟解密失败：密钥不匹配或数据损坏')
-        return result
-
     with pytest.raises(DecryptionError):
-        with pytest.MonkeyPatch().context() as m:
-            m.setattr(kr_module, '_decrypt_field_impl', strict_decrypt)
-            service.re_encrypt_history(old_key, new_key)
+        service.re_encrypt_history(old_key, new_key)
 
     # 不应有任何更新操作
     assert len(db.updated_history_batches) == 0
+
+    EncryptionEngine.clear_cache()
+
+
+# re_encrypt_categories：分类名称重加密正确
+
+
+def test_re_encrypt_categories_round_trip():
+    """分类名称用新密钥重加密后可正确解密（AAD 绑定 category_crypto_id）。"""
+    old_key = _random_key()
+    new_key = _random_key()
+
+    cat_id = 1
+    crypto_id = category_crypto_id(cat_id)
+    encrypted_name = encrypt_field('工作分类', old_key, crypto_id, 'category_name')
+
+    db = MockDB()
+    db.add_category(Category(id=cat_id, name=encrypted_name))
+    signer = MetadataSigner()
+    service = ReEncryptionService(db, signer)
+
+    service.re_encrypt_categories(old_key, new_key)
+
+    # 应记录一次分类更新
+    assert len(db.updated_categories) == 1
+    updated = db.updated_categories[0]
+    assert updated.id == cat_id
+
+    # 用新密钥解密验证（AAD 仍为 category_crypto_id(cat_id)）
+    plain = decrypt_field(updated.name, new_key, crypto_id, 'category_name')
+    assert plain == '工作分类'
+
+    EncryptionEngine.clear_cache()
+
+
+# re_encrypt_categories 损坏中止：分类名称解密失败时抛出 DecryptionError
+
+
+def test_re_encrypt_categories_corruption_raises_decryption_error():
+    """分类名称解密失败时抛出 DecryptionError 并中止（strict=True 真实路径）。
+
+    同 entries/history 损坏测试，用错误密钥加密的分类名，用 old_key 解密必然失败，
+    strict=True 触发 DecryptionError 中止改密。
+    """
+    old_key = _random_key()
+    new_key = _random_key()
+    wrong_key = _random_key()
+
+    cat_id = 1
+    crypto_id = category_crypto_id(cat_id)
+    encrypted_name = encrypt_field('损坏分类', wrong_key, crypto_id, 'category_name')
+
+    db = MockDB()
+    db.add_category(Category(id=cat_id, name=encrypted_name))
+    signer = MetadataSigner()
+    service = ReEncryptionService(db, signer)
+
+    with pytest.raises(DecryptionError):
+        service.re_encrypt_categories(old_key, new_key)
+
+    # 解析失败前不应记录任何更新
+    assert len(db.updated_categories) == 0
 
     EncryptionEngine.clear_cache()

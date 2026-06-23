@@ -65,6 +65,14 @@ if not all(
         '加密列未被纳入改密重写集合，将导致改密后数据损坏'
     )
 
+# ReEncryptedEntry 字段序须与 _RE_ENCRYPT_BATCH_UPDATE_SQL 的列序（_RE_ENCRYPT_COLUMNS
+# + id）一一对应，供 update_entries_batch 的 executemany 位置绑定。字段重排或新增列时
+# 此断言捕获错位，避免重加密写错列导致数据损坏。
+if ReEncryptedEntry._fields != tuple(_RE_ENCRYPT_COLUMNS) + ('id',):
+    raise RuntimeError(
+        'ReEncryptedEntry 字段序与 _RE_ENCRYPT_COLUMNS + id 不一致，executemany 会错位'
+    )
+
 _RE_ENCRYPT_BATCH_UPDATE_SQL = (
     f"UPDATE entries SET {', '.join(f'{column}=?' for column in _RE_ENCRYPT_COLUMNS)} "  # nosec B608 - 参数绑定
     f"WHERE id=?"
@@ -76,6 +84,33 @@ _SELECT_ENTRY_SIGN_SQL = (
     f"SELECT {', '.join(['e.id'] + [f'e.{c}' for c in _ENTRY_COLUMNS])}, "  # nosec B608 - 列名硬编码
     "c.name as category_name "
     "FROM entries e LEFT JOIN categories c ON e.category_id = c.id WHERE e.id=?"
+)
+
+# 条目带分类名的 JOIN 基础查询（e.* 形态）。供 get_entries / get_entry /
+# get_entries_by_ids / _clear_category_signatures 复用，消除 4 处复制粘贴的
+# JOIN 片段。_SELECT_ENTRY_SIGN_SQL 用显式列名（e.id, e.<col>...）而非 e.*，
+# 因签名查询需精确列序与 _ENTRY_COLUMNS 对齐，故独立不合并。
+_SELECT_ENTRY_WITH_CATEGORY_SQL = (
+    "SELECT e.*, c.name as category_name "
+    "FROM entries e LEFT JOIN categories c ON e.category_id = c.id"
+)
+
+# 密码历史 JOIN 条目 crypto_id 的基础查询，供 get_password_history /
+# get_all_password_history / get_all_password_history_batch 复用。
+_SELECT_PASSWORD_HISTORY_SQL = (
+    "SELECT h.*, e.crypto_id AS entry_crypto_id "
+    "FROM password_history h JOIN entries e ON e.id=h.entry_id"
+)
+# 密码历史 INSERT 与按条目截断到 MAX_PASSWORD_HISTORY 的 DELETE；
+# add_password_history 与 add_password_history_batch 共用，消除复制粘贴。
+_INSERT_PASSWORD_HISTORY_SQL = (
+    "INSERT INTO password_history (entry_id, old_password_enc, changed_at) VALUES (?, ?, ?)"
+)
+_TRUNCATE_PASSWORD_HISTORY_SQL = (
+    "DELETE FROM password_history WHERE entry_id = ? AND id NOT IN ("
+    "  SELECT id FROM password_history WHERE entry_id = ?"
+    "  ORDER BY changed_at DESC, id DESC LIMIT ?"
+    ")"
 )
 
 # get_entries_by_ids 的 ID 分批阈值：SQLite 默认限制 999 个主机变量，
@@ -148,6 +183,35 @@ class EntryRepository:
 
     # ==================== 条目 ====================
 
+    @staticmethod
+    def _entry_insert_params(entry: RawEntry) -> tuple:
+        """构造 INSERT 参数元组，列序与 _ENTRY_COLUMNS 一致。
+
+        供 add_entry 与 add_entries_batch 共用，消除两处 19 字段元组的复制粘贴
+        （新增加密列后只改 _ENTRY_COLUMNS，此处自动跟随，避免漏改一处致列错位）。
+        """
+        return (
+            entry.crypto_id,
+            entry.title,
+            entry.username,
+            entry.password,
+            entry.url,
+            entry.category_id,
+            entry.tags,
+            entry.notes,
+            entry.custom_fields_db_value,
+            1 if entry.is_favorite else 0,
+            1 if entry.is_deleted else 0,
+            entry.password_strength,
+            entry.entry_type,
+            entry.totp_secret,
+            entry.created_at,
+            entry.updated_at,
+            entry.deleted_at,
+            entry.password_changed_at,
+            entry.metadata_mac,
+        )
+
     def get_entries(
         self,
         deleted_only: bool = False,
@@ -170,12 +234,7 @@ class EntryRepository:
                 篡改；SKIP 仅用于签名计算前的原始读取（_select_entry_for_sign 等，
                 不能先验签再算签名）。单条详情用 STRICT 在校验失败时抛异常。
         """
-        query = """
-            SELECT e.*, c.name as category_name
-            FROM entries e
-            LEFT JOIN categories c ON e.category_id = c.id
-            WHERE 1=1
-        """
+        query = _SELECT_ENTRY_WITH_CATEGORY_SQL + " WHERE 1=1"
         params: list = []
 
         if deleted_only:
@@ -213,10 +272,7 @@ class EntryRepository:
     def get_entry(self, entry_id: int) -> RawEntry | None:
         """获取单个条目。"""
         row = self._conn.execute(
-            """SELECT e.*, c.name as category_name
-               FROM entries e
-               LEFT JOIN categories c ON e.category_id = c.id
-               WHERE e.id = ?""",
+            f"{_SELECT_ENTRY_WITH_CATEGORY_SQL} WHERE e.id = ?",  # nosec B608
             (entry_id,),
         ).fetchone()
         return self._row_to_entry(row) if row else None
@@ -238,31 +294,10 @@ class EntryRepository:
             entry.password_changed_at or entry.created_at or now
         )
         entry.metadata_mac = self._sign_entry(entry)
-        # 参数顺序须与 _ENTRY_COLUMNS 一致；加密列存 entry 的密文属性。
         try:
             cursor = self._conn.execute(
                 _INSERT_ENTRY_SQL,
-                (
-                    entry.crypto_id,
-                    entry.title,
-                    entry.username,
-                    entry.password,
-                    entry.url,
-                    entry.category_id,
-                    entry.tags,
-                    entry.notes,
-                    entry.custom_fields_db_value,
-                    1 if entry.is_favorite else 0,
-                    1 if entry.is_deleted else 0,
-                    entry.password_strength,
-                    entry.entry_type,
-                    entry.totp_secret,
-                    entry.created_at,
-                    entry.updated_at,
-                    entry.deleted_at,
-                    entry.password_changed_at,
-                    entry.metadata_mac,
-                ),
+                self._entry_insert_params(entry),
             )
         except sqlite3.IntegrityError as exc:
             # crypto_id 有 UNIQUE 约束；冲突时归一化为领域异常，避免裸驱动异常
@@ -270,6 +305,59 @@ class EntryRepository:
             raise DatabaseError(f'条目写入违反唯一约束（crypto_id 冲突）：{exc}') from exc
         self._auto_commit()
         return cursor.lastrowid or 0
+
+    @_db_write
+    def add_entries_batch(
+        self, entries: list[RawEntry], *, preserve_metadata: bool = False,
+    ) -> dict[str, int]:
+        """批量添加条目（恢复路径专用），返回 ``{crypto_id: new_id}``。
+
+        逐条计算 ``metadata_mac`` 后用 ``executemany`` 一次性 INSERT，将 N 次单独
+        INSERT + ``_auto_commit``（每次 commit 即一次 fsync）合并为 1 次 executemany
+        + 1 次 commit，显著缩短恢复长事务持 ``vault_write_lock`` 的时间（否则 UI
+        完全冻结）。``preserve_metadata`` 语义同 :meth:`add_entry`。
+
+        ``executemany`` 不返回逐条 ``lastrowid``，故按 ``crypto_id`` 反查 ``id``
+        建立 crypto_id→new_id 映射，供调用方关联旧 entry_id。
+
+        Args:
+            entries: 待写入的 RawEntry 列表（加密字段须已加密）。
+            preserve_metadata: 是否保留原 created_at/updated_at/is_deleted 等。
+        """
+        if not entries:
+            return {}
+        now = utc_now_iso()
+        params = []
+        for entry in entries:
+            # 恢复数据来自外部备份，逐条断言加密列防止明文静默落库（与 add_entry
+            # 一致，不采样护栏——恢复是低频全量写入，逐条断言开销可接受）。
+            self._assert_entry_encrypted_fields(entry)
+            entry.crypto_id = entry.crypto_id or uuid.uuid4().hex
+            entry.created_at = entry.created_at or now
+            entry.updated_at = (
+                entry.updated_at if preserve_metadata and entry.updated_at else now
+            )
+            entry.is_deleted = bool(preserve_metadata and entry.is_deleted)
+            entry.deleted_at = entry.deleted_at if preserve_metadata else ''
+            entry.password_changed_at = (
+                entry.password_changed_at or entry.created_at or now
+            )
+            entry.metadata_mac = self._sign_entry(entry)
+            params.append(self._entry_insert_params(entry))
+        try:
+            self._conn.executemany(_INSERT_ENTRY_SQL, params)
+        except sqlite3.IntegrityError as exc:
+            raise DatabaseError(
+                f'批量条目写入违反唯一约束（crypto_id 冲突）：{exc}'
+            ) from exc
+        self._auto_commit()
+        # executemany 不提供逐条 lastrowid，按 crypto_id 反查 id 建立映射。
+        placeholders = ','.join('?' for _ in entries)
+        id_rows = self._conn.execute(
+            f'SELECT id, crypto_id FROM entries WHERE crypto_id IN ({placeholders})',  # nosec B608
+            [entry.crypto_id for entry in entries],
+        ).fetchall()
+        return {row[1]: row[0] for row in id_rows}
 
     @_db_write
     def update_entry(
@@ -436,10 +524,7 @@ class EntryRepository:
                 batch = unique_ids[start:start + _ID_BATCH_SIZE]
                 placeholders = ','.join('?' for _ in batch)
                 rows = self._conn.execute(
-                    f"""SELECT e.*, c.name as category_name
-                        FROM entries e
-                        LEFT JOIN categories c ON e.category_id = c.id
-                        WHERE e.id IN ({placeholders})""",  # nosec B608 - 参数化占位符
+                    f"{_SELECT_ENTRY_WITH_CATEGORY_SQL} WHERE e.id IN ({placeholders})",  # nosec B608 - 参数化占位符
                     batch,
                 ).fetchall()
                 fetched_rows.extend(rows)
@@ -460,17 +545,14 @@ class EntryRepository:
         """添加密码历史记录。"""
         self._assert_encrypted(old_password_enc, 'password_history')
         self._conn.execute(
-            "INSERT INTO password_history (entry_id, old_password_enc, changed_at) VALUES (?, ?, ?)",
+            _INSERT_PASSWORD_HISTORY_SQL,
             (entry_id, old_password_enc, changed_at or utc_now_iso()),
         )
         # 无条件截断：NOT IN 子查询对未超限条目不匹配任何行，幂等且高效，
         # 比先 COUNT 再 DELETE 少一次查询。隐式依赖 id 为 INTEGER PRIMARY KEY
         # （NOT NULL）：若子查询结果含 NULL，NOT IN 对所有行返回 UNKNOWN 而不删除。
         self._conn.execute(
-            "DELETE FROM password_history WHERE entry_id = ? AND id NOT IN ("
-            "  SELECT id FROM password_history WHERE entry_id = ?"
-            "  ORDER BY changed_at DESC, id DESC LIMIT ?"
-            ")",
+            _TRUNCATE_PASSWORD_HISTORY_SQL,
             (entry_id, entry_id, MAX_PASSWORD_HISTORY),
         )
         self._auto_commit()
@@ -500,16 +582,12 @@ class EntryRepository:
             for enc, changed_at in items
         ]
         self._conn.executemany(
-            "INSERT INTO password_history (entry_id, old_password_enc, changed_at) "
-            "VALUES (?, ?, ?)",
+            _INSERT_PASSWORD_HISTORY_SQL,
             rows,
         )
         # 统一截断：仅一次 DELETE，替代逐条触发的 N 次截断
         self._conn.execute(
-            "DELETE FROM password_history WHERE entry_id = ? AND id NOT IN ("
-            "  SELECT id FROM password_history WHERE entry_id = ?"
-            "  ORDER BY changed_at DESC, id DESC LIMIT ?"
-            ")",
+            _TRUNCATE_PASSWORD_HISTORY_SQL,
             (entry_id, entry_id, MAX_PASSWORD_HISTORY),
         )
         self._auto_commit()
@@ -518,9 +596,8 @@ class EntryRepository:
     def get_password_history(self, entry_id: int) -> list[PasswordHistory]:
         """获取条目的密码历史。"""
         rows = self._conn.execute(
-            """SELECT h.*, e.crypto_id AS entry_crypto_id
-               FROM password_history h JOIN entries e ON e.id=h.entry_id
-               WHERE h.entry_id = ? ORDER BY h.changed_at DESC, h.id DESC""",
+            f"{_SELECT_PASSWORD_HISTORY_SQL} "
+            "WHERE h.entry_id = ? ORDER BY h.changed_at DESC, h.id DESC",
             (entry_id,),
         ).fetchall()
         return [self._row_to_password_history(r) for r in rows]
@@ -529,9 +606,7 @@ class EntryRepository:
     def get_all_password_history(self) -> list[PasswordHistory]:
         """获取全部密码历史，用于改密和备份。"""
         rows = self._conn.execute(
-            """SELECT h.*, e.crypto_id AS entry_crypto_id
-               FROM password_history h JOIN entries e ON e.id=h.entry_id
-               ORDER BY h.id"""
+            f"{_SELECT_PASSWORD_HISTORY_SQL} ORDER BY h.id"
         ).fetchall()
         return [self._row_to_password_history(r) for r in rows]
 
@@ -545,17 +620,14 @@ class EntryRepository:
         避免并发写入时 OFFSET 分页可能导致的跳过/重复问题。
         """
         rows = self._conn.execute(
-            """SELECT h.*, e.crypto_id AS entry_crypto_id
-               FROM password_history h JOIN entries e ON e.id=h.entry_id
-               WHERE h.id > ?
-               ORDER BY h.id LIMIT ?""",
+            f"{_SELECT_PASSWORD_HISTORY_SQL} WHERE h.id > ? ORDER BY h.id LIMIT ?",
             (after_id, limit),
         ).fetchall()
         return [self._row_to_password_history(r) for r in rows]
 
     @_db_operation
     def get_password_history_count(self, entry_id: int) -> int:
-        """获取条目的密码历史记录数，轻量 COUNT 查询。"""
+        """获取条目的密码历史记录数。"""
         row = self._conn.execute(
             "SELECT COUNT(*) FROM password_history WHERE entry_id = ?",
             (entry_id,),
@@ -569,8 +641,9 @@ class EntryRepository:
         改密重加密时将逐条 UPDATE 合并为单次 executemany，减少数据库往返次数。
 
         Args:
-            rows: 推荐使用 ``ReEncryptedHistory`` NamedTuple 列表，
-                也可传入由新密码密文与记录 id 组成的二元组列表。
+            rows: ``ReEncryptedHistory`` NamedTuple 列表（re_encryption 产出）。
+                NamedTuple 自动适配 executemany 的位置参数绑定；不接受普通二元组——
+                解包 ``for encrypted, _history_id in rows`` 依赖字段语义，普通 tuple 易错位。
         """
         if not rows:
             return
@@ -597,26 +670,31 @@ class EntryRepository:
         ).fetchone()
         return self._row_to_entry(row, verify=VerifyMode.SKIP) if row else None
 
-    def clear_category_signatures(self, category_id: int) -> None:
+    def _clear_category_signatures(self, category_id: int) -> None:
         """将指定分类下所有条目的 category_id 置空并重算元数据签名。
 
         供删除分类时由 DatabaseManager 编排调用，保持条目元数据完整性。
         批量执行，将 N+1 模式降为 2 次操作。不校验旧签名，因签名将被覆盖。
+        下划线前缀表明这是跨 Repository 的内部编排接口，仅供
+        ``DatabaseManager.delete_category`` 调用。
 
         锁与事务契约：本方法未使用 ``@_db_operation`` 装饰器，不自行获取
         ``db_lock``。调用方（DatabaseManager.delete_category）须已持有
         ``db_lock`` 并处于活动事务内，以保证 SELECT 与 executemany UPDATE
         的原子性及跨表一致性。入口断言将此契约从注释升级为运行期检查，
         防止未来误在无事务上下文中直接调用。
+
+        已知取舍（性能）：持 ``db_lock`` 下对分类下全部条目逐条 ``_row_to_entry``
+        + ``_sign_entry``（HMAC）是 O(N) Python 循环，大分类（数千条目）下会阻塞
+        其他数据库访问。彻底优化需 ``MetadataSigner`` 提供批量签名接口，当前作为
+        已知取舍保留——删除分类是低频操作，阻塞窗口可接受。
         """
         if not self.in_transaction:
             raise RuntimeError(
-                'clear_category_signatures 须在活动事务内调用（由 DatabaseManager.delete_category 编排）'
+                '_clear_category_signatures 须在活动事务内调用（由 DatabaseManager.delete_category 编排）'
             )
         rows = self._conn.execute(
-            "SELECT e.*, c.name as category_name "
-            "FROM entries e LEFT JOIN categories c ON e.category_id = c.id "
-            "WHERE e.category_id=?",
+            f"{_SELECT_ENTRY_WITH_CATEGORY_SQL} WHERE e.category_id=?",  # nosec B608
             (category_id,),
         ).fetchall()
         update_data = []

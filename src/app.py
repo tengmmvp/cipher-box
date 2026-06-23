@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from PyQt6.QtCore import QEvent, QObject
 
 from . import __version__
+from .business.composition import build_business_context
 from .business.managers.vault_manager import VaultManager
 from .config import ConfigManager
 from .logging_config import configure_logging
@@ -33,6 +34,8 @@ class CipherBoxApplication(QApplication):
     """
 
     def notify(self, receiver: 'QObject | None', event: 'QEvent | None') -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
+        # reportIncompatibleMethodOverride 根因：Qt 的 notify 在 typeshed 与 PyQt6 stub
+        # 间签名存在已知差异（协变/参数标注），非真实方法冲突，待 stub 对齐后可移除此抑制。
         try:
             return super().notify(receiver, event)
         except Exception:
@@ -123,9 +126,10 @@ class CipherBoxApp:
         if self._main_window is not None:
             try:
                 if not full:
-                    # aboutToQuit 不等待 worker（避免阻塞退出），但仍取消它们，
-                    # 避免 backup worker 残留持密钥继续解密，与 lock() 清零竞态。
-                    self._main_window.emergency_cancel_workers()
+                    # aboutToQuit 取消 worker 并短超时等待（400ms），让持密钥解密的
+                    # worker 退出协作循环后再 lock 清零，收缩「已锁定」后明文残留窗口；
+                    # 超时放弃不阻塞退出，与 _shutdown_workers 的长等待语义区分。
+                    self._main_window.emergency_cancel_workers(wait_timeout_ms=400)
                 # 经公共方法而非 getattr 访问 _clipboard 私有属性：崩溃兜底路径
                 # 最不应静默失效，私有属性重命名时 getattr 返回 None 会无声错过清理。
                 self._main_window.emergency_clear_clipboard()
@@ -173,7 +177,7 @@ class CipherBoxApp:
                 # 任一环节抛异常会留下半构造窗口与已连接的部分信号槽。捕获后回滚
                 # 引用为 None，提示用户重启而非继续 show 一个状态不一致的窗口。
                 try:
-                    self._main_window = MainWindow(self._config, self._vault)
+                    self._main_window = MainWindow(build_business_context(self._config, self._vault))
                 except Exception:
                     logger.error("主窗口构造失败，已回滚", exc_info=True)
                     self._main_window = None

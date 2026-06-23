@@ -9,8 +9,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
-        python-version: ['3.10', '3.12']
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        python-version: ["3.10", "3.12"]
     runs-on: ${{ matrix.os }}
     env:
       QT_QPA_PLATFORM: offscreen
@@ -30,14 +30,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-      # --locked 校验 uv.lock 与 pyproject.toml 完全一致，不一致即失败，
-      # 强制依赖变更时同步更新 uv.lock，消除 lockfile 与声明漂移。
-      - run: uv sync --locked --extra dev
+      - name: Install dependencies
+        run: uv sync --locked --extra dev
       - run: uv run ruff check src tests
       - run: uv run mypy src
-      - run: uv run pytest --cov=src --cov-report=term-missing --cov-report=xml
-      # 分层覆盖率门槛：非 UI 层（crypto/business/database/utils/config/models 等）85%，
-      # UI 层 30%。一次 pytest 生成 .coverage，再用 coverage report 按 include/omit
-      # 分层校验，避免非 UI 回退且不卡 UI 迭代。
-      - run: uv run coverage report --omit="*/src/ui/*" --fail-under=85
-      - run: uv run coverage report --include="*/src/ui/*" --fail-under=30
+      - name: Tests with coverage
+        run: uv run pytest --cov=src --cov-report=term-missing --cov-report=xml
+      # 分层覆盖率门槛：非 UI 85% / UI 30%，复用同一 .coverage
+      - name: Non-UI coverage gate
+        run: uv run coverage report --omit="*/src/ui/*" --fail-under=85
+      - name: UI coverage gate
+        run: uv run coverage report --include="*/src/ui/*" --fail-under=30
+      # pip-audit 经 --with 临时运行，不入 uv.lock
+      - name: Dependency vulnerability scan
+        run: uv run --with pip-audit pip-audit

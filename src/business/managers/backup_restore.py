@@ -20,14 +20,15 @@ from typing import IO, TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ...config import ConfigManager
-    from ...database.db_manager import DatabaseManager
+    from ...database.types import VaultDataStore
     from .entry_manager import EntryManager
     from .vault_manager import VaultManager
 
 from ...crypto.encryption import EncryptionEngine
-from ...crypto.master_key import DEFAULT_KDF_PARAMS, MasterKeyManager
+from ...crypto.master_key import DEFAULT_KDF_PARAMS, KEY_SIZE, MasterKeyManager
 from ...exceptions import BackupError, PayloadTooLargeError, VaultKeyEpochMismatchError
 from ...models import (
+    ENTRY_TYPE_LOGIN,
     Category,
     RawEntry,
 )
@@ -38,9 +39,11 @@ from ...utils.file_security import (
     validate_file_path,
 )
 from ...utils.format import utc_now_iso
+from ...utils.memory import secure_zero_buffer
 from ...utils.purge_files import secure_purge
 from ..services.backup_header_codec import (
     BACKUP_FORMAT,
+    BACKUP_SALT_SIZE,
     MAX_BACKUP_FILE_SIZE,
     MAX_BACKUP_PAYLOAD_SIZE,
     BackupFlag,
@@ -104,6 +107,14 @@ def _user_friendly_error(exc: Exception) -> str:
     return '操作失败，请检查文件和磁盘'
 
 
+class _BackupCancelled(Exception):
+    """内部哨兵异常：cancel_check 触发时中止备份采集，编排层捕获后返回 None。
+
+    用异常而非返回值传递「取消」，使采集子方法保持单一返回类型（tuple），
+    编排层 ``_collect_portable_data`` 统一在 try/except 中归一为 None。
+    """
+
+
 class BackupRestoreManager:
     """创建可移植的加密备份并以事务方式恢复。"""
 
@@ -132,46 +143,66 @@ class BackupRestoreManager:
     ) -> dict[str, Any] | None:
         """收集备份数据：解密所有字段为明文，构建可移植字典。
 
-        使用 crypto_utils.decrypt_entry_to_portable_dict 共享解密逻辑，
-        本方法保留备份特有的增量大小估算和密码历史收集。
+        编排条目与密码历史的采集：二者各自增量估算 payload 大小，超限抛
+        :class:`PayloadTooLargeError`；``cancel_check`` 触发时经
+        :class:`_BackupCancelled` 中止并整体返回 None（调用方据此不产出残缺备份）。
 
-        返回 JSON 可移植载荷（结构由 :func:`validate_restore_data` 校验），
-        嵌套 entries/categories/password_history 项值类型混合，故标注
-        dict[str, Any]。
-
-        若提供 ``cancel_check`` 且在解密循环中返回真值，立即返回 None
-        表示备份已被取消，调用方据此中止而不产出残缺备份。
+        返回结构的嵌套 entries/categories/password_history 项值类型混合，故标注
+        ``dict[str, Any]``（结构由 :func:`validate_restore_data` 校验）。
         """
-        db = self._vault.db
         key = self._key
-        entry_mgr = self._entry_mgr
         categories = [
             category.to_dict()
-            for category in entry_mgr.categories.get_categories()
+            for category in self._entry_mgr.categories.get_categories()
         ]
-        entries = []
-        raw_entries = db.get_entries(include_deleted=True)
-        if len(raw_entries) > MAX_BACKUP_ENTRIES:
-            raise PayloadTooLargeError('备份条目数量超出限制')
         # 基于字段原始字节长度的粗略估算，避免逐条 json.dumps 双重序列化开销
         estimated_size = sum(
             len(c.get('name', '').encode('utf-8')) + 128
             for c in categories
         )
+        try:
+            entries, entry_count, estimated_size = self._collect_portable_entries(
+                key, cancel_check, estimated_size,
+            )
+            history, _ = self._collect_portable_history(
+                key, cancel_check, entry_count, estimated_size,
+            )
+        except _BackupCancelled:
+            return None
+        return {
+            'format': BACKUP_FORMAT,
+            'version': 1,
+            'created_at': utc_now_iso(),
+            'categories': categories,
+            'entries': entries,
+            'password_history': history,
+        }
+
+    def _collect_portable_entries(
+        self,
+        key: bytes,
+        cancel_check: Callable[[], bool] | None,
+        estimated_size: int,
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """采集并解密全部条目为可移植字典，增量估算 payload 大小。
+
+        返回 ``(entries, entry_count, estimated_size)``。``cancel_check`` 触发时抛
+        :class:`_BackupCancelled`（编排层捕获）；完整性失败抛 :class:`BackupError`；
+        估算超限抛 :class:`PayloadTooLargeError`。
+        """
+        raw_entries = self._vault.db.get_entries(include_deleted=True)
+        if len(raw_entries) > MAX_BACKUP_ENTRIES:
+            raise PayloadTooLargeError('备份条目数量超出限制')
+        entries: list[dict[str, Any]] = []
         for raw in raw_entries:
             if cancel_check and cancel_check():
-                return None
-            portable_item = decrypt_entry_to_portable_dict(
-                raw, key, include_secrets=True,
-            )
+                raise _BackupCancelled
+            portable_item = decrypt_entry_to_portable_dict(raw, key, include_secrets=True)
             if portable_item is None:
-                raise BackupError(
-                    f'条目 {raw.id} 完整性校验或解密失败，备份已中止'
-                )
-            # 基于字段原始长度的粗略估算，每条目约 512 字节固定开销。
-            # 估算覆盖全部将进入 JSON payload 的字段，以密文长度作上界，
-            # 因 base64 密文大于等于明文，避免大 notes 或 custom_fields 场景下
-            # 粗估漏判、直至序列化才产生内存峰值。
+                raise BackupError(f'条目 {raw.id} 完整性校验或解密失败，备份已中止')
+            # 基于字段原始长度的粗略估算，每条目约 512 字节固定开销。估算覆盖全部
+            # 将进入 JSON payload 的字段，以密文长度作上界（base64 密文 ≥ 明文），
+            # 避免大 notes 或 custom_fields 场景下粗估漏判、直至序列化才产生内存峰值。
             estimated_size += (
                 len(raw.title.encode('utf-8'))
                 + len((raw.username or '').encode('utf-8'))
@@ -185,14 +216,27 @@ class BackupRestoreManager:
             if estimated_size > MAX_BACKUP_PAYLOAD_SIZE:
                 raise PayloadTooLargeError('备份数据过大')
             entries.append(portable_item)
+        return entries, len(raw_entries), estimated_size
 
-        history = []
-        history_rows = db.get_all_password_history()
-        if len(history_rows) > len(raw_entries) * MAX_HISTORY_PER_ENTRY:
+    def _collect_portable_history(
+        self,
+        key: bytes,
+        cancel_check: Callable[[], bool] | None,
+        entry_count: int,
+        estimated_size: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """采集并解密密码历史，增量估算 payload 大小。
+
+        返回 ``(history, estimated_size)``。``entry_count`` 用于历史条数上限校验
+       （每条目平均历史数不超过 :data:`MAX_HISTORY_PER_ENTRY`）。
+        """
+        history_rows = self._vault.db.get_all_password_history()
+        if len(history_rows) > entry_count * MAX_HISTORY_PER_ENTRY:
             raise PayloadTooLargeError('密码历史数量超出限制')
+        history: list[dict[str, Any]] = []
         for history_row in history_rows:
             if cancel_check and cancel_check():
-                return None
+                raise _BackupCancelled
             try:
                 pwd = decrypt_field(
                     history_row.old_password_enc, key,
@@ -202,11 +246,11 @@ class BackupRestoreManager:
                 raise BackupError(
                     f'条目 {history_row.entry_id} 的密码历史解密失败，备份已中止'
                 ) from None
-            history_item = {
+            history.append({
                 'entry_id': history_row.entry_id,
                 'password': pwd,
                 'changed_at': history_row.changed_at,
-            }
+            })
             estimated_size += (
                 len(history_row.changed_at.encode('utf-8'))
                 + len((history_row.old_password_enc or '').encode('utf-8'))
@@ -214,16 +258,7 @@ class BackupRestoreManager:
             )
             if estimated_size > MAX_BACKUP_PAYLOAD_SIZE:
                 raise PayloadTooLargeError('备份数据过大')
-            history.append(history_item)
-
-        return {
-            'format': BACKUP_FORMAT,
-            'version': 1,
-            'created_at': utc_now_iso(),
-            'categories': categories,
-            'entries': entries,
-            'password_history': history,
-        }
+        return history, estimated_size
 
     def create_backup(
         self,
@@ -277,7 +312,7 @@ class BackupRestoreManager:
         :meth:`_restore_current` 的「持锁才接触全量明文」契约统一。
         """
         t0 = time.monotonic()
-        salt = os.urandom(32)
+        salt = os.urandom(BACKUP_SALT_SIZE)
         data = self._collect_portable_data(cancel_check=cancel_check)
         if data is None:
             return False, '备份已取消'
@@ -400,9 +435,14 @@ class BackupRestoreManager:
                 # 事务已提交，key_epoch 与 snapshot_key_enc 均已在同一事务内原子写入。
                 # 在释放 vault 锁前同步内存状态（不写库），既消除事务外写库的崩溃窗口，
                 # 也消除旧 snapshot_key 仍可被并发读取（snapshot_key property）的窗口。
-                if new_epoch:
-                    self._vault.update_key_epoch(new_epoch)
-                self._vault.apply_snapshot_key(new_snapshot_key)
+                # apply_snapshot_key 总复制到 KeyManager，此后局部 new_snapshot_key
+                # 不再需要，立即清零（含 update_key_epoch 异常路径）收缩崩溃 dump 窗口。
+                try:
+                    if new_epoch:
+                        self._vault.update_key_epoch(new_epoch)
+                    self._vault.apply_snapshot_key(new_snapshot_key)
+                finally:
+                    secure_zero_buffer(new_snapshot_key)
             # 锁外清理旧 snapshot_key 加密的快照与恢复点：仅 unlink 文件，不读取
             # snapshot_key property，故无需持锁，减少锁持有时间。
             failed_purges = self._vault.purge_snapshot_backups()
@@ -433,6 +473,9 @@ class BackupRestoreManager:
     def _create_restore_point(self) -> Path | None:
         """创建恢复前安全快照，返回快照文件路径用于失败时清理，创建失败返回 None。"""
         directory = self._vault.data_dir / BACKUPS_DIR_NAME
+        # 恢复点是恢复失败回滚的安全网，优先于权限严格性：data_dir 已由 config
+        # 以 strict 创建，backups 子目录继承收紧后的父权限；宁可保留安全网也
+        # 不因 ACL 失败放弃恢复点（短期明文，恢复后即清理）。
         secure_directory(directory)
         filename = f'{PRE_RESTORE_PREFIX}{datetime.now(timezone.utc):%Y%m%d_%H%M%S_%f}_{uuid.uuid4().hex[:8]}{BACKUP_EXT}'
         target_path = directory / filename
@@ -472,34 +515,42 @@ class BackupRestoreManager:
         except OSError:
             logger.warning('异常路径清理恢复点失败：%s', path, exc_info=True)
 
-    def _restore_data(self, data: dict[str, Any]) -> tuple[str, bytes]:
+    def _restore_data(self, data: dict[str, Any]) -> tuple[str, bytearray]:
         db = self._vault.db
         key = self._key
         # snapshot_key 与 key_epoch 在同一事务内轮换：恢复整体替换数据后，旧 snapshot_key
         # 加密的快照含恢复前明文，轮换使其失效以收缩泄漏面，与改密路径语义一致。
         # 同事务写入消除事务外写库在崩溃时 epoch 已提交而
         # snapshot_key_enc 未写入的不一致窗口。
-        new_snapshot_key = os.urandom(32)
-        with self._vault.epoch_guarded_transaction(operation='恢复'):
-            db.clear_vault_data()
-            category_map = self._restore_categories(data)
-            entry_map, crypto_id_map = self._restore_entries(db, data, key, category_map)
-            self._restore_history(db, data, key, entry_map, crypto_id_map)
-            # 轮换 key_epoch 防止旧会话写入恢复后的数据
-            new_epoch = uuid.uuid4().hex
-            db.set_meta('key_epoch', new_epoch)
-            db.set_meta('snapshot_key_enc', self._vault.encrypt_snapshot_key(new_snapshot_key))
-            # key_epoch 轮换后重算 vault_meta_mac（签名含 key_epoch），保持 unlock
-            # 校验一致；恢复不改凭据字段（salt/verify/KDF），故读回当前值重算即可。
-            meta_snapshot = db.get_meta_batch(list(VAULT_META_SIGNED_KEYS))
-            db.set_meta(
-                'vault_meta_mac',
-                MetadataSigner.compute_vault_meta_mac(meta_snapshot, key),
-            )
-        # 事务提交后截断 WAL：clear_vault_data 删除的旧主密码密文残留在 WAL，
-        # 事务内 secure_checkpoint 会跳过，须在事务外显式截断以收缩泄漏面。
-        db.secure_checkpoint()
-        return new_epoch, new_snapshot_key
+        # bytearray 持有以便原地清零：成功路径 return 交调用方，apply_snapshot_key
+        # 总复制到 KeyManager 后由调用方清零自己的引用；失败路径在下方 except 清零。
+        new_snapshot_key = bytearray(os.urandom(KEY_SIZE))
+        try:
+            with self._vault.epoch_guarded_transaction(operation='恢复'):
+                db.clear_vault_data()
+                category_map = self._restore_categories(data)
+                entry_map, crypto_id_map = self._restore_entries(db, data, key, category_map)
+                self._restore_history(db, data, key, entry_map, crypto_id_map)
+                # 轮换 key_epoch 防止旧会话写入恢复后的数据
+                new_epoch = uuid.uuid4().hex
+                db.set_meta('key_epoch', new_epoch)
+                db.set_meta('snapshot_key_enc', self._vault.encrypt_snapshot_key(new_snapshot_key))
+                # key_epoch 轮换后重算 vault_meta_mac（签名含 key_epoch），保持 unlock
+                # 校验一致；恢复不改凭据字段（salt/verify/KDF），故读回当前值重算即可。
+                meta_snapshot = db.get_meta_batch(list(VAULT_META_SIGNED_KEYS))
+                db.set_meta(
+                    'vault_meta_mac',
+                    MetadataSigner.compute_vault_meta_mac(meta_snapshot, key),
+                )
+            # 事务提交后截断 WAL：clear_vault_data 删除的旧主密码密文残留在 WAL，
+            # 事务内 secure_checkpoint 会跳过，须在事务外显式截断以收缩泄漏面。
+            db.secure_checkpoint()
+            return new_epoch, new_snapshot_key
+        except Exception:
+            # 事务失败时局部 snapshot_key 未被 apply_snapshot_key 接管，原地清零
+            # 收缩崩溃 dump 窗口；成功路径由调用方在 apply 后清零自己的引用。
+            secure_zero_buffer(new_snapshot_key)
+            raise
 
     def _restore_categories(self, data: dict[str, Any]) -> dict[int, int]:
         """重建分类，返回旧 ID 到新 ID 的映射。"""
@@ -516,19 +567,24 @@ class BackupRestoreManager:
 
     @staticmethod
     def _restore_entries(
-        db: 'DatabaseManager',
+        db: 'VaultDataStore',
         data: dict[str, Any],
         key: bytes,
         category_map: dict[int, int],
     ) -> tuple[dict[int, int], dict[int, str]]:
-        """重建条目，加密敏感字段，返回 (entry_map, crypto_id_map)。"""
-        entry_map = {}
-        crypto_id_map = {}  # 旧 entry_id 到 crypto_id 的映射
-        for item in data.get('entries', []):
+        """重建条目，加密敏感字段，返回 (entry_map, crypto_id_map)。
+
+        全部条目先在内存构建为 RawEntry，再经 ``add_entries_batch`` 一次性
+        executemany 写入，避免逐条 INSERT+commit 的 N 次 fsync 拖长恢复期间
+        ``vault_write_lock`` 的持锁时间（UI 冻结窗口）。
+        """
+        items = list(data.get('entries', []))
+        entries: list[RawEntry] = []
+        for item in items:
             old_category = item.get('category_id')
             crypto_id = item['crypto_id']  # 已由 validate_entries 校验
             enc = build_encrypted_entry_fields(item, key, crypto_id)
-            entry = RawEntry(
+            entries.append(RawEntry(
                 crypto_id=crypto_id,
                 title=enc['title'],
                 username=enc['username'],
@@ -541,7 +597,7 @@ class BackupRestoreManager:
                 is_favorite=bool(item.get('is_favorite', False)),
                 is_deleted=bool(item.get('is_deleted', False)),
                 password_strength=int(item.get('password_strength', 0)),
-                entry_type=item.get('entry_type', 'login'),
+                entry_type=item.get('entry_type', ENTRY_TYPE_LOGIN),
                 totp_secret=enc['totp_secret'],
                 created_at=item.get('created_at', '') or '',
                 updated_at=item.get('updated_at', '') or '',
@@ -552,16 +608,19 @@ class BackupRestoreManager:
                     or item.get('created_at', '')
                     or utc_now_iso()
                 ),
-            )
-            new_id = db.add_entry(entry, preserve_metadata=True)
+            ))
+        crypto_id_to_new_id = db.add_entries_batch(entries, preserve_metadata=True)
+        entry_map: dict[int, int] = {}
+        crypto_id_map: dict[int, str] = {}  # 旧 entry_id 到 crypto_id 的映射
+        for item, entry in zip(items, entries, strict=True):
             if item.get('id') is not None:
-                entry_map[item['id']] = new_id
-                crypto_id_map[item['id']] = crypto_id
+                entry_map[item['id']] = crypto_id_to_new_id[entry.crypto_id]
+                crypto_id_map[item['id']] = entry.crypto_id
         return entry_map, crypto_id_map
 
     @staticmethod
     def _restore_history(
-        db: 'DatabaseManager',
+        db: 'VaultDataStore',
         data: dict[str, Any],
         key: bytes,
         entry_map: dict[int, int],
@@ -626,8 +685,12 @@ class BackupRestoreManager:
                 return False, f'备份目录路径无效: {backup_dir}'
 
         directory = Path(backup_dir) if backup_dir else config.data_dir / BACKUPS_DIR_NAME
-        # 创建并收紧权限，含用户自定义目录，避免快照全量明文以宽松 ACL 落盘
-        secure_directory(directory)
+        # 创建并收紧权限（strict）：自动快照含全量明文，ACL 失败时宁可中止备份
+        # 也不以宽松权限落盘，让用户经返回的错误感知权限问题。
+        try:
+            secure_directory(directory, strict=True)
+        except OSError as exc:
+            return False, f'无法收紧备份目录权限：{exc}'
         filename = f'{SNAPSHOT_PREFIX}{datetime.now(timezone.utc):%Y%m%d_%H%M%S_%f}_{uuid.uuid4().hex[:8]}{BACKUP_EXT}'
         success, error = self.create_backup(
             str(directory / filename), use_snapshot_key=True,

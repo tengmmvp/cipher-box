@@ -21,9 +21,7 @@ def _make_entry(**kwargs) -> RawEntry:
     return RawEntry(**kwargs)
 
 
-# ---------------------------------------------------------------------------
 # Fixture: 创建临时数据库，关闭加密断言
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def db():
@@ -44,12 +42,9 @@ def db():
         pass
 
 
-# ---------------------------------------------------------------------------
 # TestDatabaseManager
-# ---------------------------------------------------------------------------
 
 def test_init_tables(db):
-    """测试表初始化。"""
     categories = db.get_categories()
     assert len(categories) > 0
     names = [c.name for c in categories]
@@ -57,7 +52,6 @@ def test_init_tables(db):
 
 
 def test_meta_operations(db):
-    """测试元数据读写。"""
     db.set_meta('test_key', 'test_value')
     value = db.get_meta('test_key')
     assert value == 'test_value'
@@ -67,7 +61,6 @@ def test_meta_operations(db):
 
 
 def test_add_get_category(db):
-    """测试添加和获取分类。"""
     cat = Category(name='测试分类', icon_char='🧪', color='#FF0000')
     cat_id = db.add_category(cat)
     assert cat_id > 0
@@ -97,7 +90,6 @@ def test_update_category_rejects_duplicate_name(db):
 
 
 def test_add_get_entry(db):
-    """测试添加和获取条目。"""
     entry = _make_entry(
         title='测试条目',
         username='enc_user',
@@ -120,7 +112,6 @@ def test_add_get_entry(db):
 
 
 def test_soft_delete_restore(db):
-    """测试软删除和恢复。"""
     entry = _make_entry(title='待删除')
     entry_id = db.add_entry(entry)
 
@@ -144,7 +135,6 @@ def test_soft_delete_restore(db):
 
 
 def test_permanent_delete(db):
-    """测试永久删除。"""
     entry = _make_entry(title='永久删除')
     entry_id = db.add_entry(entry)
 
@@ -159,7 +149,6 @@ def test_search(db):
     db.add_entry(_make_entry(title='Gitee 账号'))
     db.add_entry(_make_entry(title='Google 邮箱'))
 
-    # 关键字搜索已从 DB 层移除，get_entries 返回全部条目。
     results = db.get_entries()
     assert len(results) == 3
 
@@ -169,7 +158,6 @@ def test_search(db):
 
 
 def test_entry_count(db):
-    """测试条目计数。"""
     initial = db.get_entry_count()
     db.add_entry(_make_entry(title='新条目'))
     assert db.get_entry_count() == initial + 1
@@ -210,9 +198,7 @@ def test_get_entries_with_limit(db):
     assert len(over) == 10
 
 
-# ---------------------------------------------------------------------------
 # TestModels
-# ---------------------------------------------------------------------------
 
 def test_entry_to_dict():
     entry = Entry(

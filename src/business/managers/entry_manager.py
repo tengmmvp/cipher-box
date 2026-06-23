@@ -18,15 +18,15 @@ import hmac
 import json
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ...database.db_manager import DatabaseManager
     from .vault_manager import VaultManager
 
 from ...crypto.password_generator import PasswordGenerator
-from ...database.types import VerifyMode
+from ...database.types import VaultDataStore, VerifyMode
 from ...exceptions import DecryptionError, EntryIntegrityError, VaultKeyEpochMismatchError
 from ...models import (
     CustomField,
@@ -93,7 +93,7 @@ class EntryManager:
         self._change_bus.register(callback)
 
     @property
-    def db(self) -> 'DatabaseManager':
+    def db(self) -> VaultDataStore:
         return self._vault.db
 
     @property
@@ -105,6 +105,16 @@ class EntryManager:
         本就经此路径访问 key_epoch。
         """
         return self._vault.key_epoch
+
+    @contextmanager
+    def epoch_guarded_transaction(self, operation: str = '') -> Iterator[None]:
+        """epoch 守卫事务，委托 vault。
+
+        供 ImportExportManager 等跨管理器操作做带 epoch 守卫的事务包裹，避免直接
+        穿透 ``_vault`` 私有属性。语义与 ``VaultManager.epoch_guarded_transaction`` 一致。
+        """
+        with self._vault.epoch_guarded_transaction(operation=operation):
+            yield
 
     @property
     def _key(self) -> bytes:
@@ -234,97 +244,112 @@ class EntryManager:
         return [CustomField.from_dict(item) for item in items]
 
     def decrypt_entry(self, raw_entry: RawEntry) -> Entry:
-        """解密条目的所有敏感字段，返回新的 Entry 对象。"""
-        integrity_errors = []
+        """解密条目的所有敏感字段，返回新的 Entry 对象（详情/编辑路径）。
+
+        字段解密失败时容错：失败字段收集到 ``integrity_message``，password/totp
+        包 :class:`Sensitive` 防明文意外进入日志/repr。
+        """
+        return self._decrypt_entry_impl(
+            raw_entry, include_secrets=True, strict_integrity=False,
+        )
+
+    def decrypt_entry_for_export(
+        self, raw_entry: RawEntry, include_secrets: bool = False,
+    ) -> Entry:
+        """仅解密导出所需字段，默认不让密码与 TOTP 进入内存结果。
+
+        任何完整性/解密失败立即抛 :class:`DecryptionError`（拒绝导出损坏数据）；
+        ``include_secrets=False`` 时跳过 password/totp_secret 解密。
+        """
+        return self._decrypt_entry_impl(
+            raw_entry, include_secrets=include_secrets, strict_integrity=True,
+        )
+
+    def _decrypt_entry_impl(
+        self,
+        raw_entry: RawEntry,
+        *,
+        include_secrets: bool,
+        strict_integrity: bool,
+    ) -> Entry:
+        """解密条目字段并构建 Entry，decrypt_entry 与 decrypt_entry_for_export 的共用实现。
+
+        两条路径的差异由两个布尔参数收敛，避免字段遍历与 copy_entry_fields 调用重复：
+
+        - ``strict_integrity=True``（导出）：完整性/解密失败立即抛 DecryptionError，
+          password/totp 返回原始字符串以供备份序列化。
+        - ``strict_integrity=False``（详情）：失败字段收集到 integrity_message，
+          password/totp 包 Sensitive 防明文意外进入日志/repr。
+        - ``include_secrets=False``：跳过 password/totp_secret 解密（导出默认不入密）。
+
+        category_name 解密失败：strict 路径转 DecryptionError（等价于原 export 的
+        外层 except 归一），lenient 路径保持抛 ValueError（与原 decrypt_entry 一致）。
+        """
+        if strict_integrity and raw_entry.integrity_error:
+            raise DecryptionError(
+                f'条目 {raw_entry.id} 元数据完整性校验失败，已拒绝导出'
+            )
+
+        integrity_errors: list[str] = []
         if raw_entry.integrity_error:
             integrity_errors.append(raw_entry.integrity_message or '元数据')
 
         def decrypt(name: str, value: str) -> str:
             try:
-                return self._decrypt_field(
-                    value, raw_entry.crypto_id, name, strict=True
-                )
+                return self._decrypt_field(value, raw_entry.crypto_id, name, strict=True)
             except ValueError:
+                if strict_integrity:
+                    raise DecryptionError(
+                        f'条目 {raw_entry.id} 导出失败，数据可能已损坏'
+                    ) from None
                 integrity_errors.append(name)
                 return ''
 
         try:
             custom_fields = self._decrypt_custom_fields(
-                raw_entry.custom_fields_db_value,
-                raw_entry.crypto_id,
+                raw_entry.custom_fields_db_value, raw_entry.crypto_id,
             )
         except ValueError:
+            if strict_integrity:
+                raise DecryptionError(
+                    f'条目 {raw_entry.id} 导出失败，数据可能已损坏'
+                ) from None
             integrity_errors.append('自定义字段')
             custom_fields = []
+
+        password_plain = decrypt('password', raw_entry.password) if include_secrets else ''
+        totp_plain = decrypt('totp_secret', raw_entry.totp_secret) if include_secrets else ''
+        # strict（导出）返回原始字符串供备份序列化；lenient（详情）包 Sensitive
+        password = password_plain if strict_integrity else Sensitive(password_plain)
+        totp_secret = totp_plain if strict_integrity else Sensitive(totp_plain)
+
+        try:
+            category_name = self._decrypt_category_name(
+                raw_entry.category_id, raw_entry.category_name,
+            )
+        except ValueError:
+            if strict_integrity:
+                raise DecryptionError(
+                    f'条目 {raw_entry.id} 导出失败，数据可能已损坏'
+                ) from None
+            raise
 
         return copy_entry_fields(
             raw_entry,
             title=decrypt('title', raw_entry.title),
             username=decrypt('username', raw_entry.username),
-            password=Sensitive(decrypt('password', raw_entry.password)),
+            password=password,
             url=decrypt('url', raw_entry.url),
-            category_name=self._decrypt_category_name(
-                raw_entry.category_id, raw_entry.category_name,
-            ),
+            category_name=category_name,
             tags=decrypt('tags', raw_entry.tags),
             notes=decrypt('notes', raw_entry.notes),
             custom_fields=custom_fields,
-            totp_secret=Sensitive(decrypt('totp_secret', raw_entry.totp_secret)),
-            integrity_error=bool(integrity_errors),
-            integrity_message='、'.join(dict.fromkeys(integrity_errors)),
+            totp_secret=totp_secret,
+            integrity_error=(not strict_integrity) and bool(integrity_errors),
+            integrity_message=(
+                '、'.join(dict.fromkeys(integrity_errors)) if not strict_integrity else ''
+            ),
         )
-
-    def decrypt_entry_for_export(
-        self,
-        raw_entry: RawEntry,
-        include_secrets: bool = False,
-    ) -> Entry:
-        """仅解密导出所需字段，默认不让密码与 TOTP 进入内存结果。"""
-        if raw_entry.integrity_error:
-            raise DecryptionError(
-                f'条目 {raw_entry.id} 元数据完整性校验失败，已拒绝导出'
-            )
-        try:
-            custom_fields = self._decrypt_custom_fields(
-                raw_entry.custom_fields_db_value,
-                raw_entry.crypto_id,
-            )
-            return copy_entry_fields(
-                raw_entry,
-                title=self._decrypt_field(
-                    raw_entry.title, raw_entry.crypto_id, 'title', strict=True
-                ),
-                username=self._decrypt_field(
-                    raw_entry.username, raw_entry.crypto_id, 'username', strict=True
-                ),
-                password=(
-                    self._decrypt_field(
-                        raw_entry.password, raw_entry.crypto_id, 'password', strict=True
-                    ) if include_secrets else ''
-                ),
-                url=self._decrypt_field(
-                    raw_entry.url, raw_entry.crypto_id, 'url', strict=True
-                ),
-                category_name=self._decrypt_category_name(
-                    raw_entry.category_id, raw_entry.category_name,
-                ),
-                tags=self._decrypt_field(
-                    raw_entry.tags, raw_entry.crypto_id, 'tags', strict=True
-                ),
-                notes=self._decrypt_field(
-                    raw_entry.notes, raw_entry.crypto_id, 'notes', strict=True
-                ),
-                custom_fields=custom_fields,
-                totp_secret=(
-                    self._decrypt_field(
-                        raw_entry.totp_secret, raw_entry.crypto_id, 'totp_secret', strict=True
-                    ) if include_secrets else ''
-                ),
-            )
-        except ValueError as exc:
-            raise DecryptionError(
-                f'条目 {raw_entry.id} 导出失败，数据可能已损坏'
-            ) from exc
 
     def _decrypt_summary(
         self, raw_entry: RawEntry, *, skip_epoch_check: bool = False,
@@ -553,7 +578,6 @@ class EntryManager:
 
         decrypted = [self.decrypt_entry(e) for e in raw_entries]
 
-        # 检查解密失败的条目并记录警告
         for dec_entry in decrypted:
             if dec_entry.integrity_error:
                 logger.warning("条目 %d 解密存在异常", dec_entry.id)

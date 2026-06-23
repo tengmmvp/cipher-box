@@ -180,6 +180,18 @@ def setup_dialog_flags(dialog: QDialog) -> None:
 
 # ======== 布局清空工具 ========
 
+# clear_layout 断开的常见可变控件信号：覆盖按钮/输入框/下拉/复选/滑动/动作等，防
+# deleteLater 到实际删除间信号触发访问已删控件（如 type_combo.currentIndexChanged
+# 闭包持有已 deleteLater 的 value_edit）。getattr 动态探测，无该信号的控件跳过。
+_CLEAR_LAYOUT_SIGNALS = (
+    'clicked', 'toggled', 'stateChanged',
+    'textChanged', 'textEdited', 'editingFinished',
+    'currentIndexChanged', 'currentTextChanged',
+    'valueChanged', 'sliderMoved',
+    'triggered', 'changed',
+)
+
+
 def clear_layout(layout: QLayout, disconnect_signals: bool = True) -> None:
     """递归清除布局中的所有控件和子布局。
 
@@ -195,14 +207,15 @@ def clear_layout(layout: QLayout, disconnect_signals: bool = True) -> None:
         widget = item.widget()
         if widget:
             if disconnect_signals:
-                # 断开常见的可点击控件信号，减少 deleteLater 窗口期风险
-                if hasattr(widget, 'clicked'):
-                    try:
-                        # widget 运行时为带 clicked 信号的可点击控件（QPushButton 等），
-                        # hasattr 已动态确认；QWidget 基类静态无该属性，故抑制类型告警。
-                        widget.clicked.disconnect()  # pyright: ignore[reportAttributeAccessIssue]
-                    except (TypeError, RuntimeError):
-                        pass
+                # 断开常见可变控件信号，减少 deleteLater 到实际删除间信号触发不一致状态。
+                # getattr 动态探测：无该信号的控件返回 None 跳过。
+                for sig_name in _CLEAR_LAYOUT_SIGNALS:
+                    sig = getattr(widget, sig_name, None)
+                    if sig is not None:
+                        try:
+                            sig.disconnect()  # pyright: ignore[reportAttributeAccessIssue]
+                        except (TypeError, RuntimeError):
+                            pass
             widget.deleteLater()
         child_layout = item.layout()
         if child_layout:

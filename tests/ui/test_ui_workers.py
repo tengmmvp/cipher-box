@@ -80,3 +80,43 @@ class TestBackgroundWorker:
 
         assert len(results) == 1
         assert results[0] is None
+
+    def test_error_translates_domain_exception(self, qapp):
+        """领域异常经 to_user_message 翻译为友好文案，不透传 str(exc) 内部细节。
+
+        A5：worker.error 不传裸 str(e)，防领域异常内部细节（如 crypto_id）或潜在
+        明文经异常消息泄漏到 UI；完整堆栈在日志。
+        """
+        from src.exceptions import DecryptionError
+        errors = []
+
+        def _fail():
+            raise DecryptionError('内部细节 crypto_id=secret123')
+
+        worker = BackgroundWorker(_fail, None)
+        worker.error.connect(lambda e: errors.append(e))
+        worker.start()
+        worker.wait(5000)
+        qapp.processEvents()
+
+        assert len(errors) == 1
+        # 友好文案，不含内部细节/潜在明文
+        assert 'crypto_id' not in errors[0]
+        assert 'secret123' not in errors[0]
+        assert '解密失败' in errors[0]
+
+    def test_error_preserves_non_domain_exception_message(self, qapp):
+        """非领域异常（如 ValueError）保留 str(exc) 可操作消息。"""
+        errors = []
+
+        def _fail():
+            raise ValueError('标题过长，最多 1024 字符')
+
+        worker = BackgroundWorker(_fail, None)
+        worker.error.connect(lambda e: errors.append(e))
+        worker.start()
+        worker.wait(5000)
+        qapp.processEvents()
+
+        assert len(errors) == 1
+        assert '标题过长' in errors[0]

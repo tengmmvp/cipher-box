@@ -158,6 +158,10 @@ class ChangeMasterDialog(QDialog):
         update_strength_label(self._strength_label, text)
 
     def _on_change(self) -> None:
+        # 重复提交守卫：后台重加密运行期间，confirm_pwd 的 returnPressed 仍可触发
+        # 本方法（setEnabled(False) 只禁按钮点击），与 login_window 对齐显式拦截。
+        if self._worker is not None and self._worker.isRunning():
+            return
         msg = self._rate_limiter.check()
         if msg:
             self._msg_label.setText(msg)

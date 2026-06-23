@@ -109,7 +109,7 @@ class CategoryRepository:
         """删除分类行。
 
         仅删除 categories 表的行；关联条目的解关联与元数据重签由
-        DatabaseManager.delete_category 编排 EntryRepository.clear_category_signatures
+        DatabaseManager.delete_category 编排 EntryRepository._clear_category_signatures
         完成，避免本 Repository 跨表访问 EntryRepository 的私有方法。
 
         锁与事务契约：本方法未使用 ``@_db_operation`` 装饰器，不自行获取

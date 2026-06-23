@@ -35,35 +35,29 @@ def test_generate_valid_secret(monkeypatch):
 
 
 def test_generate_empty_secret():
-    """空密钥返回空字符串。"""
     assert TOTPGenerator.generate('') == ''
 
 
 def test_generate_invalid_secret():
-    """无效密钥返回空字符串。"""
     assert TOTPGenerator.generate('!!!invalid!!!') == ''
 
 
 def test_remaining_seconds():
-    """剩余秒数在有效范围内。"""
     remaining = TOTPGenerator.get_remaining_seconds()
     assert remaining > 0
     assert remaining <= 30
 
 
 def test_validate_secret_valid():
-    """验证合法 Base32 密钥。"""
     assert TOTPGenerator.validate_secret('JBSWY3DPEHPK3PXP')
 
 
 def test_validate_secret_invalid():
-    """验证无效密钥。"""
     assert not TOTPGenerator.validate_secret('')
     assert not TOTPGenerator.validate_secret('!!!')
 
 
 def test_two_codes_same_period():
-    """同一时间步长生成的验证码相同。"""
     secret = 'JBSWY3DPEHPK3PXP'
     code1 = TOTPGenerator.generate(secret)
     code2 = TOTPGenerator.generate(secret)
@@ -74,7 +68,6 @@ def test_two_codes_same_period():
 
 
 def test_entry_type_constants():
-    """验证所有类型常量。"""
     assert 'login' in ENTRY_TYPES
     assert 'card' in ENTRY_TYPES
     assert 'identity' in ENTRY_TYPES
@@ -83,21 +76,18 @@ def test_entry_type_constants():
 
 
 def test_entry_type_icon():
-    """条目类型图标。"""
     entry = RawEntry(title='Test', entry_type='card')
     assert entry.type_icon == '[CARD]'
     assert entry.type_label == '信用卡'
 
 
 def test_entry_default_type():
-    """默认类型为 login。"""
     entry = RawEntry(title='Test')
     assert entry.entry_type == ENTRY_TYPE_LOGIN
     assert entry.type_icon == '[KEY]'
 
 
 def test_has_totp():
-    """TOTP 状态检测。"""
     entry1 = RawEntry(title='A', totp_secret='')
     assert not entry1.has_totp
 
@@ -106,7 +96,6 @@ def test_has_totp():
 
 
 def test_entry_to_dict_with_type():
-    """导出包含类型信息。"""
     entry = Entry(title='Test', entry_type='server', totp_secret='SECRET')
     d = entry.to_dict(include_password=True)
     assert d['entry_type'] == 'server'
@@ -136,7 +125,6 @@ def db_history():
 
 
 def test_add_password_history(db_history):
-    """添加密码历史记录。"""
     entry = _make_entry(title='Test')
     entry_id = db_history.add_entry(entry)
 
@@ -228,7 +216,6 @@ def db_category():
 
 
 def test_get_category_entry_count(db_category):
-    """获取分类下的条目数量。"""
     categories = db_category.get_categories()
     cat = categories[0]  # 未分类
     count = db_category.get_category_entry_count(cat.id)

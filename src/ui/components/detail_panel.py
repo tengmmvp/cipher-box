@@ -113,7 +113,7 @@ class DetailPanel(QWidget):
         self._field_hide_timers: list[QTimer] = []
         # 复制反馈定时器，可取消，替代不可取消的 QTimer.singleShot，
         # 避免控件销毁后回调访问已删对象。设置上限 20 以防止极端情况下的泄漏。
-        self._copy_feedback_timers: OrderedDict[QTimer, None] = OrderedDict()
+        self._copy_feedback_timers: OrderedDict[QTimer, QPushButton] = OrderedDict()
         self._COPY_FEEDBACK_TIMERS_MAX = 20
 
         # ---- 子组件 ----
@@ -136,13 +136,16 @@ class DetailPanel(QWidget):
 
         self._setup_ui()
 
-    def _add_copy_feedback_timer(self, timer: QTimer) -> None:
-        """注册复制反馈定时器，超出上限时回收最旧的（FIFO）。"""
+    def _add_copy_feedback_timer(self, timer: QTimer, btn: QPushButton) -> None:
+        """注册复制反馈定时器，超出上限时回收最旧的（FIFO）并恢复其按钮图标。"""
         if len(self._copy_feedback_timers) >= self._COPY_FEEDBACK_TIMERS_MAX:
-            # OrderedDict popitem(last=False) 移除最旧（首个），实现真正 FIFO
-            oldest, _ = self._copy_feedback_timers.popitem(last=False)
+            # FIFO 回收最旧：其 _restore 回调因 stop() 不再触发，须主动恢复按钮图标，
+            # 否则按钮永久停留 CHECK。sip 守卫防止 btn 已 deleteLater。
+            oldest, oldest_btn = self._copy_feedback_timers.popitem(last=False)
             oldest.stop()
-        self._copy_feedback_timers[timer] = None
+            if oldest_btn is not None and not sip.isdeleted(oldest_btn):
+                set_icon(oldest_btn, COPY)
+        self._copy_feedback_timers[timer] = btn
 
     def _copy_with_feedback(self, btn: QPushButton, text: str) -> None:
         """复制文本到剪贴板并显示图标反馈，定时恢复为复制图标。"""
@@ -150,7 +153,7 @@ class DetailPanel(QWidget):
         set_icon(btn, CHECK, 'success')
         timer = QTimer(self)
         timer.setSingleShot(True)
-        self._add_copy_feedback_timer(timer)
+        self._add_copy_feedback_timer(timer, btn)
 
         def _restore(btn: QPushButton = btn, t: QTimer = timer) -> None:
             # 定时器回调触发时 btn 可能已 deleteLater 但事件循环未处理，
@@ -206,7 +209,6 @@ class DetailPanel(QWidget):
 
         layout.addLayout(toolbar)
 
-        # 分隔线
         self._divider = QFrame()
         self._divider.setFixedHeight(1)
         self._divider.setObjectName('detailDivider')
@@ -222,7 +224,6 @@ class DetailPanel(QWidget):
         self._content_layout.setContentsMargins(20, 16, 20, 16)
         self._content_layout.setSpacing(10)
 
-        # 空状态
         self._empty_label = QLabel('请从列表中选择一个条目\n以查看详细信息')
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_label.setObjectName('detailEmpty')
@@ -243,40 +244,51 @@ class DetailPanel(QWidget):
             entry: 要显示的条目
             force: 强制重建，主题切换时需要刷新内联样式
         """
-        # 同条目无变化时跳过重建
         if (not force
                 and self._current_entry is not None
                 and self._current_entry.id == entry.id
                 and self._current_entry.updated_at == entry.updated_at):
             return
         logger.debug("显示条目详情: id=%d", entry.id)
-        # 切换到不同条目前，清理上一条目的 TOTP secret 明文缓存
+        self._prepare_display(entry)
+        self._update_header_and_actions(entry)
+        self._content_layout.addLayout(self._build_tags_section(entry))
+        self._render_integrity_warning(entry)
+        self._render_core_form(entry)
+        self._render_totp_and_history(entry)
+        self._build_meta_section(entry)
+        self._render_notes(entry)
+        self._render_custom_fields(entry)
+        self._content_layout.addStretch()
+
+    def _prepare_display(self, entry: Entry) -> None:
+        """切换条目：驱逐上一条目的 TOTP 明文缓存，重置控件并清空内容区。"""
         if self._current_entry is not None and self._current_entry.id != entry.id:
             self._evict_current_totp()
         self._current_entry = entry
         self._pwd_hide_timer.stop()
         self._totp_widget.stop()
         self._clear_content()
-        # 显示具体条目时隐藏空状态占位
         if self._empty_label is not None:
             self._empty_label.hide()
 
-        # 更新标题
+    def _update_header_and_actions(self, entry: Entry) -> None:
+        """更新标题与操作按钮可见性，清理并重连按钮信号。
+
+        闭包仅捕获 ``entry.id``，避免信号槽持有整个 entry 引用阻碍 GC。
+        """
         self._title_label.setText(f'{entry.type_icon} {entry.title}')
         self._edit_btn.setVisible(not entry.is_deleted)
         self._delete_btn.setVisible(not entry.is_deleted)
         self._fav_btn.setVisible(not entry.is_deleted)
         if not entry.is_deleted:
             set_icon(self._fav_btn, STAR if entry.is_favorite else STAR_OUTLINE)
-        # 清理旧信号连接
         for signal, slot in self._signal_connections:
             try:
                 signal.disconnect(slot)
             except TypeError:
                 pass
         self._signal_connections.clear()
-
-        # 建立新连接，闭包仅捕获 entry.id 以避免持有整个 entry 引用
         eid = entry.id
         self._signal_connections = [
             (self._edit_btn.clicked, lambda: self.edit_requested.emit(eid)),
@@ -286,82 +298,85 @@ class DetailPanel(QWidget):
         for signal, slot in self._signal_connections:
             signal.connect(slot)
 
-        self._content_layout.addLayout(self._build_tags_section(entry))
+    def _render_integrity_warning(self, entry: Entry) -> None:
+        """完整性错误时显示告警并隐藏编辑按钮，防止覆盖已损坏的加密数据。"""
+        if not entry.integrity_error:
+            return
+        warning = QLabel(
+            f'部分数据无法解密：{entry.integrity_message}。为保护原始数据，已禁用编辑。'
+        )
+        warning.setWordWrap(True)
+        warning.setObjectName('detailWarning')
+        self._content_layout.addWidget(warning)
+        self._edit_btn.hide()
 
-        if entry.integrity_error:
-            warning = QLabel(
-                f'部分数据无法解密：{entry.integrity_message}。为保护原始数据，已禁用编辑。'
-            )
-            warning.setWordWrap(True)
-            warning.setObjectName('detailWarning')
-            self._content_layout.addWidget(warning)
-            self._edit_btn.hide()
-
-        # ===== 核心信息区 =====
+    def _render_core_form(self, entry: Entry) -> None:
+        """渲染核心信息区（账号/密码/网址）及密码强度条。"""
         core_form = QFormLayout()
         core_form.setSpacing(10)
         core_form.setHorizontalSpacing(16)
-
-        # 账号
         if entry.username:
             core_form.addRow(*self._make_field_row('账号', entry.username, copyable=True))
-
-        # 密码
         if entry.password:
             core_form.addRow(*self._make_field_row('密码', entry.password, secret=True, main_password=True))
-
-        # 网址
         if entry.url:
-            parsed_url = urlparse(entry.url)
-            safe_url = parsed_url.scheme.lower() in ('http', 'https')
-            escaped_url = escape(entry.url, quote=True)
-            if safe_url:
-                # href 用 quote 编码以容忍空格/中文等字符，避免 RichText
-                # 解析器在 <a href="..."> 内被特殊字符截断；safe 白名单保留
-                # URL 结构字符。链接显示文本仍用转义后的原文。
-                href = quote(entry.url, safe='/:?&=#%+')
-                text = f'<a href="{escape(href, quote=True)}" style="color: {c("link")}; text-decoration:none;">{escaped_url}</a>'
-            else:
-                text = escaped_url
-            url_label = QLabel(text)
-            url_label.setWordWrap(True)
-            url_label.setTextFormat(Qt.TextFormat.RichText)
-            if safe_url:
-                url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-                url_label.setOpenExternalLinks(True)
-            core_form.addRow('网址：', url_label)
-
+            core_form.addRow('网址：', self._build_url_label(entry.url))
         self._content_layout.addLayout(core_form)
-
         if entry.password:
             self._build_strength_bar(entry)
 
-        # ===== TOTP 区域 =====
+    def _build_url_label(self, url: str) -> QLabel:
+        """构建网址标签：http(s) 渲染为可点击链接，其余 scheme 纯文本防注入。
+
+        href 用 quote 编码以容忍空格/中文等字符，避免 RichText 解析器在
+        ``<a href="...">`` 内被特殊字符截断；safe 白名单保留 URL 结构字符，
+        显示文本用转义后的原文。
+        """
+        parsed_url = urlparse(url)
+        safe_url = parsed_url.scheme.lower() in ('http', 'https')
+        escaped_url = escape(url, quote=True)
+        if safe_url:
+            href = quote(url, safe='/:?&=#%+')
+            text = (
+                f'<a href="{escape(href, quote=True)}" '
+                f'style="color: {c("link")}; text-decoration:none;">{escaped_url}</a>'
+            )
+        else:
+            text = escaped_url
+        url_label = QLabel(text)
+        url_label.setWordWrap(True)
+        url_label.setTextFormat(Qt.TextFormat.RichText)
+        if safe_url:
+            url_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+            url_label.setOpenExternalLinks(True)
+        return url_label
+
+    def _render_totp_and_history(self, entry: Entry) -> None:
+        """启动 TOTP 显示与密码历史延迟加载 stub。"""
         if entry.has_totp and entry.id and self._entry_mgr is not None:
             self._totp_widget.start(entry.id, self._entry_mgr, self._content_layout)
-
-        # ===== 密码历史，延迟加载：仅显示摘要，点击展开后才解密 =====
         if entry.id and self._entry_mgr:
             self._history_widget.build_stub(entry.id, self._entry_mgr, self._content_layout)
 
-        self._build_meta_section(entry)
+    def _render_notes(self, entry: Entry) -> None:
+        """渲染备注区。"""
+        if not entry.notes:
+            return
+        notes_group = QGroupBox('备注')
+        notes_layout = QVBoxLayout(notes_group)
+        notes_label = QLabel(entry.notes)
+        notes_label.setWordWrap(True)
+        notes_label.setObjectName('notesValue')
+        notes_layout.addWidget(notes_label)
+        self._content_layout.addWidget(notes_group)
 
-        # ===== 备注 =====
-        if entry.notes:
-            notes_group = QGroupBox('备注')
-            notes_layout = QVBoxLayout(notes_group)
-            notes_label = QLabel(entry.notes)
-            notes_label.setWordWrap(True)
-            notes_label.setObjectName('notesValue')
-            notes_layout.addWidget(notes_label)
-            self._content_layout.addWidget(notes_group)
+    def _render_custom_fields(self, entry: Entry) -> None:
+        """渲染自定义字段区。"""
+        if not entry.custom_fields:
+            return
+        cf_timers = self._fields_renderer.render(entry, self._content_layout, self)
+        self._field_hide_timers.extend(cf_timers)
 
-        # ===== 自定义字段 =====
-        if entry.custom_fields:
-            cf_timers = self._fields_renderer.render(entry, self._content_layout, self)
-            self._field_hide_timers.extend(cf_timers)
-
-        self._content_layout.addStretch()
 
     def _build_tags_section(self, entry: Entry) -> QHBoxLayout:
         """构建分类、类型和标签区域。"""

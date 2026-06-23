@@ -304,7 +304,7 @@ def decrypt_entry_to_portable_dict(
             'deleted_at': raw_entry.deleted_at,
             'password_changed_at': raw_entry.password_changed_at,
         }
-    except (ValueError, DecryptionError):
+    except DecryptionError:
         logger.warning(
             "decrypt_entry_to_portable_dict 跳过损坏条目 crypto_id=%s",
             raw_entry.crypto_id, exc_info=True,

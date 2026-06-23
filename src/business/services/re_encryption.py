@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from ...database.types import ReEncryptedEntry, ReEncryptedHistory
 from ...exceptions import DecryptionError, VaultError
 from ...models import Category, PasswordHistory, RawEntry
+from ...utils.memory import secure_zero_buffer
 from .crypto_utils import (
     SENSITIVE_ENCRYPTED_FIELDS,
     category_crypto_id,
@@ -32,17 +33,28 @@ logger = logging.getLogger(__name__)
 
 @runtime_checkable
 class ReEncryptionDB(Protocol):
-    """ReEncryptionService 所需的数据库接口协议。"""
+    """ReEncryptionService 所需的数据库接口协议（窄接口，仅含实际使用的方法）。
+
+    与 B3 的 EntryStore / CategoryStore（Business 层宽切片）平行但更窄——
+    ReEncryptionService 只用 ``get_entries`` 的 keyword 子集与若干批量方法，故独立
+    声明，避免测试 mock 必须实现全部 CRUD。DatabaseManager 与 MockDB 均满足。
+    """
 
     def get_entries(
-        self, *, include_deleted: bool, limit: int, after_id: int,
+        self, *, include_deleted: bool = False, limit: int | None = None,
+        after_id: int | None = None,
     ) -> list[RawEntry]: ...
+
     def update_entries_batch(self, rows: list[ReEncryptedEntry]) -> None: ...
+
     def get_all_password_history_batch(
-        self, after_id: int, limit: int,
+        self, after_id: int = 0, limit: int = 200,
     ) -> list[PasswordHistory]: ...
+
     def update_password_history_batch(self, rows: list[ReEncryptedHistory]) -> None: ...
+
     def get_categories(self) -> list[Category]: ...
+
     def update_category(self, category: Category) -> None: ...
 
 
@@ -92,72 +104,84 @@ class ReEncryptionService:
         # 不是 sign_with_domain_key 每条仍做的签名 HMAC——后者无法预计算，
         # 因其输入含每条目不同的字段明文。每批 200 条省 200 次域密钥派生 HMAC。
         precomputed_domain_key = self._signer.compute_domain_key(new_key)
-        last_id = 0
-        while True:
-            if cancel_event is not None and cancel_event.is_set():
-                raise VaultError('重加密已被取消，事务回滚以保持数据一致')
-            batch = self._db.get_entries(
-                include_deleted=True, limit=_RE_ENCRYPT_BATCH_SIZE,
-                after_id=last_id,
-            )
-            if not batch:
-                break
-            # batch 来自 DB get_entries，主键 id 必非 None；守卫锚定契约，避免
-            # None 作分页游标导致死循环或写入空主键（运行时不应触发）。
-            last_raw = batch[-1]
-            if last_raw.id is None:
-                raise VaultError('重加密分页遇到空主键，违反 RawEntry 主键非空契约')
-            last_id = last_raw.id
-            rows = []
-            for raw_entry in batch:
-                if raw_entry.id is None:
-                    raise VaultError('重加密遇到空主键条目，违反 RawEntry 主键非空契约')
-                try:
-                    for field in _ENCRYPTED_ENTRY_FIELDS:
-                        # custom_fields 在 RawEntry 态为密文字符串，显式取 db_value
-                        # 与 _row_to_entry 的状态机解耦，避免误读解密后的 list
-                        value = (
-                            raw_entry.custom_fields_db_value
-                            if field == 'custom_fields'
-                            else getattr(raw_entry, field)
-                        )
-                        if value:
-                            plain = _decrypt_field_impl(
-                                value, old_key, raw_entry.crypto_id, field,
+        try:
+            last_id = 0
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise VaultError('重加密已被取消，事务回滚以保持数据一致')
+                batch = self._db.get_entries(
+                    include_deleted=True, limit=_RE_ENCRYPT_BATCH_SIZE,
+                    after_id=last_id,
+                )
+                if not batch:
+                    break
+                # batch 来自 DB get_entries，主键 id 必非 None；守卫锚定契约，避免
+                # None 作分页游标导致死循环或写入空主键（运行时不应触发）。
+                last_raw = batch[-1]
+                if last_raw.id is None:
+                    raise VaultError('重加密分页遇到空主键，违反 RawEntry 主键非空契约')
+                last_id = last_raw.id
+                rows = []
+                for raw_entry in batch:
+                    if raw_entry.id is None:
+                        raise VaultError('重加密遇到空主键条目，违反 RawEntry 主键非空契约')
+                    try:
+                        for field in _ENCRYPTED_ENTRY_FIELDS:
+                            # custom_fields 在 RawEntry 态为密文字符串，显式取 db_value
+                            # 与 _row_to_entry 的状态机解耦，避免误读解密后的 list；
+                            # 写回 setattr 对 custom_fields 同样落入密文 str，
+                            # 与 custom_fields_db_value 的读取一致。
+                            value = (
+                                raw_entry.custom_fields_db_value
+                                if field == 'custom_fields'
+                                else getattr(raw_entry, field)
                             )
-                            new_cipher = _encrypt_field_impl(
-                                plain, new_key, raw_entry.crypto_id, field,
-                            )
-                            setattr(raw_entry, field, new_cipher)
-                            del plain
-                except ValueError as exc:
-                    logger.error("重加密中止：条目 id=%s 解密失败", raw_entry.id)
-                    raise DecryptionError(
-                        "某条目解密失败，数据可能已损坏。中止改密以保护数据完整性。"
-                    ) from exc
+                            if value:
+                                # strict=True：任一字段解密失败立即抛 ValueError，被下方
+                                # except 捕获转为 DecryptionError 中止改密并回滚事务。
+                                # 若用默认 strict=False，损坏字段会被静默解密为空串再
+                                # 用新密钥加密写入——不可逆的数据丢失。
+                                plain = _decrypt_field_impl(
+                                    value, old_key, raw_entry.crypto_id, field,
+                                    strict=True,
+                                )
+                                new_cipher = _encrypt_field_impl(
+                                    plain, new_key, raw_entry.crypto_id, field,
+                                )
+                                setattr(raw_entry, field, new_cipher)
+                                del plain
+                    except ValueError as exc:
+                        logger.error("重加密中止：条目 id=%s 解密失败", raw_entry.id)
+                        raise DecryptionError(
+                            "某条目解密失败，数据可能已损坏。中止改密以保护数据完整性。"
+                        ) from exc
 
-                mac = self._signer.sign_with_domain_key(raw_entry, precomputed_domain_key)
-                rows.append(ReEncryptedEntry(
-                    crypto_id=raw_entry.crypto_id,
-                    title_enc=raw_entry.title,
-                    username_enc=raw_entry.username,
-                    password_enc=raw_entry.password,
-                    url_enc=raw_entry.url,
-                    category_id=raw_entry.category_id,
-                    tags_enc=raw_entry.tags,
-                    notes_enc=raw_entry.notes,
-                    custom_fields_enc=raw_entry.custom_fields_db_value,
-                    is_favorite=1 if raw_entry.is_favorite else 0,
-                    password_strength=raw_entry.password_strength,
-                    entry_type=raw_entry.entry_type,
-                    totp_secret_enc=raw_entry.totp_secret,
-                    updated_at=raw_entry.updated_at,
-                    password_changed_at=raw_entry.password_changed_at,
-                    metadata_mac=mac,
-                    id=raw_entry.id,
-                ))
-            self._db.update_entries_batch(rows)
-            del batch, rows
+                    mac = self._signer.sign_with_domain_key(raw_entry, precomputed_domain_key)
+                    rows.append(ReEncryptedEntry(
+                        crypto_id=raw_entry.crypto_id,
+                        title_enc=raw_entry.title,
+                        username_enc=raw_entry.username,
+                        password_enc=raw_entry.password,
+                        url_enc=raw_entry.url,
+                        category_id=raw_entry.category_id,
+                        tags_enc=raw_entry.tags,
+                        notes_enc=raw_entry.notes,
+                        custom_fields_enc=raw_entry.custom_fields_db_value,
+                        is_favorite=1 if raw_entry.is_favorite else 0,
+                        password_strength=raw_entry.password_strength,
+                        entry_type=raw_entry.entry_type,
+                        totp_secret_enc=raw_entry.totp_secret,
+                        updated_at=raw_entry.updated_at,
+                        password_changed_at=raw_entry.password_changed_at,
+                        metadata_mac=mac,
+                        id=raw_entry.id,
+                    ))
+                self._db.update_entries_batch(rows)
+                del batch, rows
+        finally:
+            # 域密钥（bytearray）在重加密全程持有（含分批与取消回滚窗口），结束后
+            # 立即原地清零，收缩驻留面，不依赖后续 KeyManager.clear() 间接回收。
+            secure_zero_buffer(precomputed_domain_key)
 
     def re_encrypt_categories(self, old_key: bytes | bytearray, new_key: bytes | bytearray) -> None:
         """使用分类 ID 绑定的 AAD 重加密全部分类名称。"""
@@ -211,6 +235,7 @@ class ReEncryptionService:
                     plaintext = _decrypt_field_impl(
                         history.old_password_enc, old_key,
                         history.entry_crypto_id, 'password',
+                        strict=True,
                     )
                 except ValueError as exc:
                     logger.error("重加密中止：密码历史 id=%s 解密失败", history.id)

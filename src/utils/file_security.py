@@ -29,6 +29,11 @@ def _windows_user_sid() -> str:
 
     成功解析的结果会被缓存；非 Windows 平台缓存空串。Windows 下解析失败时
     返回空串但**不缓存**——下次调用重新解析，避免瞬时失败导致整会话失效。
+
+    已知限制：依赖 ``whoami`` 子进程，在受限环境（企业策略禁用 whoami、EDR 拦截
+    子进程创建）下会失败——此时记 ERROR 并跳过 ACL（本次），不缓存以便下次重试。
+    彻底提升可靠性需改用 ctypes 直接调 GetUserNameEx/GetTokenInformation 获取 SID，
+    当前作为已知取舍保留（whoami 在标准 Windows 环境可靠且结果有缓存，首调外零成本）。
     """
     global _CACHED_USER_SID
     cached = _CACHED_USER_SID
@@ -148,56 +153,60 @@ def secure_directory(path: Path, *, strict: bool = False) -> Path:
 def validate_file_path(path: str | Path, base_dir: Path | None = None) -> Path:
     """验证文件路径，用于导入/导出/备份操作。
 
-    解析路径并拒绝可能允许目录遍历的路径组件，
-    包括通过符号链接解析到预期目录树之外的情况。
+    解析路径并拒绝可能允许目录遍历或路径重定向的组件：拒绝 ``..`` 遍历；
+    对解析后的真实路径及其所有祖先检测符号链接与 Windows reparse point/junction，
+    作为对抗路径重定向（把写入重定向到敏感文件或攻击者可控位置）的纵深防御。
 
-    调用方必须使用返回的 resolved 路径而非原始 path 参数，
-    以避免 TOCTOU 竞态窗口。
+    调用方必须使用返回的 resolved 路径而非原始 path 参数，以缩小 TOCTOU 竞态窗口。
 
     Note:
-        Windows 上 ``is_symlink`` 不识别 junction/reparse point；高安全场景
-        应显式提供 ``base_dir``，由 ``resolve()`` 展开 junction 后用
-        ``is_relative_to`` 提供更强保证。
+        reparse point 检测具 TOCTOU 性质（检测与后续 open 间可被替换），仅在本地
+        威胁模型下有效。对高敏感写入（备份/恢复）应显式提供 ``base_dir``，由
+        ``resolve()`` + ``is_relative_to`` 提供更强的「不得逃逸受控根」保证。
 
     Args:
         path: 待验证的文件路径
-        base_dir: 可选的基目录约束。若提供，解析后的路径必须位于该目录下。
+        base_dir: 可选基目录约束，解析后的路径必须位于其下。
 
     Returns:
         解析后的安全路径，调用方应使用此返回值。
     """
-    resolved = Path(path).resolve()
-    # 拒绝含 '..' 组件的路径，防止目录遍历攻击
-    parts = Path(path).parts
-    if '..' in parts:
+    raw = Path(path)
+    if '..' in raw.parts:
         raise ValueError('文件路径包含非法遍历组件')
-    # 当未指定 base_dir 时，检测路径本身及各级父目录的符号链接作为纵深防御。
-    # Windows 上 is_symlink 不识别 junction/reparse point，补充检测
-    # FILE_ATTRIBUTE_REPARSE_POINT (0x400)，覆盖 junction 与挂载点重定向——
-    # 本项目主平台为 Windows（数据目录 %APPDATA%），此补充关闭 is_symlink 的盲区。
-    # 该检测具 TOCTOU 性质（检测与后续 open 间可被替换），仅在本地威胁模型下有效；
-    # 高安全场景应显式提供 base_dir，由 resolve()+is_relative_to 提供更强保证。
-    if base_dir is None:
-        current = Path(path)
-        while current != current.parent:  # 未到根目录
-            if current.is_symlink():
-                raise ValueError(f'路径组件包含符号链接，拒绝访问: {current}')
-            if sys.platform == 'win32':
-                try:
-                    # st_file_attributes 为 Windows 专有属性，getattr 兜底跨平台访问
-                    attrs = getattr(current.lstat(), 'st_file_attributes', 0)
-                    if attrs & 0x400:
-                        raise ValueError(
-                            f'路径组件包含 reparse point/junction，拒绝访问: {current}'
-                        )
-                except OSError:
-                    pass
-            current = current.parent
+    resolved = raw.resolve()
+    _reject_reparse_points(resolved)
     if base_dir is not None:
         base_resolved = Path(base_dir).resolve()
         if not resolved.is_relative_to(base_resolved):
             raise ValueError('文件路径超出允许的目录范围')
     return resolved
+
+
+def _reject_reparse_points(resolved: Path) -> None:
+    """拒绝 resolved 路径及其所有祖先上的符号链接 / Windows reparse point。
+
+    用解析后的真实路径（``resolve()`` 已展开符号链接）而非原 path 检测：对结果的
+    祖先链做检测可发现「祖先被替换为 junction 指向敏感位置」的重定向。Windows 上
+    ``is_symlink`` 不识别 junction/reparse point，补充 ``st_file_attributes`` 的
+    ``FILE_ATTRIBUTE_REPARSE_POINT`` (0x400) 检测，覆盖 junction 与挂载点重定向——
+    本项目主平台为 Windows（数据目录 %APPDATA%），此补充关闭 is_symlink 的盲区。
+    """
+    current = resolved
+    while current != current.parent:  # 未到根目录
+        if current.is_symlink():
+            raise ValueError(f'路径组件包含符号链接，拒绝访问: {current}')
+        if sys.platform == 'win32':
+            try:
+                # st_file_attributes 为 Windows 专有属性，getattr 兜底跨平台访问
+                attrs = getattr(current.lstat(), 'st_file_attributes', 0)
+                if attrs & 0x400:
+                    raise ValueError(
+                        f'路径组件包含 reparse point/junction，拒绝访问: {current}'
+                    )
+            except OSError:
+                pass
+        current = current.parent
 
 
 def secure_file(path: Path, *, strict: bool = False) -> Path:
@@ -329,7 +338,15 @@ def unprotect_with_dpapi(blob: bytes) -> bytes | None:
 
 
 def _dpapi_crypt(data: bytes, *, protect: bool) -> bytes | None:
-    """调用 CryptProtectData/CryptUnprotectData，任意失败返回 None。"""
+    """调用 CryptProtectData/CryptUnprotectData。
+
+    返回 None 时调用方回退明文。异常分类告警，避免「配置签名密钥因 DPAPI 调用
+    失败而明文落盘」被静默掩盖：
+    - 平台性失败（非 Windows 无 ``ctypes.WinDLL``）：静默回退，DPAPI 不可用属合法。
+    - 调用性失败（crypt32 可用但 API 返回失败）：敏感数据将明文落盘，记 ERROR
+      明确告警——此为安全降级，须可见。
+    - 未预期异常（Structure/类型错误等编程 bug）：记 ERROR 暴露而非掩盖。
+    """
     try:
         import ctypes
         from ctypes import wintypes
@@ -363,6 +380,18 @@ def _dpapi_crypt(data: bytes, *, protect: bool) -> bytes | None:
         finally:
             kernel32: Any = ctypes_any.WinDLL('kernel32')
             kernel32.LocalFree(blob_out.pbData)
+    except AttributeError:
+        # 平台性：非 Windows 无 ctypes.WinDLL/wintypes，DPAPI 不可用属合法，静默回退明文。
+        return None
+    except OSError:
+        # 调用性：crypt32 可用但 API 失败，敏感数据将明文落盘，ERROR 明确告警
+        # 便于察觉安全降级（而非静默 warning 掩盖）。
+        logger.error("DPAPI %s 调用失败，敏感数据将以明文存储", '封装' if protect else '解封')
+        return None
     except Exception:
-        logger.warning("DPAPI %s 失败，回退明文", '封装' if protect else '解封', exc_info=True)
+        # 未预期异常（Structure/类型错误等编程 bug），ERROR 暴露而非掩盖。
+        logger.error(
+            "DPAPI %s 未预期异常，敏感数据将以明文存储",
+            '封装' if protect else '解封', exc_info=True,
+        )
         return None

@@ -11,6 +11,7 @@
 import dataclasses
 
 from src.business.services.crypto_utils import SENSITIVE_ENCRYPTED_FIELDS
+from src.business.services.metadata_signer import SIGNATURE_ENCRYPTED_FIELD_ORDER
 from src.business.services.re_encryption import _ENCRYPTED_ENTRY_FIELDS
 from src.models import Entry, RawEntry
 
@@ -29,3 +30,18 @@ def test_entry_and_raw_entry_share_field_names():
 def test_encrypted_field_set_single_source():
     """re_encryption._ENCRYPTED_ENTRY_FIELDS 须引用 crypto_utils 单一来源。"""
     assert tuple(_ENCRYPTED_ENTRY_FIELDS) == SENSITIVE_ENCRYPTED_FIELDS
+
+
+def test_signature_encrypted_field_order_is_subset():
+    """SIGNATURE_ENCRYPTED_FIELD_ORDER 须是 SENSITIVE_ENCRYPTED_FIELDS 的子集且顺序固定。
+
+    签名绑定的加密字段 = 全部加密字段减去在载荷顶层以明文签名的 title/url/tags。
+    改顺序或字段集会破坏已有数据的 metadata_mac，故以测试守护此不变量。
+    """
+    sensitive = set(SENSITIVE_ENCRYPTED_FIELDS)
+    signature = set(SIGNATURE_ENCRYPTED_FIELD_ORDER)
+    assert signature <= sensitive, (
+        'SIGNATURE_ENCRYPTED_FIELD_ORDER 含非加密字段：'
+        f'额外={signature - sensitive}'
+    )
+    assert signature == sensitive - {'title', 'url', 'tags'}

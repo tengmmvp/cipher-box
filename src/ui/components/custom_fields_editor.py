@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ...models import CustomField
+from ...models import MAX_CUSTOM_FIELD_NAME, MAX_CUSTOM_FIELD_VALUE, CustomField
 from ..resources.constants import BTN_COPY
 from ..resources.icons import CLOSE, set_icon
 
@@ -26,9 +26,8 @@ class CustomFieldsEditor:
     """
 
     # 字段类型单一事实来源：下拉框 addItem 顺序、index/type 双向映射、
-    # 中文标签均从此列表派生，避免三处定义发散导致索引错位。
+    # 中文标签均从此列表派生，避免多处定义发散导致索引错位。
     _TYPE_ORDER = ['text', 'password', 'url', 'email']
-    # 中文标签按 _TYPE_ORDER 顺序对应
     _TYPE_LABELS = {'text': '文本', 'password': '密码', 'url': '网址', 'email': '邮箱'}
     _TYPE_INDEX_MAP = {t: i for i, t in enumerate(_TYPE_ORDER)}
     _INDEX_TYPE_MAP = dict(enumerate(_TYPE_ORDER))
@@ -56,6 +55,9 @@ class CustomFieldsEditor:
         name_edit = QLineEdit(name)
         name_edit.setPlaceholderText('字段名')
         name_edit.setFixedWidth(120)
+        # 控件层长度上限与 validate_plain_entry / CustomField.from_dict 对齐，
+        # 输入时即截断提供前端反馈，避免到保存时才报错。
+        name_edit.setMaxLength(MAX_CUSTOM_FIELD_NAME)
         row_layout.addWidget(name_edit)
 
         type_combo = QComboBox()
@@ -67,6 +69,7 @@ class CustomFieldsEditor:
 
         value_edit = QLineEdit(value)
         value_edit.setPlaceholderText('字段值')
+        value_edit.setMaxLength(MAX_CUSTOM_FIELD_VALUE)
         if field_type == 'password':
             value_edit.setEchoMode(QLineEdit.EchoMode.Password)
         type_combo.currentIndexChanged.connect(

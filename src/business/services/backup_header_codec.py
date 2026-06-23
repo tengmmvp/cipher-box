@@ -145,7 +145,7 @@ def inspect_backup(filepath: str) -> dict[str, Any]:
         }
 
 
-# 显式导出供 mypy/ruff 识别（json 仅为占位防 ruff unused import 误报；实际未使用）。
+# 显式声明模块公开 API，限定 `from ... import *` 的导出范围。
 __all__ = [
     'BACKUP_AAD',
     'BACKUP_FORMAT',

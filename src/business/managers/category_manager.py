@@ -43,6 +43,7 @@ class CategoryManager:
         return require_vault_key(self._vault)
 
     def get_categories(self) -> list[Category]:
+        """获取全部分类，分类名经缓存解密，按 sort_order 与名称排序。"""
         categories = self._vault.db.get_categories()
         for category in categories:
             if category.id is not None:
@@ -52,15 +53,18 @@ class CategoryManager:
         return sorted(categories, key=lambda item: (item.sort_order, item.name.casefold()))
 
     def get_category(self, category_id: int) -> Category | None:
+        """获取指定分类，分类名经缓存解密。"""
         category = self._vault.db.get_category(category_id)
         if category is not None:
             category.name = self._cache.decrypt_category_name(category_id, category.name)
         return category
 
     def get_category_entry_count(self, category_id: int) -> int:
+        """获取指定分类下的（未删除）条目数。"""
         return self._vault.db.get_category_entry_count(category_id)
 
     def get_category_entry_counts(self) -> dict[int, int]:
+        """获取全部分类的条目数映射 {category_id: count}。"""
         return self._vault.db.get_category_entry_counts()
 
     def add_category(self, category: Category, *, notify: bool = True) -> int:
@@ -69,24 +73,27 @@ class CategoryManager:
         先用 pending_id 占位加密分类名写入数据库获得真实 id，再在事务内用
         真实 category_crypto_id 重加密并更新。事务必须整体迁移不能拆，否则
         会残留 pending_id 加密的分类名密文。
+
+        查重在事务内进行，与写入原子化，避免并发两次同名分类都通过查重后
+        各自写入的 TOCTOU 竞态（分类名以密文落库，UNIQUE 约束对密文无效）。
         """
-        if not category.name.strip():
-            raise ValueError('分类名称不能为空')
-        if any(
-            existing.name.casefold() == category.name.strip().casefold()
-            for existing in self.get_categories()
-        ):
-            raise ValueError('分类名称已存在')
         plaintext_name = category.name.strip()
+        if not plaintext_name:
+            raise ValueError('分类名称不能为空')
         pending_id = f'category-pending-{uuid.uuid4().hex}'
-        stored = Category(
-            name=encrypt_field(plaintext_name, self._key, pending_id, 'category_name'),
-            icon_char=category.icon_char,
-            color=category.color,
-            sort_order=category.sort_order,
-            created_at=category.created_at,
-        )
         with self._vault.db.transaction():
+            existing_names = {
+                existing.name.casefold() for existing in self.get_categories()
+            }
+            if plaintext_name.casefold() in existing_names:
+                raise ValueError('分类名称已存在')
+            stored = Category(
+                name=encrypt_field(plaintext_name, self._key, pending_id, 'category_name'),
+                icon_char=category.icon_char,
+                color=category.color,
+                sort_order=category.sort_order,
+                created_at=category.created_at,
+            )
             result = self._vault.db.add_category(stored)
             stored.id = result
             stored.name = encrypt_field(
@@ -108,6 +115,7 @@ class CategoryManager:
         return result
 
     def update_category(self, category: Category) -> None:
+        """更新分类，重加密分类名并失效分类名缓存（条目摘要内容不变）。"""
         if category.id is None:
             raise ValueError('分类 ID 不能为空')
         plaintext_name = category.name.strip()
@@ -132,6 +140,7 @@ class CategoryManager:
         )
 
     def delete_category(self, category_id: int) -> None:
+        """删除分类，关联条目 category_id 置 NULL，失效分类名缓存。"""
         self._vault.db.delete_category(category_id)
         # 删除分类后关联条目 category_id 置 NULL，分类名缓存需失效；条目摘要
         # 内容（title/url/tags）不变，保留搜索摘要缓存避免全量重解密。

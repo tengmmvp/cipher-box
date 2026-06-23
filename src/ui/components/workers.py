@@ -11,7 +11,23 @@ from collections.abc import Callable
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
+from ...exceptions import CipherBoxError
+from ..error_messages import to_user_message
+
 logger = logging.getLogger(__name__)
+
+
+def _worker_error_message(exc: Exception) -> str:
+    """归一化 worker 异常为 error 信号消息。
+
+    领域异常（CipherBoxError 家族）经 to_user_message 翻译为友好文案，避免内部
+    细节或潜在明文经 ``str(exc)`` 泄漏到 UI；非领域异常（如 ValueError 字段校验）
+    保留 ``str(exc)`` 的可操作消息。完整堆栈已在调用方经 ``logger.error(exc_info=True)``
+    记录，故 error 信号只承载用户可见文案，不承担诊断职责。
+    """
+    if isinstance(exc, CipherBoxError):
+        return to_user_message(exc)
+    return str(exc)
 
 
 class BackgroundWorker(QThread):
@@ -91,7 +107,7 @@ class BackgroundWorker(QThread):
             # error 信号只传消息字符串给 UI（用户可见），完整堆栈在 worker 线程
             # 记录到日志，避免「error 信号已脱离异常上下文，exc_info 无堆栈可诊断」。
             logger.error("后台 worker 执行失败", exc_info=True)
-            self.error.emit(str(e))
+            self.error.emit(_worker_error_message(e))
         else:
             if self._cancel_event.is_set():
                 self.cancelled.emit()

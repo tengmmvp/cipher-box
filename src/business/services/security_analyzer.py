@@ -87,16 +87,6 @@ class SecurityAnalyzer:
     def _key(self) -> bytes:
         return require_vault_key(self._vault)
 
-    def _decrypt(
-        self, raw: RawEntry, field_name: str, value: str, *,
-        strict: bool = False, key: bytes | None = None,
-    ) -> str:
-        if not value:
-            return ''
-        return decrypt_field(
-            value, key or self._key, raw.crypto_id, field_name, strict=strict
-        )
-
     def _make_summary(self, raw: RawEntry) -> Entry:
         """只返回分析界面所需字段，避免缓存敏感明文。
 
@@ -106,9 +96,9 @@ class SecurityAnalyzer:
         failed 集合；此处检测到任一字段失败即抛 ValueError，供 full_analysis 计入
         ``skipped_count``，保持「损坏即跳过」语义与原 strict 解密一致。
         """
-        # 批量路径：full_analysis 循环外已 invalidate_if_epoch_changed，此处用
-        # no_check 避免每条重复加锁+查 epoch（持 vault_write_lock 期间 epoch 不变）。
-        title, username, url, tags = self._cache._cached_search_metadata_no_check(raw)
+        # 批量路径：full_analysis 循环外已 invalidate_if_epoch_changed，此处经公开的
+        # 无校验入口避免每条重复加锁+查 epoch（持 vault_write_lock 期间 epoch 不变）。
+        title, username, url, tags = self._cache.search_metadata_for_analysis(raw)
         if self._cache.get_failed_fields(raw.crypto_id):
             raise ValueError(f'条目 {raw.crypto_id} 摘要字段解密失败')
         summary = build_entry_summary(raw, username)
@@ -348,8 +338,8 @@ class SecurityAnalyzer:
                     continue
 
                 try:
-                    password = self._decrypt(
-                        raw, 'password', raw.password, strict=True, key=vault_key,
+                    password = decrypt_field(
+                        raw.password, vault_key, raw.crypto_id, 'password', strict=True,
                     )
                 except ValueError:
                     logger.debug("安全分析跳过损坏条目 id=%s，原因：密码解密失败", raw.id)

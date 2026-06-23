@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from functools import wraps
+from typing import TYPE_CHECKING, Any, TypedDict, TypeVar, cast
 
 from PyQt6.QtCore import QModelIndex, QPoint, Qt
 from PyQt6.QtGui import QAction
@@ -75,6 +77,19 @@ logger = logging.getLogger(__name__)
 _MAX_SEARCH_RESULTS_DISPLAY = 1000
 
 
+@dataclass
+class _ScrollRestore:
+    """列表刷新后的滚动/选中恢复参数。
+
+    _refresh_entries 计算后经 _start_async_entry_refresh / _apply_entry_results
+    传递，收纳三个相关参数避免方法签名膨胀，并使「恢复同一数据集刷新后的视口」
+    这一意图内聚到单一类型。仅当过滤器未变（should_restore_position）时恢复。
+    """
+    should_restore_position: bool
+    saved_scroll: int
+    saved_row: int
+
+
 class SecurityReport(TypedDict):
     """安全分析报告结构，对应 ``SecurityAnalyzer.full_analysis`` 返回值。
 
@@ -91,6 +106,26 @@ class SecurityReport(TypedDict):
     old: int
     _summaries_with_dates: list[tuple[Entry, datetime | None]]
     _key_epoch: int
+
+
+_F = TypeVar('_F')
+
+
+def _require_unlocked(method: Callable[..., _F]) -> Callable[..., _F]:
+    """装饰方法：锁定态（``_locked_ui=True``）时跳过执行。
+
+    锁定后主密钥已清零，被装饰方法访问 entry_mgr/totp/clipboard 会崩溃或读到
+    无效数据。集中守卫消除多处 ``if self._locked_ui: return`` 的重复。锁定态
+    返回 None——被装饰方法均为 Qt 槽或操作回调，无返回值或调用方不依赖锁定态
+    的返回值，与原内联守卫语义一致；对 Qt 信号连接透明（PyQt6 信号连接不严格
+    检查槽签名，wrapper 经 ``*args`` 透传信号参数）。
+    """
+    @wraps(method)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> _F:
+        if self._locked_ui:
+            return None  # type: ignore[return-value]
+        return method(self, *args, **kwargs)
+    return wrapper
 
 
 class _MainWindowFiltersMixin(QMainWindow):
@@ -258,10 +293,13 @@ class _MainWindowFiltersMixin(QMainWindow):
         should_restore_position = (saved_filter == current_filter)
         self._last_refresh_filter = current_filter
         scrollbar = self._entry_list.verticalScrollBar()
-        saved_scroll = (
-            scrollbar.value() if should_restore_position and scrollbar is not None else 0
+        scroll_restore = _ScrollRestore(
+            should_restore_position=should_restore_position,
+            saved_scroll=(
+                scrollbar.value() if should_restore_position and scrollbar is not None else 0
+            ),
+            saved_row=self._entry_list.currentIndex().row() if should_restore_position else -1,
         )
-        saved_row = self._entry_list.currentIndex().row() if should_restore_position else -1
 
         # 异步刷新条件：条目数超阈值时移入后台线程，避免主线程全量解密卡顿。
         # all/favorite/trash 无论是否搜索都需全量解密，大库下须异步；recent 仅在
@@ -282,9 +320,7 @@ class _MainWindowFiltersMixin(QMainWindow):
                 current_filter,
                 self._current_category_id,
                 self._current_search,
-                should_restore_position,
-                saved_scroll,
-                saved_row,
+                scroll_restore,
             )
             return
 
@@ -292,18 +328,14 @@ class _MainWindowFiltersMixin(QMainWindow):
             self._entry_worker.cancel()
             self._entry_worker = None
         entries, title = self._fetch_for_filter(self._current_filter)
-        self._apply_entry_results(
-            entries, title, should_restore_position, saved_scroll, saved_row,
-        )
+        self._apply_entry_results(entries, title, scroll_restore)
 
     def _start_async_entry_refresh(
         self,
         filter_key: str,
         category_id: int | None,
         search: str,
-        should_restore_position: bool,
-        saved_scroll: int,
-        saved_row: int,
+        scroll_restore: _ScrollRestore,
     ) -> None:
         if self._entry_worker is not None:
             self._entry_worker.cancel()
@@ -344,9 +376,7 @@ class _MainWindowFiltersMixin(QMainWindow):
                 return
             entries, title = result
             _release()
-            self._apply_entry_results(
-                entries, title, should_restore_position, saved_scroll, saved_row,
-            )
+            self._apply_entry_results(entries, title, scroll_restore)
 
         worker.finished.connect(_done)
         worker.error.connect(lambda _message: _release())
@@ -357,9 +387,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         self,
         entries: list,
         title: str,
-        should_restore_position: bool,
-        saved_scroll: int,
-        saved_row: int,
+        scroll_restore: _ScrollRestore,
     ) -> None:
         # 分类筛选下显示分类名作为标题，而非 fetcher 默认的「全部条目」
         if self._current_category_id is not None:
@@ -376,12 +404,11 @@ class _MainWindowFiltersMixin(QMainWindow):
         if self._current_filter in ('all', 'favorite', 'trash'):
             entries = self._sort_entries(entries)
 
-        # 搜索结果防御性上限：超大库下避免渲染过多条目卡死 UI
+        # 渲染上限：超大库下避免一次性渲染过多条目卡死 UI。推广到所有过滤器
+        # （含分类/收藏切换），recent 自带 LIMIT 通常不受影响；weak/duplicate 的
+        # 结果集一般远小于上限，仅超大异常库才会触发截断。
         original_count = len(entries)
-        truncated = (
-            bool(self._current_search)
-            and original_count > _MAX_SEARCH_RESULTS_DISPLAY
-        )
+        truncated = original_count > _MAX_SEARCH_RESULTS_DISPLAY
         if truncated:
             entries = entries[:_MAX_SEARCH_RESULTS_DISPLAY]
 
@@ -390,12 +417,16 @@ class _MainWindowFiltersMixin(QMainWindow):
         self._entry_model.set_entries(entries)
 
         # 恢复滚动位置和选中行，仅在过滤器未变时恢复，避免切换后跳到旧位置
-        if should_restore_position and not self._current_search and 0 <= saved_row < self._entry_model.rowCount():
-            self._entry_list.setCurrentIndex(self._entry_model.index(saved_row))
-        if should_restore_position:
+        if (
+            scroll_restore.should_restore_position
+            and not self._current_search
+            and 0 <= scroll_restore.saved_row < self._entry_model.rowCount()
+        ):
+            self._entry_list.setCurrentIndex(self._entry_model.index(scroll_restore.saved_row))
+        if scroll_restore.should_restore_position:
             scrollbar = self._entry_list.verticalScrollBar()
             if scrollbar is not None:
-                scrollbar.setValue(saved_scroll)
+                scrollbar.setValue(scroll_restore.saved_scroll)
 
         if truncated:
             self._count_label.setText(f'前 {len(entries)} 项（共 {original_count} 项）')
@@ -430,38 +461,42 @@ class _MainWindowFiltersMixin(QMainWindow):
         """按优先级解析当前空状态配置。
 
         返回由图标、标题、副标题、操作按钮文案、操作回调槽位组成的五元组。
-        将 7 种空态场景的文案与图标配置集中于此；EmptyStateWidget 的构造与信号
-        连接统一在 _show_empty_state 一处完成，新增或修改空态文案只需调整本表。
+        7 种空态场景按优先级线性判断，首个命中即返回；weak/duplicate 合并处理并
+        共享 :meth:`_is_security_analyzing` 判断，消除原先重复的分析状态查询。
+        EmptyStateWidget 的构造与信号连接统一在 _show_empty_state 一处完成，
+        新增或修改空态文案只需调整本方法。
         """
         if self._current_search:
             return (EMPTY_SEARCH, '没有找到匹配的条目', '尝试不同的搜索关键词', '清除搜索', self._clear_search)
-        if self._current_filter == 'trash':
+        filter_name = self._current_filter
+        if filter_name == 'trash':
             return (EMPTY_TRASH, '回收站是空的', '删除的条目会出现在这里', '', None)
-        if self._current_filter == 'weak':
-            # 缓存未就绪时显示"分析中"，避免空列表被误读为"无弱密码"
-            if self._security.get_cached_report(
-                self._config.get('old_password_warning_days')
-            ) is None:
-                return (EMPTY_GENERIC, '正在分析密码强度...', '请稍候', '', None)
-            return (EMPTY_SUCCESS, '没有发现弱密码', '所有密码强度良好', '', None)
-        if self._current_filter == 'duplicate':
-            if self._security.get_cached_report(
-                self._config.get('old_password_warning_days')
-            ) is None:
-                return (EMPTY_GENERIC, '正在分析重复密码...', '请稍候', '', None)
+        if filter_name in ('weak', 'duplicate'):
+            # 缓存未就绪时显示「分析中」，避免空列表被误读为「无弱/重复密码」
+            if self._is_security_analyzing():
+                label = '密码强度' if filter_name == 'weak' else '重复密码'
+                return (EMPTY_GENERIC, f'正在分析{label}...', '请稍候', '', None)
+            if filter_name == 'weak':
+                return (EMPTY_SUCCESS, '没有发现弱密码', '所有密码强度良好', '', None)
             return (EMPTY_SUCCESS, '没有重复密码', '所有密码都是唯一的', '', None)
-        if self._current_filter == 'recent':
+        if filter_name == 'recent':
             return (EMPTY_SUCCESS, '没有近期更新', '最近没有修改过条目', '', None)
         if self._current_category_id is not None:
             return (EMPTY_FOLDER, '该分类下暂无条目', '新增或编辑条目时可选择该分类', '', None)
-        # 仅此分支需要总数，惰性查询避免其他空态场景的无谓 DB 访问
-        total_entries = getattr(self, '_cached_total_entries', -1)
+        # 仅默认/空库分支需要总数，惰性查询避免其他空态场景的无谓 DB 访问
+        total_entries = self._cached_total_entries
         if total_entries < 0:
             total_entries = self._entry_mgr.get_entry_count()
             self._cached_total_entries = total_entries
         if total_entries == 0:
             return (EMPTY_VAULT, '还没有密码条目', '点击工具栏「新增」按钮开始添加', '新增条目', self._add_entry)
         return (EMPTY_GENERIC, '暂无条目', '', '', None)
+
+    def _is_security_analyzing(self) -> bool:
+        """security 分析是否仍在进行（缓存未就绪），供 weak/duplicate 空态共享。"""
+        return self._security.get_cached_report(
+            self._config.get('old_password_warning_days')
+        ) is None
 
     def _update_status_bar(self) -> None:
         days = self._config.get('old_password_warning_days')
@@ -575,21 +610,21 @@ class _MainWindowFiltersMixin(QMainWindow):
     def _on_search_input(self, _text: str) -> None:
         self._search_timer.start()
 
-    def _on_tag_changed(self) -> None:
-        if self._locked_ui:
-            return
+    @_require_unlocked
+    def _on_tag_changed(self, _index: int = -1) -> None:
+        # _index 接收 currentIndexChanged 的信号参数并忽略：@_require_unlocked 的
+        # wrapper 用 *args 透传，会破坏 PyQt6 对「槽签名少于信号参数」的自动截断，
+        # 故被装饰槽须显式接收其连接信号的全部参数（其余槽已与信号参数对齐）。
         self._current_tag = self._tag_combo.currentData() or ''
         self._refresh_entries()
 
+    @_require_unlocked
     def _do_search(self) -> None:
-        if self._locked_ui:
-            return
         self._current_search = self._search_edit.text().strip()
         self._refresh_entries()
 
+    @_require_unlocked
     def _on_filter_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
-        if self._locked_ui:
-            return
         if current:
             self._current_filter = current.data(Qt.ItemDataRole.UserRole)
             self._current_category_id = None
@@ -600,9 +635,8 @@ class _MainWindowFiltersMixin(QMainWindow):
             self._category_list.blockSignals(False)
             self._refresh_entries()
 
+    @_require_unlocked
     def _on_category_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
-        if self._locked_ui:
-            return
         if current:
             self._current_category_id = current.data(Qt.ItemDataRole.UserRole)
             self._current_filter = 'all'
@@ -693,10 +727,28 @@ class _MainWindowFiltersMixin(QMainWindow):
 
     def _show_active_entry_menu(self, summary: Entry, pos: QPoint) -> None:
         """活跃条目右键菜单 — dict dispatch，复制操作延迟解密。"""
-        # 列表条目必来自 DB，id 非 None；守卫后 entry_id 收窄为 int 供下游调用。
+        # 列表条目必来自 DB，id 非 None；守卫后由 _build_active_entry_menu 收窄为 int。
         if summary.id is None:
             return
+        menu, handlers = self._build_active_entry_menu(summary)
+        chosen = menu.exec(self._entry_list.mapToGlobal(pos))
+        if chosen is None:
+            return
+        handler = handlers.get(chosen)
+        if handler is not None:
+            handler()
+
+    def _build_active_entry_menu(
+        self, summary: Entry,
+    ) -> tuple[QMenu, dict[QAction, Callable[[], None]]]:
+        """构造活跃条目右键菜单及其「动作→处理函数」映射。
+
+        dict dispatch 替代 if/elif 链；复制类处理延迟解密（菜单打开期间可能触发
+        自动锁定，处理函数内守卫 ``_locked_ui`` 避免锁定态访问已清零密钥）。
+        """
         entry_id = summary.id
+        if entry_id is None:  # 调用方 _show_active_entry_menu 已守卫，此处为类型收窄防御
+            return QMenu(self), {}
         menu = QMenu(self)
 
         copy_user_act = QAction('复制账号', self)
@@ -720,71 +772,58 @@ class _MainWindowFiltersMixin(QMainWindow):
         if summary.is_favorite:
             fav_act = QAction('取消收藏', self)
             fav_act.setIcon(icon(STAR_OUTLINE))
-            menu.addAction(fav_act)
         else:
             fav_act = QAction('收藏', self)
             fav_act.setIcon(icon(STAR))
-            menu.addAction(fav_act)
+        menu.addAction(fav_act)
         menu.addSeparator()
         del_act = QAction('删除', self)
         del_act.setIcon(icon(DELETE))
         menu.addAction(del_act)
 
-        chosen = menu.exec(self._entry_list.mapToGlobal(pos))
-        if chosen is None:
-            return
-
-        # 延迟解密：复制操作按需加载完整条目。菜单打开期间可能触发自动锁定，
-        # 闭包内守卫避免锁定态访问已清零密钥
-        def _copy_user() -> None:
-            if self._locked_ui:
-                return
-            e = self._entry_mgr.get_entry(entry_id)
-            if e and e.username:
-                self._clipboard.copy_text(e.username)
-                Toast.show(self, '已复制账号', Toast.SUCCESS, duration=MS_TOAST_SHORT)
-
-        def _copy_pwd() -> None:
-            if self._locked_ui:
-                return
-            e = self._entry_mgr.get_entry(entry_id)
-            if e and e.password:
-                self._clipboard.copy_text(e.password)
-                # 仅当右键的是当前详情面板显示的条目时，才触发其复制按钮反馈
-                current = self._detail_panel.current_entry
-                if current is not None and current.id == entry_id:
-                    self._detail_panel.copy_feedback.emit()
-                Toast.show(self, '已复制密码', Toast.SUCCESS, duration=MS_TOAST_SHORT)
-
-        def _copy_totp() -> None:
-            if self._locked_ui:
-                return
-            # 通过 EntryManager 生成验证码，UI 层不接触明文 TOTP secret
-            code = self._entry_mgr.totp.generate(entry_id)
-            if code:
-                self._clipboard.copy_text(code)
-                Toast.show(self, '验证码已复制', Toast.SUCCESS, duration=MS_TOAST_SHORT)
-            else:
-                Toast.show(self, '验证码生成失败，请检查密钥', Toast.ERROR, duration=MS_TOAST_DEFAULT)
-
-        # dict dispatch 替代 if/elif 链
         def _toggle_favorite() -> None:
             self._entry_mgr.toggle_favorite(entry_id)
             self._refresh_entries_only()
 
-        handlers: dict = {
-            copy_user_act: _copy_user,
-            copy_pwd_act: _copy_pwd,
+        handlers: dict[QAction, Callable[[], None]] = {
+            copy_user_act: lambda: self._menu_copy_username(entry_id),
+            copy_pwd_act: lambda: self._menu_copy_password(entry_id),
             edit_act: lambda: self._edit_entry(entry_id),
             fav_act: _toggle_favorite,
             del_act: lambda: self._delete_entry(entry_id),
         }
-        if copy_totp_act:
-            handlers[copy_totp_act] = _copy_totp
+        if copy_totp_act is not None:
+            handlers[copy_totp_act] = lambda: self._menu_copy_totp(entry_id)
+        return menu, handlers
 
-        handler = handlers.get(chosen)
-        if handler:
-            handler()
+    @_require_unlocked
+    def _menu_copy_username(self, entry_id: int) -> None:
+        """延迟解密并复制条目账号；锁定态守卫避免访问已清零密钥。"""
+        entry = self._entry_mgr.get_entry(entry_id)
+        if entry and entry.username:
+            self._clipboard.copy_text(entry.username)
+            Toast.show(self, '已复制账号', Toast.SUCCESS, duration=MS_TOAST_SHORT)
+
+    @_require_unlocked
+    def _menu_copy_password(self, entry_id: int) -> None:
+        """延迟解密并复制条目密码；仅当右键的是当前详情条目时触发复制反馈。"""
+        entry = self._entry_mgr.get_entry(entry_id)
+        if entry and entry.password:
+            self._clipboard.copy_text(entry.password)
+            current = self._detail_panel.current_entry
+            if current is not None and current.id == entry_id:
+                self._detail_panel.copy_feedback.emit()
+            Toast.show(self, '已复制密码', Toast.SUCCESS, duration=MS_TOAST_SHORT)
+
+    @_require_unlocked
+    def _menu_copy_totp(self, entry_id: int) -> None:
+        """生成并复制 TOTP 验证码；UI 层不接触明文 TOTP secret。"""
+        code = self._entry_mgr.totp.generate(entry_id)
+        if code:
+            self._clipboard.copy_text(code)
+            Toast.show(self, '验证码已复制', Toast.SUCCESS, duration=MS_TOAST_SHORT)
+        else:
+            Toast.show(self, '验证码生成失败，请检查密钥', Toast.ERROR, duration=MS_TOAST_DEFAULT)
 
     def _on_category_context_menu(self, pos: QPoint) -> None:
         """分类右键菜单。"""
@@ -820,11 +859,10 @@ class _MainWindowFiltersMixin(QMainWindow):
         dialog.saved.connect(self._refresh_after_entry_change)
         dialog.exec()
 
+    @_require_unlocked
     def _edit_entry(self, entry_id: int) -> None:
         # 延迟回调（仪表盘 singleShot fix_requested）可能在锁定后触发，
-        # 守卫避免锁定态访问已清零密钥导致崩溃
-        if self._locked_ui:
-            return
+        # @_require_unlocked 守卫避免锁定态访问已清零密钥导致崩溃
         entry = self._entry_mgr.get_entry(entry_id)
         if not entry:
             return
@@ -850,9 +888,8 @@ class _MainWindowFiltersMixin(QMainWindow):
             if entry:
                 self._edit_entry(entry.id)
 
+    @_require_unlocked
     def _delete_entry(self, entry_id: int) -> None:
-        if self._locked_ui:
-            return
         entry = self._entry_mgr.get_entry(entry_id)
         if not entry:
             return

@@ -8,6 +8,8 @@ from PyQt6.QtCore import QObject, QTimer
 from PyQt6.QtGui import QClipboard
 from PyQt6.QtWidgets import QApplication
 
+from ..resources.constants import CLIPBOARD_CLEAR_SECONDS_DEFAULT
+
 # 模块级会话级 key，用于常数时间比对剪贴板内容是否仍为上次写入值（非认证用途）。
 # 每次进程启动随机生成，避免硬编码可被预测；此处不涉及跨进程认证或防篡改——
 # 仅在 _clear_clipboard 中以 hmac.compare_digest 比对"剪贴板当前内容是否仍是
@@ -30,7 +32,7 @@ class ClipboardManager(QObject):
     MainWindow 持有，随其生命周期一同回收。
     """
 
-    def __init__(self, clear_seconds: int = 30):
+    def __init__(self, clear_seconds: int = CLIPBOARD_CLEAR_SECONDS_DEFAULT):
         super().__init__()
         self._clear_seconds = clear_seconds
         # text() 与 X11 Primary Selection 独立记录 hash：Linux 下二者可被分别

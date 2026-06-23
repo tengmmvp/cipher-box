@@ -148,3 +148,42 @@ def test_different_entries_produce_different_macs():
     mac_b = signer.sign(entry_b)
 
     assert mac_a != mac_b
+
+
+def test_payload_length_prefix_prevents_ciphertext_collision():
+    """长度前缀拼接消除密文歧义：朴素 '|' 拼接会碰撞的密文对产生不同载荷。
+
+    回归守护 ``_payload`` 的 ``f'{len(p)}:{p}'`` 长度前缀设计——若未来误改为
+    固定分隔符拼接，此测试会失败（两 entry 载荷将相同，签名亦相同）。
+    """
+    # 朴素 '|' join 下两 entry 的密文字段拼接完全相同（歧义场景）：
+    # ('a', 'b|c') 与 ('a|b', 'c') 的 u|p 拼接均为 'a|b|c'，字段边界歧义
+    entry_a = _make_entry(username='a', password='b|c')
+    entry_b = _make_entry(username='a|b', password='c')
+
+    def naive_concat(entry: RawEntry) -> str:
+        return '|'.join([
+            entry.username, entry.password, entry.notes,
+            entry.totp_secret, entry.custom_fields,
+        ])
+
+    assert naive_concat(entry_a) == naive_concat(entry_b)  # 朴素拼接确有歧义
+
+    # 长度前缀载荷不同 → _enc_hash 不同 → 签名不同
+    assert MetadataSigner._payload(entry_a) != MetadataSigner._payload(entry_b)
+
+
+def test_verify_detects_ciphertext_field_tamper():
+    """密文字段（password）被置换/篡改后 verify 失败。
+
+    _enc_hash 绑定密文防止密文置换/回滚攻击；现有篡改测试仅覆盖明文 title，
+    此测试补齐密文字段篡改的回归守护。
+    """
+    master_key = b'test-key-for-cipher-tamper'
+    signer = MetadataSigner(domain_key=MetadataSigner.compute_domain_key(master_key))
+    entry = _make_entry(password='cb2:original-ciphertext')
+    entry.metadata_mac = signer.sign(entry)
+    # 模拟密文置换/回滚攻击：仅改密文字段，不改明文元数据
+    entry.password = 'cb2:attacker-ciphertext'
+    with pytest.raises(VaultIntegrityError):
+        signer.verify(entry)

@@ -14,18 +14,17 @@
 from src.business.services import key_manager as key_manager_module
 from src.business.services.key_manager import KeyManager
 
-# ---------------------------------------------------------------------------
-# 辅助函数：生成 32 字节 bytearray 测试密钥，对应 AES-256 宽度，便于真实清零验证
-# ---------------------------------------------------------------------------
+# 辅助函数：生成 32 字节 bytearray 测试密钥，对应 AES-256 宽度，
+# 便于真实清零验证
+
 
 def _make_bytearray_key(value: int = 0xAB) -> bytearray:
     """构造内容为 value 的 32 字节 bytearray 测试密钥。"""
     return bytearray([value] * 32)
 
 
-# ---------------------------------------------------------------------------
-# 1. activate 后三个属性正确返回传入值（property 返回 bytes 副本，值相等）
-# ---------------------------------------------------------------------------
+# activate 后三个属性正确返回传入值（property 返回 bytes 副本，值相等）
+
 
 def test_activate_sets_all_three_fields():
     """activate 原子设置后，key/snapshot_key/key_epoch 返回各自传入值。"""
@@ -44,9 +43,8 @@ def test_activate_sets_all_three_fields():
     assert km.key_epoch == epoch
 
 
-# ---------------------------------------------------------------------------
-# 2. 单字段更新：update_key/update_snapshot_key/update_epoch
-# ---------------------------------------------------------------------------
+# 单字段更新：update_key/update_snapshot_key/update_epoch
+
 
 def test_update_key_changes_only_key():
     """update_key 仅替换 key，snapshot_key 与 key_epoch 保持不变。"""
@@ -92,9 +90,8 @@ def test_update_epoch_changes_only_epoch():
     assert km.key_epoch == 42
 
 
-# ---------------------------------------------------------------------------
-# 3. clear 后三个属性均为 None
-# ---------------------------------------------------------------------------
+# clear 后三个属性均为 None
+
 
 def test_clear_sets_all_fields_none():
     """clear 释放全部引用，key/snapshot_key/key_epoch 均为 None。"""
@@ -108,60 +105,60 @@ def test_clear_sets_all_fields_none():
     assert km.key_epoch is None
 
 
-# ---------------------------------------------------------------------------
-# 4. clear 真正清零 bytearray 密钥，验证 secure_zero_buffer 被调用且内容归零
-# ---------------------------------------------------------------------------
+# clear 真正清零 bytearray 密钥，验证 secure_zero_buffer 被调用且内容归零
 
-def test_clear_zeroes_bytearray_key_content():
-    """clear 对 bytearray 主密钥真正清零：clear 后该 bytearray 内容全为 0。
 
-    bytearray 是可变缓冲区，secure_zero_buffer 会通过 ctypes.memset 原地清零。
-    KeyManager 内部以 bytearray 持有（_to_bytearray 对 bytearray 直接返回原对象），
-    因此传入同一 bytearray 对象，clear 后其内容应变为全 0 字节。
+def test_clear_zeroes_internal_key_content(monkeypatch):
+    """clear 经 secure_zero_buffer 原地清零 KeyManager 内部的 bytearray 副本。
+
+    _to_bytearray 总复制：KeyManager 持有独立副本（与调用方传入的对象解耦），
+    clear 时 secure_zero_buffer 对内部副本 ctypes.memset 原地清零。用 spy 捕获
+    被清零的对象，验证清零后内容全 0。
     """
-    km = KeyManager()
-    key = _make_bytearray_key(0xAB)
-    snapshot = _make_bytearray_key(0xCD)
-    km.activate(key, snapshot, 1)
+    zeroed: list[bytearray] = []
+    original = key_manager_module.secure_zero_buffer
 
+    def spy(data: bytearray) -> None:
+        original(data)
+        zeroed.append(data)
+
+    monkeypatch.setattr(key_manager_module, 'secure_zero_buffer', spy)
+
+    km = KeyManager()
+    km.activate(_make_bytearray_key(0xAB), _make_bytearray_key(0xCD), 1)
     km.clear()
 
-    assert bytes(key) == b'\x00' * len(key)
-    assert bytes(snapshot) == b'\x00' * len(snapshot)
+    assert len(zeroed) == 2
+    for buf in zeroed:
+        assert bytes(buf) == b'\x00' * len(buf)
 
 
 def test_clear_invokes_secure_zero_buffer_for_each_secret(monkeypatch):
-    """clear 对每个非空密钥调用 secure_zero_buffer 清零逻辑。
+    """clear 对每个非空密钥的内部副本调用 secure_zero_buffer。
 
-    通过 monkeypatch 替换 secure_zero_buffer，记录被调用时传入的对象身份，
-    确保主密钥与快照密钥均经过清零路径，且清零发生在属性被置 None 之前。
-    KeyManager 内部持有传入的 bytearray（身份共享），故 id 与传入对象一致。
+    _to_bytearray 总复制后，被清零的是 KeyManager 内部副本（身份与传入对象不同），
+    故断言调用次数（主密钥 + 快照密钥各一次）而非传入对象身份。
     """
     km = KeyManager()
-    key = _make_bytearray_key(0x11)
-    snapshot = _make_bytearray_key(0x22)
-    km.activate(key, snapshot, 1)
+    km.activate(_make_bytearray_key(0x11), _make_bytearray_key(0x22), 1)
 
-    called_with: list[int] = []
+    call_count = 0
     original = key_manager_module.secure_zero_buffer
 
-    def spy(data):
-        # 记录被清零对象的 id，并委托原函数完成真实清零
-        called_with.append(id(data))
+    def spy(data: bytearray) -> None:
+        nonlocal call_count
+        call_count += 1
         original(data)
 
     monkeypatch.setattr(key_manager_module, 'secure_zero_buffer', spy)
 
     km.clear()
 
-    assert id(key) in called_with
-    assert id(snapshot) in called_with
-    assert len(called_with) == 2
+    assert call_count == 2
 
 
-# ---------------------------------------------------------------------------
-# 5. 重复 activate→clear→activate 的状态转换
-# ---------------------------------------------------------------------------
+# 重复 activate→clear→activate 的状态转换
+
 
 def test_repeated_activate_clear_cycle():
     """activate→clear→activate 状态转换：clear 后能正确激活一组全新密钥材料。"""
@@ -183,9 +180,8 @@ def test_repeated_activate_clear_cycle():
     assert km.key_epoch == 2
 
 
-# ---------------------------------------------------------------------------
-# 6. 单字段置空，传入 None
-# ---------------------------------------------------------------------------
+# 单字段置空，传入 None
+
 
 def test_update_key_none():
     """update_key(None) 将主密钥置空，其余字段不受影响。"""
@@ -240,9 +236,8 @@ def test_clear_on_empty_manager_is_noop_safe():
     assert km.key_epoch is None
 
 
-# ---------------------------------------------------------------------------
-# 7. property 返回 bytes 副本，不暴露内部 bytearray 身份
-# ---------------------------------------------------------------------------
+# property 返回 bytes 副本，不暴露内部 bytearray 身份
+
 
 def test_key_property_returns_independent_copy():
     """key property 返回 bytes 副本，clear 内部 bytearray 不影响已发出的副本。
@@ -259,3 +254,27 @@ def test_key_property_returns_independent_copy():
     # 清零内部 bytearray 后，先前发出的副本内容不变
     km.clear()
     assert key_copy == bytes([0x11] * 32)
+
+
+# activate 总复制：调用方可独立清零自己的 bytearray，不影响 KeyManager 内部副本
+
+
+def test_activate_copies_caller_can_zero_independently():
+    """activate 总复制：调用方清零自己的 bytearray 不影响 KeyManager 内部副本。
+
+    A2 契约：改密/恢复路径生成 new_snapshot_key(bytearray) 传给 activate /
+    apply_snapshot_key 后，可在 finally 清零自己的引用而不破坏 KeyManager 状态
+    （KeyManager 持有独立副本）。
+    """
+    km = KeyManager()
+    key = _make_bytearray_key(0x11)
+    snapshot = _make_bytearray_key(0x22)
+    km.activate(key, snapshot, 1)
+
+    # 调用方清零自己的引用（模拟 finally secure_zero_buffer）
+    key[:] = b'\x00' * 32
+    snapshot[:] = b'\x00' * 32
+
+    # KeyManager 内部副本不受影响
+    assert km.key == bytes([0x11] * 32)
+    assert km.snapshot_key == bytes([0x22] * 32)

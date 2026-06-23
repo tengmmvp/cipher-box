@@ -50,7 +50,8 @@ class KeyManager:
         与 clear() 的清零语义对齐：旧密钥（bytearray）被新值覆盖前原地清零，
         收缩改密/恢复后旧密钥仍可被进程内存 dump 读取的窗口。
         old is not new 用于跳过“传入的正是当前持有的同一 bytearray”的情形
-        （_to_bytearray 对 bytearray 直接返回、所有权转移），避免清零掉将要使用的值。
+        （_to_bytearray 总复制使 new 总是新对象，old 非空时该条件恒成立；保留判断
+        作为防御性不变量），避免清零掉将要使用的值。
         """
         old = self._key
         new = self._to_bytearray(key)
@@ -87,17 +88,15 @@ class KeyManager:
     def _to_bytearray(value: bytearray | bytes | None) -> bytearray | None:
         """确保密钥以 bytearray 持有，使 secure_zero_buffer 能真正原地清零。
 
-        所有权契约：传入的 bytearray 直接返回，所有权转移给 KeyManager——后续
-        clear() 会原地清零该对象，调用方此后不得继续使用传入的引用（若需保留
-        密钥应自行复制；key/snapshot_key property 读取始终返回 bytes 副本，不受
-        清零影响，test_clear_zeroes_bytearray_key_content 据此验证传入对象被清零）。
-        bytes 不可变，转为 bytearray 副本持有，清零作用于该副本。AESGCM 构造时
-        仍会复制密钥到 OpenSSL C 层，该副本由 EncryptionEngine.clear_cache 间接管理。
+        总是复制：KeyManager 持有独立副本，与调用方传入的 bytearray 解耦。调用方
+        （如改密/恢复路径的 new_snapshot_key）可在 activate/apply_snapshot_key 之后
+        自行清零自己的引用而不破坏 KeyManager 状态——双方各自收缩驻留面，避免
+        「所有权转移致 finally 清零破坏激活态」的陷阱。KeyManager.clear 清零内部
+        副本。bytes 不可变，bytearray(value) 同样复制。AESGCM 构造时仍会复制密钥到
+        OpenSSL C 层，该副本由 EncryptionEngine.clear_cache 间接管理。
         """
         if value is None:
             return None
-        if isinstance(value, bytearray):
-            return value
         return bytearray(value)
 
     def clear(self) -> None:

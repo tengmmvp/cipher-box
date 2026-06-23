@@ -5,6 +5,8 @@ import pytest
 from src.business.services.entry_validation import validate_plain_entry
 from src.models import (
     ENTRY_FIELD_LIMITS,
+    MAX_CUSTOM_FIELD_NAME,
+    MAX_CUSTOM_FIELD_VALUE,
     MAX_CUSTOM_FIELDS_PER_ENTRY,
     CustomField,
     Entry,
@@ -115,3 +117,40 @@ def test_validate_plain_entry_accepts_within_limit():
     )
     # 不抛异常即通过
     validate_plain_entry(entry)
+
+
+def test_validate_plain_entry_rejects_custom_field_name_too_long():
+    """自定义字段名称超长应拒绝（与 CustomField.from_dict strict 对齐）。
+
+    回归守护：编辑路径经 Entry(...) 直接构造绕过 from_dict，此前缺单字段长度
+    校验，导致「编辑可存超长值、导入拒绝」的往返断裂——编辑存的超长值导出
+    再导入会被 from_dict 跳过整条。
+    """
+    entry = Entry(
+        title='t', username='u', password='p',
+        custom_fields=[CustomField(name='n' * (MAX_CUSTOM_FIELD_NAME + 1), value='v')],
+    )
+    with pytest.raises(ValueError, match='名称'):
+        validate_plain_entry(entry)
+
+
+def test_validate_plain_entry_rejects_custom_field_value_too_long():
+    """自定义字段值超长应拒绝（与 CustomField.from_dict strict 对齐）。"""
+    entry = Entry(
+        title='t', username='u', password='p',
+        custom_fields=[CustomField(name='n', value='v' * (MAX_CUSTOM_FIELD_VALUE + 1))],
+    )
+    with pytest.raises(ValueError, match='值'):
+        validate_plain_entry(entry)
+
+
+def test_validate_plain_entry_accepts_custom_field_at_length_limit():
+    """自定义字段 name/value 恰好等于上限应通过（边界守护）。"""
+    entry = Entry(
+        title='t', username='u', password='p',
+        custom_fields=[CustomField(
+            name='n' * MAX_CUSTOM_FIELD_NAME,
+            value='v' * MAX_CUSTOM_FIELD_VALUE,
+        )],
+    )
+    validate_plain_entry(entry)  # 不抛即通过

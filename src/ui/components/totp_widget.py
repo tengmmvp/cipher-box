@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import time as _time
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QTimer, pyqtSignal
@@ -20,6 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ...crypto.totp import TOTPGenerator
 from ..resources.constants import BTN_TOTP_COPY, FONT_FAMILY_MONOSPACE
 from ..resources.icons import COPY, set_icon_with_text
 from ..resources.theme_colors import c
@@ -95,7 +95,9 @@ class TOTPWidget(QWidget):
 
     def resume_if_active(self) -> None:
         """面板显示时若当前有条目含 TOTP 则重启定时器。"""
-        if self._entry_id:
+        # 仅当 TOTP 区域仍存在（_code_label 非 None）时重启；_clear_content 后
+        # _code_label=None，此时 start 会被 _refresh 的守卫立即 stop，产生无谓启停。
+        if self._entry_id and self._code_label is not None:
             self._timer.start(MS_TOTP_REFRESH)
 
     # ---- 内部方法 ----
@@ -183,9 +185,10 @@ class TOTPWidget(QWidget):
             self._timer.stop()
             return
         self._code_label.setText(code)
-        if self._bar:
-            remaining = self._period - (int(_time.time()) % self._period)
-            self._bar.setValue(remaining)
+        if self._bar is not None:
+            # 复用 TOTPGenerator.get_remaining_seconds：其内部对 period<=0 回退默认值，
+            # 消除本处独立取模的除零风险，并与倒计时计算保持单一来源。
+            self._bar.setValue(TOTPGenerator.get_remaining_seconds(period=self._period))
 
     def _copy_code(self) -> None:
         """复制当前 TOTP 验证码，始终取最新值。"""

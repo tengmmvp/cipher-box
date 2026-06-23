@@ -1,5 +1,3 @@
-from tests.helpers import make_entry_manager
-
 """备份恢复边界场景测试。
 
 覆盖损坏文件、截断数据、超大备份、错误密码等异常输入下
@@ -25,6 +23,7 @@ from src.business.services.backup_header_codec import (
 from src.crypto.master_key import DEFAULT_KDF_PARAMS, MasterKeyManager
 from src.exceptions import BackupError
 from src.models import Entry
+from tests.helpers import make_entry_manager
 
 
 class TestBackupCorruption:

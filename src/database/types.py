@@ -10,7 +10,7 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING, NamedTuple, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from ..models import RawEntry
+    from ..models import Category, PasswordHistory, RawEntry
 
 
 class VerifyMode(Enum):
@@ -57,6 +57,126 @@ class ConnectionProvider(Protocol):
     def assert_encrypted(self, value: str, field_name: str) -> None: ...
     def secure_checkpoint(self) -> None: ...
     def transaction(self) -> AbstractContextManager[None]: ...
+
+
+@runtime_checkable
+class EntryStore(Protocol):
+    """业务层条目与密码历史读写所需的数据接口切片。
+
+    DatabaseManager 满足此协议；Business 层（EntryManager / BackupRestoreManager 等）
+    经此协议访问条目数据，替代依赖具体 DatabaseManager，收窄暴露面（不含
+    ``set_write_guard`` 等装配期 setter），并为测试替身提供明确契约。
+    """
+
+    def get_entries(
+        self, deleted_only: bool = False, include_deleted: bool = False,
+        category_id: int | None = None, favorite_only: bool = False,
+        limit: int | None = None, after_id: int | None = None,
+        sort_by_updated: bool = False, verify: VerifyMode = VerifyMode.LENIENT,
+    ) -> list[RawEntry]: ...
+
+    def get_entry(self, entry_id: int) -> RawEntry | None: ...
+
+    def get_entry_count(self, include_deleted: bool = False) -> int: ...
+
+    def get_entries_by_ids(self, entry_ids: list[int]) -> list[RawEntry]: ...
+
+    def add_entry(self, entry: RawEntry, preserve_metadata: bool = False) -> int: ...
+
+    def add_entries_batch(
+        self, entries: list[RawEntry], *, preserve_metadata: bool = False,
+    ) -> dict[str, int]: ...
+
+    def update_entry(self, entry: RawEntry, preserve_updated_at: bool = False) -> None: ...
+
+    def update_entries_batch(self, rows: list[ReEncryptedEntry]) -> None: ...
+
+    def soft_delete_entry(self, entry_id: int) -> bool: ...
+
+    def restore_entry(self, entry_id: int) -> bool: ...
+
+    def permanent_delete_entry(self, entry_id: int) -> None: ...
+
+    def empty_trash(self) -> None: ...
+
+    def clear_vault_data(self) -> None: ...
+
+    def add_password_history(
+        self, entry_id: int, old_password_enc: str, changed_at: str = '',
+    ) -> None: ...
+
+    def add_password_history_batch(
+        self, entry_id: int, items: list[tuple[str, str]],
+    ) -> None: ...
+
+    def get_password_history(self, entry_id: int) -> list[PasswordHistory]: ...
+
+    def get_all_password_history(self) -> list[PasswordHistory]: ...
+
+    def get_all_password_history_batch(
+        self, after_id: int = 0, limit: int = 200,
+    ) -> list[PasswordHistory]: ...
+
+    def get_password_history_count(self, entry_id: int) -> int: ...
+
+    def update_password_history_batch(self, rows: list[ReEncryptedHistory]) -> None: ...
+
+
+@runtime_checkable
+class CategoryStore(Protocol):
+    """业务层分类读写所需的数据接口切片。
+
+    ``delete_category`` 是跨表编排方法（事务内清条目分类签名 + 删分类），实现方
+    须保证在活动事务内调用。
+    """
+
+    def get_categories(self) -> list[Category]: ...
+
+    def get_category(self, category_id: int) -> Category | None: ...
+
+    def add_category(self, category: Category) -> int: ...
+
+    def update_category(self, category: Category) -> None: ...
+
+    def delete_category(self, category_id: int) -> None: ...
+
+    def get_category_entry_count(self, category_id: int) -> int: ...
+
+    def get_category_entry_counts(self) -> dict[int, int]: ...
+
+
+@runtime_checkable
+class VaultDataConnection(Protocol):
+    """业务层事务 / 连接 / 元数据所需的基础设施切片。
+
+    Business 层经此协议访问事务与元数据，不经由 ``set_write_guard`` /
+    ``set_entry_integrity_handlers`` 等装配期 setter（仅 VaultManager 装配根使用）。
+    与 ``ConnectionProvider``（Repository 消费）平行，二者成员有重叠但消费方不同。
+    """
+
+    @property
+    def in_transaction(self) -> bool: ...
+
+    def transaction(self) -> AbstractContextManager[None]: ...
+
+    def get_meta(self, key: str) -> str | None: ...
+
+    def get_meta_batch(self, keys: list[str]) -> dict[str, str | None]: ...
+
+    def set_meta(self, key: str, value: str) -> None: ...
+
+    def secure_checkpoint(self) -> None: ...
+
+
+@runtime_checkable
+class VaultDataStore(EntryStore, CategoryStore, VaultDataConnection, Protocol):
+    """Business 层访问数据库的统一协议：EntryStore + CategoryStore + VaultDataConnection。
+
+    DatabaseManager 满足此协议；Business manager 经 ``VaultManager.db`` 拿到此协议
+    视图，收窄暴露面（不含 ``set_write_guard`` / ``set_entry_integrity_handlers``
+    等装配期 setter，仅 VaultManager 内部经 ``self._db`` 使用）。替代各 manager
+    直接依赖具体 DatabaseManager，便于测试替身与未来替换实现。
+    """
 
 
 class ReEncryptedEntry(NamedTuple):

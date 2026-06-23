@@ -80,7 +80,7 @@ class AboutDialog(QDialog):
         btn_layout.addStretch()
         close_btn = QPushButton('关闭')
         close_btn.setFixedSize(*BTN_DIALOG)
-        close_btn.clicked.connect(self.close)
+        close_btn.clicked.connect(self.accept)
         btn_layout.addWidget(close_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)

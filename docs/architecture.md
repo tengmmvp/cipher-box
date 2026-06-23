@@ -15,7 +15,7 @@
 | Data | `src/database/` | SQLite 持久化（schema、Repository、装饰器、连接/事务） | models |
 | Business | `src/business/` | 编排 Crypto + Data，持有密钥与缓存 | Crypto、Data |
 | UI | `src/ui/` | PyQt6 桌面 GUI，经 Business 访问数据 | Business |
-| 共享 | `src/utils/`、`src/models.py`、`src/exceptions.py`、`src/config.py` | 工具、模型、异常、配置 | — |
+| 共享 | `src/utils/`、`src/models.py`、`src/exceptions.py`、`src/config.py`、`src/logging_config.py` | 工具、模型、异常、配置、脱敏日志 | — |
 
 **反向依赖禁止**：Crypto 层绝不依赖 Business/Data；Data 层不了解密钥（只处理密文）。
 
@@ -32,8 +32,9 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
     （`PasswordHistoryService`）。
   - `EntryCacheManager`：摘要/分类名/标签/TOTP secret 多级缓存（LRU + epoch 失效）。
   - `EntryChangeBus`：统一「变更→缓存失效→回调」管线，支持 crypto_id 单条精细失效。
-  - `ImportExportManager`：CSV/JSON/浏览器导入导出，经 `@_transactional_import`
-    保证写入原子性。
+  - `ImportExportManager`：CSV/JSON/浏览器导入导出，格式解析拆分至 `managers/importers/`
+    策略类（JSON/CSV/KeePass/Bitwarden 各一）；导入写入经 `_run_import_transaction`
+    的 epoch 守卫事务保证原子性。
   - `BackupRestoreManager`：可移植二进制加密备份格式；经 `restore_points` property
     暴露 `RestorePointManager`（恢复点统计/清理）。
 - **`services/`（无状态业务服务：加解密、校验、分析等，密钥经 vault 引用现取）**
@@ -70,7 +71,7 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
 
 ### 2.3 加密字段集单一来源
 `crypto_utils.SENSITIVE_ENCRYPTED_FIELDS`（8 字段）是加密字段的单一事实来源，
-被 `key_rotation` 重加密、加解密辅助引用。`MetadataSigner._payload` 对全部 8 个
+被 `re_encryption` 重加密、加解密辅助引用。`MetadataSigner._payload` 对全部 8 个
 加密字段签名（明文字段 title/url/tags 直接进签名 JSON，密文字段用 `_enc_hash`
 绑定），无漏签。`tests/test_field_consistency.py` 守护字段集一致性。
 
@@ -124,6 +125,10 @@ HMAC-SHA256 签名（`metadata_mac` 列）：
 - **固定头**：magic + flags + Argon2 参数 + salt，随后 AES-GCM 加密的 JSON payload。
 - **恢复前快照**：恢复前用 `snapshot_key` 加密全量明文生成 `pre_restore_*.cbox`，
   恢复失败可回滚。恢复/改密轮换 `snapshot_key` 并清理旧快照以收缩泄漏面。
+- **snapshot_key 的安全等价性**：`snapshot_key` 经主密钥加密后存于
+  `vault_meta.snapshot_key_enc`，其「独立性」只是名义上的——**主密码一旦泄露，
+  所有 snapshot 备份随之失守**（含已删除条目明文）。轮换 `snapshot_key` 仅防「旧
+  snapshot 文件被单独窃取后用当前主密码解密」，不构成独立于主密码的防线。
 - **启动重试清理**：`purge_restore_points` 在应用启动时重试删除之前 purge 失败的
   `pre_restore_*.cbox` 残留（重启后占用进程已释放）。
 

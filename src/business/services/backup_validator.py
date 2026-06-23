@@ -12,14 +12,16 @@ from ...exceptions import BackupError, PayloadTooLargeError
 from ...models import (
     ENTRY_TYPES,
     MAX_CUSTOM_FIELDS_PER_ENTRY,
+    MAX_ENTRIES_LIMIT,
+    MAX_ENTRY_PAYLOAD_SIZE,
     MAX_PASSWORD_HISTORY,
     is_real_int,
 )
 
 logger = logging.getLogger(__name__)
 
-MAX_BACKUP_ENTRIES = 50_000
-MAX_ENTRY_JSON_SIZE = 2 * 1024 * 1024
+MAX_BACKUP_ENTRIES = MAX_ENTRIES_LIMIT
+MAX_ENTRY_JSON_SIZE = MAX_ENTRY_PAYLOAD_SIZE
 MAX_TEXT_FIELD_SIZE = 1024 * 1024
 MAX_HISTORY_PER_ENTRY = MAX_PASSWORD_HISTORY * 2  # 每条目历史上限，2 倍余量
 
@@ -29,13 +31,18 @@ def validate_restore_data(data: dict[str, Any]) -> None:
 
     if data.get('format') != BACKUP_FORMAT:
         raise BackupError('备份格式标识无效')
-    # 版本检查：仅支持 v1 格式。
     version = data.get('version')
     if version != 1:
         raise BackupError(f'不支持的备份格式版本：{version}（当前支持 v1）')
-    entries = data.get('entries', [])
-    categories = data.get('categories', [])
-    history = data.get('password_history', [])
+    # 严格校验顶层必备键，缺键（如攻击者构造的残缺备份缺 entries）直接拒绝，
+    # 不再以 data.get(..., []) 默认空列表静默放行。允许额外键（备份元数据等）。
+    required_top_keys = {'format', 'version', 'entries', 'categories', 'password_history'}
+    missing = required_top_keys - set(data)
+    if missing:
+        raise BackupError(f'备份数据缺少必备字段：{sorted(missing)}')
+    entries = data['entries']
+    categories = data['categories']
+    history = data['password_history']
     if not all(isinstance(items, list) for items in (entries, categories, history)):
         raise BackupError('备份数据结构无效')
     if len(entries) > MAX_BACKUP_ENTRIES:
@@ -84,9 +91,12 @@ def validate_entry_fields(item: dict[str, Any], category_ids: set[int]) -> None:
         'is_deleted', 'password_strength', 'entry_type', 'totp_secret',
         'created_at', 'updated_at', 'deleted_at', 'password_changed_at',
     }
+    # 先 require_keys 校验键集（O(1) 项数，不触及值），再做字节估算——避免 item
+    # 含超大非必填键时，str(v) 对超大值字符串化触发 DoS。require_keys 后 item 仅含
+    # 合法键，字节估算在合法键集上进行。
+    require_keys(item, required_entry_keys, '备份条目')
     if sum(len(str(v).encode('utf-8')) for v in item.values()) > MAX_ENTRY_JSON_SIZE:
         raise BackupError('备份条目格式或大小无效')
-    require_keys(item, required_entry_keys, '备份条目')
 
     for field in (
         'title', 'username', 'password', 'url', 'tags', 'notes',

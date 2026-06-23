@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ...business.entry_type_schema import all_special_fields_by_storage
 from ...utils.memory import mark_secret_discarded
 from ..resources.constants import BTN_COPY, FONT_FAMILY_MONOSPACE
 from ..resources.icons import COPY, set_icon
@@ -30,14 +31,10 @@ from .secret_field import make_secret_field_row
 if TYPE_CHECKING:
     from ...models import Entry
 
-# 模板字段名 → 显示标签，避免每次 render 重建字典
+# 模板字段名 → 显示标签，从 entry_type_schema 单一源派生（消除平行第三源）。
 _TEMPLATE_FIELD_LABELS = {
-    '_card_holder': '持卡人', '_card_number': '卡号',
-    '_card_expiry': '有效期', '_card_cvv': 'CVV',
-    '_id_fullname': '姓名', '_id_email': '邮箱',
-    '_id_phone': '电话', '_id_address': '地址',
-    '_server_host': '主机', '_server_port': '端口',
-    '_server_protocol': '协议',
+    spec.storage_name: spec.label
+    for spec in all_special_fields_by_storage().values()
 }
 
 

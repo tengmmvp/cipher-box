@@ -35,14 +35,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...business.managers.backup_restore import BackupRestoreManager
-from ...business.managers.entry_cache import EntryCacheManager
-from ...business.managers.entry_change_bus import EntryChangeBus
-from ...business.managers.entry_manager import EntryManager
-from ...business.managers.import_export import ImportExportManager
-from ...business.managers.vault_manager import VaultManager
-from ...business.services.security_analyzer import SecurityAnalyzer
-from ...config import MAX_WINDOW_GEOMETRY_BYTES, ConfigManager
+from ...business.composition import BusinessContext
+from ...config import MAX_WINDOW_GEOMETRY_BYTES
 from ..components.detail_panel import DetailPanel
 from ..components.entry_list_widget import EntryItemDelegate, EntryListModel
 from ..components.tray_icon import TrayIcon
@@ -84,12 +78,17 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
 
     lock_requested = pyqtSignal()
 
-    def __init__(self, config: ConfigManager, vault: VaultManager) -> None:
+    def __init__(self, ctx: BusinessContext) -> None:
         super().__init__()
-        self._config = config
-        self._vault = vault
-        self._create_managers()
-        self._register_callbacks()
+        self._config = ctx.config
+        self._vault = ctx.vault
+        self._cache = ctx.cache
+        self._change_bus = ctx.change_bus
+        self._entry_mgr = ctx.entry_mgr
+        self._security = ctx.security
+        self._import_export = ctx.import_export
+        self._backup = ctx.backup
+        self._create_ui_controllers()
         self._current_filter = 'all'
         self._current_category_id = None
         self._current_search = ''
@@ -102,6 +101,11 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._status_timer.setInterval(MS_STATUS_BAR_DEBOUNCE)
         self._status_timer.timeout.connect(self._update_status_bar)
         self._status_worker: BackgroundWorker | None = None
+        # _entry_worker：当前活跃的条目刷新 worker（最新启动）；_entry_workers：所有
+        # 运行中 worker（含历史未结束的）。二者经 _start_async_entry_refresh 的 add 与
+        # release 回调同步维护——add 时同时置活跃与加入集合，release 时同时移除。
+        # cancel 路径只置空活跃（worker 异步结束后由 release 回调清集合），shutdown
+        # 清整个集合。两变量语义不同故保留双跟踪，非冗余。
         self._entry_worker: BackgroundWorker | None = None
         self._entry_workers: set[BackgroundWorker] = set()
         self._entry_refresh_generation = 0
@@ -136,34 +140,24 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             app.installEventFilter(self)
         self._refresh_entries()
 
-    def _create_managers(self) -> None:
-        """组装业务层管理器与控制器。
+    def _create_ui_controllers(self) -> None:
+        """组装依赖 Qt 线程亲和性或 UI 配置的控制器。
 
-        将依赖组装从 __init__ 提取，使构造函数聚焦于初始化顺序编排，
-        管理器的创建与连线集中于此便于审计与调整。
+        纯 Python business manager 由 BusinessContext 注入（见 composition.py）；
+        此处仅创建 QObject 控制器（AutoLock/AutoBackup/Clipboard）与依赖 UI 配置的
+        控制器（EntryList/Sidebar），它们有线程亲和性或需 config，不适合放入
+        frozen dataclass。跨 manager 连线（锁定/变更回调）已在 build_business_context
+        完成。
         """
-        self._cache = EntryCacheManager(self._vault)
-        self._change_bus = EntryChangeBus(self._cache)
-        self._entry_mgr = EntryManager(self._vault, self._cache, self._change_bus)
-        self._security = SecurityAnalyzer(self._vault, self._cache)
         self._entry_list_ctrl = EntryListController(
             self._entry_mgr, self._security, self._config,
         )
         self._sidebar_ctrl = SidebarController(self._entry_mgr, self._config)
-        self._import_export = ImportExportManager(self._entry_mgr)
-        self._backup = BackupRestoreManager(self._vault, self._entry_mgr)
         self._auto_backup = AutoBackupController(self._vault, self._backup, self._config)
         self._auto_lock = AutoLockController(self._vault, self._config, self.lock_requested.emit)
         self._clipboard = ClipboardManager(
             self._config.get_safe('clipboard_clear_seconds', CLIPBOARD_CLEAR_SECONDS_DEFAULT)
         )
-
-    def _register_callbacks(self) -> None:
-        """注册锁定与条目变更回调，事件驱动地失效相关缓存。"""
-        # 注册锁定回调，确保 lock() 时自动清除 entry 缓存
-        self._vault.register_on_lock(self._entry_mgr.invalidate_caches)
-        # 条目变更时自动失效安全分析缓存，通过事件驱动取代手动调用
-        self._entry_mgr.register_on_change(self._security.invalidate_cache)
 
     def _setup_ui(self) -> None:
         self.setWindowTitle('CipherBox')
@@ -686,20 +680,31 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
                 # 用 error 级确保生产默认 INFO 输出仍可见，便于发现静默失效。
                 logger.error("崩溃兜底紧急清空剪贴板失败，明文可能残留", exc_info=True)
 
-    def emergency_cancel_workers(self) -> None:
-        """紧急取消后台 worker（不等待），供 app 层 aboutToQuit 等不阻塞退出路径。
+    def emergency_cancel_workers(self, *, wait_timeout_ms: float = 0.0) -> None:
+        """紧急取消后台 worker，供 app 层 aboutToQuit 等不阻塞退出路径。
 
-        与 ``_shutdown_workers`` 的区别：仅取消不等待，避免阻塞退出；worker 收到
-        取消标志后尽快退出协作循环，缩短持密钥解密的残留窗口。
+        与 ``_shutdown_workers`` 的区别：默认仅取消不等待（避免阻塞退出）；
+        ``wait_timeout_ms > 0`` 时取消后等待该超时（aboutToQuit 用短超时，让持密钥
+        解密的 worker 退出协作循环后再 lock 清零，收缩「已锁定」后明文残留窗口；
+        超时放弃不阻塞退出）。遍历 ``_entry_workers`` 全集快照（含并发 entry worker），
+        而非仅 ``_entry_worker`` 单引用（最后一个），避免漏 cancel 并发 worker 残留
+        持密钥继续解密、与 lock() 清零竞态。
         """
         self._auto_backup.cancel()
-        for worker in (
-            getattr(self, '_status_worker', None),
-            getattr(self, '_entry_worker', None),
-        ):
-            if worker is not None:
+        workers = (self._status_worker, *tuple(self._entry_workers))
+        for worker in workers:
+            if worker is None:
+                continue
+            try:
+                worker.cancel()
+            except RuntimeError:
+                pass
+        if wait_timeout_ms > 0:
+            for worker in workers:
+                if worker is None:
+                    continue
                 try:
-                    worker.cancel()
+                    worker.wait(int(wait_timeout_ms))
                 except RuntimeError:
                     pass
 

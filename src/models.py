@@ -8,7 +8,7 @@ Entry、Category 等模型类与字段常量是纯数据结构，不依赖任何
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,11 @@ MAX_CUSTOM_FIELD_NAME = 1024
 MAX_CUSTOM_FIELD_VALUE = 65536
 MAX_CATEGORY_NAME = 256
 MAX_PASSWORD_HISTORY = 10
+
+# 导入/备份共享的条目数与单条目载荷上限（单一事实源，供 import_export 与
+# backup_validator 复用，避免两处独立声明数值漂移产生「能导入却无法备份」的边界）。
+MAX_ENTRIES_LIMIT = 50_000
+MAX_ENTRY_PAYLOAD_SIZE = 2 * 1024 * 1024
 
 # 字段名 → (中文标签, 最大字符数)。表驱动长度校验的单一事实源，供
 # Entry.from_dict / entry_validation.validate_plain_entry / ImportExportManager._parse_csv_like
@@ -491,3 +496,11 @@ class RawEntry:
         if not self.tags:
             return []
         return [t.strip() for t in self.tags.split(',') if t.strip()]
+
+
+# 运行时守护：RawEntry（DB 密文态）与 Entry（明文态）字段名集合必须一致
+# （custom_fields 仅类型不同：str vs list[CustomField]，字段名相同）。任一方新增
+# 字段而另一方漏更将导致 DB 读写丢失字段——模块加载时即捕获，仿 entry_repository
+# 对 _RE_ENCRYPT_COLUMNS 的字段集断言模式。
+if {f.name for f in fields(RawEntry)} != {f.name for f in fields(Entry)}:
+    raise RuntimeError('RawEntry 与 Entry 字段集不一致，DB 读写可能丢失字段')

@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar, cast
 
 from PyQt6.QtCore import pyqtSignal
@@ -30,12 +29,23 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ...business.entry_type_schema import (
+    ENTRY_TYPE_SCHEMAS,
+    SpecialFieldSpec,
+    all_special_fields_by_storage,
+    get_schema,
+)
 from ...business.services.card_validation import (
     validate_card_cvv,
     validate_card_expiry,
     validate_card_number,
 )
 from ...business.services.password_service import PasswordService
+from ...exceptions import (
+    DatabaseError,
+    DecryptionError,
+    EntryIntegrityError,
+)
 from ...models import (
     ENTRY_TYPE_CARD,
     ENTRY_TYPE_LOGIN,
@@ -49,17 +59,6 @@ from ...models import (
     MAX_FIELD_TOTP_SECRET,
     MAX_FIELD_URL,
     MAX_FIELD_USERNAME,
-    SPECIAL_FIELD_CARD_CVV,
-    SPECIAL_FIELD_CARD_EXPIRY,
-    SPECIAL_FIELD_CARD_HOLDER,
-    SPECIAL_FIELD_CARD_NUMBER,
-    SPECIAL_FIELD_ID_ADDRESS,
-    SPECIAL_FIELD_ID_EMAIL,
-    SPECIAL_FIELD_ID_FULLNAME,
-    SPECIAL_FIELD_ID_PHONE,
-    SPECIAL_FIELD_SERVER_HOST,
-    SPECIAL_FIELD_SERVER_PORT,
-    SPECIAL_FIELD_SERVER_PROTOCOL,
     Category,
     CustomField,
     Entry,
@@ -92,66 +91,9 @@ logger = logging.getLogger(__name__)
 _T = TypeVar('_T')
 
 
-@dataclass(frozen=True)
-class _SpecialFieldSpec:
-    """专用字段的 schema 定义，驱动构建/收集/加载/显隐。
-
-    storage_name 沿用 ``_`` 前缀作为专用字段命名空间，将其与用户自定义字段
-    隔离以避免字段名碰撞。加载时按 storage_name 精确匹配归属，而非按前缀
-    ``startswith`` 推断，消除用户自定义字段名以 ``_card_``/``_id_``/
-    ``_server_`` 开头时被误判为专用字段的风险。
-    """
-
-    field_key: str           # widget 标识与 _special_widgets 的键，如 'card_holder'
-    storage_name: str        # custom_fields 中的存储名，如 '_card_holder'
-    label: str               # 表单标签文案
-    placeholder: str = ''
-    sensitive: bool = False  # 密码型字段（EchoMode.Password + field_type='password'）
-    max_length: int = 0      # 0 表示不设置 maxLength
-    kind: str = 'line'       # 'line' 或 'combo'
-    combo_items: tuple = ()
-
-
-# 各条目类型的专用字段 schema（按显示顺序）。schema 是字段配置的单一事实来源，
-# 驱动 _build_type_fields / _collect_type_specific_fields / _load_entry，
-# 消除分散的前缀约定与重复的 if/elif 收集逻辑。新增类型或字段只需扩展此表。
-_SPECIAL_SCHEMA: dict[str, list[_SpecialFieldSpec]] = {
-    'card': [
-        _SpecialFieldSpec('card_holder', SPECIAL_FIELD_CARD_HOLDER, '持卡人', '持卡人姓名'),
-        _SpecialFieldSpec('card_number', SPECIAL_FIELD_CARD_NUMBER, '卡号', '卡号', sensitive=True),
-        _SpecialFieldSpec('card_expiry', SPECIAL_FIELD_CARD_EXPIRY, '有效期', 'MM/YY', max_length=5),
-        _SpecialFieldSpec('card_cvv', SPECIAL_FIELD_CARD_CVV, 'CVV', 'CVV', sensitive=True, max_length=4),
-    ],
-    'identity': [
-        _SpecialFieldSpec('id_fullname', SPECIAL_FIELD_ID_FULLNAME, '姓名', '姓名'),
-        _SpecialFieldSpec('id_email', SPECIAL_FIELD_ID_EMAIL, '邮箱', '邮箱'),
-        _SpecialFieldSpec('id_phone', SPECIAL_FIELD_ID_PHONE, '电话', '电话'),
-        _SpecialFieldSpec('id_address', SPECIAL_FIELD_ID_ADDRESS, '地址', '地址'),
-    ],
-    'server': [
-        _SpecialFieldSpec('server_host', SPECIAL_FIELD_SERVER_HOST, '主机', '主机地址'),
-        _SpecialFieldSpec('server_port', SPECIAL_FIELD_SERVER_PORT, '端口', '22'),
-        _SpecialFieldSpec('server_protocol', SPECIAL_FIELD_SERVER_PROTOCOL, '协议',
-                          kind='combo', combo_items=('SSH', 'FTP', 'HTTP', 'HTTPS', '其他')),
-    ],
-}
-
-# 各类型可见字段（通用 + 专用），用于切换类型时刷新显隐
-_TYPE_FIELDS: dict[str, list[str]] = {
-    'login':    ['title', 'username', 'password', 'url'],
-    'card':     ['title', *[s.field_key for s in _SPECIAL_SCHEMA['card']]],
-    'identity': ['title', *[s.field_key for s in _SPECIAL_SCHEMA['identity']]],
-    'note':     ['title'],
-    'server':   ['title', *[s.field_key for s in _SPECIAL_SCHEMA['server']], 'username', 'password'],
-}
-
-# 全部专用字段的 storage_name → spec 映射，加载时按 storage_name 精确匹配，
-# 替代原先的前缀 startswith 推断
-_ALL_SPECIAL_BY_STORAGE: dict[str, _SpecialFieldSpec] = {
-    spec.storage_name: spec
-    for specs in _SPECIAL_SCHEMA.values()
-    for spec in specs
-}
+# 条目类型 schema（专用字段 / 可见字段顺序）的单一事实源在 business 层
+# entry_type_schema.py，本模块经 get_schema / ENTRY_TYPE_SCHEMAS /
+# all_special_fields_by_storage 读取，新增类型只扩展注册表。
 
 
 class EntryDialog(QDialog):
@@ -382,8 +324,8 @@ class EntryDialog(QDialog):
         schema 驱动通用创建逻辑；卡号/有效期格式化与端口校验等类型特有行为
         在控件创建后按 field_key 连接，保持 schema 的纯粹性。
         """
-        for specs in _SPECIAL_SCHEMA.values():
-            for spec in specs:
+        for schema in ENTRY_TYPE_SCHEMAS.values():
+            for spec in schema.special_fields:
                 widget = self._create_special_widget(spec)
                 self._add_field_row(form, spec.field_key, f'{spec.label}：', widget, visible=False)
                 self._special_widgets[spec.field_key] = widget
@@ -399,7 +341,7 @@ class EntryDialog(QDialog):
         )
 
     @staticmethod
-    def _create_special_widget(spec: _SpecialFieldSpec) -> QWidget:
+    def _create_special_widget(spec: SpecialFieldSpec) -> QWidget:
         """按 schema 创建单个专用字段控件。"""
         if spec.kind == 'combo':
             combo = QComboBox()
@@ -543,7 +485,7 @@ class EntryDialog(QDialog):
 
         # 检查当前类型的专用字段是否有用户输入数据，编辑和新建两种模式均检查
         if self._current_type:
-            old_fields = _TYPE_FIELDS.get(self._current_type, [])
+            old_fields = get_schema(self._current_type).visible_fields
             has_data = False
             for key in old_fields:
                 if key in self._special_widgets:
@@ -577,7 +519,7 @@ class EntryDialog(QDialog):
 
     def _apply_type_visibility(self, entry_type: str) -> None:
         """按条目类型刷新字段显隐，本身不触发类型切换确认。"""
-        visible_keys = set(_TYPE_FIELDS.get(entry_type, _TYPE_FIELDS['login']))
+        visible_keys = set(get_schema(entry_type).visible_fields)
 
         for key, (label, widget) in self._field_rows.items():
             # _strength 行跟随 password
@@ -636,7 +578,7 @@ class EntryDialog(QDialog):
         if isinstance(cf_raw, list) and cf_raw:
             type_specific = []
             for cf in cf_raw:
-                spec = _ALL_SPECIAL_BY_STORAGE.get(cf.name)
+                spec = all_special_fields_by_storage().get(cf.name)
                 if spec is not None:
                     widget = self._special_widgets.get(spec.field_key)
                     if widget is not None:
@@ -708,7 +650,7 @@ class EntryDialog(QDialog):
         """按当前类型的 schema 收集专用字段为 CustomField，存储名沿用 _ 前缀。"""
         entry_type = self._type_combo.currentData() or ENTRY_TYPE_LOGIN
         fields: list[CustomField] = []
-        for spec in _SPECIAL_SCHEMA.get(entry_type, []):
+        for spec in get_schema(entry_type).special_fields:
             widget = self._special_widgets[spec.field_key]
             if isinstance(widget, QComboBox):
                 value = widget.currentText()
@@ -786,15 +728,28 @@ class EntryDialog(QDialog):
             # 保存成功后立即清除敏感输入框，缩短明文在内存中的驻留时间。
             self._clear_sensitive_inputs()
             self.accept()
-        except ValueError as exc:
-            # 业务层字段校验失败，提示用户修改后重试
-            logger.warning("条目校验失败: %s", exc)
-            QMessageBox.warning(self, '输入有误', str(exc))
-        except Exception as exc:
+        except (DatabaseError, DecryptionError, EntryIntegrityError) as exc:
+            # 领域异常：DB/解密/完整性错误，翻译为用户可理解的文案。
+            # 必须在 ValueError 之前：DecryptionError 双继承 ValueError，若放后会被
+            # 字段校验分支误捕为「输入有误」，掩盖解密/完整性问题的领域文案。
             logger.error(
                 "保存条目失败: %s: %s", type(exc).__name__, exc, exc_info=True,
             )
             QMessageBox.critical(self, '错误', to_user_message(exc))
+        except ValueError as exc:
+            # 业务层字段校验失败（纯 ValueError，非 DecryptionError），提示用户修改后重试
+            logger.warning("条目校验失败: %s", exc)
+            QMessageBox.warning(self, '输入有误', str(exc))
+        except Exception as exc:
+            # 意外异常（编程错误）：与领域错误区分文案，避免把开发期 bug 经
+            # to_user_message 归并为「用户数据问题」而误导排查。完整栈已记录。
+            logger.error(
+                "保存条目时出现意外错误: %s: %s", type(exc).__name__, exc, exc_info=True,
+            )
+            QMessageBox.critical(
+                self, '错误',
+                '出现意外错误，未能保存条目。详细信息已记录到日志，请重试。',
+            )
 
     def _clear_sensitive_inputs(self) -> None:
         """清除所有敏感输入框中的明文。
@@ -817,8 +772,8 @@ class EntryDialog(QDialog):
         # id_*（PII）以及 server_host 等所有专用字段。新增类型或字段时自动纳入清除
         # 范围，避免硬编码 key 列表遗漏导致的安全回归。QComboBox（如协议选择）非
         # 敏感输入，由 isinstance(QLineEdit) 守卫跳过。
-        for specs in _SPECIAL_SCHEMA.values():
-            for spec in specs:
+        for schema in ENTRY_TYPE_SCHEMAS.values():
+            for spec in schema.special_fields:
                 widget = self._special_widgets.get(spec.field_key)
                 if isinstance(widget, QLineEdit):
                     widget.clear()

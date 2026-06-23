@@ -5,6 +5,7 @@ import gc
 import hmac
 import logging
 import os
+import sqlite3
 import threading
 import time
 import uuid
@@ -14,9 +15,10 @@ from pathlib import Path
 
 from ...config import ConfigManager
 from ...crypto.encryption import EncryptionEngine
-from ...crypto.master_key import DEFAULT_KDF_PARAMS, KDF_NAME, KdfParams, MasterKeyManager
+from ...crypto.master_key import DEFAULT_KDF_PARAMS, KDF_NAME, KEY_SIZE, KdfParams, MasterKeyManager
 from ...crypto.password_generator import PasswordGenerator
 from ...database.db_manager import DatabaseManager
+from ...database.types import VaultDataStore
 from ...exceptions import (
     CipherBoxError,
     DatabaseError,
@@ -59,7 +61,6 @@ class VaultManager:
         self._db = db if db is not None else DatabaseManager(config.db_path)
         self._db.set_write_guard(self._enforce_key_epoch)
 
-        # 元数据签名器
         self._signer = MetadataSigner()
         self._db.set_entry_integrity_handlers(
             self._signer.sign,
@@ -107,7 +108,12 @@ class VaultManager:
         self._on_lock_callbacks.append(callback)
 
     @property
-    def db(self) -> DatabaseManager:
+    def db(self) -> VaultDataStore:
+        """对外暴露收窄为 VaultDataStore 协议视图（不含 set_write_guard 等装配 setter）。
+
+        VaultManager 内部装配经 ``self._db``（DatabaseManager）使用全部能力；
+        Business manager 经此 property 拿到协议视图，收窄暴露面。
+        """
         return self._db
 
     @property
@@ -148,7 +154,11 @@ class VaultManager:
             logger.error("检查保险库状态发现数据库损坏", exc_info=True)
             self._close_db_safely()
             raise
-        except Exception:
+        except (DatabaseError, sqlite3.Error, OSError):
+            # 仅对「数据库领域错误 / 运行时错误 / 磁盘 I/O 错误」降级为未初始化
+            # （如数据库无法打开、被锁定、临时不可访问）。编程错误
+            # （AttributeError/TypeError 等）不在此列，必须上抛暴露 bug，而非被
+            # 误判为未初始化、引导用户在已有库上初始化覆盖数据。
             logger.error("检查保险库状态失败", exc_info=True)
             self._close_db_safely()
             return False
@@ -259,7 +269,7 @@ class VaultManager:
             salt, verify_token, derived_key = MasterKeyManager.create(
                 master_password, params
             )
-            snapshot_key = os.urandom(32)
+            snapshot_key = os.urandom(KEY_SIZE)
             key_epoch = uuid.uuid4().hex
             with self._db.transaction():
                 self._write_vault_metadata(
@@ -564,7 +574,9 @@ class VaultManager:
         new_epoch = uuid.uuid4().hex
         # snapshot_key 随主密钥一同轮换：旧 snapshot_key 加密的快照与恢复点随后清理，
         # 彻底收缩历史明文泄漏面，使主密码一旦被攻破也无法解密历史快照。
-        new_snapshot_key = os.urandom(32)
+        # bytearray 持有以便 finally 原地清零：activate 总复制使 KeyManager 持独立副本，
+        # 局部副本在 finally 清零不破坏激活态，收缩崩溃 dump 读取新生成 snapshot_key 的窗口。
+        new_snapshot_key = bytearray(os.urandom(KEY_SIZE))
 
         try:
             t0 = time.monotonic()
@@ -621,6 +633,9 @@ class VaultManager:
         finally:
             # 清理取消事件，避免残留影响后续改密
             self._cancel_event.clear()
+            # 新 snapshot_key 局部副本（bytearray）在 activate 总复制后立即原地清零——
+            # KeyManager 已持独立副本，清零局部副本不破坏激活态，收缩崩溃 dump 窗口。
+            secure_zero_buffer(new_snapshot_key)
             # 旧主密钥副本（self._key 返回的 bytes，不可原地清零）在新密钥生效后立即
             # 释放引用，缩短旧密钥在内存/swap 的驻留，收敛改密的「撤销泄漏」语义。
             # CPython 下 bytes 不可变，del 后仍依赖 GC 回收，此为固有限制下的尽力而为。
@@ -776,9 +791,15 @@ class VaultManager:
         """关闭保险库。
 
         设置取消事件通知正在进行的密钥轮换等长时间操作提前终止，
-        然后锁定保险库并关闭数据库连接。
+        然后锁定保险库并关闭数据库连接。用 try/finally 保证 ``lock()`` 异常时
+        数据库连接仍被关闭、取消事件仍被复位，避免连接泄漏与残留置位。
         """
         self._cancel_event.set()
-        self.lock()
-        self._db.close()
-        self._cancel_event.clear()
+        try:
+            self.lock()
+        finally:
+            try:
+                self._db.close()
+            except Exception:
+                logger.warning("关闭数据库连接失败", exc_info=True)
+            self._cancel_event.clear()

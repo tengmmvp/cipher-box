@@ -48,22 +48,18 @@ class TestMatchesSearch:
         assert matches_search(e, '') is True
 
     def test_partial_match(self):
-        """部分匹配。"""
         e = self._make_entry(title='My Secret Vault')
         assert matches_search(e, 'secret') is True
 
     def test_keyword_longer_than_field(self):
-        """关键词比字段值长。"""
         e = self._make_entry(title='ab')
         assert matches_search(e, 'abcdef') is False
 
     def test_matches_url_domain(self):
-        """URL 中匹配域名片段。"""
         e = self._make_entry(url='https://mail.google.com/inbox')
         assert matches_search(e, 'google') is True
 
     def test_tags_partial(self):
-        """标签中的部分匹配。"""
         e = self._make_entry(tags='personal,finance')
         assert matches_search(e, 'finance') is True
         assert matches_search(e, 'person') is True

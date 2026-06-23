@@ -93,6 +93,54 @@ def test_entry_export_excludes_secrets_by_default():
     assert 'password' not in entry.to_dict()
 
 
+def test_sanitize_url_scheme_rejects_dangerous_schemes():
+    """url scheme 白名单：javascript:/data:/file: 清空，http/https/裸域名保留。
+
+    覆盖全部导入路径（CSV/Chrome CSV/KeePass/JSON/Bitwarden 共享 _sanitize_url_scheme），
+    防止恶意 scheme 被详情面板渲染为可点击链接导致钓鱼/协议注入。
+    """
+    from src.business.managers.importers.base import _sanitize_url_scheme
+    # 危险 scheme 清空
+    assert _sanitize_url_scheme('javascript:alert(1)') == ''
+    assert _sanitize_url_scheme('data:text/html,<script>') == ''
+    assert _sanitize_url_scheme('file:///etc/passwd') == ''
+    assert _sanitize_url_scheme('vbscript:msgbox') == ''
+    # 白名单 scheme 保留
+    assert _sanitize_url_scheme('http://example.com') == 'http://example.com'
+    assert _sanitize_url_scheme('https://example.com/path?q=1') == 'https://example.com/path?q=1'
+    assert _sanitize_url_scheme('ftp://ftp.example.com') == 'ftp://ftp.example.com'
+    assert _sanitize_url_scheme('ssh://user@host') == 'ssh://user@host'
+    assert _sanitize_url_scheme('mailto:a@b.com') == 'mailto:a@b.com'
+    # 空 scheme（裸域名/相对路径）保留，UI 点击按默认 http 处理
+    assert _sanitize_url_scheme('example.com') == 'example.com'
+    assert _sanitize_url_scheme('/relative/path') == '/relative/path'
+    # 空串
+    assert _sanitize_url_scheme('') == ''
+    # 大小写不敏感
+    assert _sanitize_url_scheme('JavaScript:alert(1)') == ''
+    assert _sanitize_url_scheme('HTTPS://x.com') == 'HTTPS://x.com'
+
+
+def test_sanitize_totp_secret_rejects_invalid():
+    """totp_secret 清洗：无效 base32 或解码后过短清空，合法 secret 与 otpauth URI 保留。
+
+    覆盖全部导入路径（CSV/KeePass/JSON/Bitwarden 共享 _sanitize_totp_secret），防止
+    损坏密钥静默入库导致后续验证码生成失败且用户无反馈。
+    """
+    from src.business.managers.importers.base import _sanitize_totp_secret
+    # 无效 base32（含非法字符）清空
+    assert _sanitize_totp_secret('not-valid-base32!!!') == ''
+    # 解码后过短（< 10 字节）清空
+    assert _sanitize_totp_secret('ABCD') == ''
+    # 空串保留为空
+    assert _sanitize_totp_secret('') == ''
+    # 合法 base32（base32('1234567890')，解码 10 字节）保留
+    assert _sanitize_totp_secret('GEZDGNBVGY3TQOJQ') == 'GEZDGNBVGY3TQOJQ'
+    # otpauth URI 保留（secret 参数为合法 base32）
+    otpauth = 'otpauth://totp/Example:alice@google.com?secret=GEZDGNBVGY3TQOJQ&issuer=Example'
+    assert _sanitize_totp_secret(otpauth) == otpauth
+
+
 def test_custom_field_serialization():
     """自定义字段序列化与反序列化往返。"""
     cf = CustomField(name='test', value='val', field_type='password')
@@ -117,3 +165,51 @@ def test_sensitive_representations_are_redacted():
     assert secret not in repr(Sensitive(secret))
     assert secret not in repr(entry)
     assert secret not in repr(entry.custom_fields[0])
+
+
+def test_import_from_bitwarden_json_sanitizes_url_and_totp(entry_mgr, tmp_path):
+    """Bitwarden 导入清洗危险 url scheme 与无效 totp（与 CSV/JSON 路径一致）。
+
+    回归 P2-1：此前 Bitwarden 路径遗漏 _sanitize_url_scheme / _sanitize_totp_secret，
+    是唯一产出含 javascript: scheme 与无效 totp 条目的导入路径。
+    """
+    from src.business.managers.import_export import ImportExportManager
+
+    mgr = ImportExportManager(entry_mgr)
+    bw_path = tmp_path / 'bitwarden.json'
+    bw_path.write_text(json.dumps({
+        'items': [
+            {
+                'name': 'Danger',
+                'type': 1,
+                'login': {
+                    'username': 'alice',
+                    'password': 'Pass123!',
+                    'uris': [{'uri': 'javascript:alert(1)'}],
+                    'totp': 'not-valid-base32!!!',
+                },
+            },
+            {
+                'name': 'Safe',
+                'type': 1,
+                'login': {
+                    'username': 'bob',
+                    'password': 'Secret456@',
+                    'uris': [{'uri': 'https://github.com'}],
+                    'totp': 'GEZDGNBVGY3TQOJQ',  # base32('1234567890')，10 字节合法 secret
+                },
+            },
+        ],
+        'folders': [],
+    }), encoding='utf-8')
+
+    count = mgr.import_from_bitwarden_json(str(bw_path))
+
+    assert count == 2
+    by_title = {e.title: e for e in entry_mgr.get_entries()}
+    danger = by_title['Danger']
+    assert danger.url == ''              # javascript: scheme 已清空
+    assert danger.totp_secret == ''      # 无效 base32 已清空
+    safe = by_title['Safe']
+    assert safe.url == 'https://github.com'
+    assert safe.totp_secret == 'GEZDGNBVGY3TQOJQ'

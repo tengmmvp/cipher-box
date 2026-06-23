@@ -24,6 +24,13 @@ VAULT_META_SIGNED_KEYS = (
     'ciphertext_format', 'key_epoch',
 )
 
+# 签名绑定的加密字段及固定顺序（子集 + 顺序单一源）。必须等于
+# crypto_utils.SENSITIVE_ENCRYPTED_FIELDS 减 {title, url, tags}（这三者在载荷顶层
+# 以明文签名），且顺序固定——改顺序会破坏已有数据的 metadata_mac。
+# tests/test_field_consistency.py 守护此子集关系。custom_fields 在签名侧取
+# custom_fields_db_value（密文形态），故遍历时特判。
+SIGNATURE_ENCRYPTED_FIELD_ORDER = ('username', 'password', 'notes', 'totp_secret', 'custom_fields')
+
 
 class MetadataSigner:
     """条目元数据 HMAC 签名与验证。
@@ -57,7 +64,11 @@ class MetadataSigner:
 
     @domain_key.setter
     def domain_key(self, value: bytearray | None) -> None:
-        self._domain_key = value
+        # 与 set_domain_key 归一一致：防经 setter 传入 bytes 绕过 bytearray 持有
+        # 使清零失效。VaultManager 经此传 None 清零，None 保留。
+        self._domain_key = (
+            value if value is None or isinstance(value, bytearray) else bytearray(value)
+        )
 
     @staticmethod
     def compute_domain_key(key: bytes | bytearray) -> bytearray:
@@ -170,8 +181,8 @@ class MetadataSigner:
         # 「密文不含分隔符」的隐式假设：固定分隔符（如 '|'）在当前 cb2: base64 密文
         # 下安全，但未来加密格式若使密文含该字符会产生歧义载荷；长度前缀无歧义。
         enc_parts = [
-            entry.username, entry.password, entry.notes,
-            entry.totp_secret, entry.custom_fields_db_value,
+            entry.custom_fields_db_value if field == 'custom_fields' else getattr(entry, field)
+            for field in SIGNATURE_ENCRYPTED_FIELD_ORDER
         ]
         enc_concat = ''.join(f'{len(p)}:{p}' for p in enc_parts)
         data['_enc_hash'] = hashlib.sha256(enc_concat.encode('utf-8')).hexdigest()

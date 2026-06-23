@@ -192,6 +192,9 @@ class DatabaseManager:
             self._savepoint_counter += 1
             savepoint = f'"cipherbox_sp_{self._savepoint_counter}"'
             self._conn.execute(f'SAVEPOINT {savepoint}')
+            # depth 语义不变量：外层事务 begin_transaction 设 depth=1；嵌套 savepoint
+            # 每次 +=1 至 2..N，finally 中 -=1 还原。commit_transaction 要求 depth==1
+            # （仅外层事务可 commit），嵌套层只 RELEASE SAVEPOINT 不 commit。
             self._transaction_depth += 1
             try:
                 yield
@@ -310,6 +313,12 @@ class DatabaseManager:
             self._conn.execute("PRAGMA secure_delete=ON")
             self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.execute("PRAGMA synchronous=FULL")
+            # page cache 与内存映射：本地库虽小，但全表扫描（get_entries + 逐行
+            # HMAC 验签）在数千条目下从更大的 cache 受益。cache_size=-8000（约
+            # 8MB）远大于默认 2MB；mmap_size=256MB 让只读路径减少系统调用。
+            # synchronous=FULL 是耐久性安全取舍，不降级。
+            self._conn.execute("PRAGMA cache_size=-8000")
+            self._conn.execute("PRAGMA mmap_size=268435456")
             self._secure_database_files()
             self._schema_validated = False  # 新连接需要重新验证 schema
             return True
@@ -489,7 +498,7 @@ class DatabaseManager:
         with self._lock:
             self._guard_write()
             with self.transaction():
-                self._entry_repo.clear_category_signatures(category_id)
+                self._entry_repo._clear_category_signatures(category_id)
                 self._category_repo.delete_category(category_id)
 
     # -- 委托透传：Entries --
@@ -521,6 +530,13 @@ class DatabaseManager:
 
     def add_entry(self, entry: RawEntry, preserve_metadata: bool = False) -> int:
         return self._entry_repo.add_entry(entry, preserve_metadata=preserve_metadata)
+
+    def add_entries_batch(
+        self, entries: list[RawEntry], *, preserve_metadata: bool = False,
+    ) -> dict[str, int]:
+        return self._entry_repo.add_entries_batch(
+            entries, preserve_metadata=preserve_metadata,
+        )
 
     def update_entry(
         self,

@@ -79,7 +79,9 @@ class PasswordGenerator:
         """生成随机密码
 
         Args:
-            length: 密码长度，最小为 4
+            length: 密码长度，会被静默 clamp 到 ``[4, 128]``——低于 4 无法覆盖各
+                字符类至少 1 个的要求，高于 128 无实际安全收益且拖慢生成。调用方
+                应在此区间内取值；越界仅记录 warning 不抛错，以兼容 UI 滑块等调用方。
             uppercase: 包含大写字母
             lowercase: 包含小写字母
             digits: 包含数字

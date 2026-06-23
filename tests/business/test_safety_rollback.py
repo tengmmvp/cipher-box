@@ -29,9 +29,8 @@ from src.exceptions import VaultKeyEpochMismatchError
 from src.models import CustomField, Entry
 from tests.helpers import make_entry_manager, make_test_config
 
-# ─────────────────────────────────────────────────────────────────────────────
 # 1. 改密回滚一致性：重加密中途失败时，原密钥与数据仍匹配
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestChangePasswordRollbackConsistency:
     """改密重加密失败时的事务回滚与密钥/数据一致性。"""
@@ -211,9 +210,8 @@ class TestChangePasswordRollbackConsistency:
         assert '未能删除' in msg  # 附带 purge 失败 warning
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # 2. 备份恢复中途失败回滚 + 恢复点清理
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestBackupRestoreRollbackAndRestorePointCleanup:
     """备份恢复失败时数据库回滚与恢复点清理。"""
@@ -360,9 +358,8 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # 3. 导入期间并发改密触发 epoch 守卫
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestImportEpochGuard:
     """导入事务内 epoch 被轮换时，导入被守卫中止。"""
@@ -397,7 +394,7 @@ class TestImportEpochGuard:
     def test_import_aborted_when_epoch_changes_mid_transaction(self):
         """导入事务内 key_epoch 被并发改密轮换时，导入被守卫中止。
 
-        安全属性：_transactional_import 在事务开始前快照 key_epoch，
+        安全属性：_run_import_transaction 在事务开始前快照 key_epoch，
         事务内二次校验；若导入期间主密码被改导致 epoch 轮换，二次校验
         检测到 epoch 不匹配，必须抛出 VaultKeyEpochMismatchError 并
         回滚事务，避免数据用旧密钥加密但 epoch 已更新到新会话的损坏状态。
@@ -408,7 +405,7 @@ class TestImportEpochGuard:
 
         entry_count_before = len(self._entry_mgr.get_entries())
 
-        # 模拟并发改密：_transactional_import 第二次读取 key_epoch 时返回
+        # 模拟并发改密：_run_import_transaction 第二次读取 key_epoch 时返回
         # 不同的值。pre_epoch 为事务前的第一次读取，保持真实值；
         # 进入 with transaction() 后第二次读取返回伪造的新 epoch。
         original_key_epoch_property = type(self._vault).key_epoch
@@ -418,7 +415,7 @@ class TestImportEpochGuard:
         class _ShiftingEpoch:
             """描述符：首次访问返回真实 epoch，之后返回伪造值。
 
-            _transactional_import 先在事务外读 pre_epoch，再在事务内读
+            _run_import_transaction 先在事务外读 pre_epoch，再在事务内读
             current_epoch。本描述符让两次读取得到不同值，模拟并发轮换。
             """
 
@@ -447,7 +444,7 @@ class TestImportEpochGuard:
         """对照测试：epoch 未变化时导入正常完成。
 
         作为上一个测试的对照，确认 epoch 守卫不会误伤正常导入路径，
-        _transactional_import 的二次校验在 epoch 一致时放行。
+        _run_import_transaction 的二次校验在 epoch 一致时放行。
         """
         entry_count_before = len(self._entry_mgr.get_entries())
 

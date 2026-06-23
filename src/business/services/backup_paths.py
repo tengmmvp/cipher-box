@@ -8,6 +8,6 @@
 BACKUPS_DIR_NAME = 'backups'
 BACKUP_EXT = '.cbox'
 PRE_RESTORE_PREFIX = 'pre_restore_'
-PRE_RESTORE_GLOB = 'pre_restore_*.cbox'
+PRE_RESTORE_GLOB = f'{PRE_RESTORE_PREFIX}*{BACKUP_EXT}'
 SNAPSHOT_PREFIX = 'cipherbox_snapshot_'
-SNAPSHOT_GLOB = 'cipherbox_snapshot_*.cbox'
+SNAPSHOT_GLOB = f'{SNAPSHOT_PREFIX}*{BACKUP_EXT}'

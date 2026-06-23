@@ -1,5 +1,3 @@
-from tests.helpers import make_entry_manager
-
 """_re_encrypt_all 边界条件测试，覆盖空字段、custom_fields 类型、密码历史与事务回滚。
 
 通过 change_master_password 触发全量重加密，验证空字段保持空、
@@ -15,6 +13,7 @@ import pytest
 
 from src.business.managers.vault_manager import VaultManager
 from src.models import CustomField, Entry
+from tests.helpers import make_entry_manager
 
 
 class TestReEncryptEdgeCases:
@@ -37,9 +36,7 @@ class TestReEncryptEdgeCases:
         except Exception:
             pass
 
-    # ------------------------------------------------------------------
     # 1. 空字段：notes=''、totp_secret=''、username=''
-    # ------------------------------------------------------------------
     def test_re_encrypt_empty_fields(self):
         """空字符串字段在改密后保持空字符串。"""
         self._entry_mgr.add_entry(Entry(
@@ -62,9 +59,7 @@ class TestReEncryptEdgeCases:
         assert entries[0].totp_secret == ''
         assert entries[0].password == 'has_password'
 
-    # ------------------------------------------------------------------
     # 2. 完整字段：所有 5 个敏感字段都有值
-    # ------------------------------------------------------------------
     def test_re_encrypt_all_fields_populated(self):
         """所有敏感字段都有值时改密后完整保留。"""
         custom = [CustomField(name='备注', value='测试值', field_type='text')]
@@ -93,9 +88,7 @@ class TestReEncryptEdgeCases:
         assert cast(list[CustomField], e.custom_fields)[0].name == '备注'
         assert cast(list[CustomField], e.custom_fields)[0].value == '测试值'
 
-    # ------------------------------------------------------------------
     # 3. 已删除条目在改密后仍可解密
-    # ------------------------------------------------------------------
     def test_re_encrypt_deleted_entry(self):
         """已软删除的条目在改密后仍可正确解密。"""
         eid = self._entry_mgr.add_entry(Entry(
@@ -117,9 +110,7 @@ class TestReEncryptEdgeCases:
         assert entries[0].password == 'deleted_pass'
         assert entries[0].is_deleted
 
-    # ------------------------------------------------------------------
     # 4. 密码历史在改密后仍可解密
-    # ------------------------------------------------------------------
     def test_re_encrypt_password_history(self):
         """密码历史在改密后仍可正确解密。"""
         eid = self._entry_mgr.add_entry(Entry(
@@ -159,9 +150,7 @@ class TestReEncryptEdgeCases:
         assert e is not None
         assert e.password == 'second_password'
 
-    # ------------------------------------------------------------------
     # 5. 多条目混合：部分字段为空，部分字段有值
-    # ------------------------------------------------------------------
     def test_re_encrypt_mixed_entries(self):
         """多条目混合场景：空字段和完整字段交替。"""
         self._entry_mgr.add_entry(Entry(
@@ -201,9 +190,7 @@ class TestReEncryptEdgeCases:
         assert by_title['只有用户名'].username == 'name_only'
         assert by_title['只有用户名'].password == ''
 
-    # ------------------------------------------------------------------
     # 6. 改密失败时事务回滚保护数据完整性
-    # ------------------------------------------------------------------
     def test_re_encrypt_rollback_on_failure(self):
         """解密失败时回滚事务，原数据仍可用。"""
         self._entry_mgr.add_entry(Entry(
@@ -233,9 +220,7 @@ class TestReEncryptEdgeCases:
         assert entries[0].username == 'rollback_user'
         assert entries[0].password == 'original_pass'
 
-    # ------------------------------------------------------------------
     # 7. 多条目全部字段保留
-    # ------------------------------------------------------------------
     def test_re_encrypt_preserves_all_entries(self):
         """重新加密后所有条目数据完整。"""
         for i in range(5):
@@ -270,9 +255,7 @@ class TestReEncryptEdgeCases:
             assert rest.url == orig.url
             assert rest.notes == orig.notes
 
-    # ------------------------------------------------------------------
     # 8. 超过批次大小的条目也能正确重新加密
-    # ------------------------------------------------------------------
     def test_re_encrypt_with_more_than_batch_size(self):
         """超过批次大小的条目也能正确重新加密。"""
         for i in range(10):
@@ -297,9 +280,7 @@ class TestReEncryptEdgeCases:
         for title, orig in originals.items():
             assert restored[title].password == orig.password
 
-    # ------------------------------------------------------------------
     # 9. 自定义字段在改密后完整保留
-    # ------------------------------------------------------------------
     def test_re_encrypt_preserves_custom_fields(self):
         """重新加密保留自定义字段。"""
         entry = Entry(
@@ -325,3 +306,46 @@ class TestReEncryptEdgeCases:
         assert len(restored.custom_fields) == 2
         field_names = {f.name for f in restored.custom_fields}
         assert field_names == {'API Key', 'PIN'}
+
+    # 10. 某条目密文损坏时改密中止（strict=True 端到端），旧密钥下正常条目完好
+    def test_re_encrypt_aborts_on_corrupt_entry_preserves_data(self):
+        """某条目密文损坏时 strict=True 使改密中止，旧密钥下正常条目完好。
+
+        端到端验证 A1：真实 change_master_password 流程中，损坏条目解密失败
+        抛 DecryptionError（属 CipherBoxError，经 _change_master_password_locked
+        的 except CipherBoxError: raise 上抛，而非笼统返回 False），事务回滚并
+        lock；重新解锁后旧密钥下未损坏条目保持原样，杜绝「静默清空损坏字段」
+        的不可逆数据丢失。
+        """
+        import os as _os
+
+        from src.business.services.crypto_utils import encrypt_field
+        from src.exceptions import DecryptionError
+
+        self._entry_mgr.add_entry(Entry(
+            title='正常条目', username='good_user', password='good_pass',
+        ))
+        corrupt_id = self._entry_mgr.add_entry(Entry(
+            title='损坏条目', username='bad_user', password='temp_pass',
+        ))
+
+        # 将损坏条目的 password 密文替换为另一把密钥加密的结果，模拟密文损坏
+        wrong_key = _os.urandom(32)
+        raw = self._vault.db.get_entry(corrupt_id)
+        assert raw is not None
+        raw.password = encrypt_field('corrupted', wrong_key, raw.crypto_id, 'password')
+        self._vault.db.update_entry(raw)
+
+        # 改密因损坏条目解密失败抛 DecryptionError，事务回滚并 lock
+        with pytest.raises(DecryptionError):
+            self._vault.change_master_password(
+                'original_pwd_123', 'new_password_456'
+            )
+
+        # 重新解锁验证旧密钥下正常条目数据完好
+        assert self._vault.unlock('original_pwd_123')[0]
+        entry_mgr = make_entry_manager(self._vault)
+        entries = {e.title: e for e in entry_mgr.get_entries()}
+        assert entries['正常条目'].password == 'good_pass'
+        # 损坏条目仍存在（旧密钥下其 password 解密失败，容错返回空）
+        assert '损坏条目' in entries

@@ -38,6 +38,8 @@ class SensitiveDataFilter(logging.Filter):
     _PATTERNS = (
         # cb2: 密文标记 + base64 主体（至少 8 字符），整段打码
         (re.compile(r'cb2:[A-Za-z0-9+/=]{8,}'), 'cb2:[REDACTED]'),
+        # otpauth:// URI（TOTP 配置，含 secret 参数与账户名），整段打码
+        (re.compile(r'otpauth://\S+'), 'otpauth://[REDACTED]'),
         # key=value / key:value 形式的敏感赋值，等号或冒号后的非空白内容打码
         (
             re.compile(

@@ -40,7 +40,10 @@ MAX_HISTORY_DISPLAY = 5     # 详情面板最多显示密码历史条数
 MAX_TAG_DISPLAY = 5         # 详情面板最多显示标签数
 MAX_TAG_AUTOCOMPLETE = 20   # 标签自动补全最大数量
 RECENT_ENTRY_LIMIT = 20     # 「近期更新」筛选最多显示条目数
-ASYNC_SEARCH_THRESHOLD = 200  # 超过该条目数时列表/搜索移入后台线程
+ASYNC_SEARCH_THRESHOLD = 100  # 超过该条目数时列表/搜索移入后台线程
+# 阈值由 200 下调至 100：冷缓存下 100-200 条目的全量摘要解密（每条 4 字段
+# AES-GCM + base64 + 缓存填充）在主线程可达数十毫秒临界卡顿，下调使中等库
+# 也走已有异步路径避免冻结 UI；小库（< 100）仍同步以省去后台线程与「加载中」闪烁。
 
 # ---------- 窗口尺寸 ----------
 WINDOW_MIN_SIZE = (980, 640)

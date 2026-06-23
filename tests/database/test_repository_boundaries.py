@@ -11,6 +11,7 @@ import pytest
 
 from src.database import entry_repository
 from src.database.db_manager import DatabaseManager
+from src.exceptions import DatabaseError
 from src.models import MAX_PASSWORD_HISTORY, RawEntry
 
 
@@ -55,3 +56,36 @@ def test_get_entries_by_ids_batches_large_id_lists(db, monkeypatch):
     ids = [db.add_entry(_make_entry(title=f'E{i}')) for i in range(5)]
     fetched = db.get_entries_by_ids(ids)
     assert {e.id for e in fetched} == set(ids)
+
+
+def test_add_entry_converts_crypto_id_conflict_to_database_error(db):
+    """crypto_id UNIQUE 冲突归一化为 DatabaseError，避免裸 sqlite3.IntegrityError 上泄。"""
+    db.add_entry(_make_entry(crypto_id='dup-id', title='First'))
+    duplicate = _make_entry(crypto_id='dup-id', title='Second')
+    with pytest.raises(DatabaseError, match='唯一约束'):
+        db.add_entry(duplicate)
+
+
+def test_update_entries_batch_noop_on_empty(db):
+    """空列表短路：不执行 SQL、不抛异常（改密重加密无变更条目的边界）。"""
+    db.update_entries_batch([])  # 不应抛异常
+
+
+def test_get_entries_by_ids_returns_empty_for_empty_input(db):
+    """空 ID 列表短路返回 []，避免构造 IN () 非法 SQL。"""
+    assert db.get_entries_by_ids([]) == []
+
+
+def test_get_entries_by_ids_deduplicates_preserving_order(db):
+    """dict.fromkeys 去重保序：重复 id 不导致行数膨胀或位置错位。"""
+    id1 = db.add_entry(_make_entry(crypto_id='c1', title='A'))
+    id2 = db.add_entry(_make_entry(crypto_id='c2', title='B'))
+    fetched = db.get_entries_by_ids([id1, id2, id1, id2])
+    assert [e.id for e in fetched] == [id1, id2]
+
+
+def test_get_entries_after_id_cursor_paginates(db):
+    """after_id 游标分页：返回 id > after_id 的条目，按 id ASC，LIMIT 下推 SQL。"""
+    ids = [db.add_entry(_make_entry(crypto_id=f'c{i}', title=f'E{i}')) for i in range(5)]
+    page = db.get_entries(after_id=ids[1], limit=2)
+    assert [e.id for e in page] == ids[2:4]

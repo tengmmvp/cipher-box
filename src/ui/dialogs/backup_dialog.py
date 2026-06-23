@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ...business.services.backup_header_codec import inspect_backup
+from ...business.services.backup_paths import BACKUP_EXT
 from ...business.services.password_service import PasswordService
 from ...exceptions import BackupError
 from ..components.widgets import (
@@ -193,17 +194,19 @@ class BackupDialog(QDialog):
 
     def _browse(self) -> None:
         is_backup = self._btn_group.checkedId() == 0
+        backup_filter = f'CipherBox 备份 (*{BACKUP_EXT})'
         if is_backup:
             initial_dir = self._config.get('backup_directory', '') if self._config else ''
-            initial_path = str(Path(initial_dir) / 'cipherbox_backup.cbox') if initial_dir else 'cipherbox_backup.cbox'
+            default_name = f'cipherbox_backup{BACKUP_EXT}'
+            initial_path = str(Path(initial_dir) / default_name) if initial_dir else default_name
             path, _ = QFileDialog.getSaveFileName(
                 self, '选择备份保存路径', initial_path,
-                'CipherBox 备份 (*.cbox)',
+                backup_filter,
             )
         else:
             path, _ = QFileDialog.getOpenFileName(
                 self, '选择备份文件', '',
-                'CipherBox 备份 (*.cbox);;所有文件 (*.*)',
+                f'{backup_filter};;所有文件 (*.*)',
             )
         if path:
             self._selected_path = path
@@ -277,9 +280,10 @@ class BackupDialog(QDialog):
         worker.finished.connect(self._on_backup_done)
         worker.error.connect(self._on_backup_error)
         worker.start()
-        # 删除局部变量引用以缩短密码驻留。注意：worker 闭包仍捕获 password，
-        # 真正释放需等 worker 执行结束并被 release_worker 释放，此处仅做局部清零，
-        # 与其他对话框的清零策略对齐（CPython 下字符串回收仍依赖 GC）。
+        # 删除局部变量引用以缩短密码驻留。注意：_run 的默认参数 pwd 已在定义时
+        # 拷贝 password（见上方），del 局部 password 不影响 worker 执行；真正释放
+        # 需等 worker 结束被 release_worker 释放。CPython 下 str 不可变，此处仅缩短
+        # 局部引用，与其他对话框的清零策略对齐。
         del password
 
     def _on_backup_done(self, result: object) -> None:
@@ -334,13 +338,18 @@ class BackupDialog(QDialog):
                 return
         self._set_busy(True)
         self._worker_is_backup = False
-        self._worker = BackgroundWorker(
-            lambda: self._backup_mgr.restore_backup(path, password),
-            parent=self,
-        )
+
+        def _run(pwd: str | None = password) -> object:
+            return self._backup_mgr.restore_backup(path, pwd)
+
+        self._worker = BackgroundWorker(_run, parent=self)
         self._worker.finished.connect(self._on_restore_done)
         self._worker.error.connect(self._on_restore_error)
         self._worker.start()
+        # 删除局部变量引用以缩短密码驻留，与 _do_backup 对齐（_run 经默认参数在定义时
+        # 捕获 pwd 值，del 局部 password 不影响 worker 执行；真正释放需等 worker 结束
+        # 被 release_worker 释放，此处局部清零与其他对话框对齐）。
+        del password
 
     def _on_restore_done(self, result: object) -> None:
         if self.sender() is not self._worker:

@@ -24,7 +24,7 @@ from src.database.db_manager import DatabaseManager
 from src.models import Category, CustomField, Entry, RawEntry
 from tests.helpers import make_entry_manager, make_test_config
 
-# ── TestEntryManagerIntegration ──────────────────────────────────────────────
+# TestEntryManagerIntegration
 
 @pytest.fixture()
 def entry_mgr_env():
@@ -222,7 +222,7 @@ def test_get_all_tags(entry_mgr_env):
     assert tag_dict['金融'] == 1
 
 
-# ── TestVaultManagerLifecycle ────────────────────────────────────────────────
+# TestVaultManagerLifecycle
 
 @pytest.fixture()
 def vault_lifecycle_env():
@@ -325,7 +325,7 @@ def test_change_password_re_encrypts(vault_lifecycle_env):
     vault.close()
 
 
-# ── TestBackupRestore ────────────────────────────────────────────────────────
+# TestBackupRestore
 
 @pytest.fixture()
 def backup_restore_env():
@@ -449,7 +449,7 @@ def test_snapshot_key_rotates_on_master_password_change(backup_restore_env):
     assert success, error
 
 
-# ── TestSecurityAnalyzer ─────────────────────────────────────────────────────
+# TestSecurityAnalyzer
 
 @pytest.fixture()
 def security_analyzer_env():
@@ -504,7 +504,7 @@ def test_full_analysis(security_analyzer_env):
     assert result['duplicate_count'] == 1
 
 
-# ── TestDatabaseTransaction ──────────────────────────────────────────────────
+# TestDatabaseTransaction
 
 @pytest.fixture()
 def db_env():
@@ -579,7 +579,7 @@ def test_transaction_rollback(db_env):
     assert '回滚分类' not in cat_names
 
 
-# ── TestImportExport 集成 ───────────────────────────────────────────
+# TestImportExport 集成
 
 @pytest.fixture()
 def import_export_env():
@@ -676,7 +676,7 @@ def test_csv_roundtrip(import_export_env):
     assert restored[0].url == 'https://csv.example.com'
 
 
-# ── TestErrorPaths ───────────────────────────────────────────────────────────
+# TestErrorPaths
 
 def test_decrypt_with_wrong_key():
     """用错误密钥解密应抛出 ValueError。"""

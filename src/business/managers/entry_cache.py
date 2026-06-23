@@ -170,6 +170,18 @@ class EntryCacheManager:
                     self._search_metadata_failed[cid] = failed
         return result
 
+    def search_metadata_for_analysis(
+        self, raw_entry: RawEntry,
+    ) -> tuple[str, str, str, str]:
+        """供批量分析路径复用的摘要解密（公开入口，无逐条 epoch 校验）。
+
+        :meth:`_cached_search_metadata_no_check` 的公开版本，供 services 层
+        （如 :class:`SecurityAnalyzer`）批量循环复用，使 services 不必跨层访问
+        managers 的私有方法，守住「services 无状态、不耦合 managers 内部实现」
+        的分层方向。调用方须在循环外调用 :meth:`invalidate_if_epoch_changed`。
+        """
+        return self._cached_search_metadata_no_check(raw_entry)
+
     def get_failed_fields(self, crypto_id: str) -> set[str]:
         """取某条目摘要解密失败的字段集（锁内采样，避免与 clear 竞态）。"""
         with self._cache_lock:
@@ -246,6 +258,7 @@ class EntryCacheManager:
         self.invalidate_if_epoch_changed()
         with self._cache_lock:
             cached = self._tags_cache
+            observed_epoch = self._cache_epoch
         if cached is not None:
             return cached
         tag_count: dict[str, int] = {}
@@ -255,8 +268,9 @@ class EntryCacheManager:
                 tag_count[tag] = tag_count.get(tag, 0) + 1
         result = sorted(tag_count.items(), key=lambda x: -x[1])
         with self._cache_lock:
-            # 双重检查：期间可能已被并发填充，优先用已存在的缓存保证一致性
-            if self._tags_cache is not None:
+            # 双重检查：期间可能已被并发填充，或 epoch 已变化（改密/锁定清空了缓存）。
+            # 比对 observed_epoch 避免返回跨 epoch 的脏缓存。
+            if self._tags_cache is not None and self._cache_epoch == observed_epoch:
                 return self._tags_cache
             self._tags_cache = result
             return result

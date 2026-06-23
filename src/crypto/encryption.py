@@ -21,6 +21,8 @@ from collections import OrderedDict
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from ..exceptions import DecryptionError
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,13 +32,14 @@ def _cache_key(key: bytes | bytearray) -> bytes:
 
 
 _cache_lock = threading.RLock()
-# AESGCM 实例缓存：按密钥摘要索引，通常仅含当前活跃密钥。
-# 模块级缓存会跨 VaultManager 实例共享（如同一进程内的测试创建多个实例），
-# 经 SHA-256 摘要索引，缓存键不持有也不泄漏明文密钥材料。
 # AESGCM 实例缓存容量上限。正常使用仅 1 个活跃主密钥；改密瞬间旧+新两个密钥
-# 并存，取 3 留余量。上限过大（原 16）会使更多历史密钥的 AESGCM 副本（内部持有
-# C 层密钥拷贝）长期驻留进程内存，扩大内存 dump 攻击面。
-_MAX_CACHE_SIZE = 3
+# 并存，取 2 恰好容纳双密钥窗口，避免任一方反复 evict 重建（key schedule 开销），
+# 同时最小化历史密钥的 AESGCM 副本（内部持有 C 层密钥拷贝）驻留进程内存，
+# 收缩崩溃 dump 攻击面。上限过大（原 16）会扩大内存 dump 攻击面。
+_MAX_CACHE_SIZE = 2
+# AESGCM 实例缓存：按密钥摘要索引，通常仅含当前活跃密钥。模块级缓存会跨
+# VaultManager 实例共享（如同一进程内的测试创建多个实例），经 SHA-256 摘要索引，
+# 缓存键不持有也不泄漏明文密钥材料。
 _cipher_cache: OrderedDict[bytes, AESGCM] = OrderedDict()
 
 
@@ -131,17 +134,18 @@ class EncryptionEngine:
             解密后的明文字符串
 
         Raises:
-            ValueError: 密文为空、格式不符或认证失败时抛出
+            DecryptionError: 密文为空、格式不符或认证失败时抛出。DecryptionError
+                双继承 ValueError，旧的 ``except ValueError`` 兜底仍能捕获。
         """
         if not encrypted_b64:
-            raise ValueError('收到空密文')
+            raise DecryptionError('收到空密文')
         try:
             if not encrypted_b64.startswith(cls.TEXT_PREFIX):
-                raise ValueError('不支持的密文格式')
+                raise DecryptionError('不支持的密文格式')
             encoded = encrypted_b64[len(cls.TEXT_PREFIX):]
             raw = base64.b64decode(encoded, validate=True)
             if len(raw) < cls.NONCE_SIZE + cls.TAG_SIZE:
-                raise ValueError('密文长度无效')
+                raise DecryptionError('密文长度无效')
             nonce = raw[:cls.NONCE_SIZE]
             ciphertext = raw[cls.NONCE_SIZE:]
             aesgcm = cls._get_cipher(key)
@@ -150,7 +154,7 @@ class EncryptionEngine:
             return plaintext.decode('utf-8')
         except (InvalidTag, ValueError, AttributeError, TypeError) as exc:
             logger.warning("解密失败: %s", type(exc).__name__)
-            raise ValueError('解密失败，密钥或数据可能已损坏') from exc
+            raise DecryptionError('解密失败，密钥或数据可能已损坏') from exc
 
     @classmethod
     def encrypt_bytes(
@@ -189,15 +193,16 @@ class EncryptionEngine:
             解密后的原始字节数据
 
         Raises:
-            ValueError: 密文格式不符、长度不足或认证失败时抛出
+            DecryptionError: 密文格式不符、长度不足或认证失败时抛出。DecryptionError
+                双继承 ValueError，旧的 ``except ValueError`` 兜底仍能捕获。
         """
         if not data.startswith(cls.BYTES_PREFIX):
-            raise ValueError('不支持的密文字节格式')
+            raise DecryptionError('不支持的密文字节格式')
         payload = data[len(cls.BYTES_PREFIX):]
         if not payload:
-            raise ValueError('收到空密文字节')
+            raise DecryptionError('收到空密文字节')
         if len(payload) < cls.NONCE_SIZE + cls.TAG_SIZE:
-            raise ValueError('密文长度无效')
+            raise DecryptionError('密文长度无效')
         nonce = payload[:cls.NONCE_SIZE]
         ciphertext = payload[cls.NONCE_SIZE:]
         aesgcm = cls._get_cipher(key)
@@ -206,4 +211,4 @@ class EncryptionEngine:
             return aesgcm.decrypt(nonce, ciphertext, aad)
         except (InvalidTag, ValueError, AttributeError, TypeError) as exc:
             logger.warning("解密失败: %s", type(exc).__name__)
-            raise ValueError('解密失败，密钥或数据可能已损坏') from exc
+            raise DecryptionError('解密失败，密钥或数据可能已损坏') from exc

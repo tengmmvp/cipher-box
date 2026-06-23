@@ -7,6 +7,7 @@
   LENIENT 标记 ``integrity_error``，为列表路径的性能/语义权衡提供类型化开关。
 """
 
+from src.business.services import key_manager as key_manager_module
 from src.business.services.key_manager import KeyManager
 from src.database.types import VerifyMode
 from src.exceptions import VaultIntegrityError
@@ -14,43 +15,77 @@ from src.models import Entry, RawEntry
 
 
 class TestKeyManagerZeroing:
-    """验证改密/恢复时旧密钥 bytearray 被原地清零，而非等待 GC 回收。"""
+    """验证改密/恢复时旧密钥的内部 bytearray 副本被原地清零。
 
-    def test_update_key_zeroes_old_bytearray(self):
+    _to_bytearray 总复制：KeyManager 持独立副本，update/activate 时经
+    secure_zero_buffer 清零内部旧副本（外部传入对象不受影响）。用 spy 在清零前
+    快照被清零对象，验证旧密钥副本确实经过清零路径且内容为旧密钥。
+    """
+
+    def test_update_key_zeroes_old_internal_copy(self, monkeypatch):
         km = KeyManager()
-        old = bytearray(b'x' * 32)
-        km.activate(old, bytearray(b'y' * 32), epoch=1)
-        # _to_bytearray 对 bytearray 所有权转移：KeyManager 内部持有的正是该对象
-        assert km._key is old
+        km.activate(bytearray(b'x' * 32), bytearray(b'y' * 32), epoch=1)
+
+        zeroed: list[bytearray] = []
+        original = key_manager_module.secure_zero_buffer
+
+        def spy(data: bytearray) -> None:
+            zeroed.append(bytearray(data))  # 清零前快照
+            original(data)
+
+        monkeypatch.setattr(key_manager_module, 'secure_zero_buffer', spy)
         km.update_key(bytearray(b'z' * 32))
-        # 旧主密钥应被原地清零，消除改密后旧密钥驻留待 GC 的泄漏窗口
-        assert bytes(old) == b'\x00' * 32
 
-    def test_update_snapshot_key_zeroes_old_bytearray(self):
+        # 仅旧主密钥内部副本被清零（snapshot 未变，不应被清零）
+        assert len(zeroed) == 1
+        assert bytes(zeroed[0]) == b'x' * 32
+
+    def test_update_snapshot_key_zeroes_old_internal_copy(self, monkeypatch):
         km = KeyManager()
-        old_snapshot = bytearray(b's' * 32)
-        km.activate(bytearray(b'k' * 32), old_snapshot, epoch=1)
-        assert km._snapshot_key is old_snapshot
-        km.update_snapshot_key(bytearray(b'n' * 32))
-        assert bytes(old_snapshot) == b'\x00' * 32
+        km.activate(bytearray(b'k' * 32), bytearray(b's' * 32), epoch=1)
 
-    def test_update_key_to_same_object_does_not_zero(self):
-        """传入当前持有的同一 bytearray 不应清零（会清掉将要使用的值）。"""
+        zeroed: list[bytearray] = []
+        original = key_manager_module.secure_zero_buffer
+
+        def spy(data: bytearray) -> None:
+            zeroed.append(bytearray(data))
+            original(data)
+
+        monkeypatch.setattr(key_manager_module, 'secure_zero_buffer', spy)
+        km.update_snapshot_key(bytearray(b'n' * 32))
+
+        assert len(zeroed) == 1
+        assert bytes(zeroed[0]) == b's' * 32
+
+    def test_update_does_not_zero_caller_object(self):
+        """总复制：update 清零 KeyManager 内部副本，调用方传入对象不受影响。"""
         km = KeyManager()
         key = bytearray(b'k' * 32)
         km.activate(key, bytearray(b's' * 32), epoch=1)
-        km.update_key(key)  # 同一对象，所有权转移，不应清零
+        km.update_key(bytearray(b'new' * 10 + b'nn'))
+        # 调用方原对象不被清零（KeyManager 持独立副本）
         assert bytes(key) == b'k' * 32
 
-    def test_activate_zeroes_previous_keys(self):
-        """再次 activate（如恢复后重新激活）也应清零上一组密钥。"""
+    def test_activate_zeroes_previous_internal_keys(self, monkeypatch):
+        """再次 activate（如恢复后重新激活）也清零上一组密钥的内部副本。"""
         km = KeyManager()
-        old_key = bytearray(b'a' * 32)
-        old_snapshot = bytearray(b'b' * 32)
-        km.activate(old_key, old_snapshot, epoch=1)
+        km.activate(bytearray(b'a' * 32), bytearray(b'b' * 32), epoch=1)
+
+        zeroed: list[bytearray] = []
+        original = key_manager_module.secure_zero_buffer
+
+        def spy(data: bytearray) -> None:
+            zeroed.append(bytearray(data))
+            original(data)
+
+        monkeypatch.setattr(key_manager_module, 'secure_zero_buffer', spy)
         km.activate(bytearray(b'c' * 32), bytearray(b'd' * 32), epoch=2)
-        assert bytes(old_key) == b'\x00' * 32
-        assert bytes(old_snapshot) == b'\x00' * 32
+
+        # 旧主密钥 + 旧 snapshot 内部副本均被清零
+        assert len(zeroed) == 2
+        contents = {bytes(buf) for buf in zeroed}
+        assert b'a' * 32 in contents
+        assert b'b' * 32 in contents
 
 
 def test_get_entries_verify_modes(vault, entry_mgr):

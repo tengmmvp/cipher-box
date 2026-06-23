@@ -6,6 +6,8 @@
     act.setIcon(icon(COPY))  # 菜单项图标
 """
 
+import threading
+from collections import OrderedDict
 from typing import cast
 
 import qtawesome as qta
@@ -13,7 +15,15 @@ from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PyQt6.QtWidgets import QPushButton
 
+from . import theme_colors
 from .theme_colors import c
+
+# QIcon 实例缓存：按 (name, color_key, theme) 缓存。delegate 等高频路径重复调
+# icon(name) 时复用 QIcon，省 qta.icon 的字体渲染开销。主题切换时 theme 变化使
+# 缓存键改变，自动 miss 重建（颜色烘焙到 QIcon，须随主题刷新）。
+_icon_cache: OrderedDict[tuple[str, str | None, str], QIcon] = OrderedDict()
+_icon_cache_lock = threading.Lock()
+_ICON_CACHE_MAX = 200
 
 # ============================================================
 # 预设尺寸
@@ -144,18 +154,30 @@ _ICON_MAP: dict[str, tuple[str, str]] = {
 
 
 def _make_icon(name: str, color_key: str | None = None) -> QIcon:
-    """内部：创建 QIcon 实例。
+    """内部：创建或复用缓存的 QIcon 实例。
 
-    颜色在创建时烘焙到 QIcon 中，主题颜色通过 c() 获取。
-    主题切换时需重建所有图标，重建入口包括 _build_filter_list、_update_menu_icons 等，
-    遗漏重建的图标将保留旧主题颜色。
+    颜色在创建时烘焙到 QIcon 中，主题颜色通过 c() 获取。QIcon 按
+    (name, color_key, theme) 缓存——主题切换时 set_theme 改 theme_colors._current_theme，
+    缓存键变化自动 miss，新主题首次访问重建图标；旧主题条目由 LRU 淘汰。
+    高频路径（delegate 滚动、菜单/过滤列表重建）复用 QIcon，省 qta.icon 字体渲染开销。
     """
     if name not in _ICON_MAP:
         raise ValueError(f'未注册图标常量: {name}')
     glyph, default_color_key = _ICON_MAP[name]
     ck = color_key or default_color_key
+    key = (name, ck, theme_colors._current_theme)
+    with _icon_cache_lock:
+        cached = _icon_cache.get(key)
+        if cached is not None:
+            _icon_cache.move_to_end(key)
+            return cached
     color = c(ck)
-    return cast(QIcon, qta.icon(glyph, color=color))
+    icon = cast(QIcon, qta.icon(glyph, color=color))
+    with _icon_cache_lock:
+        _icon_cache[key] = icon
+        if len(_icon_cache) > _ICON_CACHE_MAX:
+            _icon_cache.popitem(last=False)
+    return icon
 
 
 def icon(name: str, color_key: str | None = None) -> QIcon:

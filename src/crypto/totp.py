@@ -10,6 +10,9 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 logger = logging.getLogger(__name__)
 
+# Base32 标准化时一次性剥离的常见分隔符（空格、连字符、点、下划线）。
+_BASE32_STRIP_TABLE = str.maketrans('', '', ' -._')
+
 
 class TOTPGenerator:
     """基于时间的一次性密码 TOTP 生成器。"""
@@ -17,7 +20,6 @@ class TOTPGenerator:
     DEFAULT_PERIOD = 30  # 时间步长，单位为秒
     DEFAULT_DIGITS = 6   # 验证码位数
 
-    # 支持的哈希算法映射
     ALGO_MAP = {
         'SHA1': 'sha1',
         'SHA256': 'sha256',
@@ -93,6 +95,10 @@ class TOTPGenerator:
     @staticmethod
     def _compute_totp(key: bytes, algo_name: str, period: int, digits: int) -> str:
         """核心 TOTP 计算：HMAC + 动态截断 + 取模。"""
+        # 防御 period<=0 导致除零：正常经 _parse_config 校验，此守卫防止绕过
+        # _parse_config 直接调用 _compute_totp（如未来重构）时 ZeroDivisionError。
+        if period <= 0:
+            raise ValueError('TOTP period 必须为正数')
         counter = int(time.time()) // period
         msg = struct.pack('>Q', counter)
         hmac_hash = hmac.new(key, msg, algo_name).digest()
@@ -207,7 +213,7 @@ class TOTPGenerator:
     @staticmethod
     def _normalize_base32(raw: str) -> str:
         """标准化 Base32 密钥：大写、去除常见分隔符、自动补齐填充。"""
-        cleaned = raw.upper().strip().replace(' ', '').replace('-', '').replace('.', '').replace('_', '')
+        cleaned = raw.upper().strip().translate(_BASE32_STRIP_TABLE)
         # 自动补齐 Base32 填充，兼容其他认证器导出的非标准填充密钥
         padding = (8 - len(cleaned) % 8) % 8
         if padding:

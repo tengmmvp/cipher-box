@@ -296,12 +296,21 @@ class SettingsDialog(QDialog):
         )):
             QMessageBox.warning(self, '生成规则无效', '至少需要选择一种密码字符类型。')
             return
+        # 快照当前内存配置：save 失败时回滚，避免内存已写入新值而磁盘仍为旧值，
+        # 导致用户取消后同进程后续 config.get 读到未持久化的脏值。
+        snapshot: dict[str, object] = {
+            key: self._config.get(key) for key, *_ in self._SETTINGS_MAP
+        }
+        snapshot['backup_directory'] = self._config.get('backup_directory')
         for key, attr, atype, _default in self._SETTINGS_MAP:
             self._config.set(key, self._get_widget_value(getattr(self, attr), atype))
         self._config.set('backup_directory', self._backup_path_edit.text().strip())
         try:
             self._config.save()
         except OSError:
+            # save 失败：回滚内存配置到快照，保持内存与磁盘（旧值）一致。
+            for key, value in snapshot.items():
+                self._config.set(key, value)
             QMessageBox.critical(
                 self, '保存失败',
                 '无法写入配置文件，请检查磁盘空间和文件权限。',

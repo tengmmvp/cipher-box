@@ -7,6 +7,8 @@
 from ...models import (
     ENTRY_FIELD_LIMITS,
     ENTRY_TYPES,
+    MAX_CUSTOM_FIELD_NAME,
+    MAX_CUSTOM_FIELD_VALUE,
     MAX_CUSTOM_FIELDS_PER_ENTRY,
     CustomField,
     Entry,
@@ -43,3 +45,16 @@ def validate_plain_entry(entry: Entry) -> None:
         raise ValueError(
             f'自定义字段过多（最多 {MAX_CUSTOM_FIELDS_PER_ENTRY} 个）'
         )
+    # 自定义字段单字段长度校验：与 CustomField.from_dict(strict=True)（导入路径）对齐，
+    # 消除「编辑可存任意长度、导入拒绝」的往返断裂——编辑存的超长值导出再导入会被
+    # from_dict 跳过整条。业务层兜底，覆盖 add/update 全部写入路径，一处闭合对称。
+    # 类型一并校验，将 len() 对非 str 的 TypeError 归一化为 ValueError，与 from_dict 对齐。
+    for field in entry.custom_fields:
+        if not isinstance(field.name, str) or len(field.name) > MAX_CUSTOM_FIELD_NAME:
+            raise ValueError(
+                f'自定义字段名称无效或过长（最多 {MAX_CUSTOM_FIELD_NAME} 字符）'
+            )
+        if not isinstance(field.value, str) or len(field.value) > MAX_CUSTOM_FIELD_VALUE:
+            raise ValueError(
+                f'自定义字段值无效或过长（最多 {MAX_CUSTOM_FIELD_VALUE} 字符）'
+            )

@@ -218,3 +218,7 @@ class PasswordHistoryWidget(QWidget):
             group_layout.addLayout(row)
 
         content_layout.addWidget(group)
+        # record dict 的 password 明文已提取到 _history_passwords，不再需要 dict 中的
+        # 明文副本——显式 pop 收缩驻留面，不依赖 _expand 返回后的 GC 回收。
+        for record in history:
+            record.pop('password', None)

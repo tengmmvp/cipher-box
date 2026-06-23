@@ -25,9 +25,6 @@ from src.business.services.crypto_utils import (
 from src.exceptions import VaultLockedError
 from src.models import CustomField, Entry, RawEntry
 
-# ---------------------------------------------------------------------------
-# 固定 fixture
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def aes_key() -> bytes:
@@ -71,9 +68,6 @@ def raw_entry() -> RawEntry:
     )
 
 
-# ==================== encrypt_field / decrypt_field 往返 ====================
-
-
 class TestEncryptDecryptRoundTrip:
     """加密后解密应还原原文。"""
 
@@ -106,9 +100,6 @@ class TestEncryptDecryptRoundTrip:
         assert ct1 != ct2
 
 
-# ==================== decrypt_field strict 模式 ====================
-
-
 class TestDecryptFieldStrict:
     """strict=True 时无效密文应抛出 ValueError。"""
 
@@ -129,9 +120,6 @@ class TestDecryptFieldStrict:
             decrypt_field(ct, wrong_key, 'cid-y', 'password', strict=True)
 
 
-# ==================== decrypt_field 非 strict 模式，默认为容错 ====================
-
-
 class TestDecryptFieldLenient:
     """strict=False 时无效密文应返回空字符串。"""
 
@@ -149,9 +137,6 @@ class TestDecryptFieldLenient:
         """空密文字符串直接返回空，走兼容路径不做解密。"""
         result = decrypt_field('', aes_key, 'cid-e', 'title')
         assert result == ''
-
-
-# ==================== matches_search ====================
 
 
 class TestMatchesSearch:
@@ -187,9 +172,6 @@ class TestMatchesSearch:
         assert matches_search(entry, '') is True
 
 
-# ==================== matches_tag ====================
-
-
 class TestMatchesTag:
     """标签匹配逻辑。"""
 
@@ -222,9 +204,6 @@ class TestMatchesTag:
         entry = Entry(tags=cast(str, None))
         assert matches_tag(entry, 'anything') is False
         assert matches_tag(entry, '') is True
-
-
-# ==================== copy_entry_fields ====================
 
 
 class TestCopyEntryFields:
@@ -276,9 +255,6 @@ class TestCopyEntryFields:
         assert copied.custom_fields == fields
 
 
-# ==================== build_entry_summary ====================
-
-
 class TestBuildEntrySummary:
     """摘要 Entry 不含敏感字段。"""
 
@@ -309,9 +285,6 @@ class TestBuildEntrySummary:
         assert summary.tags == raw_entry.tags
 
 
-# ==================== entry_aad ====================
-
-
 class TestEntryAad:
     """AAD 字符串格式验证。"""
 
@@ -330,9 +303,6 @@ class TestEntryAad:
         assert a1 != a2
 
 
-# ==================== require_vault_key ====================
-
-
 class TestRequireVaultKey:
     """保险库密钥获取。"""
 
@@ -349,9 +319,6 @@ class TestRequireVaultKey:
 
         with pytest.raises(VaultLockedError):
             require_vault_key(cast(VaultManager, FakeVaultManager()))
-
-
-# ==================== decrypt_entry_to_portable_dict strict 统一 ====================
 
 
 class TestDecryptEntryToPortableDictStrict:

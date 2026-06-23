@@ -15,7 +15,6 @@ from ...models import ENTRY_TYPE_LOGIN, ENTRY_TYPES, Entry
 from ..resources.constants import FONT_FAMILY_FALLBACKS, FONT_FAMILY_PRIMARY
 from ..resources.theme_colors import c, get_strength_color
 
-# 收藏标记字符
 FAVORITE_MARKER = '★ '
 
 # paint 行内垂直布局不变量（单位：像素）。
