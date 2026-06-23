@@ -12,6 +12,8 @@ import os
 from typing import NamedTuple
 
 from argon2.low_level import Type, hash_secret_raw
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDFExpand
 
 from ..utils.memory import secure_zero_buffer
 from .encryption import EncryptionEngine
@@ -25,7 +27,7 @@ ARGON2_MEMORY_COST = 64 * 1024  # 64 MB（KiB）
 ARGON2_PARALLELISM = 4
 SALT_SIZE = 32
 # Argon2id 盐最小长度。空盐或过短盐会显著降低派生强度（空盐退化为固定盐），
-# 拒绝过短输入避免静默降级。主盐 32 字节，备份盐经 b'backup:' 前缀后 39 字节。
+# 拒绝过短输入避免静默降级。主盐 32 字节；备份密钥经 HKDF 派生，复用同一盐值。
 MIN_SALT_SIZE = 16
 KEY_SIZE = 32  # AES-256
 
@@ -43,6 +45,13 @@ MAX_ARGON2_PARALLELISM = 16
 
 # KDF 标识，写入 vault_meta 的 master_kdf 字段，解锁时校验。
 KDF_NAME = 'argon2id'
+
+# HKDF 域分离 info 标签。主密钥与备份密钥共享同一 Argon2id 主材料，经不同 info
+# 派生实现域分离：HKDF 保证不同 info → 输出独立，消除原先用 salt 字符串前缀
+# b'backup:' 做域分离时「主盐碰巧以 b'backup:' 开头则两域等价」的隐式碰撞假设。
+# 新增密钥域（如导出密钥）只需追加常量并复用 _hkdf_expand。
+_DOMAIN_INFO_MASTER = b'cipherbox:vault-master-key'
+_DOMAIN_INFO_BACKUP = b'cipherbox:backup-key'
 
 
 class KdfParams(NamedTuple):
@@ -89,44 +98,23 @@ class MasterKeyManager:
             )
 
     @classmethod
-    def derive_backup_key(
-        cls, password: str, salt: bytes, params: KdfParams = DEFAULT_KDF_PARAMS,
-    ) -> bytearray:
-        """从备份密码派生独立的备份加密密钥，与主密钥域分离。
-
-        先独立校验原始盐长度再拼接域前缀派生。若直接把 ``b'backup:' + salt``
-        交给 derive_key，其内部 _validate_salt 校验的是拼接后的 7+len(salt)，
-        调用方传 9 字节盐即可绕过 MIN_SALT_SIZE 下限，实际熵不足。
-
-        域分离用 ``b'backup:'`` 字符串前缀混入 Argon2id 的 salt 字段，而非独立
-        HKDF info——功能上正确（不同 salt → 不同密钥），且经独立盐校验规避了前缀
-        绕过。未来若新增第三域（如导出密钥），可演进为显式 HKDF domain separation
-        以消除前缀碰撞的隐式假设。
-        """
-        cls._validate_params(params)
-        cls._validate_salt(salt)
-        return cls.derive_key(password, b'backup:' + salt, params)
-
-    @classmethod
-    def derive_key(
+    def _derive_master_material(
         cls,
         password: str,
         salt: bytes,
         params: KdfParams = DEFAULT_KDF_PARAMS,
     ) -> bytearray:
-        """使用 Argon2id 从密码派生 256 位密钥
+        """Argon2id 派生 32 字节主材料，作为 HKDF 域分离的输入。
 
-        Args:
-            password: 主密码明文
-            salt: 随机盐值
-            params: Argon2id 参数
+        含密码/盐/参数校验。返回 bytearray 以便调用方在 HKDF 派生后原地清零，
+        避免主材料（可派生全部域密钥）长期驻留内存。
 
-        Returns:
-            32 字节密钥 bytearray。返回 bytearray 而非 bytes，以便
-            _secure_zero 原地覆写底层缓冲（bytes 不可变只能清零副本）。
+        主密钥与备份密钥共享同一主材料（同 password+salt 的 Argon2id 输出），
+        经不同 HKDF info 派生实现域分离——见 :data:`_DOMAIN_INFO_MASTER` 说明。
         """
         if not isinstance(password, str):
             raise TypeError(f'密码类型无效：期望 str，实际 {type(password).__name__}')
+        cls._validate_params(params)
         cls._validate_salt(salt)
         return bytearray(hash_secret_raw(
             secret=password.encode('utf-8'),
@@ -137,6 +125,66 @@ class MasterKeyManager:
             hash_len=KEY_SIZE,
             type=Type.ID,
         ))
+
+    @classmethod
+    def _hkdf_expand(
+        cls, material: bytes | bytearray, info: bytes,
+    ) -> bytearray:
+        """从主材料经 HKDF-Expand 派生 32 字节域密钥。
+
+        用 HKDF-Expand（而非完整 HKDF extract+expand）：Argon2id 输出已是高熵伪
+        随机材料，无需 extract 步骤，直接 expand 即可。返回 bytearray 以便清零。
+        """
+        return bytearray(
+            HKDFExpand(
+                algorithm=hashes.SHA256(), length=KEY_SIZE, info=info,
+            ).derive(material)
+        )
+
+    @classmethod
+    def derive_key(
+        cls,
+        password: str,
+        salt: bytes,
+        params: KdfParams = DEFAULT_KDF_PARAMS,
+    ) -> bytearray:
+        """使用 Argon2id + HKDF 从密码派生 256 位主密钥（保险库域）。
+
+        先 Argon2id 派生主材料，再 HKDF-Expand 按 :data:`_DOMAIN_INFO_MASTER`
+        派生主密钥。主材料在派生后原地清零。
+
+        Args:
+            password: 主密码明文
+            salt: 随机盐值
+            params: Argon2id 参数
+
+        Returns:
+            32 字节主密钥 bytearray。返回 bytearray 而非 bytes，以便
+            secure_zero_buffer 原地清零底层缓冲（bytes 不可变只能清零副本）。
+        """
+        material = cls._derive_master_material(password, salt, params)
+        try:
+            return cls._hkdf_expand(material, _DOMAIN_INFO_MASTER)
+        finally:
+            secure_zero_buffer(material)
+
+    @classmethod
+    def derive_backup_key(
+        cls, password: str, salt: bytes, params: KdfParams = DEFAULT_KDF_PARAMS,
+    ) -> bytearray:
+        """从备份密码派生独立的备份加密密钥（备份域），与主密钥域分离。
+
+        与 :meth:`derive_key` 共享同一 Argon2id 主材料（同 password+salt），但经
+        :data:`_DOMAIN_INFO_BACKUP` 的 HKDF info 派生。域分离由 HKDF info 显式
+        保证（不同 info → 输出独立），消除原先用 salt 字符串前缀 ``b'backup:'``
+        做域分离时「主盐碰巧以 ``b'backup:'`` 开头则两域等价」的隐式碰撞假设。
+        新增第三域只需追加新的 ``_DOMAIN_INFO_*`` 常量并复用 _hkdf_expand。
+        """
+        material = cls._derive_master_material(password, salt, params)
+        try:
+            return cls._hkdf_expand(material, _DOMAIN_INFO_BACKUP)
+        finally:
+            secure_zero_buffer(material)
 
     @classmethod
     def create(

@@ -78,6 +78,25 @@ class TestCategoryManagerAdd:
         cats = entry_mgr.categories.get_categories()
         assert any(c.name == name for c in cats)
 
+    def test_add_category_signature_verifies_after_reload(self, entry_mgr, vault):
+        """新建分类的两阶段签名须与持久化行一致：重载后 verify_category 通过。
+
+        回归守护 created_at 回填：created_at 由 DB 层填充，若未回填内存对象，
+        两阶段重签会用空 created_at 算 mac，导致重载后验签永久失败、
+        category HMAC 纵深防御对该分类系统性失效。
+        """
+        from src.business.services.metadata_signer import MetadataSigner
+
+        cat_id = entry_mgr.categories.add_category(Category(name=_unique_name('签名')))
+        # 从 DB 重载原始行（未经 CategoryManager 缓存），用当前域密钥验签
+        raw = vault.db.get_category(cat_id)
+        assert raw is not None
+        key = vault.key
+        assert key is not None
+        signer = MetadataSigner()
+        signer.set_domain_key(MetadataSigner.compute_domain_key(key))
+        signer.verify_category(raw)  # 不抛即通过：created_at 与签名一致
+
 
 class TestCategoryManagerUpdate:
     """update_category 改名后缓存失效。"""
@@ -96,11 +115,41 @@ class TestCategoryManagerUpdate:
         raw = vault.db.get_category(cat_id)
         assert raw is not None
         assert raw.name.startswith('cb2:')
+        # 回归守护：本测试以不带 created_at 的 Category 调 update_category（模拟
+        # 不安全调用模式）。update_category 须从 DB 回填 created_at 再签名，使重载
+        # 后 verify_category 通过——否则签名与持久化行错配，category HMAC 失效。
+        from src.business.services.metadata_signer import MetadataSigner
+        key = vault.key
+        assert key is not None
+        signer = MetadataSigner()
+        signer.set_domain_key(MetadataSigner.compute_domain_key(key))
+        signer.verify_category(raw)
 
     def test_update_requires_id(self, entry_mgr):
         """id 为 None 应拒绝。"""
         with pytest.raises(ValueError, match='ID'):
             entry_mgr.categories.update_category(Category(name=_unique_name('X')))
+
+    def test_category_tamper_logs_warning_lenient(self, entry_mgr, vault, caplog):
+        """篡改 DB 行 metadata_mac，get_categories LENIENT 路径记 warning 且不抛。
+
+        端到端守护 category HMAC 纵深：直接篡改持久化的 metadata_mac（绕过 repository
+        签名），LENIENT 验签应检测到并记 warning，但不阻断返回分类（GCM 仍兜底名密文）。
+        """
+        import logging
+        cat_id = entry_mgr.categories.add_category(Category(name=_unique_name('篡改')))
+        # 直接篡改 DB 的 metadata_mac，绕过 repository 签名
+        conn = vault.db.connection
+        conn.execute("UPDATE categories SET metadata_mac='tampered' WHERE id=?", (cat_id,))
+        conn.commit()
+        with caplog.at_level(logging.WARNING, logger='src.database.category_repository'):
+            cats = vault.db.get_categories()  # 默认 LENIENT 验签
+        # LENIENT 不抛，仍返回分类；篡改的分类记完整性 warning
+        assert any(cat.id == cat_id for cat in cats)
+        assert any(
+            '元数据完整性校验失败' in r.message and str(cat_id) in r.message
+            for r in caplog.records
+        )
 
 
 class TestCategoryManagerDelete:

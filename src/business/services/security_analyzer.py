@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-from ...exceptions import VaultLockedError
+from ...exceptions import DecryptionError, VaultLockedError
 from ...models import Entry, RawEntry
 from .crypto_utils import build_entry_summary, decrypt_field, require_vault_key
 
@@ -341,7 +341,7 @@ class SecurityAnalyzer:
                     password = decrypt_field(
                         raw.password, vault_key, raw.crypto_id, 'password', strict=True,
                     )
-                except ValueError:
+                except DecryptionError:
                     logger.debug("安全分析跳过损坏条目 id=%s，原因：密码解密失败", raw.id)
                     skipped_count += 1
                     continue

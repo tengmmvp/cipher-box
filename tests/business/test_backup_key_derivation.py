@@ -63,9 +63,10 @@ def test_derive_backup_key_different_password():
 def test_derive_backup_key_isolated_from_master_key():
     """备份密钥与主密钥域分离：相同 password+salt 下两者不同。
 
-    derive_backup_key 内部对盐加 b'backup:' 前缀再派生，使备份密钥与
-    derive_key（主密钥域）隔离——即便备份密码与主密码相同、salt 相同，
-    派生结果也不同，避免备份密钥泄露等价于主密钥泄露。
+    derive_backup_key 与 derive_key 共享同一 Argon2id 主材料，但经不同 HKDF
+    info（_DOMAIN_INFO_BACKUP vs _DOMAIN_INFO_MASTER）派生，HKDF 保证不同 info
+    → 输出独立——即便备份密码与主密码相同、salt 相同，派生结果也不同，
+    避免备份密钥泄露等价于主密钥泄露。
     """
     salt = os.urandom(32)
     backup_key = MasterKeyManager.derive_backup_key('same_pw', salt)
@@ -130,6 +131,6 @@ def test_derive_key_rejects_short_or_empty_salt():
 
 
 def test_derive_backup_key_rejects_empty_salt():
-    """derive_backup_key 对空盐在 b'backup:' 前缀后仍不足最小长度，应拒绝。"""
+    """derive_backup_key 经 _derive_master_material 校验盐最小长度，空盐应拒绝。"""
     with pytest.raises(ValueError):
         MasterKeyManager.derive_backup_key('pw', b'')

@@ -53,9 +53,9 @@ class ReEncryptionDB(Protocol):
 
     def update_password_history_batch(self, rows: list[ReEncryptedHistory]) -> None: ...
 
-    def get_categories(self) -> list[Category]: ...
+    def get_categories(self, *, verify: bool = True) -> list[Category]: ...
 
-    def update_category(self, category: Category) -> None: ...
+    def update_category_reencrypted(self, category: Category) -> None: ...
 
 
 _RE_ENCRYPT_BATCH_SIZE = 200
@@ -150,7 +150,7 @@ class ReEncryptionService:
                                 )
                                 setattr(raw_entry, field, new_cipher)
                                 del plain
-                    except ValueError as exc:
+                    except DecryptionError as exc:
                         logger.error("重加密中止：条目 id=%s 解密失败", raw_entry.id)
                         raise DecryptionError(
                             "某条目解密失败，数据可能已损坏。中止改密以保护数据完整性。"
@@ -184,23 +184,46 @@ class ReEncryptionService:
             secure_zero_buffer(precomputed_domain_key)
 
     def re_encrypt_categories(self, old_key: bytes | bytearray, new_key: bytes | bytearray) -> None:
-        """使用分类 ID 绑定的 AAD 重加密全部分类名称。"""
-        for category in self._db.get_categories():
-            if category.id is None:
-                continue
-            crypto_id = category_crypto_id(category.id)
-            try:
-                plaintext = _decrypt_field_impl(
-                    category.name, old_key, crypto_id, 'category_name', strict=True,
+        """使用分类 ID 绑定的 AAD 重加密全部分类名称。
+
+        读取分类时 verify=False 跳过完整性验签：改密产生新域密钥后，旧 metadata_mac
+        在新域密钥下验证必然失败，此处只需读取原始数据重加密 name 并重签。
+
+        域密钥对称（与 ``re_encrypt_entries`` 的 ``sign_with_domain_key(new)`` 一致）：
+        本方法在改密事务内运行，此时 ``signer._domain_key`` 仍是旧值
+        （``vault_manager._re_encrypt_all`` 在事务提交后才正式 ``set_domain_key(new)``，
+        防后台线程在 commit 前用新域密钥验签未提交数据）。分类重签用
+        ``sign_category_with_domain_key`` 注入预计算的新域密钥，再经不签名的
+        ``update_category_reencrypted`` 写入——与条目一样自给自足（自己用新域密钥
+        预签名 + 不签名写），不临时切换 signer 全局 ``_domain_key``。这消除「借全局
+        状态」的隐含契约：任何新增的并发/重入读路径都不会在此窗口读到被切换的
+        ``_domain_key``，也使分类重签与条目重签在抽象上一致。
+        """
+        precomputed_domain_key = self._signer.compute_domain_key(new_key)
+        try:
+            for category in self._db.get_categories(verify=False):
+                if category.id is None:
+                    continue
+                crypto_id = category_crypto_id(category.id)
+                try:
+                    plaintext = _decrypt_field_impl(
+                        category.name, old_key, crypto_id, 'category_name', strict=True,
+                    )
+                except DecryptionError as exc:
+                    raise DecryptionError(
+                        f'分类 {category.id} 名称解密失败，已中止改密'
+                    ) from exc
+                category.name = _encrypt_field_impl(
+                    plaintext, new_key, crypto_id, 'category_name',
                 )
-            except ValueError as exc:
-                raise DecryptionError(
-                    f'分类 {category.id} 名称解密失败，已中止改密'
-                ) from exc
-            category.name = _encrypt_field_impl(
-                plaintext, new_key, crypto_id, 'category_name',
-            )
-            self._db.update_category(category)
+                category.metadata_mac = self._signer.sign_category_with_domain_key(
+                    category, precomputed_domain_key,
+                )
+                self._db.update_category_reencrypted(category)
+        finally:
+            # 新域密钥派生副本（bytearray）在分类重加密全程持有，结束后立即原地
+            # 清零收缩驻留，不依赖后续 KeyManager.clear() 间接回收。
+            secure_zero_buffer(precomputed_domain_key)
 
     def re_encrypt_history(self, old_key: bytes | bytearray, new_key: bytes | bytearray, *,
                            cancel_event: Event | None = None) -> None:
@@ -237,7 +260,7 @@ class ReEncryptionService:
                         history.entry_crypto_id, 'password',
                         strict=True,
                     )
-                except ValueError as exc:
+                except DecryptionError as exc:
                     logger.error("重加密中止：密码历史 id=%s 解密失败", history.id)
                     raise DecryptionError(
                         "某密码历史记录解密失败，数据可能已损坏。"

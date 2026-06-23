@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from src.business.managers.vault_manager import VaultManager
-from src.models import CustomField, Entry
+from src.models import Category, CustomField, Entry
 from tests.helpers import make_entry_manager
 
 
@@ -349,3 +349,43 @@ class TestReEncryptEdgeCases:
         assert entries['正常条目'].password == 'good_pass'
         # 损坏条目仍存在（旧密钥下其 password 解密失败，容错返回空）
         assert '损坏条目' in entries
+
+    # 11. 改密后全部分类以新域密钥重签，verify_category 通过（category HMAC 纵深）
+    def test_re_encrypt_categories_re_sign_under_new_domain_key(self):
+        """改密后全部分类 metadata_mac 须以新域密钥重签，verify_category 通过。
+
+        回归守护 category HMAC 纵深防御（前三轮系统性遗漏）：re_encrypt_categories
+        在改密事务内运行，此时 signer._domain_key 仍是旧值（vault_manager 在事务
+        提交后才正式 set_domain_key(new)，防后台线程验签未提交数据）。若分类重签
+        沿用旧域密钥——条目用 sign_with_domain_key(new) 绕过，但分类经
+        update_category→sign_category 用 self._domain_key（旧）——改密后全部分类
+        metadata_mac 以旧域密钥签名，新域密钥下 verify_category 永久失败，category
+        HMAC 对非密文元数据（icon/color/sort_order/created_at）的篡改检测系统性
+        失效（GCM 仍保护 name 密文，故非密钥泄漏）。本测试端到端验证修复：改密后
+        从 DB 重载全部分类原始行，用新主密钥派生的新域密钥逐个验签，全部通过。
+        """
+        from src.business.services.metadata_signer import MetadataSigner
+
+        # initialize 预置默认分类；额外新增若干自定义分类扩大覆盖面
+        for i in range(3):
+            self._entry_mgr.categories.add_category(
+                Category(name=f'改密验签分类{i}', icon_char='[X]', color='#abc'),
+            )
+
+        ok, _ = self._vault.change_master_password(
+            'original_pwd_123', 'new_password_456'
+        )
+        assert ok
+
+        # 用新主密钥派生新域密钥的独立 signer，从 DB 重载原始分类行（跳过 LENIENT
+        # 验签，取未经缓存加工的持久化行）逐个验签——不依赖 vault 内部 signer 状态，
+        # 纯粹验证持久化签名在新域密钥下的有效性。
+        key = self._vault.key
+        assert key is not None
+        signer = MetadataSigner()
+        signer.set_domain_key(MetadataSigner.compute_domain_key(key))
+
+        categories = self._vault.db.get_categories(verify=False)
+        assert len(categories) > 0
+        for category in categories:
+            signer.verify_category(category)  # 不抛即通过：新域密钥下签名有效

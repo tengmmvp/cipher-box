@@ -57,6 +57,7 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
     import_export = ImportExportManager(entry_mgr)
     backup = BackupRestoreManager(vault, entry_mgr)
     vault.register_on_lock(entry_mgr.invalidate_caches)
+    vault.register_on_lock(security.invalidate_cache)
     entry_mgr.register_on_change(security.invalidate_cache)
     return BusinessContext(
         config=config,

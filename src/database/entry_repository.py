@@ -8,6 +8,7 @@ import logging
 import sqlite3
 import threading
 import uuid
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 
 from ..exceptions import DatabaseError, VaultIntegrityError, VaultLockedError
@@ -29,6 +30,61 @@ _ENTRY_COLUMNS = [
     'totp_secret_enc', 'created_at', 'updated_at', 'deleted_at',
     'password_changed_at', 'metadata_mac',
 ]
+
+# entries 表列名 → 取值函数。INSERT/UPDATE 参数元组与加密字段断言均从此单一来源
+# 派生（列序来自 _ENTRY_COLUMNS，取值来自本映射），消除手写参数元组靠人工保持
+# 列序一致导致的错位风险：新增列只需在此追加 getter，SQL、INSERT/UPDATE 元组、
+# 加密断言自动跟随。bool 列(is_favorite/is_deleted)存为 INTEGER 经 int() 转换；
+# custom_fields_enc 取密文形态属性 custom_fields_db_value。
+_ENTRY_COLUMN_GETTERS: dict[str, Callable[[RawEntry], object]] = {
+    'crypto_id': lambda e: e.crypto_id,
+    'title_enc': lambda e: e.title,
+    'username_enc': lambda e: e.username,
+    'password_enc': lambda e: e.password,
+    'url_enc': lambda e: e.url,
+    'category_id': lambda e: e.category_id,
+    'tags_enc': lambda e: e.tags,
+    'notes_enc': lambda e: e.notes,
+    'custom_fields_enc': lambda e: e.custom_fields_db_value,
+    'is_favorite': lambda e: int(e.is_favorite),
+    'is_deleted': lambda e: int(e.is_deleted),
+    'password_strength': lambda e: e.password_strength,
+    'entry_type': lambda e: e.entry_type,
+    'totp_secret_enc': lambda e: e.totp_secret,
+    'created_at': lambda e: e.created_at,
+    'updated_at': lambda e: e.updated_at,
+    'deleted_at': lambda e: e.deleted_at,
+    'password_changed_at': lambda e: e.password_changed_at,
+    'metadata_mac': lambda e: e.metadata_mac,
+}
+# 键集守护：getter 须覆盖 _ENTRY_COLUMNS 的全部列。新增列忘加 getter 在模块加载
+# 时即报错，防止 INSERT/UPDATE 参数取值错位与加密断言漏列。
+if set(_ENTRY_COLUMN_GETTERS) != set(_ENTRY_COLUMNS):
+    raise RuntimeError('_ENTRY_COLUMN_GETTERS 与 _ENTRY_COLUMNS 列集不一致，参数取值将错位')
+
+# 取值属性存在性守护：键集守护只校验 getter 的「键」覆盖列集，不校验 lambda 内
+# 取值的「属性」是否存在。用一个全默认 RawEntry 遍历所有 getter，捕获最常见的
+# getter typo——属性名拼写错误（AttributeError）或签名错配（TypeError），在模块
+# 加载时即报错。不校验取值的语义正确性（如 title_enc 误取 username：属性存在但
+# 取错字段），那由端到端 test_re_encrypt（改密后逐字段解密比对）兜底。
+_PROBE_ENTRY = RawEntry()
+for _col, _getter in _ENTRY_COLUMN_GETTERS.items():
+    try:
+        _getter(_PROBE_ENTRY)
+    except (AttributeError, TypeError) as _exc:
+        raise RuntimeError(
+            f'_ENTRY_COLUMN_GETTERS[{_col!r}] 取值失败，属性可能拼写错误: {_exc}'
+        ) from None
+del _PROBE_ENTRY
+
+
+def _entry_column_values(entry: RawEntry, columns: list[str]) -> tuple:
+    """按给定列序从 entry 取值生成参数元组，供 INSERT/UPDATE 位置绑定。
+
+    取值经 _ENTRY_COLUMN_GETTERS（列名→取值），与 SQL 列序（_ENTRY_COLUMNS /
+    _UPDATE_ENTRY_COLUMNS）由同一映射驱动，消除手写元组列错位风险。
+    """
+    return tuple(_ENTRY_COLUMN_GETTERS[column](entry) for column in columns)
 
 # 写入用 INSERT：add_entry 写入全部列，列序与 _ENTRY_COLUMNS 一致。
 _INSERT_ENTRY_SQL = (
@@ -167,19 +223,24 @@ class EntryRepository:
         self._mgr.assert_encrypted(value, field_name)
 
     def _assert_entry_encrypted_fields(self, entry: RawEntry) -> None:
-        """防御性断言：条目的全部加密字段应为受支持格式的密文或空字符串。
+        """防御性断言：条目的全部加密字段(*_enc 列对应)应为受支持格式的密文或空。
 
-        统一 add_entry / update_entry 的加密字段断言，新增加密字段只需在此
-        追加一处，消除两处复制粘贴漏改的风险。
+        加密字段集从 _ENTRY_COLUMNS 的 *_enc 列派生(经 _ENTRY_COLUMN_GETTERS
+        取值)，单一事实源：新增 *_enc 列只需在 _ENTRY_COLUMN_GETTERS 追加 getter，
+        本断言自动覆盖，消除原先手写 8 字段清单与新增加密列漏断言的漂移风险。
         """
-        self._assert_encrypted(entry.title, 'title')
-        self._assert_encrypted(entry.username, 'username')
-        self._assert_encrypted(entry.password, 'password')
-        self._assert_encrypted(entry.url, 'url')
-        self._assert_encrypted(entry.tags, 'tags')
-        self._assert_encrypted(entry.notes, 'notes')
-        self._assert_encrypted(entry.totp_secret, 'totp_secret')
-        self._assert_encrypted(entry.custom_fields_db_value, 'custom_fields')
+        for column in _ENTRY_COLUMNS:
+            if column.endswith('_enc'):
+                # custom_fields_enc 对应密文属性 custom_fields_db_value，其余 *_enc
+                # 去后缀即 RawEntry 同名 str 属性。经 getattr 取值消除原先依赖
+                # _ENTRY_COLUMN_GETTERS 统一 object 返回类型所需的 cast，且保持
+                # 加密字段集从 _ENTRY_COLUMNS 单一来源派生。
+                attr = (
+                    'custom_fields_db_value'
+                    if column == 'custom_fields_enc'
+                    else column[:-4]
+                )
+                self._assert_encrypted(getattr(entry, attr), column[:-4])
 
     # ==================== 条目 ====================
 
@@ -187,30 +248,20 @@ class EntryRepository:
     def _entry_insert_params(entry: RawEntry) -> tuple:
         """构造 INSERT 参数元组，列序与 _ENTRY_COLUMNS 一致。
 
-        供 add_entry 与 add_entries_batch 共用，消除两处 19 字段元组的复制粘贴
-        （新增加密列后只改 _ENTRY_COLUMNS，此处自动跟随，避免漏改一处致列错位）。
+        供 add_entry 与 add_entries_batch 共用。取值经 _ENTRY_COLUMN_GETTERS 驱动，
+        新增列只需更新 getter 映射，此处自动跟随，避免漏改致列错位。
         """
-        return (
-            entry.crypto_id,
-            entry.title,
-            entry.username,
-            entry.password,
-            entry.url,
-            entry.category_id,
-            entry.tags,
-            entry.notes,
-            entry.custom_fields_db_value,
-            1 if entry.is_favorite else 0,
-            1 if entry.is_deleted else 0,
-            entry.password_strength,
-            entry.entry_type,
-            entry.totp_secret,
-            entry.created_at,
-            entry.updated_at,
-            entry.deleted_at,
-            entry.password_changed_at,
-            entry.metadata_mac,
-        )
+        return _entry_column_values(entry, _ENTRY_COLUMNS)
+
+    @staticmethod
+    def _entry_update_params(entry: RawEntry) -> tuple:
+        """构造 UPDATE SET 参数元组（不含 WHERE id），列序与 _UPDATE_ENTRY_COLUMNS 一致。
+
+        与 _entry_insert_params 对称：UPDATE 不写 is_deleted/deleted_at/created_at，
+        其余列（含全部密文列）与元数据一并更新。取值同样经 _ENTRY_COLUMN_GETTERS
+        驱动，与 UPDATE SQL 列序由同一映射守护，消除手写元组的列错位风险。
+        """
+        return _entry_column_values(entry, _UPDATE_ENTRY_COLUMNS)
 
     def get_entries(
         self,
@@ -277,23 +328,35 @@ class EntryRepository:
         ).fetchone()
         return self._row_to_entry(row) if row else None
 
+    def _normalize_for_insert(
+        self, entry: RawEntry, *, now: str, preserve_metadata: bool,
+    ) -> None:
+        """填充 INSERT 所需的默认字段(crypto_id/时间戳/删除状态/签名)。
+
+        add_entry 与 add_entries_batch 共用，消除两处复制粘贴的规范化逻辑漂移。
+        password_changed_at 回退到 created_at（"未改过密码即创建时间"语义），而非
+        updated_at/now，避免导入/恢复时用导入时刻覆盖历史时间。
+        """
+        entry.crypto_id = entry.crypto_id or uuid.uuid4().hex
+        entry.created_at = entry.created_at or now
+        entry.updated_at = (
+            entry.updated_at if preserve_metadata and entry.updated_at else now
+        )
+        entry.is_deleted = bool(preserve_metadata and entry.is_deleted)
+        entry.deleted_at = entry.deleted_at if preserve_metadata else ''
+        entry.password_changed_at = (
+            entry.password_changed_at or entry.created_at or now
+        )
+        entry.metadata_mac = self._sign_entry(entry)
+
     @_db_write
     def add_entry(self, entry: RawEntry, preserve_metadata: bool = False) -> int:
         """添加条目，返回 ID。"""
         # 防御性断言，防止明文静默写入加密列
         self._assert_entry_encrypted_fields(entry)
-        now = utc_now_iso()
-        entry.crypto_id = entry.crypto_id or uuid.uuid4().hex
-        entry.created_at = entry.created_at or now
-        entry.updated_at = entry.updated_at if preserve_metadata and entry.updated_at else now
-        entry.is_deleted = bool(preserve_metadata and entry.is_deleted)
-        entry.deleted_at = entry.deleted_at if preserve_metadata else ''
-        # password_changed_at 回退到 created_at（"未改过密码即创建时间"语义），
-        # 而非 updated_at/now，避免导入/恢复时用导入时刻的 updated_at 覆盖历史时间。
-        entry.password_changed_at = (
-            entry.password_changed_at or entry.created_at or now
+        self._normalize_for_insert(
+            entry, now=utc_now_iso(), preserve_metadata=preserve_metadata,
         )
-        entry.metadata_mac = self._sign_entry(entry)
         try:
             cursor = self._conn.execute(
                 _INSERT_ENTRY_SQL,
@@ -332,17 +395,9 @@ class EntryRepository:
             # 恢复数据来自外部备份，逐条断言加密列防止明文静默落库（与 add_entry
             # 一致，不采样护栏——恢复是低频全量写入，逐条断言开销可接受）。
             self._assert_entry_encrypted_fields(entry)
-            entry.crypto_id = entry.crypto_id or uuid.uuid4().hex
-            entry.created_at = entry.created_at or now
-            entry.updated_at = (
-                entry.updated_at if preserve_metadata and entry.updated_at else now
+            self._normalize_for_insert(
+                entry, now=now, preserve_metadata=preserve_metadata,
             )
-            entry.is_deleted = bool(preserve_metadata and entry.is_deleted)
-            entry.deleted_at = entry.deleted_at if preserve_metadata else ''
-            entry.password_changed_at = (
-                entry.password_changed_at or entry.created_at or now
-            )
-            entry.metadata_mac = self._sign_entry(entry)
             params.append(self._entry_insert_params(entry))
         try:
             self._conn.executemany(_INSERT_ENTRY_SQL, params)
@@ -352,12 +407,20 @@ class EntryRepository:
             ) from exc
         self._auto_commit()
         # executemany 不提供逐条 lastrowid，按 crypto_id 反查 id 建立映射。
-        placeholders = ','.join('?' for _ in entries)
-        id_rows = self._conn.execute(
-            f'SELECT id, crypto_id FROM entries WHERE crypto_id IN ({placeholders})',  # nosec B608
-            [entry.crypto_id for entry in entries],
-        ).fetchall()
-        return {row[1]: row[0] for row in id_rows}
+        # 按 _ID_BATCH_SIZE 分批，避免恢复 >999 条目时 crypto_id IN(...) 超出
+        # SQLite 主机变量上限（与 get_entries_by_ids 一致）。
+        crypto_ids = [entry.crypto_id for entry in entries]
+        id_map: dict[str, int] = {}
+        for start in range(0, len(crypto_ids), _ID_BATCH_SIZE):
+            batch = crypto_ids[start:start + _ID_BATCH_SIZE]
+            placeholders = ','.join('?' for _ in batch)
+            rows = self._conn.execute(
+                f'SELECT id, crypto_id FROM entries WHERE crypto_id IN ({placeholders})',  # nosec B608
+                batch,
+            ).fetchall()
+            for row in rows:
+                id_map[row[1]] = row[0]
+        return id_map
 
     @_db_write
     def update_entry(
@@ -379,28 +442,12 @@ class EntryRepository:
             else utc_now_iso()
         )
         entry.metadata_mac = self._sign_entry(entry)
-        # 参数顺序须与 _UPDATE_ENTRY_COLUMNS 一致（不含 is_deleted/deleted_at/created_at）。
+        # SET 参数经 _entry_update_params 取值（_UPDATE_ENTRY_COLUMNS 列序），末尾
+        # 追加 WHERE id 绑定。列序由 _ENTRY_COLUMN_GETTERS 单一来源守护，
+        # 与 INSERT 路径对称，消除手写 17 字段元组的列错位风险。
         self._conn.execute(
             _UPDATE_ENTRY_SQL,
-            (
-                entry.crypto_id,
-                entry.title,
-                entry.username,
-                entry.password,
-                entry.url,
-                entry.category_id,
-                entry.tags,
-                entry.notes,
-                entry.custom_fields_db_value,
-                1 if entry.is_favorite else 0,
-                entry.password_strength,
-                entry.entry_type,
-                entry.totp_secret,
-                entry.updated_at,
-                entry.password_changed_at,
-                entry.metadata_mac,
-                entry.id,
-            ),
+            (*self._entry_update_params(entry), entry.id),
         )
         self._auto_commit()
 
@@ -418,13 +465,13 @@ class EntryRepository:
         # 采样首条的加密列做格式自检，防止重加密流程 bug 导致明文静默落入
         # 加密列。逐行断言开销不可接受（改密可达数万条），采样首条作护栏。
         first = rows[0]
-        for enc_value in (
-            first.title_enc, first.username_enc, first.password_enc, first.url_enc,
-            first.tags_enc, first.notes_enc,
-            first.custom_fields_enc, first.totp_secret_enc,
-        ):
-            if enc_value:
-                self._assert_encrypted(enc_value, 're_encrypt_batch')
+        # 采样首条的加密列做格式自检：从 ReEncryptedEntry._fields 的 *_enc 字段派生，
+        # 与列序单一来源统一，新增 *_enc 列时采样断言自动覆盖（无需手动同步 8 字段清单）。
+        for field in ReEncryptedEntry._fields:
+            if field.endswith('_enc'):
+                enc_value = getattr(first, field)
+                if enc_value:
+                    self._assert_encrypted(enc_value, 're_encrypt_batch')
         self._conn.executemany(_RE_ENCRYPT_BATCH_UPDATE_SQL, rows)
         self._auto_commit()
 

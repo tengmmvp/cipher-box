@@ -78,7 +78,7 @@ def _make_raw_entry(
 
 
 class MockDB:
-    """内存 mock，实现 ReEncryptionDB Protocol 四个方法。"""
+    """内存 mock，实现 ReEncryptionDB Protocol。"""
 
     def __init__(self):
         self._entries: list[RawEntry] = []
@@ -126,12 +126,16 @@ class MockDB:
         """记录批量更新行。"""
         self.updated_history_batches.append(rows)
 
-    def get_categories(self) -> list[Category]:
-        """返回填充的分类，供 re_encrypt_categories 测试。"""
+    def get_categories(self, *, verify: bool = True) -> list[Category]:
+        """返回填充的分类，供 re_encrypt_categories 测试。
+
+        verify 参数为兼容 ReEncryptionDB Protocol（re_encrypt_categories 以
+        verify=False 读取跳过验签）；mock 不验签，参数仅占位。
+        """
         return list(self._categories)
 
-    def update_category(self, category: Category) -> None:
-        """记录重加密后的分类，供断言新密钥密文。"""
+    def update_category_reencrypted(self, category: Category) -> None:
+        """记录重加密后的分类（re_encrypt_categories 经此不签名写路径写入）。"""
         self.updated_categories.append(category)
 
 

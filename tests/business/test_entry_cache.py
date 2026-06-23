@@ -66,6 +66,26 @@ class TestTotpSecretCache:
         assert len(cache._totp_secret_cache) == 0
 
 
+class TestTagsCacheValid:
+    def test_invalid_before_population(self, cache):
+        """初始未填充标签缓存，tags_cache_valid 为 False。"""
+        assert not cache.tags_cache_valid
+
+    def test_valid_after_population(self, entry_mgr, cache):
+        """填充标签后 tags_cache_valid 为 True（_tags_cache 非空且 epoch 一致）。"""
+        entry_mgr.add_entry(Entry(title='T', username='u', password='p', tags='work,dev'))
+        cache.get_all_tags()  # 填充 _tags_cache
+        assert cache.tags_cache_valid
+
+    def test_invalid_after_invalidate(self, entry_mgr, cache):
+        """invalidate_all 后 tags_cache_valid 回到 False。"""
+        entry_mgr.add_entry(Entry(title='T', username='u', password='p', tags='work'))
+        cache.get_all_tags()
+        assert cache.tags_cache_valid
+        cache.invalidate_all()
+        assert not cache.tags_cache_valid
+
+
 class TestInvalidateAll:
     def test_clears_all_caches(self, entry_mgr, cache):
         entry_mgr.add_entry(Entry(title='A', username='u', password='p'))

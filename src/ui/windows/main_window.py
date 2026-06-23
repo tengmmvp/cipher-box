@@ -2,7 +2,9 @@
 
 编排侧边栏、条目列表与详情面板，集成快捷键、排序、Toast 通知、分类管理、
 标签筛选、撤销删除、主题刷新、自动锁定与备份、安全仪表盘等功能。通过
-_MainWindowFiltersMixin 与 _MainWindowMenuMixin 多重继承拆分方法实现职责分离。
+_MainWindowEntriesMixin / _MainWindowFiltersMixin / _MainWindowMenuMixin 多重继承
+拆分方法实现职责分离，三组方法经 MainWindow 多重继承共享同一 self（共享工具
+``_require_unlocked`` 见 ``main_window_mixin_base``）。
 """
 
 import logging
@@ -68,12 +70,13 @@ from ..resources.icons import (
 )
 from ..resources.styles import get_style
 from ..utils.clipboard import ClipboardManager
+from .main_window_entries import _MainWindowEntriesMixin
 from .main_window_filters import _MainWindowFiltersMixin
 from .main_window_menu import _MainWindowMenuMixin
 
 logger = logging.getLogger(__name__)
 
-class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
+class MainWindow(_MainWindowEntriesMixin, _MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
     """CipherBox 主窗口。"""
 
     lock_requested = pyqtSignal()
@@ -109,6 +112,11 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
         self._entry_worker: BackgroundWorker | None = None
         self._entry_workers: set[BackgroundWorker] = set()
         self._entry_refresh_generation = 0
+        # 标签下拉异步刷新：get_all_tags() 在缓存失效时需全量解密全部条目 tags，
+        # 大库下移入后台。_tag_worker 跟踪最新标签 worker（取消重叠），标签 worker
+        # 同样加入 _entry_workers 以复用 _shutdown_workers / closeEvent 的取消。
+        self._tag_worker: BackgroundWorker | None = None
+        self._tag_refresh_generation = 0
         self._cached_categories = []
         self._cached_tag_names = []
         self._cached_total_entries = -1
@@ -517,6 +525,7 @@ class MainWindow(_MainWindowFiltersMixin, _MainWindowMenuMixin, QMainWindow):
             wait_worker_shutdown(worker)
         self._entry_workers.clear()
         self._entry_worker = None
+        self._tag_worker = None
 
     def _quit_app(self) -> None:
         # 托盘退出：与 closeEvent 退出分支清理对齐——先移除事件过滤器，防止

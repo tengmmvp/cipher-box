@@ -277,7 +277,7 @@ class EntryManager:
         两条路径的差异由两个布尔参数收敛，避免字段遍历与 copy_entry_fields 调用重复：
 
         - ``strict_integrity=True``（导出）：完整性/解密失败立即抛 DecryptionError，
-          password/totp 返回原始字符串以供备份序列化。
+          password/totp 返回已解密明文（普通 str，不包 Sensitive）供备份序列化。
         - ``strict_integrity=False``（详情）：失败字段收集到 integrity_message，
           password/totp 包 Sensitive 防明文意外进入日志/repr。
         - ``include_secrets=False``：跳过 password/totp_secret 解密（导出默认不入密）。
@@ -297,7 +297,7 @@ class EntryManager:
         def decrypt(name: str, value: str) -> str:
             try:
                 return self._decrypt_field(value, raw_entry.crypto_id, name, strict=True)
-            except ValueError:
+            except DecryptionError:
                 if strict_integrity:
                     raise DecryptionError(
                         f'条目 {raw_entry.id} 导出失败，数据可能已损坏'
@@ -309,7 +309,16 @@ class EntryManager:
             custom_fields = self._decrypt_custom_fields(
                 raw_entry.custom_fields_db_value, raw_entry.crypto_id,
             )
-        except ValueError:
+        except (DecryptionError, ValueError) as exc:
+            # 一并捕获（不吞其他异常类型），但区分故障层记日志以便排障：
+            # DecryptionError=密文层损坏（GCM 认证失败/密钥问题，可能指向数据迁移
+            # 或攻击）；其余 ValueError（含 json.loads 的 JSONDecodeError 与结构校验
+            # raise ValueError('结构无效')）=结构层损坏（密文已解密但内容损坏，
+            # 多指向序列化 bug 或部分写入）。两类根因排查路径不同，故日志区分。
+            layer = '密文' if isinstance(exc, DecryptionError) else '结构'
+            logger.warning(
+                '条目 %s 自定义字段%s层损坏', raw_entry.crypto_id, layer,
+            )
             if strict_integrity:
                 raise DecryptionError(
                     f'条目 {raw_entry.id} 导出失败，数据可能已损坏'
@@ -319,7 +328,7 @@ class EntryManager:
 
         password_plain = decrypt('password', raw_entry.password) if include_secrets else ''
         totp_plain = decrypt('totp_secret', raw_entry.totp_secret) if include_secrets else ''
-        # strict（导出）返回原始字符串供备份序列化；lenient（详情）包 Sensitive
+        # strict（导出）返回已解密明文（普通 str）供备份序列化；lenient（详情）包 Sensitive
         password = password_plain if strict_integrity else Sensitive(password_plain)
         totp_secret = totp_plain if strict_integrity else Sensitive(totp_plain)
 
@@ -327,7 +336,7 @@ class EntryManager:
             category_name = self._decrypt_category_name(
                 raw_entry.category_id, raw_entry.category_name,
             )
-        except ValueError:
+        except DecryptionError:
             if strict_integrity:
                 raise DecryptionError(
                     f'条目 {raw_entry.id} 导出失败，数据可能已损坏'
@@ -378,7 +387,7 @@ class EntryManager:
             summary.category_name = self._decrypt_category_name(
                 raw_entry.category_id, raw_entry.category_name,
             )
-        except ValueError:
+        except DecryptionError:
             failed = set(failed)
             failed.add('category')
         summary.integrity_error = raw_entry.integrity_error or bool(failed)
@@ -513,15 +522,21 @@ class EntryManager:
             # 精细失效，避免标题/URL 编辑触发全量重解密。raw.tags 解密失败时保守
             # 视为 tags 已变（None != 任意字符串），仍失效标签缓存。
             try:
-                old_tags = self._decrypt_field(
-                    raw.tags, raw.crypto_id, 'tags', strict=True,
-                ) if raw.tags else ''
-            except ValueError:
-                old_tags = None
+                old_tags = (
+                    self._decrypt_field(
+                        raw.tags, raw.crypto_id, 'tags', strict=True,
+                    ) if raw.tags else ''
+                )
+                tags_decrypt_failed = False
+            except DecryptionError:
+                old_tags = ''
+                tags_decrypt_failed = True
             self._change_bus.notify(
                 password_changed,
                 crypto_id=raw.crypto_id,
-                tags_changed=(old_tags != entry.tags),
+                # 解密失败时保守视为 tags 已变以失效标签缓存；old_tags 始终为 str，
+                # 避免原先 None 哨兵混入 str 类型。
+                tags_changed=tags_decrypt_failed or (old_tags != entry.tags),
             )
 
     def delete_entry(self, entry_id: int) -> bool:
@@ -626,24 +641,20 @@ class EntryManager:
         # 循环外一次性 epoch 校验：本批 raw 在单次调用内 epoch 不可能变化
         # （调用方事务内已固定），循环内走无校验路径避免每条目重复加锁取 epoch。
         self._invalidate_if_epoch_changed()
-        if search:
-            # 摘要字段首次搜索后进入会话缓存，后续搜索无重复解密成本。
-            summaries = []
-            for raw in raw_entries:
-                if cancel_check and cancel_check():
-                    break
-                summary = self._decrypt_summary(raw, skip_epoch_check=True)
-                if matches_search(summary, search):
-                    summaries.append(summary)
-            # search 时 limit 未下推 SQL，此处截断以兑现 limit 契约
-            if limit:
-                summaries = summaries[:limit]
-        else:
-            summaries = []
-            for raw in raw_entries:
-                if cancel_check and cancel_check():
-                    break
-                summaries.append(self._decrypt_summary(raw, skip_epoch_check=True))
+        # search 与非 search 共用同一循环：search 时在 append 前做 matches_search
+        # 过滤，消除原先两段近乎相同的循环。摘要字段首次搜索后进入会话缓存，
+        # 后续搜索无重复解密成本。
+        summaries = []
+        for raw in raw_entries:
+            if cancel_check and cancel_check():
+                break
+            summary = self._decrypt_summary(raw, skip_epoch_check=True)
+            if search and not matches_search(summary, search):
+                continue
+            summaries.append(summary)
+        # search 时 limit 未下推 SQL（避免先截断后过滤致命中失真），此处截断兑现契约
+        if search and limit:
+            summaries = summaries[:limit]
         return summaries
 
     def get_recent_summaries(self, limit: int = 20) -> list[Entry]:
@@ -706,3 +717,8 @@ class EntryManager:
     def get_all_tags(self) -> list[tuple[str, int]]:
         """获取所有标签及其使用频率。委托 cache。"""
         return self._cache.get_all_tags()
+
+    @property
+    def tags_cache_valid(self) -> bool:
+        """标签缓存是否有效，委托 cache。供 UI 决定标签下拉同步/异步刷新。"""
+        return self._cache.tags_cache_valid

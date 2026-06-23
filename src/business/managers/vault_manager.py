@@ -66,6 +66,10 @@ class VaultManager:
             self._signer.sign,
             self._signer.verify,
         )
+        self._db.set_category_integrity_handlers(
+            self._signer.sign_category,
+            self._signer.verify_category,
+        )
 
         # 密钥轮换服务，仅负责纯加解密计算，事务仍由 VaultManager 管理
         self._rotator = ReEncryptionService(self._db, self._signer)

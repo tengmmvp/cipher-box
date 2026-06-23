@@ -54,6 +54,7 @@ _TABLE_COLUMNS = {
         'id': ('INTEGER', 0, 1), 'name': ('TEXT', 1, 0),
         'icon_char': ('TEXT', 0, 0), 'color': ('TEXT', 0, 0),
         'sort_order': ('INTEGER', 0, 0), 'created_at': ('TEXT', 0, 0),
+        'metadata_mac': ('TEXT', 1, 0),
     },
     'entries': {
         'id': ('INTEGER', 0, 1), 'crypto_id': ('TEXT', 1, 0),
@@ -136,7 +137,8 @@ class SchemaManager:
                 icon_char TEXT DEFAULT '[DIR]',
                 color TEXT DEFAULT '#666666',
                 sort_order INTEGER DEFAULT 0,
-                created_at TEXT DEFAULT ''
+                created_at TEXT DEFAULT '',
+                metadata_mac TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS entries (

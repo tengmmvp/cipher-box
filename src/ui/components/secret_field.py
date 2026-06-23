@@ -15,7 +15,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
-from ..resources.constants import BTN_COPY
+from ..resources.constants import BTN_COPY, PWD_MASK
 from ..resources.icons import COPY, EYE, LOCK, set_icon
 
 
@@ -62,7 +62,7 @@ def make_secret_field_row(
     row_layout = QHBoxLayout(row_widget)
     row_layout.setContentsMargins(0, 0, 0, 0)
 
-    val_label = QLabel('••••••••')
+    val_label = QLabel(PWD_MASK)
     if val_label_style:
         val_label.setStyleSheet(val_label_style)
     else:
@@ -80,7 +80,7 @@ def make_secret_field_row(
     field_timer.setSingleShot(True)
 
     def _auto_mask(lbl: QLabel = val_label, btn: QPushButton = show_btn) -> None:
-        lbl.setText('••••••••')
+        lbl.setText(PWD_MASK)
         set_icon(btn, EYE)
 
     field_timer.timeout.connect(_auto_mask)
@@ -91,12 +91,12 @@ def make_secret_field_row(
         if sip.isdeleted(lbl) or sip.isdeleted(btn):
             return
         pwd = store.get(key, '')
-        if lbl.text() == '••••••••':
+        if lbl.text() == PWD_MASK:
             lbl.setText(pwd)
             set_icon(btn, LOCK)
             timer.start(get_pwd_visible_ms())
         else:
-            lbl.setText('••••••••')
+            lbl.setText(PWD_MASK)
             set_icon(btn, EYE)
             timer.stop()
 

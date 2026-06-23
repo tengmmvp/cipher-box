@@ -60,6 +60,16 @@ class EntryVerifier(Protocol):
     def __call__(self, entry: RawEntry) -> None: ...
 
 
+@runtime_checkable
+class CategorySigner(Protocol):
+    def __call__(self, category: Category) -> str: ...
+
+
+@runtime_checkable
+class CategoryVerifier(Protocol):
+    def __call__(self, category: Category) -> None: ...
+
+
 class DatabaseManager:
     """SQLite 数据库管理器
 
@@ -77,6 +87,8 @@ class DatabaseManager:
         self._write_guard: Callable[[], None] | None = None
         self._entry_signer: EntrySigner | None = None
         self._entry_verifier: EntryVerifier | None = None
+        self._category_signer: CategorySigner | None = None
+        self._category_verifier: CategoryVerifier | None = None
         self._last_secure_ts: float = 0.0
         self._schema_validated: bool = False
         # 实例级加密断言开关。test_mode 下自动关闭，允许测试直接写入明文。
@@ -109,6 +121,11 @@ class DatabaseManager:
         return self._entry_verifier
 
     @property
+    def category_verifier(self) -> CategoryVerifier | None:
+        """分类元数据校验函数。"""
+        return self._category_verifier
+
+    @property
     def schema_validated(self) -> bool:
         return self._schema_validated
 
@@ -128,6 +145,10 @@ class DatabaseManager:
         """条目元数据签名，公共接口。"""
         return self._sign_entry(entry)
 
+    def sign_category(self, category: Category) -> str:
+        """分类元数据签名，公共接口。"""
+        return self._sign_category(category)
+
     def assert_encrypted(self, value: str, field_name: str) -> None:
         """断言加密字段的值格式正确，公共接口。"""
         self._assert_encrypted(value, field_name)
@@ -144,6 +165,15 @@ class DatabaseManager:
         """设置条目元数据签名与校验函数。"""
         self._entry_signer = signer
         self._entry_verifier = verifier
+
+    def set_category_integrity_handlers(
+        self,
+        signer: CategorySigner,
+        verifier: CategoryVerifier,
+    ) -> None:
+        """设置分类元数据签名与校验函数。"""
+        self._category_signer = signer
+        self._category_verifier = verifier
 
     def _guard_write(self) -> None:
         if self._write_guard:
@@ -457,6 +487,11 @@ class DatabaseManager:
             return self._entry_signer(entry)
         return entry.metadata_mac
 
+    def _sign_category(self, category: Category) -> str:
+        if self._category_signer:
+            return self._category_signer(category)
+        return category.metadata_mac
+
     # ==================== 委托与编排 ====================
     # DatabaseManager 作为统一数据访问入口。纯透传方法（get_entries、add_category
     # 等）在下方显式手写委托给子 Repository——保留显式委托而非 __getattr__ 动态
@@ -467,17 +502,20 @@ class DatabaseManager:
     def init_tables(self) -> None:
         return self._schema_mgr.init_tables()
 
-    def get_categories(self) -> list[Category]:
-        return self._category_repo.get_categories()
+    def get_categories(self, *, verify: bool = True) -> list[Category]:
+        return self._category_repo.get_categories(verify=verify)
 
-    def get_category(self, category_id: int) -> Category | None:
-        return self._category_repo.get_category(category_id)
+    def get_category(self, category_id: int, *, verify: bool = True) -> Category | None:
+        return self._category_repo.get_category(category_id, verify=verify)
 
     def add_category(self, category: Category) -> int:
         return self._category_repo.add_category(category)
 
     def update_category(self, category: Category) -> None:
         return self._category_repo.update_category(category)
+
+    def update_category_reencrypted(self, category: Category) -> None:
+        return self._category_repo.update_category_reencrypted(category)
 
     def get_category_entry_count(self, category_id: int) -> int:
         return self._category_repo.get_category_entry_count(category_id)

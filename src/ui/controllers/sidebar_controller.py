@@ -50,6 +50,11 @@ class SidebarController:
         """获取所有标签及其条目数量。"""
         return self._entry_mgr.get_all_tags()
 
+    @property
+    def tags_cache_valid(self) -> bool:
+        """标签缓存是否有效，委托 entry_manager。供主窗口决定标签下拉同步/异步刷新。"""
+        return self._entry_mgr.tags_cache_valid
+
     # ========== 分类 CRUD ==========
 
     def build_category_label(self, cat: Category, count: int) -> str:

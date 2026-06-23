@@ -10,7 +10,7 @@ import json
 import logging
 
 from ...exceptions import VaultIntegrityError, VaultLockedError
-from ...models import RawEntry
+from ...models import Category, RawEntry
 from ...utils.memory import secure_zero_buffer
 
 logger = logging.getLogger(__name__)
@@ -25,8 +25,9 @@ VAULT_META_SIGNED_KEYS = (
 )
 
 # 签名绑定的加密字段及固定顺序（子集 + 顺序单一源）。必须等于
-# crypto_utils.SENSITIVE_ENCRYPTED_FIELDS 减 {title, url, tags}（这三者在载荷顶层
-# 以明文签名），且顺序固定——改顺序会破坏已有数据的 metadata_mac。
+# crypto_utils.SENSITIVE_ENCRYPTED_FIELDS 减 {title, url, tags}（这三者在 _payload
+# 顶层以密文形态直接入签——sign/verify 操作 RawEntry，其 title/url/tags 即密文），
+# 且顺序固定——改顺序会破坏已有数据的 metadata_mac。
 # tests/test_field_consistency.py 守护此子集关系。custom_fields 在签名侧取
 # custom_fields_db_value（密文形态），故遍历时特判。
 SIGNATURE_ENCRYPTED_FIELD_ORDER = ('username', 'password', 'notes', 'totp_secret', 'custom_fields')
@@ -91,10 +92,9 @@ class MetadataSigner:
         """
         dk = MetadataSigner.compute_domain_key(key)
         try:
-            payload = json.dumps(
-                {k: meta.get(k) for k in VAULT_META_SIGNED_KEYS},
-                sort_keys=True, ensure_ascii=False, separators=(',', ':'),
-            ).encode('utf-8')
+            payload = MetadataSigner._canonical_json_bytes(
+                {k: meta.get(k) for k in VAULT_META_SIGNED_KEYS}
+            )
             return hmac.new(dk, payload, hashlib.sha256).hexdigest()
         finally:
             secure_zero_buffer(dk)
@@ -147,6 +147,66 @@ class MetadataSigner:
         if not hmac.compare_digest(entry.metadata_mac, expected):
             raise VaultIntegrityError(f'条目 {entry.id} 元数据完整性校验失败')
 
+    def sign_category(self, category: Category) -> str:
+        """计算分类元数据 HMAC 签名，使用预计算的域密钥。
+
+        与条目签名共享同一域密钥（主密钥派生）。跨 epoch 隔离同样由域密钥轮换
+        提供：改密产生新域密钥，旧分类签名在新域密钥下验证失败，故改密时
+        re_encrypt_categories 须在重加密分类名后重签。
+        """
+        if self._domain_key is None:
+            raise VaultLockedError('保险库未解锁，无法签名分类元数据')
+        return hmac.new(
+            self._domain_key, self._category_payload(category), hashlib.sha256,
+        ).hexdigest()
+
+    def sign_category_with_domain_key(
+        self, category: Category, domain_key: bytes | bytearray,
+    ) -> str:
+        """直接用预计算的域密钥签名分类，跳过密钥派生与 ``_domain_key`` 读取。
+
+        对称 :meth:`sign_with_domain_key`，供 ``ReEncryptionService.re_encrypt_categories``
+        在改密事务内用新域密钥重签分类。改密事务内 ``_domain_key`` 仍是旧值
+        （vault_manager 在事务提交后才正式 ``set_domain_key(new)``），若分类重签
+        沿用 ``sign_category``（读 ``_domain_key``）会用旧域密钥，导致改密后
+        ``verify_category`` 永久失败。调用方预计算 ``compute_domain_key(new_key)``
+        后注入，使分类重签与条目 ``sign_with_domain_key(new)`` 对称，且不临时切换
+        signer 全局 ``_domain_key``。
+
+        Args:
+            category: 分类对象。
+            domain_key: 预计算的域密钥（``compute_domain_key`` 返回 bytearray），
+                接受 bytes | bytearray，与 ``sign_with_domain_key`` 的清零语义统一。
+        """
+        return hmac.new(
+            domain_key, self._category_payload(category), hashlib.sha256,
+        ).hexdigest()
+
+    def verify_category(self, category: Category) -> None:
+        """验证分类元数据完整性签名。
+
+        Raises:
+            VaultIntegrityError: 签名验证失败（含空签名）。
+            VaultLockedError: 保险库未解锁。
+        """
+        if not category.metadata_mac:
+            raise VaultIntegrityError(f'分类 {category.id} 缺少元数据完整性签名')
+        expected = self.sign_category(category)
+        if not hmac.compare_digest(category.metadata_mac, expected):
+            raise VaultIntegrityError(f'分类 {category.id} 元数据完整性校验失败')
+
+    @staticmethod
+    def _canonical_json_bytes(data: dict) -> bytes:
+        """规范化 JSON 字节串：排序键、紧凑分隔、UTF-8 编码。
+
+        供 ``_payload``（条目）与 ``_category_payload``（分类）复用，确保两类签名
+        载荷的序列化参数完全一致，避免两处独立维护导致漂移——漏改一处会使一侧
+        签名可验、另一侧验签失败却难以定位。
+        """
+        return json.dumps(
+            data, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+        ).encode('utf-8')
+
     @staticmethod
     def _payload(entry: RawEntry) -> bytes:
         """构造签名载荷。
@@ -186,9 +246,26 @@ class MetadataSigner:
         ]
         enc_concat = ''.join(f'{len(p)}:{p}' for p in enc_parts)
         data['_enc_hash'] = hashlib.sha256(enc_concat.encode('utf-8')).hexdigest()
-        return json.dumps(
-            data,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(',', ':'),
-        ).encode('utf-8')
+        return MetadataSigner._canonical_json_bytes(data)
+
+    @staticmethod
+    def _category_payload(category: Category) -> bytes:
+        """构造分类签名载荷。
+
+        name 为密文，以 SHA-256 摘要绑定（name_hash），防止分类名密文置换。注意
+        与条目 ``_payload`` 的 ``_enc_hash`` 机制不同：条目对「长度前缀拼接的全部
+        加密字段」取单个 SHA-256（多字段），分类仅对单个 name 取 SHA-256——因分类
+        只有一个加密字段。两者均为「密文 SHA-256 绑定」但实现非镜像，勿按条目范式
+        「对齐」分类载荷，否则会改变签名格式、破坏已持久化的 category metadata_mac
+        验签。其余元数据（icon/color/sort_order/created_at）直接入签；id 入载荷防
+        id 与元数据错配。
+        """
+        data = {
+            'id': category.id,
+            'name_hash': hashlib.sha256(category.name.encode('utf-8')).hexdigest(),
+            'icon_char': category.icon_char,
+            'color': category.color,
+            'sort_order': category.sort_order,
+            'created_at': category.created_at,
+        }
+        return MetadataSigner._canonical_json_bytes(data)

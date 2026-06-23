@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ...utils.memory import mark_secret_discarded
-from ..resources.constants import BTN_COPY, FONT_FAMILY_MONOSPACE, MAX_HISTORY_DISPLAY
+from ..resources.constants import BTN_COPY, FONT_FAMILY_MONOSPACE, MAX_HISTORY_DISPLAY, PWD_MASK
 from ..resources.icons import COPY, EYE, LOCK, set_icon
 from ..resources.theme_colors import c
 
@@ -123,7 +123,7 @@ class PasswordHistoryWidget(QWidget):
         self._own_timers.clear()
         # 先掩码已渲染的明文 QLabel 再释放，避免 deleteLater 异步销毁前明文驻留。
         for lbl in self._pwd_labels:
-            lbl.setText('••••••••')
+            lbl.setText(PWD_MASK)
         self._pwd_labels.clear()
         for p in self._history_passwords:
             mark_secret_discarded(p)
@@ -150,7 +150,7 @@ class PasswordHistoryWidget(QWidget):
 
             # 密码，初始隐藏
             pwd_text = record.get('password', '')
-            pwd_label = QLabel('••••••••')
+            pwd_label = QLabel(PWD_MASK)
             pwd_label.setStyleSheet(
                 f'font-family: {FONT_FAMILY_MONOSPACE}; font-size: 12px; color: {c("text_primary")};'
             )
@@ -177,21 +177,21 @@ class PasswordHistoryWidget(QWidget):
             def _on_hist_timeout(lbl: QLabel = pwd_label, btn: QPushButton = show_btn) -> None:
                 # 仅重置显示，不清空槽位：历史密码需支持显示→隐藏→再显示，
                 # 与主密码字段一致；明文释放统一交给 clear() 的 mark_secret_discarded。
-                lbl.setText('••••••••')
+                lbl.setText(PWD_MASK)
                 set_icon(btn, EYE)
 
             hist_timer.timeout.connect(_on_hist_timeout)
 
             def toggle_pwd(_checked: bool = False, lbl: QLabel = pwd_label, btn: QPushButton = show_btn, idx: int = hist_idx, timer: QTimer = hist_timer) -> None:
                 pwd = self._history_passwords[idx] if idx < len(self._history_passwords) else ''
-                if lbl.text() == '••••••••':
+                if lbl.text() == PWD_MASK:
                     lbl.setText(pwd)
                     set_icon(btn, LOCK)
                     if self._get_pwd_visible_ms is None:
                         return
                     timer.start(self._get_pwd_visible_ms())
                 else:
-                    lbl.setText('••••••••')
+                    lbl.setText(PWD_MASK)
                     set_icon(btn, EYE)
                     timer.stop()
 

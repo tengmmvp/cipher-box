@@ -44,6 +44,7 @@ from ..resources.constants import (
     BTN_ICON,
     MAX_TAG_DISPLAY,
     MS_FEEDBACK,
+    PWD_MASK,
     PWD_VISIBLE_SECONDS_DEFAULT,
 )
 from ..resources.icons import (
@@ -542,7 +543,7 @@ class DetailPanel(QWidget):
         row_layout = QHBoxLayout(row_widget)
         row_layout.setContentsMargins(0, 0, 0, 0)
 
-        val_label = QLabel('••••••••')
+        val_label = QLabel(PWD_MASK)
         val_label.setObjectName('secretValue')
         row_layout.addWidget(val_label, 1)
 
@@ -563,12 +564,12 @@ class DetailPanel(QWidget):
             if sip.isdeleted(lbl) or sip.isdeleted(btn):
                 return
             pwd = self._current_password
-            if lbl.text() == '••••••••':
+            if lbl.text() == PWD_MASK:
                 lbl.setText(pwd)
                 set_icon(btn, LOCK)
                 self._pwd_hide_timer.start(self._get_pwd_visible_ms())
             else:
-                lbl.setText('••••••••')
+                lbl.setText(PWD_MASK)
                 set_icon(btn, EYE)
                 self._pwd_hide_timer.stop()
 
@@ -602,7 +603,7 @@ class DetailPanel(QWidget):
     def _auto_hide_password(self) -> None:
         """自动隐藏密码。"""
         if self._pwd_label_ref and self._show_btn_ref:
-            self._pwd_label_ref.setText('••••••••')
+            self._pwd_label_ref.setText(PWD_MASK)
             set_icon(self._show_btn_ref, EYE)
 
     def _copy(self, text: str) -> None:
@@ -645,7 +646,7 @@ class DetailPanel(QWidget):
         self._current_password = ''
         # 先清空主密码 label 明文再置空引用，避免 deleteLater 异步销毁前明文驻留。
         if self._pwd_label_ref is not None:
-            self._pwd_label_ref.setText('••••••••')
+            self._pwd_label_ref.setText(PWD_MASK)
         self._pwd_label_ref = None
         self._show_btn_ref = None
         # _empty_label 为构造时一次创建的常驻控件，从布局中取出避免被

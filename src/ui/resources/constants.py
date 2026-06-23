@@ -89,6 +89,7 @@ FONT_FAMILY_CSS = '"Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Segoe 
 # ---------- 密码相关默认值 ----------
 PWD_TOGGLE_AUTO_HIDE_SECONDS = 30    # 密码切换按钮自动隐藏秒数
 PWD_GENERATE_LENGTH_DEFAULT: int = int(DEFAULT_CONFIG['default_password_length'])  # 默认生成密码长度（单一源）
+PWD_MASK = '••••••••'  # 密码字段掩码（显隐切换/比较的单一来源，跨 detail_panel / password_history_widget / secret_field 复用）
 
 # ---------- 等宽字体，用于 QSS 样式表 ----------
 FONT_FAMILY_MONOSPACE = 'Consolas, Courier New, monospace'

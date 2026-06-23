@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
@@ -126,7 +126,7 @@ def decrypt_field(
         key: AES-256 密钥。
         crypto_id: 条目加密标识。
         field_name: 字段名称。
-        strict: 为 True 时解密失败抛出 ValueError，否则返回空字符串。
+        strict: 为 True 时解密失败抛出 DecryptionError（ValueError 子类），否则返回空字符串。
     """
     if not encrypted:
         return ''
@@ -134,7 +134,11 @@ def decrypt_field(
         return EncryptionEngine.decrypt(
             encrypted, key, entry_aad(crypto_id, field_name)
         )
-    except ValueError:
+    except DecryptionError:
+        # EncryptionEngine.decrypt 已把 InvalidTag/格式错误/_get_cipher 密钥长度等
+        # 所有失败统一包装为 DecryptionError（ValueError 子类）。显式捕获
+        # DecryptionError 而非宽泛 ValueError，使「密文损坏」语义清晰，且不吞掉
+        # 其他 ValueError（容错路径记日志、strict 路径 raise）。
         if strict:
             raise
         logger.warning(
@@ -312,7 +316,7 @@ def decrypt_entry_to_portable_dict(
         return None
 
 
-def build_encrypted_entry_fields(item: dict, key: bytes | bytearray, crypto_id: str) -> dict:
+def build_encrypted_entry_fields(item: dict[str, Any], key: bytes | bytearray, crypto_id: str) -> dict:
     """加密条目的敏感字段，与 decrypt_entry_to_portable_dict 对称。
 
     供备份恢复等需要从明文字典重建加密条目的场景使用。加密字段集与

@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from ..managers.vault_manager import VaultManager
 
 from ...database.types import VerifyMode
+from ...exceptions import DecryptionError
 from ...models import RawEntry
 from ..services.crypto_utils import (
     category_crypto_id,
@@ -26,7 +27,7 @@ from ..services.crypto_utils import (
 
 logger = logging.getLogger(__name__)
 
-# 搜索摘要缓存容量上限：与 encryption.py 的 AESGCM LRU 对齐「有限容量」设计，
+# 搜索摘要缓存容量上限：沿用 encryption.py 的「有限容量 LRU」设计理念，
 # 避免大库下明文摘要 dict 以条目数为上界无界增长。LRU 淘汰最久未访问项。
 _MAX_SEARCH_METADATA_CACHE_SIZE = 2000
 
@@ -155,7 +156,7 @@ class EntryCacheManager:
                 value = _decrypt_field_impl(
                     encrypted, self._key, cid, field_name, strict=True,
                 )
-            except ValueError:
+            except DecryptionError:
                 value = ''
                 failed.add(field_name)
             values.append(value)
@@ -274,3 +275,16 @@ class EntryCacheManager:
                 return self._tags_cache
             self._tags_cache = result
             return result
+
+    @property
+    def tags_cache_valid(self) -> bool:
+        """标签缓存是否有效（非空且 key_epoch 未变），供 UI 决定同步/异步刷新。
+
+        缓存命中时 get_all_tags() 仅锁内取值（微秒级），UI 可据此同步重建下拉、
+        省去无谓的后台线程创建；缓存失效时才需异步全量解密。
+        """
+        with self._cache_lock:
+            return (
+                self._tags_cache is not None
+                and self._cache_epoch == self._vault.key_epoch
+            )

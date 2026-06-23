@@ -126,7 +126,7 @@ class EntryDialog(QDialog):
         self._config = config
         self._current_type = entry.entry_type if entry else ENTRY_TYPE_LOGIN
         self._field_rows: dict[str, tuple[QLabel, QWidget]] = {}
-        self._special_widgets: dict[str, QWidget] = {}
+        self._special_widgets: dict[str, QLineEdit | QComboBox] = {}
 
         self._setup_ui()
         if entry:
@@ -341,7 +341,7 @@ class EntryDialog(QDialog):
         )
 
     @staticmethod
-    def _create_special_widget(spec: SpecialFieldSpec) -> QWidget:
+    def _create_special_widget(spec: SpecialFieldSpec) -> QLineEdit | QComboBox:
         """按 schema 创建单个专用字段控件。"""
         if spec.kind == 'combo':
             combo = QComboBox()
@@ -490,7 +490,10 @@ class EntryDialog(QDialog):
             for key in old_fields:
                 if key in self._special_widgets:
                     widget = self._special_widgets[key]
-                    text = cast(QLineEdit, widget).text() if isinstance(widget, QLineEdit) else ''
+                    # QComboBox（如协议选择）的当前选项也算用户输入，纳入「有数据」
+                    # 判定，避免切换类型前选过协议却被当作无数据而漏确认。
+                    # dict 已收紧为 QLineEdit | QComboBox，isinstance 收窄后无需 cast。
+                    text = widget.text() if isinstance(widget, QLineEdit) else widget.currentText()
                     if text.strip():
                         has_data = True
                         break
@@ -768,7 +771,7 @@ class EntryDialog(QDialog):
         self._url_edit.clear()
         self._tags_edit.clear()
         self._notes_edit.clear()
-        # 专用字段统一清除：遍历 _SPECIAL_SCHEMA 全表，覆盖 card_*（卡号/CVV 等）、
+        # 专用字段统一清除：遍历 ENTRY_TYPE_SCHEMAS 全表，覆盖 card_*（卡号/CVV 等）、
         # id_*（PII）以及 server_host 等所有专用字段。新增类型或字段时自动纳入清除
         # 范围，避免硬编码 key 列表遗漏导致的安全回归。QComboBox（如协议选择）非
         # 敏感输入，由 isinstance(QLineEdit) 守卫跳过。

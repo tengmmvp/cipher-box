@@ -56,6 +56,11 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
 - **盐**：每个保险库 32 字节随机盐，存于 `vault_meta.master_salt`。
 - **密码验证**：不存哈希。加密一段已知明文（`VERIFY_PLAINTEXT`）作为验证令牌
   （`master_verify`），用 `hmac.compare_digest` 常数时间比对解密结果。
+- **HKDF 域分离**：主密钥与备份密钥共享同一 Argon2id 主材料（同 password+salt），
+  经不同 HKDF-Expand info（`_DOMAIN_INFO_MASTER` / `_DOMAIN_INFO_BACKUP`）派生，
+  域分离由 HKDF info 显式保证（不同 info → 输出独立），消除原先用 salt 字符串前缀
+  `b'backup:'` 做域分离的隐式碰撞假设。新增密钥域只需追加 info 常量并复用
+  `_hkdf_expand`。
 - **KDF 参数校验**：`MasterKeyManager._validate_params` 在派生前强制参数下限
   （`MIN_ARGON2_*`），防止 `vault_meta` 被篡改为弱参数。**注意**：即便参数被篡改，
   派生密钥会随之改变，导致 `master_verify` 解密失败 → 用户无法解锁（DoS），
@@ -97,9 +102,17 @@ HMAC-SHA256 签名（`metadata_mac` 列）：
 - 签名载荷含全部元数据字段 + 加密字段密文的 SHA-256 摘要，绑定密文防置换。
 - **不改 epoch 显式入载荷**：跨 epoch 隔离由域密钥本身提供（主密钥变 → 域密钥变 →
   旧签名验证失败）。
-- **校验模式**（`VerifyMode`）：`STRICT`（单条详情，失败抛异常）、`LENIENT`（全量
-  解密，标记不抛）、`SKIP`（列表/搜索/标签高频路径，跳过 HMAC 以优化性能，篡改由
-  STRICT 与写路径重签兜底；解密损坏仍由 strict 解密异常捕获并标记）。
+- **校验模式**（`VerifyMode`）：`STRICT`（单条详情，失败抛异常）、`LENIENT`（列表/
+  搜索/标签等只读路径默认模式，逐行 HMAC 验签并标记篡改条目不抛，使列表层即可检测
+  非加密元数据篡改）、`SKIP`（仅签名重算前的原始读取与改密重签读取——不能先验签再
+  算签名）。LENIENT 的 HMAC 开销远小于摘要解密，大库列表/标签刷新已移入
+  BackgroundWorker 进一步消除主线程影响。
+- **分类完整性签名**：`categories` 表行同样有 `metadata_mac` 列（`sign_category` /
+  `verify_category`），载荷含分类名密文的 SHA-256 摘要 + 元数据（icon/color/
+  sort_order/created_at），与条目加密字段对称，使分类名篡改同样可被 HMAC 检测
+  （GCM 认证为第一层兜底）。改密时 `re_encrypt_categories` 用
+  `sign_category_with_domain_key`（新域密钥）预签名后经 `update_category_reencrypted`
+  （不签名写）落库，与条目 `sign_with_domain_key` 对称。
 
 ## 5. 事务与并发
 
@@ -120,8 +133,9 @@ HMAC-SHA256 签名（`metadata_mac` 列）：
 
 `BackupRestoreManager` 实现可移植的二进制加密备份格式：
 
-- **独立密钥域**：备份密码经 `derive_backup_key`（`b'backup:' + salt` 前缀）派生独立
-  密钥，与主密钥域分离，支持跨主密码恢复。
+- **独立密钥域**：备份密码经 `derive_backup_key` 派生独立密钥——与主密钥共享同一
+  Argon2id 主材料但经不同 HKDF info 派生（见 §2.1），与主密钥域分离，支持跨主密码
+  恢复。
 - **固定头**：magic + flags + Argon2 参数 + salt，随后 AES-GCM 加密的 JSON payload。
 - **恢复前快照**：恢复前用 `snapshot_key` 加密全量明文生成 `pre_restore_*.cbox`，
   恢复失败可回滚。恢复/改密轮换 `snapshot_key` 并清理旧快照以收缩泄漏面。

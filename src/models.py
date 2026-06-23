@@ -9,6 +9,7 @@ Entry、Category 等模型类与字段常量是纯数据结构，不依赖任何
 
 import logging
 from dataclasses import dataclass, field, fields
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,7 @@ class Category:
     color: str = '#666666'
     sort_order: int = 0
     created_at: str = ''
+    metadata_mac: str = ''  # 元数据完整性 HMAC 签名（与 Entry.metadata_mac 对称）
 
     def to_dict(self) -> dict:
         return {
@@ -179,7 +181,7 @@ class Category:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> 'Category':
+    def from_dict(cls, data: dict[str, Any]) -> 'Category':
         """从字典创建 Category，与 to_dict 对称。
 
         对文本字段做长度校验，作为导入/恢复路径的纵深防御；

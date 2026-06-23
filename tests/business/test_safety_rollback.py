@@ -357,6 +357,32 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
             '结构无效的恢复不应残留新的恢复点'
         )
 
+    def test_restore_succeeds_when_post_commit_checkpoint_fails(self):
+        """事务提交后 secure_checkpoint 失败应非致命：数据已提交完整，恢复仍成功。
+
+        回归守护 _restore_data 的事务外 WAL 截断：secure_checkpoint 因 WAL 锁/IO
+        失败时不应使整个恢复失败并清零 new_snapshot_key——否则库已提交
+        snapshot_key_enc + key_epoch 但当前会话无对应密钥，状态不一致。截断失败
+        仅影响泄漏面（WAL 残留 clear_vault_data 删除的旧明文密文），与改密路径
+        （vault_manager._re_encrypt_all）secure_checkpoint 的非致命处理对称。
+        """
+        from unittest.mock import patch
+
+        # 用快照密钥创建合法备份（restore 无需备份密码）
+        backup_path = str(Path(self._tmp_dir) / 'snapshot.cbox')
+        success, _ = self._backup_mgr.create_backup(backup_path, use_snapshot_key=True)
+        assert success, '创建快照备份失败'
+
+        # mock 事务提交后的 secure_checkpoint 抛异常（模拟 WAL 锁/IO 失败）
+        with patch.object(
+            self._vault.db, 'secure_checkpoint', side_effect=OSError('WAL 锁定'),
+        ):
+            success, error = self._backup_mgr.restore_backup(backup_path)
+
+        # 恢复应成功：secure_checkpoint 失败非致命，数据已事务提交完整，
+        # snapshot_key 正确 apply（若被误清零，restore 会失败返回 False）
+        assert success, f'secure_checkpoint 失败不应使恢复失败: {error}'
+
 
 # 3. 导入期间并发改密触发 epoch 守卫
 
