@@ -143,7 +143,7 @@ _SELECT_ENTRY_SIGN_SQL = (
 )
 
 # 条目带分类名的 JOIN 基础查询（e.* 形态）。供 get_entries / get_entry /
-# get_entries_by_ids / _clear_category_signatures 复用，消除 4 处复制粘贴的
+# get_entries_by_ids / clear_category_signatures 复用，消除 4 处复制粘贴的
 # JOIN 片段。_SELECT_ENTRY_SIGN_SQL 用显式列名（e.id, e.<col>...）而非 e.*，
 # 因签名查询需精确列序与 _ENTRY_COLUMNS 对齐，故独立不合并。
 _SELECT_ENTRY_WITH_CATEGORY_SQL = (
@@ -717,13 +717,15 @@ class EntryRepository:
         ).fetchone()
         return self._row_to_entry(row, verify=VerifyMode.SKIP) if row else None
 
-    def _clear_category_signatures(self, category_id: int) -> None:
+    def clear_category_signatures(self, category_id: int) -> None:
         """将指定分类下所有条目的 category_id 置空并重算元数据签名。
 
         供删除分类时由 DatabaseManager 编排调用，保持条目元数据完整性。
         批量执行，将 N+1 模式降为 2 次操作。不校验旧签名，因签名将被覆盖。
-        下划线前缀表明这是跨 Repository 的内部编排接口，仅供
-        ``DatabaseManager.delete_category`` 调用。
+        作为公开的跨 Repository 编排接口（非私有）供
+        ``DatabaseManager.delete_category`` 显式调用——原先以下划线前缀标记
+        「内部接口」却仍被 db_manager 跨对象访问，反而违背 db_manager 自身
+        「消除跨 Repository 私有访问越权」的声明，故提升为公开方法。
 
         锁与事务契约：本方法未使用 ``@_db_operation`` 装饰器，不自行获取
         ``db_lock``。调用方（DatabaseManager.delete_category）须已持有
@@ -738,7 +740,7 @@ class EntryRepository:
         """
         if not self.in_transaction:
             raise RuntimeError(
-                '_clear_category_signatures 须在活动事务内调用（由 DatabaseManager.delete_category 编排）'
+                'clear_category_signatures 须在活动事务内调用（由 DatabaseManager.delete_category 编排）'
             )
         rows = self._conn.execute(
             f"{_SELECT_ENTRY_WITH_CATEGORY_SQL} WHERE e.category_id=?",  # nosec B608

@@ -7,6 +7,7 @@
 import logging
 import sqlite3
 import threading
+from typing import Any
 
 from ..exceptions import VaultIntegrityError, VaultLockedError
 from ..models import Category
@@ -134,13 +135,20 @@ class CategoryRepository:
         self._auto_commit()
         return cursor.lastrowid or 0
 
+    @staticmethod
+    def _category_update_tuple(category: Category) -> tuple[Any, ...]:
+        """构造 UPDATE categories 的参数元组，供单条与批量写入复用以消除列序重复。"""
+        return (
+            category.name, category.icon_char, category.color,
+            category.sort_order, category.metadata_mac, category.id,
+        )
+
     def _update_category_row(self, category: Category) -> None:
         """写入分类行（不含查重/created_at 回填/签名），供 update_category 与
         update_category_reencrypted 复用同一 UPDATE SQL，消除列序重复维护。"""
         self._conn.execute(
             "UPDATE categories SET name=?, icon_char=?, color=?, sort_order=?, metadata_mac=? WHERE id=?",
-            (category.name, category.icon_char, category.color, category.sort_order,
-             category.metadata_mac, category.id),
+            self._category_update_tuple(category),
         )
         self._auto_commit()
 
@@ -183,12 +191,29 @@ class CategoryRepository:
         """
         self._update_category_row(category)
 
+    @_db_write
+    def update_categories_batch(self, categories: list[Category]) -> None:
+        """改密重加密专用批量写入：executemany 一次性更新已预签名的分类。
+
+        与 :meth:`update_category_reencrypted` 语义一致（不重算签名、不查重），仅把
+        逐条 UPDATE 合并为单次 executemany，与条目/历史的 ``update_entries_batch`` /
+        ``update_password_history_batch`` 改密路径对称。``_auto_commit`` 在活动事务内
+        不真正提交，故批量只触发一次权限刷新。
+        """
+        if not categories:
+            return
+        self._conn.executemany(
+            "UPDATE categories SET name=?, icon_char=?, color=?, sort_order=?, metadata_mac=? WHERE id=?",
+            [self._category_update_tuple(c) for c in categories],
+        )
+        self._auto_commit()
+
     def delete_category(self, category_id: int) -> None:
         """删除分类行。
 
         仅删除 categories 表的行；关联条目的解关联与元数据重签由
-        DatabaseManager.delete_category 编排 EntryRepository._clear_category_signatures
-        完成，避免本 Repository 跨表访问 EntryRepository 的私有方法。
+        DatabaseManager.delete_category 编排 EntryRepository.clear_category_signatures
+        完成（公开的跨表编排接口），避免本 Repository 跨表访问 EntryRepository。
 
         锁与事务契约：本方法未使用 ``@_db_operation`` 装饰器，不自行获取
         ``db_lock``。调用方（DatabaseManager.delete_category）须已持有

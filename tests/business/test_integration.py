@@ -17,12 +17,11 @@ import pytest
 from src.business.managers.backup_restore import BackupRestoreManager
 from src.business.managers.entry_cache import EntryCacheManager
 from src.business.managers.import_export import ImportExportManager
-from src.business.managers.vault_manager import VaultManager
 from src.business.services.security_analyzer import SecurityAnalyzer
 from src.crypto.encryption import EncryptionEngine
 from src.database.db_manager import DatabaseManager
 from src.models import Category, CustomField, Entry, RawEntry
-from tests.helpers import make_entry_manager, make_test_config
+from tests.helpers import make_entry_manager, make_test_config, make_vault
 
 # TestEntryManagerIntegration
 
@@ -31,7 +30,7 @@ def entry_mgr_env():
     """创建 VaultManager + EntryManager，返回 (entry_mgr, vault, tmp_dir)。"""
     tmp_dir = tempfile.mkdtemp()
     config = make_test_config(tmp_dir)
-    vault = VaultManager(config)
+    vault = make_vault(config)
     vault.initialize("test_password_123")
     entry_mgr = make_entry_manager(vault)
     yield entry_mgr, vault, tmp_dir
@@ -239,7 +238,7 @@ def test_initialize_and_unlock(vault_lifecycle_env):
     master_pwd = "test_password_123"
 
     # 1. 初始化并添加条目
-    vault = VaultManager(config)
+    vault = make_vault(config)
     assert vault.initialize(master_pwd)[0]
     assert vault.is_unlocked
 
@@ -283,7 +282,7 @@ def test_change_password_re_encrypts(vault_lifecycle_env):
     new_pwd = "new_password_456"
 
     # 1. 初始化 + 添加条目
-    vault = VaultManager(config)
+    vault = make_vault(config)
     vault.initialize(old_pwd)
     entry_mgr = make_entry_manager(vault)
 
@@ -332,7 +331,7 @@ def backup_restore_env():
     """创建 VaultManager + EntryManager + BackupRestoreManager。"""
     tmp_dir = tempfile.mkdtemp()
     config = make_test_config(tmp_dir)
-    vault = VaultManager(config)
+    vault = make_vault(config)
     vault.initialize("test_password_123")
     entry_mgr = make_entry_manager(vault)
     backup_mgr = BackupRestoreManager(vault, entry_mgr)
@@ -456,7 +455,7 @@ def security_analyzer_env():
     """创建 VaultManager + EntryManager + SecurityAnalyzer。"""
     tmp_dir = tempfile.mkdtemp()
     config = make_test_config(tmp_dir)
-    vault = VaultManager(config)
+    vault = make_vault(config)
     vault.initialize("test_password_123")
     entry_mgr = make_entry_manager(vault)
     analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
@@ -586,7 +585,7 @@ def import_export_env():
     """创建 VaultManager + EntryManager + ImportExportManager。"""
     tmpdir = tempfile.mkdtemp()
     config = make_test_config(tmpdir)
-    vault = VaultManager(config)
+    vault = make_vault(config)
     vault.initialize("test_password_123")
     entry_mgr = make_entry_manager(vault)
     import_export = ImportExportManager(entry_mgr)
@@ -696,7 +695,7 @@ def test_backup_with_locked_vault():
     """锁定状态创建备份应失败。"""
     tmp_dir = tempfile.mkdtemp()
     config = make_test_config(tmp_dir)
-    vault = VaultManager(config)
+    vault = make_vault(config)
     vault.initialize("test_password_123")
     backup_mgr = BackupRestoreManager(vault, make_entry_manager(vault))
 
@@ -718,7 +717,7 @@ def test_change_password_wrong_old():
     """旧密码错误时改密应失败。"""
     tmp_dir = tempfile.mkdtemp()
     config = make_test_config(tmp_dir)
-    vault = VaultManager(config)
+    vault = make_vault(config)
     vault.initialize("OriginalMaster!2026")
 
     # 用错误的旧密码改密应返回 False
@@ -739,7 +738,7 @@ def test_is_initialized_returns_false_when_db_cannot_open():
     """is_initialized 在 DB 打开失败时应返回 False。"""
     tmp_dir = tempfile.mkdtemp()
     config = make_test_config(tmp_dir)
-    vault = VaultManager(config)
+    vault = make_vault(config)
 
     # 确保 db_path 存在使文件检查通过
     db_file = Path(tmp_dir) / 'vault.db'

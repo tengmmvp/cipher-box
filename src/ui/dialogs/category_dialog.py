@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ...models import Category
-from ..components.widgets import setup_dialog_flags
+from ..components.widgets import create_cancel_button, setup_dialog_flags
 from ..error_messages import to_user_message
 from ..resources.constants import BTN_DIALOG, DIALOG_CATEGORY_MIN_SIZE
 from ..resources.theme_colors import c
@@ -201,10 +201,7 @@ class CategoryDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        cancel_btn = QPushButton('取消')
-        cancel_btn.setFixedSize(*BTN_DIALOG)
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(create_cancel_button(self))
 
         save_btn = QPushButton('保存')
         save_btn.setObjectName('primaryBtn')

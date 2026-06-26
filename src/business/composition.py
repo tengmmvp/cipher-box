@@ -15,7 +15,9 @@ from .managers.entry_cache import EntryCacheManager
 from .managers.entry_change_bus import EntryChangeBus
 from .managers.entry_manager import EntryManager
 from .managers.import_export import ImportExportManager
+from .managers.vault_lifecycle import VaultLifecycleOrchestrator
 from .managers.vault_manager import VaultManager
+from .services.database_bootstrap import DatabaseBootstrap
 from .services.security_analyzer import SecurityAnalyzer
 
 
@@ -36,6 +38,26 @@ class BusinessContext:
     security: SecurityAnalyzer
     import_export: ImportExportManager
     backup: BackupRestoreManager
+
+
+def build_vault(config: ConfigManager, *, test_mode: bool = False) -> VaultManager:
+    """创建并完整装配 VaultManager（db、signer、生命周期编排器）。
+
+    集中 vault 装配：DatabaseBootstrap 创建 db+signer 并注入条目/分类完整性 handler，
+    VaultManager 持有 db+signer 并注入 write_guard，VaultLifecycleOrchestrator 注入
+    生命周期委托（initialize/unlock/lock/change_master_password/close）。app.py 与测试
+    经此单一入口取得完全装配的 vault，消除原先 VaultManager 内部 ``new DatabaseManager``
+    的隐藏第二组合根与分散装配步骤。
+
+    Args:
+        config: 配置管理器。
+        test_mode: True 时关闭 DatabaseManager 密文前缀断言（测试直接构造非密文数据）；
+            生产路径保持默认 False。
+    """
+    db, signer = DatabaseBootstrap.bootstrap(config, test_mode=test_mode)
+    vault = VaultManager(config, db, signer)
+    vault.attach_lifecycle(VaultLifecycleOrchestrator(vault, db, signer))
+    return vault
 
 
 def build_business_context(config: ConfigManager, vault: VaultManager) -> BusinessContext:

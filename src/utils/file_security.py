@@ -24,6 +24,20 @@ _CACHED_USER_SID: str | None = None
 _SID_LOCK = threading.Lock()
 
 
+def _run_no_window(
+    cmd: list[str], *, timeout: int = 10, check: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """运行子进程，抑制 Windows 控制台窗口（CREATE_NO_WINDOW），统一文本输出与超时。
+
+    收敛 whoami / icacls 调用的公共参数（capture_output/text/creationflags/timeout），
+    新增 icacls 调用点复用即不漏 creationflags 导致弹黑窗。
+    """
+    return subprocess.run(
+        cmd, capture_output=True, text=True, check=check,
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), timeout=timeout,
+    )
+
+
 def _windows_user_sid() -> str:
     """获取当前 Windows 用户的 SID，用于 ACL 权限设置。
 
@@ -48,12 +62,8 @@ def _windows_user_sid() -> str:
             return _CACHED_USER_SID
         sid = ''
         try:
-            result = subprocess.run(
-                ['whoami', '/user', '/fo', 'csv', '/nh'],
-                capture_output=True,
-                text=True,
-                check=True,
-                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            result = _run_no_window(
+                ['whoami', '/user', '/fo', 'csv', '/nh'], check=True,
             )
             # 用 csv 解析 whoami 的 CSV 输出，正确处理用户名含逗号时的引号边界，
             # 避免 split(',') 在 "Doe, John" 场景误切导致 SID 解析错误。
@@ -102,21 +112,13 @@ def _restrict_windows_acl(
             return
     permission = '(OI)(CI)F' if is_directory else 'F'
     try:
-        grant = subprocess.run(
+        grant = _run_no_window(
             ['icacls', str(path), '/grant:r', f'*{sid}:{permission}'],
-            capture_output=True,
-            text=True,
-            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-            timeout=10,
         )
         if grant.returncode != 0:
             raise OSError(grant.stderr.strip() or 'icacls grant failed')
-        inherit = subprocess.run(
+        inherit = _run_no_window(
             ['icacls', str(path), '/inheritance:r'],
-            capture_output=True,
-            text=True,
-            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
-            timeout=10,
         )
         if inherit.returncode != 0:
             raise OSError(inherit.stderr.strip() or 'icacls inheritance failed')

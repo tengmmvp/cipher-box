@@ -7,14 +7,14 @@
 from pathlib import Path
 
 from src.business.managers.restore_point_manager import RestorePointManager
-from src.business.managers.vault_manager import VaultManager
+from tests.helpers import make_vault
 
 
 class TestRestorePointCleanup:
     """验证恢复点启动重试清理逻辑。"""
 
     def test_purge_removes_restore_points(self, vault_config):
-        vault = VaultManager(vault_config)
+        vault = make_vault(vault_config)
         vault.initialize("test_password_12345")
         try:
             backups_dir = vault.data_dir / 'backups'
@@ -36,7 +36,7 @@ class TestRestorePointCleanup:
 
         cipherbox_snapshot_* 可能为有效的定期自动快照，不应被启动清理删除。
         """
-        vault = VaultManager(vault_config)
+        vault = make_vault(vault_config)
         vault.initialize("test_password_12345")
         try:
             backups_dir = vault.data_dir / 'backups'
@@ -55,7 +55,7 @@ class TestRestorePointCleanup:
 
     def test_purge_missing_directory_is_noop(self, vault_config):
         """backups 目录不存在时安全无操作，返回空失败列表。"""
-        vault = VaultManager(vault_config)
+        vault = make_vault(vault_config)
         vault.initialize("test_password_12345")
         try:
             failed = vault.purge_restore_points()
@@ -70,7 +70,7 @@ class TestRestorePointCleanup:
         清理的唯一入口，须有回归守护其「真删除 + 计数正确」契约，防止 glob
         模式漂移或返回值语义变化导致「用户以为已清理实则残留」的假阳性安全。
         """
-        vault = VaultManager(vault_config)
+        vault = make_vault(vault_config)
         vault.initialize("test_password_12345")
         try:
             backups_dir = vault.data_dir / 'backups'
@@ -91,7 +91,7 @@ class TestRestorePointCleanup:
 
     def test_clear_all_preserves_snapshots(self, vault_config):
         """clear_all 仅清理 pre_restore_*，保留定期自动快照 cipherbox_snapshot_*。"""
-        vault = VaultManager(vault_config)
+        vault = make_vault(vault_config)
         vault.initialize("test_password_12345")
         try:
             backups_dir = vault.data_dir / 'backups'
@@ -112,7 +112,7 @@ class TestRestorePointCleanup:
         self, vault_config, monkeypatch
     ):
         """部分失败时返回值 = 总数 − 失败数，且失败文件残留、成功文件真删。"""
-        vault = VaultManager(vault_config)
+        vault = make_vault(vault_config)
         vault.initialize("test_password_12345")
         try:
             backups_dir = vault.data_dir / 'backups'

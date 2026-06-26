@@ -5,7 +5,6 @@ import dataclasses
 import pytest
 
 from src.crypto.master_key import KdfParams
-from src.database.db_manager import DatabaseManager
 from src.models import Entry
 from tests.helpers import make_test_config
 
@@ -35,29 +34,25 @@ _TEST_KDF_PARAMS = KdfParams(time_cost=2, memory_cost=16 * 1024, parallelism=1)
 
 @pytest.fixture(autouse=True)
 def _weak_kdf_for_tests(monkeypatch):
-    """测试全局注入弱 KDF，加速 vault_manager 的主密钥派生（initialize / change_master）。
+    """测试全局注入弱 KDF，加速保险库主密钥派生（initialize / change_master）。
 
-    覆盖范围：仅 ``vault_manager.DEFAULT_KDF_PARAMS``（initialize / change_master
-    经此派生）。**有意不覆盖** ``backup_restore.DEFAULT_KDF_PARAMS``——备份密码
-    派生用 backup_restore 模块自有的导入副本，保持真实 OWASP 参数：
-    ``test_rejects_downgraded_kdf_params`` 需创建真实参数备份再篡改为更弱值以验证
-    防降级守卫；若一并弱化会使创建出的备份已是最低合法参数，无法测试降级拒绝。
-    故涉及备份密码派生的少数测试较慢（真实 Argon2id 64MB），属可接受取舍。
+    覆盖范围：仅 ``vault_lifecycle.DEFAULT_KDF_PARAMS``（initialize / change_master
+    经此派生，生命周期流程已拆出至 vault_lifecycle）。**有意不覆盖**
+    ``backup_restore.DEFAULT_KDF_PARAMS``——备份密码派生用 backup_restore 模块自有的
+    导入副本，保持真实 OWASP 参数：``test_rejects_downgraded_kdf_params`` 需创建真实
+    参数备份再篡改为更弱值以验证防降级守卫；若一并弱化会使创建出的备份已是最低合法
+    参数，无法测试降级拒绝。故涉及备份密码派生的少数测试较慢（真实 Argon2id 64MB），
+    属可接受取舍。
     """
-    from src.business.managers import vault_manager
-    monkeypatch.setattr(vault_manager, 'DEFAULT_KDF_PARAMS', _TEST_KDF_PARAMS)
+    from src.business.managers import vault_lifecycle
+    monkeypatch.setattr(vault_lifecycle, 'DEFAULT_KDF_PARAMS', _TEST_KDF_PARAMS)
 
 
 @pytest.fixture
 def vault(vault_config):
-    """已初始化的 VaultManager 实例。
-
-    注入 test_mode=True 的 DatabaseManager 关闭密文前缀断言（_enforce_encrypted_fields），
-    适配测试直接构造的非密文数据；生产路径不传 db，默认断言启用。
-    """
-    from src.business.managers.vault_manager import VaultManager
-    db = DatabaseManager(vault_config.db_path, test_mode=True)
-    v = VaultManager(vault_config, db=db)
+    """已初始化的 VaultManager 实例（经 build_vault 完整装配 db+signer+生命周期）。"""
+    from tests.helpers import make_vault
+    v = make_vault(vault_config, test_mode=True)
     v.initialize('TestPassword123!', params=_TEST_KDF_PARAMS)
     yield v
     try:

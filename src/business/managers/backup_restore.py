@@ -68,6 +68,9 @@ from ..services.backup_paths import (
 from ..services.backup_validator import (
     MAX_BACKUP_ENTRIES,
     MAX_HISTORY_PER_ENTRY,
+    REQUIRED_CATEGORY_KEYS,
+    REQUIRED_ENTRY_KEYS,
+    REQUIRED_HISTORY_KEYS,
     validate_restore_data,
 )
 from ..services.crypto_utils import (
@@ -142,6 +145,22 @@ class PortableBackup(TypedDict):
     password_history: list[PortableHistoryItem]
 
 
+# 启动期一致性断言：Portable* TypedDict 字段集须与 backup_validator.REQUIRED_*_KEYS
+# 完全一致。新增字段时若只改 TypedDict 而漏改校验键集（或反之），模块加载即失败，
+# 而非让恢复路径静默放行残缺载荷。用显式 raise 而非 assert：python -O 会剔除 assert。
+_PORTABLE_KEY_ASSERTS = (
+    (set(PortableCategory.__annotations__), REQUIRED_CATEGORY_KEYS, 'PortableCategory'),
+    (set(PortableEntry.__annotations__), REQUIRED_ENTRY_KEYS, 'PortableEntry'),
+    (set(PortableHistoryItem.__annotations__), REQUIRED_HISTORY_KEYS, 'PortableHistoryItem'),
+)
+for _actual, _expected, _name in _PORTABLE_KEY_ASSERTS:
+    if _actual != _expected:
+        raise RuntimeError(
+            f'{_name} 字段集与 backup_validator 校验键集不一致：'
+            f'{sorted(_actual)} != {sorted(_expected)}'
+        )
+
+
 def _user_friendly_error(exc: Exception) -> str:
     """将异常映射为用户友好的错误消息。
 
@@ -165,6 +184,10 @@ def _user_friendly_error(exc: Exception) -> str:
         return '文件读写失败，请检查路径和磁盘'
     if isinstance(exc, json.JSONDecodeError):
         return '备份文件格式无效或已损坏'
+    if isinstance(exc, ValueError):
+        # validate_file_path 等抛出的 ValueError 已携带面向用户的中文消息，直接展示；
+        # 其余 ValueError 退回通用提示，不向用户暴露内部异常细节。
+        return str(exc) or '输入数据无效'
     # PayloadTooLargeError(BackupError 子类)已由上方 BackupError 分支捕获并返回 str
     return '操作失败，请检查文件和磁盘'
 
@@ -436,11 +459,13 @@ class BackupRestoreManager:
                 if result[0]:
                     logger.info("备份恢复完成 (%.1fms)", (time.monotonic() - t0) * 1000)
                 return result
-        except ValueError as exc:
-            # _restore_current 中精心编写的错误消息直接传递给用户
-            logger.error("恢复失败: %s", exc, exc_info=True)
-            return False, str(exc)
         except Exception as exc:
+            # 所有异常（validate_file_path 的 ValueError、BackupError、OSError 等）统一
+            # 经 _user_friendly_error 翻译为用户友好消息。原先独立的 except ValueError
+            # 分支注释声称透传 _restore_current 的消息，但 _restore_current 只 return 不
+            # raise，实际仅捕获 validate_file_path 的 ValueError——该职责已由
+            # _user_friendly_error 的 ValueError 分支承接，消除「未来 _restore_current
+            # 误抛 ValueError 会绕过翻译直暴露内部消息」的风险。
             logger.error("恢复失败: %s", exc, exc_info=True)
             return False, _user_friendly_error(exc)
 

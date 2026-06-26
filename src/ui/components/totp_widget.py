@@ -19,7 +19,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...crypto.totp import TOTPGenerator
 from ..resources.constants import BTN_TOTP_COPY, FONT_FAMILY_MONOSPACE
 from ..resources.icons import COPY, set_icon_with_text
 from ..resources.theme_colors import c
@@ -186,9 +185,9 @@ class TOTPWidget(QWidget):
             return
         self._code_label.setText(code)
         if self._bar is not None:
-            # 复用 TOTPGenerator.get_remaining_seconds：其内部对 period<=0 回退默认值，
-            # 消除本处独立取模的除零风险，并与倒计时计算保持单一来源。
-            self._bar.setValue(TOTPGenerator.get_remaining_seconds(period=self._period))
+            # 经 TotpService 计算剩余秒数：其内部对 period<=0 回退默认值，消除本处
+            # 独立取模的除零风险；走业务门面而非直接依赖 crypto 层。
+            self._bar.setValue(self._entry_mgr.totp.remaining_seconds(self._period))
 
     def _copy_code(self) -> None:
         """复制当前 TOTP 验证码，始终取最新值。"""

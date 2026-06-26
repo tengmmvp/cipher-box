@@ -52,7 +52,7 @@
 <td width="50%">
 
 ### 📦 导入 / 导出 / 备份
-- JSON / CSV + Chrome / Bitwarden / KeePass 导入
+- JSON / CSV + Chrome / Bitwarden / KeePass（CSV 导出）导入
 - 独立密码保护的可移植加密备份
 - 本地自动快照 · 导入去重与原子回滚
 
@@ -137,11 +137,17 @@ python -m unittest discover tests/  # unittest
 src/
 ├── crypto/          # 加密引擎（AES-256-GCM、Argon2id、TOTP）
 ├── database/        # SQLite 数据层与固定结构校验
-├── business/        # 业务编排（保险库、条目、安全分析、导入导出）
-├── ui/              # PyQt6 界面（主题系统、QSS 样式）
-│   └── resources/   #   样式表 · 主题色 · 图标
+├── business/        # 业务编排
+│   ├── managers/    #   有状态编排（保险库、条目、导入导出、备份恢复）
+│   └── services/    #   协作模块（加解密、校验、签名、重加密、安全分析）
+├── ui/              # PyQt6 界面
+│   ├── windows/     #   主窗口（拆分为职责文件 + 共享 mixin base）
+│   ├── dialogs/     #   对话框（登录、条目编辑、备份、设置等）
+│   ├── components/  #   可复用控件（详情面板、条目列表、TOTP、密码历史）
+│   ├── controllers/ #   数据到控件的映射与生命周期
+│   └── resources/   #   样式表 · 主题色 · 图标 · 常量
 └── utils/           # 共享工具（文件安全、内存清零、格式化、安全擦除）
-tests/               # 测试套件
+tests/               # 测试套件（按 crypto/database/business/ui/utils/config 分层）
 ```
 
 ---

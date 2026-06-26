@@ -9,14 +9,13 @@ build_business_context 注册两条安全相关不变量回调：
 """
 
 from src.business.composition import build_business_context
-from src.business.managers.vault_manager import VaultManager
 from src.models import Entry
-from tests.helpers import make_test_config
+from tests.helpers import make_test_config, make_vault
 
 
 def _make_ctx(tmp_dir: str):
     config = make_test_config(tmp_dir)
-    vault = VaultManager(config)
+    vault = make_vault(config)
     vault.initialize('TestComposition!2026')
     return build_business_context(config, vault), vault
 

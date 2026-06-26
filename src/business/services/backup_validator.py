@@ -5,6 +5,7 @@
 """
 
 import logging
+from collections.abc import Set
 from datetime import datetime
 from typing import Any
 
@@ -24,6 +25,20 @@ MAX_BACKUP_ENTRIES = MAX_ENTRIES_LIMIT
 MAX_ENTRY_JSON_SIZE = MAX_ENTRY_PAYLOAD_SIZE
 MAX_TEXT_FIELD_SIZE = 1024 * 1024
 MAX_HISTORY_PER_ENTRY = MAX_PASSWORD_HISTORY * 2  # 每条目历史上限，2 倍余量
+
+# 备份载荷各 TypedDict 的必备键集（与 backup_restore.Portable* 一一对应）。提为
+# 模块级常量供 validate_* 复用；backup_restore 启动期断言 Portable*.__annotations__
+# 与此一致，消除「TypedDict 字段」与「校验 require_keys」双重维护的静默漂移。
+REQUIRED_CATEGORY_KEYS = frozenset({
+    'id', 'name', 'icon_char', 'color', 'sort_order', 'created_at',
+})
+REQUIRED_ENTRY_KEYS = frozenset({
+    'id', 'crypto_id', 'title', 'username', 'password', 'url',
+    'category_id', 'tags', 'notes', 'custom_fields', 'is_favorite',
+    'is_deleted', 'password_strength', 'entry_type', 'totp_secret',
+    'created_at', 'updated_at', 'deleted_at', 'password_changed_at',
+})
+REQUIRED_HISTORY_KEYS = frozenset({'entry_id', 'password', 'changed_at'})
 
 
 def validate_restore_data(data: dict[str, Any]) -> None:
@@ -63,11 +78,7 @@ def validate_categories(categories: list[dict[str, Any]]) -> set[int]:
     for item in categories:
         if not isinstance(item, dict):
             raise BackupError('备份分类格式无效')
-        require_keys(
-            item,
-            {'id', 'name', 'icon_char', 'color', 'sort_order', 'created_at'},
-            '备份分类',
-        )
+        require_keys(item, REQUIRED_CATEGORY_KEYS, '备份分类')
         category_id = item['id']
         if not is_real_int(category_id):
             raise BackupError('备份分类 ID 无效')
@@ -85,16 +96,10 @@ def validate_categories(categories: list[dict[str, Any]]) -> set[int]:
 
 def validate_entry_fields(item: dict[str, Any], category_ids: set[int]) -> None:
     """验证单条备份条目的必填键、字段类型和文本长度。"""
-    required_entry_keys = {
-        'id', 'crypto_id', 'title', 'username', 'password', 'url',
-        'category_id', 'tags', 'notes', 'custom_fields', 'is_favorite',
-        'is_deleted', 'password_strength', 'entry_type', 'totp_secret',
-        'created_at', 'updated_at', 'deleted_at', 'password_changed_at',
-    }
     # 先 require_keys 校验键集（O(1) 项数，不触及值），再做字节估算——避免 item
     # 含超大非必填键时，str(v) 对超大值字符串化触发 DoS。require_keys 后 item 仅含
     # 合法键，字节估算在合法键集上进行。
-    require_keys(item, required_entry_keys, '备份条目')
+    require_keys(item, REQUIRED_ENTRY_KEYS, '备份条目')
     if sum(len(str(v).encode('utf-8')) for v in item.values()) > MAX_ENTRY_JSON_SIZE:
         raise BackupError('备份条目格式或大小无效')
 
@@ -186,9 +191,7 @@ def validate_history(history: list[dict[str, Any]], entry_ids: set[int]) -> None
     for item in history:
         if not isinstance(item, dict):
             raise BackupError('备份密码历史格式无效')
-        require_keys(
-            item, {'entry_id', 'password', 'changed_at'}, '备份密码历史'
-        )
+        require_keys(item, REQUIRED_HISTORY_KEYS, '备份密码历史')
         entry_id = item['entry_id']
         # 与 validate_entries 的 ID 校验对齐：拒绝 bool/float 等伪装成 int 的类型
         if not is_real_int(entry_id):
@@ -201,7 +204,7 @@ def validate_history(history: list[dict[str, Any]], entry_ids: set[int]) -> None
         require_text(item['changed_at'], '密码历史时间', 64)
 
 
-def require_keys(item: dict[str, Any], expected: set[str], label: str) -> None:
+def require_keys(item: dict[str, Any], expected: Set[str], label: str) -> None:
     """验证 item 是否恰好包含所需的键集合，拒绝多余或缺失的键。"""
     if set(item) != expected:
         raise BackupError(f'{label}字段不完整')

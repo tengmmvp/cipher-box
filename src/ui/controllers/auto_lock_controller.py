@@ -17,6 +17,8 @@ from PyQt6 import sip
 from PyQt6.QtCore import QAbstractNativeEventFilter, QByteArray, QObject, QTimer
 from PyQt6.QtWidgets import QApplication
 
+from ...config import DEFAULT_CONFIG
+
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QWidget
 
@@ -84,7 +86,11 @@ class AutoLockController:
         """按 auto_lock_minutes 重置定时器；未解锁或关闭时停止。"""
         if self._lock_timer is None:
             return
-        minutes = self._config.get_safe('auto_lock_minutes', 5)
+        # 默认值引用 DEFAULT_CONFIG 单一源，与 constants.py 派生 clipboard 默认值的路径一致，
+        # 避免「改了默认却此处仍是字面量 5」的漂移。
+        minutes = self._config.get_safe(
+            'auto_lock_minutes', DEFAULT_CONFIG['auto_lock_minutes']
+        )
         if not self._vault.is_unlocked or minutes <= 0:
             self._lock_timer.stop()
             return

@@ -4,6 +4,14 @@
 部分异常通过多重继承同时属于 CipherBoxError 和标准异常类型，
 使调用方既可精确捕获领域异常，也可通过 ``except ValueError`` /
 ``except RuntimeError`` 兜底捕获。
+
+.. warning::
+
+    多重继承意味着 ``DecryptionError`` / ``PayloadTooLargeError`` 也是 ``ValueError``，
+    ``VaultError`` / ``DatabaseError`` 也是 ``RuntimeError``。**捕获这些标准异常时会
+    连带捕获对应的领域异常子类**——若某处用 ``except ValueError:`` 兜底，会同时吞掉
+    ``DecryptionError`` 等领域异常而掩盖真实问题。应优先捕获具体的 ``CipherBox``
+    异常，仅在确认要兜底时才用标准异常基类。
 """
 
 __all__ = [

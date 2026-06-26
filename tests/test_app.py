@@ -12,8 +12,7 @@ LoginWindow/MainWindow 的 GUI 交互，难以在无头测试中端到端驱动�
 import tempfile
 
 from src.app import CipherBoxApp
-from src.business.managers.vault_manager import VaultManager
-from tests.helpers import make_test_config
+from tests.helpers import make_test_config, make_vault
 
 
 def test_emergency_cleanup_noop_when_vault_locked(monkeypatch):
@@ -24,7 +23,7 @@ def test_emergency_cleanup_noop_when_vault_locked(monkeypatch):
     """
     with tempfile.TemporaryDirectory() as root:
         config = make_test_config(root)
-        vault = VaultManager(config)
+        vault = make_vault(config)
         assert vault.initialize('MasterPassword!2026')[0]
         vault.lock()
         lock_calls: list[int] = []
@@ -49,7 +48,7 @@ def test_emergency_cleanup_locks_unlocked_vault():
     """保险库解锁时 _emergency_cleanup 应尽力调用 lock() 收缩明文残留面。"""
     with tempfile.TemporaryDirectory() as root:
         config = make_test_config(root)
-        vault = VaultManager(config)
+        vault = make_vault(config)
         assert vault.initialize('MasterPassword!2026')[0]
         assert vault.is_unlocked
         app = CipherBoxApp.__new__(CipherBoxApp)
@@ -66,7 +65,7 @@ def test_emergency_cleanup_idempotent_across_repeated_calls():
     调用，重复清理不应抛异常（vault 已锁定时再次短路）。"""
     with tempfile.TemporaryDirectory() as root:
         config = make_test_config(root)
-        vault = VaultManager(config)
+        vault = make_vault(config)
         assert vault.initialize('MasterPassword!2026')[0]
         app = CipherBoxApp.__new__(CipherBoxApp)
         app._vault = vault
@@ -83,7 +82,7 @@ def test_emergency_cleanup_swallows_main_window_errors():
     仍须继续执行 vault.lock()——崩溃兜底绝不能因清理再次抛出。"""
     with tempfile.TemporaryDirectory() as root:
         config = make_test_config(root)
-        vault = VaultManager(config)
+        vault = make_vault(config)
         assert vault.initialize('MasterPassword!2026')[0]
 
         class _BoomWindow:

@@ -242,6 +242,28 @@ class PasswordHistory:
         }
 
 
+def _entry_type_icon(entry_type: str) -> str:
+    """条目类型图标（未知类型回退 login）。"""
+    return ENTRY_TYPES.get(entry_type, ENTRY_TYPES[ENTRY_TYPE_LOGIN])['icon']
+
+
+def _entry_type_label(entry_type: str) -> str:
+    """条目类型标签（未知类型回退 login）。"""
+    return ENTRY_TYPES.get(entry_type, ENTRY_TYPES[ENTRY_TYPE_LOGIN])['label']
+
+
+def _entry_has_totp(totp_present: bool, totp_secret: str) -> bool:
+    """是否配置了 TOTP（显式标记或存在 secret）。"""
+    return totp_present or bool(totp_secret)
+
+
+def _parse_tag_list(tags: str) -> list[str]:
+    """逗号分隔的 tags 字符串解析为去空白、去空的标签列表。"""
+    if not tags:
+        return []
+    return [t.strip() for t in tags.split(',') if t.strip()]
+
+
 @dataclass(repr=False)
 class Entry:
     """密码条目（明文态）。
@@ -307,23 +329,21 @@ class Entry:
     @property
     def type_icon(self) -> str:
         """获取条目类型图标。"""
-        return ENTRY_TYPES.get(self.entry_type, ENTRY_TYPES[ENTRY_TYPE_LOGIN])['icon']
+        return _entry_type_icon(self.entry_type)
 
     @property
     def type_label(self) -> str:
         """获取条目类型标签。"""
-        return ENTRY_TYPES.get(self.entry_type, ENTRY_TYPES[ENTRY_TYPE_LOGIN])['label']
+        return _entry_type_label(self.entry_type)
 
     @property
     def has_totp(self) -> bool:
         """是否配置了 TOTP。"""
-        return self.totp_present or bool(self.totp_secret)
+        return _entry_has_totp(self.totp_present, self.totp_secret)
 
     def get_tag_list(self) -> list[str]:
         """获取标签列表。"""
-        if not self.tags:
-            return []
-        return [t.strip() for t in self.tags.split(',') if t.strip()]
+        return _parse_tag_list(self.tags)
 
     def to_dict(self, include_password: bool = False) -> dict:
         """转换为字典，供导出流程使用。
@@ -484,20 +504,18 @@ class RawEntry:
 
     @property
     def type_icon(self) -> str:
-        return ENTRY_TYPES.get(self.entry_type, ENTRY_TYPES[ENTRY_TYPE_LOGIN])['icon']
+        return _entry_type_icon(self.entry_type)
 
     @property
     def type_label(self) -> str:
-        return ENTRY_TYPES.get(self.entry_type, ENTRY_TYPES[ENTRY_TYPE_LOGIN])['label']
+        return _entry_type_label(self.entry_type)
 
     @property
     def has_totp(self) -> bool:
-        return self.totp_present or bool(self.totp_secret)
+        return _entry_has_totp(self.totp_present, self.totp_secret)
 
     def get_tag_list(self) -> list[str]:
-        if not self.tags:
-            return []
-        return [t.strip() for t in self.tags.split(',') if t.strip()]
+        return _parse_tag_list(self.tags)
 
 
 # 运行时守护：RawEntry（DB 密文态）与 Entry（明文态）字段名集合必须一致

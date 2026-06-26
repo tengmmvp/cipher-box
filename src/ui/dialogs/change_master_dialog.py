@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hmac
 import logging
 from pathlib import Path
 
@@ -22,10 +23,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...business.managers.vault_manager import AUTH_FAILED_MESSAGE, VaultManager
+from ...business.managers.vault_lifecycle import AUTH_FAILED_MESSAGE
+from ...business.managers.vault_manager import VaultManager
 from ...business.services.password_service import PasswordService
 from ..components.widgets import (
     RateLimiter,
+    create_cancel_button,
     create_password_toggle_btn,
     release_worker,
     set_label_severity,
@@ -141,10 +144,7 @@ class ChangeMasterDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        cancel_btn = QPushButton('取消')
-        cancel_btn.setFixedSize(*BTN_DIALOG)
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(create_cancel_button(self))
 
         self._change_btn = QPushButton('修改')
         self._change_btn.setObjectName('primaryBtn')
@@ -181,10 +181,14 @@ class ChangeMasterDialog(QDialog):
         if not valid:
             self._msg_label.setText(error)
             return
-        if new != confirm:
+        # 常量时间比较，避免短路 == 的时序侧信道（首个不同字符即返回，泄露公共
+        # 前缀长度）。encode('utf-8') 是必须的：主密码可含 Unicode（如中文），而
+        # hmac.compare_digest 对 str 仅接受 ASCII，非 ASCII 会抛 TypeError。与
+        # vault_manager._change_master_password_locked 的比较保持一致。
+        if not hmac.compare_digest(new.encode('utf-8'), confirm.encode('utf-8')):
             self._msg_label.setText('两次输入的新密码不一致')
             return
-        if old == new:
+        if hmac.compare_digest(old.encode('utf-8'), new.encode('utf-8')):
             self._msg_label.setText('新密码不能与旧密码相同')
             return
 

@@ -198,6 +198,8 @@ DARK_COLORS = {
 if set(LIGHT_COLORS) != set(DARK_COLORS):
     raise RuntimeError('浅色/深色主题颜色 key 不一致')
 
+# 模块初始主题。须与 config.DEFAULT_THEME 保持一致：config 层是配置默认的单一
+# 事实源，本模块作为零上层依赖的纯色板不 import config，故以注释声明一致性约定。
 _current_theme = 'light'
 _current_colors = dict(LIGHT_COLORS)
 

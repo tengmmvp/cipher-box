@@ -13,12 +13,11 @@ from typing import cast
 from unittest.mock import patch
 
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QLabel, QLineEdit, QWidget
+from PyQt6.QtWidgets import QApplication, QLabel, QWidget
 
 from src.business.composition import build_business_context
 from src.business.managers.backup_restore import BackupRestoreManager
 from src.business.managers.import_export import ImportExportManager
-from src.business.managers.vault_manager import VaultManager
 from src.crypto.encryption import EncryptionEngine
 from src.crypto.totp import TOTPGenerator
 from src.exceptions import SchemaError
@@ -27,7 +26,7 @@ from src.ui.dialogs.entry_dialog import EntryDialog
 from src.ui.dialogs.login_window import LoginWindow
 from src.ui.resources.styles import get_style
 from src.ui.windows.main_window import MainWindow
-from tests.helpers import make_entry_manager, make_test_config
+from tests.helpers import make_entry_manager, make_test_config, make_vault
 
 _APP = QApplication.instance() or QApplication([])
 
@@ -38,7 +37,7 @@ def _config(root: str):
 
 def test_unchanged_password_does_not_create_history():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         entry_id = manager.add_entry(Entry(title='Account', password='SamePassword!2026'))
@@ -51,7 +50,7 @@ def test_unchanged_password_does_not_create_history():
 
 def test_password_history_survives_master_password_change():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         assert vault.initialize('OldMasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         entry_id = manager.add_entry(Entry(title='Account', password='FirstPassword!2026'))
@@ -70,7 +69,7 @@ def test_password_history_survives_master_password_change():
 
 def test_portable_backup_restores_into_different_vault():
     with tempfile.TemporaryDirectory() as source_root, tempfile.TemporaryDirectory() as target_root:
-        source = VaultManager(_config(source_root))
+        source = make_vault(_config(source_root))
         assert source.initialize('SourceMasterPassword!2026')[0]
         source_manager = make_entry_manager(source)
         entry_id = source_manager.add_entry(Entry(
@@ -91,7 +90,7 @@ def test_portable_backup_restores_into_different_vault():
         )
         assert success, error
 
-        target = VaultManager(_config(target_root))
+        target = make_vault(_config(target_root))
         assert target.initialize('DifferentMasterPassword!2026')[0]
         success, error = BackupRestoreManager(target, make_entry_manager(target)).restore_backup(
             backup_path, 'IndependentBackupPassword!2026'
@@ -117,7 +116,7 @@ def test_portable_backup_restores_into_different_vault():
 
 def test_entry_dialog_restores_type_specific_fields():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         entry = Entry(
@@ -130,9 +129,9 @@ def test_entry_dialog_restores_type_specific_fields():
         )
         dialog = EntryDialog(manager, manager.categories.get_categories(), entry=entry, config=_config(root))
         assert dialog._type_combo.currentData() == 'card'
-        assert not dialog._special_widgets['card_number'].isHidden()
-        assert cast(QLineEdit, dialog._special_widgets['card_holder']).text() == 'Test User'
-        assert cast(QLineEdit, dialog._special_widgets['card_number']).text() == '4111 1111 1111 1111'
+        assert not dialog._special_edits['card_number'].isHidden()
+        assert dialog._special_edits['card_holder'].text() == 'Test User'
+        assert dialog._special_edits['card_number'].text() == '4111 1111 1111 1111'
         dialog.close()
         vault.close()
 
@@ -140,7 +139,7 @@ def test_entry_dialog_restores_type_specific_fields():
 def test_lock_preparation_clears_decrypted_ui_and_clipboard():
     with tempfile.TemporaryDirectory() as root:
         config = _config(root)
-        vault = VaultManager(config)
+        vault = make_vault(config)
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         manager.add_entry(Entry(title='Secret', password='VisibleSecret!2026'))
@@ -171,7 +170,7 @@ def test_change_master_success_triggers_force_backup(monkeypatch):
 
     with tempfile.TemporaryDirectory() as root:
         config = _config(root)
-        vault = VaultManager(config)
+        vault = make_vault(config)
         assert vault.initialize('MasterPassword!2026')[0]
         make_entry_manager(vault).add_entry(Entry(title='t', password='p'))
         window = MainWindow(build_business_context(config, vault))
@@ -202,7 +201,7 @@ def test_change_master_success_triggers_force_backup(monkeypatch):
 def test_lock_closes_and_scrubs_open_entry_dialog():
     with tempfile.TemporaryDirectory() as root:
         config = _config(root)
-        vault = VaultManager(config)
+        vault = make_vault(config)
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         entry_id = manager.add_entry(Entry(title='Secret', password='DialogSecret!2026'))
@@ -230,9 +229,9 @@ def test_lock_closes_and_scrubs_open_entry_dialog():
 
 def test_stale_key_session_cannot_write_after_master_password_change():
     with tempfile.TemporaryDirectory() as root:
-        first = VaultManager(_config(root))
+        first = make_vault(_config(root))
         assert first.initialize('OldMasterPassword!2026')[0]
-        stale = VaultManager(_config(root))
+        stale = make_vault(_config(root))
         assert stale.unlock('OldMasterPassword!2026')[0]
         assert first.change_master_password(
             'OldMasterPassword!2026', 'NewMasterPassword!2026'
@@ -253,7 +252,7 @@ def test_stale_key_session_cannot_write_after_master_password_change():
 
 def test_context_bound_ciphertext_rejects_cross_entry_swap():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         first_id = manager.add_entry(Entry(title='First', password='FirstSecret!2026'))
@@ -275,7 +274,7 @@ def test_context_bound_ciphertext_rejects_cross_entry_swap():
 
 def test_vault_persists_kdf_parameters_and_ciphertext_format():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         # 显式用生产级 DEFAULT_KDF_PARAMS，绕过测试全局弱 KDF monkeypatch——
         # 本测试专门验证 OWASP 级参数被正确持久化到 vault_meta。
         from src.crypto.master_key import DEFAULT_KDF_PARAMS
@@ -305,7 +304,7 @@ def test_selecting_first_entry_opens_detail_panel_without_crash():
     with tempfile.TemporaryDirectory() as root:
         config = _config(root)
         config.set('theme', 'dark')
-        vault = VaultManager(config)
+        vault = make_vault(config)
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         entry_id = manager.add_entry(Entry(title='Selectable', password='Strong!2026Password'))
@@ -379,7 +378,7 @@ def test_totp_accepts_standard_otpauth_uri():
 
 def test_bitwarden_import_preserves_folder_totp_and_custom_fields():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         importer = ImportExportManager(manager)
@@ -415,7 +414,7 @@ def test_bitwarden_import_preserves_folder_totp_and_custom_fields():
 
 def test_import_rolls_back_when_any_entry_fails():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         importer = ImportExportManager(manager)
@@ -449,7 +448,7 @@ def test_import_rolls_back_when_any_entry_fails():
 
 def test_export_without_password_excludes_secret_custom_fields():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         manager.add_entry(Entry(
@@ -480,7 +479,7 @@ def test_export_without_password_excludes_secret_custom_fields():
 
 def test_passwordless_overwrite_import_preserves_existing_secrets():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         entry_id = manager.add_entry(Entry(
@@ -512,7 +511,7 @@ def test_passwordless_overwrite_import_preserves_existing_secrets():
 
 def test_favorite_change_does_not_reset_password_age():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         entry_id = manager.add_entry(Entry(title='Account', password='Password!2026'))
@@ -530,7 +529,7 @@ def test_favorite_change_does_not_reset_password_age():
 def test_main_window_filters_entries_by_tag():
     with tempfile.TemporaryDirectory() as root:
         config = _config(root)
-        vault = VaultManager(config)
+        vault = make_vault(config)
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         manager.add_entry(Entry(title='Work', tags='工作,重要'))
@@ -549,7 +548,7 @@ def test_main_window_filters_entries_by_tag():
 
 def test_existing_vault_cannot_be_initialized_again():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         assert vault.initialize('OriginalMaster!2026')[0]
         manager = make_entry_manager(vault)
         entry_id = manager.add_entry(Entry(title='Keep', password='KeepSecret!2026'))
@@ -567,7 +566,7 @@ def test_existing_vault_cannot_be_initialized_again():
 
 def test_entry_metadata_tampering_is_rejected():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         entry_id = manager.add_entry(Entry(title='Original', password='Secret!2026'))
@@ -591,7 +590,7 @@ def test_entry_metadata_tampering_is_rejected():
 
 def test_entry_metadata_is_resigned_after_master_password_change():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         assert vault.initialize('OldMasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         entry_id = manager.add_entry(Entry(title='Account', password='Secret!2026'))
@@ -613,7 +612,7 @@ def test_entry_metadata_is_resigned_after_master_password_change():
 
 def test_vault_api_rejects_weak_master_passwords():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         ok, msg = vault.initialize('aaaaaaaaaaaa')
         assert ok is False
         assert msg
@@ -622,7 +621,7 @@ def test_vault_api_rejects_weak_master_passwords():
 
 def test_nested_transaction_uses_savepoint_for_inner_rollback():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         with vault.db.transaction():
@@ -640,7 +639,7 @@ def test_nested_transaction_uses_savepoint_for_inner_rollback():
 
 def test_import_all_does_not_decrypt_existing_vault():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         assert vault.initialize('MasterPassword!2026')[0]
         manager = make_entry_manager(vault)
         manager.add_entry(Entry(title='Existing', password='ExistingSecret!2026'))
@@ -666,7 +665,7 @@ def test_import_all_does_not_decrypt_existing_vault():
 def test_pre_restore_snapshot_purged_on_master_password_change():
     """改密后自动清理恢复点，收缩其中保存的已删除条目明文泄漏面。"""
     with tempfile.TemporaryDirectory() as source_root, tempfile.TemporaryDirectory() as target_root:
-        source = VaultManager(_config(source_root))
+        source = make_vault(_config(source_root))
         assert source.initialize('SourceMaster!2026')[0]
         make_entry_manager(source).add_entry(
             Entry(title='Incoming', password='IncomingSecret!2026')
@@ -677,7 +676,7 @@ def test_pre_restore_snapshot_purged_on_master_password_change():
         )
         assert success, error
 
-        target = VaultManager(_config(target_root))
+        target = make_vault(_config(target_root))
         assert target.initialize('OldTargetMaster!2026')[0]
         target_manager = make_entry_manager(target)
         target_manager.add_entry(
@@ -703,7 +702,7 @@ def test_pre_restore_snapshot_purged_on_master_password_change():
 
 def test_existing_database_missing_table_is_rejected_without_repair():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         assert vault.initialize('MasterPassword!2026')[0]
         vault.close()
         db_path = Path(root) / 'vault.db'
@@ -712,7 +711,7 @@ def test_existing_database_missing_table_is_rejected_without_repair():
         connection.commit()
         connection.close()
 
-        reopened = VaultManager(_config(root))
+        reopened = make_vault(_config(root))
         # schema 损坏（缺表）时 is_initialized 传播 SchemaError 而非静默 False，
         # 避免 UI 误判为未初始化后在损坏库上初始化覆盖既有数据。
         try:
@@ -733,7 +732,7 @@ def test_existing_database_missing_table_is_rejected_without_repair():
 
 def test_deleted_default_category_does_not_reappear_after_restart():
     with tempfile.TemporaryDirectory() as root:
-        vault = VaultManager(_config(root))
+        vault = make_vault(_config(root))
         assert vault.initialize('MasterPassword!2026')[0]
         category = next(
             item for item in make_entry_manager(vault).categories.get_categories()
@@ -744,7 +743,7 @@ def test_deleted_default_category_does_not_reappear_after_restart():
         vault.db.delete_category(category_id)
         vault.close()
 
-        reopened = VaultManager(_config(root))
+        reopened = make_vault(_config(root))
         assert reopened.is_initialized is True
         assert reopened.unlock('MasterPassword!2026')[0]
         assert all(

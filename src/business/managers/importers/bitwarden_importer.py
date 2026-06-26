@@ -2,6 +2,7 @@
 
 import enum
 import json
+import logging
 from typing import Any
 
 from ....models import (
@@ -20,6 +21,7 @@ from ....models import (
     CustomField,
     Entry,
 )
+from ...services.entry_validation import validate_plain_entry
 from .base import (
     ParsedImport,
     _merge_bitwarden_secrets,
@@ -28,7 +30,36 @@ from .base import (
     _validate_items,
 )
 
+logger = logging.getLogger(__name__)
+
 _SOURCE_LABEL = 'Bitwarden 导入'
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    """Bitwarden 嵌套结构守卫：非 dict 一律视为空 dict。
+
+    被污染或损坏的 Bitwarden 导出中，fields/card/identity/login 等字段可能是
+    list/str/int 等非 dict 类型，直接 ``.get`` 会抛 AttributeError 中断整个导入
+    （单个畸形 item 使全部已解析条目无法导入——拒绝服务）。守卫为空 dict 使解析
+    对畸形结构容错，再由末尾 ``validate_plain_entry`` 兜底校验。
+    """
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    """Bitwarden 列表字段守卫：非 list 视为空列表，避免字符串被逐字符迭代。"""
+    return value if isinstance(value, list) else []
+
+
+def _as_str(value: Any) -> str:
+    """标量字段守卫：非 str 一律视为空串。
+
+    Bitwarden 正常导出的标量字段均为 str；异常导出中可能是 None/数字/嵌套结构。
+    强制非 str → '' 防止类型混淆数据进入加密链路破坏 ``metadata_mac`` 载荷的可
+    重现性。丢弃而非 ``str(value)`` 转换：异常值多为污染数据，丢弃更安全，且
+    ``validate_plain_entry`` 会复核长度。
+    """
+    return value if isinstance(value, str) else ''
 
 
 class BitwardenItemType(enum.IntEnum):
@@ -49,56 +80,57 @@ class BitwardenItemType(enum.IntEnum):
 def _bitwarden_entry_fields(item: dict[str, Any]) -> tuple[str, list[CustomField]]:
     """解析 Bitwarden item 的条目类型与自定义字段。
 
-    item_type 经 BitwardenItemType 映射；未知/缺失类型回退 login。
+    item_type 经 BitwardenItemType 映射；未知/缺失/非法类型回退 login。所有嵌套
+    结构经 _as_dict/_as_list/_as_str 守卫，对畸形 item 容错不抛 AttributeError。
     """
     try:
         item_type = BitwardenItemType(item.get('type', BitwardenItemType.LOGIN))
-    except ValueError:
+    except (ValueError, TypeError):
         item_type = BitwardenItemType.LOGIN
     custom_fields = [
         CustomField(
-            name=field.get('name') or '自定义字段',
-            value=str(field.get('value') or ''),
+            name=_as_str(field.get('name')) or '自定义字段',
+            value=_as_str(field.get('value')),
             field_type='password' if field.get('type') == 1 else 'text',
         )
-        for field in item.get('fields', [])
-        if field.get('value') is not None
+        for field in _as_list(item.get('fields'))
+        if isinstance(field, dict) and field.get('value') is not None
     ]
     if item_type == BitwardenItemType.NOTE:
         return ENTRY_TYPE_NOTE, custom_fields
     if item_type == BitwardenItemType.CARD:
-        card = item.get('card', {})
-        exp_year = str(card.get('expYear', ''))
-        exp_month = str(card.get('expMonth', ''))
+        card = _as_dict(item.get('card'))
+        exp_year = _as_str(card.get('expYear'))
+        exp_month = _as_str(card.get('expMonth'))
         if exp_month:
             exp_month = exp_month.zfill(2)
         # 截断为两位年份以匹配卡片常见的 MM/YY 显示格式
         if len(exp_year) == 4:
             exp_year = exp_year[-2:]
         custom_fields.extend([
-            CustomField(SPECIAL_FIELD_CARD_HOLDER, str(card.get('cardholderName') or '')),
-            CustomField(SPECIAL_FIELD_CARD_NUMBER, str(card.get('number') or ''), 'password'),
+            CustomField(SPECIAL_FIELD_CARD_HOLDER, _as_str(card.get('cardholderName'))),
+            CustomField(SPECIAL_FIELD_CARD_NUMBER, _as_str(card.get('number')), 'password'),
             CustomField(
                 SPECIAL_FIELD_CARD_EXPIRY,
                 '/'.join(filter(None, [exp_month, exp_year])),
             ),
-            CustomField(SPECIAL_FIELD_CARD_CVV, str(card.get('code') or ''), 'password'),
+            CustomField(SPECIAL_FIELD_CARD_CVV, _as_str(card.get('code')), 'password'),
         ])
         return ENTRY_TYPE_CARD, custom_fields
     if item_type == BitwardenItemType.IDENTITY:
-        identity = item.get('identity', {})
+        identity = _as_dict(item.get('identity'))
         fullname = ' '.join(filter(None, [
-            str(identity.get('firstName') or ''), str(identity.get('middleName') or ''),
-            str(identity.get('lastName') or ''),
+            _as_str(identity.get('firstName')), _as_str(identity.get('middleName')),
+            _as_str(identity.get('lastName')),
         ]))
         custom_fields.extend([
             CustomField(SPECIAL_FIELD_ID_FULLNAME, fullname),
-            CustomField(SPECIAL_FIELD_ID_EMAIL, str(identity.get('email') or '')),
-            CustomField(SPECIAL_FIELD_ID_PHONE, str(identity.get('phone') or '')),
+            CustomField(SPECIAL_FIELD_ID_EMAIL, _as_str(identity.get('email'))),
+            CustomField(SPECIAL_FIELD_ID_PHONE, _as_str(identity.get('phone'))),
             CustomField(SPECIAL_FIELD_ID_ADDRESS, ' '.join(filter(None, [
-                str(identity.get('address1') or ''), str(identity.get('address2') or ''),
-                str(identity.get('city') or ''), str(identity.get('state') or ''),
-                str(identity.get('postalCode') or ''), str(identity.get('country') or ''),
+                _as_str(identity.get('address1')), _as_str(identity.get('address2')),
+                _as_str(identity.get('city')), _as_str(identity.get('state')),
+                _as_str(identity.get('postalCode')), _as_str(identity.get('country')),
             ]))),
         ])
         return ENTRY_TYPE_IDENTITY, custom_fields
@@ -111,6 +143,11 @@ class BitwardenImporter:
     解析 login/card/identity/note 四种 item 类型，映射 folder 为分类。Bitwarden
     JSON 可完整表达敏感字段，覆盖导入时信任导入数据，仅空值保留已有
     （见 ``_merge_bitwarden_secrets``）。
+
+    对畸形/被污染的导出 JSON 容错：嵌套结构经类型守卫避免 AttributeError 中断整个
+    导入；每个条目构造后经 ``validate_plain_entry`` 校验（类型、长度、自定义字段
+    结构），失败则跳过该条目并记录，使 ``ImportExportManager`` 的 ``skip_validation=True``
+    假设对本路径成立（与经 ``Entry.from_dict`` 校验的 JSON/CSV 路径对齐）。
     """
 
     def parse(self, filepath: str) -> ParsedImport:
@@ -130,38 +167,52 @@ class BitwardenImporter:
             )
 
         folder_map = {
-            folder.get('id'): folder.get('name', '')
-            for folder in data.get('folders', [])
-            if folder.get('id')
+            _as_str(folder.get('id')): _as_str(folder.get('name'))
+            for folder in _as_list(data.get('folders'))
+            if isinstance(folder, dict) and folder.get('id')
         }
 
         # 解析 Bitwarden 条目
         entries: list[Entry] = []
         entries_data: list[dict[str, str]] = []
         for item in items:
-            login = item.get('login', {})
+            if not isinstance(item, dict):
+                logger.warning("跳过非对象类型的 Bitwarden item")
+                continue
+            login = _as_dict(item.get('login'))
             entry_type, custom_fields = _bitwarden_entry_fields(item)
-            folder_name = folder_map.get(item.get('folderId'), '')
-            uris = login.get('uris') or []
-            url = uris[0].get('uri', '') if uris else ''
+            folder_name = folder_map.get(_as_str(item.get('folderId')), '')
+            uris = _as_list(login.get('uris'))
+            first_uri = uris[0] if uris and isinstance(uris[0], dict) else {}
+            url = _as_str(first_uri.get('uri'))
             entry = Entry(
-                title=item.get('name', ''),
-                username=login.get('username', ''),
-                password=login.get('password', ''),
+                title=_as_str(item.get('name')),
+                username=_as_str(login.get('username')),
+                password=_as_str(login.get('password')),
                 # url scheme / totp_secret 经模块级清洗，与 CSV/JSON 路径一致
                 # （_sanitize_url_scheme / _sanitize_totp_secret）。
                 url=_sanitize_url_scheme(url),
-                notes=item.get('notes', ''),
+                notes=_as_str(item.get('notes')),
                 custom_fields=custom_fields,
                 entry_type=entry_type,
-                totp_secret=_sanitize_totp_secret(login.get('totp', '')),
-                is_favorite=item.get('favorite', False),
+                totp_secret=_sanitize_totp_secret(_as_str(login.get('totp'))),
+                is_favorite=bool(item.get('favorite', False)),
                 category_name=folder_name,
             )
+            # 校验类型/长度/自定义字段结构，闭合 skip_validation=True 的假设；失败跳过
+            # 单条而非中断整个导入，与 _import_entries 的逐条容错语义一致。
+            try:
+                validate_plain_entry(entry)
+            except ValueError as exc:
+                logger.warning(
+                    "跳过校验失败的 Bitwarden 条目（crypto_id=%s）: %s",
+                    entry.crypto_id or '(未生成)', exc,
+                )
+                continue
             entries.append(entry)
             entries_data.append({
-                'title': item.get('name', ''),
-                'username': login.get('username', ''),
+                'title': entry.title,
+                'username': entry.username,
             })
 
         return ParsedImport(

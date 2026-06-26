@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -35,7 +36,7 @@ from ...business.services.backup_paths import BACKUP_EXT
 from ...business.services.password_service import PasswordService
 from ...exceptions import BackupError
 from ..components.widgets import (
-    format_status,
+    create_cancel_button,
     release_worker,
     set_label_severity,
     setup_dialog_flags,
@@ -51,6 +52,8 @@ from ..resources.theme_colors import c
 if TYPE_CHECKING:
     from ...business.managers.backup_restore import BackupRestoreManager
     from ...config import ConfigManager
+
+logger = logging.getLogger(__name__)
 
 
 class BackupDialog(QDialog):
@@ -137,10 +140,7 @@ class BackupDialog(QDialog):
         self._purge_btn.clicked.connect(self._purge_restore_points)
         btn_layout.addWidget(self._purge_btn)
 
-        cancel_btn = QPushButton('取消')
-        cancel_btn.setFixedSize(*BTN_DIALOG)
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(create_cancel_button(self))
 
         self._exec_btn = QPushButton('创建备份')
         self._exec_btn.setObjectName('primaryBtn')
@@ -162,7 +162,9 @@ class BackupDialog(QDialog):
         try:
             has_points = self._backup_mgr.restore_points.count() > 0
         except Exception:
-            has_points = True  # 统计出错时保持可点，避免误锁功能
+            # 统计出错时保持可点，避免误锁功能；记录日志保留可审计痕迹
+            logger.warning("统计恢复点数失败，保持清理按钮可点", exc_info=True)
+            has_points = True
         self._purge_btn.setEnabled(has_points)
 
     def closeEvent(self, a0: QCloseEvent | None) -> None:
@@ -294,11 +296,11 @@ class BackupDialog(QDialog):
         success, error_msg = cast(tuple[bool, str], result)
         if success:
             self.data_changed = True
-            self._status_label.setText(format_status(True, '备份创建成功'))
+            self._status_label.setText('备份创建成功')
             set_label_severity(self._status_label, 'success')
             QMessageBox.information(self, '成功', f'备份已保存到：\n{self._path_label.text()}')
         else:
-            self._status_label.setText(format_status(False, '备份失败'))
+            self._status_label.setText('备份失败')
             set_label_severity(self._status_label, 'error')
             msg = f'备份创建失败：{error_msg}' if error_msg else '备份创建失败，请检查文件路径和磁盘空间。'
             QMessageBox.critical(self, '错误', msg)
@@ -308,7 +310,7 @@ class BackupDialog(QDialog):
             return
         self._set_busy(False)
         release_worker(self)
-        self._status_label.setText(format_status(False, '备份失败'))
+        self._status_label.setText('备份失败')
         set_label_severity(self._status_label, 'error')
         QMessageBox.critical(self, '错误', f'备份创建失败：{error_msg}')
 
@@ -359,11 +361,11 @@ class BackupDialog(QDialog):
         success, error_msg = cast(tuple[bool, str], result)
         if success:
             self.data_changed = True
-            self._status_label.setText(format_status(True, '恢复成功'))
+            self._status_label.setText('恢复成功')
             set_label_severity(self._status_label, 'success')
             QMessageBox.information(self, '成功', '备份恢复成功！')
         else:
-            self._status_label.setText(format_status(False, '恢复失败'))
+            self._status_label.setText('恢复失败')
             set_label_severity(self._status_label, 'error')
             detail = f'\n\n错误信息：{error_msg}' if error_msg else ''
             QMessageBox.critical(self, '错误', f'恢复失败，请确认备份文件有效且主密码正确。{detail}')
@@ -373,7 +375,7 @@ class BackupDialog(QDialog):
             return
         self._set_busy(False)
         release_worker(self)
-        self._status_label.setText(format_status(False, '恢复失败'))
+        self._status_label.setText('恢复失败')
         set_label_severity(self._status_label, 'error')
         QMessageBox.critical(self, '错误', f'恢复失败：{error_msg}')
 

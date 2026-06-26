@@ -414,7 +414,52 @@ class ImportExportManager:
 
     # ======== 导入入口 ========
 
+    # 格式键 → 策略类注册表：新增格式只需新增策略类并在此注册，import_file 据此
+    # 单一 dispatch，无需为每格式编写独立方法。chrome_csv 复用 CsvImporter
+    # （Chrome/Edge 与 CipherBox CSV 共享列名格式）。
+    _IMPORTERS: dict[str, type[FormatImporter]] = {
+        'json': JsonImporter,
+        'csv': CsvImporter,
+        'chrome_csv': CsvImporter,
+        'keepass_csv': KeePassCsvImporter,
+        'bitwarden_json': BitwardenImporter,
+    }
+
     @_validate_import_input
+    def import_file(
+        self,
+        filepath: str,
+        format_key: str,
+        default_category_id: int | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
+        duplicate_action: str = 'import_all',
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> int:
+        """按格式键导入：单一 dispatch 入口，依 _IMPORTERS 注册表分发到策略类。
+
+        新增格式只需新增策略类并在 _IMPORTERS 注册，即可经此入口导入，无需为每
+        格式编写独立方法。``import_from_*`` 保留为语义化便捷别名，委托本方法。
+
+        Args:
+            filepath: 文件路径。
+            format_key: _IMPORTERS 中的格式键（'json'/'csv'/'chrome_csv'/
+                'keepass_csv'/'bitwarden_json'）。
+            default_category_id: 默认分类 ID。
+            progress_callback: 进度回调。
+            duplicate_action: 重复处理策略。
+                - 'skip': 跳过重复项
+                - 'overwrite': 覆盖匹配的已有条目
+                - 'import_all': 全部导入，默认行为
+            cancel_check: 取消检查回调。
+        """
+        importer_cls = self._IMPORTERS.get(format_key)
+        if importer_cls is None:
+            raise ValueError(f'不支持的导入格式：{format_key}')
+        return self._run_importer(
+            importer_cls(), filepath, default_category_id,
+            duplicate_action, progress_callback, cancel_check,
+        )
+
     def import_from_json(
         self,
         filepath: str,
@@ -423,23 +468,12 @@ class ImportExportManager:
         duplicate_action: str = 'import_all',
         cancel_check: Callable[[], bool] | None = None,
     ) -> int:
-        """从 JSON 文件导入。
-
-        Args:
-            filepath: 文件路径。
-            default_category_id: 默认分类 ID。
-            progress_callback: 进度回调。
-            duplicate_action: 重复处理策略。
-                - 'skip': 跳过重复项
-                - 'overwrite': 覆盖匹配的已有条目
-                - 'import_all': 全部导入，默认行为
-        """
-        return self._run_importer(
-            JsonImporter(), filepath, default_category_id,
-            duplicate_action, progress_callback, cancel_check,
+        """从 JSON 文件导入，委托 :meth:`import_file`（格式键 'json'）。"""
+        return self.import_file(
+            filepath, 'json', default_category_id,
+            progress_callback, duplicate_action, cancel_check,
         )
 
-    @_validate_import_input
     def import_from_csv(
         self,
         filepath: str,
@@ -448,25 +482,12 @@ class ImportExportManager:
         duplicate_action: str = 'import_all',
         cancel_check: Callable[[], bool] | None = None,
     ) -> int:
-        """从 CSV 文件导入，支持多种列名格式。
-
-        Args:
-            filepath: 文件路径。
-            default_category_id: 默认分类 ID。
-            progress_callback: 进度回调。
-            duplicate_action: 重复处理策略。
-                - 'skip': 跳过重复项
-                - 'overwrite': 覆盖匹配的已有条目
-                - 'import_all': 全部导入，默认行为
-        """
-        return self._run_importer(
-            CsvImporter(), filepath, default_category_id,
-            duplicate_action, progress_callback, cancel_check,
+        """从 CSV 文件导入（支持多种列名格式），委托 :meth:`import_file`（'csv'）。"""
+        return self.import_file(
+            filepath, 'csv', default_category_id,
+            progress_callback, duplicate_action, cancel_check,
         )
 
-    # 注意：Chrome/Edge CSV 与 CipherBox CSV 共享相同的列名格式，即 name/url/username/password 等，
-    # 因此直接委托给 import_from_csv。不添加 @_validate_import_input 装饰器，
-    # 因为路径校验与事务由 import_from_csv 内部处理。
     def import_from_chrome_csv(
         self,
         filepath: str,
@@ -475,20 +496,16 @@ class ImportExportManager:
         duplicate_action: str = 'import_all',
         cancel_check: Callable[[], bool] | None = None,
     ) -> int:
-        """从 Chrome/Edge 导出的 CSV 导入。
+        """从 Chrome/Edge CSV 导入，委托 :meth:`import_file`（'chrome_csv'）。
 
-        Args:
-            filepath: 文件路径。
-            default_category_id: 默认分类 ID。
-            progress_callback: 进度回调。
-            duplicate_action: 重复处理策略。
-                - 'skip': 跳过重复项
-                - 'overwrite': 覆盖匹配的已有条目
-                - 'import_all': 全部导入，默认行为
+        Chrome/Edge CSV 与 CipherBox CSV 共享列名格式，注册表 'chrome_csv' 复用
+        CsvImporter，故本别名与 :meth:`import_from_csv` 等价。
         """
-        return self.import_from_csv(filepath, default_category_id, progress_callback, duplicate_action, cancel_check)
+        return self.import_file(
+            filepath, 'chrome_csv', default_category_id,
+            progress_callback, duplicate_action, cancel_check,
+        )
 
-    @_validate_import_input
     def import_from_keepass_csv(
         self,
         filepath: str,
@@ -497,25 +514,12 @@ class ImportExportManager:
         duplicate_action: str = 'import_all',
         cancel_check: Callable[[], bool] | None = None,
     ) -> int:
-        """从 KeePass 导出的 CSV 文件导入。
-
-        KeePass CSV 常见列名: Title, UserName, Password, URL, Notes, Group。
-
-        Args:
-            filepath: 文件路径。
-            default_category_id: 默认分类 ID。
-            progress_callback: 进度回调。
-            duplicate_action: 重复处理策略。
-                - 'skip': 跳过重复项
-                - 'overwrite': 覆盖匹配的已有条目
-                - 'import_all': 全部导入，默认行为
-        """
-        return self._run_importer(
-            KeePassCsvImporter(), filepath, default_category_id,
-            duplicate_action, progress_callback, cancel_check,
+        """从 KeePass CSV 导入（列名 Title/UserName/Password/URL/Notes/Group），委托 import_file（'keepass_csv'）。"""
+        return self.import_file(
+            filepath, 'keepass_csv', default_category_id,
+            progress_callback, duplicate_action, cancel_check,
         )
 
-    @_validate_import_input
     def import_from_bitwarden_json(
         self,
         filepath: str,
@@ -524,20 +528,10 @@ class ImportExportManager:
         duplicate_action: str = 'import_all',
         cancel_check: Callable[[], bool] | None = None,
     ) -> int:
-        """从 Bitwarden JSON 导出文件导入。
-
-        Args:
-            filepath: 文件路径。
-            default_category_id: 默认分类 ID。
-            progress_callback: 进度回调。
-            duplicate_action: 重复处理策略。
-                - 'skip': 跳过重复项
-                - 'overwrite': 覆盖匹配的已有条目
-                - 'import_all': 全部导入，默认行为
-        """
-        return self._run_importer(
-            BitwardenImporter(), filepath, default_category_id,
-            duplicate_action, progress_callback, cancel_check,
+        """从 Bitwarden JSON 导入，委托 :meth:`import_file`（'bitwarden_json'）。"""
+        return self.import_file(
+            filepath, 'bitwarden_json', default_category_id,
+            progress_callback, duplicate_action, cancel_check,
         )
 
     @staticmethod

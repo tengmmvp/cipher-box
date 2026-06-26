@@ -559,17 +559,22 @@ class _MainWindowFiltersMixin(QMainWindow):
 
     def _apply_status_summary(self, summary: SecurityReport) -> None:
         try:
+            # 直接索引：SecurityReport 为 TypedDict，SecurityAnalyzer 保证字段齐全；
+            # 缺键属结构 bug，应抛 KeyError 显式暴露，而非 .get 静默回退 0（虚假正常态
+            # 比崩溃更难诊断）。原 .get 容错会掩盖上游重构漏填字段的真实错误。
             total = summary['total']
             self._stats_label.setText(f'共 {total} 项')
             parts = [f'总计 {total} 条']
-            if summary['weak_count'] > 0:
-                parts.append(f'弱密码 {summary["weak_count"]}')
-            if summary['duplicate_count'] > 0:
-                parts.append(f'重复 {summary["duplicate_count"]}')
+            weak = summary['weak_count']
+            if weak > 0:
+                parts.append(f'弱密码 {weak}')
+            duplicate = summary['duplicate_count']
+            if duplicate > 0:
+                parts.append(f'重复 {duplicate}')
             self._status_bar.showMessage('  |  '.join(parts))
             # 密码过期警告：复用实例属性，避免 findChild
-            if summary.get('old', 0) > 0:
-                old_count = summary['old']
+            old_count = summary['old']
+            if old_count > 0:
                 self._warning_label.setText(f'  {old_count} 个密码已过期  ')
                 self._warning_label.show()
                 if self._warning_label.parent() is not self._status_bar:

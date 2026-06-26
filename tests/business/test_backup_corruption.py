@@ -13,7 +13,6 @@ from pathlib import Path
 import pytest
 
 from src.business.managers.backup_restore import BackupRestoreManager
-from src.business.managers.vault_manager import VaultManager
 from src.business.services.backup_header_codec import (
     BACKUP_MAGIC,
     BACKUP_SALT_SIZE,
@@ -23,7 +22,7 @@ from src.business.services.backup_header_codec import (
 from src.crypto.master_key import DEFAULT_KDF_PARAMS, MasterKeyManager
 from src.exceptions import BackupError
 from src.models import Entry
-from tests.helpers import make_entry_manager
+from tests.helpers import make_entry_manager, make_vault
 
 
 class TestBackupCorruption:
@@ -32,7 +31,7 @@ class TestBackupCorruption:
     @pytest.fixture(autouse=True)
     def setup_vault(self, tmp_path, vault_config):
         self._tmp_dir = str(tmp_path)
-        self._vault = VaultManager(vault_config)
+        self._vault = make_vault(vault_config)
         self._vault.initialize("test_password_12345")
         self._entry_mgr = make_entry_manager(self._vault)
         self._backup_mgr = BackupRestoreManager(self._vault, self._entry_mgr)

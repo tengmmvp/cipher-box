@@ -178,8 +178,8 @@ class EntryCacheManager:
 
         :meth:`_cached_search_metadata_no_check` 的公开版本，供 services 层
         （如 :class:`SecurityAnalyzer`）批量循环复用，使 services 不必跨层访问
-        managers 的私有方法，守住「services 无状态、不耦合 managers 内部实现」
-        的分层方向。调用方须在循环外调用 :meth:`invalidate_if_epoch_changed`。
+        managers 的私有方法，守住分层方向（services 不反向耦合 managers
+        内部实现）。调用方须在循环外调用 :meth:`invalidate_if_epoch_changed`。
         """
         return self._cached_search_metadata_no_check(raw_entry)
 
@@ -251,10 +251,24 @@ class EntryCacheManager:
         with self._cache_lock:
             self._totp_secret_cache.clear()
 
+    def _decrypt_tags(self, raw_entry: RawEntry) -> str:
+        """仅解密 tags 字段供标签聚合。
+
+        get_all_tags 只消费 tags，走专用单字段解密路径而非 4 字段搜索摘要缓存，
+        冷缓存下省去 title/username/url 的冗余 GCM 解密（约 3/4 开销）。失败回退
+        空串，与 :meth:`_cached_search_metadata_no_check` 的容错一致。
+        """
+        try:
+            return _decrypt_field_impl(
+                raw_entry.tags, self._key, raw_entry.crypto_id, 'tags', strict=True,
+            )
+        except DecryptionError:
+            return ''
+
     def get_all_tags(self) -> list[tuple[str, int]]:
         """获取所有标签及其使用频率，结果在会话内缓存。
 
-        标签列为密文，逐条解密摘要字段后聚合；缓存于条目增删改与锁定/改密时失效。
+        标签列为密文，仅解密 tags 字段后聚合；缓存于条目增删改与锁定/改密时失效。
         """
         self.invalidate_if_epoch_changed()
         with self._cache_lock:
@@ -264,7 +278,7 @@ class EntryCacheManager:
             return cached
         tag_count: dict[str, int] = {}
         for raw in self._vault.db.get_entries(include_deleted=False, verify=VerifyMode.LENIENT):
-            tags_str = self._cached_search_metadata_no_check(raw)[3]
+            tags_str = self._decrypt_tags(raw)
             for tag in (t.strip() for t in tags_str.split(',') if t.strip()):
                 tag_count[tag] = tag_count.get(tag, 0) + 1
         result = sorted(tag_count.items(), key=lambda x: -x[1])

@@ -20,14 +20,13 @@ import pytest
 
 from src.business.managers.backup_restore import BackupRestoreManager
 from src.business.managers.import_export import ImportExportManager
-from src.business.managers.vault_manager import VaultManager
 from src.business.services.backup_header_codec import (
     BACKUP_HEADER_SIZE,
     BACKUP_SALT_SIZE,
 )
 from src.exceptions import VaultKeyEpochMismatchError
 from src.models import CustomField, Entry
-from tests.helpers import make_entry_manager, make_test_config
+from tests.helpers import make_entry_manager, make_test_config, make_vault
 
 # 1. 改密回滚一致性：重加密中途失败时，原密钥与数据仍匹配
 
@@ -39,7 +38,7 @@ class TestChangePasswordRollbackConsistency:
     def setup_vault(self, tmp_path):
         self._tmp_dir = str(tmp_path)
         config = make_test_config(self._tmp_dir)
-        self._vault = VaultManager(config)
+        self._vault = make_vault(config)
         self._master_pwd = 'OriginalMaster!2026'
         self._vault.initialize(self._master_pwd)
         self._entry_mgr = make_entry_manager(self._vault)
@@ -85,7 +84,7 @@ class TestChangePasswordRollbackConsistency:
             raise RuntimeError('模拟重加密中途失败')
 
         with patch(
-            'src.business.managers.vault_manager.ReEncryptionService'
+            'src.business.services.re_encryption.ReEncryptionService'
             '.re_encrypt_entries',
             new=_failing_re_encrypt_entries,
         ):
@@ -135,7 +134,7 @@ class TestChangePasswordRollbackConsistency:
             raise RuntimeError('模拟历史重加密失败')
 
         with patch(
-            'src.business.managers.vault_manager.ReEncryptionService'
+            'src.business.services.re_encryption.ReEncryptionService'
             '.re_encrypt_history',
             new=_failing_re_encrypt_history,
         ):
@@ -179,7 +178,7 @@ class TestChangePasswordRollbackConsistency:
             return real_re_encrypt(rotator, old_key, new_key, cancel_event=cancel_event)
 
         with patch(
-            'src.business.managers.vault_manager.ReEncryptionService.re_encrypt_entries',
+            'src.business.services.re_encryption.ReEncryptionService.re_encrypt_entries',
             new=_cancel_then_re_encrypt,
         ):
             with pytest.raises(VaultError):
@@ -200,7 +199,7 @@ class TestChangePasswordRollbackConsistency:
     def test_change_password_reports_purge_failure(self):
         """改密成功但旧快照清理失败时返回 True 并附带 warning 提示手动清理。"""
         with patch(
-            'src.business.managers.vault_manager.VaultManager._purge_snapshot_backups',
+            'src.business.managers.vault_manager.VaultManager.purge_snapshot_backups',
             return_value=[Path(self._tmp_dir) / 'occupied.cbox'],
         ):
             ok, msg = self._vault.change_master_password(
@@ -220,7 +219,7 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
     def setup_vault(self, tmp_path):
         self._tmp_dir = str(tmp_path)
         config = make_test_config(self._tmp_dir)
-        self._vault = VaultManager(config)
+        self._vault = make_vault(config)
         self._master_pwd = 'test_password_123'
         self._vault.initialize(self._master_pwd)
         self._entry_mgr = make_entry_manager(self._vault)
@@ -394,7 +393,7 @@ class TestImportEpochGuard:
     def setup_vault(self, tmp_path):
         self._tmp_dir = str(tmp_path)
         config = make_test_config(self._tmp_dir)
-        self._vault = VaultManager(config)
+        self._vault = make_vault(config)
         self._master_pwd = 'test_password_123'
         self._vault.initialize(self._master_pwd)
         self._entry_mgr = make_entry_manager(self._vault)
@@ -493,7 +492,7 @@ def test_restore_rotates_snapshot_key(tmp_path):
     Path(source_dir).mkdir()
     Path(target_dir).mkdir()
 
-    source = VaultManager(make_test_config(source_dir))
+    source = make_vault(make_test_config(source_dir))
     source.initialize('SourceMaster!2026')
     make_entry_manager(source).add_entry(
         Entry(title='Incoming', password='IncomingSecret!2026')
@@ -501,7 +500,7 @@ def test_restore_rotates_snapshot_key(tmp_path):
     portable = str(Path(source_dir) / 'portable.cbox')
     assert BackupRestoreManager(source, make_entry_manager(source)).create_backup(portable, 'PortableBackup!2026')[0]
 
-    target = VaultManager(make_test_config(target_dir))
+    target = make_vault(make_test_config(target_dir))
     target.initialize('TargetMaster!2026')
     old_snapshot_key = bytes(target.snapshot_key)
     backup_mgr = BackupRestoreManager(target, make_entry_manager(target))

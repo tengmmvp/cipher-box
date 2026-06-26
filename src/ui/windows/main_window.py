@@ -38,10 +38,11 @@ from PyQt6.QtWidgets import (
 )
 
 from ...business.composition import BusinessContext
-from ...config import MAX_WINDOW_GEOMETRY_BYTES
+from ...config import DEFAULT_THEME, MAX_WINDOW_GEOMETRY_BYTES
 from ..components.detail_panel import DetailPanel
 from ..components.entry_list_widget import EntryItemDelegate, EntryListModel
 from ..components.tray_icon import TrayIcon
+from ..components.widgets import disconnect_all
 from ..components.workers import BackgroundWorker, wait_worker_shutdown
 from ..controllers.auto_backup_controller import AutoBackupController
 from ..controllers.auto_lock_controller import AutoLockController
@@ -172,9 +173,9 @@ class MainWindow(_MainWindowEntriesMixin, _MainWindowFiltersMixin, _MainWindowMe
         self.setMinimumSize(*WINDOW_MIN_SIZE)
         self.resize(*WINDOW_DEFAULT_SIZE)
 
-        theme = self._config.get('theme', 'light')
+        theme = self._config.get('theme', DEFAULT_THEME)
         self.setStyleSheet(get_style(theme))
-        self._current_theme = theme
+        self._current_theme: str = theme
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -449,10 +450,7 @@ class MainWindow(_MainWindowEntriesMixin, _MainWindowFiltersMixin, _MainWindowMe
             self._tray.deleteLater()
             self._tray = None
         # 先断开旧连接，避免禁用→重启用托盘时 _on_lock_tray 重复连接
-        try:
-            self.lock_requested.disconnect(self._on_lock_tray)
-        except TypeError:
-            pass
+        disconnect_all([(self.lock_requested, self._on_lock_tray)])
         self._tray = TrayIcon(self)
         self._tray.show_window.connect(self._show_from_tray)
         self._tray.lock_vault.connect(lambda: self.lock_requested.emit())
@@ -549,7 +547,7 @@ class MainWindow(_MainWindowEntriesMixin, _MainWindowFiltersMixin, _MainWindowMe
 
     def _apply_theme(self) -> None:
         """应用当前主题，用于设置切换后刷新。"""
-        theme = self._config.get('theme', 'light')
+        theme = self._config.get('theme', DEFAULT_THEME)
         if theme != self._current_theme:
             self._current_theme = theme
             style = get_style(theme)

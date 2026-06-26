@@ -41,7 +41,6 @@ if TYPE_CHECKING:
     from ..utils.clipboard import ClipboardManager
 from ..resources.constants import (
     BTN_COPY,
-    BTN_ICON,
     MAX_TAG_DISPLAY,
     MS_FEEDBACK,
     PWD_MASK,
@@ -63,7 +62,7 @@ from .custom_fields_renderer import CustomFieldsRenderer
 from .password_history_widget import PasswordHistoryWidget
 from .secret_field import make_secret_field_row
 from .totp_widget import TOTPWidget
-from .widgets import clear_layout
+from .widgets import clear_layout, create_icon_button, disconnect_all
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +85,11 @@ class DetailPanel(QWidget):
     delete_requested = pyqtSignal(int)
     favorite_toggled = pyqtSignal(int)
     copy_feedback = pyqtSignal()
+
+    # 复制反馈定时器上限：防止极端情况下定时器泄漏（可取消定时器替代
+    # QTimer.singleShot，控件销毁前需逐个 stop）。类常量而非实例属性，遵循
+    # PEP 8 全大写常量命名约定。
+    _COPY_FEEDBACK_TIMERS_MAX = 20
 
     def __init__(
         self,
@@ -115,7 +119,6 @@ class DetailPanel(QWidget):
         # 复制反馈定时器，可取消，替代不可取消的 QTimer.singleShot，
         # 避免控件销毁后回调访问已删对象。设置上限 20 以防止极端情况下的泄漏。
         self._copy_feedback_timers: OrderedDict[QTimer, QPushButton] = OrderedDict()
-        self._COPY_FEEDBACK_TIMERS_MAX = 20
 
         # ---- 子组件 ----
         self._totp_widget = TOTPWidget(self)
@@ -184,28 +187,11 @@ class DetailPanel(QWidget):
 
         toolbar.addStretch()
 
-        self._fav_btn = QPushButton()
-        set_icon(self._fav_btn, STAR_OUTLINE)
-        self._fav_btn.setObjectName('iconBtn')
-        self._fav_btn.setFixedSize(*BTN_ICON)
-        self._fav_btn.setToolTip('收藏')
-        self._fav_btn.hide()
+        self._fav_btn = create_icon_button(STAR_OUTLINE, '收藏', visible=False)
+        self._edit_btn = create_icon_button(EDIT, '编辑', visible=False)
+        self._delete_btn = create_icon_button(DELETE, '删除', visible=False)
         toolbar.addWidget(self._fav_btn)
-
-        self._edit_btn = QPushButton()
-        set_icon(self._edit_btn, EDIT)
-        self._edit_btn.setObjectName('iconBtn')
-        self._edit_btn.setFixedSize(*BTN_ICON)
-        self._edit_btn.setToolTip('编辑')
-        self._edit_btn.hide()
         toolbar.addWidget(self._edit_btn)
-
-        self._delete_btn = QPushButton()
-        set_icon(self._delete_btn, DELETE)
-        self._delete_btn.setObjectName('iconBtn')
-        self._delete_btn.setFixedSize(*BTN_ICON)
-        self._delete_btn.setToolTip('删除')
-        self._delete_btn.hide()
         toolbar.addWidget(self._delete_btn)
 
         layout.addLayout(toolbar)
@@ -284,11 +270,7 @@ class DetailPanel(QWidget):
         self._fav_btn.setVisible(not entry.is_deleted)
         if not entry.is_deleted:
             set_icon(self._fav_btn, STAR if entry.is_favorite else STAR_OUTLINE)
-        for signal, slot in self._signal_connections:
-            try:
-                signal.disconnect(slot)
-            except TypeError:
-                pass
+        disconnect_all(self._signal_connections)
         self._signal_connections.clear()
         eid = entry.id
         self._signal_connections = [
@@ -695,10 +677,6 @@ class DetailPanel(QWidget):
 
     def secure_clear(self) -> None:
         """安全清除所有敏感数据和信号连接，由主窗口在锁定时调用。"""
-        for signal, slot in self._signal_connections:
-            try:
-                signal.disconnect(slot)
-            except TypeError:
-                pass
+        disconnect_all(self._signal_connections)
         self._signal_connections.clear()
         self.show_empty()

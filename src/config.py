@@ -56,8 +56,11 @@ OLD_PASSWORD_WARNING_DAYS_DEFAULT = 90
 # 与 MainWindow 窗口位置恢复（解码后字节数）共用此单一常量，消除校验端与消费端
 # 各自硬编码导致上限不一致、合法 geometry 被静默丢弃的问题。
 MAX_WINDOW_GEOMETRY_BYTES = 256
+# 主题默认值（light/dark）：DEFAULT_CONFIG 与 UI 层 get('theme', DEFAULT_THEME)
+# 兜底共用此单一事实源，避免 'light' 字面量散落多处导致重命名时漂移。
+DEFAULT_THEME = 'light'
 DEFAULT_CONFIG: dict[str, Any] = {
-    'theme': 'light',
+    'theme': DEFAULT_THEME,
     'auto_lock_minutes': 5,
     'clipboard_clear_seconds': 30,
     'password_visible_seconds': 10,

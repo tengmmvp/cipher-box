@@ -65,6 +65,11 @@ def _validate_items(items: list[dict[str, Any]]) -> None:
     if len(items) > MAX_ENTRIES_LIMIT:
         raise ValueError(f'导入条目过多，最大允许 {MAX_ENTRIES_LIMIT} 条')
     for item in items:
+        # 跳过非对象项（被污染导出中可能是数字/字符串）：各策略类的 parse 循环
+        # 同样跳过非 dict item，此处不对其求大小，避免 item.values() 对非 dict
+        # 抛 AttributeError 中断整个导入（单个畸形项导致的拒绝服务）。
+        if not isinstance(item, dict):
+            continue
         if sum(
             len(v.encode('utf-8')) if isinstance(v, str)
             else len(str(v).encode('utf-8'))

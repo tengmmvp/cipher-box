@@ -11,9 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from src.business.managers.vault_manager import VaultManager
 from src.crypto.master_key import MasterKeyManager
-from tests.helpers import make_entry_manager, make_test_config
+from tests.helpers import make_entry_manager, make_test_config, make_vault
 
 
 def _make_config(tmp_dir: str):
@@ -25,7 +24,7 @@ def vault_and_key():
     """创建并初始化 VaultManager，返回 vault、key、tmp_dir 三元组。"""
     tmp_dir = tempfile.mkdtemp()
     config = _make_config(tmp_dir)
-    vault = VaultManager(config)
+    vault = make_vault(config)
     vault.initialize('TestBackupKey!2026')
     key = vault.key
     assert key is not None

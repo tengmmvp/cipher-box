@@ -1,7 +1,7 @@
 """Chrome/Edge CSV 导入测试。
 
 验证 ``import_from_chrome_csv`` 正确映射 name/url/username/password 列。
-该路径直接委托 ``import_from_csv``，列映射此前无测试覆盖，仅靠人工核对，
+该路径经 ``import_file('chrome_csv')`` 委托 ``CsvImporter``（与 ``import_from_csv`` 共享列名格式），列映射此前无测试覆盖，仅靠人工核对，
 新增测试以固化 Chrome 导出列名到内部字段的映射关系。
 """
 

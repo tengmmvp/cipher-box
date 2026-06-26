@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ...config import DEFAULT_CONFIG, ConfigManager
-from ..components.widgets import setup_dialog_flags
+from ..components.widgets import create_cancel_button, setup_dialog_flags
 from ..resources.constants import BTN_DIALOG, DIALOG_SETTINGS_MIN_SIZE
 
 
@@ -63,10 +63,7 @@ class SettingsDialog(QDialog):
         reset_btn.clicked.connect(self._reset_to_defaults)
         btn_layout.addWidget(reset_btn)
 
-        cancel_btn = QPushButton('取消')
-        cancel_btn.setFixedSize(*BTN_DIALOG)
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(create_cancel_button(self))
 
         save_btn = QPushButton('保存')
         save_btn.setObjectName('primaryBtn')

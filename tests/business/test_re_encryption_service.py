@@ -138,6 +138,10 @@ class MockDB:
         """记录重加密后的分类（re_encrypt_categories 经此不签名写路径写入）。"""
         self.updated_categories.append(category)
 
+    def update_categories_batch(self, categories: list[Category]) -> None:
+        """记录重加密后的分类（批量写入路径，与 update_category_reencrypted 等价）。"""
+        self.updated_categories.extend(categories)
+
 
 # re_encrypt_entries：旧密钥加密的条目用新密钥重加密后可正确解密
 

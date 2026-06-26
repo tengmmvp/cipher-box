@@ -2,6 +2,7 @@
 
 import logging
 import sys
+from collections.abc import Callable
 from types import TracebackType
 from typing import TYPE_CHECKING
 
@@ -12,9 +13,8 @@ if TYPE_CHECKING:
     from PyQt6.QtCore import QEvent, QObject
 
 from . import __version__
-from .business.composition import build_business_context
-from .business.managers.vault_manager import VaultManager
-from .config import ConfigManager
+from .business.composition import build_business_context, build_vault
+from .config import DEFAULT_THEME, ConfigManager
 from .logging_config import configure_logging
 from .ui.dialogs.login_window import LoginWindow
 from .ui.resources.styles import get_style
@@ -52,7 +52,7 @@ class CipherBoxApp:
         self._app = QApplication.instance() or CipherBoxApplication(sys.argv)
         self._config = ConfigManager()
         configure_logging(self._config.data_dir)
-        self._vault = VaultManager(self._config)
+        self._vault = build_vault(self._config)
         # 启动时重试清理之前 purge 失败的恢复点（pre_restore_*.cbox，含恢复前全部
         # 条目明文），收缩历史明文泄漏面。恢复点是临时安全快照，恢复成功后应删除；
         # 之前因文件占用未删净的残留在此重试（重启后占用进程已释放）。
@@ -98,6 +98,16 @@ class CipherBoxApp:
         sys.excepthook = _excepthook
         self._app.aboutToQuit.connect(lambda: self._emergency_cleanup(full=False))
 
+    def _safe_cleanup(self, label: str, fn: Callable[[], None]) -> None:
+        """执行一个崩溃/退出兜底清理步骤，吞异常并记录 exc_info。
+
+        崩溃兜底路径绝不能因清理再次抛出；每步独立记录便于事后诊断哪个环节失效。
+        """
+        try:
+            fn()
+        except Exception:
+            logger.warning(f'崩溃兜底：{label}失败', exc_info=True)
+
     def _emergency_cleanup(self, *, full: bool = False) -> None:
         """紧急清理：尽力锁定保险库并清空剪贴板。
 
@@ -119,31 +129,30 @@ class CipherBoxApp:
         except Exception:
             logger.warning("崩溃兜底：检查解锁状态失败", exc_info=True)
         if full and self._main_window is not None:
-            try:
-                self._main_window.prepare_for_lock()
-            except Exception:
-                logger.warning("崩溃兜底：prepare_for_lock 失败", exc_info=True)
+            main_window = self._main_window
+            self._safe_cleanup(
+                'prepare_for_lock', lambda: main_window.prepare_for_lock()
+            )
         if self._main_window is not None:
-            try:
+            main_window = self._main_window
+
+            def _clear_clipboard() -> None:
                 if not full:
                     # aboutToQuit 取消 worker 并短超时等待（400ms），让持密钥解密的
                     # worker 退出协作循环后再 lock 清零，收缩「已锁定」后明文残留窗口；
                     # 超时放弃不阻塞退出，与 _shutdown_workers 的长等待语义区分。
-                    self._main_window.emergency_cancel_workers(wait_timeout_ms=400)
+                    main_window.emergency_cancel_workers(wait_timeout_ms=400)
                 # 经公共方法而非 getattr 访问 _clipboard 私有属性：崩溃兜底路径
                 # 最不应静默失效，私有属性重命名时 getattr 返回 None 会无声错过清理。
-                self._main_window.emergency_clear_clipboard()
-            except Exception:
-                logger.warning("崩溃兜底：清空剪贴板失败", exc_info=True)
-        try:
-            self._vault.lock()
-        except Exception:
-            logger.warning("崩溃兜底：锁定保险库失败", exc_info=True)
+                main_window.emergency_clear_clipboard()
+
+            self._safe_cleanup('清空剪贴板', _clear_clipboard)
+        self._safe_cleanup('锁定保险库', lambda: self._vault.lock())
 
     def run(self) -> int:
         """启动应用。"""
         # 应用全局样式
-        theme = self._config.get('theme', 'light')
+        theme = self._config.get('theme', DEFAULT_THEME)
         self._app.setStyleSheet(get_style(theme))  # type: ignore[attr-defined]
 
         # 设置应用属性

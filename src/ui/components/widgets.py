@@ -11,7 +11,9 @@ import json
 import logging
 import os
 import time
+from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
@@ -26,16 +28,61 @@ from PyQt6.QtWidgets import (
 from ...business.services.password_service import PasswordService
 from ...config import RATE_LIMITS
 from ...utils.file_security import secure_file
-from ..resources.constants import BTN_ICON
+from ..resources.constants import BTN_DIALOG, BTN_ICON
 from ..resources.icons import EYE, LOCK, set_icon
 from ..resources.theme_colors import get_strength_color
 
-# ======== 对话框状态标签格式化 ========
+if TYPE_CHECKING:
+    from .workers import BackgroundWorker
 
-def format_status(success: bool, message: str) -> str:
-    """格式化对话框操作状态标签。"""
-    prefix = '[OK]' if success else '[X]'
-    return f'{prefix} {message}'
+# ======== 信号断开与取消按钮 ========
+
+def disconnect_all(connections: Iterable[tuple[Any, object]]) -> None:
+    """断开一组 (signal, slot) 连接，未连接的吞 TypeError。
+
+    Qt 重复断开已断开的信号会抛 TypeError，此 helper 统一吞掉，消除各组件复制的
+    ``for signal, slot in ...: try: signal.disconnect(slot) except TypeError: pass`` 样板。
+    """
+    for signal, slot in connections:
+        try:
+            signal.disconnect(slot)
+        except TypeError:
+            pass
+
+
+def create_cancel_button(parent_dialog: QDialog) -> QPushButton:
+    """构造统一的「取消」按钮：固定尺寸并绑定 reject。
+
+    消除各对话框复制的 ``QPushButton('取消') + setFixedSize(*BTN_DIALOG) +
+    clicked.connect(reject)`` 样板。
+    """
+    btn = QPushButton('取消')
+    btn.setFixedSize(*BTN_DIALOG)
+    btn.clicked.connect(parent_dialog.reject)
+    return btn
+
+
+def create_icon_button(
+    icon_name: str,
+    tooltip: str,
+    *,
+    visible: bool = True,
+    object_name: str = 'iconBtn',
+) -> QPushButton:
+    """构造统一的图标按钮：固定 BTN_ICON 尺寸、语义 objectName、图标与提示。
+
+    消除各组件复制的 ``QPushButton() + setObjectName('iconBtn') +
+    setFixedSize(*BTN_ICON) + set_icon(...) + setToolTip(...)`` 5 步样板。
+    返回未连接 clicked 信号的按钮，由调用方按需连接。
+    """
+    btn = QPushButton()
+    btn.setObjectName(object_name)
+    btn.setFixedSize(*BTN_ICON)
+    set_icon(btn, icon_name)
+    btn.setToolTip(tooltip)
+    if not visible:
+        btn.hide()
+    return btn
 
 
 # ======== 密码显示/隐藏切换按钮 ========
@@ -408,16 +455,30 @@ class RateLimiter:
 
 # ======== Worker 释放工具 ========
 
-def release_worker(dialog: QDialog) -> None:
+class WorkerHost(Protocol):
+    """持有 BackgroundWorker 的对话框协议，约束 release_worker 的入参类型。
+
+    所有运行后台 worker 的对话框（backup/import_export/change_master/login/
+    security_dashboard）声明 ``_worker: BackgroundWorker | None`` 即满足本协议。
+    用 Protocol 而非具体 QDialog 子类：release_worker 只依赖「持有 _worker」这一
+    结构契约。相较原先的 ``getattr(dialog, '_worker', None)`` 宽容访问，属性访问
+    使「_worker 被重命名」能在静态类型检查阶段暴露（而非运行时静默返回 None、
+    worker 信号未断开、关闭后回调访问已销毁控件）。
+    """
+
+    _worker: BackgroundWorker | None
+
+
+def release_worker(dialog: WorkerHost) -> None:
     """安全释放对话框持有的 BackgroundWorker。
 
     断开所有信号并将 ``dialog._worker`` 置 None，防止对话框关闭后
     Worker 回调访问已销毁的控件。应在 reject() 和完成回调中调用。
 
     Args:
-        dialog: 持有 ``_worker`` 属性的对话框实例。
+        dialog: 持有 ``_worker`` 属性的对话框实例（满足 :class:`WorkerHost`）。
     """
-    worker = getattr(dialog, '_worker', None)
+    worker = dialog._worker
     if worker is None:
         return
     for sig_name in ('finished', 'error', 'cancelled', 'progress'):
@@ -425,8 +486,7 @@ def release_worker(dialog: QDialog) -> None:
             getattr(worker, sig_name).disconnect()
         except (TypeError, RuntimeError):
             pass
-    # _worker 为对话框运行时动态属性（非 QDialog 类型成员），mypy 无法静态识别
-    dialog._worker = None  # type: ignore[attr-defined]
+    dialog._worker = None
 
 
 def set_label_severity(label: QLabel, severity: str) -> None:

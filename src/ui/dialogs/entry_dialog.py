@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QIntValidator
@@ -65,6 +65,8 @@ from ...models import (
 )
 from ..components.custom_fields_editor import CustomFieldsEditor
 from ..components.widgets import (
+    create_cancel_button,
+    create_icon_button,
     create_password_toggle_btn,
     setup_dialog_flags,
     update_strength_label,
@@ -72,14 +74,13 @@ from ..components.widgets import (
 from ..error_messages import to_user_message
 from ..resources.constants import (
     BTN_DIALOG,
-    BTN_ICON,
     BTN_SMALL_ACTION,
     DIALOG_ENTRY_MIN_SIZE,
     PWD_GENERATE_LENGTH_DEFAULT,
     PWD_TOGGLE_AUTO_HIDE_SECONDS,
     PWD_VISIBLE_SECONDS_DEFAULT,
 )
-from ..resources.icons import GENERATE, set_icon
+from ..resources.icons import GENERATE
 from ..resources.theme_colors import c
 
 if TYPE_CHECKING:
@@ -126,7 +127,12 @@ class EntryDialog(QDialog):
         self._config = config
         self._current_type = entry.entry_type if entry else ENTRY_TYPE_LOGIN
         self._field_rows: dict[str, tuple[QLabel, QWidget]] = {}
-        self._special_widgets: dict[str, QLineEdit | QComboBox] = {}
+        # 专用字段按控件类型分类存储：combo → _special_combos，其余（QLineEdit）→
+        # _special_edits。键→类型映射由存储侧（_build_type_fields 归类）保证，使后续
+        # 访问无需 cast——原先 dict[str, QLineEdit | QComboBox] 联合类型丢失映射，被迫
+        # 在每个访问点 cast 赎回类型（12+ 处），且 schema 改字段类型时 cast 会静默放过。
+        self._special_edits: dict[str, QLineEdit] = {}
+        self._special_combos: dict[str, QComboBox] = {}
 
         self._setup_ui()
         if entry:
@@ -213,11 +219,7 @@ class EntryDialog(QDialog):
         )
         pwd_layout.addWidget(self._toggle_pwd_btn)
 
-        gen_btn = QPushButton()
-        gen_btn.setObjectName('iconBtn')
-        gen_btn.setFixedSize(*BTN_ICON)
-        set_icon(gen_btn, GENERATE)
-        gen_btn.setToolTip('生成密码')
+        gen_btn = create_icon_button(GENERATE, '生成密码')
         gen_btn.clicked.connect(self._generate_password)
         pwd_layout.addWidget(gen_btn)
 
@@ -304,10 +306,7 @@ class EntryDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        cancel_btn = QPushButton('取消')
-        cancel_btn.setFixedSize(*BTN_DIALOG)
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(create_cancel_button(self))
 
         save_btn = QPushButton('保存')
         save_btn.setObjectName('primaryBtn')
@@ -318,7 +317,7 @@ class EntryDialog(QDialog):
         return btn_layout
 
     def _build_type_fields(self, form: QFormLayout) -> None:
-        """按 schema 创建各条目类型的专用字段并注册到 _special_widgets。
+        """按 schema 创建各条目类型的专用字段并按控件类型注册到 _special_edits / _special_combos。
 
         所有字段初始隐藏，由 _apply_type_visibility 按当前类型切换显隐。
         schema 驱动通用创建逻辑；卡号/有效期格式化与端口校验等类型特有行为
@@ -328,17 +327,14 @@ class EntryDialog(QDialog):
             for spec in schema.special_fields:
                 widget = self._create_special_widget(spec)
                 self._add_field_row(form, spec.field_key, f'{spec.label}：', widget, visible=False)
-                self._special_widgets[spec.field_key] = widget
+                if isinstance(widget, QComboBox):
+                    self._special_combos[spec.field_key] = widget
+                else:
+                    self._special_edits[spec.field_key] = widget
         # 卡号/有效期格式化与端口校验：类型特有行为，schema 之外的特殊连接
-        cast(QLineEdit, self._special_widgets['card_number']).textChanged.connect(
-            self._format_card_number
-        )
-        cast(QLineEdit, self._special_widgets['card_expiry']).textChanged.connect(
-            self._format_card_expiry
-        )
-        cast(QLineEdit, self._special_widgets['server_port']).setValidator(
-            QIntValidator(1, 65535, self)
-        )
+        self._special_edits['card_number'].textChanged.connect(self._format_card_number)
+        self._special_edits['card_expiry'].textChanged.connect(self._format_card_expiry)
+        self._special_edits['server_port'].setValidator(QIntValidator(1, 65535, self))
 
     @staticmethod
     def _create_special_widget(spec: SpecialFieldSpec) -> QLineEdit | QComboBox:
@@ -370,10 +366,9 @@ class EntryDialog(QDialog):
 
     def _validate_card_fields(self) -> bool:
         """校验信用卡字段，失败时弹出警告并返回 False。"""
-        w = self._special_widgets
-        card_number = cast(QLineEdit, w['card_number']).text().strip()
-        card_expiry = cast(QLineEdit, w['card_expiry']).text().strip()
-        card_cvv = cast(QLineEdit, w['card_cvv']).text().strip()
+        card_number = self._special_edits['card_number'].text().strip()
+        card_expiry = self._special_edits['card_expiry'].text().strip()
+        card_cvv = self._special_edits['card_cvv'].text().strip()
 
         if card_number and not validate_card_number(card_number):
             QMessageBox.warning(self, '校验失败', '卡号格式不正确，请检查后重试。')
@@ -393,11 +388,11 @@ class EntryDialog(QDialog):
         ``_on_save`` 写入与 ``_validate_field_lengths`` 校验长度共用，
         防止两处拼接逻辑漂移。
         """
-        host = cast(QLineEdit, self._special_widgets['server_host']).text().strip()
+        host = self._special_edits['server_host'].text().strip()
         if not host:
             return ''
-        port = cast(QLineEdit, self._special_widgets['server_port']).text().strip()
-        protocol = cast(QComboBox, self._special_widgets['server_protocol']).currentText().lower()
+        port = self._special_edits['server_port'].text().strip()
+        protocol = self._special_combos['server_protocol'].currentText().lower()
         return f'{protocol}://{host}' + (f':{port}' if port else '')
 
     def _validate_field_lengths(self, entry_type: str) -> bool:
@@ -449,23 +444,23 @@ class EntryDialog(QDialog):
 
     def _format_card_number(self, text: str) -> None:
         """卡号输入时按每 4 位插入空格分组显示。"""
-        w = self._special_widgets['card_number']
+        w = self._special_edits['card_number']
         w.blockSignals(True)
         digits = text.replace(' ', '')
         formatted = ' '.join(digits[i:i+4] for i in range(0, len(digits), 4))
-        self._safe_set_formatted(cast(QLineEdit, w), text, formatted)
+        self._safe_set_formatted(w, text, formatted)
         w.blockSignals(False)
 
     def _format_card_expiry(self, text: str) -> None:
         """有效期输入时自动补入分隔符，整理为 MM/YY 形态。"""
-        w = self._special_widgets['card_expiry']
+        w = self._special_edits['card_expiry']
         w.blockSignals(True)
         digits = text.replace('/', '')
         if len(digits) > 2:
             formatted = digits[:2] + '/' + digits[2:4]
         else:
             formatted = digits
-        self._safe_set_formatted(cast(QLineEdit, w), text, formatted, cursor_at_end=True)
+        self._safe_set_formatted(w, text, formatted, cursor_at_end=True)
         w.blockSignals(False)
 
     # ------------------------------------------------------------------
@@ -488,15 +483,19 @@ class EntryDialog(QDialog):
             old_fields = get_schema(self._current_type).visible_fields
             has_data = False
             for key in old_fields:
-                if key in self._special_widgets:
-                    widget = self._special_widgets[key]
-                    # QComboBox（如协议选择）的当前选项也算用户输入，纳入「有数据」
-                    # 判定，避免切换类型前选过协议却被当作无数据而漏确认。
-                    # dict 已收紧为 QLineEdit | QComboBox，isinstance 收窄后无需 cast。
-                    text = widget.text() if isinstance(widget, QLineEdit) else widget.currentText()
-                    if text.strip():
-                        has_data = True
-                        break
+                # QComboBox（如协议选择）的当前选项也算用户输入，纳入「有数据」
+                # 判定，避免切换类型前选过协议却被当作无数据而漏确认。
+                edit = self._special_edits.get(key)
+                combo = self._special_combos.get(key)
+                if edit is not None:
+                    text = edit.text()
+                elif combo is not None:
+                    text = combo.currentText()
+                else:
+                    continue
+                if text.strip():
+                    has_data = True
+                    break
             # 新建模式下，标题、密码、备注等通用字段已有内容时也应确认
             if not has_data and self._entry is None:
                 if (self._title_edit.text().strip()
@@ -583,14 +582,14 @@ class EntryDialog(QDialog):
             for cf in cf_raw:
                 spec = all_special_fields_by_storage().get(cf.name)
                 if spec is not None:
-                    widget = self._special_widgets.get(spec.field_key)
-                    if widget is not None:
-                        if isinstance(widget, QComboBox):
-                            idx = widget.findText(cf.value)
-                            if idx >= 0:
-                                widget.setCurrentIndex(idx)
-                        else:
-                            cast(QLineEdit, widget).setText(cf.value)
+                    combo = self._special_combos.get(spec.field_key)
+                    edit = self._special_edits.get(spec.field_key)
+                    if combo is not None:
+                        idx = combo.findText(cf.value)
+                        if idx >= 0:
+                            combo.setCurrentIndex(idx)
+                    elif edit is not None:
+                        edit.setText(cf.value)
                 else:
                     type_specific.append(cf)
 
@@ -654,11 +653,11 @@ class EntryDialog(QDialog):
         entry_type = self._type_combo.currentData() or ENTRY_TYPE_LOGIN
         fields: list[CustomField] = []
         for spec in get_schema(entry_type).special_fields:
-            widget = self._special_widgets[spec.field_key]
-            if isinstance(widget, QComboBox):
-                value = widget.currentText()
+            combo = self._special_combos.get(spec.field_key)
+            if combo is not None:
+                value = combo.currentText()
             else:
-                value = cast(QLineEdit, widget).text()
+                value = self._special_edits[spec.field_key].text()
                 # 卡号去除分组空格后存储
                 if spec.field_key == 'card_number':
                     value = value.replace(' ', '')
@@ -777,9 +776,9 @@ class EntryDialog(QDialog):
         # 敏感输入，由 isinstance(QLineEdit) 守卫跳过。
         for schema in ENTRY_TYPE_SCHEMAS.values():
             for spec in schema.special_fields:
-                widget = self._special_widgets.get(spec.field_key)
-                if isinstance(widget, QLineEdit):
-                    widget.clear()
+                edit = self._special_edits.get(spec.field_key)
+                if edit is not None:
+                    edit.clear()
         # 自定义字段中回显模式为 Password 的值视为敏感数据一并清除
         self._cf_editor.clear_sensitive_values()
 

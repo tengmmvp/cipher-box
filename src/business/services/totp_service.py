@@ -5,8 +5,8 @@ UI→Business 迁移，调用方不接触明文 TOTP secret。secret 解密与�
 pop_totp），避免与 EntryManager 其它缓存失效逻辑耦合。
 
 依赖 :class:`TotpCacheProtocol` 而非具体 ``EntryCacheManager``：services 子包保持
-「无状态服务」契约，运行时不依赖 managers 子包，由 ``EntryCacheManager`` 作为协议
-的实现者在构造时注入，守住分层方向。
+不反向依赖 managers 的契约，运行时不 import managers 子包，由 ``EntryCacheManager``
+作为协议的实现者在构造时注入，守住分层方向。
 """
 
 from typing import TYPE_CHECKING, Protocol, TypedDict
@@ -29,8 +29,8 @@ class TotpCacheProtocol(Protocol):
     """TOTP secret 缓存的最小协议，解耦 TotpService 与 EntryCacheManager。
 
     ``EntryCacheManager`` 自然满足此协议（鸭子类型），构造时作为 ``cache`` 注入。
-    定义协议使 services/ 不必运行时 import managers/，守住「services 无状态、
-    managers 有状态编排」的分层方向。
+    定义协议使 services/ 不必运行时 import managers/，守住「services 不反向依赖
+    managers、由 managers 在构造时注入协作方」的分层方向。
     """
 
     def invalidate_if_epoch_changed(self) -> None:
@@ -120,6 +120,15 @@ class TotpService:
             'remaining': TOTPGenerator.get_remaining_seconds(secret=secret),
             'period': TOTPGenerator.get_period(secret),
         }
+
+    def remaining_seconds(self, period: int) -> int:
+        """当前时间步长剩余秒数，供 TOTP 定时器倒计时刷新。
+
+        纯时间计算（不查 DB、不解密 secret），委托
+        :meth:`TOTPGenerator.get_remaining_seconds`。经本服务暴露，使 TOTPWidget
+        等刷新逻辑不直接依赖 crypto 层，守住 UI→Business→Crypto 的分层方向。
+        """
+        return TOTPGenerator.get_remaining_seconds(period=period)
 
     def evict(self, entry_id: int) -> None:
         """清理指定条目的 TOTP secret 明文缓存。

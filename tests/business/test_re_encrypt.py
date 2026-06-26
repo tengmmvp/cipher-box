@@ -11,9 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
-from src.business.managers.vault_manager import VaultManager
 from src.models import Category, CustomField, Entry
-from tests.helpers import make_entry_manager
+from tests.helpers import make_entry_manager, make_vault
 
 
 class TestReEncryptEdgeCases:
@@ -22,7 +21,7 @@ class TestReEncryptEdgeCases:
     @pytest.fixture(autouse=True)
     def setup_vault(self, tmp_path, vault_config):
         self._tmp_dir = str(tmp_path)
-        self._vault = VaultManager(vault_config)
+        self._vault = make_vault(vault_config)
         self._vault.initialize('original_pwd_123')
         self._entry_mgr = make_entry_manager(self._vault)
         yield

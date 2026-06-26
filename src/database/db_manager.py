@@ -26,6 +26,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from ..crypto.encryption import EncryptionEngine
 from ..exceptions import DatabaseError, TransactionError
 from ..models import Category, PasswordHistory, RawEntry
 from ..utils.file_security import secure_directory, secure_file
@@ -466,20 +467,23 @@ class DatabaseManager:
         ``encrypt_bytes`` 的字节前缀路径不经过此加密列断言。
         """
         if self._enforce_encrypted_fields and value:
-            # EncryptionEngine.encrypt 始终产出 cb2: 前缀密文；强制要求此前缀，
+            # EncryptionEngine.encrypt 始终产出 TEXT_PREFIX 前缀密文；强制要求此前缀，
             # 使纯字母数字明文（如 abc123，恰为 base64 字符子集）无法再以「无前缀
             # 合法密文」名义通过字符集校验。真正认证仍由 GCM 标签在解密时完成，
             # 此处为防御性拦截，防止绕过 EntryManager 直接写库时明文静默落入加密列。
-            if not value.startswith('cb2:'):
+            # 引用 EncryptionEngine.TEXT_PREFIX 单一事实源：前缀重命名时此校验与
+            # 错误提示自动同步，避免字面量漂移。
+            prefix = EncryptionEngine.TEXT_PREFIX
+            if not value.startswith(prefix):
                 raise ValueError(
                     f'数据层收到未加密的 {field_name}'
-                    f'（期望 cb2: 前缀的 base64 密文），请通过 EntryManager 操作条目'
+                    f'（期望 {prefix} 前缀的 base64 密文），请通过 EntryManager 操作条目'
                 )
-            tail = value[len('cb2:'):]
+            tail = value[len(prefix):]
             if not _B64_CHARS.issuperset(tail):
                 raise ValueError(
                     f'数据层收到格式异常的 {field_name}'
-                    f'（cb2: 前缀后须为 base64 密文），请通过 EntryManager 操作条目'
+                    f'（{prefix} 前缀后须为 base64 密文），请通过 EntryManager 操作条目'
                 )
 
     def _sign_entry(self, entry: RawEntry) -> str:
@@ -517,6 +521,9 @@ class DatabaseManager:
     def update_category_reencrypted(self, category: Category) -> None:
         return self._category_repo.update_category_reencrypted(category)
 
+    def update_categories_batch(self, categories: list[Category]) -> None:
+        return self._category_repo.update_categories_batch(categories)
+
     def get_category_entry_count(self, category_id: int) -> int:
         return self._category_repo.get_category_entry_count(category_id)
 
@@ -536,7 +543,7 @@ class DatabaseManager:
         with self._lock:
             self._guard_write()
             with self.transaction():
-                self._entry_repo._clear_category_signatures(category_id)
+                self._entry_repo.clear_category_signatures(category_id)
                 self._category_repo.delete_category(category_id)
 
     # -- 委托透传：Entries --

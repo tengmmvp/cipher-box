@@ -18,6 +18,11 @@ from ...exceptions import DecryptionError, VaultLockedError
 from ...models import Entry, RawEntry
 from .crypto_utils import build_entry_summary, decrypt_field, require_vault_key
 
+# 全量分析取消探测掩码：每 64 条检查一次取消请求（idx & _CANCEL_CHECK_MASK == 0
+# 即 idx 为 64 倍数），降低热循环高频调用的开销。安全分析扫描频率高于改密，故取消
+# 探测比 vault_manager 改密路径（每条检查）更稀疏。
+_CANCEL_CHECK_MASK = 0x3F
+
 # 分析缓存存活时间，单位为秒。命中期内复用基础分析与密码指纹结果，
 # 避免重复执行 O(n) 解密与 HMAC 计算。条目增删或改密会立即失效缓存，
 # 此 TTL 仅控制时间维度的淘汰。跨层时序常量未集中到 UI 层，以避免
@@ -315,7 +320,7 @@ class SecurityAnalyzer:
                 # vault 写锁；此处主动中止并抛 VaultLockedError（已被 _cached_analysis
                 # 捕获返回空报告），释放写锁让 lock() 尽快完成，避免 UI 冻结与明文驻留。
                 # 与改密/重加密/备份的取消探针模式对齐。
-                if (idx & 0x3F) == 0 and self._vault.is_cancel_requested():
+                if (idx & _CANCEL_CHECK_MASK) == 0 and self._vault.is_cancel_requested():
                     raise VaultLockedError('安全分析因锁定/取消请求而中止')
                 if raw.integrity_error:
                     logger.debug("安全分析跳过元数据完整性失败条目 id=%s", raw.id)

@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
 
 from ...utils.file_security import secure_file
 from ..components.widgets import (
-    format_status,
+    create_cancel_button,
     release_worker,
     set_label_severity,
     setup_dialog_flags,
@@ -200,10 +200,7 @@ class ImportExportDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        cancel_btn = QPushButton('取消')
-        cancel_btn.setFixedSize(*BTN_DIALOG)
-        cancel_btn.clicked.connect(self.reject)
-        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(create_cancel_button(self))
 
         self._action_btn = QPushButton('导出')
         self._action_btn.setObjectName('primaryBtn')
@@ -357,7 +354,7 @@ class ImportExportDialog(QDialog):
         if perm_warning:
             # 导出文件（可能含明文密码）权限未能收紧，明确提示用户手动限制访问
             message += '（警告：文件权限未能收紧，建议手动限制该文件访问）'
-        self._status_label.setText(format_status(True, message))
+        self._status_label.setText(message)
         set_label_severity(self._status_label, 'success')
 
     def _on_export_error(self, error_msg: str) -> None:
@@ -367,7 +364,7 @@ class ImportExportDialog(QDialog):
         self._set_busy(False)
         self._progress.hide()
         logger.error("导出失败: %s", error_msg)
-        self._status_label.setText(format_status(False, f'导出失败：{error_msg}'))
+        self._status_label.setText(f'导出失败：{error_msg}')
         set_label_severity(self._status_label, 'error')
 
     def _do_import(self, path: str) -> None:
@@ -432,7 +429,7 @@ class ImportExportDialog(QDialog):
         release_worker(self)
         self._set_busy(False)
         self._progress.hide()
-        self._status_label.setText(format_status(True, f'成功导入 {count} 条记录'))
+        self._status_label.setText(f'成功导入 {count} 条记录')
         set_label_severity(self._status_label, 'success')
         if count > 0:
             self.import_completed.emit()
@@ -444,5 +441,5 @@ class ImportExportDialog(QDialog):
         self._set_busy(False)
         self._progress.hide()
         logger.error("导入失败: %s", error_msg)
-        self._status_label.setText(format_status(False, f'导入失败：{error_msg}'))
+        self._status_label.setText(f'导入失败：{error_msg}')
         set_label_severity(self._status_label, 'error')

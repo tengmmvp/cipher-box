@@ -57,6 +57,8 @@ class ReEncryptionDB(Protocol):
 
     def update_category_reencrypted(self, category: Category) -> None: ...
 
+    def update_categories_batch(self, categories: list[Category]) -> None: ...
+
 
 _RE_ENCRYPT_BATCH_SIZE = 200
 # 重加密的敏感字段集，与 crypto_utils 的加解密字段集共用单一事实来源，
@@ -123,6 +125,9 @@ class ReEncryptionService:
                 last_id = last_raw.id
                 rows = []
                 for raw_entry in batch:
+                    # 主键非空守卫：兼作 Pyright 类型收窄（raw_entry.id 类型为 int|None，
+                    # 缺失会使构造 ReEncryptedEntry(id=raw_entry.id) 处类型不符），并在
+                    # 运行时锚定 DB 主键非空契约，与外层分页游标守卫并非纯冗余。
                     if raw_entry.id is None:
                         raise VaultError('重加密遇到空主键条目，违反 RawEntry 主键非空契约')
                     try:
@@ -167,7 +172,7 @@ class ReEncryptionService:
                         tags_enc=raw_entry.tags,
                         notes_enc=raw_entry.notes,
                         custom_fields_enc=raw_entry.custom_fields_db_value,
-                        is_favorite=1 if raw_entry.is_favorite else 0,
+                        is_favorite=int(raw_entry.is_favorite),
                         password_strength=raw_entry.password_strength,
                         entry_type=raw_entry.entry_type,
                         totp_secret_enc=raw_entry.totp_secret,
@@ -201,6 +206,9 @@ class ReEncryptionService:
         """
         precomputed_domain_key = self._signer.compute_domain_key(new_key)
         try:
+            # 收集所有重加密+重签后的分类，一次性 executemany 写入，与条目/历史
+            # 的批量重加密路径对称（分类通常 <20，收益在一致性而非吞吐）。
+            updated: list[Category] = []
             for category in self._db.get_categories(verify=False):
                 if category.id is None:
                     continue
@@ -219,7 +227,9 @@ class ReEncryptionService:
                 category.metadata_mac = self._signer.sign_category_with_domain_key(
                     category, precomputed_domain_key,
                 )
-                self._db.update_category_reencrypted(category)
+                updated.append(category)
+            if updated:
+                self._db.update_categories_batch(updated)
         finally:
             # 新域密钥派生副本（bytearray）在分类重加密全程持有，结束后立即原地
             # 清零收缩驻留，不依赖后续 KeyManager.clear() 间接回收。

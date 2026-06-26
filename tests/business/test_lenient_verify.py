@@ -8,9 +8,9 @@ from tests.helpers import make_entry_manager
 """
 import pytest
 
-from src.business.managers.vault_manager import VaultManager
 from src.exceptions import VaultIntegrityError
 from src.models import Entry, RawEntry
+from tests.helpers import make_vault
 
 
 class TestLenientVerify:
@@ -18,7 +18,7 @@ class TestLenientVerify:
 
     @pytest.fixture(autouse=True)
     def setup_vault(self, vault_config):
-        self._vault = VaultManager(vault_config)
+        self._vault = make_vault(vault_config)
         self._vault.initialize("test_password_12345")
         self._entry_mgr = make_entry_manager(self._vault)
         yield
