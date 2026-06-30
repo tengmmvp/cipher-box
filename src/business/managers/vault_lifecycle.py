@@ -13,7 +13,6 @@ VaultManager 的 ``initialize`` / ``unlock`` / ``lock`` / ``change_master_passwo
 from __future__ import annotations
 
 import base64
-import binascii
 import hmac
 import logging
 import os
@@ -39,6 +38,7 @@ from ...exceptions import (
 )
 from ...utils.memory import secure_zero_buffer
 from ..services.crypto_utils import encrypt_plaintext_category_names
+from ..services.error_messages import to_user_message
 from ..services.metadata_signer import MetadataSigner
 from ..services.re_encryption import ReEncryptionService
 from ..services.vault_meta_store import VaultMetaStore
@@ -52,22 +52,14 @@ AUTH_FAILED_MESSAGE = '当前主密码错误'
 
 
 def _friendly_error(exc: Exception, default: str) -> str:
-    """将生命周期流程的底层异常映射为用户可读的中文提示。
+    """将生命周期流程异常映射为用户可读提示（委托统一翻译层 :func:`to_user_message`）。
 
-    CipherBoxError 已由各流程的 ``except CipherBoxError: raise`` 分支向上传播
-    （带领域语义），此处仅兜底未预期的底层异常，避免把英文 ``str(exc)`` 透传到
-    UI（如 ``KeyError('master_salt')`` 会显示为 "'master_salt'"）。
-
-    - ``ValueError`` 常携带校验函数的中文文案（主密码强度、参数非法等），原样保留；
-    - ``binascii.Error``（base64 解码失败）提示数据格式错误；
-    - ``KeyError``/``TypeError``/其他异常给通用默认提示。
+    场景化 ``default`` 用于未归类异常兜底（如「保险库初始化失败」/「保险库无法解锁」）。
+    ``CipherBoxError`` 在上层流程已 ``except CipherBoxError: raise`` 传播，此处主要兜底
+    非预期异常：校验类 ``ValueError``（密码强度、参数非法等）保留可操作消息，IO/格式
+    异常归一，避免把英文 ``str(exc)``（如 ``KeyError('master_salt')``）透传到 UI。
     """
-    if isinstance(exc, ValueError):
-        msg = str(exc).strip()
-        return msg or default
-    if isinstance(exc, binascii.Error):
-        return '保险库数据格式错误，可能已损坏'
-    return default
+    return to_user_message(exc, default=default)
 
 
 # unlock 单次批量读取的 vault_meta 键，避免多次独立 DB 锁获取。

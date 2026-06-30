@@ -20,7 +20,7 @@ import logging
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from .vault_manager import VaultManager
@@ -249,9 +249,7 @@ class EntryManager:
         字段解密失败时容错：失败字段收集到 ``integrity_message``，password/totp
         包 :class:`Sensitive` 防明文意外进入日志/repr。
         """
-        return self._decrypt_entry_impl(
-            raw_entry, include_secrets=True, strict_integrity=False,
-        )
+        return self._decrypt_entry_impl(raw_entry, mode='detail')
 
     def decrypt_entry_for_export(
         self, raw_entry: RawEntry, include_secrets: bool = False,
@@ -262,29 +260,33 @@ class EntryManager:
         ``include_secrets=False`` 时跳过 password/totp_secret 解密。
         """
         return self._decrypt_entry_impl(
-            raw_entry, include_secrets=include_secrets, strict_integrity=True,
+            raw_entry, mode='export', include_secrets=include_secrets,
         )
 
     def _decrypt_entry_impl(
         self,
         raw_entry: RawEntry,
         *,
-        include_secrets: bool,
-        strict_integrity: bool,
+        mode: Literal['detail', 'export'],
+        include_secrets: bool = True,
     ) -> Entry:
         """解密条目字段并构建 Entry，decrypt_entry 与 decrypt_entry_for_export 的共用实现。
 
-        两条路径的差异由两个布尔参数收敛，避免字段遍历与 copy_entry_fields 调用重复：
+        两条路径的差异由 ``mode`` 收敛（替代原先的 ``strict_integrity`` 布尔，调用点
+        语义更清晰——读 ``mode='export'`` 比读 ``strict_integrity=True`` 直观），避免
+        字段遍历与 copy_entry_fields 调用重复：
 
-        - ``strict_integrity=True``（导出）：完整性/解密失败立即抛 DecryptionError，
-          password/totp 返回已解密明文（普通 str，不包 Sensitive）供备份序列化。
-        - ``strict_integrity=False``（详情）：失败字段收集到 integrity_message，
-          password/totp 包 Sensitive 防明文意外进入日志/repr。
-        - ``include_secrets=False``：跳过 password/totp_secret 解密（导出默认不入密）。
+        - ``mode='export'``：完整性/解密失败立即抛 DecryptionError，password/totp
+          返回已解密明文（普通 str，不包 Sensitive）供备份序列化。
+        - ``mode='detail'``：失败字段收集到 integrity_message，password/totp 包
+          :class:`Sensitive` 防明文意外进入日志/repr；隐含 ``include_secrets=True``。
+        - ``include_secrets=False``：仅 export 模式有意义，跳过 password/totp_secret
+          解密（导出默认不入密）。
 
-        category_name 解密失败：strict 路径转 DecryptionError（等价于原 export 的
-        外层 except 归一），lenient 路径保持抛 ValueError（与原 decrypt_entry 一致）。
+        category_name 解密失败：export 路径转 DecryptionError（等价于原 export 的
+        外层 except 归一），detail 路径保持抛 ValueError（与原 decrypt_entry 一致）。
         """
+        strict_integrity = mode == 'export'
         if strict_integrity and raw_entry.integrity_error:
             raise DecryptionError(
                 f'条目 {raw_entry.id} 元数据完整性校验失败，已拒绝导出'
@@ -429,7 +431,11 @@ class EntryManager:
             preserve_metadata=bool(entry.created_at or entry.updated_at),
         )
         if notify:
-            self._change_bus.notify()
+            # 新增条目不改变既有条目的 title/username/url/tags 摘要，clear_summaries=False
+            # 保留摘要缓存，新条目摘要下次列表查询时自然解密填充，避免全量重解密。
+            # tags 分布与 total/重复分组变化仍由默认 tags_changed=True、
+            # password_changed=True 失效。对齐 toggle_favorite 的精细失效策略。
+            self._change_bus.notify(clear_summaries=False)
         return result
 
     def update_entry(
@@ -544,14 +550,18 @@ class EntryManager:
         if not self._vault.db.soft_delete_entry(entry_id):
             return False
         self._cache.pop_totp(entry_id)
-        self._change_bus.notify()
+        # 软删除仅切换 is_deleted，不改变摘要内容（title/username/url/tags），保留摘要缓存
+        # 避免全量重解密；tags 分布与 total/重复分组变化由默认 tags_changed=True、
+        # password_changed=True 失效。对齐 toggle_favorite 的精细失效策略。
+        self._change_bus.notify(clear_summaries=False)
         return True
 
     def restore_entry(self, entry_id: int) -> bool:
         """恢复条目。返回是否实际执行（条目存在）。"""
         if not self._vault.db.restore_entry(entry_id):
             return False
-        self._change_bus.notify()
+        # 恢复仅切换 is_deleted，不改变摘要内容，保留摘要缓存（同 delete_entry 理由）。
+        self._change_bus.notify(clear_summaries=False)
         return True
 
     def permanent_delete_entry(self, entry_id: int) -> None:

@@ -13,11 +13,11 @@ from src.business.managers.backup_restore import _user_friendly_error
 def test_enospc_maps_to_disk_full_message():
     """OSError(errno=ENOSPC) 映射为「磁盘空间不足」而非通用「文件读写失败」。"""
     exc = OSError(errno.ENOSPC, 'No space left on device')
-    assert _user_friendly_error(exc) == '磁盘空间不足'
+    assert _user_friendly_error(exc) == '磁盘空间不足。'
 
 
 def test_generic_oserror_maps_to_io_failure_message():
     """非 ENOSPC 且非 PermissionError/FileNotFound 等子类的 OSError 回退为通用文案。"""
     # EIO 不映射到 PermissionError/FileNotFoundError/IsADirectoryError，走通用分支
     exc = OSError(errno.EIO, 'I/O error')
-    assert _user_friendly_error(exc) == '文件读写失败，请检查路径和磁盘'
+    assert _user_friendly_error(exc) == '文件读写失败，请检查路径和磁盘。'

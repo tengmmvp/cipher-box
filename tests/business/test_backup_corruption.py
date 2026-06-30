@@ -67,7 +67,9 @@ class TestBackupCorruption:
         path = os.path.join(self._tmp_dir, 'oversized.cbox')
         success, error = self._backup_mgr.create_backup(path, 'BackupTest!2026')
         assert not success
-        assert '过大' in error
+        # PayloadTooLargeError 归一为固定友好文案（防 str 泄漏内部细节，与 DecryptionError
+        # 一致）；诊断详情由 create_backup 记录到日志（exc_info）。断言走大小限制文案分支。
+        assert '大小' in error or '限制' in error
 
     def test_rejects_corrupted_magic_bytes(self):
         """损坏的 magic bytes 应被拒绝。"""
@@ -215,7 +217,9 @@ class TestBackupCorruption:
             f.write(struct.pack('<BIII', 1, 2, 16 * 1024, 1))
         success, error = self._backup_mgr.restore_backup(path, 'BackupTest!2026')
         assert not success
-        assert 'KDF' in error or '篡改' in error
+        # BackupError 归一为固定友好文案（KDF 篡改的具体诊断记入日志，用户层归一）。
+        # 核心守护是 not success（防降级拒绝）；文案断言验证走了 BackupError 友好分支。
+        assert '损坏' in error or '格式' in error
 
     def test_restore_point_cleaned_on_creation_exception(self, monkeypatch):
         """恢复点创建抛异常时应触发清理，避免含明文的恢复点残留。"""

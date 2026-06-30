@@ -252,6 +252,27 @@ class MasterKeyManager:
         return None
 
     @classmethod
+    def verify_password(
+        cls,
+        password: str,
+        salt: bytes,
+        verify_token: str,
+        params: KdfParams = DEFAULT_KDF_PARAMS,
+    ) -> bool:
+        """仅验证主密码是否正确，不返回派生密钥（验证后立即清零）。
+
+        供 :meth:`change_password` 等只需「是/否」判定的场景：:meth:`verify` 返回的
+        派生密钥在改密流程中并未使用（重加密用已激活的 ``vault.key``），让调用方持有
+        它只会多一份旧主密钥副本驻留内存。本方法内部仍经 :meth:`verify` 派生验证，
+        但成功后立即 ``secure_zero_buffer`` 清零返回的密钥，调用方从不接触密钥副本。
+        """
+        key = cls.verify(password, salt, verify_token, params)
+        if key is None:
+            return False
+        secure_zero_buffer(key)
+        return True
+
+    @classmethod
     def change_password(
         cls,
         old_password: str,
@@ -276,17 +297,14 @@ class MasterKeyManager:
             其中新密钥直接复用 create 内部派生结果，避免重加密流程再次执行
             Argon2id 派生。
         """
-        old_key = cls.verify(
+        # 旧密码仅用于「是/否」验证：重加密用已激活的 vault.key，无需持有旧密钥副本。
+        # verify_password 内部派生验证后立即清零，本方法不接触旧密钥，收缩改密窗口的
+        # 密钥驻留面（原先经 verify 返回 old_key 在 finally 清零，多一份副本驻留）。
+        if not cls.verify_password(
             old_password, old_salt, old_verify_token, old_params
-        )
-        if old_key is None:
+        ):
             return None
-        try:
-            new_salt, new_verify_token, new_key = cls.create(
-                new_password, new_params
-            )
-            return new_salt, new_verify_token, new_key
-        finally:
-            # old_key 为 verify 返回的 bytearray（旧密钥派生结果），仅用于验证旧密码，
-            # 验证通过后不再需要。原地清零收缩其在内存/swap 的驻留。
-            secure_zero_buffer(old_key)
+        new_salt, new_verify_token, new_key = cls.create(
+            new_password, new_params
+        )
+        return new_salt, new_verify_token, new_key

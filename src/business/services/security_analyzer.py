@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     from ..managers.entry_cache import EntryCacheManager
@@ -35,6 +35,26 @@ SECURITY_ANALYSIS_CACHE_TTL_SECONDS = 120
 HEALTH_PENALTY_WEAK = 15
 HEALTH_PENALTY_DUPLICATE = 10
 HEALTH_PENALTY_OLD = 5
+
+
+class SecurityReport(TypedDict):
+    """安全分析报告结构（full_analysis / get_cached_report 返回值的类型契约）。
+
+    生产者（SecurityAnalyzer）与消费者（main_window_filters / SecurityDashboard）
+    共享此 TypedDict，使两侧键集一致——新增/改名字段时类型检查即时捕获漂移，
+    而非运行时 KeyError。``_summaries_with_dates`` 与 ``_key_epoch`` 为缓存分层
+    内部键（供不同 days 重过滤与 epoch 失效判定），纳入 TypedDict 以完整描述结构。
+    """
+
+    total: int
+    weak_count: int
+    weak_entries: list[Entry]
+    duplicate_groups: list[list[Entry]]
+    duplicate_count: int
+    old_entries: list[Entry]
+    old: int
+    _summaries_with_dates: list[tuple[Entry, datetime | None]]
+    _key_epoch: str | None
 
 
 class SecurityAnalyzer:

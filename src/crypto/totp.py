@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 # Base32 标准化时一次性剥离的常见分隔符（空格、连字符、点、下划线）。
 _BASE32_STRIP_TABLE = str.maketrans('', '', ' -._')
 
+# otpauth URI 解析时 period 的合理上界：恶意/损坏 secret 构造超长 period（如 999999）
+# 会让 TOTP 几乎不变（退化为静态码），用户难以察觉验证码异常。1–300 秒覆盖所有合法
+# 场景（RFC 6238 默认 30s，少数服务用 60s），拒绝极端值防退化。与 url scheme 白名单
+# 清洗一致，拦截导入路径的异常 otpauth URI。
+_MAX_TOTP_PERIOD = 300
+
 
 class TOTPGenerator:
     """基于时间的一次性密码 TOTP 生成器。"""
@@ -88,7 +94,7 @@ class TOTPGenerator:
             algorithm = parsed_algo
         if algorithm not in TOTPGenerator.ALGO_MAP:
             raise ValueError('不支持的算法')
-        if period <= 0 or digits not in (6, 7, 8):
+        if not (1 <= period <= _MAX_TOTP_PERIOD) or digits not in (6, 7, 8):
             raise ValueError('TOTP 参数无效')
         return algorithm, value, period, digits
 

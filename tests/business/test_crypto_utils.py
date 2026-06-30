@@ -22,7 +22,7 @@ from src.business.services.crypto_utils import (
     matches_tag,
     require_vault_key,
 )
-from src.exceptions import VaultLockedError
+from src.exceptions import DecryptionError, VaultLockedError
 from src.models import CustomField, Entry, RawEntry
 
 
@@ -322,10 +322,10 @@ class TestRequireVaultKey:
 
 
 class TestDecryptEntryToPortableDictStrict:
-    """验证字段 strict 策略统一：任一加密字段损坏即返回 None（跳过整条）。"""
+    """验证字段 strict 策略统一：任一加密字段损坏即抛 DecryptionError（不再返回 None）。"""
 
-    def test_corrupt_notes_returns_none(self, aes_key):
-        """notes 密文损坏时整条返回 None，而非返回空 notes 的残缺字典。"""
+    def test_corrupt_notes_raises_decryption_error(self, aes_key):
+        """notes 密文损坏时抛 DecryptionError，而非返回空 notes 的残缺字典。"""
         from src.business.services.crypto_utils import (
             decrypt_entry_to_portable_dict,
         )
@@ -341,10 +341,11 @@ class TestDecryptEntryToPortableDictStrict:
             custom_fields='',
             totp_secret='',
         )
-        assert decrypt_entry_to_portable_dict(raw, aes_key, include_secrets=True) is None
+        with pytest.raises(DecryptionError):
+            decrypt_entry_to_portable_dict(raw, aes_key, include_secrets=True)
 
-    def test_corrupt_password_returns_none(self, aes_key):
-        """password 密文损坏时整条返回 None（统一 strict 后不再容错为空）。"""
+    def test_corrupt_password_raises_decryption_error(self, aes_key):
+        """password 密文损坏时抛 DecryptionError（统一 strict 后不再容错为空）。"""
         from src.business.services.crypto_utils import (
             decrypt_entry_to_portable_dict,
         )
@@ -356,7 +357,8 @@ class TestDecryptEntryToPortableDictStrict:
             password='cb2:brokenpasswordcipher',
             url='', tags='', notes='', custom_fields='', totp_secret='',
         )
-        assert decrypt_entry_to_portable_dict(raw, aes_key, include_secrets=True) is None
+        with pytest.raises(DecryptionError):
+            decrypt_entry_to_portable_dict(raw, aes_key, include_secrets=True)
 
     def test_all_valid_returns_full_dict(self, aes_key):
         """全部字段有效时返回完整字典，notes 正常解密。"""

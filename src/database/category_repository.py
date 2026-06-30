@@ -52,13 +52,13 @@ class CategoryRepository:
         return self._mgr.sign_category(category)
 
     def _verify_category_if_signed(self, category: Category) -> None:
-        """LENIENT 验签分类完整性：有签名（metadata_mac 非空）才验，失败记日志。
+        """LENIENT 验签分类完整性：有签名（metadata_mac 非空）才验，失败记日志并标记。
 
         首次初始化的默认分类在 encrypt_plaintext_category_names 签名前 mac 为空，
-        属合法未签名状态，跳过验签避免噪音；其余分类有签名则验，篡改记 warning。
-        Category 无 integrity_error 运行时字段（避免 UI 扩散），验签失败仅日志，
-        分类名密文仍由 GCM 认证兜底。改密重签路径以 verify=False 跳过本验签，
-        避免旧签名在新域密钥下的假阳性篡改告警。
+        属合法未签名状态，跳过验签避免噪音；其余分类有签名则验，篡改记 warning 并
+        置 ``category.integrity_error = True``，供 UI（sidebar ⚠ 标识）对用户可见。
+        分类名密文仍由 GCM 认证兜底；本验签覆盖 icon/color/sort_order 等非加密元数据。
+        改密重签路径以 verify=False 跳过本验签，避免旧签名在新域密钥下的假阳性告警。
         """
         verifier = self._mgr.category_verifier
         if verifier and category.metadata_mac:
@@ -66,6 +66,7 @@ class CategoryRepository:
                 verifier(category)
             except VaultIntegrityError:
                 logger.warning("分类 %s 元数据完整性校验失败", category.id)
+                category.integrity_error = True
             except VaultLockedError:
                 # 锁定竞态：域密钥在取行后被 prepare_for_lock 清零，锁定态验签无意义，
                 # 静默跳过避免 get_categories/get_category 崩溃（entry 路径 re-raise 由

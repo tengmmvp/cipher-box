@@ -58,10 +58,16 @@ class SidebarController:
     # ========== 分类 CRUD ==========
 
     def build_category_label(self, cat: Category, count: int) -> str:
-        """构建分类列表项的显示文本。"""
+        """构建分类列表项的显示文本。
+
+        分类元数据完整性校验失败时（``cat.integrity_error``）在名称前加 ⚠ 警告标识，
+        使分类层 HMAC 篡改对用户可见（原先仅记日志，用户无法察觉 icon/color/sort_order
+        等非加密元数据被篡改）。
+        """
+        name = f'⚠ {cat.name}' if cat.integrity_error else cat.name
         if count > 0:
-            return f'{cat.icon_char} {cat.name} ({count})'
-        return f'{cat.icon_char} {cat.name}'
+            return f'{cat.icon_char} {name} ({count})'
+        return f'{cat.icon_char} {name}'
 
     def build_delete_message(self, category_id: int) -> tuple[str, bool, str]:
         """构建删除分类的确认消息。

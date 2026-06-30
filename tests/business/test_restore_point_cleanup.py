@@ -142,3 +142,25 @@ class TestRestorePointCleanup:
             assert not (backups_dir / 'pre_restore_2.cbox').exists()
         finally:
             vault.close()
+
+
+def test_change_master_password_reports_purge_failure(vault, monkeypatch):
+    """改密成功但旧快照清理失败时返回 (True, 带明文泄漏提示)，不静默成功。
+
+    守护「改密成功 + purge 失败」的用户可见反馈路径：snapshot_key 已轮换，但旧
+    snapshot_key 加密的快照/恢复点含历史明文未删净，须明确告知用户而非笼统成功。
+    启动期 purge_restore_points 会重试其中 pre_restore_* 残留，cipherbox_snapshot_*
+    由 retention 淘汰，故此处仅验证反馈文案可见。
+    """
+    backups_dir = vault.data_dir / 'backups'
+    backups_dir.mkdir(parents=True, exist_ok=True)
+    stale = backups_dir / 'cipherbox_snapshot_stale.cbox'
+    stale.write_bytes(b'stale snapshot encrypted with old snapshot_key')
+
+    # mock purge_snapshot_backups 报告失败（模拟文件被外部进程占用未删净）
+    monkeypatch.setattr(vault, 'purge_snapshot_backups', lambda: [stale])
+
+    success, msg = vault.change_master_password('TestPassword123!', 'NewPassword456!')
+
+    assert success is True
+    assert '未能删除' in msg

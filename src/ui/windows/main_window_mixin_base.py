@@ -3,6 +3,25 @@
 从 main_window_filters 提取 ``_require_unlocked`` 守卫装饰器，供 filters 与
 entries 两个 Mixin 平级 import，消除 entries → filters 的兄弟 Mixin 私有依赖
 （二者本应平级，各自从本模块取共享工具，互不构成隐式前置依赖）。
+
+跨 Mixin 方法契约清单（单一参考）：
+MainWindow 经多重继承组合 ``_MainWindowEntriesMixin`` 与 ``_MainWindowFiltersMixin``，
+二者经 ``self`` 跨调用对方方法。mypy 不跨 Mixin 验证这些调用（多重继承运行时解析），
+故各消费方 Mixin 在 ``TYPE_CHECKING`` 下声明 stub 供局部静态分析。此清单集中记录全部
+跨 Mixin 方法，作为重命名时的单一参考——重命名提供方后须同步更新消费方 stub，
+否则运行时才会 ``AttributeError``（mypy 不跨 Mixin 拦截）：
+
+  - 提供方 ``_MainWindowEntriesMixin`` → 消费方 ``_MainWindowFiltersMixin``：
+    ``_add_entry``（空态「新增条目」按钮回调）
+  - 提供方 ``_MainWindowFiltersMixin`` → 消费方 ``_MainWindowEntriesMixin``：
+    ``_refresh_after_entry_change``（条目增删改后经防抖触发全量刷新）、
+    ``_refresh_entries_only``（切换收藏等仅刷条目列表）、
+    ``_refresh_categories``（分类变更后刷分类列表）
+
+收敛取舍：filters→entries 仅 ``_add_entry`` 一个入口（空态回调），已最小；entries→filters
+三个 refresh 入口对应不同刷新粒度（全量 / 仅条目 / 分类），合并会损失精细刷新能力
+（如切换收藏的轻量刷新），故保留。新增跨 Mixin 方法须在此清单与消费方
+``TYPE_CHECKING`` stub 同步登记。
 """
 
 from __future__ import annotations

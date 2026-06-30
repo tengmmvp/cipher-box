@@ -107,3 +107,46 @@ class TestLruEviction:
             cache.cached_search_metadata(raw)
         # 上限 2，加入第 3 条后应驱逐最旧的一条
         assert len(cache._search_metadata_cache) <= 2
+
+
+class TestEntryManagerFineGrainedInvalidation:
+    """守护 EntryManager 增删/软删除/恢复的精细缓存失效（clear_summaries=False）。
+
+    这三类操作不改变既有条目的 title/username/url/tags 摘要内容，应保留摘要缓存
+    避免全量重解密。防止未来误改回 notify()（默认 clear_summaries=True 全清），
+    导致单条 delete/restore/add 触发整库摘要重解密。
+    """
+
+    def test_delete_preserves_other_summaries(self, entry_mgr, cache):
+        """软删除一条不应清空其他条目的摘要缓存（仅切换 is_deleted）。"""
+        entry_mgr.add_entry(Entry(title='A', username='u', password='p'))
+        entry_mgr.add_entry(Entry(title='B', username='u', password='p'))
+        raws = entry_mgr.db.get_entries()
+        for raw in raws:
+            cache.cached_search_metadata(raw)
+        assert len(cache._search_metadata_cache) == 2
+        entry_mgr.delete_entry(raws[0].id)
+        # 软删除不清摘要：两条摘要均保留，回收站展示时复用缓存
+        assert len(cache._search_metadata_cache) == 2
+
+    def test_restore_preserves_other_summaries(self, entry_mgr, cache):
+        """恢复一条不应清空其他条目的摘要缓存。"""
+        entry_mgr.add_entry(Entry(title='A', username='u', password='p'))
+        entry_mgr.add_entry(Entry(title='B', username='u', password='p'))
+        raws = entry_mgr.db.get_entries()
+        for raw in raws:
+            cache.cached_search_metadata(raw)
+        entry_mgr.delete_entry(raws[0].id)
+        assert len(cache._search_metadata_cache) == 2
+        entry_mgr.restore_entry(raws[0].id)
+        assert len(cache._search_metadata_cache) == 2
+
+    def test_add_preserves_existing_summaries(self, entry_mgr, cache):
+        """新增条目不应清空既有条目的摘要缓存（新条目摘要自然填充）。"""
+        entry_mgr.add_entry(Entry(title='A', username='u', password='p'))
+        raw_a = entry_mgr.db.get_entries()[0]
+        cache.cached_search_metadata(raw_a)
+        assert len(cache._search_metadata_cache) == 1
+        entry_mgr.add_entry(Entry(title='B', username='u', password='p'))
+        # 新增 B 后 A 的摘要仍保留
+        assert raw_a.crypto_id in cache._search_metadata_cache

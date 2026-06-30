@@ -22,6 +22,7 @@ from src.business.services.backup_validator import (
     validate_history,
     validate_restore_data,
 )
+from src.business.services.crypto_utils import STRING_ENCRYPTED_FIELDS
 from src.exceptions import BackupError, PayloadTooLargeError
 from src.models import MAX_PASSWORD_HISTORY
 
@@ -453,3 +454,30 @@ class TestRequireText:
 def test_history_limit_constant_matches_model():
     """守护 MAX_HISTORY_PER_ENTRY 与 MAX_PASSWORD_HISTORY 的 2 倍关系。"""
     assert MAX_HISTORY_PER_ENTRY == MAX_PASSWORD_HISTORY * 2
+
+
+class TestEncryptedFieldsSingleSource:
+    """守护 validate_entry_fields 对字符串型加密字段的长度校验来自单一事实源
+    STRING_ENCRYPTED_FIELDS：新增加密字段时校验自动跟随，不漏字段。"""
+
+    @pytest.mark.parametrize('field', list(STRING_ENCRYPTED_FIELDS))
+    def test_each_encrypted_field_length_enforced(self, field):
+        """每个字符串型加密字段超长均被拒绝，验证校验覆盖全部加密字段。
+
+        若未来把新字段加入 SENSITIVE_ENCRYPTED_FIELDS，此处自动新增用例；若校验侧
+        漏跟该字段，对应用例会因未抛 PayloadTooLargeError 而失败。
+        """
+        from src.business.services.backup_validator import MAX_TEXT_FIELD_SIZE
+        entry = _valid_entry()
+        entry[field] = 'x' * (MAX_TEXT_FIELD_SIZE + 1)
+        with pytest.raises(PayloadTooLargeError):
+            validate_entry_fields(entry, {1})
+
+    def test_encrypted_fields_subset_of_required_keys(self):
+        """守护加载期断言的不变量：STRING_ENCRYPTED_FIELDS ⊆ REQUIRED_ENTRY_KEYS。
+
+        缺失会使 require_text(item[field]) 因键不存在而 KeyError（而非静默跳过），
+        模块加载期断言已强制此关系，此处冗余守护以在字段集演进时即时发现。
+        """
+        from src.business.services.backup_validator import REQUIRED_ENTRY_KEYS
+        assert set(STRING_ENCRYPTED_FIELDS) <= REQUIRED_ENTRY_KEYS

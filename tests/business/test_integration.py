@@ -409,7 +409,9 @@ def test_rejects_unknown_format(backup_restore_env):
 
     success, error = backup_mgr.restore_backup(backup_path)
     assert not success
-    assert '无效的备份文件格式' in error
+    # BackupError 归一为固定友好文案（任务12 收敛：防 str 泄漏内部细节）；
+    # 「无效的备份文件格式」具体诊断记入日志，用户层文案含「格式」/「损坏」。
+    assert '格式' in error or '损坏' in error
 
 
 def test_snapshot_key_rotates_on_master_password_change(backup_restore_env):
@@ -446,6 +448,25 @@ def test_snapshot_key_rotates_on_master_password_change(backup_restore_env):
     assert success, error
     success, error = backup_mgr.restore_backup(new_backup_path)
     assert success, error
+
+
+def test_unlock_after_master_change_verifies_vault_meta_mac(entry_mgr_env):
+    """改密后 close → re-unlock 用新密码成功，验证 vault_meta_mac 用新域密钥重算且校验通过。
+
+    守护审查 P1#2：改密流程 _re_encrypt_all 经 _meta_store.update 重算 vault_meta_mac
+    （含新 key_epoch/salt/verify），unlock 时 compute_vault_meta_mac 用新域密钥比对——
+    若 mac 用错域密钥或漏重算，unlock 会抛 VaultIntegrityError。间接验证条目 metadata_mac
+    也用新域密钥重签（解锁后 get_entries 能正确解密与验签）。
+    """
+    entry_mgr, vault, _tmp_dir = entry_mgr_env
+    entry_mgr.add_entry(Entry(title='改密前条目', username='u', password='p'))
+    assert vault.change_master_password('test_password_123', 'NewMasterPassword!2026')[0]
+    vault.close()
+    success, error = vault.unlock('NewMasterPassword!2026')
+    assert success, f'改密后解锁失败（vault_meta_mac 可能未用新域密钥重算）: {error}'
+    # 改密后条目用新密钥重加密 + 重签 metadata_mac，解锁后可正确解密
+    entries = entry_mgr.get_entries()
+    assert any(e.title == '改密前条目' for e in entries)
 
 
 # TestSecurityAnalyzer

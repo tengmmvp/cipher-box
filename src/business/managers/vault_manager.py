@@ -436,31 +436,38 @@ class VaultManager:
         """
         self._lifecycle = lifecycle
 
+    def _require_lifecycle(self) -> VaultLifecycleOrchestrator:
+        """获取已注入的生命周期编排器，未注入时抛 RuntimeError。
+
+        用显式 ``raise`` 替代原先各委托方法的 ``assert``：``python -O`` 会剔除 assert，
+        导致未注入时抛出无信息的 ``AttributeError`` 而非清晰的「attach_lifecycle 未
+        调用」。集中此守卫消除 5 处重复断言，与项目「显式 raise 而非 assert 用于运行
+        期契约校验」的约定一致（见 entry_repository / config / models）。
+        """
+        if self._lifecycle is None:
+            raise RuntimeError('attach_lifecycle 未调用')
+        return self._lifecycle
+
     def initialize(
         self, master_password: str, params: KdfParams | None = None,
     ) -> tuple[bool, str]:
         """首次初始化保险库（委托 VaultLifecycleOrchestrator）。"""
-        assert self._lifecycle is not None, 'attach_lifecycle 未调用'
-        return self._lifecycle.initialize(master_password, params=params)
+        return self._require_lifecycle().initialize(master_password, params=params)
 
     def unlock(self, master_password: str) -> tuple[bool, str]:
         """解锁保险库（委托 VaultLifecycleOrchestrator）。"""
-        assert self._lifecycle is not None, 'attach_lifecycle 未调用'
-        return self._lifecycle.unlock(master_password)
+        return self._require_lifecycle().unlock(master_password)
 
     def lock(self) -> None:
         """锁定保险库（委托 VaultLifecycleOrchestrator）。"""
-        assert self._lifecycle is not None, 'attach_lifecycle 未调用'
-        self._lifecycle.lock()
+        self._require_lifecycle().lock()
 
     def close(self) -> None:
         """关闭保险库（委托 VaultLifecycleOrchestrator）。"""
-        assert self._lifecycle is not None, 'attach_lifecycle 未调用'
-        self._lifecycle.close()
+        self._require_lifecycle().close()
 
     def change_master_password(
         self, old_password: str, new_password: str,
     ) -> tuple[bool, str]:
         """修改主密码（委托 VaultLifecycleOrchestrator）。"""
-        assert self._lifecycle is not None, 'attach_lifecycle 未调用'
-        return self._lifecycle.change_master_password(old_password, new_password)
+        return self._require_lifecycle().change_master_password(old_password, new_password)

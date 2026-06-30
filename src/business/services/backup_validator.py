@@ -18,6 +18,7 @@ from ...models import (
     MAX_PASSWORD_HISTORY,
     is_real_int,
 )
+from .crypto_utils import STRING_ENCRYPTED_FIELDS
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,27 @@ REQUIRED_ENTRY_KEYS = frozenset({
     'created_at', 'updated_at', 'deleted_at', 'password_changed_at',
 })
 REQUIRED_HISTORY_KEYS = frozenset({'entry_id', 'password', 'changed_at'})
+
+# 条目时间戳字段（ISO 8601 字符串）。校验时与字符串型加密字段分离：前者 64 字节
+# 上限，后者 MAX_TEXT_FIELD_SIZE。集中为常量供长度校验与日期格式校验复用。
+_ENTRY_TIMESTAMP_FIELDS: tuple[str, ...] = (
+    'created_at', 'updated_at', 'deleted_at', 'password_changed_at',
+)
+
+# 启动期断言：validate_entry_fields 经 require_text(item[field]) 直接索引字符串型
+# 加密字段，而 require_keys 仅保证 REQUIRED_ENTRY_KEYS 存在。若新增加密字段加入
+# SENSITIVE_ENCRYPTED_FIELDS 却漏加 REQUIRED_ENTRY_KEYS，此处会因键缺失抛出而非
+# 静默跳过校验——模块加载即暴露字段集漂移。用显式 raise 而非 assert：python -O
+# 会剔除 assert。空集同样拒绝，避免 STRING_ENCRYPTED_FIELDS 被误替换为空导致校验
+# 静默放过残缺载荷。
+if not STRING_ENCRYPTED_FIELDS:
+    raise RuntimeError('STRING_ENCRYPTED_FIELDS 为空，明文长度校验将被静默跳过')
+_missing_enc_fields = set(STRING_ENCRYPTED_FIELDS) - REQUIRED_ENTRY_KEYS
+if _missing_enc_fields:
+    raise RuntimeError(
+        f'STRING_ENCRYPTED_FIELDS 未全部纳入 REQUIRED_ENTRY_KEYS，'
+        f'校验会因键缺失而失败：{sorted(_missing_enc_fields)}'
+    )
 
 
 def validate_restore_data(data: dict[str, Any]) -> None:
@@ -103,15 +125,17 @@ def validate_entry_fields(item: dict[str, Any], category_ids: set[int]) -> None:
     if sum(len(str(v).encode('utf-8')) for v in item.values()) > MAX_ENTRY_JSON_SIZE:
         raise BackupError('备份条目格式或大小无效')
 
-    for field in (
-        'title', 'username', 'password', 'url', 'tags', 'notes',
-        'totp_secret', 'created_at', 'updated_at', 'deleted_at',
-        'password_changed_at',
-    ):
-        limit = 64 if field.endswith('_at') else MAX_TEXT_FIELD_SIZE
-        require_text(item[field], f'条目字段 {field}', limit)
+    # 字符串型加密字段的明文长度校验：单一事实源 STRING_ENCRYPTED_FIELDS，与加密侧
+    # build_encrypted_entry_fields / decrypt_entry_to_portable_dict 的字段集对称。
+    # 新增加密字段时此处自动跟随，避免校验侧漏字段导致残缺载荷静默放行。custom_fields
+    # 为 list，由 validate_entry_custom_fields 单独校验，不在 STRING_ENCRYPTED_FIELDS 内。
+    for field in STRING_ENCRYPTED_FIELDS:
+        require_text(item[field], f'条目字段 {field}', MAX_TEXT_FIELD_SIZE)
+    # 时间戳字段：64 字节上限（ISO 8601 字符串）
+    for field in _ENTRY_TIMESTAMP_FIELDS:
+        require_text(item[field], f'条目字段 {field}', 64)
     # 基本 ISO 8601 格式校验
-    for key in ('created_at', 'updated_at', 'deleted_at', 'password_changed_at'):
+    for key in _ENTRY_TIMESTAMP_FIELDS:
         val = item.get(key, '')
         if val and isinstance(val, str):
             try:

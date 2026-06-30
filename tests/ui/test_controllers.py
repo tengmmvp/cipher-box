@@ -63,7 +63,7 @@ class TestGetFetcher:
 class TestBuildCategoryLabel:
     @staticmethod
     def _cat():
-        return SimpleNamespace(icon_char='[KEY]', name='社交')
+        return SimpleNamespace(icon_char='[KEY]', name='社交', integrity_error=False)
 
     def test_with_entries_shows_count(self):
         ctrl = _sidebar_controller()
@@ -72,6 +72,12 @@ class TestBuildCategoryLabel:
     def test_zero_entries_omits_count(self):
         ctrl = _sidebar_controller()
         assert ctrl.build_category_label(self._cat(), 0) == '[KEY] 社交'
+
+    def test_integrity_error_shows_warning(self):
+        """分类元数据完整性失败时（integrity_error=True）标签前加 ⚠ 警告。"""
+        ctrl = _sidebar_controller()
+        cat = SimpleNamespace(icon_char='[KEY]', name='社交', integrity_error=True)
+        assert ctrl.build_category_label(cat, 3) == '[KEY] ⚠ 社交 (3)'
 
 
 class TestBuildDeleteMessage:

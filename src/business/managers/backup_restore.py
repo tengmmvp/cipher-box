@@ -7,7 +7,6 @@
 - 恢复点统计/清理 → :class:`.restore_point_manager.RestorePointManager`
 """
 
-import errno
 import json
 import logging
 import os
@@ -30,7 +29,6 @@ from ...exceptions import (
     BackupError,
     DecryptionError,
     PayloadTooLargeError,
-    VaultKeyEpochMismatchError,
 )
 from ...models import (
     Category,
@@ -80,6 +78,7 @@ from ..services.crypto_utils import (
     encrypt_field,
     require_vault_key,
 )
+from ..services.error_messages import to_user_message
 from ..services.metadata_signer import VAULT_META_SIGNED_KEYS, MetadataSigner
 from ..services.password_service import PasswordService
 from .restore_point_manager import MAX_RESTORE_POINTS, RestorePointManager
@@ -162,34 +161,13 @@ for _actual, _expected, _name in _PORTABLE_KEY_ASSERTS:
 
 
 def _user_friendly_error(exc: Exception) -> str:
-    """将异常映射为用户友好的错误消息。
+    """将异常映射为用户友好的错误消息（委托统一翻译层 :func:`to_user_message`）。
 
-    按异常类型精确匹配映射，不依赖英文错误文本，避免子串误匹配。
-    未识别的异常类型返回通用提示，不向用户暴露内部异常类名（类名经调用方日志记录）。
+    保持备份/恢复场景的兜底文案「操作失败，请检查文件和磁盘」。``DecryptionError``
+    等 ``CipherBoxError`` 经统一层归一为固定文案，不再经 ``ValueError`` 分支透传
+    ``str(exc)`` 的内部 ``crypto_id`` 等技术细节，使备份/恢复入口与 UI 层文案一致。
     """
-    if isinstance(exc, FileNotFoundError):
-        return '找不到指定的文件'
-    if isinstance(exc, PermissionError):
-        return '没有文件访问权限'
-    if isinstance(exc, IsADirectoryError):
-        return '所选路径是目录，请选择文件'
-    if isinstance(exc, VaultKeyEpochMismatchError):
-        return '操作期间检测到主密码已被修改，已中止并回滚，请重试'
-    if isinstance(exc, BackupError):
-        return str(exc)
-    if isinstance(exc, OSError):
-        # ENOSPC 表示磁盘满，其余 OSError 统一提示读写失败
-        if exc.errno == errno.ENOSPC:
-            return '磁盘空间不足'
-        return '文件读写失败，请检查路径和磁盘'
-    if isinstance(exc, json.JSONDecodeError):
-        return '备份文件格式无效或已损坏'
-    if isinstance(exc, ValueError):
-        # validate_file_path 等抛出的 ValueError 已携带面向用户的中文消息，直接展示；
-        # 其余 ValueError 退回通用提示，不向用户暴露内部异常细节。
-        return str(exc) or '输入数据无效'
-    # PayloadTooLargeError(BackupError 子类)已由上方 BackupError 分支捕获并返回 str
-    return '操作失败，请检查文件和磁盘'
+    return to_user_message(exc, default='操作失败，请检查文件和磁盘。')
 
 
 class _BackupCancelled(Exception):
@@ -295,9 +273,14 @@ class BackupRestoreManager:
         for raw in raw_entries:
             if cancel_check and cancel_check():
                 raise _BackupCancelled
-            portable_item = decrypt_entry_to_portable_dict(raw, key, include_secrets=True)
-            if portable_item is None:
-                raise BackupError(f'条目 {raw.id} 完整性校验或解密失败，备份已中止')
+            try:
+                portable_item = decrypt_entry_to_portable_dict(raw, key, include_secrets=True)
+            except (DecryptionError, json.JSONDecodeError) as exc:
+                # decrypt_entry_to_portable_dict 失败抛异常（完整性/解密/JSON 损坏），
+                # 此处转为 BackupError 中止备份（备份不容忍残缺条目）。
+                raise BackupError(
+                    f'条目 {raw.id} 完整性校验或解密失败，备份已中止'
+                ) from exc
             # 基于字段原始长度的粗略估算，每条目约 512 字节固定开销。估算覆盖全部
             # 将进入 JSON payload 的字段，以密文长度作上界（base64 密文 ≥ 明文），
             # 避免大 notes 或 custom_fields 场景下粗估漏判、直至序列化才产生内存峰值。
@@ -508,7 +491,11 @@ class BackupRestoreManager:
                     if len(plaintext) > MAX_BACKUP_PAYLOAD_SIZE:
                         return False, '备份解密数据过大'
                     data = json.loads(plaintext.decode('utf-8'))
-                except Exception:
+                except (OSError, DecryptionError, json.JSONDecodeError):
+                    # 缩窄为预期的「读文件 / GCM 解密 / JSON 解析」失败，统一提示密码错误
+                    # 或损坏；编程错误（KeyError/TypeError/AttributeError 等）不在此列，
+                    # 冒泡由上层 restore_backup 的 except 经 _user_friendly_error 兜底，避免
+                    # 把真实 bug 静默归为「备份损坏」而掩盖根因。
                     logger.debug("备份读取或解密失败", exc_info=True)
                     return False, '备份密码错误或文件已损坏'
                 if not isinstance(data, dict) or not isinstance(data.get('entries'), list):

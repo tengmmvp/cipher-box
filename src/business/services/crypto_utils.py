@@ -236,84 +236,76 @@ def decrypt_entry_to_portable_dict(
     key: bytes | bytearray,
     *,
     include_secrets: bool = True,
-) -> dict | None:
-    """将原始 Entry 解密为明文字典，容错处理。
+) -> dict:
+    """将原始 Entry 解密为明文字典，任一字段损坏抛异常。
 
-    供备份、导出等需要跳过损坏条目继续处理的场景使用。
-    单条目解密失败时返回 None。
-
-    BackupRestoreManager._collect_portable_data() 共享此解密逻辑。
+    供备份、导出等需要整条解密的场景。与原先返回 ``dict | None`` 不同：失败不再
+    返回 None 让调用方判断，而是直接抛 :class:`DecryptionError`（元数据完整性失败
+    或字段解密失败）或 :exc:`json.JSONDecodeError`（自定义字段 JSON 损坏），由调用
+    方 catch 决定中止或跳过。消除「None 既可能=损坏跳过也可能=完整性失败」的二义，
+    且与项目其余「失败抛 DecryptionError」约定一致——原先唯一调用方
+    ``_collect_portable_entries`` 在 None 时本就立即 raise BackupError，None 路径冗余。
 
     Args:
         raw_entry: 数据库层原始 Entry，加密字段为密文字符串。
         key: AES-256 密钥。
         include_secrets: 是否包含密码和 TOTP 密钥等敏感字段。
+
+    Raises:
+        DecryptionError: ``raw_entry`` 元数据完整性失败，或任一加密字段解密失败。
+        json.JSONDecodeError: 自定义字段密文解密成功但 JSON 结构损坏。
     """
     if raw_entry.integrity_error:
-        logger.warning(
-            "拒绝转换元数据完整性失败的条目 crypto_id=%s",
-            raw_entry.crypto_id,
+        raise DecryptionError(
+            f'条目 {raw_entry.crypto_id} 元数据完整性校验失败'
         )
-        return None
-    try:
-        # 全部加密字段统一 strict=True：任一字段损坏即抛 ValueError，由下方 except
-        # 捕获返回 None（跳过整条），保证「部分损坏即整条不可用」的一致契约。
-        # 实际触发极少——metadata_mac 的 _enc_hash 已覆盖全部加密字段密文，单字段
-        # 损坏会先触发元数据完整性失败使 raw_entry.integrity_error=True，在进入本
-        # 函数前即被上方检查拦截返回 None。
-        custom_json = decrypt_field(
-            raw_entry.custom_fields_db_value,
-            key, raw_entry.crypto_id, 'custom_fields', strict=True,
-        )
-        try:
-            custom_fields = json.loads(custom_json) if custom_json else []
-        except json.JSONDecodeError:
-            return None
-        return {
-            'id': raw_entry.id,
-            'crypto_id': raw_entry.crypto_id,
-            'title': decrypt_field(
-                raw_entry.title, key, raw_entry.crypto_id, 'title', strict=True,
-            ),
-            'username': decrypt_field(
-                raw_entry.username, key, raw_entry.crypto_id, 'username', strict=True,
-            ),
-            'password': (
-                decrypt_field(
-                    raw_entry.password, key, raw_entry.crypto_id, 'password', strict=True,
-                ) if include_secrets else ''
-            ),
-            'url': decrypt_field(
-                raw_entry.url, key, raw_entry.crypto_id, 'url', strict=True,
-            ),
-            'category_id': raw_entry.category_id,
-            'tags': decrypt_field(
-                raw_entry.tags, key, raw_entry.crypto_id, 'tags', strict=True,
-            ),
-            'notes': decrypt_field(
-                raw_entry.notes, key, raw_entry.crypto_id, 'notes', strict=True,
-            ),
-            'custom_fields': custom_fields,
-            'totp_secret': (
-                decrypt_field(
-                    raw_entry.totp_secret, key, raw_entry.crypto_id, 'totp_secret', strict=True,
-                ) if include_secrets else ''
-            ),
-            'password_strength': raw_entry.password_strength,
-            'entry_type': raw_entry.entry_type,
-            'is_favorite': raw_entry.is_favorite,
-            'is_deleted': raw_entry.is_deleted,
-            'created_at': raw_entry.created_at,
-            'updated_at': raw_entry.updated_at,
-            'deleted_at': raw_entry.deleted_at,
-            'password_changed_at': raw_entry.password_changed_at,
-        }
-    except DecryptionError:
-        logger.warning(
-            "decrypt_entry_to_portable_dict 跳过损坏条目 crypto_id=%s",
-            raw_entry.crypto_id, exc_info=True,
-        )
-        return None
+    # 全部加密字段统一 strict=True：任一字段损坏即抛 DecryptionError 冒泡至调用方。
+    # 实际触发极少——metadata_mac 的 _enc_hash 已覆盖全部加密字段密文，单字段损坏
+    # 会先触发元数据完整性失败使 raw_entry.integrity_error=True，在上方检查即抛出。
+    custom_json = decrypt_field(
+        raw_entry.custom_fields_db_value,
+        key, raw_entry.crypto_id, 'custom_fields', strict=True,
+    )
+    custom_fields = json.loads(custom_json) if custom_json else []
+    return {
+        'id': raw_entry.id,
+        'crypto_id': raw_entry.crypto_id,
+        'title': decrypt_field(
+            raw_entry.title, key, raw_entry.crypto_id, 'title', strict=True,
+        ),
+        'username': decrypt_field(
+            raw_entry.username, key, raw_entry.crypto_id, 'username', strict=True,
+        ),
+        'password': (
+            decrypt_field(
+                raw_entry.password, key, raw_entry.crypto_id, 'password', strict=True,
+            ) if include_secrets else ''
+        ),
+        'url': decrypt_field(
+            raw_entry.url, key, raw_entry.crypto_id, 'url', strict=True,
+        ),
+        'category_id': raw_entry.category_id,
+        'tags': decrypt_field(
+            raw_entry.tags, key, raw_entry.crypto_id, 'tags', strict=True,
+        ),
+        'notes': decrypt_field(
+            raw_entry.notes, key, raw_entry.crypto_id, 'notes', strict=True,
+        ),
+        'custom_fields': custom_fields,
+        'totp_secret': (
+            decrypt_field(
+                raw_entry.totp_secret, key, raw_entry.crypto_id, 'totp_secret', strict=True,
+            ) if include_secrets else ''
+        ),
+        'password_strength': raw_entry.password_strength,
+        'entry_type': raw_entry.entry_type,
+        'is_favorite': raw_entry.is_favorite,
+        'is_deleted': raw_entry.is_deleted,
+        'created_at': raw_entry.created_at,
+        'updated_at': raw_entry.updated_at,
+        'deleted_at': raw_entry.deleted_at,
+        'password_changed_at': raw_entry.password_changed_at,
+    }
 
 
 def build_encrypted_entry_fields(item: dict[str, Any], key: bytes | bytearray, crypto_id: str) -> dict:

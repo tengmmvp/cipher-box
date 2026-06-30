@@ -30,7 +30,9 @@ class TestToUserMessage:
 
     def test_vault_key_epoch_mismatch(self):
         msg = to_user_message(VaultKeyEpochMismatchError('epoch'))
-        assert '其他进程' in msg or '重新打开' in msg
+        # 收敛后采用「操作期间检测到主密码已被修改」文案：准确描述改密/恢复/导入
+        # 期间 epoch 复查失败的场景（多数为同进程另一操作改密，非字面「其他进程」）。
+        assert '已被修改' in msg or '重试' in msg
 
     def test_payload_too_large_precedes_backup_error(self):
         """PayloadTooLargeError（BackupError 子类）应优先于 BackupError 匹配。"""

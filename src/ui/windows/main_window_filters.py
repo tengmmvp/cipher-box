@@ -14,8 +14,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from PyQt6.QtCore import QModelIndex, Qt
 from PyQt6.QtWidgets import QListWidgetItem, QMainWindow
@@ -50,9 +49,9 @@ if TYPE_CHECKING:
     )
 
     from ...business.managers.entry_manager import EntryManager
-    from ...business.services.security_analyzer import SecurityAnalyzer
+    from ...business.services.security_analyzer import SecurityAnalyzer, SecurityReport
     from ...config import ConfigManager
-    from ...models import Category, Entry
+    from ...models import Category
     from ..components.detail_panel import DetailPanel
     from ..components.entry_list_widget import EntryListModel
     from ..controllers.entry_list_controller import EntryListController as _EntryListController
@@ -76,24 +75,6 @@ class _ScrollRestore:
     should_restore_position: bool
     saved_scroll: int
     saved_row: int
-
-
-class SecurityReport(TypedDict):
-    """安全分析报告结构，对应 ``SecurityAnalyzer.full_analysis`` 返回值。
-
-    业务层 ``get_cached_report`` / ``get_or_compute_report`` 返回的是宽松 ``dict``，
-    此处 TypedDict 仅用于 UI 侧消费时提升键访问的类型安全。
-    """
-
-    total: int
-    weak_count: int
-    weak_entries: list[Entry]
-    duplicate_groups: list[list[Entry]]
-    duplicate_count: int
-    old_entries: list[Entry]
-    old: int
-    _summaries_with_dates: list[tuple[Entry, datetime | None]]
-    _key_epoch: str | None
 
 
 class _MainWindowFiltersMixin(QMainWindow):
@@ -288,10 +269,19 @@ class _MainWindowFiltersMixin(QMainWindow):
         effective_category = self._current_category_id if use_current_state else category_id
         fetcher = self._entry_list_ctrl.get_fetcher(filter_key)
         if filter_key == 'all':
-            return fetcher(effective_category, effective_search, cancel_check)
-        if filter_key in ('favorite', 'recent', 'trash'):
-            return fetcher(effective_search, cancel_check)
-        return fetcher()  # weak、duplicate 无参数
+            entries, title = fetcher(effective_category, effective_search, cancel_check)
+        elif filter_key in ('favorite', 'recent', 'trash'):
+            entries, title = fetcher(effective_search, cancel_check)
+        else:
+            entries, title = fetcher()  # weak、duplicate 无参数
+        # 排序在数据获取阶段完成（同步路径与异步 worker 均在此排序），使
+        # _apply_entry_results 仅负责渲染，避免大库主线程回调做 O(N log N) 排序卡顿。
+        # weak/duplicate/recent 保持默认顺序（安全分析或 SQL LIMIT 已定序）。
+        # tag/search 子集过滤仍留在 _apply_entry_results（主线程，用回调返回时的最新
+        # 过滤器状态），避免 worker 闭包捕获的 tag 与用户后续切换产生竞态。
+        if filter_key in ('all', 'favorite', 'trash'):
+            entries = self._sort_entries(entries)
+        return entries, title
 
     def _current_category_name(self) -> str:
         """返回当前选中分类的名称，无选中分类时返回空字符串。"""
@@ -421,9 +411,8 @@ class _MainWindowFiltersMixin(QMainWindow):
         if self._current_tag:
             entries = self._entry_list_ctrl.filter_by_tag(entries, self._current_tag)
 
-        # 排序：弱密码/重复/近期使用默认顺序
-        if self._current_filter in ('all', 'favorite', 'trash'):
-            entries = self._sort_entries(entries)
+        # 排序已在 _fetch_for_filter 数据获取阶段完成（同步与异步 worker 均在此排序），
+        # 此处仅做 search/tag 子集过滤与渲染。
 
         # 渲染上限：超大库下避免一次性渲染过多条目卡死 UI。推广到所有过滤器
         # （含分类/收藏切换），recent 自带 LIMIT 通常不受影响；weak/duplicate 的
@@ -524,7 +513,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         # 快速路径：缓存命中时直接更新 UI
         cached = self._security.get_cached_report(days)
         if cached is not None:
-            self._apply_status_summary(cast(SecurityReport, cached))
+            self._apply_status_summary(cast('SecurityReport', cached))
             return
         # 缓存未命中：显示占位文本，异步执行分析
         self._status_bar.showMessage('安全分析中...')
@@ -540,7 +529,7 @@ class _MainWindowFiltersMixin(QMainWindow):
             # 锁定后或非当前 worker 的延迟回调均不应用，避免访问已清零状态
             if self._locked_ui or self._status_worker is not worker:
                 return
-            self._apply_status_summary(cast(SecurityReport, summary))
+            self._apply_status_summary(cast('SecurityReport', summary))
             # worker 已结束，释放引用，与 _on_error 一致，避免 _status_worker
             # 长期指向已结束 worker 而破坏生命周期不变量。
             if self._status_worker is worker:

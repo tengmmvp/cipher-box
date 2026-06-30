@@ -169,6 +169,11 @@ class Category:
     sort_order: int = 0
     created_at: str = ''
     metadata_mac: str = ''  # 元数据完整性 HMAC 签名（与 Entry.metadata_mac 对称）
+    # 运行时完整性标志（不入库、不序列化，to_dict 不含）：LENIENT 验签失败时置 True，
+    # 供 UI 提示。与 RawEntry.integrity_error 对称，使分类元数据篡改（icon/color/
+    # sort_order 等非加密字段）对用户可见——原先仅记日志，用户无法察觉分类层 HMAC
+    # 失败（分类名密文仍由 GCM 认证兜底，但元数据篡改可静默通过）。
+    integrity_error: bool = False
 
     def to_dict(self) -> dict:
         return {
