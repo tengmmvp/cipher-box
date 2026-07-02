@@ -14,8 +14,8 @@ from functools import wraps
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, TypeVar
 
-from ...exceptions import EntryError, EntryIntegrityError
-from ...models import MAX_CATEGORY_NAME, Category, Entry
+from ...exceptions import DatabaseError, DecryptionError, EntryError, EntryIntegrityError
+from ...models import MAX_CATEGORY_NAME, Category, Entry, RawEntry
 from ...utils.file_security import atomic_write, validate_file_path
 from ...utils.format import utc_now_iso
 from .importers import (
@@ -145,8 +145,16 @@ class ImportExportManager:
         logger.info('%s: 检测到 %d 个重复项，将覆盖', source_label, len(matched))
         return set(), matched
 
-    def _prepare_overwrite_map(self, overwrite: dict[int, Entry]) -> dict[int, Entry]:
-        """批量加载待覆盖条目的完整解密数据，使用单次 SQL 查询替代 N+1 模式。"""
+    def _prepare_overwrite_map(
+        self, overwrite: dict[int, Entry],
+    ) -> dict[int, tuple[RawEntry, Entry]]:
+        """批量加载待覆盖条目的密文 raw 与完整解密数据，单次 SQL 查询替代 N+1。
+
+        返回 ``{idx: (raw, decrypted_entry)}``：保留密文 raw 供 ``update_entry``
+        经 ``preloaded_raw`` 复用（跳过重复 ``get_entry``），解密 entry 的 password
+        经 ``preloaded_old_password`` 复用（跳过重复解密旧密码），消除覆盖路径的
+        双重读取与解密。
+        """
         ids_by_idx: dict[int, int] = {}
         for idx, summary in overwrite.items():
             if summary.id is not None:
@@ -155,13 +163,13 @@ class ImportExportManager:
             return {}
         raw_entries = self._entry_mgr.db.get_entries_by_ids(list(ids_by_idx.values()))
         entries_by_id = {e.id: e for e in raw_entries}
-        result: dict[int, Entry] = {}
+        result: dict[int, tuple[RawEntry, Entry]] = {}
         for idx, entry_id in ids_by_idx.items():
             raw = entries_by_id.get(entry_id)
             if raw is None:
                 raise EntryError(f'待覆盖条目 {entry_id} 已不存在')
             entry = self._entry_mgr.decrypt_entry(raw)
-            result[idx] = entry
+            result[idx] = (raw, entry)
         return result
 
     def _resolve_category(
@@ -180,7 +188,7 @@ class ImportExportManager:
         if key in categories:
             return categories[key].id
         category = Category(name=clean_name, icon_char='[IMPORT]', color='#0f766e')
-        category.id = self._entry_mgr.categories.add_category(category)
+        category.id = self._entry_mgr.categories.add_category(category, notify=False)
         categories[key] = category
         return category.id
 
@@ -197,7 +205,7 @@ class ImportExportManager:
         def write_cb(f: IO[str]) -> bool:
             header = {
                 'app': 'CipherBox',
-                'exported_at': self._now(),
+                'exported_at': utc_now_iso(),
                 'secrets_included': include_password,
             }
             f.write('{\n')
@@ -307,12 +315,16 @@ class ImportExportManager:
         )
         overwrite_entries = self._prepare_overwrite_map(overwrite_map) if overwrite_map else {}
 
-        count = 0
-        skipped = 0
         total = len(entries)
+        new_entries: list[Entry] = []
+        # (源序号, new_entry, preloaded_raw, preloaded_existing)：覆盖路径逐条更新，
+        # 预加载 raw 与已解密 existing 复用，避免 update_entry 重复 get_entry 与解密旧密码。
+        overwrite_plans: list[tuple[int, Entry, RawEntry, Entry]] = []
+        skipped = 0
+
         for i, entry in enumerate(entries):
             if cancel_check and cancel_check():
-                # 用户取消：中止后续导入，已写入条目随事务提交（部分导入）。
+                # 用户取消：中止分类，已分类条目随后批量/逐条写入（部分导入随事务提交）。
                 # 使 worker.cancel() 真正生效而非空转冻结 UI。
                 break
             if i in duplicate_indices:
@@ -324,7 +336,7 @@ class ImportExportManager:
 
             try:
                 if i in overwrite_entries:
-                    existing = overwrite_entries[i]
+                    raw, existing = overwrite_entries[i]
                     entry.id = existing.id
                     entry.created_at = existing.created_at
                     if overwrite_merger is not None:
@@ -332,29 +344,76 @@ class ImportExportManager:
                     # 导入覆盖保留原 password_changed_at，避免批量导入把"久未
                     # 修改"条目重置为"刚修改"从而绕过过期检测
                     entry.password_changed_at = existing.password_changed_at
-                    self._entry_mgr.update_entry(
-                        entry, preserve_password_changed_at=True, notify=False,
-                    )
+                    overwrite_plans.append((i, entry, raw, existing))
                 else:
-                    self._entry_mgr.add_entry(
-                        entry, notify=False, skip_validation=True,
-                    )
+                    new_entries.append(entry)
             except (ValueError, EntryIntegrityError) as exc:
-                # 字段长度违规或完整性错误，跳过该条目而非回滚整个导入。
+                # 分类解析或覆盖合并器抛出校验错误，跳过该条目而非回滚整个导入。
                 # 不打印 title：标题可能含敏感信息，落入日志会扩大泄漏面。
                 # 用条目序号（导入数据中的位置）替代，便于排查又不暴露内容。
                 skipped += 1
                 logger.warning(
-                    "跳过第 %d 个条目（crypto_id=%s）: %s",
+                    "%s: 跳过第 %d 个条目（crypto_id=%s）: %s",
+                    source_label,
                     i + 1,
                     entry.crypto_id or '(未生成)',
                     exc,
                 )
                 continue
-
-            count += 1
             if progress_callback:
                 progress_callback(i + 1, total)
+
+        # 批量写入新条目：加密列由 _build_encrypted_entry 产出合法 cb2: 密文，逐条
+        # _assert_entry_encrypted_fields 不会失败；用 executemany 替代逐条 INSERT，
+        # 缩短导入事务持 db_lock 的时间（期间 UI 侧栏/列表读请求被阻塞）。
+        count = 0
+        if new_entries:
+            try:
+                self._entry_mgr.add_entries(new_entries, notify=False)
+                count += len(new_entries)
+            except (ValueError, EntryIntegrityError, DatabaseError) as exc:
+                logger.warning(
+                    "%s: 批量写入 %d 个新条目失败: %s",
+                    source_label, len(new_entries), exc,
+                )
+                skipped += len(new_entries)
+
+        # 覆盖路径逐条更新：保留 per-entry 错误隔离。preloaded_raw/preloaded_old_password
+        # 复用 _prepare_overwrite_map 的预读结果，跳过重复 get_entry 与旧密码解密。
+        for idx, entry, raw, existing in overwrite_plans:
+            try:
+                self._entry_mgr.update_entry(
+                    entry,
+                    preserve_password_changed_at=True,
+                    notify=False,
+                    preloaded_raw=raw,
+                    preloaded_old_password=existing.password or '',
+                )
+            except DecryptionError as exc:
+                # 防御性：当前 preloaded_old_password 已使 update_entry 跳过旧密码解密，
+                # 理论上不抛 DecryptionError；保留此前置捕获以防未来 update_entry 新增
+                # 解密路径时，数据损坏被下方 ValueError 兜底静默吞掉（DecryptionError
+                # 双继承 ValueError，须置于其前）。ERROR 级显著记录，不打印敏感内容。
+                skipped += 1
+                logger.error(
+                    "%s: 第 %d 个条目覆盖失败——目标条目 crypto_id=%s 已有数据损坏: %s",
+                    source_label,
+                    idx + 1,
+                    entry.crypto_id or '(未生成)',
+                    exc,
+                )
+                continue
+            except (ValueError, EntryIntegrityError) as exc:
+                skipped += 1
+                logger.warning(
+                    "%s: 跳过覆盖第 %d 个条目（crypto_id=%s）: %s",
+                    source_label,
+                    idx + 1,
+                    entry.crypto_id or '(未生成)',
+                    exc,
+                )
+                continue
+            count += 1
 
         # 批量导入统一通知一次（add/update 已传 notify=False 避免逐条回调）
         self._entry_mgr.notify_batch_change()
@@ -533,7 +592,3 @@ class ImportExportManager:
             filepath, 'bitwarden_json', default_category_id,
             progress_callback, duplicate_action, cancel_check,
         )
-
-    @staticmethod
-    def _now() -> str:
-        return utc_now_iso()

@@ -427,17 +427,11 @@ def test_import_rolls_back_when_any_entry_fails():
                 {'title': 'Second', 'password': 'b'},
             ]
         }), encoding='utf-8')
-        original_add = manager.add_entry
-        calls = 0
 
-        def fail_second(entry, **kwargs):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                raise RuntimeError('simulated import failure')
-            return original_add(entry, **kwargs)
-
-        with patch.object(manager, 'add_entry', side_effect=fail_second):
+        # 导入经批量 add_entries 写入（executemany）。模拟写入失败：RuntimeError 不在
+        # 导入的容错捕获（ValueError/EntryIntegrityError/DatabaseError）内，异常冒泡
+        # 使整个导入事务回滚，不留部分写入的数据。
+        with patch.object(manager, 'add_entries', side_effect=RuntimeError('simulated import failure')):
             try:
                 importer.import_from_json(str(path))
             except RuntimeError:

@@ -14,7 +14,7 @@ import logging
 from threading import Event
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from ...database.types import ReEncryptedEntry, ReEncryptedHistory
+from ...database.types import EntryQuery, ReEncryptedEntry, ReEncryptedHistory
 from ...exceptions import DecryptionError, VaultError
 from ...models import Category, PasswordHistory, RawEntry
 from ...utils.memory import secure_zero_buffer
@@ -40,10 +40,7 @@ class ReEncryptionDB(Protocol):
     声明，避免测试 mock 必须实现全部 CRUD。DatabaseManager 与 MockDB 均满足。
     """
 
-    def get_entries(
-        self, *, include_deleted: bool = False, limit: int | None = None,
-        after_id: int | None = None,
-    ) -> list[RawEntry]: ...
+    def get_entries(self, query: EntryQuery) -> list[RawEntry]: ...
 
     def update_entries_batch(self, rows: list[ReEncryptedEntry]) -> None: ...
 
@@ -112,8 +109,10 @@ class ReEncryptionService:
                 if cancel_event is not None and cancel_event.is_set():
                     raise VaultError('重加密已被取消，事务回滚以保持数据一致')
                 batch = self._db.get_entries(
-                    include_deleted=True, limit=_RE_ENCRYPT_BATCH_SIZE,
-                    after_id=last_id,
+                    EntryQuery(
+                        include_deleted=True, limit=_RE_ENCRYPT_BATCH_SIZE,
+                        after_id=last_id,
+                    )
                 )
                 if not batch:
                     break

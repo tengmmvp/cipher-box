@@ -10,6 +10,8 @@
 
 import dataclasses
 
+import pytest
+
 from src.business.services.crypto_utils import SENSITIVE_ENCRYPTED_FIELDS
 from src.business.services.metadata_signer import SIGNATURE_ENCRYPTED_FIELD_ORDER
 from src.business.services.re_encryption import _ENCRYPTED_ENTRY_FIELDS
@@ -45,3 +47,38 @@ def test_signature_encrypted_field_order_is_subset():
         f'额外={signature - sensitive}'
     )
     assert signature == sensitive - {'title', 'url', 'tags'}
+
+
+def test_entries_table_columns_single_source():
+    """schema_manager 建表列与 entry_repository SQL 列须一致（除 autoincrement id）。
+
+    两份列名列表描述同一张 entries 表：``schema_manager._TABLE_COLUMNS`` 用于
+    CREATE TABLE / schema 校验，``entry_repository._ENTRY_COLUMNS`` 派生
+    INSERT/UPDATE/SELECT SQL 与加密字段断言。新增列须两处同步——只改一处会在某一
+    运行路径（新建库 INSERT 或旧库 SELECT）才暴露 ``sqlite3.OperationalError``，
+    模块加载期不报错。
+    """
+    from src.database.entry_repository import _ENTRY_COLUMNS
+    from src.database.schema_manager import _TABLE_COLUMNS
+
+    schema_cols: set[str] = set(_TABLE_COLUMNS['entries'])
+    repo_cols: set[str] = set(_ENTRY_COLUMNS)
+    # id 是 autoincrement PK，不在 INSERT 列(_ENTRY_COLUMNS)，但在建表列。
+    assert schema_cols - {'id'} == repo_cols, (
+        'entries 表列名在 schema_manager 与 entry_repository 间漂移：'
+        f'仅建表列={schema_cols - repo_cols - {"id"}}，'
+        f'仅 SQL 列={repo_cols - schema_cols}'
+    )
+
+
+def test_entry_query_rejects_conflicting_deleted_flags():
+    """EntryQuery 拒绝 deleted_only 与 include_deleted 同时为 True（互斥校验）。"""
+    from src.database.types import EntryQuery
+
+    # 两者互斥：deleted_only 仅回收站 vs include_deleted 含回收站
+    with pytest.raises(ValueError):
+        EntryQuery(deleted_only=True, include_deleted=True)
+    # 单独使用合法
+    EntryQuery(deleted_only=True)
+    EntryQuery(include_deleted=True)
+    EntryQuery()

@@ -22,6 +22,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from ..exceptions import DecryptionError
+from ..models import CIPHERTEXT_BYTES_PREFIX, CIPHERTEXT_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,10 @@ class EncryptionEngine:
     TAG_SIZE = 16    # GCM 认证标签长度，128 位
     KEY_SIZE = 32    # AES-256 密钥长度
     FORMAT_ID = 'aes-256-gcm-aad'
-    TEXT_PREFIX = 'cb2:'
-    BYTES_PREFIX = b'CB2'
+    # 密文格式前缀取自共享层单一事实源（models.CIPHERTEXT_PREFIX），使数据层密文自检
+    # 与日志脱敏不经 crypto 层即可引用同一前缀；保留为类属性以兼容既有引用。
+    TEXT_PREFIX = CIPHERTEXT_PREFIX
+    BYTES_PREFIX = CIPHERTEXT_BYTES_PREFIX
 
     @classmethod
     def _get_cipher(cls, key: bytes | bytearray) -> AESGCM:
@@ -134,22 +137,32 @@ class EncryptionEngine:
             解密后的明文字符串
 
         Raises:
-            DecryptionError: 密文为空、格式不符或认证失败时抛出。DecryptionError
-                双继承 ValueError，旧的 ``except ValueError`` 兜底仍能捕获。
+            DecryptionError: 密文为空、格式不符、长度不足、base64 非法或 GCM 认证
+                失败时抛出，各类原因携带细分消息。注意 DecryptionError 双继承
+                ValueError——调用方若同时兜底 ValueError，须先捕获 DecryptionError。
         """
         if not encrypted_b64:
             raise DecryptionError('收到空密文')
+        # 格式 / 长度校验置于 try 之外（与 decrypt_bytes 对称）：这些是客户端逻辑
+        # 错误，应保留细分诊断消息。注意 DecryptionError 双继承 ValueError，若放进
+        # 下方 try，会被自身 ``except (..., ValueError, ...)`` 捕获并改写为通用文案，
+        # 丢失「格式不符 / 长度无效」的原始区分。
+        if not encrypted_b64.startswith(cls.TEXT_PREFIX):
+            raise DecryptionError('不支持的密文格式')
+        encoded = encrypted_b64[len(cls.TEXT_PREFIX):]
         try:
-            if not encrypted_b64.startswith(cls.TEXT_PREFIX):
-                raise DecryptionError('不支持的密文格式')
-            encoded = encrypted_b64[len(cls.TEXT_PREFIX):]
             raw = base64.b64decode(encoded, validate=True)
-            if len(raw) < cls.NONCE_SIZE + cls.TAG_SIZE:
-                raise DecryptionError('密文长度无效')
-            nonce = raw[:cls.NONCE_SIZE]
-            ciphertext = raw[cls.NONCE_SIZE:]
-            aesgcm = cls._get_cipher(key)
-            aad = cls._aad_bytes(associated_data)
+        except ValueError as exc:
+            # binascii.Error（非法 base64 字符 / 长度）IS-A ValueError
+            logger.warning("密文 base64 解码失败: %s", type(exc).__name__)
+            raise DecryptionError('密文解码失败') from exc
+        if len(raw) < cls.NONCE_SIZE + cls.TAG_SIZE:
+            raise DecryptionError('密文长度无效')
+        nonce = raw[:cls.NONCE_SIZE]
+        ciphertext = raw[cls.NONCE_SIZE:]
+        aesgcm = cls._get_cipher(key)
+        aad = cls._aad_bytes(associated_data)
+        try:
             plaintext = aesgcm.decrypt(nonce, ciphertext, aad)
             return plaintext.decode('utf-8')
         except (InvalidTag, ValueError, AttributeError, TypeError) as exc:

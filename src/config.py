@@ -103,6 +103,24 @@ _INT_RANGES = {k: (lo, hi) for k, (lo, hi, _) in _INT_SPECS.items()}
 _SECURITY_MINIMUMS: dict[str, int] = {
     k: sm for k, (_, _, sm) in _INT_SPECS.items() if sm is not None
 }
+
+
+def get_ui_int_range(key: str) -> tuple[int, int]:
+    """返回 UI Spinner 的可选范围 (min, max)，派生自 _INT_SPECS 单一事实源。
+
+    下限取 config 下限与运行时安全下限的较大者——避免 UI 提供 ``get_safe`` 读取时会
+    钳制的值（如 ``clipboard_clear_seconds`` 文件下限 0，但 ``get_safe`` 强制 ≥10，故
+    UI 下限为 10，防止界面选 0 而实际生效 10 的脱节）。``auto_lock_minutes`` 例外：
+    0 是合法的「禁用」选项（``get_safe`` 在配置完整性通过时豁免 0），故 UI 下限仍为 0。
+    供 settings_dialog 构建 SpinBox，消除 UI 与 config 范围的双源漂移。
+    """
+    config_min, config_max = _INT_RANGES[key]
+    security_min = _SECURITY_MINIMUMS.get(key)
+    if security_min is not None and key != 'auto_lock_minutes':
+        return max(config_min, security_min), config_max
+    return config_min, config_max
+
+
 # 完整性校验失败（签名缺失/不符）时必须回退默认值的键集合：除安全下限相关
 # 整型键外，还包含 backup_directory——完整性失败时其值不可信（可能被定向篡改
 # 以诱导明文备份落入攻击者可读目录），与安全键同等回退默认。
@@ -324,11 +342,13 @@ class ConfigManager:
         不受安全下限约束，直接返回 0。这优先尊重用户选择而非强制安全策略。
         负值等非法篡改值仍会被修正为安全下限。
 
-        威胁模型边界：完整性 HMAC 密钥（config.key）与配置文件同处数据目录，具备
-        该目录读写权限的本地攻击者可重算签名使 _integrity_warning 保持 False，
-        继而放行 auto_lock_minutes=0。此为本地威胁模型的固有限制——外层防御依赖
-        secure_file 将配置文件收紧到当前用户独占。彻底修复（如独立、签名强制保护
-        的「禁用自动锁定」开关）属 feature 级改动，不在本层处理。
+        威胁模型边界：config.key 经 Windows DPAPI（当前用户凭据）封装（见
+        _load_integrity_key），仅防「窃取文件后离线重算签名」，不防「能以当前
+        用户身份运行代码的攻击者」——其可直接调 CryptProtectData 重算签名使
+        _integrity_warning 保持 False，继而放行 auto_lock_minutes=0。此为本地
+        威胁模型的固有限制；外层防御依赖 secure_file 将配置文件收紧到当前用户
+        独占。彻底修复（如独立、签名强制保护的「禁用自动锁定」开关）属 feature
+        级改动，不在本层处理。
         """
         value = self.get(key, default)
         if isinstance(value, int) and key in _SECURITY_MINIMUMS:

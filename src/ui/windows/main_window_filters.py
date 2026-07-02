@@ -185,15 +185,19 @@ class _MainWindowFiltersMixin(QMainWindow):
         self._category_list.blockSignals(False)
         self._cached_categories = categories
 
-    def _refresh_tag_filter(self) -> None:
+    def _refresh_tag_filter(self, entry_count: int | None = None) -> None:
         # 标签下拉的 get_all_tags() 在缓存失效（改密/锁定/标签变更）时需全量解密
         # 全部条目的 tags 字段，大库下同步会卡主线程。仅在「大库 且 缓存失效」时
         # 移入后台线程；缓存命中（get_all_tags 仅锁内取值，微秒级）或小库时直接
         # 同步重建下拉，省去无谓的 QThread 创建与跨线程信号开销。
-        if (
-            self._entry_mgr.get_entry_count(include_deleted=True) >= ASYNC_SEARCH_THRESHOLD
-            and not self._sidebar_ctrl.tags_cache_valid
-        ):
+        # entry_count 由调用方（_do_refresh_after_entry_change）共享以避免重复 COUNT(*)，
+        # 为 None 时（其他调用方）自取。
+        count = (
+            entry_count
+            if entry_count is not None
+            else self._entry_mgr.get_entry_count(include_deleted=True)
+        )
+        if count >= ASYNC_SEARCH_THRESHOLD and not self._sidebar_ctrl.tags_cache_valid:
             self._start_async_tag_refresh()
             return
         self._apply_tag_filter(self._sidebar_ctrl.get_all_tags())
@@ -292,7 +296,7 @@ class _MainWindowFiltersMixin(QMainWindow):
                 return category.name
         return ''
 
-    def _refresh_entries(self) -> None:
+    def _refresh_entries(self, entry_count: int | None = None) -> None:
         # 重建列表前取消待执行的选中防抖，避免对已失效的 pending_selection
         # 操作，与 prepare_for_lock 一致
         self._select_timer.stop()
@@ -324,7 +328,8 @@ class _MainWindowFiltersMixin(QMainWindow):
         )
         if (
             needs_async
-            and self._entry_mgr.get_entry_count(include_deleted=True)
+            and (entry_count if entry_count is not None
+                 else self._entry_mgr.get_entry_count(include_deleted=True))
             >= ASYNC_SEARCH_THRESHOLD
         ):
             self._start_async_entry_refresh(
@@ -513,7 +518,7 @@ class _MainWindowFiltersMixin(QMainWindow):
         # 快速路径：缓存命中时直接更新 UI
         cached = self._security.get_cached_report(days)
         if cached is not None:
-            self._apply_status_summary(cast('SecurityReport', cached))
+            self._apply_status_summary(cached)
             return
         # 缓存未命中：显示占位文本，异步执行分析
         self._status_bar.showMessage('安全分析中...')
@@ -609,9 +614,11 @@ class _MainWindowFiltersMixin(QMainWindow):
         self._cached_total_entries = -1
         # 失效滚动位置恢复标记：条目增删后列表已变，不应恢复旧滚动位置
         self._last_refresh_filter = None
+        # 取一次含删除的计数，供 tag/entries 的异步阈值判断共享，避免两次 COUNT(*)。
+        entry_count = self._entry_mgr.get_entry_count(include_deleted=True)
         self._refresh_categories()
-        self._refresh_tag_filter()
-        self._refresh_entries()
+        self._refresh_tag_filter(entry_count)
+        self._refresh_entries(entry_count)
         self._status_timer.start()
 
     def _refresh_entries_only(self) -> None:

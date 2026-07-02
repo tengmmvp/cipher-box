@@ -9,7 +9,7 @@
 
 from src.business.services import key_manager as key_manager_module
 from src.business.services.key_manager import KeyManager
-from src.database.types import VerifyMode
+from src.database.types import EntryQuery, VerifyMode
 from src.exceptions import VaultIntegrityError
 from src.models import Entry, RawEntry
 
@@ -101,10 +101,10 @@ def test_get_entries_verify_modes(vault, entry_mgr):
     original_verifier = vault.db._entry_verifier
     vault.db._entry_verifier = bad_verifier
     try:
-        lenient = vault.db.get_entries(verify=VerifyMode.LENIENT)
+        lenient = vault.db.get_entries(EntryQuery(verify=VerifyMode.LENIENT))
         assert lenient and lenient[0].integrity_error is True
 
-        skipped = vault.db.get_entries(verify=VerifyMode.SKIP)
+        skipped = vault.db.get_entries(EntryQuery(verify=VerifyMode.SKIP))
         assert skipped and skipped[0].integrity_error is False
     finally:
         vault.db._entry_verifier = original_verifier

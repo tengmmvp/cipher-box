@@ -8,6 +8,7 @@ EntryCacheManager 此前仅被集成测试顺带执行（覆盖率靠路径覆�
 import pytest
 
 from src.business.managers import entry_cache as entry_cache_module
+from src.database.types import EntryQuery
 from src.models import Entry
 
 
@@ -20,7 +21,7 @@ def cache(entry_mgr):
 class TestSearchMetadataCache:
     def test_decrypts_and_caches_summary(self, entry_mgr, cache):
         entry_mgr.add_entry(Entry(title='GitHub', username='alice', password='p'))
-        raw = entry_mgr.db.get_entries()[0]
+        raw = entry_mgr.db.get_entries(EntryQuery())[0]
         title, username, url, tags = cache.cached_search_metadata(raw)
         assert title == 'GitHub'
         assert username == 'alice'
@@ -29,7 +30,7 @@ class TestSearchMetadataCache:
 
     def test_single_entry_invalidation(self, entry_mgr, cache):
         entry_mgr.add_entry(Entry(title='A', username='u', password='p'))
-        raw = entry_mgr.db.get_entries()[0]
+        raw = entry_mgr.db.get_entries(EntryQuery())[0]
         cache.cached_search_metadata(raw)
         assert raw.crypto_id in cache._search_metadata_cache
         # 单条 crypto_id 失效：仅 pop 该条
@@ -39,7 +40,7 @@ class TestSearchMetadataCache:
     def test_bulk_change_clears_all_summaries(self, entry_mgr, cache):
         entry_mgr.add_entry(Entry(title='A', username='u', password='p'))
         entry_mgr.add_entry(Entry(title='B', username='u', password='p'))
-        for raw in entry_mgr.db.get_entries():
+        for raw in entry_mgr.db.get_entries(EntryQuery()):
             cache.cached_search_metadata(raw)
         assert len(cache._search_metadata_cache) == 2
         # crypto_id=None + clear_summaries=True：全清
@@ -48,7 +49,7 @@ class TestSearchMetadataCache:
 
     def test_category_change_keeps_summaries(self, entry_mgr, cache):
         entry_mgr.add_entry(Entry(title='A', username='u', password='p'))
-        raw = entry_mgr.db.get_entries()[0]
+        raw = entry_mgr.db.get_entries(EntryQuery())[0]
         cache.cached_search_metadata(raw)
         # 分类 CRUD：保留摘要缓存
         cache.apply_change(crypto_id=None, clear_summaries=False, category_changed=True)
@@ -89,7 +90,7 @@ class TestTagsCacheValid:
 class TestInvalidateAll:
     def test_clears_all_caches(self, entry_mgr, cache):
         entry_mgr.add_entry(Entry(title='A', username='u', password='p'))
-        raw = entry_mgr.db.get_entries()[0]
+        raw = entry_mgr.db.get_entries(EntryQuery())[0]
         cache.cached_search_metadata(raw)
         cache.store_totp(1, 'S')
         cache.invalidate_all()
@@ -103,7 +104,7 @@ class TestLruEviction:
         monkeypatch.setattr(entry_cache_module, '_MAX_SEARCH_METADATA_CACHE_SIZE', 2)
         for i in range(3):
             entry_mgr.add_entry(Entry(title=f'T{i}', username='u', password='p'))
-        for raw in entry_mgr.db.get_entries():
+        for raw in entry_mgr.db.get_entries(EntryQuery()):
             cache.cached_search_metadata(raw)
         # 上限 2，加入第 3 条后应驱逐最旧的一条
         assert len(cache._search_metadata_cache) <= 2
@@ -121,7 +122,7 @@ class TestEntryManagerFineGrainedInvalidation:
         """软删除一条不应清空其他条目的摘要缓存（仅切换 is_deleted）。"""
         entry_mgr.add_entry(Entry(title='A', username='u', password='p'))
         entry_mgr.add_entry(Entry(title='B', username='u', password='p'))
-        raws = entry_mgr.db.get_entries()
+        raws = entry_mgr.db.get_entries(EntryQuery())
         for raw in raws:
             cache.cached_search_metadata(raw)
         assert len(cache._search_metadata_cache) == 2
@@ -133,7 +134,7 @@ class TestEntryManagerFineGrainedInvalidation:
         """恢复一条不应清空其他条目的摘要缓存。"""
         entry_mgr.add_entry(Entry(title='A', username='u', password='p'))
         entry_mgr.add_entry(Entry(title='B', username='u', password='p'))
-        raws = entry_mgr.db.get_entries()
+        raws = entry_mgr.db.get_entries(EntryQuery())
         for raw in raws:
             cache.cached_search_metadata(raw)
         entry_mgr.delete_entry(raws[0].id)
@@ -144,7 +145,7 @@ class TestEntryManagerFineGrainedInvalidation:
     def test_add_preserves_existing_summaries(self, entry_mgr, cache):
         """新增条目不应清空既有条目的摘要缓存（新条目摘要自然填充）。"""
         entry_mgr.add_entry(Entry(title='A', username='u', password='p'))
-        raw_a = entry_mgr.db.get_entries()[0]
+        raw_a = entry_mgr.db.get_entries(EntryQuery())[0]
         cache.cached_search_metadata(raw_a)
         assert len(cache._search_metadata_cache) == 1
         entry_mgr.add_entry(Entry(title='B', username='u', password='p'))

@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 from ...crypto.encryption import EncryptionEngine
 from ...crypto.master_key import DEFAULT_KDF_PARAMS, KEY_SIZE, MasterKeyManager
+from ...database.types import EntryQuery
 from ...exceptions import (
     BackupError,
     DecryptionError,
@@ -49,6 +50,7 @@ from ..services.backup_header_codec import (
     MAX_BACKUP_FILE_SIZE,
     MAX_BACKUP_PAYLOAD_SIZE,
     BackupFlag,
+    derive_backup_key,
     enforce_kdf_floor,
     header_aad,
     read_backup_header,
@@ -160,14 +162,14 @@ for _actual, _expected, _name in _PORTABLE_KEY_ASSERTS:
         )
 
 
-def _user_friendly_error(exc: Exception) -> str:
+def _friendly_error(exc: Exception, default: str) -> str:
     """将异常映射为用户友好的错误消息（委托统一翻译层 :func:`to_user_message`）。
 
-    保持备份/恢复场景的兜底文案「操作失败，请检查文件和磁盘」。``DecryptionError``
-    等 ``CipherBoxError`` 经统一层归一为固定文案，不再经 ``ValueError`` 分支透传
-    ``str(exc)`` 的内部 ``crypto_id`` 等技术细节，使备份/恢复入口与 UI 层文案一致。
+    与 vault_lifecycle._friendly_error 同名同构（模块级私有，跨模块一致命名）：
+    场景化 ``default`` 用于未归类异常兜底。``DecryptionError`` 等 ``CipherBoxError``
+    经统一层归一为固定文案，不再透传 ``str(exc)`` 的内部 ``crypto_id`` 等技术细节。
     """
-    return to_user_message(exc, default='操作失败，请检查文件和磁盘。')
+    return to_user_message(exc, default=default)
 
 
 class _BackupCancelled(Exception):
@@ -266,7 +268,7 @@ class BackupRestoreManager:
         :class:`_BackupCancelled`（编排层捕获）；完整性失败抛 :class:`BackupError`；
         估算超限抛 :class:`PayloadTooLargeError`。
         """
-        raw_entries = self._vault.db.get_entries(include_deleted=True)
+        raw_entries = self._vault.db.get_entries(EntryQuery(include_deleted=True))
         if len(raw_entries) > MAX_BACKUP_ENTRIES:
             raise PayloadTooLargeError('备份条目数量超出限制')
         entries: list[dict[str, Any]] = []
@@ -376,7 +378,7 @@ class BackupRestoreManager:
                 )
         except Exception as exc:
             logger.error("备份失败: %s", exc, exc_info=True)
-            return False, _user_friendly_error(exc)
+            return False, _friendly_error(exc, '操作失败，请检查文件和磁盘。')
 
     def _create_backup_locked(
         self,
@@ -398,9 +400,7 @@ class BackupRestoreManager:
         backup_key: bytes | bytearray
         if backup_password:
             flags = BackupFlag.PASSWORD
-            backup_key = MasterKeyManager.derive_backup_key(
-                backup_password, salt, DEFAULT_KDF_PARAMS,
-            )
+            backup_key = derive_backup_key(backup_password, salt)
         elif use_snapshot_key:
             flags = BackupFlag.SNAPSHOT
             backup_key = self._vault.snapshot_key
@@ -444,13 +444,13 @@ class BackupRestoreManager:
                 return result
         except Exception as exc:
             # 所有异常（validate_file_path 的 ValueError、BackupError、OSError 等）统一
-            # 经 _user_friendly_error 翻译为用户友好消息。原先独立的 except ValueError
-            # 分支注释声称透传 _restore_current 的消息，但 _restore_current 只 return 不
-            # raise，实际仅捕获 validate_file_path 的 ValueError——该职责已由
-            # _user_friendly_error 的 ValueError 分支承接，消除「未来 _restore_current
-            # 误抛 ValueError 会绕过翻译直暴露内部消息」的风险。
+            # 经 _friendly_error（委托 to_user_message）翻译为用户友好消息。原先独立的
+            # except ValueError 分支注释声称透传 _restore_current 的消息，但 _restore_current
+            # 只 return 不 raise，实际仅捕获 validate_file_path 的 ValueError——该职责已由
+            # 统一翻译层承接，消除「未来 _restore_current 误抛 ValueError 绕过翻译直暴露
+            # 内部消息」的风险。
             logger.error("恢复失败: %s", exc, exc_info=True)
-            return False, _user_friendly_error(exc)
+            return False, _friendly_error(exc, '操作失败，请检查文件和磁盘。')
 
     def _restore_current(self, file: IO[bytes], backup_password: str | None) -> tuple[bool, str]:
         flags, salt, kdf_params = read_backup_header(file)
@@ -494,7 +494,7 @@ class BackupRestoreManager:
                 except (OSError, DecryptionError, json.JSONDecodeError):
                     # 缩窄为预期的「读文件 / GCM 解密 / JSON 解析」失败，统一提示密码错误
                     # 或损坏；编程错误（KeyError/TypeError/AttributeError 等）不在此列，
-                    # 冒泡由上层 restore_backup 的 except 经 _user_friendly_error 兜底，避免
+                    # 冒泡由上层 restore_backup 的 except 经 _friendly_error 兜底，避免
                     # 把真实 bug 静默归为「备份损坏」而掩盖根因。
                     logger.debug("备份读取或解密失败", exc_info=True)
                     return False, '备份密码错误或文件已损坏'
@@ -532,28 +532,33 @@ class BackupRestoreManager:
             # snapshot_key property，故无需持锁，减少锁持有时间。
             failed_purges = self._vault.purge_snapshot_backups()
             if failed_purges:
-                # 区分明文恢复点（pre_restore_*，含恢复前全部条目明文）与普通快照：
-                # 恢复点未能删除是更严重的明文泄漏面，需显著警告并指引重启清理，
-                # 而非笼统归并到「旧快照」让用户在「恢复完成」措辞下忽视风险。
-                restore_point_failed = any(
-                    p.name.startswith('pre_restore_') for p in failed_purges
-                )
-                if restore_point_failed:
-                    return True, (
-                        f'恢复完成，但 {len(failed_purges)} 个含恢复前明文的快照'
-                        '未能删除（可能被占用）。为避免明文泄漏，请关闭可能占用'
-                        '该文件的程序后重启应用以自动清理。'
-                    )
-                return True, (
-                    f'恢复完成，但 {len(failed_purges)} 个旧快照未能删除'
-                    '（可能被占用），建议在备份对话框手动清理以收缩泄漏面。'
-                )
+                return True, self._format_purge_warning(failed_purges)
             return True, ''
         finally:
             # 确保 PASSWORD 派生的 backup_key 在所有退出路径（含密钥派生失败、文件
             # 过大、解密异常）都清零；SNAPSHOT 路径借用 snapshot_key 不清零。
             # backup_key 已在方法级预声明，派生异常时为 None，zero_backup_key_if_owned 对 None 跳过。
             zero_backup_key_if_owned(flags, backup_key)
+
+    def _format_purge_warning(self, failed_purges: list[Path]) -> str:
+        """格式化 purge 失败警告：区分含明文的恢复点（严重泄漏面）与普通旧快照。
+
+        恢复点（``pre_restore_*``，含恢复前全部条目明文）未能删除是更严重的明文
+        泄漏面，需显著警告并指引重启清理；普通旧快照笼统提示手动清理即可。
+        """
+        restore_point_failed = any(
+            p.name.startswith('pre_restore_') for p in failed_purges
+        )
+        if restore_point_failed:
+            return (
+                f'恢复完成，但 {len(failed_purges)} 个含恢复前明文的快照'
+                '未能删除（可能被占用）。为避免明文泄漏，请关闭可能占用'
+                '该文件的程序后重启应用以自动清理。'
+            )
+        return (
+            f'恢复完成，但 {len(failed_purges)} 个旧快照未能删除'
+            '（可能被占用），建议在备份对话框手动清理以收缩泄漏面。'
+        )
 
     def _create_restore_point(self) -> Path | None:
         """创建恢复前安全快照，返回快照文件路径用于失败时清理，创建失败返回 None。"""

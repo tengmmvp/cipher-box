@@ -15,7 +15,7 @@ from ..exceptions import DatabaseError, VaultIntegrityError, VaultLockedError
 from ..models import MAX_PASSWORD_HISTORY, PasswordHistory, RawEntry
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation, _db_write
-from .types import ConnectionProvider, ReEncryptedEntry, ReEncryptedHistory, VerifyMode
+from .types import ConnectionProvider, EntryQuery, ReEncryptedEntry, ReEncryptedHistory, VerifyMode
 
 logger = logging.getLogger(__name__)
 
@@ -263,61 +263,50 @@ class EntryRepository:
         """
         return _entry_column_values(entry, _UPDATE_ENTRY_COLUMNS)
 
-    def get_entries(
-        self,
-        deleted_only: bool = False,
-        include_deleted: bool = False,
-        category_id: int | None = None,
-        favorite_only: bool = False,
-        limit: int | None = None,
-        after_id: int | None = None,
-        sort_by_updated: bool = False,
-        verify: VerifyMode = VerifyMode.LENIENT,
-    ) -> list[RawEntry]:
-        """获取密码条目列表
+    def get_entries(self, query: EntryQuery) -> list[RawEntry]:
+        """获取密码条目列表，过滤/排序/limit/verify 经 ``EntryQuery`` 单一传入。
 
-        sort_by_updated 为 True 时仅按 updated_at DESC 排序（不带 is_favorite），
-        供「近期更新」视图下推 LIMIT 到 SQL，避免全量内存排序再截断。
+        ``query.sort_by_updated`` 为 True 时仅按 updated_at DESC 排序（不带
+        is_favorite），供「近期更新」视图下推 LIMIT 到 SQL，避免全量内存排序再截断。
 
-        Args:
-            verify: 完整性校验模式，默认 LENIENT（逐行 HMAC 验签并标记异常条目，
-                不抛异常）。列表/搜索/标签等只读路径沿用默认 LENIENT 以检测元数据
-                篡改；SKIP 仅用于签名计算前的原始读取（_select_entry_for_sign 等，
-                不能先验签再算签名）。单条详情用 STRICT 在校验失败时抛异常。
+        ``query.verify``：完整性校验模式，默认 LENIENT（逐行 HMAC 验签并标记异常
+        条目，不抛异常）。列表/搜索/标签等只读路径沿用默认 LENIENT 以检测元数据
+        篡改；SKIP 仅用于签名计算前的原始读取（_select_entry_for_sign 等，不能先
+        验签再算签名）。单条详情用 STRICT 在校验失败时抛异常。
         """
-        query = _SELECT_ENTRY_WITH_CATEGORY_SQL + " WHERE 1=1"
+        sql = _SELECT_ENTRY_WITH_CATEGORY_SQL + " WHERE 1=1"
         params: list = []
 
-        if deleted_only:
-            query += " AND e.is_deleted = 1"
-        elif not include_deleted:
-            query += " AND e.is_deleted = 0"
+        if query.deleted_only:
+            sql += " AND e.is_deleted = 1"
+        elif not query.include_deleted:
+            sql += " AND e.is_deleted = 0"
 
-        if category_id is not None:
-            query += " AND e.category_id = ?"
-            params.append(category_id)
+        if query.category_id is not None:
+            sql += " AND e.category_id = ?"
+            params.append(query.category_id)
 
-        if favorite_only:
-            query += " AND e.is_favorite = 1"
+        if query.favorite_only:
+            sql += " AND e.is_favorite = 1"
 
-        if after_id is not None:
-            query += " AND e.id > ?"
-            params.append(after_id)
-            query += " ORDER BY e.id ASC"
-        elif sort_by_updated:
-            query += " ORDER BY e.updated_at DESC"
+        if query.after_id is not None:
+            sql += " AND e.id > ?"
+            params.append(query.after_id)
+            sql += " ORDER BY e.id ASC"
+        elif query.sort_by_updated:
+            sql += " ORDER BY e.updated_at DESC"
         else:
-            query += " ORDER BY e.is_favorite DESC, e.updated_at DESC"
+            sql += " ORDER BY e.is_favorite DESC, e.updated_at DESC"
 
-        if limit is not None:
-            query += " LIMIT ?"
-            params.append(limit)
+        if query.limit is not None:
+            sql += " LIMIT ?"
+            params.append(query.limit)
 
         with self._lock:
-            rows = self._conn.execute(query, params).fetchall()
+            rows = self._conn.execute(sql, params).fetchall()
         # fetchall 后 sqlite3.Row 已脱离游标；完整性验签与 dataclass 构建不再
         # 持有数据库锁，避免大库后台搜索长期阻塞其他短查询。
-        return [self._row_to_entry(r, verify=verify) for r in rows]
+        return [self._row_to_entry(r, verify=query.verify) for r in rows]
 
     @_db_operation
     def get_entry(self, entry_id: int) -> RawEntry | None:

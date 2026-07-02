@@ -99,6 +99,10 @@ class MainWindow(_MainWindowEntriesMixin, _MainWindowFiltersMixin, _MainWindowMe
         self._current_tag = ''
         self._tray: TrayIcon | None = None
         self._locked_ui = False
+        # 首次解锁标志：MainWindow 构造紧跟 app.py 的 refresh_after_unlock（show 前），
+        # 而构造期 __init__/_setup_ui 已刷新 categories/tags/entries，故首次解锁跳过
+        # 重复刷新，避免构造期 worker 与本次 worker 双重全量解密（W1+W2）。
+        self._first_unlock = True
 
         self._status_timer = QTimer(self)
         self._status_timer.setSingleShot(True)
@@ -658,9 +662,14 @@ class MainWindow(_MainWindowEntriesMixin, _MainWindowFiltersMixin, _MainWindowMe
     def refresh_after_unlock(self) -> None:
         """解锁后刷新界面。"""
         self._locked_ui = False
-        self._refresh_categories()
-        self._refresh_tag_filter()
-        self._refresh_entries()
+        if self._first_unlock:
+            # 首次解锁紧跟构造：__init__/_setup_ui 已刷新 categories/tags/entries，
+            # 跳过重复全量加载（否则构造期 worker 与本处 worker 双重解密）。
+            self._first_unlock = False
+        else:
+            self._refresh_categories()
+            self._refresh_tag_filter()
+            self._refresh_entries()
         self._detail_panel.show_empty()
         self._auto_lock.reset_timer()
         # 解锁后刷新状态栏安全摘要，避免停留在锁定前的陈旧或空白状态

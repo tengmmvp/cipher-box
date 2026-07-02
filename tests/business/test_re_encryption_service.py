@@ -23,6 +23,7 @@ from src.business.services.re_encryption import (
     ReEncryptionService,
 )
 from src.crypto.encryption import EncryptionEngine
+from src.database.types import EntryQuery
 from src.exceptions import DecryptionError
 from src.models import Category, PasswordHistory, RawEntry
 
@@ -102,14 +103,11 @@ class MockDB:
 
     # ReEncryptionDB Protocol 实现
 
-    def get_entries(
-        self, *, include_deleted: bool = False, limit: int | None = None,
-        after_id: int | None = None,
-    ) -> list[RawEntry]:
+    def get_entries(self, query: EntryQuery) -> list[RawEntry]:
         """按 id 升序分页返回条目。"""
-        after = after_id or 0
+        after = query.after_id or 0
         filtered = [e for e in self._entries if cast(int, e.id) > after]
-        return filtered[:limit] if limit is not None else filtered
+        return filtered[:query.limit] if query.limit is not None else filtered
 
     def update_entries_batch(self, rows: list[ReEncryptedEntry]) -> None:
         """记录批量更新行。"""

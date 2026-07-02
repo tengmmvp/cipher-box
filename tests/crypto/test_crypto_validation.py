@@ -67,9 +67,13 @@ class TestEncryptionValidation:
         assert "InvalidTag" not in error_msg
 
     def test_decrypt_rejects_non_string_ciphertext(self):
-        """密文非字符串时拒绝解密。"""
-        # 非 str 进入 decrypt 后触发 AttributeError，被 except 捕获并包装为 ValueError。
-        with pytest.raises(ValueError):
+        """密文非字符串时拒绝解密。
+
+        非 str 是调用方类型 bug（真实路径密文恒为 str），与 decrypt_bytes 对非 bytes
+        抛 TypeError 一致——类型错误不包装为 DecryptionError，直接抛 AttributeError。
+        decrypt 的失败闭合仅覆盖「字符串密文的解密失败」（格式 / 长度 / base64 / GCM）。
+        """
+        with pytest.raises(AttributeError):
             EncryptionEngine.decrypt(123, b'\x00' * 32, "aad")  # type: ignore[arg-type]
 
     def test_decrypt_rejects_wrong_prefix(self):

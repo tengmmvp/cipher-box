@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from src.database.db_manager import DatabaseManager
+from src.database.types import EntryQuery
 from src.models import Category, CustomField, Entry, RawEntry
 
 
@@ -121,11 +122,11 @@ def test_soft_delete_restore(db):
     assert deleted.is_deleted
 
     # 正常列表不含已删除条目。
-    active = db.get_entries(include_deleted=False)
+    active = db.get_entries(EntryQuery(include_deleted=False))
     assert not any(e.id == entry_id for e in active)
 
     # 回收站包含已删除条目。
-    trashed = db.get_entries(include_deleted=True)
+    trashed = db.get_entries(EntryQuery(include_deleted=True))
     assert any(e.id == entry_id for e in trashed)
 
     # 恢复。
@@ -149,11 +150,11 @@ def test_search(db):
     db.add_entry(_make_entry(title='Gitee 账号'))
     db.add_entry(_make_entry(title='Google 邮箱'))
 
-    results = db.get_entries()
+    results = db.get_entries(EntryQuery())
     assert len(results) == 3
 
     # 实际的内存搜索由 EntryManager.get_entries 负责。
-    all_entries = db.get_entries()
+    all_entries = db.get_entries(EntryQuery())
     assert len(all_entries) == 3
 
 
@@ -182,20 +183,48 @@ def test_get_entries_with_limit(db):
         db.add_entry(_make_entry(title=f'条目{i}'))
 
     # 不传 limit 时返回全部。
-    all_entries = db.get_entries()
+    all_entries = db.get_entries(EntryQuery())
     assert len(all_entries) == 10
 
     # limit=3 只返回 3 条。
-    limited = db.get_entries(limit=3)
+    limited = db.get_entries(EntryQuery(limit=3))
     assert len(limited) == 3
 
     # limit=0 对应 SQL LIMIT 0，返回空列表。
-    empty = db.get_entries(limit=0)
+    empty = db.get_entries(EntryQuery(limit=0))
     assert len(empty) == 0
 
     # limit 大于总数时返回全部。
-    over = db.get_entries(limit=100)
+    over = db.get_entries(EntryQuery(limit=100))
     assert len(over) == 10
+
+
+def test_get_entries_filter_branches(db):
+    """get_entries 的 deleted_only/category_id/favorite_only/sort_by_updated 分支。
+
+    各分支经 EntryQuery 字段触发，覆盖 SQL 过滤/排序子句的不同组合。
+    """
+    cat_id = db.add_category(Category(name='测试过滤分类'))
+    db.add_entry(_make_entry(title='A', category_id=cat_id))
+    db.add_entry(_make_entry(title='Fav', category_id=cat_id, is_favorite=True))
+    del_id = db.add_entry(_make_entry(title='Del'))
+    db.soft_delete_entry(del_id)
+
+    # deleted_only：仅回收站
+    assert [e.id for e in db.get_entries(EntryQuery(deleted_only=True))] == [del_id]
+
+    # category_id：仅该分类（默认不含已删除）
+    by_cat = db.get_entries(EntryQuery(category_id=cat_id))
+    assert all(e.category_id == cat_id for e in by_cat)
+    assert len(by_cat) == 2
+
+    # favorite_only：仅收藏
+    favs = db.get_entries(EntryQuery(favorite_only=True))
+    assert len(favs) == 1 and favs[0].is_favorite
+
+    # sort_by_updated：走 updated_at DESC 分支（与默认 is_favorite DESC 排序分支区分）
+    by_updated = db.get_entries(EntryQuery(sort_by_updated=True))
+    assert len(by_updated) == 2  # A + Fav（Del 已软删除，默认不含）
 
 
 # TestModels

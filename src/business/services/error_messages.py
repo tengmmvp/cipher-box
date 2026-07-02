@@ -2,9 +2,9 @@
 
 业务层（``backup_restore`` / ``vault_lifecycle``）与 UI 层（经
 :mod:`src.ui.error_messages` re-export）共享此翻译，避免三处各自维护异常→文案
-映射导致同一异常在不同入口呈现不一致文案——例如 ``DecryptionError`` 经
+映射导致同一异常在不同入口呈现不一致文案——（重构前 ``DecryptionError`` 曾经经
 ``backup_restore._user_friendly_error`` 的 ``ValueError`` 分支透传内部 ``crypto_id``
-等技术细节，而 UI 层归一为「解密失败」。
+等技术细节，而 UI 层归一为「解密失败」；现已统一委托 ``to_user_message``）。
 
 设计原则：技术性/内部异常（``CipherBoxError`` 家族、IO 错误、格式错误、解密失败、
 完整性校验失败）归一为固定友好提示，不暴露 ``str(exc)`` 的内部细节（数据库列名、

@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, TypedDict, cast
 
 if TYPE_CHECKING:
     from ..managers.entry_cache import EntryCacheManager
@@ -14,7 +14,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-from ...exceptions import DecryptionError, VaultLockedError
+from ...database.types import EntryQuery
+from ...exceptions import DecryptionError, EntryIntegrityError, VaultLockedError
 from ...models import Entry, RawEntry
 from .crypto_utils import build_entry_summary, decrypt_field, require_vault_key
 
@@ -37,14 +38,8 @@ HEALTH_PENALTY_DUPLICATE = 10
 HEALTH_PENALTY_OLD = 5
 
 
-class SecurityReport(TypedDict):
-    """安全分析报告结构（full_analysis / get_cached_report 返回值的类型契约）。
-
-    生产者（SecurityAnalyzer）与消费者（main_window_filters / SecurityDashboard）
-    共享此 TypedDict，使两侧键集一致——新增/改名字段时类型检查即时捕获漂移，
-    而非运行时 KeyError。``_summaries_with_dates`` 与 ``_key_epoch`` 为缓存分层
-    内部键（供不同 days 重过滤与 epoch 失效判定），纳入 TypedDict 以完整描述结构。
-    """
+class _SecurityReportBase(TypedDict):
+    """安全分析报告的公开字段（生产/消费契约，required）。"""
 
     total: int
     weak_count: int
@@ -53,6 +48,18 @@ class SecurityReport(TypedDict):
     duplicate_count: int
     old_entries: list[Entry]
     old: int
+
+
+class SecurityReport(_SecurityReportBase, total=False):
+    """安全分析报告结构（full_analysis / get_cached_report 返回值的类型契约）。
+
+    生产者（SecurityAnalyzer）与消费者（main_window_filters / SecurityDashboard）
+    共享此 TypedDict，使两侧键集一致——新增/改名字段时类型检查即时捕获漂移，
+    而非运行时 KeyError。``_summaries_with_dates`` 与 ``_key_epoch`` 为缓存分层
+    内部键（``total=False`` 可选）：前者供不同 days 重过滤，后者供 epoch 失效判定；
+    仅缓存层填充 ``_key_epoch``，full_analysis 与空报告不设，故标可选。
+    """
+
     _summaries_with_dates: list[tuple[Entry, datetime | None]]
     _key_epoch: str | None
 
@@ -85,7 +92,7 @@ class SecurityAnalyzer:
         # （str 不可变，复用后 summary Entry 与缓存引用同一字符串对象，收缩明文驻留面）。
         self._cache = entry_cache
         self._cache_ttl_seconds = cache_ttl_seconds
-        self._analysis_cache: dict | None = None
+        self._analysis_cache: SecurityReport | None = None
         self._analysis_cache_time: float = 0
         self._analysis_cache_days: int = 0
         self._cache_lock = threading.Lock()
@@ -118,22 +125,34 @@ class SecurityAnalyzer:
         摘要字段（title/username/url/tags）复用 EntryCacheManager 的缓存解密结果，
         分类名复用其 ``decrypt_category_name``，避免在此独立解密产生与列表路径
         重复的明文字符串副本。cache 以 strict 解密，损坏字段返回 ``''`` 并记入
-        failed 集合；此处检测到任一字段失败即抛 ValueError，供 full_analysis 计入
-        ``skipped_count``，保持「损坏即跳过」语义与原 strict 解密一致。
+        failed 集合；此处检测到任一字段失败即抛 EntryIntegrityError，供
+        full_analysis 计入 ``skipped_count``。刻意选用 EntryIntegrityError（非
+        ValueError 子类）而非 ValueError：使「损坏即跳过」语义不依赖「缓存层吸收
+        DecryptionError 不外抛」这一隐性契约——即便未来缓存层透传 DecryptionError
+        （其 IS-A ValueError），也不会被 full_analysis 的跳过分支误吞而静默。
         """
         # 批量路径：full_analysis 循环外已 invalidate_if_epoch_changed，此处经公开的
         # 无校验入口避免每条重复加锁+查 epoch（持 vault_write_lock 期间 epoch 不变）。
         title, username, url, tags = self._cache.search_metadata_for_analysis(raw)
         if self._cache.get_failed_fields(raw.crypto_id):
-            raise ValueError(f'条目 {raw.crypto_id} 摘要字段解密失败')
+            raise EntryIntegrityError(f'条目 {raw.crypto_id} 摘要字段解密失败')
         summary = build_entry_summary(raw, username)
         summary.title = title
         summary.url = url
         summary.tags = tags
         if raw.category_id is not None and raw.category_name:
-            summary.category_name = self._cache.decrypt_category_name(
-                raw.category_id, raw.category_name,
-            )
+            # 分类名密文损坏时 decrypt_category_name 抛 DecryptionError（strict=True
+            # 透传）。统一转 EntryIntegrityError，使 _make_summary 只抛这一种类型——
+            # full_analysis 的跳过分支据此 skip 损坏条目，不因 DecryptionError 透传
+            # 而终止整次分析（保持与摘要字段损坏一致的容错）。
+            try:
+                summary.category_name = self._cache.decrypt_category_name(
+                    raw.category_id, raw.category_name,
+                )
+            except DecryptionError:
+                raise EntryIntegrityError(
+                    f'条目 {raw.crypto_id} 分类名解密失败'
+                ) from None
         return summary
 
     def _password_fingerprint(self, password: str, key: bytes | None = None) -> bytes:
@@ -151,17 +170,22 @@ class SecurityAnalyzer:
             key if key is not None else self._key, password.encode('utf-8'), 'sha256'
         )
 
-    def _refilter_cache(self, cache: dict, days: int) -> dict:
-        """从缓存副本中按 days 重新过滤过期条目，并返回列表副本。
+    def _refilter_cache(self, cache: SecurityReport, days: int) -> SecurityReport:
+        """从缓存按 days 重新过滤过期条目，返回独立副本。
 
         提取公共逻辑以消除 _cached_analysis 与 get_cached_report 的 DRY 违规。
-        调用方须在持有 _cache_lock 的上下文中调用，且 cache 须为通过 ``dict(cache)`` 创建的浅拷贝。
+        调用方须在持有 _cache_lock 的上下文中调用，传入原始缓存——本方法内部
+        ``dict()`` 浅拷贝保护原始（days-specific 的 old_entries 等只落到副本，
+        不污染缓存本体）。
 
         返回的每个 Entry 均通过 ``dataclasses.replace`` 创建为独立副本，调用方
         修改其属性不会污染缓存。duplicate_groups 中的每个分组列表与组内 Entry
         同样复制。summary Entry 不含可变容器字段，其 custom_fields 为空列表，
         故浅层 replace 已足够。
         """
+        # dict(TypedDict) 在 mypy 下退化为 dict[str, object]，丢失 TypedDict 类型，
+        # cast 标注此复制边界（TypedDict 的已知类型限制，非兼容代码）。
+        cache = cast('SecurityReport', dict(cache))
         if days != self._analysis_cache_days:
             cutoff = datetime.now(timezone.utc) - timedelta(days=days)
             cache['old_entries'] = [
@@ -189,7 +213,7 @@ class SecurityAnalyzer:
             cache['_summaries_with_dates'] = list(cache['_summaries_with_dates'])
         return cache
 
-    def _cached_analysis(self, days: int = 90) -> dict:
+    def _cached_analysis(self, days: int = 90) -> SecurityReport:
         """带缓存的安全分析。采用缓存分层设计，基础分析不依赖 days 参数。
 
         缓存有效期由 ``_cache_ttl_seconds`` 控制，默认为
@@ -204,11 +228,11 @@ class SecurityAnalyzer:
         """
         with self._cache_lock:
             current_epoch = self._vault.key_epoch
-            if (self._analysis_cache is not None
+            cached = self._analysis_cache
+            if (cached is not None
                     and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds
-                    and self._analysis_cache.get('_key_epoch') == current_epoch):
-                result = dict(self._analysis_cache)
-                return self._refilter_cache(result, days)
+                    and cached.get('_key_epoch') == current_epoch):
+                return self._refilter_cache(cached, days)
         try:
             result = self.full_analysis(days)
         except VaultLockedError:
@@ -228,29 +252,29 @@ class SecurityAnalyzer:
             if (cached is not None
                     and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds
                     and cached.get('_key_epoch') == current_epoch):
-                return self._refilter_cache(dict(cached), days)
+                return self._refilter_cache(cached, days)
             result['_key_epoch'] = current_epoch
             self._analysis_cache = result
             self._analysis_cache_time = time.monotonic()
             self._analysis_cache_days = days
             # 出口复制：与 hit 路径一致，返回经 _refilter_cache 的独立副本，
             # 防止调用方修改返回的列表/Entry 污染缓存本体。
-            return self._refilter_cache(dict(result), days)
+            return self._refilter_cache(result, days)
 
-    def get_cached_report(self, days: int = 90) -> dict | None:
+    def get_cached_report(self, days: int = 90) -> SecurityReport | None:
         """返回仍有效的缓存报告，无缓存或已过期则返回 None。
 
         缓存有效时不再因 days 不同返回 None。days 变化时仅重新过滤
         过期条目，不触发重新计算。
         """
         with self._cache_lock:
-            if (self._analysis_cache is not None
+            cached = self._analysis_cache
+            if (cached is not None
                     and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds):
-                result = dict(self._analysis_cache)
-                return self._refilter_cache(result, days)
+                return self._refilter_cache(cached, days)
         return None
 
-    def get_or_compute_report(self, days: int = 90) -> dict:
+    def get_or_compute_report(self, days: int = 90) -> SecurityReport:
         """返回缓存报告，若无效则重新计算并缓存。"""
         return self._cached_analysis(days)
 
@@ -297,7 +321,7 @@ class SecurityAnalyzer:
             logger.debug('条目 %s 日期解析失败: %s', raw.id, changed_at_str)
             return None
 
-    def full_analysis(self, days: int = 90) -> dict:
+    def full_analysis(self, days: int = 90) -> SecurityReport:
         """一次性完成所有安全分析，避免重复解密。
 
         设计说明：此方法始终执行全部三种分析，即弱密码、重复密码和过期密码，
@@ -320,7 +344,7 @@ class SecurityAnalyzer:
         # 操作锁，使 lock() 必须等待分析释放密钥后才能清零并返回，避免后台
         # Worker 超时后在“已锁定”状态继续持有主密钥和明文。
         with self._vault.vault_write_lock():
-            entries = self._vault.db.get_entries(include_deleted=False)
+            entries = self._vault.db.get_entries(EntryQuery(include_deleted=False))
             total = len(entries)
             weak_entries = []
             password_map: dict[bytes, list[Entry]] = {}
@@ -348,7 +372,7 @@ class SecurityAnalyzer:
                     continue
                 try:
                     summary = self._make_summary(raw)
-                except ValueError:
+                except EntryIntegrityError:
                     logger.debug("安全分析跳过损坏条目 id=%s", raw.id, exc_info=True)
                     skipped_count += 1
                     continue

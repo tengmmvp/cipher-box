@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..managers.vault_manager import VaultManager
 
-from ...database.types import VerifyMode
+from ...database.types import EntryQuery, VerifyMode
 from ...exceptions import DecryptionError
 from ...models import RawEntry
 from ..services.crypto_utils import (
@@ -254,10 +254,14 @@ class EntryCacheManager:
     def _decrypt_tags(self, raw_entry: RawEntry) -> str:
         """仅解密 tags 字段供标签聚合。
 
-        get_all_tags 只消费 tags，走专用单字段解密路径而非 4 字段搜索摘要缓存，
-        冷缓存下省去 title/username/url 的冗余 GCM 解密（约 3/4 开销）。失败回退
-        空串，与 :meth:`_cached_search_metadata_no_check` 的容错一致。
+        优先复用搜索摘要缓存的 tags（列表 worker 已解密填充于元组第 4 项），命中则
+        省去一次 AES-GCM 解密；未命中再走专用单字段解密（冷缓存下省去
+        title/username/url 的冗余解密，约 3/4 开销）。失败回退空串，与
+        :meth:`_cached_search_metadata_no_check` 的容错一致。
         """
+        cached = self._search_metadata_cache.get(raw_entry.crypto_id)
+        if cached is not None:
+            return cached[3]
         try:
             return _decrypt_field_impl(
                 raw_entry.tags, self._key, raw_entry.crypto_id, 'tags', strict=True,
@@ -277,7 +281,9 @@ class EntryCacheManager:
         if cached is not None:
             return cached
         tag_count: dict[str, int] = {}
-        for raw in self._vault.db.get_entries(include_deleted=False, verify=VerifyMode.LENIENT):
+        for raw in self._vault.db.get_entries(
+            EntryQuery(include_deleted=False, verify=VerifyMode.LENIENT)
+        ):
             tags_str = self._decrypt_tags(raw)
             for tag in (t.strip() for t in tags_str.split(',') if t.strip()):
                 tag_count[tag] = tag_count.get(tag, 0) + 1

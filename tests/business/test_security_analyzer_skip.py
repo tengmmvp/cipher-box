@@ -130,6 +130,40 @@ class TestSecurityAnalyzerSkipCorrupt:
         assert result['old'] == 1
 
 
+def test_corrupt_category_name_is_skipped_not_raised():
+    """分类名密文损坏时 full_analysis 跳过该条目，不因 DecryptionError 终止分析。
+
+    回归守护：_make_summary 的 decrypt_category_name 用 strict=True，分类名密文损坏
+    会抛 DecryptionError。须转为 EntryIntegrityError 被 full_analysis 的跳过分支捕获，
+    而非冒泡终止整次分析（与摘要字段损坏一致的容错）。
+    """
+    vault = MagicMock()
+    vault.key = b'\x00' * 32
+    vault.is_unlocked = True
+    vault.is_cancel_requested.return_value = False
+
+    entry = RawEntry(
+        id=1,
+        crypto_id='cat_corrupt',
+        title=encrypt_field('标题', vault.key, 'cat_corrupt', 'title'),
+        username='',
+        password='',
+        custom_fields='',
+        category_id=5,
+        # 损坏的分类名密文：合法 cb2: 前缀但含非 base64 字符，decrypt_category_name
+        # 解密失败抛 DecryptionError。
+        category_name='cb2:!!!corrupt_category!!!',
+    )
+    vault.db.get_entries.return_value = [entry]
+
+    analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
+    result = analyzer.full_analysis(90)
+
+    assert isinstance(result, dict)
+    assert result['total'] == 1  # 条目仍计入总数
+    assert result['weak_count'] == 0  # 损坏条目不参与弱密码统计
+
+
 def test_cached_analysis_returns_independent_copy():
     """_cached_analysis 返回独立副本，调用方修改不污染缓存本体。
 
@@ -146,7 +180,7 @@ def test_cached_analysis_returns_independent_copy():
     analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
     result1 = analyzer._cached_analysis(90)
     # 模拟调用方修改返回对象（如 UI 排序/追加）
-    result1['weak_entries'].append('polluted')
+    result1['weak_entries'].append('polluted')  # type: ignore[arg-type]  故意污染验证副本独立
 
     result2 = analyzer._cached_analysis(90)
     assert 'polluted' not in result2['weak_entries']

@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from .vault_manager import VaultManager
 
 from ...crypto.password_generator import PasswordGenerator
-from ...database.types import VaultDataStore, VerifyMode
+from ...database.types import EntryQuery, VaultDataStore, VerifyMode
 from ...exceptions import DecryptionError, EntryIntegrityError, VaultKeyEpochMismatchError
 from ...models import (
     CustomField,
@@ -296,15 +296,21 @@ class EntryManager:
         if raw_entry.integrity_error:
             integrity_errors.append(raw_entry.integrity_message or '元数据')
 
+        def record_failure(name: str) -> None:
+            """字段解密失败的统一处置：strict（导出）抛 DecryptionError 拒绝损坏数据，
+            lenient（详情）记入失败列表供 integrity_message 汇总。收敛原先散落于各
+            字段的 ``if strict_integrity: raise ... else: append`` 重复分叉。"""
+            if strict_integrity:
+                raise DecryptionError(
+                    f'条目 {raw_entry.id} 导出失败，数据可能已损坏'
+                ) from None
+            integrity_errors.append(name)
+
         def decrypt(name: str, value: str) -> str:
             try:
                 return self._decrypt_field(value, raw_entry.crypto_id, name, strict=True)
             except DecryptionError:
-                if strict_integrity:
-                    raise DecryptionError(
-                        f'条目 {raw_entry.id} 导出失败，数据可能已损坏'
-                    ) from None
-                integrity_errors.append(name)
+                record_failure(name)
                 return ''
 
         try:
@@ -321,11 +327,7 @@ class EntryManager:
             logger.warning(
                 '条目 %s 自定义字段%s层损坏', raw_entry.crypto_id, layer,
             )
-            if strict_integrity:
-                raise DecryptionError(
-                    f'条目 {raw_entry.id} 导出失败，数据可能已损坏'
-                ) from None
-            integrity_errors.append('自定义字段')
+            record_failure('自定义字段')
             custom_fields = []
 
         password_plain = decrypt('password', raw_entry.password) if include_secrets else ''
@@ -438,14 +440,51 @@ class EntryManager:
             self._change_bus.notify(clear_summaries=False)
         return result
 
+    def add_entries(self, entries: list[Entry], *, notify: bool = True) -> None:
+        """批量添加条目（导入路径），加密后用 executemany 一次性写入。
+
+        对每个条目检测强度、生成 crypto_id、构建加密 RawEntry，末尾单次
+        :meth:`EntryRepository.add_entries_batch` 写入，将 N 次单独 INSERT 合并为
+        1 次 executemany，缩短导入事务持 ``db_lock`` 的时间（期间 UI 侧栏/列表的
+        读请求被阻塞）。``entries`` 须已由 ``Entry.from_dict`` 校验（与单条
+        ``add_entry(skip_validation=True)`` 对齐，不再重复长度校验）；``metadata_mac``
+        签名由 repository 层 ``_normalize_for_insert`` 统一计算，与单条路径一致。
+        """
+        if not entries:
+            if notify:
+                self._change_bus.notify(clear_summaries=False)
+            return
+        now = utc_now_iso()
+        enc_entries: list[RawEntry] = []
+        for entry in entries:
+            entry.password_strength = PasswordGenerator.check_strength(entry.password).score
+            crypto_id = entry.crypto_id or uuid.uuid4().hex
+            enc_entries.append(self._build_encrypted_entry(
+                entry, crypto_id, now,
+                created_at=entry.created_at or now,
+                updated_at=entry.updated_at or now,
+            ))
+        preserve = any(e.created_at or e.updated_at for e in entries)
+        self._vault.db.add_entries_batch(enc_entries, preserve_metadata=preserve)
+        if notify:
+            # 与 add_entry 一致：新条目不改变既有摘要，clear_summaries=False 保留缓存。
+            self._change_bus.notify(clear_summaries=False)
+
     def update_entry(
         self,
         entry: Entry,
         *,
         preserve_password_changed_at: bool = False,
         notify: bool = True,
+        preloaded_raw: RawEntry | None = None,
+        preloaded_old_password: str | None = None,
     ) -> None:
         """更新条目，自动加密并记录密码历史。
+
+        preloaded_raw / preloaded_old_password：导入覆盖路径已由
+        ``_prepare_overwrite_map`` 批量预读 raw 与解密旧密码，传入以跳过重复
+        ``get_entry`` 与旧密码解密（消除覆盖路径的双重读取与解密）。其他调用方
+        留空，走默认 read-modify-write。
 
         线程安全说明：此方法采用 read-modify-write 模式，先在事务外读取旧条目
         与旧密码、完成加解密与 enc_entry 构建，仅在最后写入时进入事务并复查
@@ -467,7 +506,8 @@ class EntryManager:
         # read 前快照 key_epoch，事务内复查，防止 read-modify-write 期间改密
         # 导致 add_password_history 写入旧密钥密文到已被重写的历史表。
         pre_epoch = self.key_epoch
-        raw = self.db.get_entry(entry.id)
+        # preloaded_raw：导入覆盖路径已批量预读，跳过重复 get_entry。
+        raw = preloaded_raw if preloaded_raw is not None else self.db.get_entry(entry.id)
         if raw is None:
             return
 
@@ -481,21 +521,20 @@ class EntryManager:
         # AES-256-GCM 每次加密使用随机 nonce，相同明文产生不同密文，
         # 因此密文比较不可行。HMAC 指纹方案需要在数据库中额外存储指纹
         # 字段，这会要求 schema 变更，当前解密比较是无需迁移的合理选择。
-        old_password = self._decrypt_field(
-            old_pwd_enc, raw.crypto_id, 'password', strict=True
-        ) if old_pwd_enc else ''
+        if preloaded_old_password is not None:
+            # 导入覆盖路径已解密旧密码（来自 _prepare_overwrite_map），跳过重复解密。
+            old_password = preloaded_old_password
+        else:
+            old_password = self._decrypt_field(
+                old_pwd_enc, raw.crypto_id, 'password', strict=True,
+            ) if old_pwd_enc else ''
         new_pwd_enc = self._encrypt_field(entry.password, raw.crypto_id, 'password')
         # 常量时间比较，避免明文密码比较的时序侧信道（短路比较按首个不同字符提前返回）。
         password_changed = not hmac.compare_digest(old_password, entry.password)
         del old_password  # 尽快释放明文引用
-        if preserve_password_changed_at:
-            # 导入覆盖等同步场景：保留原 password_changed_at，避免批量导入
-            # 把"久未修改"条目重置为"刚修改"从而绕过过期检测
-            password_changed_at = entry.password_changed_at or raw.password_changed_at
-        elif password_changed:
-            password_changed_at = utc_now_iso()
-        else:
-            password_changed_at = raw.password_changed_at
+        password_changed_at = self._resolve_password_changed_at(
+            entry, raw, password_changed, preserve_password_changed_at,
+        )
 
         strength = PasswordGenerator.check_strength(entry.password)
         entry.password_strength = strength.score
@@ -524,26 +563,52 @@ class EntryManager:
                 )
             self.db.update_entry(enc_entry)
         if notify:
-            # 检测 tags 是否变更以决定是否失效标签缓存；摘要缓存按 crypto_id 单条
-            # 精细失效，避免标题/URL 编辑触发全量重解密。raw.tags 解密失败时保守
-            # 视为 tags 已变（None != 任意字符串），仍失效标签缓存。
-            try:
-                old_tags = (
-                    self._decrypt_field(
-                        raw.tags, raw.crypto_id, 'tags', strict=True,
-                    ) if raw.tags else ''
-                )
-                tags_decrypt_failed = False
-            except DecryptionError:
-                old_tags = ''
-                tags_decrypt_failed = True
-            self._change_bus.notify(
-                password_changed,
-                crypto_id=raw.crypto_id,
-                # 解密失败时保守视为 tags 已变以失效标签缓存；old_tags 始终为 str，
-                # 避免原先 None 哨兵混入 str 类型。
-                tags_changed=tags_decrypt_failed or (old_tags != entry.tags),
+            self._notify_entry_updated(raw, entry, password_changed)
+
+    def _resolve_password_changed_at(
+        self,
+        entry: Entry,
+        raw: RawEntry,
+        password_changed: bool,
+        preserve: bool,
+    ) -> str:
+        """决定 update_entry 写入的 password_changed_at。
+
+        - preserve（导入覆盖同步）：保留原值，避免批量导入把「久未修改」条目重置为
+          「刚修改」从而绕过过期检测。
+        - password_changed：密码实际变更，记当前时间。
+        - 否则：保留原值。
+        """
+        if preserve:
+            return entry.password_changed_at or raw.password_changed_at
+        if password_changed:
+            return utc_now_iso()
+        return raw.password_changed_at
+
+    def _notify_entry_updated(
+        self, raw: RawEntry, entry: Entry, password_changed: bool,
+    ) -> None:
+        """update_entry 后的变更通知：检测 tags 是否变更以决定标签缓存失效粒度。
+
+        摘要缓存按 crypto_id 单条精细失效（避免标题/URL 编辑触发全量重解密）；
+        raw.tags 解密失败时保守视为 tags 已变（仍失效标签缓存）。
+        """
+        try:
+            old_tags = (
+                self._decrypt_field(raw.tags, raw.crypto_id, 'tags', strict=True)
+                if raw.tags else ''
             )
+            tags_decrypt_failed = False
+        except DecryptionError:
+            old_tags = ''
+            tags_decrypt_failed = True
+        self._change_bus.notify(
+            password_changed,
+            crypto_id=raw.crypto_id,
+            # 解密失败时保守视为 tags 已变以失效标签缓存；old_tags 始终为 str，
+            # 避免原先 None 哨兵混入 str 类型。
+            tags_changed=tags_decrypt_failed or (old_tags != entry.tags),
+        )
 
     def delete_entry(self, entry_id: int) -> bool:
         """软删除条目，移入回收站。返回是否实际执行（条目存在）。"""
@@ -595,10 +660,12 @@ class EntryManager:
         按关键词过滤使用 ``get_entry_summaries(search=...)``。
         """
         raw_entries = self._vault.db.get_entries(
-            deleted_only=deleted_only,
-            include_deleted=include_deleted,
-            category_id=category_id,
-            favorite_only=favorite_only,
+            EntryQuery(
+                deleted_only=deleted_only,
+                include_deleted=include_deleted,
+                category_id=category_id,
+                favorite_only=favorite_only,
+            )
         )
 
         decrypted = [self.decrypt_entry(e) for e in raw_entries]
@@ -642,11 +709,13 @@ class EntryManager:
         # _decrypt_summary 将 raw.integrity_error 透传到 summary，列表 delegate 据此
         # 显示完整性警示。HMAC 开销远小于摘要解密，性能影响可忽略。
         raw_entries = self.db.get_entries(
-            deleted_only=deleted_only,
-            category_id=category_id,
-            favorite_only=favorite_only,
-            limit=sql_limit,
-            verify=VerifyMode.LENIENT,
+            EntryQuery(
+                deleted_only=deleted_only,
+                category_id=category_id,
+                favorite_only=favorite_only,
+                limit=sql_limit,
+                verify=VerifyMode.LENIENT,
+            )
         )
         # 循环外一次性 epoch 校验：本批 raw 在单次调用内 epoch 不可能变化
         # （调用方事务内已固定），循环内走无校验路径避免每条目重复加锁取 epoch。
@@ -680,7 +749,7 @@ class EntryManager:
         if limit <= 0:
             return []
         raw_entries = self.db.get_entries(
-            sort_by_updated=True, limit=limit, verify=VerifyMode.LENIENT,
+            EntryQuery(sort_by_updated=True, limit=limit, verify=VerifyMode.LENIENT),
         )
         self._invalidate_if_epoch_changed()
         return [self._decrypt_summary(entry, skip_epoch_check=True) for entry in raw_entries]
@@ -690,7 +759,7 @@ class EntryManager:
         include_secrets: bool = False,
         cancel_check: Callable[[], bool] | None = None,
     ) -> list[Entry]:
-        raw_entries = self.db.get_entries(include_deleted=False)
+        raw_entries = self.db.get_entries(EntryQuery(include_deleted=False))
         entries = []
         for raw_entry in raw_entries:
             if cancel_check and cancel_check():

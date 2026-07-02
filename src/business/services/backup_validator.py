@@ -18,10 +18,13 @@ from ...models import (
     MAX_PASSWORD_HISTORY,
     is_real_int,
 )
+from .backup_header_codec import BACKUP_FORMAT
 from .crypto_utils import STRING_ENCRYPTED_FIELDS
 
 logger = logging.getLogger(__name__)
 
+# 备份语境别名（指向 models 单一源）：改动上限须同步 models.MAX_ENTRIES_LIMIT /
+# MAX_ENTRY_PAYLOAD_SIZE，此处仅是可读性别名，非独立的第二份上限。
 MAX_BACKUP_ENTRIES = MAX_ENTRIES_LIMIT
 MAX_ENTRY_JSON_SIZE = MAX_ENTRY_PAYLOAD_SIZE
 MAX_TEXT_FIELD_SIZE = 1024 * 1024
@@ -64,8 +67,6 @@ if _missing_enc_fields:
 
 
 def validate_restore_data(data: dict[str, Any]) -> None:
-    from .backup_header_codec import BACKUP_FORMAT
-
     if data.get('format') != BACKUP_FORMAT:
         raise BackupError('备份格式标识无效')
     version = data.get('version')

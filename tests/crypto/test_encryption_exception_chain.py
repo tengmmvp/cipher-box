@@ -1,8 +1,8 @@
 """测试 EncryptionEngine 异常链保留。
 
 验证 decrypt 与 decrypt_bytes 在遇到无效或篡改数据时，抛出 DecryptionError
-（双继承 ValueError，旧 ``except ValueError`` 兜底仍兼容）并通过 ``raise ... from exc``
-保留原始异常链，使 __cause__ 不为空，便于开发者追踪根因。
+（双继承 ValueError）并通过 ``raise ... from exc`` 保留原始异常链，使 __cause__
+不为空，便于开发者追踪根因。格式不符 / 长度不足等确定性错误无底层异常，不产生链。
 """
 import pytest
 
@@ -16,12 +16,14 @@ class TestEncryptionExceptionChain:
     def test_decrypt_invalid_data_raises_decryption_error(self):
         """decrypt 无效数据时抛出 DecryptionError 并保留原始异常链。"""
         key = b'\x00' * 32
-        # 构造无效密文，过短无法包含 nonce 加 tag。
+        # 正确前缀但 base64 非法（含下划线，非标准字母表）→ 走解码失败路径，保留异常链。
+        # 格式不符 / 长度不足属确定性错误（无底层异常），不产生 __cause__；此处专门
+        # 验证「可恢复异常被 raise ... from exc 链接」的契约。
         with pytest.raises(DecryptionError) as exc_info:
-            EncryptionEngine.decrypt('invalid_data', key, 'aad')
-        # DecryptionError 双继承 ValueError，旧兜底仍兼容
+            EncryptionEngine.decrypt(EncryptionEngine.TEXT_PREFIX + 'invalid_data', key, 'aad')
+        # DecryptionError 双继承 ValueError
         assert isinstance(exc_info.value, ValueError)
-        # __cause__ 应保留原始异常，方便开发者追踪根因。
+        # __cause__ 应保留原始异常（base64 解码错误），方便开发者追踪根因。
         assert exc_info.value.__cause__ is not None
 
     def test_decrypt_bytes_invalid_data_raises_decryption_error(self):

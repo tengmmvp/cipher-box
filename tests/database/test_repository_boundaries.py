@@ -11,6 +11,7 @@ import pytest
 
 from src.database import entry_repository
 from src.database.db_manager import DatabaseManager
+from src.database.types import EntryQuery
 from src.exceptions import DatabaseError
 from src.models import MAX_PASSWORD_HISTORY, RawEntry
 
@@ -87,5 +88,5 @@ def test_get_entries_by_ids_deduplicates_preserving_order(db):
 def test_get_entries_after_id_cursor_paginates(db):
     """after_id 游标分页：返回 id > after_id 的条目，按 id ASC，LIMIT 下推 SQL。"""
     ids = [db.add_entry(_make_entry(crypto_id=f'c{i}', title=f'E{i}')) for i in range(5)]
-    page = db.get_entries(after_id=ids[1], limit=2)
+    page = db.get_entries(EntryQuery(after_id=ids[1], limit=2))
     assert [e.id for e in page] == ids[2:4]

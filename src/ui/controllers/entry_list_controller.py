@@ -14,7 +14,7 @@ from ..resources.constants import RECENT_ENTRY_LIMIT, SORT_OPTIONS
 
 if TYPE_CHECKING:
     from ...business.managers.entry_manager import EntryManager
-    from ...business.services.security_analyzer import SecurityAnalyzer
+    from ...business.services.security_analyzer import SecurityAnalyzer, SecurityReport
     from ...config import ConfigManager
     from ...models import Entry
 
@@ -109,13 +109,14 @@ class EntryListController:
         """
         del cancel_check  # 签名对齐，无实际用途
         summary = self.get_security_summary()
-        return (summary or {}).get('weak_entries', []), '弱密码（全部分类）'
+        weak = summary['weak_entries'] if summary is not None else []
+        return weak, '弱密码（全部分类）'
 
     def fetch_duplicate(self, cancel_check: Callable[[], bool] | None = None) -> tuple[list[Entry], str]:
         """获取重复密码条目（``cancel_check`` 同 fetch_weak，仅签名对齐）。"""
         del cancel_check
         summary = self.get_security_summary()
-        groups = (summary or {}).get('duplicate_groups', [])
+        groups = summary['duplicate_groups'] if summary is not None else []
         return [e for group in groups for e in group], '重复密码（全部分类）'
 
     def fetch_recent(
@@ -178,7 +179,7 @@ class EntryListController:
 
     # ========== 安全摘要 ==========
 
-    def get_security_summary(self) -> dict | None:
+    def get_security_summary(self) -> SecurityReport | None:
         """返回缓存的安全分析结果，不触发同步计算。
 
         当缓存未就绪时返回 None，调用方应处理此情况。

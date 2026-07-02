@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...config import DEFAULT_CONFIG, ConfigManager
+from ...config import DEFAULT_CONFIG, ConfigManager, get_ui_int_range
 from ..components.widgets import create_cancel_button, setup_dialog_flags
 from ..resources.constants import BTN_DIALOG, DIALOG_SETTINGS_MIN_SIZE
 
@@ -107,7 +107,7 @@ class SettingsDialog(QDialog):
         lock_group = QGroupBox('自动锁定')
         lock_layout = QFormLayout(lock_group)
         self._auto_lock_spin = QSpinBox()
-        self._auto_lock_spin.setRange(0, 60)
+        self._auto_lock_spin.setRange(*get_ui_int_range('auto_lock_minutes'))
         self._auto_lock_spin.setSpecialValueText('不自动锁定')
         self._auto_lock_spin.setSuffix(' 分钟')
         lock_layout.addRow('空闲自动锁定：', self._auto_lock_spin)
@@ -116,10 +116,10 @@ class SettingsDialog(QDialog):
         clip_group = QGroupBox('剪贴板')
         clip_layout = QFormLayout(clip_group)
         self._clipboard_spin = QSpinBox()
-        # 最小 10 秒与 config._SECURITY_MINIMUMS 的运行时安全下限一致：
-        # get_safe('clipboard_clear_seconds') 会将低于 10 的值钳制到 10，
-        # 故 UI 不再提供 0 /「不自动清空」选项，避免界面值与运行时实际值脱节。
-        self._clipboard_spin.setRange(10, 300)
+        # 范围派生自 config.get_ui_int_range 单一源（下限取运行时安全下限 10）：
+        # get_safe('clipboard_clear_seconds') 会将低于 10 的值钳制到 10，故 UI 不提供
+        # 0 /「不自动清空」选项，避免界面值与运行时实际值脱节。
+        self._clipboard_spin.setRange(*get_ui_int_range('clipboard_clear_seconds'))
         self._clipboard_spin.setSuffix(' 秒')
         clip_layout.addRow('复制后自动清空：', self._clipboard_spin)
         layout.addWidget(clip_group)
@@ -127,7 +127,7 @@ class SettingsDialog(QDialog):
         pwd_group = QGroupBox('密码显示')
         pwd_layout = QFormLayout(pwd_group)
         self._pwd_visible_spin = QSpinBox()
-        self._pwd_visible_spin.setRange(3, 60)
+        self._pwd_visible_spin.setRange(*get_ui_int_range('password_visible_seconds'))
         self._pwd_visible_spin.setSuffix(' 秒')
         pwd_layout.addRow('密码显示自动隐藏：', self._pwd_visible_spin)
         layout.addWidget(pwd_group)
@@ -143,7 +143,7 @@ class SettingsDialog(QDialog):
         form = QFormLayout(group)
 
         self._default_length_spin = QSpinBox()
-        self._default_length_spin.setRange(4, 64)
+        self._default_length_spin.setRange(*get_ui_int_range('default_password_length'))
         form.addRow('默认长度：', self._default_length_spin)
 
         self._default_upper_check = QCheckBox('包含大写字母')
@@ -164,7 +164,7 @@ class SettingsDialog(QDialog):
         warn_group = QGroupBox('安全提醒')
         warn_layout = QFormLayout(warn_group)
         self._old_pwd_spin = QSpinBox()
-        self._old_pwd_spin.setRange(30, 365)
+        self._old_pwd_spin.setRange(*get_ui_int_range('old_password_warning_days'))
         self._old_pwd_spin.setSuffix(' 天')
         warn_layout.addRow('密码超过此天数未修改时提醒：', self._old_pwd_spin)
         layout.addWidget(warn_group)
@@ -195,11 +195,11 @@ class SettingsDialog(QDialog):
         )
         auto_form.addRow('', self._auto_backup_check)
         self._backup_interval_spin = QSpinBox()
-        self._backup_interval_spin.setRange(1, 168)
+        self._backup_interval_spin.setRange(*get_ui_int_range('auto_backup_interval_hours'))
         self._backup_interval_spin.setSuffix(' 小时')
         auto_form.addRow('创建间隔：', self._backup_interval_spin)
         self._backup_retention_spin = QSpinBox()
-        self._backup_retention_spin.setRange(2, 50)
+        self._backup_retention_spin.setRange(*get_ui_int_range('auto_backup_retention'))
         self._backup_retention_spin.setSuffix(' 份')
         auto_form.addRow('保留数量：', self._backup_retention_spin)
         self._auto_backup_check.toggled.connect(self._update_backup_options)

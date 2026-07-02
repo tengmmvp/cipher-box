@@ -6,6 +6,7 @@ import sqlite3
 import threading
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TYPE_CHECKING, NamedTuple, Protocol, runtime_checkable
 
@@ -18,6 +19,32 @@ class VerifyMode(Enum):
     STRICT = auto()    # 校验失败时抛出异常
     LENIENT = auto()   # 设置 integrity_error 标志但不抛出异常
     SKIP = auto()      # 完全跳过校验
+
+
+@dataclass(frozen=True)
+class EntryQuery:
+    """entries 表查询参数（过滤 + 排序 + limit + verify），get_entries 的单一入口。
+
+    封装原先 8 个独立参数，并在构造时校验 ``deleted_only`` / ``include_deleted``
+    互斥——二者同时为 True 语义矛盾（前者仅回收站、后者含回收站），原先代码以
+    ``deleted_only`` 优先静默忽略 ``include_deleted``，现改为构造即拒绝。
+    """
+
+    deleted_only: bool = False
+    include_deleted: bool = False
+    category_id: int | None = None
+    favorite_only: bool = False
+    limit: int | None = None
+    after_id: int | None = None
+    sort_by_updated: bool = False
+    verify: VerifyMode = VerifyMode.LENIENT
+
+    def __post_init__(self) -> None:
+        if self.deleted_only and self.include_deleted:
+            raise ValueError(
+                'EntryQuery: deleted_only 与 include_deleted 互斥——'
+                'deleted_only=True 仅返回回收站，include_deleted=True 含全部（含回收站）'
+            )
 
 
 @runtime_checkable
@@ -72,12 +99,7 @@ class EntryStore(Protocol):
     ``set_write_guard`` 等装配期 setter），并为测试替身提供明确契约。
     """
 
-    def get_entries(
-        self, deleted_only: bool = False, include_deleted: bool = False,
-        category_id: int | None = None, favorite_only: bool = False,
-        limit: int | None = None, after_id: int | None = None,
-        sort_by_updated: bool = False, verify: VerifyMode = VerifyMode.LENIENT,
-    ) -> list[RawEntry]: ...
+    def get_entries(self, query: EntryQuery) -> list[RawEntry]: ...
 
     def get_entry(self, entry_id: int) -> RawEntry | None: ...
 

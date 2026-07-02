@@ -26,15 +26,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from ..crypto.encryption import EncryptionEngine
 from ..exceptions import DatabaseError, TransactionError
-from ..models import Category, PasswordHistory, RawEntry
+from ..models import CIPHERTEXT_PREFIX, Category, PasswordHistory, RawEntry
 from ..utils.file_security import secure_directory, secure_file
 from ._decorators import _db_operation, _db_write
 from .category_repository import CategoryRepository
 from .entry_repository import EntryRepository
 from .schema_manager import SchemaManager
-from .types import ReEncryptedEntry, ReEncryptedHistory, VerifyMode
+from .types import EntryQuery, ReEncryptedEntry, ReEncryptedHistory
 
 logger = logging.getLogger(__name__)
 
@@ -467,13 +466,13 @@ class DatabaseManager:
         ``encrypt_bytes`` 的字节前缀路径不经过此加密列断言。
         """
         if self._enforce_encrypted_fields and value:
-            # EncryptionEngine.encrypt 始终产出 TEXT_PREFIX 前缀密文；强制要求此前缀，
+            # 加密层始终产出 CIPHERTEXT_PREFIX 前缀密文；强制要求此前缀，
             # 使纯字母数字明文（如 abc123，恰为 base64 字符子集）无法再以「无前缀
             # 合法密文」名义通过字符集校验。真正认证仍由 GCM 标签在解密时完成，
             # 此处为防御性拦截，防止绕过 EntryManager 直接写库时明文静默落入加密列。
-            # 引用 EncryptionEngine.TEXT_PREFIX 单一事实源：前缀重命名时此校验与
-            # 错误提示自动同步，避免字面量漂移。
-            prefix = EncryptionEngine.TEXT_PREFIX
+            # 引用共享层 CIPHERTEXT_PREFIX 单一事实源（不经 crypto 层，保持 Data 层
+            # 零 crypto 依赖）：前缀重命名时此校验与错误提示自动同步，避免字面量漂移。
+            prefix = CIPHERTEXT_PREFIX
             if not value.startswith(prefix):
                 raise ValueError(
                     f'数据层收到未加密的 {field_name}'
@@ -548,27 +547,8 @@ class DatabaseManager:
 
     # -- 委托透传：Entries --
 
-    def get_entries(
-        self,
-        deleted_only: bool = False,
-        include_deleted: bool = False,
-        category_id: int | None = None,
-        favorite_only: bool = False,
-        limit: int | None = None,
-        after_id: int | None = None,
-        sort_by_updated: bool = False,
-        verify: VerifyMode = VerifyMode.LENIENT,
-    ) -> list[RawEntry]:
-        return self._entry_repo.get_entries(
-            deleted_only=deleted_only,
-            include_deleted=include_deleted,
-            category_id=category_id,
-            favorite_only=favorite_only,
-            limit=limit,
-            after_id=after_id,
-            sort_by_updated=sort_by_updated,
-            verify=verify,
-        )
+    def get_entries(self, query: EntryQuery) -> list[RawEntry]:
+        return self._entry_repo.get_entries(query)
 
     def get_entry(self, entry_id: int) -> RawEntry | None:
         return self._entry_repo.get_entry(entry_id)

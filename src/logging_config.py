@@ -12,6 +12,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import TracebackType
 
+from .models import CIPHERTEXT_PREFIX
 from .utils.file_security import secure_directory, secure_file
 
 
@@ -36,8 +37,13 @@ class SensitiveDataFilter(logging.Filter):
     """
 
     _PATTERNS = (
-        # cb2: 密文标记 + base64 主体（至少 8 字符），整段打码
-        (re.compile(r'cb2:[A-Za-z0-9+/=]{8,}'), 'cb2:[REDACTED]'),
+        # 密文标记（CIPHERTEXT_PREFIX）+ base64 主体（至少 8 字符），整段打码。
+        # 前缀经 re.escape 取自共享层单一事实源，避免格式升级时正则与实际前缀漂移
+        # 致脱敏静默失效（密文明文落入日志）。
+        (
+            re.compile(re.escape(CIPHERTEXT_PREFIX) + r'[A-Za-z0-9+/=]{8,}'),
+            CIPHERTEXT_PREFIX + '[REDACTED]',
+        ),
         # otpauth:// URI（TOTP 配置，含 secret 参数与账户名），整段打码
         (re.compile(r'otpauth://\S+'), 'otpauth://[REDACTED]'),
         # key=value / key:value 形式的敏感赋值，等号或冒号后的非空白内容打码

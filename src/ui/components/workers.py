@@ -8,6 +8,7 @@ Qt 事件循环。工作函数完成后会主动释放闭包引用，防止其�
 import logging
 import threading
 from collections.abc import Callable
+from typing import Any, Generic, TypeVar
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
@@ -15,6 +16,8 @@ from ...exceptions import CipherBoxError
 from ..error_messages import to_user_message
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar('_T')
 
 
 def _worker_error_message(exc: Exception) -> str:
@@ -30,7 +33,7 @@ def _worker_error_message(exc: Exception) -> str:
     return str(exc)
 
 
-class BackgroundWorker(QThread):
+class BackgroundWorker(QThread, Generic[_T]):
     """通用后台任务执行器，支持协作取消和进度报告。
 
     用法::
@@ -63,18 +66,20 @@ class BackgroundWorker(QThread):
     cancelled = pyqtSignal()
     progress = pyqtSignal(int, int)
 
-    def __init__(self, func: Callable[[], object], parent: QObject | None = None):
+    def __init__(self, func: Callable[[], _T], parent: QObject | None = None):
         """初始化后台工作线程。
 
         Args:
             func: 要在线程中执行的函数。闭包可能捕获敏感数据如密码，
-                函数执行完毕后 self._func 会被置 None 以释放闭包引用。
+                函数执行完毕后 self._func 会被置 None 以释放闭包引用。泛型参数
+                ``_T`` 由 func 返回类型推断，使 worker 的结果类型可静态追踪
+                （``finished`` 信号因 PyQt 运行时仍是 ``object``，消费侧仍需收窄）。
             parent: 父对象。若提供，QThread 作为 parent 的子对象，在 parent
                 销毁时一同被销毁。调用方须确保 parent 销毁前 worker 已完成
                 即调用 cancel() + wait()，否则可能导致崩溃。
         """
         super().__init__(parent)
-        self._func: Callable[[], object] | None = func
+        self._func: Callable[[], _T] | None = func
         self._cancel_event = threading.Event()
 
     @property
@@ -119,7 +124,7 @@ class BackgroundWorker(QThread):
 
 
 def wait_worker_shutdown(
-    worker: BackgroundWorker | None,
+    worker: BackgroundWorker[Any] | None,
     *,
     cancel: bool = True,
     timeout: int | None = None,

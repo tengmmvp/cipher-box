@@ -44,6 +44,13 @@ MAX_PASSWORD_HISTORY = 10
 MAX_ENTRIES_LIMIT = 50_000
 MAX_ENTRY_PAYLOAD_SIZE = 2 * 1024 * 1024
 
+# 加密字段密文格式前缀（密文以此标识，跨层共享的单一事实源）。EncryptionEngine 的
+# TEXT_PREFIX/BYTES_PREFIX、数据层密文格式自检（db_manager._assert_encrypted）与日志
+# 脱敏正则（logging_config）均引用此处，避免「cb2:」字面量散落多处于格式升级时静默
+# 漂移——尤其脱敏正则失效会致密文明文落入日志文件。
+CIPHERTEXT_PREFIX = 'cb2:'
+CIPHERTEXT_BYTES_PREFIX = b'CB2'
+
 # 字段名 → (中文标签, 最大字符数)。表驱动长度校验的单一事实源，供
 # Entry.from_dict / entry_validation.validate_plain_entry / ImportExportManager._parse_csv_like
 # 复用，避免三处手工拼装字典漂移。仅含长度受限的字符串型字段（custom_fields 另有

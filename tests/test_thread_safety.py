@@ -7,6 +7,7 @@
 import threading
 
 from src.database.db_manager import DatabaseManager
+from src.database.types import EntryQuery
 from src.models import Category, RawEntry
 
 
@@ -24,7 +25,7 @@ class TestDatabaseThreadSafety:
         def reader():
             try:
                 for _ in range(20):
-                    db.get_entries(include_deleted=False)
+                    db.get_entries(EntryQuery(include_deleted=False))
                     db.get_categories()
             except Exception as e:
                 errors.append(e)
@@ -67,7 +68,7 @@ class TestDatabaseThreadSafety:
             t.join()
 
         assert not errors
-        entries = db.get_entries()
+        entries = db.get_entries(EntryQuery())
         assert len(entries) == 5  # RLock 保证全部写入成功
         db.close()
 
@@ -93,7 +94,7 @@ class TestDatabaseThreadSafety:
         def reader():
             try:
                 for _ in range(30):
-                    db.get_entries(include_deleted=False)
+                    db.get_entries(EntryQuery(include_deleted=False))
                     db.get_categories()
             except Exception as e:
                 errors.append(e)
@@ -135,7 +136,7 @@ class TestVaultThreadSafety:
         def read_entries():
             try:
                 for _ in range(10):
-                    entries = vault.db.get_entries()
+                    entries = vault.db.get_entries(EntryQuery())
                     assert isinstance(entries, list)
             except Exception as e:
                 errors.append(e)
