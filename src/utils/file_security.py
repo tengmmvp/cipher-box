@@ -157,9 +157,9 @@ def validate_file_path(path: str | Path, base_dir: Path | None = None) -> Path:
     """验证文件路径，用于导入/导出/备份操作。
 
     解析路径并拒绝可能允许目录遍历或路径重定向的组件：拒绝 ``..`` 遍历；
-    对**原始未解析路径**及其所有祖先逐级 ``lstat`` 检测符号链接与 Windows
-    reparse point/junction，作为对抗路径重定向（把写入重定向到敏感文件或
-    攻击者可控位置）的纵深防御。
+    对**原始未解析路径**检测符号链接与 Windows reparse point/junction（平台分支
+    策略详见 :func:`_reject_reparse_points`），作为对抗路径重定向（把写入重定向到
+    敏感文件或攻击者可控位置）的纵深防御。
 
     调用方必须使用返回的 resolved 路径而非原始 path 参数，以缩小 TOCTOU 竞态窗口。
 
@@ -191,17 +191,40 @@ def validate_file_path(path: str | Path, base_dir: Path | None = None) -> Path:
 
 
 def _reject_reparse_points(path: Path) -> None:
-    """拒绝路径及其所有祖先上的符号链接 / Windows reparse point/junction。
+    """拒绝路径上的符号链接 / Windows reparse point/junction，对抗路径重定向。
 
-    对**原始未解析路径**逐级 ``lstat``（不跟随）检测：``resolve()`` 会展开并跟随
-    符号链接与 junction，故必须在解析前逐级检测，才能发现经由 junction 的重定向。
-    每一级用一次 ``lstat`` 同时取 ``st_mode``（判符号链接）与 Windows 专有的
-    ``st_file_attributes``（判 reparse point），覆盖 junction 与挂载点重定向——
-    Windows 上 ``is_symlink`` 不识别 junction/reparse point，需 ``0x400`` 补充。
+    按平台分支以平衡安全与可用性：
 
-    不存在的组件（如待写入的新文件本身）``lstat`` 抛 ``FileNotFoundError``，视为
-    非重定向并继续向上检测已存在的祖先——祖先被替换为 junction 是更现实的威胁。
+    - **Windows**：逐级 ``lstat``（不跟随）检测整条路径——Windows 系统目录
+      （``%APPDATA%``、``%USERPROFILE%``）通常不含 reparse point/junction，逐级检测
+      不误伤系统路径，且能防御 junction 把祖先目录重定向到攻击者可控位置的威胁。
+      符号链接用 ``S_ISLNK``，junction/挂载点用 Windows 专有 ``st_file_attributes & 0x400``
+      补充——Windows 上 ``is_symlink`` 不识别 junction/reparse point。
+    - **Unix**：仅检测**目标叶子本身**（``path``）是否为符号链接，不遍历祖先。Unix
+      系统目录普遍为符号链接（macOS ``/var``→``/private/var``、``/tmp``→``/private/tmp``；
+      Linux ``/bin``→``/usr/bin`` 等），逐级检测会误伤所有经系统临时目录的合法路径
+      （曾导致 macOS CI 全部备份/导入测试失败）。叶子检测仍覆盖主要 TOCTOU 威胁——
+      目标文件/目录本身被替换为符号链接；祖先被替换的前提是攻击者已控制该祖先目录，
+      威胁等级已高，纵深防御的边际价值低于误伤成本。
+
+    必须在 ``resolve()`` 之前对原始路径检测：``resolve()`` 会展开并跟随符号链接与
+    junction，解析后路径上 ``is_symlink()`` 恒为 False，检测将静默失效。不存在的
+    组件（如待写入的新文件）``lstat`` 抛 ``FileNotFoundError``，视为非重定向。
     """
+    if sys.platform != 'win32':
+        # Unix：仅检测叶子。祖先系统符号链接（/var、/tmp、/bin…）合法，逐级会大面积误伤。
+        try:
+            st = path.lstat()
+        except FileNotFoundError:
+            return
+        except OSError:
+            logger.debug('lstat 失败，跳过重定向检测: %s', path, exc_info=True)
+            return
+        if stat.S_ISLNK(st.st_mode):
+            raise ValueError(f'目标是符号链接，拒绝访问: {path}')
+        return
+
+    # Windows：逐级检测符号链接 + reparse point/junction。
     current = path
     while True:
         try:
@@ -214,13 +237,12 @@ def _reject_reparse_points(path: Path) -> None:
         if st is not None:
             if stat.S_ISLNK(st.st_mode):
                 raise ValueError(f'路径组件包含符号链接，拒绝访问: {current}')
-            if sys.platform == 'win32':
-                # st_file_attributes 为 Windows 专有属性，getattr 兜底跨平台访问
-                attrs = getattr(st, 'st_file_attributes', 0)
-                if attrs & 0x400:
-                    raise ValueError(
-                        f'路径组件包含 reparse point/junction，拒绝访问: {current}'
-                    )
+            # st_file_attributes 为 Windows 专有属性，getattr 兜底跨平台访问
+            attrs = getattr(st, 'st_file_attributes', 0)
+            if attrs & 0x400:
+                raise ValueError(
+                    f'路径组件包含 reparse point/junction，拒绝访问: {current}'
+                )
         if current == current.parent:
             break
         current = current.parent

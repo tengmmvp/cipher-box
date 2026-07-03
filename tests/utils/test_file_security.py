@@ -209,15 +209,17 @@ class TestValidateFilePath:
 
 
 class TestValidateFilePathReparse:
-    """validate_file_path 的符号链接 / reparse point 重定向检测。
+    """validate_file_path 的符号链接 / reparse point 重定向检测（平台分支）。
 
-    回归守护：检测必须在 ``resolve()`` 之前对原始路径逐级 ``lstat``，否则经由
-    junction/symlink 的重定向在解析后路径上 ``is_symlink()`` 恒为 False，检测将
-    静默失效（旧实现因「先 resolve 再检测 + is_symlink 不识别 junction」而长期无效）。
+    回归守护两条不变量：
+    1. 检测须在 ``resolve()`` 之前对原始路径 ``lstat``，否则经由 symlink/junction
+       的重定向在解析后路径上 ``is_symlink()`` 恒为 False，检测静默失效。
+    2. Unix 仅检测叶子、Windows 逐级检测——逐级检测在 Unix 会误伤系统符号链接
+       （macOS ``/var``→``/private/var``），曾致 macOS CI 全部备份/导入测试失败。
     """
 
-    def test_symlink_component_rejected(self, tmp_path):
-        """路径组件本身为符号链接时拒绝访问。"""
+    def test_symlink_target_rejected(self, tmp_path):
+        """目标本身（叶子）为符号链接时拒绝访问（跨平台，主要 TOCTOU 防御）。"""
         from src.utils.file_security import validate_file_path
         target = tmp_path / 'real.txt'
         target.write_text('data')
@@ -229,8 +231,12 @@ class TestValidateFilePathReparse:
         with pytest.raises(ValueError, match='符号链接'):
             validate_file_path(str(link))
 
-    def test_symlink_ancestor_rejected(self, tmp_path):
-        """祖先目录为符号链接时拒绝（更现实的重定向威胁）。"""
+    def test_symlink_ancestor_unix_allows_windows_rejects(self, tmp_path):
+        """祖先符号链接：Unix 放行（系统符号链接 /var 等），Windows 拒绝（重定向威胁）。
+
+        回归守护：macOS CI 临时目录位于 /var/folders（/var→/private/var 系统符号链接），
+        若 Unix 逐级拒绝祖先符号链接，所有经临时目录的备份/导入测试将全部失败。
+        """
         from src.utils.file_security import validate_file_path
         real_dir = tmp_path / 'real_dir'
         real_dir.mkdir()
@@ -240,8 +246,14 @@ class TestValidateFilePathReparse:
             os.symlink(real_dir, link_dir)
         except (OSError, NotImplementedError):
             pytest.skip('当前环境不支持创建符号链接')
-        with pytest.raises(ValueError, match='符号链接'):
-            validate_file_path(str(link_dir / 'file.txt'))
+        target = str(link_dir / 'file.txt')
+        if os.name == 'nt':
+            with pytest.raises(ValueError, match='符号链接'):
+                validate_file_path(target)
+        else:
+            # Unix：祖先 link_dir 虽为符号链接，但叶子 file.txt 是普通文件 → 放行
+            result = validate_file_path(target)
+            assert result.is_absolute()
 
     @pytest.mark.skipif(os.name != 'nt', reason='junction 为 Windows 特有')
     def test_junction_ancestor_rejected(self, tmp_path):
@@ -273,3 +285,66 @@ class TestValidateFilePathReparse:
         target = tmp_path / 'sub' / 'new_import.json'
         result = validate_file_path(str(target))
         assert result.is_absolute()
+
+
+class TestRejectReparseBranches:
+    """``_reject_reparse_points`` 平台分支单元测试（monkeypatch ``sys.platform``）。
+
+    本地（任意平台）即可验证 Unix「仅叶子」与 Windows「逐级」两分支的正确性，
+    弥补 macOS ``/var`` 回归在 Windows 本地无法复现的盲区——逐级检测在 Unix 会
+    误伤系统符号链接（``/var``→``/private/var``），曾致 macOS CI 全部备份/导入
+    测试失败。
+    """
+
+    def test_unix_branch_does_not_traverse_ancestors(self, tmp_path, monkeypatch):
+        """Unix 分支仅 lstat 叶子一次，不遍历祖先（避免误伤 /var 等系统符号链接）。"""
+        from src.utils import file_security
+
+        monkeypatch.setattr(file_security.sys, 'platform', 'darwin')
+        call_count = {'n': 0}
+        real_lstat = Path.lstat
+
+        def counting_lstat(self):
+            call_count['n'] += 1
+            return real_lstat(self)
+
+        monkeypatch.setattr(Path, 'lstat', counting_lstat)
+        target = tmp_path / 'sub' / 'deep' / 'file.txt'
+        target.parent.mkdir(parents=True)
+        target.write_text('x')
+        file_security._reject_reparse_points(target)
+        assert call_count['n'] == 1, 'Unix 分支应仅 lstat 叶子，不遍历祖先'
+
+    def test_unix_branch_rejects_leaf_symlink(self, tmp_path, monkeypatch):
+        """Unix 分支：叶子 lstat 为符号链接时拒绝（主要 TOCTOU 防御保留）。"""
+        from src.utils import file_security
+
+        monkeypatch.setattr(file_security.sys, 'platform', 'darwin')
+
+        class _FakeStat:
+            st_mode = stat.S_IFLNK
+
+        target = tmp_path / 'evil.txt'
+        target.write_text('x')
+        monkeypatch.setattr(Path, 'lstat', lambda self: _FakeStat())
+        with pytest.raises(ValueError, match='符号链接'):
+            file_security._reject_reparse_points(target)
+
+    def test_windows_branch_traverses_ancestors(self, tmp_path, monkeypatch):
+        """Windows 分支逐级 lstat 整条路径（junction 重定向威胁需逐级检测）。"""
+        from src.utils import file_security
+
+        monkeypatch.setattr(file_security.sys, 'platform', 'win32')
+        call_count = {'n': 0}
+        real_lstat = Path.lstat
+
+        def counting_lstat(self):
+            call_count['n'] += 1
+            return real_lstat(self)
+
+        monkeypatch.setattr(Path, 'lstat', counting_lstat)
+        target = tmp_path / 'sub' / 'deep' / 'file.txt'
+        target.parent.mkdir(parents=True)
+        target.write_text('x')
+        file_security._reject_reparse_points(target)
+        assert call_count['n'] > 1, 'Windows 分支应逐级 lstat 祖先'
