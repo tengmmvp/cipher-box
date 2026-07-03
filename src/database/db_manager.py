@@ -253,7 +253,14 @@ class DatabaseManager:
         if self.in_transaction:
             raise TransactionError("数据库事务已经开始")
         self._guard_write()
-        self._conn.execute("BEGIN TRANSACTION")
+        try:
+            self._conn.execute("BEGIN TRANSACTION")
+        except sqlite3.OperationalError as exc:
+            # 纵深防御：正常路径下 in_transaction 守卫已排除重复 BEGIN。若仍触发
+            # 'cannot start a transaction within a transaction'（如 standalone
+            # @_db_write 写失败后隐式事务悬挂的遗留态），归一为 DatabaseError 而非
+            # 让裸驱动异常上泄（与 @_db_write 的失败回滚契约共同关闭连接毒化路径）。
+            raise DatabaseError(f'开始事务失败：{exc}') from exc
         self._transaction_depth = 1
 
     def commit_transaction(self) -> None:
@@ -338,7 +345,18 @@ class DatabaseManager:
             # （RLock）提供，所有 DB 操作须通过 @_db_operation 或在已持锁上下文中调用。
             self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
-            self._conn.execute("PRAGMA journal_mode=WAL")
+            # 校验 WAL 是否真正生效：不支持 WAL 的文件系统（网络共享、部分 FAT/exFAT）
+            # 上 SQLite 会静默回退到其它日志模式并返回该模式名。WAL 未生效时
+            # wal_checkpoint(TRUNCATE) 与 -wal/-shm 权限收紧等安全清理会静默降级为
+            # no-op，须记可观测告警让降级可见，而非误以为安全清理仍在工作。
+            mode_row = self._conn.execute("PRAGMA journal_mode=WAL").fetchone()
+            actual_mode = mode_row[0] if mode_row else ''
+            if str(actual_mode).lower() != 'wal':
+                logger.warning(
+                    "WAL 模式未生效（实际为 %s），WAL 相关安全清理将静默降级；"
+                    "建议将数据目录置于支持 WAL 的本地文件系统",
+                    actual_mode,
+                )
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.execute("PRAGMA secure_delete=ON")
             self._conn.execute("PRAGMA busy_timeout=5000")

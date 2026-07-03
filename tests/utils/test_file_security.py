@@ -206,3 +206,70 @@ class TestValidateFilePath:
         test_file = tmp_path / "subdir" / "file.dat"
         result = validate_file_path(str(test_file))
         assert result.is_absolute()
+
+
+class TestValidateFilePathReparse:
+    """validate_file_path 的符号链接 / reparse point 重定向检测。
+
+    回归守护：检测必须在 ``resolve()`` 之前对原始路径逐级 ``lstat``，否则经由
+    junction/symlink 的重定向在解析后路径上 ``is_symlink()`` 恒为 False，检测将
+    静默失效（旧实现因「先 resolve 再检测 + is_symlink 不识别 junction」而长期无效）。
+    """
+
+    def test_symlink_component_rejected(self, tmp_path):
+        """路径组件本身为符号链接时拒绝访问。"""
+        from src.utils.file_security import validate_file_path
+        target = tmp_path / 'real.txt'
+        target.write_text('data')
+        link = tmp_path / 'link.txt'
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError):
+            pytest.skip('当前环境不支持创建符号链接')
+        with pytest.raises(ValueError, match='符号链接'):
+            validate_file_path(str(link))
+
+    def test_symlink_ancestor_rejected(self, tmp_path):
+        """祖先目录为符号链接时拒绝（更现实的重定向威胁）。"""
+        from src.utils.file_security import validate_file_path
+        real_dir = tmp_path / 'real_dir'
+        real_dir.mkdir()
+        (real_dir / 'file.txt').write_text('data')
+        link_dir = tmp_path / 'link_dir'
+        try:
+            os.symlink(real_dir, link_dir)
+        except (OSError, NotImplementedError):
+            pytest.skip('当前环境不支持创建符号链接')
+        with pytest.raises(ValueError, match='符号链接'):
+            validate_file_path(str(link_dir / 'file.txt'))
+
+    @pytest.mark.skipif(os.name != 'nt', reason='junction 为 Windows 特有')
+    def test_junction_ancestor_rejected(self, tmp_path):
+        """Windows junction（reparse point）祖先应被拒绝。
+
+        junction 非符号链接，``is_symlink()`` 不识别，须靠
+        ``st_file_attributes & 0x400`` 检测——此为旧实现静默失效的根因。
+        """
+        import subprocess
+
+        from src.utils.file_security import validate_file_path
+        real_dir = tmp_path / 'real_dir'
+        real_dir.mkdir()
+        junction = tmp_path / 'junction_dir'
+        result = subprocess.run(
+            ['cmd', '/c', 'mklink', '/J', str(junction), str(real_dir)],
+            capture_output=True, text=True,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+        )
+        if result.returncode != 0:
+            pytest.skip('当前环境无法创建 junction')
+        (junction / 'file.txt').write_text('data')
+        with pytest.raises(ValueError, match='reparse point|符号链接'):
+            validate_file_path(str(junction / 'file.txt'))
+
+    def test_nonexistent_target_passes_when_ancestors_clean(self, tmp_path):
+        """待写入的新文件本身不存在、祖先均无重定向时应通过（导入/备份目标常见）。"""
+        from src.utils.file_security import validate_file_path
+        target = tmp_path / 'sub' / 'new_import.json'
+        result = validate_file_path(str(target))
+        assert result.is_absolute()

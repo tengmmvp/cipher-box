@@ -147,13 +147,13 @@ class ImportExportManager:
 
     def _prepare_overwrite_map(
         self, overwrite: dict[int, Entry],
-    ) -> dict[int, tuple[RawEntry, Entry]]:
-        """批量加载待覆盖条目的密文 raw 与完整解密数据，单次 SQL 查询替代 N+1。
+    ) -> dict[int, RawEntry]:
+        """批量预读待覆盖条目的密文 raw（不解密），单次 SQL 查询替代 N+1。
 
-        返回 ``{idx: (raw, decrypted_entry)}``：保留密文 raw 供 ``update_entry``
-        经 ``preloaded_raw`` 复用（跳过重复 ``get_entry``），解密 entry 的 password
-        经 ``preloaded_old_password`` 复用（跳过重复解密旧密码），消除覆盖路径的
-        双重读取与解密。
+        返回 ``{idx: raw}``：仅预读密文，解密推迟到覆盖循环逐条执行并立即清零，
+        使任一时刻仅 1 条覆盖目标的完整明文（含 password/totp_secret）驻留内存，
+        与单条路径的「用毕即清」纪律一致（原先一次性解密全部覆盖目标并全程驻留）。
+        raw 供 ``update_entry`` 经 ``preloaded_raw`` 复用（跳过重复 ``get_entry``）。
         """
         ids_by_idx: dict[int, int] = {}
         for idx, summary in overwrite.items():
@@ -163,13 +163,12 @@ class ImportExportManager:
             return {}
         raw_entries = self._entry_mgr.db.get_entries_by_ids(list(ids_by_idx.values()))
         entries_by_id = {e.id: e for e in raw_entries}
-        result: dict[int, tuple[RawEntry, Entry]] = {}
+        result: dict[int, RawEntry] = {}
         for idx, entry_id in ids_by_idx.items():
             raw = entries_by_id.get(entry_id)
             if raw is None:
                 raise EntryError(f'待覆盖条目 {entry_id} 已不存在')
-            entry = self._entry_mgr.decrypt_entry(raw)
-            result[idx] = (raw, entry)
+            result[idx] = raw
         return result
 
     def _resolve_category(
@@ -313,13 +312,14 @@ class ImportExportManager:
         duplicate_indices, overwrite_map = self._duplicate_plan(
             entries_data, duplicate_action, source_label
         )
-        overwrite_entries = self._prepare_overwrite_map(overwrite_map) if overwrite_map else {}
+        overwrite_raws = self._prepare_overwrite_map(overwrite_map) if overwrite_map else {}
 
         total = len(entries)
         new_entries: list[Entry] = []
-        # (源序号, new_entry, preloaded_raw, preloaded_existing)：覆盖路径逐条更新，
-        # 预加载 raw 与已解密 existing 复用，避免 update_entry 重复 get_entry 与解密旧密码。
-        overwrite_plans: list[tuple[int, Entry, RawEntry, Entry]] = []
+        # (源序号, new_entry, preloaded_raw, preloaded_old_password)：覆盖路径逐条更新。
+        # existing 在覆盖循环逐条解密、提取 old_password 后立即清零（用毕即清），故 plan
+        # 仅保留 old_password 字符串而非整个 existing，收敛明文驻留。
+        overwrite_plans: list[tuple[int, Entry, RawEntry, str]] = []
         skipped = 0
 
         for i, entry in enumerate(entries):
@@ -335,16 +335,25 @@ class ImportExportManager:
             )
 
             try:
-                if i in overwrite_entries:
-                    raw, existing = overwrite_entries[i]
-                    entry.id = existing.id
-                    entry.created_at = existing.created_at
-                    if overwrite_merger is not None:
-                        overwrite_merger(entry, existing)
-                    # 导入覆盖保留原 password_changed_at，避免批量导入把"久未
-                    # 修改"条目重置为"刚修改"从而绕过过期检测
-                    entry.password_changed_at = existing.password_changed_at
-                    overwrite_plans.append((i, entry, raw, existing))
+                if i in overwrite_raws:
+                    raw = overwrite_raws[i]
+                    # 逐条解密覆盖目标：用毕即清（password/totp_secret 置零 + 删引用），
+                    # 任一时刻仅 1 条覆盖目标完整明文驻留，与单条路径纪律一致。
+                    existing = self._entry_mgr.decrypt_entry(raw)
+                    try:
+                        entry.id = existing.id
+                        entry.created_at = existing.created_at
+                        if overwrite_merger is not None:
+                            overwrite_merger(entry, existing)
+                        # 导入覆盖保留原 password_changed_at，避免批量导入把"久未
+                        # 修改"条目重置为"刚修改"从而绕过过期检测
+                        entry.password_changed_at = existing.password_changed_at
+                        old_password = existing.password or ''
+                    finally:
+                        existing.password = ''
+                        existing.totp_secret = ''
+                        del existing
+                    overwrite_plans.append((i, entry, raw, old_password))
                 else:
                     new_entries.append(entry)
             except (ValueError, EntryIntegrityError) as exc:
@@ -379,15 +388,16 @@ class ImportExportManager:
                 skipped += len(new_entries)
 
         # 覆盖路径逐条更新：保留 per-entry 错误隔离。preloaded_raw/preloaded_old_password
-        # 复用 _prepare_overwrite_map 的预读结果，跳过重复 get_entry 与旧密码解密。
-        for idx, entry, raw, existing in overwrite_plans:
+        # 复用 _prepare_overwrite_map 的密文预读与覆盖循环提取的 old_password，跳过重复
+        # get_entry 与旧密码解密。
+        for idx, entry, raw, old_password in overwrite_plans:
             try:
                 self._entry_mgr.update_entry(
                     entry,
                     preserve_password_changed_at=True,
                     notify=False,
                     preloaded_raw=raw,
-                    preloaded_old_password=existing.password or '',
+                    preloaded_old_password=old_password,
                 )
             except DecryptionError as exc:
                 # 防御性：当前 preloaded_old_password 已使 update_entry 跳过旧密码解密，

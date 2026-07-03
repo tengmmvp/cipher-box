@@ -90,3 +90,34 @@ def test_get_entries_after_id_cursor_paginates(db):
     ids = [db.add_entry(_make_entry(crypto_id=f'c{i}', title=f'E{i}')) for i in range(5)]
     page = db.get_entries(EntryQuery(after_id=ids[1], limit=2))
     assert [e.id for e in page] == ids[2:4]
+
+
+def test_add_entry_foreign_key_violation_classified(db):
+    """引用不存在分类的 FK 违规分流为「外键约束」，不误标为 crypto_id 冲突（#14 回归）。"""
+    entry = _make_entry(category_id=999999, title='FK')
+    with pytest.raises(DatabaseError, match='外键约束'):
+        db.add_entry(entry)
+
+
+def test_classify_entry_integrity_error_routes_by_message():
+    """_classify_entry_integrity_error 按文案分流 FK/NOT NULL/唯一（#14 单元守护）。"""
+    import sqlite3
+
+    from src.database.entry_repository import _classify_entry_integrity_error
+
+    fk = _classify_entry_integrity_error(
+        '条目写入', sqlite3.IntegrityError('FOREIGN KEY constraint failed')
+    )
+    assert '外键约束' in str(fk)
+    assert 'crypto_id' not in str(fk)
+
+    nn = _classify_entry_integrity_error(
+        '条目写入', sqlite3.IntegrityError('NOT NULL constraint failed: entries.title_enc')
+    )
+    assert '非空约束' in str(nn)
+    assert 'crypto_id' not in str(nn)
+
+    uq = _classify_entry_integrity_error(
+        '条目写入', sqlite3.IntegrityError('UNIQUE constraint failed: entries.crypto_id')
+    )
+    assert 'crypto_id' in str(uq)

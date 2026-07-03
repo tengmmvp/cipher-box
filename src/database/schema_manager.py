@@ -46,32 +46,35 @@ _INDEX_DEFINITIONS: list[tuple[str, str, tuple[str, ...], bool]] = [
     ),
 ]
 
+# 列预期四元组：(type, notnull, pk, dflt_value)。dflt_value 为 PRAGMA table_info
+# 返回的默认值原文（带引号字符串如 "'login'"、裸数字如 "0"、无默认为 None），覆盖列
+# 默认值校验，防止被篡改默认值（如 entry_type DEFAULT）的库仍通过结构校验。
 _TABLE_COLUMNS = {
     'vault_meta': {
-        'key': ('TEXT', 0, 1), 'value': ('TEXT', 1, 0),
+        'key': ('TEXT', 0, 1, None), 'value': ('TEXT', 1, 0, None),
     },
     'categories': {
-        'id': ('INTEGER', 0, 1), 'name': ('TEXT', 1, 0),
-        'icon_char': ('TEXT', 0, 0), 'color': ('TEXT', 0, 0),
-        'sort_order': ('INTEGER', 0, 0), 'created_at': ('TEXT', 0, 0),
-        'metadata_mac': ('TEXT', 1, 0),
+        'id': ('INTEGER', 0, 1, None), 'name': ('TEXT', 1, 0, None),
+        'icon_char': ('TEXT', 0, 0, "'[DIR]'"), 'color': ('TEXT', 0, 0, "'#666666'"),
+        'sort_order': ('INTEGER', 0, 0, '0'), 'created_at': ('TEXT', 0, 0, "''"),
+        'metadata_mac': ('TEXT', 1, 0, "''"),
     },
     'entries': {
-        'id': ('INTEGER', 0, 1), 'crypto_id': ('TEXT', 1, 0),
-        'title_enc': ('TEXT', 1, 0), 'username_enc': ('TEXT', 0, 0),
-        'password_enc': ('TEXT', 0, 0), 'url_enc': ('TEXT', 0, 0),
-        'category_id': ('INTEGER', 0, 0), 'tags_enc': ('TEXT', 0, 0),
-        'notes_enc': ('TEXT', 0, 0), 'custom_fields_enc': ('TEXT', 0, 0),
-        'is_favorite': ('INTEGER', 0, 0), 'is_deleted': ('INTEGER', 0, 0),
-        'password_strength': ('INTEGER', 0, 0), 'entry_type': ('TEXT', 0, 0),
-        'totp_secret_enc': ('TEXT', 0, 0), 'created_at': ('TEXT', 0, 0),
-        'updated_at': ('TEXT', 0, 0), 'deleted_at': ('TEXT', 0, 0),
-        'password_changed_at': ('TEXT', 0, 0),
-        'metadata_mac': ('TEXT', 1, 0),
+        'id': ('INTEGER', 0, 1, None), 'crypto_id': ('TEXT', 1, 0, "''"),
+        'title_enc': ('TEXT', 1, 0, "''"), 'username_enc': ('TEXT', 0, 0, "''"),
+        'password_enc': ('TEXT', 0, 0, "''"), 'url_enc': ('TEXT', 0, 0, "''"),
+        'category_id': ('INTEGER', 0, 0, None), 'tags_enc': ('TEXT', 0, 0, "''"),
+        'notes_enc': ('TEXT', 0, 0, "''"), 'custom_fields_enc': ('TEXT', 0, 0, "''"),
+        'is_favorite': ('INTEGER', 0, 0, '0'), 'is_deleted': ('INTEGER', 0, 0, '0'),
+        'password_strength': ('INTEGER', 0, 0, '0'), 'entry_type': ('TEXT', 0, 0, "'login'"),
+        'totp_secret_enc': ('TEXT', 0, 0, "''"), 'created_at': ('TEXT', 0, 0, "''"),
+        'updated_at': ('TEXT', 0, 0, "''"), 'deleted_at': ('TEXT', 0, 0, "''"),
+        'password_changed_at': ('TEXT', 0, 0, "''"),
+        'metadata_mac': ('TEXT', 1, 0, "''"),
     },
     'password_history': {
-        'id': ('INTEGER', 0, 1), 'entry_id': ('INTEGER', 1, 0),
-        'old_password_enc': ('TEXT', 0, 0), 'changed_at': ('TEXT', 0, 0),
+        'id': ('INTEGER', 0, 1, None), 'entry_id': ('INTEGER', 1, 0, None),
+        'old_password_enc': ('TEXT', 0, 0, "''"), 'changed_at': ('TEXT', 0, 0, "''"),
     },
 }
 
@@ -240,8 +243,12 @@ class SchemaManager:
             # table 来自上方硬编码的 required 字典键，安全无注入风险。
             # SQLite PRAGMA 不支持参数化查询，f-string 是唯一方式。
             rows = cursor.execute(f'PRAGMA table_info({table})').fetchall()
+            # 比对 (type, notnull, pk, dflt_value) 四元组：dflt_value 覆盖列默认值，
+            # 防止被篡改默认值的库仍通过结构校验。PRAGMA table_info 的 dflt_value
+            # 返回带引号原文（如 "'login'"、"0"），无默认时为 None，与 _TABLE_COLUMNS
+            # 第四位预期一一对应。
             columns = {
-                row['name']: (row['type'].upper(), row['notnull'], row['pk'])
+                row['name']: (row['type'].upper(), row['notnull'], row['pk'], row['dflt_value'])
                 for row in rows
             }
             if columns != expected_columns:

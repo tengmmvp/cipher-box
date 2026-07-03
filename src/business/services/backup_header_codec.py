@@ -109,6 +109,30 @@ def enforce_kdf_floor(params: KdfParams) -> None:
         raise BackupError('备份文件 KDF 参数异常，可能已被篡改')
 
 
+# 恢复不可信备份时的 KDF 紧上界倍数：备份头 KDF 参数由提供者控制，validate_params
+# 的宽上界（1GB/time=10/p=16）不足以防社会工程下的内存耗尽 DoS。恢复路径额外限制
+# 各分量不超过创建默认的此倍数，超出拒绝（合法备份恒用 DEFAULT_KDF_PARAMS）。
+MAX_RESTORE_KDF_MULTIPLIER = 2
+
+
+def enforce_kdf_ceiling(params: KdfParams) -> None:
+    """恢复不可信备份时拒绝远超创建默认的 Argon2id 参数，防内存耗尽 DoS。
+
+    合法备份恒以 ``DEFAULT_KDF_PARAMS`` 创建，故紧上界（DEFAULT 的
+    ``MAX_RESTORE_KDF_MULTIPLIER`` 倍）不影响正常恢复；社会工程下被构造为
+    1GB/time=10/p=16 的恶意备份会在派生（且在 vault_write_lock 内同步执行）前被
+    早期拒绝，避免 UI 长时间冻结或 OOM。与 :func:`enforce_kdf_floor` 互补：floor
+    防弱化降级，ceiling 防资源耗尽飙升。
+    """
+    m = MAX_RESTORE_KDF_MULTIPLIER
+    if (
+        params.time_cost > DEFAULT_KDF_PARAMS.time_cost * m
+        or params.memory_cost > DEFAULT_KDF_PARAMS.memory_cost * m
+        or params.parallelism > DEFAULT_KDF_PARAMS.parallelism * m
+    ):
+        raise BackupError('备份文件 KDF 参数异常（超出恢复允许上界），可能已被篡改')
+
+
 def zero_backup_key_if_owned(flags: BackupFlag, key: bytearray | bytes | None) -> None:
     """清零 PASSWORD 路径派生的 backup_key；SNAPSHOT 路径借用 snapshot_key 不清零。
 
@@ -156,7 +180,9 @@ __all__ = [
     'BackupFlag',
     'MAX_BACKUP_FILE_SIZE',
     'MAX_BACKUP_PAYLOAD_SIZE',
+    'MAX_RESTORE_KDF_MULTIPLIER',
     'derive_backup_key',
+    'enforce_kdf_ceiling',
     'enforce_kdf_floor',
     'header_aad',
     'inspect_backup',

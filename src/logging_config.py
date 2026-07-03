@@ -46,11 +46,16 @@ class SensitiveDataFilter(logging.Filter):
         ),
         # otpauth:// URI（TOTP 配置，含 secret 参数与账户名），整段打码
         (re.compile(r'otpauth://\S+'), 'otpauth://[REDACTED]'),
-        # key=value / key:value 形式的敏感赋值，等号或冒号后的非空白内容打码
+        # key=value / key:value 形式的敏感赋值，等号或冒号后的值打码。
+        # 值贪婪到行尾（.+）：含空格的 passphrase（如 'correct horse battery staple'）
+        # 整段打码，原 \S+ 仅打码首个词致其余明文泄漏。过度打码（一行多赋值时整行
+        # 打码）优于漏打码，符合纵深防御宁可误杀的安全侧取舍。
+        # 关键词前置否定环视 (?<![A-Za-z])：避免 mid-word 误匹配（如 donkey=… 被当作
+        # key= 打码）。中文关键词（密码/密钥/令牌）前字符非 A-Za-z，环视通过，不受影响。
         (
             re.compile(
-                r'(?i)(password|pwd|passwd|secret|token|api[_-]?key|key|密码|密钥|令牌)'
-                r'\s*[:=]\s*\S+'
+                r'(?i)(?<![A-Za-z])(password|pwd|passwd|secret|token|api[_-]?key|key|密码|密钥|令牌)'
+                r'\s*[:=]\s*.+'
             ),
             r'\1=[REDACTED]',
         ),

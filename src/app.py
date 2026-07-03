@@ -233,8 +233,12 @@ class CipherBoxApp:
     def _on_lock(self) -> None:
         """锁定保险库。"""
         if self._main_window:
-            self._main_window.prepare_for_lock()
+            # 先隐藏主窗口：prepare_for_lock 关闭对话框时可能经 wait_worker_shutdown
+            # 阻塞等待后台 worker（恢复/导入 worker 不可中断）。先 hide() 让窗口立即
+            # 从用户视野消失，配合 prepare_for_lock 内「先清明文 UI 再等 worker」双重
+            # 收敛「用户已请求锁定」到实际清零之间的明文/密钥暴露窗口。
             self._main_window.hide()
+            self._main_window.prepare_for_lock()
 
         self._vault.lock()
 

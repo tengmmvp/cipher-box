@@ -51,6 +51,7 @@ from ..services.backup_header_codec import (
     MAX_BACKUP_PAYLOAD_SIZE,
     BackupFlag,
     derive_backup_key,
+    enforce_kdf_ceiling,
     enforce_kdf_floor,
     header_aad,
     read_backup_header,
@@ -454,30 +455,37 @@ class BackupRestoreManager:
 
     def _restore_current(self, file: IO[bytes], backup_password: str | None) -> tuple[bool, str]:
         flags, salt, kdf_params = read_backup_header(file)
-        # 防 KDF 参数降级：在派生密钥前拒绝被篡改为更弱参数的备份头
+        # 防 KDF 参数降级/飙升：在派生密钥前拒绝被篡改的参数。floor 拒绝弱化降级；
+        # ceiling 拒绝社会工程下构造的内存耗尽参数（合法备份恒用 DEFAULT_KDF_PARAMS），
+        # 避免在持锁派生时 UI 长冻结或 OOM。
         enforce_kdf_floor(kdf_params)
+        enforce_kdf_ceiling(kdf_params)
         # 预声明 backup_key：PASSWORD 派生失败或 SNAPSHOT 路径前的提前 return 会使
-        # backup_key 未在 with 块内赋值，方法级 finally 仍需引用它。预声明 None 避免
-        # locals().get 反射（字段重命名时静态检查无法发现）。
+        # backup_key 未赋值，方法级 finally 仍需引用它。预声明 None 避免 locals 反射。
         backup_key: bytearray | bytes | None = None
+        checkpoint_ok = True
         try:
-            # 持 vault 写锁串行化恢复与改密/备份：从解密全量明文到写库全程持锁，
-            # 与 create_backup 的「持锁才接触全量明文」契约统一。经公共
-            # vault_write_lock 访问，不直接触碰受保护的 _lock。备份密钥（PASSWORD
-            # 派生 / SNAPSHOT 读取）也在锁内解析，与 create_backup 完全对称，消除
-            # SNAPSHOT 路径 is_unlocked 检查与读取之间主线程 lock() 清零 snapshot_key
-            # 的竞态窗口。
+            # PASSWORD 派生在锁外完成：Argon2id（64MB）耗时，移出 vault_write_lock
+            # 缩短持锁与 UI 冻结窗口。backup_key 为本地派生，不涉及 snapshot_key 竞态。
+            if flags == BackupFlag.PASSWORD:
+                if not backup_password:
+                    return False, '请输入创建备份时设置的备份密码'
+                backup_key = MasterKeyManager.derive_backup_key(
+                    backup_password, salt, kdf_params,
+                )
+            # 持 vault 写锁串行化恢复与改密/备份：从解密全量明文到写库全程持锁。
+            # SNAPSHOT 路径借用 snapshot_key，须在锁内读取（消除 is_unlocked 检查与
+            # 读取间主线程 lock() 清零 snapshot_key 的竞态），故仍在锁内解析。
             with self._vault.vault_write_lock():
-                if flags == BackupFlag.PASSWORD:
-                    if not backup_password:
-                        return False, '请输入创建备份时设置的备份密码'
-                    backup_key = MasterKeyManager.derive_backup_key(
-                        backup_password, salt, kdf_params,
-                    )
-                else:
+                if flags != BackupFlag.PASSWORD:
                     if not self._vault.is_unlocked:
                         return False, '恢复快照备份需要先解锁保险库'
                     backup_key = self._vault.snapshot_key
+                # backup_key 必非 None：PASSWORD 在锁外已派生，SNAPSHOT 在上方分支已读取。
+                # 显式检查替代 assert（项目约定：python -O 下 assert 跳过，显式检查仍捕获
+                # 意外状态），同时满足类型检查的 narrow 需求。
+                if backup_key is None:
+                    raise RuntimeError('备份密钥未初始化')
                 try:
                     # 内存特征：峰值约 3 倍载荷大小。
                     # encrypted 不超过 64MB，plaintext 不超过 32MB，外加 JSON 解析树，
@@ -520,24 +528,39 @@ class BackupRestoreManager:
                 # 事务已提交，key_epoch 与 snapshot_key_enc 均已在同一事务内原子写入。
                 # 在释放 vault 锁前同步内存状态（不写库），既消除事务外写库的崩溃窗口，
                 # 也消除旧 snapshot_key 仍可被并发读取（snapshot_key property）的窗口。
-                # apply_snapshot_key 总复制到 KeyManager，此后局部 new_snapshot_key
-                # 不再需要，立即清零（含 update_key_epoch 异常路径）收缩崩溃 dump 窗口。
                 try:
                     if new_epoch:
                         self._vault.update_key_epoch(new_epoch)
                     self._vault.apply_snapshot_key(new_snapshot_key)
                 finally:
                     secure_zero_buffer(new_snapshot_key)
+                # 事务提交后截断 WAL：clear_vault_data 删除的是被恢复数据替换的旧条目/
+                # 分类/历史密文，由**当前主密钥**加密（恢复不轮换主密钥，与改密路径残留
+                # 旧密钥不同），持当前主密钥与 WAL 文件者可恢复这些旧明文。须在事务外
+                # 显式截断（事务内 secure_checkpoint 会跳过）；失败非致命（数据已提交完整），
+                # 但纳入返回警告让降级可见，建议重启重试 TRUNCATE。
+                try:
+                    self._vault.db.secure_checkpoint()
+                except Exception:
+                    logger.warning('恢复后 WAL 安全截断失败', exc_info=True)
+                    checkpoint_ok = False
             # 锁外清理旧 snapshot_key 加密的快照与恢复点：仅 unlink 文件，不读取
             # snapshot_key property，故无需持锁，减少锁持有时间。
             failed_purges = self._vault.purge_snapshot_backups()
+            warnings: list[str] = []
+            if not checkpoint_ok:
+                warnings.append(
+                    '恢复完成，但 WAL 安全截断失败，被替换的旧数据（当前主密钥加密）'
+                    '可能残留于 WAL；建议重启应用以完成清理。'
+                )
             if failed_purges:
-                return True, self._format_purge_warning(failed_purges)
+                warnings.append(self._format_purge_warning(failed_purges))
+            if warnings:
+                return True, ' '.join(warnings)
             return True, ''
         finally:
             # 确保 PASSWORD 派生的 backup_key 在所有退出路径（含密钥派生失败、文件
             # 过大、解密异常）都清零；SNAPSHOT 路径借用 snapshot_key 不清零。
-            # backup_key 已在方法级预声明，派生异常时为 None，zero_backup_key_if_owned 对 None 跳过。
             zero_backup_key_if_owned(flags, backup_key)
 
     def _format_purge_warning(self, failed_purges: list[Path]) -> str:
@@ -638,17 +661,10 @@ class BackupRestoreManager:
                     'vault_meta_mac',
                     MetadataSigner.compute_vault_meta_mac(meta_snapshot, key),
                 )
-            # 事务提交后截断 WAL：clear_vault_data 删除的旧主密码密文残留在 WAL，
-            # 事务内 secure_checkpoint 会跳过，须在事务外显式截断以收缩泄漏面。
-            # 截断失败非致命（数据已提交完整，WAL 残留仅为泄漏面问题），单独捕获
-            # 避免 finally 因 success 未置 True 而清零 new_snapshot_key——否则调用方
-            # 拿不到已落库 snapshot_key_enc 对应的密钥，当前会话 snapshot 状态与已
-            # 提交的库不一致。与改密路径（vault_manager._re_encrypt_all）secure_checkpoint
-            # 的非致命处理对称。
-            try:
-                db.secure_checkpoint()
-            except Exception:
-                logger.warning('恢复后 WAL 安全截断失败（非致命）', exc_info=True)
+            # WAL 截断已移至调用方 _restore_current（事务提交后在 vault_write_lock 内
+            # 显式 secure_checkpoint，失败纳入返回警告让降级可见）。此处不再截断，避免
+            # 与调用方重复；success 在 return 前置 True，保证 finally 不误清零已落库的
+            # snapshot_key（调用方 apply_snapshot_key 复制到 KeyManager 后才清零自身引用）。
             success = True
             return new_epoch, new_snapshot_key
         finally:

@@ -4,6 +4,7 @@ import csv
 import io
 import logging
 import os
+import stat
 import subprocess
 import sys
 import threading
@@ -156,8 +157,9 @@ def validate_file_path(path: str | Path, base_dir: Path | None = None) -> Path:
     """验证文件路径，用于导入/导出/备份操作。
 
     解析路径并拒绝可能允许目录遍历或路径重定向的组件：拒绝 ``..`` 遍历；
-    对解析后的真实路径及其所有祖先检测符号链接与 Windows reparse point/junction，
-    作为对抗路径重定向（把写入重定向到敏感文件或攻击者可控位置）的纵深防御。
+    对**原始未解析路径**及其所有祖先逐级 ``lstat`` 检测符号链接与 Windows
+    reparse point/junction，作为对抗路径重定向（把写入重定向到敏感文件或
+    攻击者可控位置）的纵深防御。
 
     调用方必须使用返回的 resolved 路径而非原始 path 参数，以缩小 TOCTOU 竞态窗口。
 
@@ -176,8 +178,11 @@ def validate_file_path(path: str | Path, base_dir: Path | None = None) -> Path:
     raw = Path(path)
     if '..' in raw.parts:
         raise ValueError('文件路径包含非法遍历组件')
+    # 必须在 resolve() 之前对原始路径逐级检测：resolve() 会展开并跟随符号链接与
+    # junction，若先 resolve 再检测，原始输入中经由 junction 的重定向在解析后路径
+    # 上 is_symlink() 恒为 False，检测将静默失效（该控制曾因此长期无效）。
+    _reject_reparse_points(raw)
     resolved = raw.resolve()
-    _reject_reparse_points(resolved)
     if base_dir is not None:
         base_resolved = Path(base_dir).resolve()
         if not resolved.is_relative_to(base_resolved):
@@ -185,29 +190,39 @@ def validate_file_path(path: str | Path, base_dir: Path | None = None) -> Path:
     return resolved
 
 
-def _reject_reparse_points(resolved: Path) -> None:
-    """拒绝 resolved 路径及其所有祖先上的符号链接 / Windows reparse point。
+def _reject_reparse_points(path: Path) -> None:
+    """拒绝路径及其所有祖先上的符号链接 / Windows reparse point/junction。
 
-    用解析后的真实路径（``resolve()`` 已展开符号链接）而非原 path 检测：对结果的
-    祖先链做检测可发现「祖先被替换为 junction 指向敏感位置」的重定向。Windows 上
-    ``is_symlink`` 不识别 junction/reparse point，补充 ``st_file_attributes`` 的
-    ``FILE_ATTRIBUTE_REPARSE_POINT`` (0x400) 检测，覆盖 junction 与挂载点重定向——
-    本项目主平台为 Windows（数据目录 %APPDATA%），此补充关闭 is_symlink 的盲区。
+    对**原始未解析路径**逐级 ``lstat``（不跟随）检测：``resolve()`` 会展开并跟随
+    符号链接与 junction，故必须在解析前逐级检测，才能发现经由 junction 的重定向。
+    每一级用一次 ``lstat`` 同时取 ``st_mode``（判符号链接）与 Windows 专有的
+    ``st_file_attributes``（判 reparse point），覆盖 junction 与挂载点重定向——
+    Windows 上 ``is_symlink`` 不识别 junction/reparse point，需 ``0x400`` 补充。
+
+    不存在的组件（如待写入的新文件本身）``lstat`` 抛 ``FileNotFoundError``，视为
+    非重定向并继续向上检测已存在的祖先——祖先被替换为 junction 是更现实的威胁。
     """
-    current = resolved
-    while current != current.parent:  # 未到根目录
-        if current.is_symlink():
-            raise ValueError(f'路径组件包含符号链接，拒绝访问: {current}')
-        if sys.platform == 'win32':
-            try:
+    current = path
+    while True:
+        try:
+            st = current.lstat()
+        except FileNotFoundError:
+            st = None
+        except OSError:
+            logger.debug('lstat 失败，跳过该组件重定向检测: %s', current, exc_info=True)
+            st = None
+        if st is not None:
+            if stat.S_ISLNK(st.st_mode):
+                raise ValueError(f'路径组件包含符号链接，拒绝访问: {current}')
+            if sys.platform == 'win32':
                 # st_file_attributes 为 Windows 专有属性，getattr 兜底跨平台访问
-                attrs = getattr(current.lstat(), 'st_file_attributes', 0)
+                attrs = getattr(st, 'st_file_attributes', 0)
                 if attrs & 0x400:
                     raise ValueError(
                         f'路径组件包含 reparse point/junction，拒绝访问: {current}'
                     )
-            except OSError:
-                pass
+        if current == current.parent:
+            break
         current = current.parent
 
 

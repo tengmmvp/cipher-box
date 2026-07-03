@@ -6,7 +6,9 @@ import hmac
 import logging
 import struct
 import time
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, urlparse
+
+from ..utils.memory import secure_zero_buffer
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +79,9 @@ class TOTPGenerator:
             if parsed.netloc.lower() != 'totp':
                 raise ValueError('仅支持 TOTP URI')
             query = parse_qs(parsed.query)
-            value = unquote(query.get('secret', [''])[0]).strip()
+            # parse_qs 已对返回值做一次百分号解码，勿再 unquote（双重解码会把
+            # secret 中的 %XX 当转义再次解码，损坏密钥）。
+            value = query.get('secret', [''])[0].strip()
             if not value:
                 raise ValueError('otpauth URI 中缺少 secret 参数')
             algorithm = query.get('algorithm', [algorithm])[0].upper()
@@ -99,7 +103,7 @@ class TOTPGenerator:
         return algorithm, value, period, digits
 
     @staticmethod
-    def _compute_totp(key: bytes, algo_name: str, period: int, digits: int) -> str:
+    def _compute_totp(key: bytes | bytearray, algo_name: str, period: int, digits: int) -> str:
         """核心 TOTP 计算：HMAC + 动态截断 + 取模。"""
         # 防御 period<=0 导致除零：正常经 _parse_config 校验，此守卫防止绕过
         # _parse_config 直接调用 _compute_totp（如未来重构）时 ZeroDivisionError。
@@ -138,11 +142,20 @@ class TOTPGenerator:
             return '', ValueError('不支持的 TOTP 算法')
 
         try:
-            key = base64.b32decode(TOTPGenerator._normalize_base32(raw_secret), casefold=True)
+            # 解码为 bytearray 以便用毕经 secure_zero_buffer 原地清零（bytes 不可变，
+            # 只能清零副本）。TOTP 种子是长效认证机密，与主密钥清零纪律对齐。
+            key = bytearray(
+                base64.b32decode(TOTPGenerator._normalize_base32(raw_secret), casefold=True)
+            )
         except (binascii.Error, ValueError) as exc:
             return '', ValueError(f'TOTP Base32 解码失败: {exc}')
 
-        return TOTPGenerator._compute_totp(key, algo_name, period, digits), None
+        try:
+            return TOTPGenerator._compute_totp(key, algo_name, period, digits), None
+        finally:
+            # CPython 固有限制：hmac.new 内部构造的 ipad/opad 副本仍依赖 GC 回收，
+            # 此处只收缩外部一份引用，非完全擦除。
+            secure_zero_buffer(key)
 
     @staticmethod
     def generate(secret: str, algorithm: str = 'SHA1', period: int = DEFAULT_PERIOD, digits: int = DEFAULT_DIGITS) -> str:
@@ -203,8 +216,10 @@ class TOTPGenerator:
     def _extract_period(secret: str, default: int = DEFAULT_PERIOD) -> int:
         """从 otpauth URI 中提取 period，避免完整 _parse_config 的开销。
 
-        对解析结果做正数校验，与 _parse_config 对齐，防止 period<=0 让
-        get_remaining_seconds 取模抛 ZeroDivisionError 或返回负倒计时。
+        与 _parse_config 复用同一合法区间 ``1 <= period <= _MAX_TOTP_PERIOD``（单一
+        事实源）：period<=0 会让 get_remaining_seconds 取模抛 ZeroDivisionError 或返回
+        负倒计时；超长 period（如 999999）让 TOTP 几乎不变（退化为静态码），UI 倒计时
+        显示异常超大值而验证码恒为空，用户难以察觉配置损坏。
         """
         value = secret.strip()
         if value.lower().startswith('otpauth://'):
@@ -213,7 +228,7 @@ class TOTPGenerator:
                 period = int(query.get('period', [str(default)])[0])
             except (ValueError, TypeError):
                 return default
-            return period if period > 0 else default
+            return period if 0 < period <= _MAX_TOTP_PERIOD else default
         return default
 
     @staticmethod
@@ -252,16 +267,22 @@ class TOTPGenerator:
             return False
 
         try:
-            decoded = base64.b32decode(TOTPGenerator._normalize_base32(raw_secret), casefold=True)
+            # 解码为 bytearray 以便用毕原地清零（同 _generate_impl 的清零契约）。
+            decoded = bytearray(
+                base64.b32decode(TOTPGenerator._normalize_base32(raw_secret), casefold=True)
+            )
         except (binascii.Error, ValueError):
             logger.debug("TOTP 密钥验证失败", exc_info=True)
             return False
-        # 拒绝解码后过短的 secret：RFC 6238 建议 ≥160 位（20 字节），但实践中
-        # Google Authenticator 等广泛使用 10 字节（80 位，16 个 base32 字符）secret，
-        # 30s 窗口 + 6 位码下在线爆破 80 位 secret 仍不可行（需 ~2^80/10^6 次尝试）。
-        # 故下限放宽到 10 字节，仅拦截明显损坏/截断的极短输入（其生成的码永不匹配，
-        # 用户难以察觉）。
-        if len(decoded) < 10:
-            logger.debug("TOTP 密钥解码后长度不足：%d 字节", len(decoded))
-            return False
-        return True
+        try:
+            # 拒绝解码后过短的 secret：RFC 6238 建议 ≥160 位（20 字节），但实践中
+            # Google Authenticator 等广泛使用 10 字节（80 位，16 个 base32 字符）secret，
+            # 30s 窗口 + 6 位码下在线爆破 80 位 secret 仍不可行（需 ~2^80/10^6 次尝试）。
+            # 故下限放宽到 10 字节，仅拦截明显损坏/截断的极短输入（其生成的码永不匹配，
+            # 用户难以察觉）。
+            if len(decoded) < 10:
+                logger.debug("TOTP 密钥解码后长度不足：%d 字节", len(decoded))
+                return False
+            return True
+        finally:
+            secure_zero_buffer(decoded)

@@ -37,9 +37,16 @@ class _DbOperationHost(Protocol):
 
 
 class _DbWriteHost(_DbOperationHost, Protocol):
-    """写操作宿主额外要求 _guard_write（阻止过期密钥会话写库）。"""
+    """写操作宿主额外要求 _guard_write 与事务状态查询。
+
+    ``in_transaction`` 用于 ``_db_write`` 的失败回滚契约：仅在未处显式事务时
+    回滚 standalone 写的隐式事务，避免对显式事务内的嵌套写双重 rollback。
+    """
 
     def _guard_write(self) -> None: ...
+
+    @property
+    def in_transaction(self) -> bool: ...
 
 
 _H = TypeVar('_H', bound='_DbOperationHost')
@@ -69,7 +76,15 @@ def _db_write(method: Callable[Concatenate[_HW, _P], _R]) -> Callable[Concatenat
     写库。通过装饰器自动执行写入前校验，使写保护成为不可遗忘的默认，而非依赖每个
     写方法内部手动调用——后者分散在十余处，新增写方法时一旦遗漏即静默绕过护栏。
 
-    要求被装饰的实例满足 ``_DbWriteHost``（_conn/_lock/_guard_write）。
+    失败回滚契约：被装饰的 standalone 写方法依赖 sqlite3 默认 ``isolation_level``
+    的隐式事务（首条 DML 自动开事务，末尾 ``_auto_commit`` 收尾）。若方法抛异常，
+    ``_auto_commit`` 不执行，隐式事务保持开启而 ``_transaction_depth`` 仍为 0，
+    此后显式 ``transaction()`` 的 ``BEGIN TRANSACTION`` 会抛
+    *"cannot start a transaction within a transaction"*。故 standalone 写失败时
+    必须回滚隐式事务；显式事务内的嵌套写不在此回滚（由 ``transaction()`` 上下文
+    统一回滚，避免双重 rollback 干扰外层事务）。
+
+    要求被装饰的实例满足 ``_DbWriteHost``（_conn/_lock/_guard_write/in_transaction）。
     """
     @functools.wraps(method)
     def wrapper(self: _HW, *args: _P.args, **kwargs: _P.kwargs) -> _R:
@@ -77,5 +92,15 @@ def _db_write(method: Callable[Concatenate[_HW, _P], _R]) -> Callable[Concatenat
             raise DatabaseError("数据库未连接")
         with self._lock:
             self._guard_write()
-            return method(self, *args, **kwargs)
+            try:
+                return method(self, *args, **kwargs)
+            except Exception:
+                if not self.in_transaction:
+                    conn = self._conn
+                    if conn is not None:
+                        try:
+                            conn.rollback()
+                        except sqlite3.Error:
+                            logger.warning("写失败后回滚隐式事务失败", exc_info=True)
+                raise
     return wrapper

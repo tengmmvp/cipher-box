@@ -71,3 +71,23 @@ class TestGetSafeSecurityMinimums:
         cfg._config = {'auto_lock_minutes': 0}
         cfg._integrity_warning = True
         assert cfg.get_safe('auto_lock_minutes', 5) == 1
+
+
+def test_integrity_key_read_failure_does_not_block_startup(tmp_path, monkeypatch):
+    """config.key 读取失败（TOCTOU/IO）时 fall-through 生成新密钥，不阻断启动（#11）。"""
+    from pathlib import Path
+    cfg = make_test_config(str(tmp_path))
+    key_path = cfg._integrity_key_path
+    assert key_path.exists()
+
+    real_read = Path.read_bytes
+
+    def _fail(self, *args, **kwargs):
+        if self == key_path:
+            raise OSError('io error')
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'read_bytes', _fail)
+    # 再次构造指向同目录：读取失败应 fall-through 生成新密钥，不抛异常
+    cfg2 = make_test_config(str(tmp_path))
+    assert cfg2._integrity_key_path.exists()

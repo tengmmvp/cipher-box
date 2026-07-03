@@ -98,3 +98,31 @@ class TestTOTPErrorHandling:
         uri = 'otpauth://totp/Test?secret=JBSWY3DPEHPK3PXP&algorithm=SHA512'
         result = TOTPGenerator._parse_config(uri, 'SHA1', 30, 6)  # type: ignore[arg-type]
         assert result[0] == 'SHA512'  # algorithm
+
+    # --- otpauth secret 解码：parse_qs 已单次解码，勿再 unquote（#9 回归守护）---
+
+    def test_otpauth_secret_percent_encoded_decoded_once(self):
+        """otpauth URI 中百分号编码的 secret 经 parse_qs 单次解码还原。
+
+        回归守护：勿在 parse_qs 之外再 unquote（曾双重解码，把 secret 中的 %XX 当
+        转义再次解码而损坏密钥）。JBSWY3DP 的百分号编码 %4A%42%53%57%59%33%44%50
+        经单次解码还原为 JBSWY3DP；若二次解码，%4A 会被解为字节 0x4A，密钥损坏。
+        """
+        uri = 'otpauth://totp/Test?secret=%4A%42%53%57%59%33%44%50'
+        result = TOTPGenerator._parse_config(uri, 'SHA1', 30, 6)  # type: ignore[arg-type]
+        assert result[1] == 'JBSWY3DP'  # value 经单次解码还原
+
+    # --- period 上界单一源：_extract_period 须与 _parse_config 复用 _MAX_TOTP_PERIOD（#10）---
+
+    def test_extract_period_oversized_returns_default(self):
+        """超长 period（如 999999）让 TOTP 退化为静态码、UI 倒计时异常，须回退默认。"""
+        uri = 'otpauth://totp/Test?secret=JBSWY3DPEHPK3PXP&period=999999'
+        assert TOTPGenerator._extract_period(uri, 30) == 30
+        assert TOTPGenerator.get_period(uri) == 30
+
+    def test_extract_period_at_upper_bound(self):
+        """period=300（_MAX_TOTP_PERIOD 上界）通过，301 回退默认。"""
+        uri_ok = 'otpauth://totp/Test?secret=JBSWY3DPEHPK3PXP&period=300'
+        uri_over = 'otpauth://totp/Test?secret=JBSWY3DPEHPK3PXP&period=301'
+        assert TOTPGenerator._extract_period(uri_ok, 30) == 300
+        assert TOTPGenerator._extract_period(uri_over, 30) == 30

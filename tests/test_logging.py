@@ -62,6 +62,23 @@ class TestSensitiveDataFilter:
         assert 'supersecret' not in message
         assert '[REDACTED]' in message
 
+    def test_redacts_value_with_spaces(self):
+        """含空格的敏感值整段打码（贪婪到行尾），不泄漏首个词之后的内容（#8 回归）。"""
+        record = _make_record('password=correct horse battery staple')
+        SensitiveDataFilter().filter(record)
+        message = record.getMessage()
+        assert 'correct' not in message
+        assert 'horse' not in message
+        assert 'staple' not in message
+        assert '[REDACTED]' in message
+
+    def test_does_not_redact_mid_word_match(self):
+        """关键词作为单词一部分时不误打码（donkey=/monkey= 不触发 key= 规则，#8 回归）。"""
+        original = 'donkey=foo bar monkey=baz'
+        record = _make_record(original)
+        SensitiveDataFilter().filter(record)
+        assert record.getMessage() == original
+
 
 class TestRedactingFormatter:
     """验证异常 traceback 中的敏感模式被打码（闭合 exc_info=True 的缺口）。

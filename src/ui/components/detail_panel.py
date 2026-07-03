@@ -489,6 +489,9 @@ class DetailPanel(QWidget):
                 self._copy_with_feedback(btn, v)
 
             copy_btn.clicked.connect(_copy_value)
+            # 与敏感字段复制按钮一致：复制后发 copy_feedback，经主窗口在状态栏提示
+            # 「已复制到剪贴板」。原先仅按钮打勾无状态栏文案，与敏感字段反馈不一致。
+            copy_btn.clicked.connect(self.copy_feedback.emit)
             row_layout.addWidget(copy_btn)
 
         return name_label, row_widget

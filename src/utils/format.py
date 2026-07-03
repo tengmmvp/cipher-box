@@ -22,8 +22,12 @@ def format_datetime(iso_str: str) -> str:
     """
     if not iso_str:
         return ''
+    # Python 3.10 的 fromisoformat 不接受 UTC 'Z' 后缀（3.11+ 才支持），naive 外部
+    # 数据（如手改/导入 JSON）可能含 'Z'；归一化为 +00:00 后再解析，与 aware UTC
+    # 路径一致，避免 'Z' 串落入 except 原样返回未格式化。
+    normalized = iso_str[:-1] + '+00:00' if iso_str.endswith('Z') else iso_str
     try:
-        dt = datetime.fromisoformat(iso_str)
+        dt = datetime.fromisoformat(normalized)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         dt = dt.astimezone()

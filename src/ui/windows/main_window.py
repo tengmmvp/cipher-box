@@ -587,6 +587,18 @@ class MainWindow(_MainWindowEntriesMixin, _MainWindowFiltersMixin, _MainWindowMe
 
     # ========== 窗口事件 ==========
 
+    def _stop_ui_timers(self) -> None:
+        """停止所有 UI 去抖定时器（搜索/选择/条目变更/状态栏）。
+
+        收敛锁定、隐藏到托盘等状态转换路径的定时器停止集合为单一调用，避免新增
+        定时器时遗漏某个——``_status_timer`` 曾在 ``_secure_hide_to_tray`` 漏停，
+        致托盘态 pending 触发仍启动全量解密的安全分析 worker。
+        """
+        self._search_timer.stop()
+        self._select_timer.stop()
+        self._entry_change_timer.stop()
+        self._status_timer.stop()
+
     def _secure_hide_to_tray(self) -> None:
         """隐藏到托盘前的安全清理：清详情面板明文、清剪贴板、停 worker 与定时器。
 
@@ -596,9 +608,7 @@ class MainWindow(_MainWindowEntriesMixin, _MainWindowFiltersMixin, _MainWindowMe
         """
         self._detail_panel.show_empty()
         self._clipboard.clear_now()
-        self._select_timer.stop()
-        self._entry_change_timer.stop()
-        self._search_timer.stop()
+        self._stop_ui_timers()
         self._pending_selection = None
         from ..components.toast import ToastManager
         ToastManager.cancel_all_for(self)
@@ -725,30 +735,26 @@ class MainWindow(_MainWindowEntriesMixin, _MainWindowFiltersMixin, _MainWindowMe
                     pass
 
     def prepare_for_lock(self) -> None:
-        """在清除主密钥前销毁界面和剪贴板中的明文副本。"""
+        """在清除主密钥前销毁界面和剪贴板中的明文副本。
+
+        清理顺序原则：先立即收敛主窗口自身的明文/密钥/可见性（列表模型、详情面板、
+        剪贴板、定时器、缓存、后台 worker），**再**关闭对话框——后者经
+        ``wait_worker_shutdown`` 可能阻塞主线程等待后台写入完成（恢复/导入 worker
+        不可中断）。若先等对话框，恢复/导入进行中触发锁定会使主密钥与明文 UI 在
+        用户「已请求锁定」后仍持续可见数秒至数十秒；先清主窗口可把暴露面收敛到
+        对话框自身的敏感控件（由各对话框 reject 路径清零）。
+        """
         self._locked_ui = True
         self._auto_lock.stop_timer()
         # 清除活跃 Toast 的回调，防止锁定后撤销操作触发异常。
         from ..components.toast import ToastManager
         ToastManager.cancel_all_for(self)
-        # 关闭所有打开的对话框：直接走对话框自身的 reject()——各对话框 reject 调用
-        # 自己的 _clear_sensitive_inputs 清零敏感控件，且 wait_worker_shutdown 等待
-        # 后台 worker 退出。原先 findChildren(QLineEdit/QTextEdit).clear() 旁路既无法
-        # 等待 worker，也抓不到未来新增的非 LineEdit 敏感控件，与各对话框的清零双轨
-        # 易漂移，故移除，单一清零路径交由对话框自身负责。
-        if QApplication.instance():
-            for widget in list(QApplication.topLevelWidgets()):
-                if widget is self or not isinstance(widget, QDialog):
-                    continue
-                widget.reject()
-        # 重置搜索状态
+        # —— 先立即清空主窗口敏感 UI 与状态（均不阻塞）——
         self._current_search = ''
         self._search_edit.blockSignals(True)
         self._search_edit.clear()
         self._search_edit.blockSignals(False)
-        self._search_timer.stop()
-        self._select_timer.stop()
-        self._entry_change_timer.stop()
+        self._stop_ui_timers()
         self._pending_selection = None
         # 清空条目列表，移除对 Entry 对象的引用
         self._entry_model.set_entries([])
@@ -758,7 +764,6 @@ class MainWindow(_MainWindowEntriesMixin, _MainWindowFiltersMixin, _MainWindowMe
         self._clipboard.clear_now()
         # 停止后台定时器
         self._auto_backup.stop_timer()
-        self._status_timer.stop()
         # 取消后台 worker（状态分析/备份/列表刷新），避免锁定后仍运行、对已锁定
         # vault 发信号或继续解密条目
         self._shutdown_workers()
@@ -767,6 +772,14 @@ class MainWindow(_MainWindowEntriesMixin, _MainWindowFiltersMixin, _MainWindowMe
         # 清空 username 明文缓存。epoch 失效会在下次访问时触发，
         # 此处显式调用以立即释放，避免锁定到进程退出的残留窗口
         self._entry_mgr.invalidate_caches()
+        # —— 最后关闭对话框：reject 经 wait_worker_shutdown 可能阻塞等待后台 worker ——
+        # 各对话框 reject 调用自身的 _clear_sensitive_inputs 清零敏感控件并等待后台
+        # worker 退出；置于末尾使主窗口明文先行清除，对话框等待期间的暴露仅限其自身。
+        if QApplication.instance():
+            for widget in list(QApplication.topLevelWidgets()):
+                if widget is self or not isinstance(widget, QDialog):
+                    continue
+                widget.reject()
         self._count_label.setText('0 项')
         self._status_bar.clearMessage()
         # 托盘锁定状态由 lock_requested 信号驱动（_setup_tray 连接 _on_lock_tray），

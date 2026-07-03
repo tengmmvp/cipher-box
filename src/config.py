@@ -179,15 +179,23 @@ class ConfigManager:
         """
         secure_directory(self._data_dir, strict=True)
         if self._integrity_key_path.exists():
-            blob = self._integrity_key_path.read_bytes()
-            key = unprotect_with_dpapi(blob)
-            if key is None:
-                # 非 DPAPI 封装：当作明文密钥（旧格式或非 Windows），长度校验
-                key = blob if len(blob) == _CONFIG_KEY_SIZE else None
-            if key is not None and len(key) == _CONFIG_KEY_SIZE:
-                secure_file(self._integrity_key_path, strict=True)
-                return key
-            logger.warning('配置签名密钥损坏，将生成新密钥')
+            try:
+                blob = self._integrity_key_path.read_bytes()
+            except (FileNotFoundError, OSError):
+                # exists() 与 read_bytes() 间 TOCTOU（文件被外部删除）或瞬时 IO/权限
+                # 错误：与「损坏时生成新密钥」分支一致 fall-through，绝不阻断启动
+                # （与 docstring 承诺的启动韧性一致，与下方写路径的完整兜底对称）。
+                logger.warning('读取配置签名密钥失败，将生成新密钥', exc_info=True)
+                blob = None
+            if blob is not None:
+                key = unprotect_with_dpapi(blob)
+                if key is None:
+                    # 非 DPAPI 封装：当作明文密钥（旧格式或非 Windows），长度校验
+                    key = blob if len(blob) == _CONFIG_KEY_SIZE else None
+                if key is not None and len(key) == _CONFIG_KEY_SIZE:
+                    secure_file(self._integrity_key_path, strict=True)
+                    return key
+                logger.warning('配置签名密钥损坏，将生成新密钥')
 
         key = os.urandom(_CONFIG_KEY_SIZE)
         # 优先 DPAPI 封装；失败回退明文（不阻断启动）

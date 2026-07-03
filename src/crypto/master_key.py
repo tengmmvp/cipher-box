@@ -235,20 +235,26 @@ class MasterKeyManager:
         """
         cls._validate_params(params)
         key = cls.derive_key(password, salt, params)
+        returned = False
         try:
             decrypted = EncryptionEngine.decrypt(verify_token, key, VERIFY_AAD)
+            if hmac.compare_digest(decrypted, VERIFY_PLAINTEXT):
+                returned = True
+                return key
+            logger.debug("主密码验证失败：验证令牌明文不匹配（令牌可能损坏）")
         except ValueError as exc:
             # decrypt 将 InvalidTag（GCM 认证失败，即密码错误）与其他 ValueError
             # （令牌格式损坏）归一化为 ValueError。区分二者便于事后审计「密码错」
             # 与「令牌损坏」，诊断损坏的 verify_token 反复触发速率锁定的情况。
             logger.debug("主密码验证失败：令牌解密异常 %s", type(exc).__name__)
-        else:
-            if hmac.compare_digest(decrypted, VERIFY_PLAINTEXT):
-                return key
-            logger.debug("主密码验证失败：验证令牌明文不匹配（令牌可能损坏）")
-        # 验证失败：派生密钥不再返回，原地清零收缩驻留。
-        # 登录是最频繁的错误密码入口，避免每次输错都把 Argon2id 派生的密钥留给 GC。
-        secure_zero_buffer(key)
+        finally:
+            # finally 兜底覆盖所有非成功路径：含 decrypt 抛非 ValueError 异常
+            # （如 verify_token 非 str 时内部 startswith 抛 AttributeError，该调用位于
+            # decrypt 的 try 块之外），避免派生密钥残留栈帧依赖 GC。与 create() 的
+            # except Exception 清零契约对称。登录是最频繁的错误密码入口，每次输错都
+            # 把 Argon2id 派生的密钥清零而非留给 GC。
+            if not returned:
+                secure_zero_buffer(key)
         return None
 
     @classmethod

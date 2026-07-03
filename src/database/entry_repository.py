@@ -174,6 +174,22 @@ _TRUNCATE_PASSWORD_HISTORY_SQL = (
 _ID_BATCH_SIZE = 500
 
 
+def _classify_entry_integrity_error(prefix: str, exc: sqlite3.IntegrityError) -> DatabaseError:
+    """按 sqlite 原始文案分流 IntegrityError 成因，避免一律误标为「crypto_id 冲突」。
+
+    entries 表除 crypto_id UNIQUE 外还有 category_id 外键约束；FK/NOT NULL 违规被
+    误标为唯一约束会误导排障方向（开发者看到「crypto_id 冲突」却实为外键违例）。
+    """
+    message = str(exc).lower()
+    if 'foreign key' in message:
+        detail = '违反外键约束（引用的分类不存在）'
+    elif 'not null' in message:
+        detail = '违反非空约束'
+    else:
+        detail = '违反唯一约束（crypto_id 冲突）'
+    return DatabaseError(f'{prefix}{detail}：{exc}')
+
+
 class EntryRepository:
     """条目数据访问层 — 条目 CRUD、批量操作、密码历史。
 
@@ -352,9 +368,9 @@ class EntryRepository:
                 self._entry_insert_params(entry),
             )
         except sqlite3.IntegrityError as exc:
-            # crypto_id 有 UNIQUE 约束；冲突时归一化为领域异常，避免裸驱动异常
-            # 泄漏给上层（其余路径经 DatabaseError/ValueError 传递）。
-            raise DatabaseError(f'条目写入违反唯一约束（crypto_id 冲突）：{exc}') from exc
+            # 归一化为领域异常，避免裸驱动异常泄漏给上层；按文案分流 FK/NOT NULL/唯一，
+            # 避免一律误标为 crypto_id 冲突（真实 sqlite 文案随 {exc} 附出供进一步诊断）。
+            raise _classify_entry_integrity_error('条目写入', exc) from exc
         self._auto_commit()
         return cursor.lastrowid or 0
 
@@ -391,9 +407,7 @@ class EntryRepository:
         try:
             self._conn.executemany(_INSERT_ENTRY_SQL, params)
         except sqlite3.IntegrityError as exc:
-            raise DatabaseError(
-                f'批量条目写入违反唯一约束（crypto_id 冲突）：{exc}'
-            ) from exc
+            raise _classify_entry_integrity_error('批量条目写入', exc) from exc
         self._auto_commit()
         # executemany 不提供逐条 lastrowid，按 crypto_id 反查 id 建立映射。
         # 按 _ID_BATCH_SIZE 分批，避免恢复 >999 条目时 crypto_id IN(...) 超出
