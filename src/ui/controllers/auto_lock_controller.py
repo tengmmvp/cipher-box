@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -106,17 +107,18 @@ class AutoLockController:
 
         仅 Windows 平台启用；注册失败（如远程会话、权限受限、wtsapi32 不可用）
         静默降级为仅 QTimer 超时锁定。须在窗口 show 后（HWND 有效）调用，
-        故由 MainWindow.showEvent 首次触发。测试环境（pytest）跳过，不安装过滤器。
+        故由 MainWindow.showEvent 首次触发。测试环境（CIPHERBOX_DISABLE_WTS）跳过，不安装过滤器。
         """
         # WTS 注册须在窗口 show 后（HWND 有效）；__init__ 时未 show 会触发 C 层
         # access violation。_wts_setup_attempted 守卫使注册仅在实际显示时发生一次。
         if self._wts_setup_attempted:
             return
         self._wts_setup_attempted = True
-        # 仅 Windows 交互会话注册。测试环境（pytest 驱动 QApplication）的窗口未进入
-        # 真实消息循环，WTSRegisterSessionNotification 会触发 C 层 access violation
-        # （无法 try/except 捕获）；真实交互运行时窗口进入消息循环，WTS 正常工作。
-        if sys.platform != 'win32' or 'pytest' in sys.modules:
+        # 仅 Windows 交互会话注册。测试环境（经 CIPHERBOX_DISABLE_WTS 显式标记）的窗口
+        # 未进入真实消息循环，WTSRegisterSessionNotification 会触发 C 层 access violation
+        # （无法 try/except 捕获）；真实交互运行时窗口进入消息循环，WTS 正常工作。用环境
+        # 变量替代 'pytest' in sys.modules 探测，避免生产代码分支于测试框架存在性（MAINT-1）。
+        if sys.platform != 'win32' or os.environ.get('CIPHERBOX_DISABLE_WTS'):
             return
         try:
             import ctypes

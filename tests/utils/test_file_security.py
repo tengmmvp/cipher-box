@@ -80,6 +80,49 @@ class TestSecureDeleteFile:
         # finally 仍 unlink，避免半成品文件残留于目录被直接打开
         assert not target.exists()
 
+    def test_secure_delete_file_symlink_preserves_target(self, tmp_path):
+        """真实符号链接：仅删链接本身，目标文件内容与存在性保持（SEC-1）。
+
+        回归守护：secure_purge 经 glob 匹配，若 secure_delete_file 跟随符号链接覆写，
+        攻击者在备份目录植入的恶意链接会诱导 purge 随机覆写链接指向的任意目标文件。
+        """
+        target = tmp_path / 'real.cbox'
+        original = b'sensitive-plaintext-target'
+        target.write_bytes(original)
+        link = tmp_path / 'pre_restore_evil.cbox'
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError):
+            pytest.skip('当前环境不支持创建符号链接')
+        secure_delete_file(link)
+        assert not link.exists()                       # 链接被删除
+        assert target.exists()                         # 目标文件仍在
+        assert target.read_bytes() == original         # 目标内容未被覆写
+
+    def test_secure_delete_file_skips_overwrite_when_reparse(self, tmp_path, monkeypatch):
+        """叶子判定为符号链接/reparse 时仅 unlink，不触发覆写 open（SEC-1）。
+
+        monkeypatch 模拟重定向判定，不依赖真实符号链接创建权限，本地任意平台即可
+        验证分支：命中即走 unlink-only 路径，绝不 open(path, 'r+b') 覆写。
+        """
+        from src.utils import file_security
+        target = tmp_path / 'link_like.cbox'
+        target.write_bytes(b'data')
+        monkeypatch.setattr(file_security, '_path_is_symlink_or_reparse', lambda p: True)
+
+        overwritten = {'yes': False}
+        real_open = open
+
+        def _detect_overwrite(path, *args, **kwargs):
+            if args and args[0] == 'r+b':
+                overwritten['yes'] = True
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr('builtins.open', _detect_overwrite)
+        secure_delete_file(target)
+        assert not target.exists()             # 被当作链接 unlink
+        assert overwritten['yes'] is False     # 未发生覆写
+
 
 class TestSecureDirectory:
     """secure_directory 测试。"""
@@ -288,7 +331,7 @@ class TestValidateFilePathReparse:
 
 
 class TestRejectReparseBranches:
-    """``_reject_reparse_points`` 平台分支单元测试（monkeypatch ``sys.platform``）。
+    """``_reject_reparse_points`` 平台分支单元测试（monkeypatch ``IS_WINDOWS``）。
 
     本地（任意平台）即可验证 Unix「仅叶子」与 Windows「逐级」两分支的正确性，
     弥补 macOS ``/var`` 回归在 Windows 本地无法复现的盲区——逐级检测在 Unix 会
@@ -300,7 +343,7 @@ class TestRejectReparseBranches:
         """Unix 分支仅 lstat 叶子一次，不遍历祖先（避免误伤 /var 等系统符号链接）。"""
         from src.utils import file_security
 
-        monkeypatch.setattr(file_security.sys, 'platform', 'darwin')
+        monkeypatch.setattr(file_security, 'IS_WINDOWS', False)
         call_count = {'n': 0}
         real_lstat = Path.lstat
 
@@ -319,7 +362,7 @@ class TestRejectReparseBranches:
         """Unix 分支：叶子 lstat 为符号链接时拒绝（主要 TOCTOU 防御保留）。"""
         from src.utils import file_security
 
-        monkeypatch.setattr(file_security.sys, 'platform', 'darwin')
+        monkeypatch.setattr(file_security, 'IS_WINDOWS', False)
 
         class _FakeStat:
             st_mode = stat.S_IFLNK
@@ -334,7 +377,7 @@ class TestRejectReparseBranches:
         """Windows 分支逐级 lstat 整条路径（junction 重定向威胁需逐级检测）。"""
         from src.utils import file_security
 
-        monkeypatch.setattr(file_security.sys, 'platform', 'win32')
+        monkeypatch.setattr(file_security, 'IS_WINDOWS', True)
         call_count = {'n': 0}
         real_lstat = Path.lstat
 
@@ -348,3 +391,51 @@ class TestRejectReparseBranches:
         target.write_text('x')
         file_security._reject_reparse_points(target)
         assert call_count['n'] > 1, 'Windows 分支应逐级 lstat 祖先'
+
+
+class TestAtomicWritePermissions:
+    """atomic_write 临时文件落地即 0600，消除明文临时文件世界可读窗口（SEC-2）。"""
+
+    def test_open_file_restricted_creates_0600(self, tmp_path):
+        """_open_file_restricted opener 以 0600 创建文件（Unix 验证 mode 位）。"""
+        import stat as stat_mod
+
+        from src.utils.file_security import _open_file_restricted
+        path = tmp_path / 'created.bin'
+        fd = _open_file_restricted(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+        os.close(fd)
+        if os.name == 'nt':
+            return  # Windows 忽略 POSIX mode 位，靠继承父目录 ACL
+        mode = stat_mod.S_IMODE(path.stat().st_mode)
+        assert mode == 0o600
+
+    def test_atomic_write_uses_restricted_opener(self, tmp_path, monkeypatch):
+        """atomic_write 把 _open_file_restricted 作为 opener 传给 open（SEC-2）。"""
+        from src.utils import file_security
+        from src.utils.file_security import atomic_write
+        captured = {}
+        real_open = open
+
+        def _spy(file, mode='r', *args, **kwargs):
+            captured['opener'] = kwargs.get('opener')
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr('builtins.open', _spy)
+        target = tmp_path / 'export.json'
+        atomic_write(target, lambda f: (f.write(b'x'), True)[1], mode='wb')
+        assert captured['opener'] is file_security._open_file_restricted
+
+    def test_atomic_write_roundtrip_restricted(self, tmp_path):
+        """atomic_write 完整写入后目标文件 0600 且内容正确（SEC-2 端到端）。"""
+        import stat as stat_mod
+
+        from src.utils.file_security import atomic_write
+        target = tmp_path / 'roundtrip.json'
+        payload = b'{"secret":"value"}'
+        ok = atomic_write(target, lambda f: (f.write(payload), True)[1], mode='wb')
+        assert ok
+        assert target.read_bytes() == payload
+        if os.name == 'nt':
+            return
+        mode = stat_mod.S_IMODE(target.stat().st_mode)
+        assert mode == 0o600

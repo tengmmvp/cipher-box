@@ -108,3 +108,60 @@ def test_get_entries_verify_modes(vault, entry_mgr):
         assert skipped and skipped[0].integrity_error is False
     finally:
         vault.db._entry_verifier = original_verifier
+
+
+class TestGetCachedCounts:
+    """get_cached_counts 轻量计数入口（PERF-2）：跳过 _refilter_cache 的 Entry 深拷贝。
+
+    仅读计数的消费者（状态栏刷新、weak/duplicate 空态判定）经此入口避免无谓深拷贝。
+    用 __new__ 绕过完整构造、手动填充缓存，聚焦计数提取与 days 影响 old 的逻辑。
+    """
+
+    @staticmethod
+    def _analyzer(cache, *, days: int = 90, ttl: int = 120, age: float = 0.0):
+        import threading
+        import time
+
+        from src.business.services.security_analyzer import SecurityAnalyzer
+
+        analyzer = SecurityAnalyzer.__new__(SecurityAnalyzer)
+        analyzer._analysis_cache = cache
+        analyzer._analysis_cache_time = time.monotonic() - age
+        analyzer._analysis_cache_days = days
+        analyzer._cache_ttl_seconds = ttl
+        analyzer._cache_lock = threading.Lock()
+        return analyzer
+
+    def test_returns_none_when_no_cache(self):
+        assert self._analyzer(None).get_cached_counts() is None
+
+    def test_returns_none_when_expired(self):
+        analyzer = self._analyzer({'total': 1}, ttl=0, age=1.0)
+        assert analyzer.get_cached_counts() is None
+
+    def test_returns_counts_matching_cache_days(self):
+        from src.business.services.security_analyzer import SecurityCounts
+
+        cache = {'total': 10, 'weak_count': 3, 'duplicate_count': 2, 'old': 1}
+        counts = self._analyzer(cache, days=90).get_cached_counts(90)
+        assert counts == SecurityCounts(10, 3, 2, 1)
+
+    def test_old_recounted_when_days_differs(self):
+        """days 与缓存 days 不同时按 days 重算 old 计数，不深拷贝 Entry。"""
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        cache = {
+            'total': 5, 'weak_count': 0, 'duplicate_count': 0, 'old': 0,
+            '_summaries_with_dates': [
+                (Entry(title='old', username='u', password='p', entry_type='login'),
+                 now - timedelta(days=200)),
+                (Entry(title='recent', username='u', password='p', entry_type='login'),
+                 now - timedelta(days=10)),
+            ],
+        }
+        analyzer = self._analyzer(cache, days=90)
+        # days=365：cutoff=now-365d，两条目(200d/10d前)均晚于 cutoff → 不过期
+        assert analyzer.get_cached_counts(365).old == 0
+        # days=100：cutoff=now-100d，old(200d前)早于 cutoff → 过期；recent(10d前)不过期
+        assert analyzer.get_cached_counts(100).old == 1

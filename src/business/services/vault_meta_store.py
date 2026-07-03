@@ -14,7 +14,7 @@ from ...crypto.encryption import EncryptionEngine
 from ...crypto.master_key import DEFAULT_KDF_PARAMS, KDF_NAME, KdfParams
 from ...database.types import VaultDataConnection
 from ...exceptions import VaultIntegrityError
-from .metadata_signer import MetadataSigner
+from .metadata_signer import VAULT_META_SIGNED_KEYS, MetadataSigner
 
 # snapshot_key 加密的 AAD 域标签，与主密钥绑定防跨域重用。
 _SNAPSHOT_KEY_AAD = 'vault:snapshot-key'
@@ -80,17 +80,13 @@ class VaultMetaStore:
         db.set_meta('ciphertext_format', EncryptionEngine.FORMAT_ID)
         db.set_meta('snapshot_key_enc', self.encrypt_snapshot_key(snapshot_key, key))
         db.set_meta('key_epoch', key_epoch)
-        # vault_meta 完整性签名：用当前 key 派生域密钥签安全相关字段，供 unlock 校验。
-        # 写入与上述字段同事务（调用方持事务），保证 mac 与被签字段原子一致。
-        meta_for_mac = {
-            'master_salt': base64.b64encode(salt).decode('ascii'),
-            'master_verify': verify_token,
-            'master_kdf_time_cost': str(params.time_cost),
-            'master_kdf_memory_cost': str(params.memory_cost),
-            'master_kdf_parallelism': str(params.parallelism),
-            'ciphertext_format': EncryptionEngine.FORMAT_ID,
-            'key_epoch': key_epoch,
-        }
+        # vault_meta 完整性签名：签名键集从 VAULT_META_SIGNED_KEYS 单一源派生——
+        # 写完所有字段后回读刚写入的值再签，与恢复路径（backup_restore 经
+        # get_meta_batch(list(VAULT_META_SIGNED_KEYS)) 取值）对称，消除「手工重建
+        # 键集漏键致写入即签错、下次 unlock 比对失败」的漂移（ARCH-3）。回读须在
+        # 调用方事务内（write 契约要求调用方持事务），同事务 set_meta 后立即
+        # get_meta_batch 可见刚写值。
+        meta_for_mac = db.get_meta_batch(list(VAULT_META_SIGNED_KEYS))
         db.set_meta(
             'vault_meta_mac', MetadataSigner.compute_vault_meta_mac(meta_for_mac, key),
         )

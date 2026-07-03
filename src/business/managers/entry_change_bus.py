@@ -60,4 +60,4 @@ class EntryChangeBus:
             try:
                 cb(password_changed)
             except Exception:
-                logger.debug("条目变更回调执行失败", exc_info=True)
+                logger.warning("条目变更回调执行失败", exc_info=True)

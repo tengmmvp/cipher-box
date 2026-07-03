@@ -14,6 +14,12 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# 平台判定单一常量：全模块统一引用，避免 os.name=='nt' 与 sys.platform=='win32'
+# 两种惯用法在同文件（乃至同函数内）混用（MAINT-2）。二者在标准 CPython 的
+# Windows(nt/win32)/Linux(posix)/macOS(posix) 下布尔等价，统一为单一常量消除
+# 「未来修改平台判定时只动一处」的跨平台漂移风险。
+IS_WINDOWS = sys.platform == 'win32'
 _SECURED_WINDOWS_OBJECTS: OrderedDict[str, tuple[int, int]] = OrderedDict()
 _SECURED_LOCK = threading.Lock()
 _MAX_SECURED_CACHE = 256
@@ -54,7 +60,7 @@ def _windows_user_sid() -> str:
     cached = _CACHED_USER_SID
     if cached is not None:
         return cached
-    if os.name != 'nt':
+    if not IS_WINDOWS:
         with _SID_LOCK:
             _CACHED_USER_SID = ''
         return ''
@@ -141,14 +147,14 @@ def secure_directory(path: Path, *, strict: bool = False) -> Path:
     ``strict=True`` 时权限设置失败抛异常，否则仅记录告警；返回 ``path`` 便于链式调用。
     """
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if sys.platform != 'win32':
+    if not IS_WINDOWS:
         try:
             os.chmod(path, 0o700)
         except OSError:
             if strict:
                 raise
             logger.warning('无法限制目录权限：%s', path, exc_info=True)
-    if os.name == 'nt':
+    if IS_WINDOWS:
         _restrict_windows_acl(path, True, strict=strict)
     return path
 
@@ -211,7 +217,7 @@ def _reject_reparse_points(path: Path) -> None:
     junction，解析后路径上 ``is_symlink()`` 恒为 False，检测将静默失效。不存在的
     组件（如待写入的新文件）``lstat`` 抛 ``FileNotFoundError``，视为非重定向。
     """
-    if sys.platform != 'win32':
+    if not IS_WINDOWS:
         # Unix：仅检测叶子。祖先系统符号链接（/var、/tmp、/bin…）合法，逐级会大面积误伤。
         try:
             st = path.lstat()
@@ -227,18 +233,18 @@ def _reject_reparse_points(path: Path) -> None:
     # Windows：逐级检测符号链接 + reparse point/junction。
     current = path
     while True:
+        comp_st: os.stat_result | None = None
         try:
-            st = current.lstat()
+            comp_st = current.lstat()
         except FileNotFoundError:
-            st = None
+            pass
         except OSError:
             logger.debug('lstat 失败，跳过该组件重定向检测: %s', current, exc_info=True)
-            st = None
-        if st is not None:
-            if stat.S_ISLNK(st.st_mode):
+        if comp_st is not None:
+            if stat.S_ISLNK(comp_st.st_mode):
                 raise ValueError(f'路径组件包含符号链接，拒绝访问: {current}')
             # st_file_attributes 为 Windows 专有属性，getattr 兜底跨平台访问
-            attrs = getattr(st, 'st_file_attributes', 0)
+            attrs = getattr(comp_st, 'st_file_attributes', 0)
             if attrs & 0x400:
                 raise ValueError(
                     f'路径组件包含 reparse point/junction，拒绝访问: {current}'
@@ -248,6 +254,28 @@ def _reject_reparse_points(path: Path) -> None:
         current = current.parent
 
 
+def _path_is_symlink_or_reparse(path: Path) -> bool:
+    """检测叶子本身是否为符号链接 / Windows reparse point/junction（``lstat`` 不跟随）。
+
+    供 :func:`secure_delete_file` 在覆写前判定：若叶子是符号链接/reparse point，
+    直接 ``unlink`` 链接本身（不覆写其目标），避免 purge 链经由恶意链接把覆写
+    重定向到任意目标文件（SEC-1，与 :func:`validate_file_path` 的 reparse 防御同源）。
+    """
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logger.debug('lstat 失败，按非重定向处理: %s', path, exc_info=True)
+        return False
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    if IS_WINDOWS:
+        attrs = getattr(st, 'st_file_attributes', 0)
+        return bool(attrs & 0x400)
+    return False
+
+
 def secure_file(path: Path, *, strict: bool = False) -> Path:
     """设置文件最小权限，仅当前用户可读写。
 
@@ -255,14 +283,14 @@ def secure_file(path: Path, *, strict: bool = False) -> Path:
     """
     if not path.exists():
         return path
-    if sys.platform != 'win32':
+    if not IS_WINDOWS:
         try:
             os.chmod(path, 0o600)
         except OSError:
             if strict:
                 raise
             logger.warning('无法限制文件权限：%s', path, exc_info=True)
-    if os.name == 'nt':
+    if IS_WINDOWS:
         _restrict_windows_acl(path, False, strict=strict)
     return path
 
@@ -277,7 +305,15 @@ def secure_delete_file(path: Path) -> None:
 
     文件不存在时直接返回（视为已删除）；覆写采用随机字节，SSD 磨损均衡下并非
     密码学保证但显著强于单纯 unlink。unlink 使用 missing_ok 防御 TOCTOU。
+
+    符号链接/reparse point 仅删链接本身、不覆写目标（SEC-1）：secure_purge 经 glob
+    匹配，攻击者可在备份目录植入恶意链接诱导 purge 把随机覆写重定向到任意目标文件。
     """
+    if _path_is_symlink_or_reparse(path):
+        # 叶子是符号链接/reparse point：仅 unlink 链接本身，绝不覆写其指向的目标——
+        # 删链接满足清理语义（链接消失），且不破坏目标。missing_ok 防 TOCTOU。
+        path.unlink(missing_ok=True)
+        return
     if not path.exists():
         # 文件已不存在视为已删除，直接返回；避免 stat 抛 FileNotFoundError
         # 中断调用方的批量清理循环，单文件缺失不被误报为清理失败。
@@ -313,6 +349,12 @@ def secure_delete_file(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
+def _open_file_restricted(name: str, flags: int) -> int:
+    """``open()`` 的 opener 回调：以 0600 创建文件，供 :func:`atomic_write`
+    消除明文临时文件在 ``secure_file`` 收紧权限前的世界可读窗口（SEC-2）。"""
+    return os.open(name, flags, 0o600)
+
+
 def atomic_write(
     target: Path,
     write_cb: Callable[[Any], bool],
@@ -327,10 +369,14 @@ def atomic_write(
     （删除临时文件，不替换目标）。异常时删除临时文件并重新抛出。目标与临时
     文件都经 secure_file 收紧权限。统一导出 JSON/CSV 与备份二进制的原子写契约，
     消除三处逐字复制的「写临时 → fsync → replace → secure → 清理」模式。
+
+    临时文件落地即 0600（经 ``_open_file_restricted`` opener），消除「写入明文 →
+    关闭 → secure_file 收紧」间的世界可读窗口（SEC-2）。0600 经 umask 不损 owner
+    位；Windows 忽略 POSIX mode 位，靠继承已由 secure_directory 收紧的父目录 ACL。
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.with_name(target.name + '.tmp')
-    open_kwargs: dict = {}
+    open_kwargs: dict = {'opener': _open_file_restricted}
     if encoding is not None:
         open_kwargs['encoding'] = encoding
     if newline is not None:
@@ -361,7 +407,7 @@ def atomic_write(
 
 def protect_with_dpapi(data: bytes) -> bytes | None:
     """用 Windows DPAPI 封装数据，返回封装后的 blob；非 Windows 或失败返回 None。"""
-    if sys.platform != 'win32':
+    if not IS_WINDOWS:
         return None
     return _dpapi_crypt(data, protect=True)
 
@@ -371,7 +417,7 @@ def unprotect_with_dpapi(blob: bytes) -> bytes | None:
 
     返回 None 表示数据非 DPAPI 封装或解封失败，调用方据此尝试明文回退。
     """
-    if sys.platform != 'win32':
+    if not IS_WINDOWS:
         return None
     return _dpapi_crypt(blob, protect=False)
 

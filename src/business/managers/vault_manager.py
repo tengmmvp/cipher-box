@@ -106,20 +106,28 @@ class VaultManager:
 
     # ---- 锁定回调 ----
     def register_on_lock(self, callback: Callable[[], None]) -> None:
-        """注册锁定时自动调用的回调，用于清除缓存等。"""
+        """注册锁定与密钥版本轮换时自动调用的回调，用于清除缓存等。
+
+        注册的回调在两类事件触发：(1) ``VaultLifecycleOrchestrator.lock`` 锁定时；
+        (2) :meth:`update_key_epoch` 备份恢复后密钥版本轮换时（保险库仍解锁，但数据
+        整体替换需失效按 crypto_id 索引的明文缓存，防命中旧明文）。注册方须确保回调
+        在两种语义下均安全——当前注册的均为纯缓存清除、幂等，故复用同一列表（ARCH-2）。
+        """
         self._on_lock_callbacks.append(callback)
 
     def invoke_lock_callbacks(self) -> None:
         """触发全部锁定回调（清缓存等）。
 
-        供 VaultLifecycleOrchestrator.lock 在清零密钥后调用。回调异常不中断后续
-        回调，仅记录——单个回调失败不应阻止其余缓存清理。
+        两个调用点：``VaultLifecycleOrchestrator.lock`` 清零密钥后、
+        :meth:`update_key_epoch` 备份恢复轮换密钥版本后（保险库仍解锁）。回调异常不
+        中断后续回调，仅记 WARNING——单个回调失败不应阻止其余缓存清理，但安全相关
+        失效（如锁定时明文缓存未清）应在生产日志可见（QL-3）。
         """
         for cb in self._on_lock_callbacks:
             try:
                 cb()
             except Exception:
-                logger.debug("锁定回调执行失败", exc_info=True)
+                logger.warning("锁定回调执行失败", exc_info=True)
 
     # ---- 数据库与配置 ----
     @property

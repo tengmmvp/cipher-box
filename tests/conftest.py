@@ -1,12 +1,20 @@
 """共享测试 fixtures — 消除各测试文件中的重复辅助函数。"""
 
 import dataclasses
+import os
 
 import pytest
 
 from src.crypto.master_key import KdfParams
 from src.models import Entry
 from tests.helpers import make_test_config
+
+# 显式标记测试环境：AutoLockController.setup_session_notification 据此跳过 WTS 注册——
+# WTSRegisterSessionNotification 在无真实消息循环的测试窗口上触发 C 层 access violation
+# （无法 try/except 捕获）。替代生产代码探测 'pytest' in sys.modules 的 prod/test 耦合
+# （MAINT-1）：测试运行经此环境变量显式声明，生产路径不设置它，行为分支不再依赖
+# 测试框架是否被加载。
+os.environ.setdefault('CIPHERBOX_DISABLE_WTS', '1')
 
 
 @pytest.fixture(scope='session')

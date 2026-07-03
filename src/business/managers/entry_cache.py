@@ -281,8 +281,16 @@ class EntryCacheManager:
         if cached is not None:
             return cached
         tag_count: dict[str, int] = {}
+        # 标签聚合仅需 tags 字段：用 VerifyMode.SKIP 跳过逐行元数据 HMAC 验签（PERF-1，
+        # 每行省去 14 键 dict + SHA-256 + canonical JSON + HMAC 的验签开销）。tags_enc
+        # 的完整性由 _decrypt_tags 解密时的 GCM 认证保护——篡改会使 GCM 解密失败回退
+        # 空串；且 _decrypt_tags 优先复用列表 worker 以 LENIENT 验签后填充的摘要缓存，
+        # 命中时 tags 已经过验签。故标签聚合正确性不依赖元数据 HMAC。
+        # 注：与列表 worker 的扫描仍各自独立（_tags_cache 命中时本方法直接返回、不扫描；
+        # 失效时才扫描），复用列表 worker 已填充的摘要缓存需串行化保证填充完整性，
+        # 修复并不廉价，故此处仅取「SKIP 验签」这一廉价且安全的省 CPU 改进。
         for raw in self._vault.db.get_entries(
-            EntryQuery(include_deleted=False, verify=VerifyMode.LENIENT)
+            EntryQuery(include_deleted=False, verify=VerifyMode.SKIP)
         ):
             tags_str = self._decrypt_tags(raw)
             for tag in (t.strip() for t in tags_str.split(',') if t.strip()):

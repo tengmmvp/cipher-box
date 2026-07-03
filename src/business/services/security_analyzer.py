@@ -6,7 +6,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
 
 if TYPE_CHECKING:
     from ..managers.entry_cache import EntryCacheManager
@@ -62,6 +62,19 @@ class SecurityReport(_SecurityReportBase, total=False):
 
     _summaries_with_dates: list[tuple[Entry, datetime | None]]
     _key_epoch: str | None
+
+
+class SecurityCounts(NamedTuple):
+    """安全分析的计数视图（total/weak/duplicate/old），供仅读计数的消费者。
+
+    与 :class:`SecurityReport` 区分：不含 Entry 列表，获取时无需 :meth:`_refilter_cache`
+    的深拷贝（PERF-2），状态栏刷新与空态判定等只读计数场景用它避免无谓深拷贝。
+    """
+
+    total: int
+    weak_count: int
+    duplicate_count: int
+    old: int
 
 
 class SecurityAnalyzer:
@@ -273,6 +286,35 @@ class SecurityAnalyzer:
                     and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds):
                 return self._refilter_cache(cached, days)
         return None
+
+    def get_cached_counts(self, days: int = 90) -> SecurityCounts | None:
+        """返回缓存计数（total/weak/duplicate/old），无缓存或过期返回 None。
+
+        仅读计数的消费者（状态栏刷新、weak/duplicate 空态的「分析中」判定）用此轻量
+        入口，跳过 :meth:`get_cached_report` 经 :meth:`_refilter_cache` 对 weak/old/
+        duplicate 列表的 Entry 深拷贝（PERF-2）。``old`` 计数依赖 days：days 与缓存
+        days 不同时按 days 过滤 ``_summaries_with_dates`` 的日期计次（O(n) 日期比较，
+        无 Entry 深拷贝），其余计数不依赖 days，直接读缓存。
+        """
+        with self._cache_lock:
+            cached = self._analysis_cache
+            if (cached is None
+                    or (time.monotonic() - self._analysis_cache_time) >= self._cache_ttl_seconds):
+                return None
+            if days == self._analysis_cache_days:
+                old = cached.get('old', 0)
+            else:
+                cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+                old = sum(
+                    1 for _s, dt in cached.get('_summaries_with_dates', [])
+                    if dt is not None and dt < cutoff
+                )
+            return SecurityCounts(
+                cached.get('total', 0),
+                cached.get('weak_count', 0),
+                cached.get('duplicate_count', 0),
+                old,
+            )
 
     def get_or_compute_report(self, days: int = 90) -> SecurityReport:
         """返回缓存报告，若无效则重新计算并缓存。"""

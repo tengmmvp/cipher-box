@@ -68,8 +68,10 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
     使缓存失效事件驱动化。调用方（app.py 解锁成功后）取得 ctx 传给 MainWindow。
 
     连线集中于此使依赖关系显式且单一：锁定时失效 entry 缓存（``register_on_lock``），
-    条目变更时失效安全分析缓存（``register_on_change``）。原先散落在
-    MainWindow._register_callbacks，现上提至组装根，使 MainWindow 不再承担
+    条目变更时失效安全分析缓存（``register_on_change``）。``register_on_lock`` 注册的
+    回调也会在备份恢复（``update_key_epoch``）后触发——恢复整体替换数据，按 crypto_id
+    索引的明文缓存须失效以防命中旧明文；当前注册的均为纯缓存清除、幂等，复用安全。
+    原先散落在 MainWindow._register_callbacks，现上提至组装根，使 MainWindow 不再承担
     跨 manager 连线职责。
     """
     cache = EntryCacheManager(vault)

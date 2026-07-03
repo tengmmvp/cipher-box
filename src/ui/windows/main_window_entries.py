@@ -342,7 +342,7 @@ class _MainWindowEntriesMixin(QMainWindow):
                 Toast.show(self, f'已恢复「{entry_title}」', Toast.SUCCESS)
 
             self._refresh_after_entry_change()
-            Toast.show(self, f'已移入回收站', Toast.INFO, duration=MS_TOAST_LONG,
+            Toast.show(self, '已移入回收站', Toast.INFO, duration=MS_TOAST_LONG,
                        action_text='撤销', action_callback=undo)
 
     def _delete_selected_entry(self) -> None:

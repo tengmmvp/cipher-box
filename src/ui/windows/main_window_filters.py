@@ -509,16 +509,19 @@ class _MainWindowFiltersMixin(QMainWindow):
 
     def _is_security_analyzing(self) -> bool:
         """security 分析是否仍在进行（缓存未就绪），供 weak/duplicate 空态共享。"""
-        return self._security.get_cached_report(
+        return self._security.get_cached_counts(
             self._config.get('old_password_warning_days')
         ) is None
 
     def _update_status_bar(self) -> None:
         days = self._config.get('old_password_warning_days')
-        # 快速路径：缓存命中时直接更新 UI
-        cached = self._security.get_cached_report(days)
-        if cached is not None:
-            self._apply_status_summary(cached)
+        # 快速路径：缓存命中时仅取计数——get_cached_counts 跳过 get_cached_report
+        # 经 _refilter_cache 的 Entry 深拷贝（PERF-2），状态栏只需四个计数。
+        counts = self._security.get_cached_counts(days)
+        if counts is not None:
+            self._render_status(
+                counts.total, counts.weak_count, counts.duplicate_count, counts.old,
+            )
             return
         # 缓存未命中：显示占位文本，异步执行分析
         self._status_bar.showMessage('安全分析中...')
@@ -534,7 +537,13 @@ class _MainWindowFiltersMixin(QMainWindow):
             # 锁定后或非当前 worker 的延迟回调均不应用，避免访问已清零状态
             if self._locked_ui or self._status_worker is not worker:
                 return
-            self._apply_status_summary(cast('SecurityReport', summary))
+            # worker 返回完整 SecurityReport（含列表，供 weak/duplicate 列表复用）；
+            # 状态栏仅需计数，提取后渲染。
+            report = cast('SecurityReport', summary)
+            self._render_status(
+                report['total'], report['weak_count'],
+                report['duplicate_count'], report['old'],
+            )
             # worker 已结束，释放引用，与 _on_error 一致，避免 _status_worker
             # 长期指向已结束 worker 而破坏生命周期不变量。
             if self._status_worker is worker:
@@ -551,23 +560,24 @@ class _MainWindowFiltersMixin(QMainWindow):
         worker.error.connect(_on_error)
         worker.start()
 
-    def _apply_status_summary(self, summary: SecurityReport) -> None:
+    def _render_status(
+        self, total: int, weak: int, duplicate: int, old_count: int,
+    ) -> None:
+        """据四项安全计数渲染状态栏统计标签、状态栏消息与过期警告。
+
+        缓存命中路径（``get_cached_counts``）与 worker 完成路径（完整 SecurityReport
+        提取计数）共用此渲染，避免两处重复。直接用入参计数，不依赖 SecurityReport
+        结构，使缓存命中路径无需获取完整报告、亦不经 _refilter_cache 深拷贝（PERF-2）。
+        """
         try:
-            # 直接索引：SecurityReport 为 TypedDict，SecurityAnalyzer 保证字段齐全；
-            # 缺键属结构 bug，应抛 KeyError 显式暴露，而非 .get 静默回退 0（虚假正常态
-            # 比崩溃更难诊断）。原 .get 容错会掩盖上游重构漏填字段的真实错误。
-            total = summary['total']
             self._stats_label.setText(f'共 {total} 项')
             parts = [f'总计 {total} 条']
-            weak = summary['weak_count']
             if weak > 0:
                 parts.append(f'弱密码 {weak}')
-            duplicate = summary['duplicate_count']
             if duplicate > 0:
                 parts.append(f'重复 {duplicate}')
             self._status_bar.showMessage('  |  '.join(parts))
             # 密码过期警告：复用实例属性，避免 findChild
-            old_count = summary['old']
             if old_count > 0:
                 self._warning_label.setText(f'  {old_count} 个密码已过期  ')
                 self._warning_label.show()
