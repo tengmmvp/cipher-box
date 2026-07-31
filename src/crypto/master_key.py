@@ -192,7 +192,7 @@ class MasterKeyManager:
         password: str,
         params: KdfParams = DEFAULT_KDF_PARAMS,
     ) -> tuple[bytes, str, bytearray]:
-        """创建新的主密码凭据
+        """创建新的主密码凭据。
 
         Args:
             password: 主密码
@@ -222,7 +222,7 @@ class MasterKeyManager:
         verify_token: str,
         params: KdfParams = DEFAULT_KDF_PARAMS,
     ) -> bytearray | None:
-        """验证主密码
+        """验证主密码。
 
         Args:
             password: 用户输入的密码
@@ -288,7 +288,7 @@ class MasterKeyManager:
         old_params: KdfParams = DEFAULT_KDF_PARAMS,
         new_params: KdfParams = DEFAULT_KDF_PARAMS,
     ) -> tuple[bytes, str, bytearray] | None:
-        """修改主密码
+        """修改主密码。
 
         Args:
             old_password: 旧密码

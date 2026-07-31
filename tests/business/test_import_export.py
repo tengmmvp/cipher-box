@@ -203,7 +203,7 @@ def test_import_from_bitwarden_json_sanitizes_url_and_totp(entry_mgr, tmp_path):
         'folders': [],
     }), encoding='utf-8')
 
-    count = mgr.import_from_bitwarden_json(str(bw_path))
+    count = mgr.import_file(str(bw_path), 'bitwarden_json')
 
     assert count == 2
     by_title = {e.title: e for e in entry_mgr.get_entries()}

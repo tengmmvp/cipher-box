@@ -29,6 +29,7 @@ from ...models import Category
 from ..components.widgets import create_cancel_button, setup_dialog_flags
 from ..error_messages import to_user_message
 from ..resources.constants import BTN_DIALOG, DIALOG_CATEGORY_MIN_SIZE
+from ..resources.strings import DLG_TITLE_ERROR, DLG_TITLE_INFO
 from ..resources.theme_colors import c
 
 if TYPE_CHECKING:
@@ -255,7 +256,7 @@ class CategoryDialog(QDialog):
         """校验名称后写入分类，成功则发出信号并关闭。"""
         name = self._name_edit.text().strip()
         if not name:
-            QMessageBox.warning(self, '提示', '请输入分类名称')
+            QMessageBox.warning(self, DLG_TITLE_INFO, '请输入分类名称')
             return
 
         icon_char = self._icon_combo.currentText()
@@ -280,4 +281,4 @@ class CategoryDialog(QDialog):
             logger.error(
                 "保存分类失败: %s: %s", type(exc).__name__, exc, exc_info=True,
             )
-            QMessageBox.critical(self, '错误', to_user_message(exc))
+            QMessageBox.critical(self, DLG_TITLE_ERROR, to_user_message(exc))

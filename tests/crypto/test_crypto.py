@@ -29,7 +29,7 @@ def test_encrypt_decrypt():
 
 def test_empty_string():
     key = os.urandom(32)
-    # 空字符串走 sentinel 加密路径，确保 AAD 参与认证。
+    # 空明文仍走完整加密路径，确保 AAD 参与认证。
     encrypted = EncryptionEngine.encrypt('', key, AAD)
     assert encrypted != ''
     assert encrypted.startswith(EncryptionEngine.TEXT_PREFIX)
@@ -184,7 +184,7 @@ def test_exclude_ambiguous():
 # TestEncryptionEdgeCases
 
 def test_encrypt_empty_string_no_aad():
-    """空字符串现在通过 sentinel 加密，AAD 参与认证。"""
+    """空明文仍走完整加密路径，AAD 参与认证。"""
     result = EncryptionEngine.encrypt("", b'\x00' * 32, "any_aad")
     assert result != ''
     assert result.startswith(EncryptionEngine.TEXT_PREFIX)

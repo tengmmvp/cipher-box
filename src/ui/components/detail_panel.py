@@ -97,7 +97,7 @@ class DetailPanel(QWidget):
         entry_manager: EntryManager | None = None,
         config: ConfigManager | None = None,
         parent: QWidget | None = None,
-    ):
+    ) -> None:
         super().__init__(parent)
         self.setObjectName('detailPanel')
         self._clipboard = clipboard_manager
@@ -337,7 +337,9 @@ class DetailPanel(QWidget):
     def _render_totp_and_history(self, entry: Entry) -> None:
         """启动 TOTP 显示与密码历史延迟加载 stub。"""
         if entry.has_totp and entry.id and self._entry_mgr is not None:
-            self._totp_widget.start(entry.id, self._entry_mgr, self._content_layout)
+            self._totp_widget.start(
+                entry.id, self._entry_mgr, self._content_layout, entry.totp_secret,
+            )
         if entry.id and self._entry_mgr:
             self._history_widget.build_stub(entry.id, self._entry_mgr, self._content_layout)
 

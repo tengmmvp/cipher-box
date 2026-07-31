@@ -95,7 +95,7 @@ PWD_MASK = '••••••••'  # 密码字段掩码（显隐切换/比�
 FONT_FAMILY_MONOSPACE = 'Consolas, Courier New, monospace'
 
 # ---------- 排序选项 ----------
-# 每项由显示名称、字段、排序方向组成，供 main_window 和 main_window_filters 共享
+# 每项由显示名称、字段、排序方向组成，供 main_window 和 ListRefreshController 共享
 SORT_OPTIONS = [
     ('更新时间 ↓', 'updated_at', 'desc'),
     ('更新时间 ↑', 'updated_at', 'asc'),

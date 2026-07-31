@@ -53,6 +53,38 @@ def test_load_unsigned_drops_security_keys():
         assert manager.integrity_reason == 'missing'
 
 
+def test_tampered_backup_directory_falls_back_to_default():
+    """篡改 backup_directory 致签名失配后，该敏感键回退默认值（与 clipboard_clear_seconds 等同等处理）。
+
+    backup_directory 属于 _INTEGRITY_SENSITIVE_KEYS：完整性失败时其值不可信——
+    可能被定向篡改以诱导明文备份落入攻击者可读目录。覆盖签名「不符（mismatch）」
+    路径：先 save 产生有效签名，再改写 JSON 中的 backup_directory 值并保留旧签名行
+    使签名失配，重新加载后断言其与 clipboard_clear_seconds 等敏感键同等回退默认。
+    """
+    with tempfile.TemporaryDirectory() as root:
+        manager = _manager(root)
+        manager.set('backup_directory', '/tmp/evil_backups')
+        manager.save()
+
+        # 篡改：改写 backup_directory 值，保留旧签名行 → 签名失配（mismatch）
+        raw = manager.config_path.read_text(encoding='utf-8')
+        json_text, sig_line = raw.rsplit('\n', 1)
+        tampered = json_text.replace(
+            '"backup_directory": "/tmp/evil_backups"',
+            '"backup_directory": "/tmp/attacker_readable"',
+        )
+        manager.config_path.write_text(tampered + '\n' + sig_line, encoding='utf-8')
+
+        # 重新加载
+        reloaded = _manager(root)
+        reloaded.load()
+        assert not reloaded.check_integrity()
+        assert reloaded.integrity_reason == 'mismatch'
+        # 完整性失败，敏感键回退默认值（默认为空字符串），篡改值不被采信
+        assert reloaded.get('backup_directory') == DEFAULT_CONFIG['backup_directory']
+        assert reloaded.get('backup_directory') == ''
+
+
 def test_set_rejects_unknown_or_invalid_values():
     with tempfile.TemporaryDirectory() as root:
         manager = _manager(root)

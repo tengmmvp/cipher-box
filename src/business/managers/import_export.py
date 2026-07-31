@@ -119,6 +119,13 @@ class ImportExportManager:
         source_label: str,
         existing_entries: list[Entry] | None = None,
     ) -> tuple[set[int], dict[int, Entry]]:
+        """按重复策略生成导入计划，返回 ``(跳过索引集, 覆盖映射)``。
+
+        按 ``(title, username)`` casefold 匹配已有条目，策略决定返回语义：
+        - ``import_all``：两者均空，全部作为新增。
+        - ``skip``：重复项索引收入跳过集，覆盖映射为空。
+        - ``overwrite``：重复项 ``索引 → 已有条目`` 收入覆盖映射，跳过集为空。
+        """
         if duplicate_action not in {'import_all', 'skip', 'overwrite'}:
             raise ValueError('无效的重复项处理策略')
         if duplicate_action == 'import_all':
@@ -327,6 +334,11 @@ class ImportExportManager:
                 # 用户取消：中止分类，已分类条目随后批量/逐条写入（部分导入随事务提交）。
                 # 使 worker.cancel() 真正生效而非空转冻结 UI。
                 break
+            # 每条都推进进度（含 duplicate/skip/overwrite）：total 含全部条目，进度应
+            # 到 total，避免 duplicate/skip 跳过 progress_callback 导致进度条永远到
+            # 不了 100%（原 progress 仅在成功处理后调用，被 continue 跳过）。
+            if progress_callback:
+                progress_callback(i + 1, total)
             if i in duplicate_indices:
                 continue
 
@@ -369,8 +381,6 @@ class ImportExportManager:
                     exc,
                 )
                 continue
-            if progress_callback:
-                progress_callback(i + 1, total)
 
         # 批量写入新条目：加密列由 _build_encrypted_entry 产出合法 cb2: 密文，逐条
         # _assert_entry_encrypted_fields 不会失败；用 executemany 替代逐条 INSERT，
@@ -469,7 +479,7 @@ class ImportExportManager:
     ) -> int:
         """统一执行格式策略：解析文件后在 epoch 守卫事务内写入。
 
-        各 import_from_* 入口共享此骨架，仅传入的 importer 不同，消除事务/分类/
+        import_file 入口共享此骨架，仅传入的 importer 不同，消除事务/分类/
         写入编排的重复。文件解析在事务外完成（importer.parse），大文件 I/O 与
         解析不持 db_lock。
         """
@@ -507,7 +517,7 @@ class ImportExportManager:
         """按格式键导入：单一 dispatch 入口，依 _IMPORTERS 注册表分发到策略类。
 
         新增格式只需新增策略类并在 _IMPORTERS 注册，即可经此入口导入，无需为每
-        格式编写独立方法。``import_from_*`` 保留为语义化便捷别名，委托本方法。
+        格式编写独立方法。
 
         Args:
             filepath: 文件路径。
@@ -527,78 +537,4 @@ class ImportExportManager:
         return self._run_importer(
             importer_cls(), filepath, default_category_id,
             duplicate_action, progress_callback, cancel_check,
-        )
-
-    def import_from_json(
-        self,
-        filepath: str,
-        default_category_id: int | None = None,
-        progress_callback: Callable[[int, int], None] | None = None,
-        duplicate_action: str = 'import_all',
-        cancel_check: Callable[[], bool] | None = None,
-    ) -> int:
-        """从 JSON 文件导入，委托 :meth:`import_file`（格式键 'json'）。"""
-        return self.import_file(
-            filepath, 'json', default_category_id,
-            progress_callback, duplicate_action, cancel_check,
-        )
-
-    def import_from_csv(
-        self,
-        filepath: str,
-        default_category_id: int | None = None,
-        progress_callback: Callable[[int, int], None] | None = None,
-        duplicate_action: str = 'import_all',
-        cancel_check: Callable[[], bool] | None = None,
-    ) -> int:
-        """从 CSV 文件导入（支持多种列名格式），委托 :meth:`import_file`（'csv'）。"""
-        return self.import_file(
-            filepath, 'csv', default_category_id,
-            progress_callback, duplicate_action, cancel_check,
-        )
-
-    def import_from_chrome_csv(
-        self,
-        filepath: str,
-        default_category_id: int | None = None,
-        progress_callback: Callable[[int, int], None] | None = None,
-        duplicate_action: str = 'import_all',
-        cancel_check: Callable[[], bool] | None = None,
-    ) -> int:
-        """从 Chrome/Edge CSV 导入，委托 :meth:`import_file`（'chrome_csv'）。
-
-        Chrome/Edge CSV 与 CipherBox CSV 共享列名格式，注册表 'chrome_csv' 复用
-        CsvImporter，故本别名与 :meth:`import_from_csv` 等价。
-        """
-        return self.import_file(
-            filepath, 'chrome_csv', default_category_id,
-            progress_callback, duplicate_action, cancel_check,
-        )
-
-    def import_from_keepass_csv(
-        self,
-        filepath: str,
-        default_category_id: int | None = None,
-        progress_callback: Callable[[int, int], None] | None = None,
-        duplicate_action: str = 'import_all',
-        cancel_check: Callable[[], bool] | None = None,
-    ) -> int:
-        """从 KeePass CSV 导入（列名 Title/UserName/Password/URL/Notes/Group），委托 import_file（'keepass_csv'）。"""
-        return self.import_file(
-            filepath, 'keepass_csv', default_category_id,
-            progress_callback, duplicate_action, cancel_check,
-        )
-
-    def import_from_bitwarden_json(
-        self,
-        filepath: str,
-        default_category_id: int | None = None,
-        progress_callback: Callable[[int, int], None] | None = None,
-        duplicate_action: str = 'import_all',
-        cancel_check: Callable[[], bool] | None = None,
-    ) -> int:
-        """从 Bitwarden JSON 导入，委托 :meth:`import_file`（'bitwarden_json'）。"""
-        return self.import_file(
-            filepath, 'bitwarden_json', default_category_id,
-            progress_callback, duplicate_action, cancel_check,
         )

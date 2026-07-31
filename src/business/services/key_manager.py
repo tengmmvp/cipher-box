@@ -49,23 +49,32 @@ class KeyManager:
 
         与 clear() 的清零语义对齐：旧密钥（bytearray）被新值覆盖前原地清零，
         收缩改密/恢复后旧密钥仍可被进程内存 dump 读取的窗口。
+        """
+        self._key = self._set_secret(self._key, key)
+
+    def _set_snapshot_key(self, snapshot_key: bytearray | bytes | None) -> None:
+        """装入快照密钥前先安全清零旧 bytearray，理由同 _set_key。"""
+        self._snapshot_key = self._set_secret(self._snapshot_key, snapshot_key)
+
+    def _set_secret(
+        self, current_value: bytearray | None, value: bytearray | bytes | None,
+    ) -> bytearray | None:
+        """归一新值为 bytearray 副本，并在装入前安全清零旧 bytearray。
+
+        _set_key 与 _set_snapshot_key 共用的装入逻辑：仅槽位不同，故抽出。
+
         old is not new 用于跳过“传入的正是当前持有的同一 bytearray”的情形
         （_to_bytearray 总复制使 new 总是新对象，old 非空时该条件恒成立；保留判断
         作为防御性不变量），避免清零掉将要使用的值。
         """
-        old = self._key
-        new = self._to_bytearray(key)
-        if old is not None and old is not new and isinstance(old, bytearray):
-            secure_zero_buffer(old)
-        self._key = new
-
-    def _set_snapshot_key(self, snapshot_key: bytearray | bytes | None) -> None:
-        """装入快照密钥前先安全清零旧 bytearray，理由同 _set_key。"""
-        old = self._snapshot_key
-        new = self._to_bytearray(snapshot_key)
-        if old is not None and old is not new and isinstance(old, bytearray):
-            secure_zero_buffer(old)
-        self._snapshot_key = new
+        new = self._to_bytearray(value)
+        if (
+            current_value is not None
+            and current_value is not new
+            and isinstance(current_value, bytearray)
+        ):
+            secure_zero_buffer(current_value)
+        return new
 
     def activate(
         self, key: bytearray | bytes, snapshot_key: bytearray | bytes, epoch: str,

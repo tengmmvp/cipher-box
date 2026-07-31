@@ -4,7 +4,9 @@
 - 数据库连接的打开/关闭和文件安全
 - 事务管理（begin / commit / rollback / savepoint）
 - vault_meta 表的元数据读写
-- ``_db_operation`` 装饰器，提供线程安全锁和连接校验
+
+线程安全与连接校验经 ``_db_operation`` / ``_db_write`` 装饰器提供
+（定义在 :mod:`._decorators`，作用于本类与各 Repository 的方法）。
 
 CRUD 操作已委托给子 Repository：
 - ``entries`` → :class:`EntryRepository`

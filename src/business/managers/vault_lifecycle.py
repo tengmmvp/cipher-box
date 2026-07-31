@@ -51,17 +51,6 @@ logger = logging.getLogger(__name__)
 AUTH_FAILED_MESSAGE = '当前主密码错误'
 
 
-def _friendly_error(exc: Exception, default: str) -> str:
-    """将生命周期流程异常映射为用户可读提示（委托统一翻译层 :func:`to_user_message`）。
-
-    场景化 ``default`` 用于未归类异常兜底（如「保险库初始化失败」/「保险库无法解锁」）。
-    ``CipherBoxError`` 在上层流程已 ``except CipherBoxError: raise`` 传播，此处主要兜底
-    非预期异常：校验类 ``ValueError``（密码强度、参数非法等）保留可操作消息，IO/格式
-    异常归一，避免把英文 ``str(exc)``（如 ``KeyError('master_salt')``）透传到 UI。
-    """
-    return to_user_message(exc, default=default)
-
-
 # unlock 单次批量读取的 vault_meta 键，避免多次独立 DB 锁获取。
 _VAULT_META_KEYS = [
     'master_salt', 'master_verify', 'master_kdf_time_cost',
@@ -144,7 +133,7 @@ class VaultLifecycleOrchestrator:
             # 强制清除可能已激活的密钥：activate_keys 已激活密钥并置 is_unlocked=True。
             # 不清除会使 initialize 报失败但保险库处于半解锁状态（持密钥），状态不一致。
             self._vault.clear_vault_state()
-            return False, _friendly_error(exc, '保险库初始化失败')
+            return False, to_user_message(exc, default='保险库初始化失败')
 
     def unlock(self, master_password: str) -> tuple[bool, str]:
         """使用主密码解锁保险库。"""
@@ -199,6 +188,14 @@ class VaultLifecycleOrchestrator:
             # 加载」的部分就位窗口：此窗口内 is_unlocked 为 False，并发读取者不会得到
             # 「已解锁但 snapshot_key 缺失」的中间态。
             self._vault.mark_unlocked()
+            # S4: 解锁后主动截断 WAL，清除上次运行可能残留的旧明文页（如恢复后
+            # secure_checkpoint 失败时 -wal 残留——恢复不轮换主密钥，残留页由当前
+            # 主密钥加密，持主密钥+WAL 者可解出恢复前旧明文）。失败非致命（数据已
+            # 可读），下次解锁重试。
+            try:
+                self._db.secure_checkpoint()
+            except Exception:
+                logger.warning("解锁后 WAL 安全截断失败（非致命）", exc_info=True)
             logger.info("解锁完成 (%.1fms)", (time.monotonic() - t0) * 1000)
             return True, ''
         except CipherBoxError:
@@ -212,7 +209,7 @@ class VaultLifecycleOrchestrator:
         except Exception as exc:
             self.lock()
             logger.warning("解锁失败", exc_info=True)
-            return False, _friendly_error(exc, '保险库无法解锁')
+            return False, to_user_message(exc, default='保险库无法解锁')
 
     def lock(self) -> None:
         """锁定保险库，清除内存中的密钥材料。
@@ -254,7 +251,11 @@ class VaultLifecycleOrchestrator:
     def change_master_password(
         self, old_password: str, new_password: str,
     ) -> tuple[bool, str]:
-        """修改主密码。方法获取可重入写锁，与 _re_encrypt_all 的写操作串行化。"""
+        """修改主密码。
+
+        获取可重入写锁串行化与重加密的写操作，实际逻辑委托
+        :meth:`_change_master_password_locked`。
+        """
         with self._vault.vault_write_lock():
             return self._change_master_password_locked(old_password, new_password)
 
@@ -314,7 +315,7 @@ class VaultLifecycleOrchestrator:
             raise  # 所有 CipherBox 自定义异常向上传播
         except Exception as exc:
             logger.warning("修改主密码失败", exc_info=True)
-            return False, _friendly_error(exc, '修改主密码失败')
+            return False, to_user_message(exc, default='修改主密码失败')
 
     def _re_encrypt_all(
         self,

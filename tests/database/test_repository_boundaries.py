@@ -1,17 +1,21 @@
-"""Repository 边界测试：密码历史截断与批量 ID 查询分页。
+"""Repository 边界测试：密码历史截断、批量 ID 查询分页与批量写 happy-path。
 
 覆盖此前仅被间接路径触及的边界：add_password_history 截断到 MAX_PASSWORD_HISTORY
-（off-by-one）、get_entries_by_ids 在 ID 数超过 SQLite 主机变量上限时的分批查询。
+（off-by-one）、get_entries_by_ids 在 ID 数超过 SQLite 主机变量上限时的分批查询，
+以及批量写（add_entries_batch / update_entries_batch / update_password_history_batch）
+此前仅有空输入短路面、缺失真实加密落库的 happy-path。
 """
 
+import os
 import tempfile
 from pathlib import Path
 
 import pytest
 
+from src.crypto.encryption import EncryptionEngine
 from src.database import entry_repository
 from src.database.db_manager import DatabaseManager
-from src.database.types import EntryQuery
+from src.database.types import EntryQuery, ReEncryptedEntry, ReEncryptedHistory
 from src.exceptions import DatabaseError
 from src.models import MAX_PASSWORD_HISTORY, RawEntry
 
@@ -121,3 +125,182 @@ def test_classify_entry_integrity_error_routes_by_message():
         '条目写入', sqlite3.IntegrityError('UNIQUE constraint failed: entries.crypto_id')
     )
     assert 'crypto_id' in str(uq)
+
+
+# === 批量写 happy-path ===
+#
+# 顶部 db fixture（test_mode=True）关闭了加密断言，仅覆盖空输入短路等控制流边界。
+# 以下测试用真实 DatabaseManager（_enforce_encrypted_fields=True）+ EncryptionEngine
+# 产出的合法 cb2: 密文，覆盖 add_entries_batch 分页反查、update_entries_batch 与
+# update_password_history_batch 的 happy-path：此前三者仅有空输入短路面或零测试。
+
+# 真实 AES-256 密钥，仅本模块批量写 happy-path 使用。模块加载时生成一次，
+# 供 _enc 默认引用；新密钥场景（update_*_batch 验证重加密生效）显式传 key。
+_BATCH_KEY = os.urandom(32)
+
+
+@pytest.fixture
+def secure_db(tmp_path):
+    """启用加密断言的临时数据库，用于批量写 happy-path。
+
+    非 test_mode → _enforce_encrypted_fields 默认 True，配合 EncryptionEngine 产出的
+    合法 cb2: 密文，真实走 _assert_entry_encrypted_fields / _assert_encrypted 拦截路径，
+    确保 happy-path 在生产态加密断言启用下成立（而非仅 test_mode 放行）。
+    """
+    database = DatabaseManager(tmp_path / 'batch_writes.db')
+    database.open()
+    database.init_tables()
+    yield database
+    database.close()
+
+
+def _enc(plaintext: str, crypto_id: str, field: str, *, key: bytes = _BATCH_KEY) -> str:
+    """产生合法 cb2: 密文，AAD 遵循 entry:<crypto_id>:<field> 域分离约定。"""
+    return EncryptionEngine.encrypt(plaintext, key, f'entry:{crypto_id}:{field}')
+
+
+def _make_encrypted_entry(crypto_id: str, title: str) -> RawEntry:
+    """构建全部敏感字段为合法 cb2: 密文的 RawEntry，满足 _assert_entry_encrypted_fields。
+
+    url/tags/notes/custom_fields/totp_secret 留空（断言对空值放行），仅给 title/
+    username/password 三列填密文以覆盖加密列写回路径。
+    """
+    return RawEntry(
+        crypto_id=crypto_id,
+        title=_enc(title, crypto_id, 'title'),
+        username=_enc('user-' + title, crypto_id, 'username'),
+        password=_enc('pwd-' + title, crypto_id, 'password'),
+        entry_type='login',
+        password_strength=3,
+    )
+
+
+def test_add_entries_batch_happy_path_crosses_paging(secure_db):
+    """add_entries_batch 插入 >1000 条（跨 _ID_BATCH_SIZE=500 分页边界），全部落库可读。
+
+    1001 = 2*_ID_BATCH_SIZE + 1，反查 {crypto_id: id} 映射需分 3 批 IN 查询。
+    验证：映射覆盖全部输入条目、值均为正整数（非 None）、全量落库可读、
+    抽样首/中/尾三条（跨分页边界）的密文可解密回原明文。
+    """
+    entries = [
+        _make_encrypted_entry(crypto_id=f'c{i:05d}', title=f'标题{i}')
+        for i in range(1001)
+    ]
+    id_map = secure_db.add_entries_batch(entries)
+
+    # 映射完整性：键集 == 输入 crypto_id 集，值全为正整数（executemany 不返回逐条
+    # lastrowid，实现按 crypto_id 反查 id；分批 IN 查询不得遗漏）
+    assert set(id_map) == {e.crypto_id for e in entries}
+    assert len(id_map) == 1001
+    assert all(isinstance(v, int) and v > 0 for v in id_map.values())
+
+    # 全量落库可读
+    fetched = secure_db.get_entries(EntryQuery(include_deleted=True))
+    assert len(fetched) == 1001
+    assert {e.crypto_id for e in fetched} == {e.crypto_id for e in entries}
+
+    # 抽样首/中/尾（跨分页边界 500/1000），验证映射 id 指向的行密文可解密回原明文
+    for sample_idx in (0, 500, 1000):
+        crypto_id = f'c{sample_idx:05d}'
+        entry_id = id_map[crypto_id]
+        fetched_entry = secure_db.get_entry(entry_id)
+        assert fetched_entry is not None
+        assert fetched_entry.crypto_id == crypto_id
+        assert EncryptionEngine.decrypt(
+            fetched_entry.title, _BATCH_KEY, f'entry:{crypto_id}:title',
+        ) == f'标题{sample_idx}'
+
+
+def test_update_entries_batch_happy_path(secure_db):
+    """update_entries_batch 批量重加密若干条目字段，读回解密验证更新生效。
+
+    覆盖首行 _enc 采样断言放行 + executemany 位置绑定列序正确性：用新密钥重加密
+    title/username/password 后读回，解密得新明文即证明写回列未错位。
+    """
+    entries = [
+        _make_encrypted_entry(crypto_id=f'upd-{i}', title=f'原标题{i}')
+        for i in range(3)
+    ]
+    id_map = secure_db.add_entries_batch(entries)
+
+    new_key = os.urandom(32)
+    rows = []
+    for i, entry in enumerate(entries):
+        crypto_id = entry.crypto_id
+        rows.append(ReEncryptedEntry(
+            crypto_id=crypto_id,
+            title_enc=_enc(f'新标题{i}', crypto_id, 'title', key=new_key),
+            username_enc=_enc(f'新用户{i}', crypto_id, 'username', key=new_key),
+            password_enc=_enc(f'新密码{i}', crypto_id, 'password', key=new_key),
+            url_enc='',
+            category_id=None,
+            tags_enc='',
+            notes_enc='',
+            custom_fields_enc='',
+            is_favorite=0,
+            password_strength=3,
+            entry_type='login',
+            totp_secret_enc='',
+            updated_at='2026-07-31T00:00:00Z',
+            password_changed_at='',
+            metadata_mac='',
+            id=id_map[crypto_id],
+        ))
+    secure_db.update_entries_batch(rows)
+
+    # 读回解密：三个重加密字段均更新为新密钥下的新明文（列序不错位）
+    for i, entry in enumerate(entries):
+        crypto_id = entry.crypto_id
+        updated = secure_db.get_entry(id_map[crypto_id])
+        assert updated is not None
+        assert EncryptionEngine.decrypt(
+            updated.title, new_key, f'entry:{crypto_id}:title',
+        ) == f'新标题{i}'
+        assert EncryptionEngine.decrypt(
+            updated.username, new_key, f'entry:{crypto_id}:username',
+        ) == f'新用户{i}'
+        assert EncryptionEngine.decrypt(
+            updated.password, new_key, f'entry:{crypto_id}:password',
+        ) == f'新密码{i}'
+
+
+def test_update_password_history_batch_happy_path(secure_db):
+    """update_password_history_batch 批量重加密密码历史，可按条目读回新密文。
+
+    覆盖此前零测试的 update_password_history_batch：逐条 _assert_encrypted 放行 +
+    executemany（old_password_enc, id）位置绑定，读回解密验证密文已更新为新密钥。
+    """
+    crypto_id = 'hist-1'
+    entry_id = secure_db.add_entries_batch(
+        [_make_encrypted_entry(crypto_id=crypto_id, title='带历史')],
+    )[crypto_id]
+
+    # 写入 2 条密码历史（< MAX_PASSWORD_HISTORY=10，不触发截断）
+    secure_db.add_password_history(
+        entry_id, _enc('old-pwd-1', crypto_id, 'password'), '2026-01-01T00:00:00Z',
+    )
+    secure_db.add_password_history(
+        entry_id, _enc('old-pwd-2', crypto_id, 'password'), '2026-02-01T00:00:00Z',
+    )
+    history = secure_db.get_password_history(entry_id)
+    assert len(history) == 2
+
+    new_key = os.urandom(32)
+    rows = [
+        ReEncryptedHistory(
+            ciphertext=_enc(f'new-pwd-{h.id}', crypto_id, 'password', key=new_key),
+            id=h.id,
+        )
+        for h in history
+    ]
+    secure_db.update_password_history_batch(rows)
+
+    # 按条目读回，解密得新明文（id 不错位、密文已替换）
+    updated = secure_db.get_password_history(entry_id)
+    assert len(updated) == 2
+    by_id = {h.id: h for h in updated}
+    for h in history:
+        rec = by_id[h.id]
+        assert EncryptionEngine.decrypt(
+            rec.old_password_enc, new_key, f'entry:{crypto_id}:password',
+        ) == f'new-pwd-{h.id}'

@@ -1,5 +1,3 @@
-from tests.helpers import make_entry_manager
-
 """宽松完整性校验测试，验证列表操作容忍损坏条目。
 
 覆盖 get_entries 的宽容模式与 get_entry 的严格模式差异：
@@ -10,7 +8,7 @@ import pytest
 
 from src.exceptions import VaultIntegrityError
 from src.models import Entry, RawEntry
-from tests.helpers import make_vault
+from tests.helpers import make_entry_manager, make_vault
 
 
 class TestLenientVerify:

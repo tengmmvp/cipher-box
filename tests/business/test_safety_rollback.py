@@ -454,7 +454,7 @@ class TestImportEpochGuard:
 
         with patch.object(type(self._vault), 'key_epoch', _ShiftingEpoch()):
             with pytest.raises(VaultKeyEpochMismatchError):
-                self._import_export.import_from_json(self._json_path)
+                self._import_export.import_file(self._json_path, 'json')
 
         # patch 上下文管理器退出时已自动恢复 key_epoch property，无需手动还原
         _ = original_key_epoch_property
@@ -473,7 +473,7 @@ class TestImportEpochGuard:
         """
         entry_count_before = len(self._entry_mgr.get_entries())
 
-        count = self._import_export.import_from_json(self._json_path)
+        count = self._import_export.import_file(self._json_path, 'json')
 
         # 正常导入应成功导入 1 条
         assert count == 1

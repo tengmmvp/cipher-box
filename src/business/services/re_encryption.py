@@ -14,7 +14,7 @@ import logging
 from threading import Event
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from ...database.types import EntryQuery, ReEncryptedEntry, ReEncryptedHistory
+from ...database.types import EntryQuery, ReEncryptedEntry, ReEncryptedHistory, VerifyMode
 from ...exceptions import DecryptionError, VaultError
 from ...models import Category, PasswordHistory, RawEntry
 from ...utils.memory import secure_zero_buffer
@@ -112,6 +112,10 @@ class ReEncryptionService:
                     EntryQuery(
                         include_deleted=True, limit=_RE_ENCRYPT_BATCH_SIZE,
                         after_id=last_id,
+                        # 重加密会重写全部密文并用新域密钥重签，旧签名验证无安全意义
+                        # （密文完整性由 strict 解密的 GCM 认证标签兜底）；指定 SKIP
+                        # 避免每行冗余 HMAC 验签延长 vault_write_lock 持锁时间。
+                        verify=VerifyMode.SKIP,
                     )
                 )
                 if not batch:
@@ -258,11 +262,19 @@ class ReEncryptionService:
             )
             if not history_batch:
                 break
-            last_history_id = history_batch[-1].id or 0
+            # history_batch 来自 DB get_all_password_history_batch，主键 id 必非 None；
+            # 守卫锚定契约，避免 None 作分页游标导致死循环（旧代码 id or 0 在 id 真为
+            # None 时回退 0，重复查同批永不推进）。
+            last_history = history_batch[-1]
+            if last_history.id is None:
+                raise VaultError('重加密分页遇到空主键，违反 PasswordHistory 主键非空契约')
+            last_history_id = last_history.id
             rows: list[ReEncryptedHistory] = []
             for history in history_batch:
+                # 主键非空守卫：兼作 Pyright 类型收窄（history.id 类型为 int|None），
+                # 并在运行时锚定 DB 主键非空契约，与外层分页游标守卫并非纯冗余。
                 if history.id is None:
-                    continue  # 跳过无 ID 的历史记录，不应出现，防御性编程
+                    raise VaultError('重加密遇到空主键密码历史，违反 PasswordHistory 主键非空契约')
                 try:
                     plaintext = _decrypt_field_impl(
                         history.old_password_enc, old_key,

@@ -11,6 +11,7 @@ from typing import Any
 
 from .models import is_real_int
 from .utils.file_security import (
+    atomic_write,
     protect_with_dpapi,
     secure_directory,
     secure_file,
@@ -83,6 +84,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'sort_order': 'desc',             # asc, desc
     'window_geometry': None,
     'splitter_sizes': None,
+    # 已建立的安全哨兵登记名（RateLimiter 首次持久化状态时登记）。HMAC 签名覆盖，
+    # 用于检测「状态文件 + 哨兵被同时删除」的速率限制绕过：文件可删，但删除后签名
+    # config 仍记录哨兵曾建立 → 加载时判定为恶意删除并降级最高阶梯锁定。非用户面向。
+    'security_sentinels': [],
 }
 
 # 整型配置字段规范：(文件可接受下限, 上限, 运行时安全下限 or None)。
@@ -123,8 +128,12 @@ def get_ui_int_range(key: str) -> tuple[int, int]:
 
 # 完整性校验失败（签名缺失/不符）时必须回退默认值的键集合：除安全下限相关
 # 整型键外，还包含 backup_directory——完整性失败时其值不可信（可能被定向篡改
-# 以诱导明文备份落入攻击者可读目录），与安全键同等回退默认。
-_INTEGRITY_SENSITIVE_KEYS: set[str] = set(_SECURITY_MINIMUMS) | {'backup_directory'}
+# 以诱导明文备份落入攻击者可读目录），与安全键同等回退默认。security_sentinels
+# 同列：完整性失败时其值不可信，回退默认（空），由 RateLimiter 据完整性失败本身
+# 保守降级，不采信被篡改的登记内容。
+_INTEGRITY_SENSITIVE_KEYS: set[str] = (
+    set(_SECURITY_MINIMUMS) | {'backup_directory', 'security_sentinels'}
+)
 _BOOL_KEYS = {
     'default_uppercase', 'default_lowercase', 'default_digits',
     'default_symbols', 'default_exclude_ambiguous', 'auto_backup_enabled',
@@ -202,18 +211,14 @@ class ConfigManager:
         stored = protect_with_dpapi(key)
         if stored is None:
             stored = key
-        temp_path = self._integrity_key_path.with_suffix('.key.tmp')
-        try:
-            with open(temp_path, 'wb') as file:
-                file.write(stored)
-                file.flush()
-                os.fsync(file.fileno())
-            secure_file(temp_path, strict=True)
-            os.replace(temp_path, self._integrity_key_path)
-            secure_file(self._integrity_key_path, strict=True)
-        except Exception:
-            temp_path.unlink(missing_ok=True)
-            raise
+        # 经 atomic_write 落地即 0600（opener 回调）：消除「写入明文签名密钥 → 关闭 →
+        # secure_file 收紧」间的世界可读窗口（与 SEC-2 一致；config.key 在 Unix 无
+        # DPAPI 时以明文存储签名密钥，是密码学密钥不应宽松落盘）。
+        def _write_key(f: Any) -> bool:
+            f.write(stored)
+            return True
+
+        atomic_write(self._integrity_key_path, _write_key, mode='wb')
         return key
 
     @property
@@ -308,27 +313,20 @@ class ConfigManager:
     def save(self) -> None:
         """原子保存配置，避免异常退出留下半个 JSON 文件。"""
         with self._lock:
-            self._config_path.parent.mkdir(parents=True, exist_ok=True)
-            temp_path = self._config_path.with_suffix('.json.tmp')
             content = json.dumps(self._config, indent=2, ensure_ascii=False)
             sig = hmac.new(
                 self._integrity_key,
                 content.encode('utf-8'),
                 hashlib.sha256,
             ).hexdigest()
-            try:
-                with open(temp_path, 'w', encoding='utf-8') as f:
-                    f.write(content)
-                    f.write(f'\n{_CONFIG_SIG_PREFIX}{sig}')
-                    f.flush()
-                    os.fsync(f.fileno())
-                secure_file(temp_path, strict=True)
-                os.replace(temp_path, self._config_path)
-                secure_file(self._config_path, strict=True)
-            except Exception:
-                # 异常时清理临时文件，避免残留含明文配置的 .tmp 孤儿文件
-                temp_path.unlink(missing_ok=True)
-                raise
+            # 经 atomic_write 落地即 0600（opener 回调）：消除「写入含安全关键配置的
+            # 明文 → 关闭 → secure_file 收紧」间的世界可读窗口（与 SEC-2 一致）。
+            def _write_config(f: Any) -> bool:
+                f.write(content)
+                f.write(f'\n{_CONFIG_SIG_PREFIX}{sig}')
+                return True
+
+            atomic_write(self._config_path, _write_config, mode='w', encoding='utf-8')
             # 成功写出带有效签名的配置，清除会话内的完整性告警状态：避免此前
             # 检测到的篡改/缺失状态在 save 后仍粘滞，导致 get_safe 的 auto_lock
             # 豁免被持续钳制而误伤合法用户，以及内存状态与磁盘实际不一致。
@@ -380,6 +378,33 @@ class ConfigManager:
                 raise ValueError(f'配置项值无效：{key}')
             self._config[key] = value
 
+    def register_security_sentinel(self, name: str) -> None:
+        """登记某安全哨兵已建立（写入签名 config，幂等）。
+
+        供 :class:`~src.ui.components.widgets.RateLimiter` 在持久化状态时调用。建立后，
+        若状态文件与哨兵被同时删除，签名 config 仍记录其曾建立——加载时据此判定为
+        恶意删除并降级最高阶梯锁定，关闭「删两文件即归零计数」的绕过。攻击者无法伪造
+        签名（config.key 经 DPAPI/文件权限保护），删哨兵后无法从 config 抹除登记。
+
+        幂等：已登记时直接返回，不再触发 save，避免每次登录都写盘。
+        """
+        with self._lock:
+            current = list(self._config.get('security_sentinels', []))
+            if name in current:
+                return
+            current.append(name)
+            self._config['security_sentinels'] = current
+            self.save()
+
+    def is_security_sentinel_established(self, name: str) -> bool:
+        """该安全哨兵是否已在签名 config 中登记为已建立。
+
+        调用方应先查 :meth:`check_integrity`：完整性失败时本方法返回值不可信
+        （登记可能被篡改），应保守视为「已建立」降级锁定，而非采信返回值。
+        """
+        with self._lock:
+            return name in self._config.get('security_sentinels', [])
+
     @staticmethod
     def _is_valid(key: str, value: Any) -> bool:
         if key in _INT_RANGES:
@@ -410,6 +435,20 @@ class ConfigManager:
                 isinstance(value, list)
                 and len(value) == 3
                 and all(is_real_int(item) and 1 <= item <= 10000 for item in value)
+            )
+        if key == 'security_sentinels':
+            # 登记名为限长、无 NUL 的纯字符串列表（RateLimiter 状态文件 stem），
+            # 拒绝其它类型与重复外的脏值；长度上限防御异常膨胀。
+            return (
+                isinstance(value, list)
+                and len(value) <= 64
+                and all(
+                    isinstance(item, str)
+                    and item
+                    and len(item) <= 128
+                    and '\x00' not in item
+                    for item in value
+                )
             )
         logger.debug("配置键 %s 无验证规则，已拒绝", key)
         return False

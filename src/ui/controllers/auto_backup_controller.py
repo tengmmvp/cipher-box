@@ -88,27 +88,23 @@ class AutoBackupController:
         if self._worker is not None and self._worker.isRunning():
             return
 
-        # cancel_check 经显式容器引用 worker，避免闭包延迟绑定局部变量 worker：
-        # _task 在 worker 构造前定义，若直接引用 worker 则依赖「start 后 worker 已
-        # 赋值」的隐式执行顺序，未来把 start 内联进构造会触发 NameError。
-        worker_holder: list[BackgroundWorker] = []
-
         def _task() -> tuple[bool, str]:
-            # 接入 worker 的协作取消探针：锁定/隐藏到托盘时 wait_worker_shutdown
+            # worker 是下方赋值的自由变量，闭包延迟绑定：_task 在 worker.run 时执行，
+            # 此时 worker 已赋值。cancel_check 直接用 BackgroundWorker 提供的绑定方法，
+            # 消除 holder 列表与 lambda 包装。锁定/隐藏到托盘时 wait_worker_shutdown
             # 设置取消标志，maybe_auto_backup 的全量解密循环据此及时退出。
             return self._backup.maybe_auto_backup(
                 self._config, force=force,
-                cancel_check=lambda: worker_holder[0].is_cancelled,
+                cancel_check=worker.cancel_check,
             )
 
         def _on_backup_error(msg: str) -> None:
             # 守卫：仅当当前备份 worker 仍是本 worker 时记录，避免被后续备份替换后
-            # 旧 worker 的延迟错误信号触发误导性日志。
-            if self._worker is worker_holder[0]:
+            # 旧 worker 的延迟错误信号触发误导性日志。worker 为自由变量，延迟绑定。
+            if self._worker is worker:
                 logger.warning("自动快照失败: %s", msg)
 
         worker = BackgroundWorker(_task, parent=self._parent)
-        worker_holder.append(worker)
         worker.error.connect(_on_backup_error)
         self._worker = worker
         worker.start()

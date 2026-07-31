@@ -60,8 +60,10 @@ def _sanitize_totp_secret(secret: str) -> str:
 
 
 def _validate_items(items: list[dict[str, Any]]) -> None:
-    """逐项验证导入数据大小。使用字段长度估算防止恶意构造的巨大字段
-    在后续处理中引发内存问题。"""
+    """逐项验证导入数据大小。
+
+    使用字段长度估算防止恶意构造的巨大字段在后续处理中引发内存问题。
+    """
     if len(items) > MAX_ENTRIES_LIMIT:
         raise ValueError(f'导入条目过多，最大允许 {MAX_ENTRIES_LIMIT} 条')
     for item in items:

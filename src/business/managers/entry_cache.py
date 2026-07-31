@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 from ...database.types import EntryQuery, VerifyMode
 from ...exceptions import DecryptionError
-from ...models import RawEntry
+from ...models import MAX_ENTRIES_LIMIT, RawEntry
 from ..services.crypto_utils import (
     category_crypto_id,
     decrypt_field as _decrypt_field_impl,
@@ -27,9 +27,11 @@ from ..services.crypto_utils import (
 
 logger = logging.getLogger(__name__)
 
-# 搜索摘要缓存容量上限：沿用 encryption.py 的「有限容量 LRU」设计理念，
-# 避免大库下明文摘要 dict 以条目数为上界无界增长。LRU 淘汰最久未访问项。
-_MAX_SEARCH_METADATA_CACHE_SIZE = 2000
+# 搜索摘要缓存容量上限：与条目数上限（MAX_ENTRIES_LIMIT）对齐，使大库
+# （上限内）的 title/username/url/tags 摘要全部驻留缓存、避免每次列表刷新
+# 全量重解密。明文驻留面由锁定/改密时 invalidate_all 清零兜底。LRU 仅在
+# 超出上限（理论上仅极端入库规模）时淘汰最久未访问项。
+_MAX_SEARCH_METADATA_CACHE_SIZE = MAX_ENTRIES_LIMIT
 
 
 class EntryCacheManager:
@@ -42,9 +44,12 @@ class EntryCacheManager:
 
     def __init__(self, vault: 'VaultManager'):
         self._vault = vault
-        # 搜索摘要缓存保存 title/username/url/tags 明文，减少重复搜索解密。
-        # OrderedDict + LRU 上限，防止大库下明文摘要无界增长。
-        self._search_metadata_cache: OrderedDict[str, tuple[str, str, str, str]] = OrderedDict()
+        # 搜索摘要缓存保存 title/username/url/tags 明文及其小写形式（后 4 项），
+        # 小写形式供 matches_search 跳过每条目 4 字段实时 .lower()。OrderedDict +
+        # LRU 上限，防止大库下明文摘要无界增长。
+        self._search_metadata_cache: OrderedDict[
+            str, tuple[str, str, str, str, str, str, str, str]
+        ] = OrderedDict()
         self._search_metadata_failed: dict[str, set[str]] = {}
         self._category_name_cache: dict[int, str] = {}
         self._totp_secret_cache: dict[int, str] = {}
@@ -125,14 +130,21 @@ class EntryCacheManager:
         并在循环外调用一次 :meth:`invalidate_if_epoch_changed`，避免每条目重复
         加锁取 epoch——同一批 raw 在单次列表/搜索调用内 epoch 不可能变化
         （调用方事务内已固定），逐条校验属冗余的 N 次 RLock + epoch 查询。
+
+        返回明文原形 4 元组；小写形式经 :meth:`search_lower_no_check` 取得，
+        两者一同缓存以避免 matches_search 每条目实时 .lower()。
         """
         self.invalidate_if_epoch_changed()
-        return self._cached_search_metadata_no_check(raw_entry)
+        return self._cached_search_metadata_no_check(raw_entry)[:4]
 
     def _cached_search_metadata_no_check(
         self, raw_entry: RawEntry,
-    ) -> tuple[str, str, str, str]:
+    ) -> tuple[str, str, str, str, str, str, str, str]:
         """cached_search_metadata 的无 epoch 校验版本，供批量循环复用。
+
+        返回 8 元组：(title, username, url, tags, title_lower, username_lower,
+        url_lower, tags_lower)。前 4 项为明文原形（列表展示），后 4 项为小写形式
+        （供 matches_search 跳过实时 .lower()）。两者一同解密一次并缓存。
 
         调用方须保证循环外已调用 ``invalidate_if_epoch_changed``。
         """
@@ -160,7 +172,13 @@ class EntryCacheManager:
                 value = ''
                 failed.add(field_name)
             values.append(value)
-        result = (values[0], values[1], values[2], values[3])
+        # 小写形式与原形一同缓存：一次 .lower()（远廉价于 AES-GCM 解密）换取
+        # matches_search 每次搜索跳过 4 字段实时 .lower() 的 N 倍开销。
+        result = (
+            values[0], values[1], values[2], values[3],
+            values[0].lower(), values[1].lower(),
+            values[2].lower(), values[3].lower(),
+        )
         with self._cache_lock:
             if self._cache_epoch == entry_epoch:
                 self._search_metadata_cache[cid] = result
@@ -180,8 +198,24 @@ class EntryCacheManager:
         （如 :class:`SecurityAnalyzer`）批量循环复用，使 services 不必跨层访问
         managers 的私有方法，守住分层方向（services 不反向耦合 managers
         内部实现）。调用方须在循环外调用 :meth:`invalidate_if_epoch_changed`。
+
+        返回明文原形 4 元组（切片自内部 8 元组）。
         """
-        return self._cached_search_metadata_no_check(raw_entry)
+        return self._cached_search_metadata_no_check(raw_entry)[:4]
+
+    def search_lower_no_check(
+        self, raw_entry: RawEntry,
+    ) -> tuple[str, str, str, str]:
+        """返回摘要字段的小写形式 (title, username, url, tags)，供搜索匹配复用。
+
+        无 epoch 校验、无逐条解密：直接复用 :meth:`_cached_search_metadata_no_check`
+        已填充的缓存条目取后 4 项（命中缓存时为纯锁内 dict 查询）。供批量搜索循环
+        （如 :meth:`EntryManager.get_entry_summaries`）在摘要已由 ``_decrypt_summary``
+        填充后调用，跳过 :func:`matches_search` 每条目 4 字段实时 ``.lower()``。
+
+        调用方须在循环外已调用 ``invalidate_if_epoch_changed``。
+        """
+        return self._cached_search_metadata_no_check(raw_entry)[4:]
 
     def get_failed_fields(self, crypto_id: str) -> set[str]:
         """取某条目摘要解密失败的字段集（锁内采样，避免与 clear 竞态）。"""
@@ -259,7 +293,8 @@ class EntryCacheManager:
         title/username/url 的冗余解密，约 3/4 开销）。失败回退空串，与
         :meth:`_cached_search_metadata_no_check` 的容错一致。
         """
-        cached = self._search_metadata_cache.get(raw_entry.crypto_id)
+        with self._cache_lock:
+            cached = self._search_metadata_cache.get(raw_entry.crypto_id)
         if cached is not None:
             return cached[3]
         try:

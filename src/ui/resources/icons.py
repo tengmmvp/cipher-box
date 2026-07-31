@@ -1,4 +1,4 @@
-"""统一图标管理模块 — 基于 QtAwesome 的语义化图标系统
+"""统一图标管理模块 — 基于 QtAwesome 的语义化图标系统。
 
 使用方式：
     from .resources.icons import icon, set_icon, EYE, COPY

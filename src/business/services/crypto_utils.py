@@ -72,7 +72,16 @@ STRING_ENCRYPTED_FIELDS: tuple[str, ...] = tuple(
 
 
 def require_vault_key(vault_manager: VaultManager) -> bytes:
-    """获取保险库加密密钥，未解锁时抛出 VaultLockedError。"""
+    """获取保险库加密密钥，未解锁时抛出 VaultLockedError。
+
+    优先查 ``is_unlocked`` 而非仅查 ``key is None``：unlock 流程在 vault_meta_mac
+    校验通过前 key 已装入但 ``is_unlocked`` 仍为 False，查 is_unlocked 收紧此窄窗，
+    避免并发调用在解锁未完成时获取 key。is_unlocked=True 蕴含 key 非 None（其定义
+    即 ``_is_unlocked and _key is not None``），第二个 None 检查仅为类型 narrow
+    与防御（解锁态下不达）。
+    """
+    if not vault_manager.is_unlocked:
+        raise VaultLockedError("保险库未解锁")
     key = vault_manager.key
     if key is None:
         raise VaultLockedError("保险库未解锁")
@@ -163,6 +172,27 @@ def matches_search(entry: Entry | RawEntry, query: str) -> bool:
             or kw in username.lower()
             or kw in (entry.url or '').lower()
             or kw in (entry.tags or '').lower())
+
+
+def matches_search_lower(
+    lower: tuple[str, str, str, str], query: str,
+) -> bool:
+    """检查条目是否匹配搜索关键词，使用预计算的小写字段值。
+
+    与 :func:`matches_search` 的区别：跳过每条目 4 字段实时 ``.lower()``，
+    复用摘要缓存内的小写形式 (title_lower, username_lower, url_lower,
+    tags_lower)，供批量搜索热路径（如 :meth:`EntryManager.get_entry_summaries`）
+    消除每次搜索 N×4 次 ``.lower()`` 的重复开销。匹配语义与 :func:`matches_search`
+    完全一致（关键词 ``.lower()`` 后对小写字段做 ``in`` 子串匹配）。
+
+    Args:
+        lower: 预计算小写形式的 (title, username, url, tags)。
+        query: 搜索关键词，空字符串匹配所有条目。
+    """
+    if not query:
+        return True
+    kw = query.lower()
+    return kw in lower[0] or kw in lower[1] or kw in lower[2] or kw in lower[3]
 
 
 def matches_tag(entry: Entry, tag: str) -> bool:

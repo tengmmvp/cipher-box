@@ -9,6 +9,7 @@ import sqlite3
 import threading
 
 from ..exceptions import DatabaseError, SchemaError
+from ..models import ENTRY_TYPE_LOGIN
 from ..utils.format import utc_now_iso
 from .types import ConnectionProvider
 
@@ -66,7 +67,7 @@ _TABLE_COLUMNS = {
         'category_id': ('INTEGER', 0, 0, None), 'tags_enc': ('TEXT', 0, 0, "''"),
         'notes_enc': ('TEXT', 0, 0, "''"), 'custom_fields_enc': ('TEXT', 0, 0, "''"),
         'is_favorite': ('INTEGER', 0, 0, '0'), 'is_deleted': ('INTEGER', 0, 0, '0'),
-        'password_strength': ('INTEGER', 0, 0, '0'), 'entry_type': ('TEXT', 0, 0, "'login'"),
+        'password_strength': ('INTEGER', 0, 0, '0'), 'entry_type': ('TEXT', 0, 0, f"'{ENTRY_TYPE_LOGIN}'"),
         'totp_secret_enc': ('TEXT', 0, 0, "''"), 'created_at': ('TEXT', 0, 0, "''"),
         'updated_at': ('TEXT', 0, 0, "''"), 'deleted_at': ('TEXT', 0, 0, "''"),
         'password_changed_at': ('TEXT', 0, 0, "''"),
@@ -128,7 +129,7 @@ class SchemaManager:
                 self._mgr.schema_validated = True
             return
 
-        cursor.executescript("""
+        cursor.executescript(f"""
             CREATE TABLE IF NOT EXISTS vault_meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -158,7 +159,7 @@ class SchemaManager:
                 is_favorite INTEGER DEFAULT 0,
                 is_deleted INTEGER DEFAULT 0,
                 password_strength INTEGER DEFAULT 0,
-                entry_type TEXT DEFAULT 'login',
+                entry_type TEXT DEFAULT '{ENTRY_TYPE_LOGIN}',
                 totp_secret_enc TEXT DEFAULT '',
                 created_at TEXT DEFAULT '',
                 updated_at TEXT DEFAULT '',

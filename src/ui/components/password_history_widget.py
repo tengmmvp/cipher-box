@@ -36,7 +36,6 @@ class PasswordHistoryWidget(QWidget):
     点击展开后才解密完整记录。
     """
 
-    copy_requested = pyqtSignal(str)
     copy_feedback = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None):

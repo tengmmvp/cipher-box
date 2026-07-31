@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QCloseEvent
@@ -41,6 +41,7 @@ from ..resources.constants import (
     BTN_DIALOG,
     DIALOG_IMPORT_EXPORT_MIN_SIZE,
 )
+from ..resources.strings import DLG_TITLE_INFO
 from ..resources.theme_colors import c
 
 if TYPE_CHECKING:
@@ -59,20 +60,23 @@ _IMPORT_FILTERS = {
     'KeePass CSV':       ('CSV 文件 (*.csv)', 'keepass_import.csv'),
 }
 _IMPORT_FORMATS = list(_IMPORT_FILTERS.keys())
+# UI 格式名 → 业务层 import_file 的 format_key（单一 dispatch 入口）。
+# 替代原先的 _IMPORT_HANDLERS 方法名字符串映射 + getattr 动态分派：方法名与
+# ImportExportManager 真实方法漂移会在运行时抛 AttributeError，本映射仅依赖
+# _IMPORTERS 注册表的稳定格式键。
+_IMPORT_FORMAT_KEYS = {
+    'JSON (CipherBox)': 'json',
+    'CSV': 'csv',
+    'Chrome / Edge CSV': 'chrome_csv',
+    'Bitwarden JSON': 'bitwarden_json',
+    'KeePass CSV': 'keepass_csv',
+}
 
 
 class ImportExportDialog(QDialog):
     """导入与导出统一对话框，按模式切换可见选项与可用格式。"""
 
     import_completed = pyqtSignal()
-
-    _IMPORT_HANDLERS = {
-        'JSON (CipherBox)': 'import_from_json',
-        'CSV': 'import_from_csv',
-        'Chrome / Edge CSV': 'import_from_chrome_csv',
-        'Bitwarden JSON': 'import_from_bitwarden_json',
-        'KeePass CSV': 'import_from_keepass_csv',
-    }
 
     def __init__(
         self,
@@ -251,7 +255,7 @@ class ImportExportDialog(QDialog):
 
     def _execute(self) -> None:
         if not self._selected_path:
-            QMessageBox.warning(self, '提示', '请先选择文件')
+            QMessageBox.warning(self, DLG_TITLE_INFO, '请先选择文件')
             return
 
         if self._is_export:
@@ -296,32 +300,31 @@ class ImportExportDialog(QDialog):
 
         self._set_busy(True)
 
-        worker_holder: list[BackgroundWorker] = []
-
         def _export_task() -> int:
-            worker = worker_holder[0]
-            cancel_check = lambda: worker.is_cancelled
+            # worker 是下方赋值的自由变量，闭包延迟绑定（_export_task 在 worker.run
+            # 时执行，worker 已赋值）。cancel_check 直接用 BackgroundWorker 提供的绑定
+            # 方法，消除 holder 列表与 lambda 包装。
             entries = self._entry_mgr.get_entries_for_export(
-                include_pwd, cancel_check=cancel_check,
+                include_pwd, cancel_check=worker.cancel_check,
             )
             if worker.is_cancelled:
                 return 0
             if fmt == 'JSON':
                 self._import_export.export_to_json(
-                    path, entries, include_pwd, cancel_check=cancel_check,
+                    path, entries, include_pwd, cancel_check=worker.cancel_check,
                 )
             else:
                 self._import_export.export_to_csv(
-                    path, entries, include_pwd, cancel_check=cancel_check,
+                    path, entries, include_pwd, cancel_check=worker.cancel_check,
                 )
             return len(entries)
 
         self._worker_is_export = True
-        self._worker = BackgroundWorker(_export_task, parent=self)
-        worker_holder.append(self._worker)
-        self._worker.finished.connect(self._on_export_done)
-        self._worker.error.connect(self._on_export_error)
-        self._worker.start()
+        worker = BackgroundWorker(_export_task, parent=self)
+        self._worker = worker
+        worker.finished.connect(self._on_export_done)
+        worker.error.connect(self._on_export_error)
+        worker.start()
 
     def _on_export_done(self, count: int) -> None:
         if self.sender() is not self._worker:
@@ -389,34 +392,28 @@ class ImportExportDialog(QDialog):
         self._progress.setValue(0)
         self._progress.show()
 
-        worker_holder: list = []
-
         def _import_task() -> int:
-            # worker_holder 解耦：闭包经 holder[0] 访问 worker，消除对
-            # self._worker 赋值时序的依赖（原读 self._worker 依赖赋值先于 start，
-            # 是脆弱的隐式契约）。同时取 cancel_check 使 reject() 真正中断导入循环。
-            worker = worker_holder[0] if worker_holder else None
-            progress_cb = worker.emit_progress if worker is not None else None
-            # is_cancelled 是 @property 返回 bool，须包成 lambda 提供 Callable[[], bool]。
-            cancel_check = (lambda: worker.is_cancelled if worker is not None else False) if worker is not None else None
+            # worker 是下方赋值的自由变量，闭包延迟绑定。progress/cancel 直接用
+            # BackgroundWorker 提供的绑定方法，消除 holder 列表与 lambda 包装。
+            # 经 _IMPORT_FORMAT_KEYS 映射到 format_key，调 import_file 单一 dispatch
+            # 入口，消除原先 getattr(method_name) 动态分派与业务层 5 个别名方法。
             fmt_name = _IMPORT_FORMATS[fmt_index] if 0 <= fmt_index < len(_IMPORT_FORMATS) else ''
-            method_name = self._IMPORT_HANDLERS.get(fmt_name)
-            if method_name:
-                handler = getattr(self._import_export, method_name)
-                return cast(int, handler(
-                    path,
-                    progress_callback=progress_cb,
-                    duplicate_action=duplicate_action,
-                    cancel_check=cancel_check,
-                ))
-            return 0
+            format_key = _IMPORT_FORMAT_KEYS.get(fmt_name)
+            if format_key is None:
+                return 0
+            return self._import_export.import_file(
+                path, format_key,
+                progress_callback=worker.emit_progress,
+                duplicate_action=duplicate_action,
+                cancel_check=worker.cancel_check,
+            )
 
-        self._worker = BackgroundWorker(_import_task, parent=self)
-        worker_holder.append(self._worker)
-        self._worker.progress.connect(self._on_import_progress)
-        self._worker.finished.connect(self._on_import_done)
-        self._worker.error.connect(self._on_import_error)
-        self._worker.start()
+        worker = BackgroundWorker(_import_task, parent=self)
+        self._worker = worker
+        worker.progress.connect(self._on_import_progress)
+        worker.finished.connect(self._on_import_done)
+        worker.error.connect(self._on_import_error)
+        worker.start()
 
     def _on_import_progress(self, current: int, total: int) -> None:
         """导入进度回调：切换到确定范围并更新进度条。"""

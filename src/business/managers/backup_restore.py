@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, TypedDict, cast
+from typing import IO, TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
 
 if TYPE_CHECKING:
     from ...config import ConfigManager
@@ -33,6 +33,7 @@ from ...exceptions import (
 )
 from ...models import (
     Category,
+    PasswordHistory,
     RawEntry,
 )
 from ...utils.file_security import (
@@ -163,16 +164,6 @@ for _actual, _expected, _name in _PORTABLE_KEY_ASSERTS:
         )
 
 
-def _friendly_error(exc: Exception, default: str) -> str:
-    """将异常映射为用户友好的错误消息（委托统一翻译层 :func:`to_user_message`）。
-
-    与 vault_lifecycle._friendly_error 同名同构（模块级私有，跨模块一致命名）：
-    场景化 ``default`` 用于未归类异常兜底。``DecryptionError`` 等 ``CipherBoxError``
-    经统一层归一为固定文案，不再透传 ``str(exc)`` 的内部 ``crypto_id`` 等技术细节。
-    """
-    return to_user_message(exc, default=default)
-
-
 class _BackupCancelled(Exception):
     """内部哨兵异常：cancel_check 触发时中止备份采集，编排层捕获后返回 None。
 
@@ -186,6 +177,28 @@ class _BackupCancelled(Exception):
 _CATEGORY_OVERHEAD_BYTES = 128
 _ENTRY_OVERHEAD_BYTES = 512
 _HISTORY_OVERHEAD_BYTES = 64
+
+
+class _PreparedBackup(NamedTuple):
+    """``_prepare_backup_locked`` 的输出，承载锁外 ``_finalize_backup`` 的全部输入。
+
+    A4（备份锁外解密）：prepare 在 ``vault_write_lock`` 内完成快速 DB 读与
+    snapshot_key 副本采集；全量解密与 PASSWORD 密钥派生（Argon2id）推迟到锁外
+    finalize，缩短主线程 ``lock()`` 经 ``cancel_check`` 中止备份前的阻塞窗口。
+
+    ``snapshot_key`` 为锁内 ``VaultManager.snapshot_key`` property 返回的 bytes 副本：
+    锁外 finalize 持此副本，主线程 ``lock()`` 经 ``KeyManager.clear`` 原地清零内部
+    bytearray 不影响该独立拷贝（与 KeyManager.snapshot_key「返回副本」契约一致）。
+    PASSWORD 路径 ``backup_password`` 随结构带入锁外，供 finalize 派生 backup_key。
+    """
+    filepath: str
+    salt: bytes
+    flags: BackupFlag
+    backup_password: str | None
+    snapshot_key: bytes | None
+    raw_entries: list[RawEntry]
+    history_rows: list[PasswordHistory]
+    categories: list[dict[str, Any]]
 
 
 class BackupRestoreManager:
@@ -218,7 +231,11 @@ class BackupRestoreManager:
             raise PayloadTooLargeError('备份数据过大')
 
     def _collect_portable_data(
-        self, cancel_check: Callable[[], bool] | None = None,
+        self,
+        cancel_check: Callable[[], bool] | None = None,
+        raw_entries: list[RawEntry] | None = None,
+        history_rows: list[PasswordHistory] | None = None,
+        categories: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         """收集备份数据：解密所有字段为明文，构建可移植字典。
 
@@ -226,14 +243,21 @@ class BackupRestoreManager:
         :class:`PayloadTooLargeError`；``cancel_check`` 触发时经
         :class:`_BackupCancelled` 中止并整体返回 None（调用方据此不产出残缺备份）。
 
+        A4 后本方法在 ``_finalize_backup`` 锁外调用：``raw_entries``/``history_rows``/
+        ``categories`` 由 ``_prepare_backup_locked`` 在锁内预读并传入，本方法只负责
+        解密（全量解密移出锁以缩短 ``lock()`` 阻塞，``cancel_check`` 在锁外解密循环
+        中及时生效）。三者任一为 None 时回退到自读 DB 的原行为，供
+        ``_create_backup_locked`` 持锁全流程复用。
+
         返回结构的嵌套 entries/categories/password_history 项值类型混合，故标注
         ``dict[str, Any]``（结构由 :func:`validate_restore_data` 校验）。
         """
         key = self._key
-        categories = [
-            category.to_dict()
-            for category in self._entry_mgr.categories.get_categories()
-        ]
+        if categories is None:
+            categories = [
+                category.to_dict()
+                for category in self._entry_mgr.categories.get_categories()
+            ]
         # 基于字段原始字节长度的粗略估算，避免逐条 json.dumps 双重序列化开销
         estimated_size = sum(
             len(c.get('name', '').encode('utf-8')) + _CATEGORY_OVERHEAD_BYTES
@@ -241,10 +265,10 @@ class BackupRestoreManager:
         )
         try:
             entries, entry_count, estimated_size = self._collect_portable_entries(
-                key, cancel_check, estimated_size,
+                key, cancel_check, estimated_size, raw_entries,
             )
             history, _ = self._collect_portable_history(
-                key, cancel_check, entry_count, estimated_size,
+                key, cancel_check, entry_count, estimated_size, history_rows,
             )
         except _BackupCancelled:
             return None
@@ -262,14 +286,20 @@ class BackupRestoreManager:
         key: bytes,
         cancel_check: Callable[[], bool] | None,
         estimated_size: int,
+        raw_entries: list[RawEntry] | None = None,
     ) -> tuple[list[dict[str, Any]], int, int]:
         """采集并解密全部条目为可移植字典，增量估算 payload 大小。
 
         返回 ``(entries, entry_count, estimated_size)``。``cancel_check`` 触发时抛
         :class:`_BackupCancelled`（编排层捕获）；完整性失败抛 :class:`BackupError`；
         估算超限抛 :class:`PayloadTooLargeError`。
+
+        A4：``raw_entries`` 由 ``_prepare_backup_locked`` 锁内预读时，直接解密传入的
+        raw（跳过 DB 读，保留数量校验、cancel_check、estimated_size 逻辑），使本方法
+        的解密循环可在锁外运行、``cancel_check`` 得以及时中止。
         """
-        raw_entries = self._vault.db.get_entries(EntryQuery(include_deleted=True))
+        if raw_entries is None:
+            raw_entries = self._vault.db.get_entries(EntryQuery(include_deleted=True))
         if len(raw_entries) > MAX_BACKUP_ENTRIES:
             raise PayloadTooLargeError('备份条目数量超出限制')
         entries: list[dict[str, Any]] = []
@@ -307,13 +337,18 @@ class BackupRestoreManager:
         cancel_check: Callable[[], bool] | None,
         entry_count: int,
         estimated_size: int,
+        history_rows: list[PasswordHistory] | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """采集并解密密码历史，增量估算 payload 大小。
 
         返回 ``(history, estimated_size)``。``entry_count`` 用于历史条数上限校验
-       （每条目平均历史数不超过 :data:`MAX_HISTORY_PER_ENTRY`）。
+        （每条目平均历史数不超过 :data:`MAX_HISTORY_PER_ENTRY`）。
+
+        A4：``history_rows`` 由 ``_prepare_backup_locked`` 锁内预读时直接解密传入
+        （跳过 DB 读），使解密循环可在锁外运行。
         """
-        history_rows = self._vault.db.get_all_password_history()
+        if history_rows is None:
+            history_rows = self._vault.db.get_all_password_history()
         if len(history_rows) > entry_count * MAX_HISTORY_PER_ENTRY:
             raise PayloadTooLargeError('密码历史数量超出限制')
         history: list[dict[str, Any]] = []
@@ -355,31 +390,38 @@ class BackupRestoreManager:
         时中止备份并返回 (False, '备份已取消')，避免后台备份在隐藏/锁定后
         继续持有密钥解密。
 
-        锁获取与核心逻辑分离：核心逻辑抽取到 :meth:`_create_backup_locked`，供
-        :meth:`_create_restore_point` 在已持锁上下文复用，避免经本方法再次获取
-        RLock 的嵌套重入（虽 RLock 可重入，但契约脆弱）。
+        A4（备份锁外解密）：``vault_write_lock`` 仅持有快速 prepare 阶段（DB 读 +
+        snapshot_key 副本采集 + 数量校验），全量解密与 PASSWORD 密钥派生（Argon2id）
+        推迟到锁外 :meth:`_finalize_backup`。主线程 ``lock()`` 经 ``_shutdown_workers``
+        → ``cancel_check`` 中止备份后才取锁清零密钥（worker 全程 join 后方清零），
+        故 finalize 锁外解密期间主密钥不会被并发清零；snapshot_key 取 bytes 副本
+        （property 返回拷贝），锁外使用不受 KeyManager 内部 bytearray 清零影响。
+
+        ``_create_backup_locked`` 保留为持锁全流程入口，供 :meth:`_create_restore_point`
+        在已持锁上下文复用（恢复点快照体积小、持锁全程可接受，无需 A4 优化）。
         """
         try:
             filepath = str(validate_file_path(filepath))
             # 备份密码是离线攻击（窃取 .cbox 后暴力破解）的唯一屏障，须与主密码
             # 同等强度。UI 已校验，业务层兜底防止绕过 UI（如未来 CLI/自动化入口）
-            # 直接调用 create_backup 设置极弱备份密码。
+            # 直接调用 create_backup 设置极弱备份密码。强度校验在锁前完成。
             if backup_password:
                 valid, error = PasswordService.validate_master_password(
                     backup_password, label='备份密码',
                 )
                 if not valid:
                     return False, error
-            # 持 vault 锁与改密重加密串行：避免后台备份读全量明文期间密钥被轮换，
-            # 导致解密失败被静默跳过而产出残缺备份。备份密钥也在锁内解析，避免
-            # snapshot_key 在释放锁后、加密前被主线程 lock() 清零的竞态。
+            # 锁内仅做快速 prepare（DB 读 + snapshot_key 副本采集），全量解密与密钥
+            # 派生推迟到锁外 finalize，缩短 vault_write_lock 持有时间，使主线程 lock()
+            # 经 cancel_check 及时中止备份而非等待全量解密。
             with self._vault.vault_write_lock():
-                return self._create_backup_locked(
-                    filepath, backup_password, use_snapshot_key, cancel_check,
+                prepared = self._prepare_backup_locked(
+                    filepath, backup_password, use_snapshot_key,
                 )
+            return self._finalize_backup(prepared, cancel_check)
         except Exception as exc:
             logger.error("备份失败: %s", exc, exc_info=True)
-            return False, _friendly_error(exc, '操作失败，请检查文件和磁盘。')
+            return False, to_user_message(exc, default='操作失败，请检查文件和磁盘。')
 
     def _create_backup_locked(
         self,
@@ -388,42 +430,121 @@ class BackupRestoreManager:
         use_snapshot_key: bool,
         cancel_check: Callable[[], bool] | None,
     ) -> tuple[bool, str]:
-        """备份核心逻辑；调用方须已持有 ``vault_write_lock``。
+        """备份全流程；调用方须已持有 ``vault_write_lock``。
 
-        持锁契约：snapshot_key 在锁内读取，备份密钥全程在锁内解析与清零，与
-        :meth:`_restore_current` 的「持锁才接触全量明文」契约统一。
+        持锁顺序执行 prepare + finalize，供 :meth:`_create_restore_point` 在已持锁
+        上下文复用（恢复点快照体积小、持锁全程可接受，不经 A4 锁外优化）。本方法
+        保留为持锁全流程的单一入口，亦为测试 monkeypatch 拦截恢复点创建的桩点
+        （见 test_restore_point_cleaned_on_creation_exception）。
         """
-        t0 = time.monotonic()
+        prepared = self._prepare_backup_locked(filepath, backup_password, use_snapshot_key)
+        return self._finalize_backup(prepared, cancel_check)
+
+    def _prepare_backup_locked(
+        self,
+        filepath: str,
+        backup_password: str | None,
+        use_snapshot_key: bool,
+    ) -> _PreparedBackup:
+        """锁内快速采集 finalize 所需全部输入；调用方须已持有 ``vault_write_lock``。
+
+        A4：仅在此完成需持锁串行的快速操作——生成 salt、读 raw_entries/
+        history_rows/categories、条目数量上限校验、确定 flags、SNAPSHOT 路径取
+        snapshot_key 副本。PASSWORD 密钥派生（Argon2id）与全量解密**不**在此，
+        推迟到锁外 :meth:`_finalize_backup`，缩短 ``lock()`` 经 cancel_check 中止前
+        的阻塞窗口。
+
+        snapshot_key 经 ``VaultManager.snapshot_key`` property 取 bytes 副本：锁外
+        finalize 持此副本加密，主线程 ``lock()`` 清零 KeyManager 内部 bytearray 不
+        影响该独立拷贝（与 KeyManager.snapshot_key「返回副本」契约一致）。
+        """
         salt = os.urandom(BACKUP_SALT_SIZE)
-        data = self._collect_portable_data(cancel_check=cancel_check)
-        if data is None:
-            return False, '备份已取消'
-        backup_key: bytes | bytearray
+        raw_entries = self._vault.db.get_entries(EntryQuery(include_deleted=True))
+        # 数量上限在锁内预判（快速失败，避免锁外 finalize 才抛错白白多持锁时间）；
+        # _collect_portable_entries 收到预读 raw 时仍保留同名校验作防御性冗余。
+        if len(raw_entries) > MAX_BACKUP_ENTRIES:
+            raise PayloadTooLargeError('备份条目数量超出限制')
+        history_rows = self._vault.db.get_all_password_history()
+        categories = [
+            category.to_dict()
+            for category in self._entry_mgr.categories.get_categories()
+        ]
+        snapshot_key: bytes | None
         if backup_password:
             flags = BackupFlag.PASSWORD
-            backup_key = derive_backup_key(backup_password, salt)
+            snapshot_key = None
         elif use_snapshot_key:
             flags = BackupFlag.SNAPSHOT
-            backup_key = self._vault.snapshot_key
+            snapshot_key = self._vault.snapshot_key
         else:
             raise BackupError('必须指定备份密码或使用快照密钥')
+        return _PreparedBackup(
+            filepath=filepath,
+            salt=salt,
+            flags=flags,
+            backup_password=backup_password,
+            snapshot_key=snapshot_key,
+            raw_entries=raw_entries,
+            history_rows=history_rows,
+            categories=categories,
+        )
+
+    def _finalize_backup(
+        self,
+        prepared: _PreparedBackup,
+        cancel_check: Callable[[], bool] | None,
+    ) -> tuple[bool, str]:
+        """锁外完成密钥派生、全量解密、加密与落盘（A4：缩短 vault_write_lock 持有）。
+
+        PASSWORD 路径在此派生 backup_key（Argon2id，锁外）；SNAPSHOT 路径用 prepared
+        锁内取的 snapshot_key 副本。``cancel_check`` 在解密循环中及时中止（返回
+        ``(False, '备份已取消')``）。AAD（``header_aad(flags, salt, DEFAULT_KDF_PARAMS)``）、
+        header 写入、payload/数量上限与原持锁实现完全一致，备份格式不变。
+        backup_key 的清零（``zero_backup_key_if_owned``）在 finally 完成，PASSWORD
+        路径派生密钥在所有退出路径均被清零；SNAPSHOT 路径借用 snapshot_key 不清零。
+        """
+        t0 = time.monotonic()
+        backup_key: bytes | bytearray
+        if prepared.flags == BackupFlag.PASSWORD:
+            password = prepared.backup_password
+            # prepare 已保证 PASSWORD 路径 backup_password 非 None；此处显式检查替代
+            # assert（python -O 下 assert 跳过），满足类型 narrow 与意外状态防御。
+            if password is None:
+                raise BackupError('备份密码不可用')
+            backup_key = derive_backup_key(password, prepared.salt)
+        else:
+            snapshot_key = prepared.snapshot_key
+            if snapshot_key is None:
+                raise BackupError('快照密钥不可用')
+            backup_key = snapshot_key
         try:
+            data = self._collect_portable_data(
+                cancel_check=cancel_check,
+                raw_entries=prepared.raw_entries,
+                history_rows=prepared.history_rows,
+                categories=prepared.categories,
+            )
+            if data is None:
+                return False, '备份已取消'
             payload = json.dumps(data, ensure_ascii=False).encode('utf-8')
             del data
             if len(payload) > MAX_BACKUP_PAYLOAD_SIZE:
                 raise PayloadTooLargeError('备份数据过大')
             encrypted = EncryptionEngine.encrypt_bytes(
-                payload, backup_key, header_aad(flags, salt, DEFAULT_KDF_PARAMS)
+                payload, backup_key,
+                header_aad(prepared.flags, prepared.salt, DEFAULT_KDF_PARAMS),
             )
             del payload
             def _write_backup_file(file: IO[bytes]) -> bool:
-                write_backup_header(file, flags, salt, DEFAULT_KDF_PARAMS)
+                write_backup_header(
+                    file, prepared.flags, prepared.salt, DEFAULT_KDF_PARAMS,
+                )
                 file.write(encrypted)
                 return True
 
-            atomic_write(Path(filepath), _write_backup_file)
+            atomic_write(Path(prepared.filepath), _write_backup_file)
         finally:
-            zero_backup_key_if_owned(flags, backup_key)
+            zero_backup_key_if_owned(prepared.flags, backup_key)
         logger.info("备份创建完成 (%.1fms)", (time.monotonic() - t0) * 1000)
         return True, ''
 
@@ -445,13 +566,13 @@ class BackupRestoreManager:
                 return result
         except Exception as exc:
             # 所有异常（validate_file_path 的 ValueError、BackupError、OSError 等）统一
-            # 经 _friendly_error（委托 to_user_message）翻译为用户友好消息。原先独立的
+            # 经 to_user_message 翻译为用户友好消息。原先独立的
             # except ValueError 分支注释声称透传 _restore_current 的消息，但 _restore_current
             # 只 return 不 raise，实际仅捕获 validate_file_path 的 ValueError——该职责已由
             # 统一翻译层承接，消除「未来 _restore_current 误抛 ValueError 绕过翻译直暴露
             # 内部消息」的风险。
             logger.error("恢复失败: %s", exc, exc_info=True)
-            return False, _friendly_error(exc, '操作失败，请检查文件和磁盘。')
+            return False, to_user_message(exc, default='操作失败，请检查文件和磁盘。')
 
     def _restore_current(self, file: IO[bytes], backup_password: str | None) -> tuple[bool, str]:
         flags, salt, kdf_params = read_backup_header(file)
@@ -487,6 +608,14 @@ class BackupRestoreManager:
                 if backup_key is None:
                     raise RuntimeError('备份密钥未初始化')
                 try:
+                    # S8 TOCTOU 防护：header 锁外读取（供 PASSWORD 锁外派生决策）后，
+                    # 锁内读 payload 前重读 header 比对——检测文件在「锁外读 header →
+                    # 锁内读 payload」窗口内被替换。GCM-AAD 只绑定单次 header+payload，
+                    # 整个合法备份替换需此额外校验拦截。read_backup_header 把指针留在
+                    # payload 开头，故重读后 file.read 仍从 payload 起始。
+                    file.seek(0)
+                    if read_backup_header(file) != (flags, salt, kdf_params):
+                        return False, '备份文件在读取期间已变更，请重试'
                     # 内存特征：峰值约 3 倍载荷大小。
                     # encrypted 不超过 64MB，plaintext 不超过 32MB，外加 JSON 解析树，
                     # 桌面应用可接受。GCM 认证加密要求完整密文可用，无法流式解密。
@@ -502,7 +631,7 @@ class BackupRestoreManager:
                 except (OSError, DecryptionError, json.JSONDecodeError):
                     # 缩窄为预期的「读文件 / GCM 解密 / JSON 解析」失败，统一提示密码错误
                     # 或损坏；编程错误（KeyError/TypeError/AttributeError 等）不在此列，
-                    # 冒泡由上层 restore_backup 的 except 经 _friendly_error 兜底，避免
+                    # 冒泡由上层 restore_backup 的 except 经 to_user_message 兜底，避免
                     # 把真实 bug 静默归为「备份损坏」而掩盖根因。
                     logger.debug("备份读取或解密失败", exc_info=True)
                     return False, '备份密码错误或文件已损坏'
@@ -629,6 +758,17 @@ class BackupRestoreManager:
             logger.warning('异常路径清理恢复点失败：%s', path, exc_info=True)
 
     def _restore_data(self, data: dict[str, Any]) -> tuple[str, bytearray]:
+        """在 epoch 守卫事务内用当前主密钥重建全部数据并轮换 key_epoch 与 snapshot_key。
+
+        恢复不改主密码，故用 ``self._key`` 重新加密备份载荷。事务内清空库后重建
+        分类、条目、密码历史，再同事务写入新的 key_epoch 与 snapshot_key_enc（消除
+        事务外崩溃的不一致窗口），并据新 epoch 重算 vault_meta_mac。
+
+        返回 ``(new_epoch, new_snapshot_key)``：调用方在事务提交后、释放锁前经
+        :meth:`VaultManager.update_key_epoch` 与 :meth:`apply_snapshot_key` 同步内存
+        状态。``new_snapshot_key`` 为 bytearray 便于失败时原地清零（成功路径由调用方
+        在 apply 后清零自身引用）。
+        """
         db = self._vault.db
         key = self._key
         # validate_restore_data 已校验载荷结构，cast 为 PortableBackup 使后续 _restore_*
@@ -746,9 +886,10 @@ class BackupRestoreManager:
         entry_map: dict[int, int] = {}
         crypto_id_map: dict[int, str] = {}  # 旧 entry_id 到 crypto_id 的映射
         for item, entry in zip(items, entries, strict=True):
-            if item.get('id') is not None:
-                entry_map[item['id']] = crypto_id_to_new_id[entry.crypto_id]
-                crypto_id_map[item['id']] = entry.crypto_id
+            # item['id'] 由 validate_entries 保证为正整数（require_keys + is_real_int），
+            # 直接索引建立映射，与 PortableEntry 文档「无 .get 死分支」契约一致。
+            entry_map[item['id']] = crypto_id_to_new_id[entry.crypto_id]
+            crypto_id_map[item['id']] = entry.crypto_id
         return entry_map, crypto_id_map
 
     @staticmethod
@@ -811,7 +952,12 @@ class BackupRestoreManager:
         backup_dir = config.get('backup_directory', '')
         if backup_dir:
             try:
-                backup_dir = str(validate_file_path(backup_dir))
+                # backup_directory 是用户自定义的高敏感路径——自动快照含全量明文，
+                # 若攻击者把其某祖先目录替换为符号链接，可把写入重定向到攻击者位置。
+                # 默认 validate_file_path 的 Unix 分支仅检测叶子（避开 macOS 系统
+                # 符号链接误伤），此处追加 check_ancestors 逐级检测祖先符号链接
+                # （系统规范链接放行），收缩该重定向威胁。
+                backup_dir = str(validate_file_path(backup_dir, check_ancestors=True))
             except ValueError:
                 return False, f'备份目录路径无效: {backup_dir}'
 
@@ -831,7 +977,12 @@ class BackupRestoreManager:
             return False, error
 
         config.set('last_auto_backup_at', utc_now_iso())
-        config.save()
+        try:
+            config.save()
+        except OSError:
+            # save 失败：备份已成功创建，未持久化的时间戳仅会让下次间隔检查失效而
+            # 冗余备份，非致命；风格与 settings_dialog 的 config.save() 一致。
+            logger.warning('无法写入配置文件，请检查磁盘空间和文件权限。', exc_info=True)
 
         retention = config.get('auto_backup_retention', 10)
         # 按文件名降序保留最新 retention 个自动快照；过期快照含全量明文，删除失败

@@ -10,10 +10,11 @@ from unittest.mock import MagicMock
 class TestChangeMasterDialogRateLimit:
     """验证改密失败计数的认证语义。"""
 
-    def test_auth_failure_counts_toward_rate_limit(self, qapp):
+    def test_auth_failure_counts_toward_rate_limit(self, qapp, tmp_path):
         """旧密码错误（认证失败）应计入失败计数。"""
         from src.ui.dialogs.change_master_dialog import ChangeMasterDialog
         vault = MagicMock()
+        vault.data_dir = tmp_path
         dialog = ChangeMasterDialog(vault)
         try:
             dialog._on_change_done((False, '当前主密码错误'))
@@ -21,10 +22,11 @@ class TestChangeMasterDialogRateLimit:
         finally:
             dialog.deleteLater()
 
-    def test_non_auth_failure_does_not_count(self, qapp):
+    def test_non_auth_failure_does_not_count(self, qapp, tmp_path):
         """非认证失败（系统错误、凭据问题等）不计入失败计数。"""
         from src.ui.dialogs.change_master_dialog import ChangeMasterDialog
         vault = MagicMock()
+        vault.data_dir = tmp_path
         dialog = ChangeMasterDialog(vault)
         try:
             # 模拟系统错误或保险库凭据问题，文案非认证失败

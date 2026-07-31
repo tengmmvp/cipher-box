@@ -25,15 +25,16 @@ from .services.security_analyzer import SecurityAnalyzer
 class BusinessContext:
     """业务层 manager 的组装容器。
 
-    装载纯 Python manager（无线程亲和性）：保险库、缓存、变更总线、条目、
-    安全分析、导入导出、备份恢复。``config`` 与 ``vault`` 作为顶层依赖一并
-    装入，使 MainWindow 仅需接收本容器即可取得全部业务依赖。
+    装载纯 Python manager（无线程亲和性）：保险库、条目、安全分析、导入导出、
+    备份恢复。``config`` 与 ``vault`` 作为顶层依赖一并装入，使 MainWindow 仅需接收
+    本容器即可取得全部业务依赖。缓存（EntryCacheManager）与变更总线（EntryChangeBus）
+    仅为业务层内部 cache 失效连线而创建，不对外暴露——UI 经 entry_mgr 间接消费缓存
+    派生状态，刷新走显式调用（``_do_refresh_after_entry_change``），避免容器面扩大与
+    「字段存在即暗示应订阅」的误导。
     """
 
     config: ConfigManager
     vault: VaultManager
-    cache: EntryCacheManager
-    change_bus: EntryChangeBus
     entry_mgr: EntryManager
     security: SecurityAnalyzer
     import_export: ImportExportManager
@@ -86,8 +87,6 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
     return BusinessContext(
         config=config,
         vault=vault,
-        cache=cache,
-        change_bus=change_bus,
         entry_mgr=entry_mgr,
         security=security,
         import_export=import_export,

@@ -31,7 +31,7 @@ class TestEncryptionValidation:
             EncryptionEngine.encrypt(123, b'\x00' * 32, "aad")  # type: ignore[arg-type]
 
     def test_encrypt_empty_string_returns_encrypted(self):
-        """空字符串明文通过 sentinel 加密，AAD 参与认证。"""
+        """空明文仍走完整加密路径，AAD 参与认证。"""
         result = EncryptionEngine.encrypt("", b'\x00' * 32, "aad")
         assert result != ''
         assert result.startswith(EncryptionEngine.TEXT_PREFIX)

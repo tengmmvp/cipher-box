@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -29,6 +28,7 @@ from ...business.services.password_service import PasswordService
 
 if TYPE_CHECKING:
     from ...business.managers.vault_manager import VaultManager
+    from ...config import ConfigManager
 from ..components.widgets import (
     RateLimiter,
     create_password_toggle_btn,
@@ -48,16 +48,23 @@ class LoginWindow(QDialog):
 
     login_success = pyqtSignal()
 
-    def __init__(self, vault_manager: VaultManager, parent: QWidget | None = None):
+    def __init__(
+        self,
+        vault_manager: VaultManager,
+        config: ConfigManager | None = None,
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self._vault = vault_manager
+        self._config = config
         self._is_first_time = not vault_manager.is_initialized
-        data_dir = getattr(self._vault, 'data_dir', None)
-        state_path = (
-            Path(data_dir) / 'login_rate_limit.json'
-            if isinstance(data_dir, (str, Path)) else None
-        )
-        self._rate_limiter = RateLimiter(state_path)
+        # data_dir 是 VaultManager 的有类型 property（恒返回 Path）；直接索引使其
+        # 缺失（重构改名）在静态检查/运行时即时暴露，而非 getattr 静默退化为
+        # 仅内存限流（state_path=None → 跨会话退避与哨兵删文件检测全部失效）。
+        state_path = self._vault.data_dir / 'login_rate_limit.json'
+        # 传入 config：使 RateLimiter 把哨兵登记到签名 config，关闭「同时删除
+        # 状态文件+哨兵即归零计数」的绕过。config=None 时退回仅文件配对检测。
+        self._rate_limiter = RateLimiter(state_path, config)
         self._worker: BackgroundWorker | None = None
         self._setup_ui()
 
@@ -217,24 +224,29 @@ class LoginWindow(QDialog):
         if success:
             self._rate_limiter.record_success()
             # 登录成功后立即清除密码输入框，缩短明文在内存中的驻留时间
-            self._password_edit.clear()
-            # _confirm_edit 在 _setup_ui 中无条件创建（首设显示，登录态隐藏），
-            # 无需 hasattr 守卫；登录态下隐藏控件 clear() 是安全的无副作用操作
-            self._confirm_edit.clear()
+            self._clear_password_inputs()
             self.login_success.emit()
             self.accept()
         else:
             # 失败后立即清除主密码明文，缩短敏感输入在控件中的驻留时间，
             # 与成功路径及 change_master_dialog 的清零策略对齐。失败尝试的
             # 主密码仍是用户真实密码，残留于 QLineEdit 会扩大肩窥/内存 dump 暴露面。
-            self._password_edit.clear()
-            self._confirm_edit.clear()
+            self._clear_password_inputs()
             if is_auth_failure:
                 lock_seconds = self._rate_limiter.record_failure()
                 if lock_seconds > 0:
                     self._show_error(f'尝试次数过多，请等待 {lock_seconds} 秒后重试')
                     return
             self._show_error(error_msg or '操作失败，请重试')
+
+    def _clear_password_inputs(self) -> None:
+        """清除主密码与确认密码输入框，缩短明文在控件中的驻留时间。
+
+        _confirm_edit 在 _setup_ui 中无条件创建（首设显示，登录态隐藏），故无需
+        hasattr 守卫；登录态下隐藏控件 clear() 是安全的无副作用操作。
+        """
+        self._password_edit.clear()
+        self._confirm_edit.clear()
 
     def _on_confirm(self) -> None:
         """处理确认按钮点击。"""
@@ -285,6 +297,8 @@ class LoginWindow(QDialog):
 
     def _on_auth_done(self, result: tuple[bool, str]) -> None:
         """后台认证完成回调，result 为来自 VaultManager 的元组。"""
+        if self.sender() is not self._worker:
+            return
         release_worker(self)
         self._reset_confirm_btn()
         success, error_msg = result
@@ -297,6 +311,8 @@ class LoginWindow(QDialog):
         无具体信息时回退到 error_default。is_auth_failure=False 保持不变，
         系统错误不计入速率锁定，避免故障触发账户级递增锁定。
         """
+        if self.sender() is not self._worker:
+            return
         release_worker(self)
         self._reset_confirm_btn()
         self._on_auth_result(False, error_msg or error_default, is_auth_failure=False)

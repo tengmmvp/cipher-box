@@ -101,7 +101,7 @@ _UPDATE_ENTRY_COLUMNS = [
 ]
 _UPDATE_ENTRY_SQL = (
     f"UPDATE entries SET {', '.join(f'{column}=?' for column in _UPDATE_ENTRY_COLUMNS)} "  # nosec B608 - 参数绑定
-    f"WHERE id=?"
+    "WHERE id=?"
 )
 
 # 重加密批量更新列：改密重写除删除状态与创建时间外的全部列（含全部密文列）。
@@ -131,7 +131,7 @@ if ReEncryptedEntry._fields != tuple(_RE_ENCRYPT_COLUMNS) + ('id',):
 
 _RE_ENCRYPT_BATCH_UPDATE_SQL = (
     f"UPDATE entries SET {', '.join(f'{column}=?' for column in _RE_ENCRYPT_COLUMNS)} "  # nosec B608 - 参数绑定
-    f"WHERE id=?"
+    "WHERE id=?"
 )
 
 # 预计算签名查询 SQL，使用 LEFT JOIN 提供与其他查询一致的列，包括 category_name，
@@ -465,11 +465,11 @@ class EntryRepository:
         """
         if not rows:
             return
-        # 采样首条的加密列做格式自检，防止重加密流程 bug 导致明文静默落入
-        # 加密列。逐行断言开销不可接受（改密可达数万条），采样首条作护栏。
+        # 采样首条的加密列做格式自检，防止重加密流程 bug 导致明文静默落入加密列。
+        # 逐行断言开销不可接受（改密可达数万条），故仅采样首条作护栏；字段集从
+        # ReEncryptedEntry._fields 的 *_enc 派生，与列序单一来源统一，新增 *_enc
+        # 列时采样断言自动覆盖（无需手动同步 8 字段清单）。
         first = rows[0]
-        # 采样首条的加密列做格式自检：从 ReEncryptedEntry._fields 的 *_enc 字段派生，
-        # 与列序单一来源统一，新增 *_enc 列时采样断言自动覆盖（无需手动同步 8 字段清单）。
         for field in ReEncryptedEntry._fields:
             if field.endswith('_enc'):
                 enc_value = getattr(first, field)
@@ -682,7 +682,7 @@ class EntryRepository:
             "SELECT COUNT(*) FROM password_history WHERE entry_id = ?",
             (entry_id,),
         ).fetchone()
-        return row[0] if row else 0
+        return int(row[0]) if row else 0
 
     @_db_write
     def update_password_history_batch(self, rows: list[ReEncryptedHistory]) -> None:
@@ -775,19 +775,19 @@ class EntryRepository:
             id=row['id'],
             crypto_id=row['crypto_id'],
             title=row['title_enc'],
-            username=row['username_enc'],
-            password=row['password_enc'],
+            username=row['username_enc'] or '',
+            password=row['password_enc'] or '',
             url=row['url_enc'] or '',
             category_id=row['category_id'],
             category_name=row['category_name'],
             tags=row['tags_enc'] or '',
-            notes=row['notes_enc'],
+            notes=row['notes_enc'] or '',
             custom_fields=row['custom_fields_enc'] or '',
             is_favorite=bool(row['is_favorite']),
             is_deleted=bool(row['is_deleted']),
             password_strength=row['password_strength'],
             entry_type=row['entry_type'],
-            totp_secret=row['totp_secret_enc'],
+            totp_secret=row['totp_secret_enc'] or '',
             created_at=row['created_at'] or '',
             updated_at=row['updated_at'] or '',
             deleted_at=row['deleted_at'] or '',

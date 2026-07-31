@@ -32,7 +32,7 @@ class CustomFieldsEditor:
     _TYPE_INDEX_MAP = {t: i for i, t in enumerate(_TYPE_ORDER)}
     _INDEX_TYPE_MAP = dict(enumerate(_TYPE_ORDER))
 
-    def __init__(self, container_layout: QVBoxLayout):
+    def __init__(self, container_layout: QVBoxLayout) -> None:
         self._container = container_layout
         # 各元素依次为字段名、类型、值编辑框与所在行布局的四元组
         self._rows: list[tuple[QLineEdit, QComboBox, QLineEdit, QHBoxLayout]] = []

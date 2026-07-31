@@ -16,6 +16,9 @@ from ...database.types import VaultDataConnection
 from ...exceptions import VaultIntegrityError
 from .metadata_signer import VAULT_META_SIGNED_KEYS, MetadataSigner
 
+# snapshot_key 为 32 字节的 AES-256 密钥
+SNAPSHOT_KEY_LEN = 32
+
 # snapshot_key 加密的 AAD 域标签，与主密钥绑定防跨域重用。
 _SNAPSHOT_KEY_AAD = 'vault:snapshot-key'
 
@@ -50,7 +53,7 @@ class VaultMetaStore:
         """
         encoded = EncryptionEngine.decrypt(encrypted, key, _SNAPSHOT_KEY_AAD)
         snapshot_key = base64.b64decode(encoded)
-        if len(snapshot_key) != 32:
+        if len(snapshot_key) != SNAPSHOT_KEY_LEN:
             raise VaultIntegrityError('自动快照密钥损坏')
         return snapshot_key
 

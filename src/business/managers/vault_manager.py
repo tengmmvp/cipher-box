@@ -69,6 +69,7 @@ class VaultManager:
         self._db.set_write_guard(self.enforce_key_epoch)
 
         self._is_unlocked = False
+        self._ever_unlocked = False  # 曾解锁过（解锁后不随 lock 重置，供 enforce_key_epoch 区分「从未激活」与「已锁定」）
         self._key_mgr = KeyManager()
         self._lock = threading.RLock()  # 串行化改密/重加密/备份/恢复等接触全量明文的长操作
         self._db_initialized = False  # 缓存标志，避免 is_initialized 重复打开数据库
@@ -192,7 +193,7 @@ class VaultManager:
         is_initialized 等探测方法打开连接后若失败，连接未关会导致 Windows 下
         tempfile 清理抛 WinError 32。失败路径主动关闭，回滚到未打开状态。
         """
-        if getattr(self._db, 'is_open', False):
+        if self._db.is_open:
             try:
                 self._db.close()
             except Exception:
@@ -248,16 +249,20 @@ class VaultManager:
         调用，lock 会触发业务回调（清缓存等），回调中访问数据库形成 db_lock 重入与
         潜在锁顺序风险；clear_vault_state 仅清密钥状态、不触发回调，更可控。
         """
-        if self._key_epoch is None:
-            return
         if self._db.in_transaction:
             # 事务进行中跳过：写路径已在事务边界校验过 epoch，事务内重复比对无意义
             # （get_meta 经 @_db_operation 重入 RLock 不会死锁，但属冗余）。代价是整个
             # 事务期间的写入不受此守卫保护，故每个事务化写路径必须在事务开始时自行
             # 比对 epoch（见 epoch_guarded_transaction 的复查）。
             return
-        if not self.is_unlocked:
+        # 曾解锁过但当前未解锁 = 已锁定：拒绝写（含后台线程持旧 key 副本在 lock 后
+        # 提交写入的竞态）。用 _ever_unlocked 区分「从未激活」（initialize 前，允许
+        # 写 vault_meta）与「已锁定」（lock 清零 key_epoch，单看 epoch is None 无法
+        # 区分二者）。
+        if self._ever_unlocked and not self.is_unlocked:
             raise VaultLockedError("保险库已锁定，不能写入数据")
+        if self._key_epoch is None:
+            return  # 从未激活（initialize 前），守卫放行 vault_meta 写入
         current_epoch = self._db.get_meta('key_epoch')
         if current_epoch and current_epoch != self._key_epoch:
             self.clear_vault_state()
@@ -331,6 +336,7 @@ class VaultManager:
     def mark_unlocked(self) -> None:
         """标记保险库为已解锁（在全部密钥材料就位后调用）。"""
         self._is_unlocked = True
+        self._ever_unlocked = True
 
     def activate_keys(
         self, key: bytes | bytearray, snapshot_key: bytes | bytearray, epoch: str,

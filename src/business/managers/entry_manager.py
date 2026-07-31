@@ -40,7 +40,7 @@ from ..services.crypto_utils import (
     copy_entry_fields,
     decrypt_field as _decrypt_field_impl,
     encrypt_field as _encrypt_field_impl,
-    matches_search,
+    matches_search_lower,
     require_vault_key,
 )
 from ..services.entry_validation import validate_plain_entry
@@ -51,6 +51,13 @@ from .entry_cache import EntryCacheManager
 from .entry_change_bus import EntryChangeBus
 
 logger = logging.getLogger(__name__)
+
+# 完整性失败字段→中文标签映射，构造 integrity_message 用。模块级常量避免
+# _make_summary 每次调用重建字典。键为加密字段名子集 + 'category'。
+_INTEGRITY_FIELD_LABELS: dict[str, str] = {
+    'title': '标题', 'username': '账号', 'url': 'URL',
+    'tags': '标签', 'category': '分类',
+}
 
 
 class EntryManager:
@@ -191,7 +198,7 @@ class EntryManager:
         self, raw_entry: RawEntry,
     ) -> tuple[str, str, str, str]:
         """无 epoch 校验的摘要解密，供批量循环复用（循环外须已 invalidate）。"""
-        return self._cache._cached_search_metadata_no_check(raw_entry)
+        return self._cache.search_metadata_for_analysis(raw_entry)
 
     def _decrypt_category_name(self, category_id: int | None, value: str) -> str:
         """解密分类名并缓存。委托 cache。"""
@@ -347,6 +354,25 @@ class EntryManager:
                 ) from None
             raise
 
+        if mode == 'detail':
+            # P4: detail 路径复用列表摘要缓存（title/username/url/tags 已解密），
+            # 避免详情面板选中时重复解密这 4 字段；仅 notes/password/totp/custom_fields
+            # 需解密。摘要解密失败的字段经 get_failed_fields 取，按原 record_failure
+            # 语义（英文字段名）计入 integrity_errors，与逐字段 decrypt 的失败汇总一致。
+            title, username, url, tags = self._cached_search_metadata(raw_entry)
+            failed = self._cache.get_failed_fields(raw_entry.crypto_id)
+            integrity_errors.extend(
+                name for name in ('title', 'username', 'url', 'tags') if name in failed
+            )
+            return copy_entry_fields(
+                raw_entry,
+                title=title, username=username, password=password,
+                url=url, category_name=category_name, tags=tags,
+                notes=decrypt('notes', raw_entry.notes),
+                custom_fields=custom_fields, totp_secret=totp_secret,
+                integrity_error=bool(integrity_errors),
+                integrity_message='、'.join(dict.fromkeys(integrity_errors)),
+            )
         return copy_entry_fields(
             raw_entry,
             title=decrypt('title', raw_entry.title),
@@ -398,11 +424,7 @@ class EntryManager:
         messages = []
         if raw_entry.integrity_error:
             messages.append(raw_entry.integrity_message or '元数据')
-        label_map = {
-            'title': '标题', 'username': '账号', 'url': 'URL',
-            'tags': '标签', 'category': '分类',
-        }
-        messages.extend(label_map[name] for name in failed)
+        messages.extend(_INTEGRITY_FIELD_LABELS[name] for name in failed)
         summary.integrity_message = '、'.join(dict.fromkeys(messages))
         return summary
 
@@ -515,23 +537,9 @@ class EntryManager:
         # 下次 TotpService.get_state / generate_cached 重新解密。
         self._cache.pop_totp(entry.id)
 
-        # 检测密码变更，归档旧密码
-        old_pwd_enc = raw.password
-        # 安全-性能权衡：此处必须解密旧密码与明文比较来检测变更。
-        # AES-256-GCM 每次加密使用随机 nonce，相同明文产生不同密文，
-        # 因此密文比较不可行。HMAC 指纹方案需要在数据库中额外存储指纹
-        # 字段，这会要求 schema 变更，当前解密比较是无需迁移的合理选择。
-        if preloaded_old_password is not None:
-            # 导入覆盖路径已解密旧密码（来自 _prepare_overwrite_map），跳过重复解密。
-            old_password = preloaded_old_password
-        else:
-            old_password = self._decrypt_field(
-                old_pwd_enc, raw.crypto_id, 'password', strict=True,
-            ) if old_pwd_enc else ''
-        new_pwd_enc = self._encrypt_field(entry.password, raw.crypto_id, 'password')
-        # 常量时间比较，避免明文密码比较的时序侧信道（短路比较按首个不同字符提前返回）。
-        password_changed = not hmac.compare_digest(old_password, entry.password)
-        del old_password  # 尽快释放明文引用
+        new_pwd_enc, password_changed = self._prepare_password_update(
+            entry, raw, preloaded_old_password,
+        )
         password_changed_at = self._resolve_password_changed_at(
             entry, raw, password_changed, preserve_password_changed_at,
         )
@@ -555,15 +563,41 @@ class EntryManager:
                 raise VaultKeyEpochMismatchError(
                     '更新期间检测到密钥变更（改密/锁定），已中止以防写入旧密钥密文'
                 )
-            if old_pwd_enc and password_changed and entry.id is not None:
+            if raw.password and password_changed and entry.id is not None:
                 # 用与条目一致的 password_changed_at 作为历史 changed_at，
                 # 避免两次独立 utc_now_iso() 产生的微秒级时序倒置
                 self.db.add_password_history(
-                    entry.id, old_pwd_enc, changed_at=password_changed_at,
+                    entry.id, raw.password, changed_at=password_changed_at,
                 )
             self.db.update_entry(enc_entry)
         if notify:
             self._notify_entry_updated(raw, entry, password_changed)
+
+    def _prepare_password_update(
+        self,
+        entry: Entry,
+        raw: RawEntry,
+        preloaded_old_password: str | None,
+    ) -> tuple[str, bool]:
+        """检测密码变更并加密新密码，返回 (新密码密文, 是否变更)。
+
+        安全-性能权衡：必须解密旧密码与明文比较来检测变更——AES-256-GCM 每次
+        加密使用随机 nonce，相同明文产生不同密文，密文比较不可行；HMAC 指纹方案
+        需额外存储指纹字段（要求 schema 变更），当前解密比较是无需迁移的合理选择。
+        常量时间比较（hmac.compare_digest）避免明文密码比较的时序侧信道。
+        preloaded_old_password 用于导入覆盖路径已解密的旧密码，跳过重复解密。
+        """
+        old_pwd_enc = raw.password
+        if preloaded_old_password is not None:
+            old_password = preloaded_old_password
+        else:
+            old_password = self._decrypt_field(
+                old_pwd_enc, raw.crypto_id, 'password', strict=True,
+            ) if old_pwd_enc else ''
+        new_pwd_enc = self._encrypt_field(entry.password, raw.crypto_id, 'password')
+        password_changed = not hmac.compare_digest(old_password, entry.password)
+        del old_password  # 尽快释放明文引用
+        return new_pwd_enc, password_changed
 
     def _resolve_password_changed_at(
         self,
@@ -728,7 +762,9 @@ class EntryManager:
             if cancel_check and cancel_check():
                 break
             summary = self._decrypt_summary(raw, skip_epoch_check=True)
-            if search and not matches_search(summary, search):
+            if search and not matches_search_lower(
+                self._cache.search_lower_no_check(raw), search,
+            ):
                 continue
             summaries.append(summary)
         # search 时 limit 未下推 SQL（避免先截断后过滤致命中失真），此处截断兑现契约
@@ -759,6 +795,17 @@ class EntryManager:
         include_secrets: bool = False,
         cancel_check: Callable[[], bool] | None = None,
     ) -> list[Entry]:
+        """获取用于导出的全部条目（不含回收站），默认不解密密码/TOTP。
+
+        走 :meth:`decrypt_entry_for_export` 的 export 模式：任何字段完整性/解密
+        失败立即抛 :class:`DecryptionError`（拒绝导出损坏数据），区别于
+        :meth:`get_entries` 的容错汇总。``include_secrets=False`` 时跳过
+        password/totp_secret 解密。
+
+        Args:
+            include_secrets: 是否解密 password 与 totp_secret 入结果。
+            cancel_check: 可选取消探针，返回真值时中止遍历。
+        """
         raw_entries = self.db.get_entries(EntryQuery(include_deleted=False))
         entries = []
         for raw_entry in raw_entries:

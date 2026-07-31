@@ -159,7 +159,12 @@ def secure_directory(path: Path, *, strict: bool = False) -> Path:
     return path
 
 
-def validate_file_path(path: str | Path, base_dir: Path | None = None) -> Path:
+def validate_file_path(
+    path: str | Path,
+    base_dir: Path | None = None,
+    *,
+    check_ancestors: bool = False,
+) -> Path:
     """验证文件路径，用于导入/导出/备份操作。
 
     解析路径并拒绝可能允许目录遍历或路径重定向的组件：拒绝 ``..`` 遍历；
@@ -171,12 +176,23 @@ def validate_file_path(path: str | Path, base_dir: Path | None = None) -> Path:
 
     Note:
         reparse point 检测具 TOCTOU 性质（检测与后续 open 间可被替换），仅在本地
-        威胁模型下有效。对高敏感写入（备份/恢复）应显式提供 ``base_dir``，由
-        ``resolve()`` + ``is_relative_to`` 提供更强的「不得逃逸受控根」保证。
+        威胁模型下有效。
+
+        ``base_dir`` 经 ``resolve()`` + ``is_relative_to`` 约束「解析后路径不得逃逸
+        受控根」，但 ``base_dir`` 与写入路径都会经 ``resolve()`` 跟随同一条祖先符号
+        链接，故**仅靠 ``base_dir`` 无法检测祖先目录被替换为符号链接**的威胁。对
+        backup_directory 这类高敏感用户路径应额外传 ``check_ancestors=True``，由
+        Unix 分支逐级 lstat 祖先（容忍 macOS 系统规范链接）补齐该缺口。
 
     Args:
         path: 待验证的文件路径
         base_dir: 可选基目录约束，解析后的路径必须位于其下。
+        check_ancestors: 是否对**原始路径**逐级检测祖先符号链接/reparse。默认
+            ``False``——Unix 仅检测叶子（避开 macOS ``/var``→``/private/var`` 等
+            系统符号链接误伤）。高敏感用户路径（如自定义 backup_directory）传
+            ``True``：Unix 逐级 lstat 祖先并拒绝非系统规范的符号链接，收缩「攻击者
+            替换祖先目录为 symlink 把含明文写入重定向到攻击者位置」的威胁。Windows
+            分支始终逐级检测，本参数对其无影响。
 
     Returns:
         解析后的安全路径，调用方应使用此返回值。
@@ -187,7 +203,7 @@ def validate_file_path(path: str | Path, base_dir: Path | None = None) -> Path:
     # 必须在 resolve() 之前对原始路径逐级检测：resolve() 会展开并跟随符号链接与
     # junction，若先 resolve 再检测，原始输入中经由 junction 的重定向在解析后路径
     # 上 is_symlink() 恒为 False，检测将静默失效（该控制曾因此长期无效）。
-    _reject_reparse_points(raw)
+    _reject_reparse_points(raw, check_ancestors=check_ancestors)
     resolved = raw.resolve()
     if base_dir is not None:
         base_resolved = Path(base_dir).resolve()
@@ -196,7 +212,7 @@ def validate_file_path(path: str | Path, base_dir: Path | None = None) -> Path:
     return resolved
 
 
-def _reject_reparse_points(path: Path) -> None:
+def _reject_reparse_points(path: Path, *, check_ancestors: bool = False) -> None:
     """拒绝路径上的符号链接 / Windows reparse point/junction，对抗路径重定向。
 
     按平台分支以平衡安全与可用性：
@@ -206,28 +222,56 @@ def _reject_reparse_points(path: Path) -> None:
       不误伤系统路径，且能防御 junction 把祖先目录重定向到攻击者可控位置的威胁。
       符号链接用 ``S_ISLNK``，junction/挂载点用 Windows 专有 ``st_file_attributes & 0x400``
       补充——Windows 上 ``is_symlink`` 不识别 junction/reparse point。
-    - **Unix**：仅检测**目标叶子本身**（``path``）是否为符号链接，不遍历祖先。Unix
+    - **Unix**：默认仅检测**目标叶子本身**（``path``）是否为符号链接，不遍历祖先。Unix
       系统目录普遍为符号链接（macOS ``/var``→``/private/var``、``/tmp``→``/private/tmp``；
       Linux ``/bin``→``/usr/bin`` 等），逐级检测会误伤所有经系统临时目录的合法路径
       （曾导致 macOS CI 全部备份/导入测试失败）。叶子检测仍覆盖主要 TOCTOU 威胁——
-      目标文件/目录本身被替换为符号链接；祖先被替换的前提是攻击者已控制该祖先目录，
-      威胁等级已高，纵深防御的边际价值低于误伤成本。
+      目标文件/目录本身被替换为符号链接。
+
+      ``check_ancestors=True`` 时追加**祖先符号链接检测**：逐级 lstat 祖先，拒绝非
+      系统规范的符号链接，覆盖「祖先目录被替换为符号链接」的威胁（对自定义 backup_directory
+      这类高敏感用户路径，攻击者把其祖先替为 symlink 即可把含明文的快照重定向到攻击者
+      位置）。系统规范链接（macOS 顶层 ``/var``→``/private/var`` 等，见
+      :func:`_is_canonical_system_link`）仍放行，故经 macOS 系统临时目录的合法路径不误伤。
 
     必须在 ``resolve()`` 之前对原始路径检测：``resolve()`` 会展开并跟随符号链接与
     junction，解析后路径上 ``is_symlink()`` 恒为 False，检测将静默失效。不存在的
     组件（如待写入的新文件）``lstat`` 抛 ``FileNotFoundError``，视为非重定向。
     """
     if not IS_WINDOWS:
-        # Unix：仅检测叶子。祖先系统符号链接（/var、/tmp、/bin…）合法，逐级会大面积误伤。
+        # 叶子检测（覆盖主要 TOCTOU：目标本身被替换为符号链接）。
         try:
             st = path.lstat()
         except FileNotFoundError:
-            return
+            pass  # 不存在的叶子（待写入新文件）视作非重定向，继续祖先检测
         except OSError:
-            logger.debug('lstat 失败，跳过重定向检测: %s', path, exc_info=True)
+            logger.debug('lstat 失败，跳过叶子重定向检测: %s', path, exc_info=True)
+            pass
+        else:
+            if stat.S_ISLNK(st.st_mode):
+                raise ValueError(f'目标是符号链接，拒绝访问: {path}')
+        if not check_ancestors:
+            # 默认行为：仅检测叶子。祖先系统符号链接（/var、/tmp…）合法，逐级会大面积误伤。
             return
-        if stat.S_ISLNK(st.st_mode):
-            raise ValueError(f'目标是符号链接，拒绝访问: {path}')
+        # 高敏感路径追加祖先符号链接检测：逐级 lstat 祖先，拒绝非系统规范的符号链接，
+        # 收缩「替换祖先目录为 symlink 重定向含明文写入」的威胁。系统规范链接（macOS
+        # /var→/private/var 等）经 _is_canonical_system_link 放行，避免误伤系统临时目录。
+        current = path.parent
+        while True:
+            try:
+                cst = current.lstat()
+            except OSError:
+                # 含 FileNotFoundError（祖先组件不存在）与瞬时 IO；视作非重定向，跳过。
+                cst = None
+            if (
+                cst is not None
+                and stat.S_ISLNK(cst.st_mode)
+                and not _is_canonical_system_link(current)
+            ):
+                raise ValueError(f'祖先目录是符号链接，拒绝访问: {current}')
+            if current == current.parent:
+                break
+            current = current.parent
         return
 
     # Windows：逐级检测符号链接 + reparse point/junction。
@@ -252,6 +296,33 @@ def _reject_reparse_points(path: Path) -> None:
         if current == current.parent:
             break
         current = current.parent
+
+
+def _is_canonical_system_link(path: Path) -> bool:
+    """判断符号链接是否为操作系统维护的「规范重映射」（非攻击重定向），供祖先符号
+    链接检测放行。
+
+    macOS 把若干顶层系统目录符号链接到 ``/private`` 下（``/var``→``/private/var``、
+    ``/tmp``→``/private/tmp``、``/etc``→``/private/etc``），由系统稳定维护、映射到等价
+    规范位置，属合法；若一律拒绝祖先符号链接，所有经系统临时目录的合法路径（macOS
+    CI 临时目录位于 ``/var/folders``）会被误伤（曾致 macOS CI 全部备份/导入测试失败）。
+
+    仅放行此类「顶层 ``/x`` → ``/private/x``」的系统规范链接；深层符号链接、Linux 上
+    的祖先符号链接一律视为可疑（Linux 系统目录非符号链接，正常用户路径无顶层符号链接
+    祖先）。判定仅依赖 darwin 平台与 ``resolve()`` 结果，无硬编码路径表，避免平台/版本
+    漂移。
+    """
+    if sys.platform != 'darwin':
+        return False
+    parts = path.parts
+    # 仅顶层单段绝对路径（('/','var')），避免误放深层重定向链接
+    if len(parts) != 2 or not path.is_absolute():
+        return False
+    try:
+        target = str(path.resolve(strict=False))
+    except OSError:
+        return False
+    return target == '/' + 'private' + '/' + parts[1]
 
 
 def _path_is_symlink_or_reparse(path: Path) -> bool:

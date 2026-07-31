@@ -21,7 +21,7 @@ def test_import_from_chrome_csv_maps_columns(entry_mgr, tmp_path):
         encoding='utf-8',
     )
 
-    count = mgr.import_from_chrome_csv(str(csv_path))
+    count = mgr.import_file(str(csv_path), 'chrome_csv')
 
     assert count == 2
     entries = entry_mgr.get_entries()
@@ -42,7 +42,7 @@ def test_import_from_chrome_csv_empty(entry_mgr, tmp_path):
     csv_path = tmp_path / 'empty.csv'
     csv_path.write_text('name,url,username,password\n', encoding='utf-8')
 
-    assert mgr.import_from_chrome_csv(str(csv_path)) == 0
+    assert mgr.import_file(str(csv_path), 'chrome_csv') == 0
     assert entry_mgr.get_entries() == []
 
 
@@ -55,4 +55,4 @@ def test_import_rejects_missing_default_category(entry_mgr, tmp_path):
     )
 
     with pytest.raises(ValueError, match='默认分类不存在'):
-        mgr.import_from_chrome_csv(str(csv_path), default_category_id=999_999)
+        mgr.import_file(str(csv_path), 'chrome_csv', default_category_id=999_999)

@@ -47,6 +47,7 @@ from ..resources.constants import (
     BTN_DIALOG_WIDE,
     DIALOG_BACKUP_MIN_SIZE,
 )
+from ..resources.strings import DLG_TITLE_ERROR, DLG_TITLE_INFO, DLG_TITLE_SUCCESS
 from ..resources.theme_colors import c
 
 if TYPE_CHECKING:
@@ -217,7 +218,7 @@ class BackupDialog(QDialog):
 
     def _execute(self) -> None:
         if not self._selected_path:
-            QMessageBox.warning(self, '提示', '请先选择文件')
+            QMessageBox.warning(self, DLG_TITLE_INFO, '请先选择文件')
             return
 
         is_backup = self._btn_group.checkedId() == 0
@@ -257,35 +258,24 @@ class BackupDialog(QDialog):
             return
         self._set_busy(True)
         self._worker_is_backup = True
-        # lambda 默认参数在定义时拷贝 password，避免 del 局部后闭包引用触发
-        # pyflakes F821，且 worker 线程执行时 pwd 已就绪。
-        # 传 cancel_check 使 reject() 真正中断全量解密循环，而非空转阻塞主线程。
-        # worker_holder 列表解耦：cancel_check 经 holder[0] 引用 worker，而非闭包
-        # 捕获 self._worker（后者要求 self._worker 在 worker.start() 前赋值，时序
-        # 脆弱）。与 import_export._do_import 统一模式，消除两套解耦技巧。
-        holder: list[BackgroundWorker] = []
 
-        # 默认参数 pwd 在定义时拷贝 password，避免下方 del password 后闭包引用
-        # 触发 F821/运行时 NameError（与原 lambda pwd=password 同模式）。
         def _run(pwd: str = password) -> tuple[bool, str]:
+            # worker 是下方赋值的自由变量，闭包延迟绑定：_run 在 worker.run 时执行，
+            # 此时 worker 已赋值。默认参数 pwd 在定义时拷贝 password，下方 del 局部
+            # password 不影响 worker 执行。cancel_check 直接用 BackgroundWorker 提供
+            # 的绑定方法，消除 holder 列表与 lambda 包装。
             return self._backup_mgr.create_backup(
-                path, pwd,
-                # is_cancelled 是 @property 返回 bool，须包成 lambda 提供
-                # Callable[[], bool]，否则 create_backup 的 cancel_check() 对 bool
-                # 调用会抛 TypeError。holder[0] 在 worker.start() 前已 append。
-                cancel_check=lambda: holder[0].is_cancelled if holder else False,
+                path, pwd, cancel_check=worker.cancel_check,
             )
 
         worker = BackgroundWorker(_run, parent=self)
-        holder.append(worker)
         self._worker = worker
         worker.finished.connect(self._on_backup_done)
         worker.error.connect(self._on_backup_error)
         worker.start()
-        # 删除局部变量引用以缩短密码驻留。注意：_run 的默认参数 pwd 已在定义时
-        # 拷贝 password（见上方），del 局部 password 不影响 worker 执行；真正释放
-        # 需等 worker 结束被 release_worker 释放。CPython 下 str 不可变，此处仅缩短
-        # 局部引用，与其他对话框的清零策略对齐。
+        # 删除局部变量引用以缩短密码驻留：_run 默认参数已拷贝 password，del 局部
+        # password 不影响 worker 执行；真正释放需等 worker 结束被 release_worker
+        # 释放。CPython 下 str 不可变，此处仅缩短局部引用。
         del password
 
     def _on_backup_done(self, result: object) -> None:
@@ -298,12 +288,12 @@ class BackupDialog(QDialog):
             self.data_changed = True
             self._status_label.setText('备份创建成功')
             set_label_severity(self._status_label, 'success')
-            QMessageBox.information(self, '成功', f'备份已保存到：\n{self._path_label.text()}')
+            QMessageBox.information(self, DLG_TITLE_SUCCESS, f'备份已保存到：\n{self._path_label.text()}')
         else:
             self._status_label.setText('备份失败')
             set_label_severity(self._status_label, 'error')
             msg = f'备份创建失败：{error_msg}' if error_msg else '备份创建失败，请检查文件路径和磁盘空间。'
-            QMessageBox.critical(self, '错误', msg)
+            QMessageBox.critical(self, DLG_TITLE_ERROR, msg)
 
     def _on_backup_error(self, error_msg: str) -> None:
         if self.sender() is not self._worker:
@@ -312,7 +302,7 @@ class BackupDialog(QDialog):
         release_worker(self)
         self._status_label.setText('备份失败')
         set_label_severity(self._status_label, 'error')
-        QMessageBox.critical(self, '错误', f'备份创建失败：{error_msg}')
+        QMessageBox.critical(self, DLG_TITLE_ERROR, f'备份创建失败：{error_msg}')
 
     def _do_restore(self, path: str) -> None:
         reply = QMessageBox.warning(
@@ -328,7 +318,7 @@ class BackupDialog(QDialog):
         try:
             info = inspect_backup(path)
         except (OSError, BackupError, ValueError) as exc:
-            QMessageBox.critical(self, '错误', str(exc))
+            QMessageBox.critical(self, DLG_TITLE_ERROR, str(exc))
             return
         password = None
         if info.get('password_required'):
@@ -363,12 +353,12 @@ class BackupDialog(QDialog):
             self.data_changed = True
             self._status_label.setText('恢复成功')
             set_label_severity(self._status_label, 'success')
-            QMessageBox.information(self, '成功', '备份恢复成功！')
+            QMessageBox.information(self, DLG_TITLE_SUCCESS, '备份恢复成功！')
         else:
             self._status_label.setText('恢复失败')
             set_label_severity(self._status_label, 'error')
             detail = f'\n\n错误信息：{error_msg}' if error_msg else ''
-            QMessageBox.critical(self, '错误', f'恢复失败，请确认备份文件有效且主密码正确。{detail}')
+            QMessageBox.critical(self, DLG_TITLE_ERROR, f'恢复失败，请确认备份文件有效且主密码正确。{detail}')
 
     def _on_restore_error(self, error_msg: str) -> None:
         if self.sender() is not self._worker:
@@ -377,7 +367,7 @@ class BackupDialog(QDialog):
         release_worker(self)
         self._status_label.setText('恢复失败')
         set_label_severity(self._status_label, 'error')
-        QMessageBox.critical(self, '错误', f'恢复失败：{error_msg}')
+        QMessageBox.critical(self, DLG_TITLE_ERROR, f'恢复失败：{error_msg}')
 
     def _purge_restore_points(self) -> None:
         """手动清理恢复前自动创建的安全快照，收缩已删除条目的明文泄漏面。"""

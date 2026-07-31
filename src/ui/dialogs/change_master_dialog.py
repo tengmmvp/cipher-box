@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hmac
 import logging
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -40,6 +40,10 @@ from ..resources.constants import (
     BTN_DIALOG,
     DIALOG_CHANGE_MASTER_MIN_SIZE,
 )
+from ..resources.strings import DLG_TITLE_ERROR, DLG_TITLE_SUCCESS
+
+if TYPE_CHECKING:
+    from ...config import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -47,17 +51,29 @@ logger = logging.getLogger(__name__)
 class ChangeMasterDialog(QDialog):
     """主密码修改对话框，含旧密码校验与新密码强度校验。"""
 
-    def __init__(self, vault_manager: VaultManager, parent: QWidget | None = None):
+    def __init__(
+        self,
+        vault_manager: VaultManager,
+        config: ConfigManager | None = None,
+        parent: QWidget | None = None,
+    ):
         super().__init__(parent)
         self._vault = vault_manager
-        data_dir = getattr(self._vault, 'data_dir', None)
-        state_path = (
-            Path(data_dir) / 'change_master_rate_limit.json'
-            if isinstance(data_dir, (str, Path)) else None
-        )
-        self._rate_limiter = RateLimiter(state_path)
+        self._config = config
+        # data_dir 是 VaultManager 的有类型 property（恒返回 Path）；直接索引使其
+        # 缺失在静态检查/运行时即时暴露，而非 getattr 静默退化为仅内存限流。
+        state_path = self._vault.data_dir / 'change_master_rate_limit.json'
+        # 传入 config：使 RateLimiter 把哨兵登记到签名 config，关闭「同时删除
+        # 状态文件+哨兵即归零计数」的绕过。config=None 时退回仅文件配对检测。
+        self._rate_limiter = RateLimiter(state_path, config)
         self._worker: BackgroundWorker | None = None
         self._setup_ui()
+
+    def _clear_password_inputs(self) -> None:
+        """清除全部密码输入框，缩短明文在控件中的驻留时间。"""
+        self._old_pwd.clear()
+        self._new_pwd.clear()
+        self._confirm_pwd.clear()
 
     def reject(self) -> None:
         """关闭对话框前取消并等待后台 worker 完成，并清除密码输入。"""
@@ -68,9 +84,7 @@ class ChangeMasterDialog(QDialog):
         wait_worker_shutdown(self._worker)
         release_worker(self)
         # 取消时同样清除全部密码输入，与成功/失败路径一致，缩短明文驻留
-        self._old_pwd.clear()
-        self._new_pwd.clear()
-        self._confirm_pwd.clear()
+        self._clear_password_inputs()
         super().reject()
 
     def _setup_ui(self) -> None:
@@ -214,21 +228,21 @@ class ChangeMasterDialog(QDialog):
         self._worker.start()
 
     def _on_change_done(self, result: tuple[bool, str]) -> None:
+        if self.sender() is not self._worker:
+            return
         release_worker(self)
         self._change_btn.setEnabled(True)
         set_label_severity(self._msg_label, 'error')
         success, error_msg = result
         # 无论成功与否都清除全部密码输入，缩短明文在控件中的驻留时间
-        self._old_pwd.clear()
-        self._new_pwd.clear()
-        self._confirm_pwd.clear()
+        self._clear_password_inputs()
         if success:
             self._rate_limiter.record_success()
             message = '主密码已修改成功！'
             # 改密成功但 purge 失败时，error_msg 携带 warning，附加提示用户手动清理
             if error_msg:
                 message += f'\n\n{error_msg}'
-            QMessageBox.information(self, '成功', message)
+            QMessageBox.information(self, DLG_TITLE_SUCCESS, message)
             self.accept()
         else:
             display_msg = error_msg or AUTH_FAILED_MESSAGE
@@ -245,13 +259,13 @@ class ChangeMasterDialog(QDialog):
                 self._msg_label.setText(display_msg)
 
     def _on_change_error(self, error_msg: str) -> None:
+        if self.sender() is not self._worker:
+            return
         release_worker(self)
         self._change_btn.setEnabled(True)
         set_label_severity(self._msg_label, 'error')
         self._msg_label.setText('')
-        self._old_pwd.clear()
-        self._new_pwd.clear()
-        self._confirm_pwd.clear()
+        self._clear_password_inputs()
         # error 信号已脱离异常上下文，exc_info 无堆栈；记录消息文本即可
         logger.error("主密码修改失败: %s", error_msg)
-        QMessageBox.critical(self, '错误', error_msg)
+        QMessageBox.critical(self, DLG_TITLE_ERROR, error_msg)

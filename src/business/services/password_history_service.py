@@ -36,7 +36,7 @@ class PasswordHistoryService:
         """读取条目的密码历史记录数。委托 db.get_password_history_count。"""
         return self._vault.db.get_password_history_count(entry_id)
 
-    def decrypt(self, history: list[PasswordHistory]) -> list[dict]:
+    def decrypt(self, history: list[PasswordHistory]) -> list[dict[str, str]]:
         """解密密码历史，返回字典列表，每个字典含变更时间 changed_at 与密码 password。
 
         持 ``vault_write_lock`` 与 ``security_analyzer.full_analysis`` 对齐：本方法

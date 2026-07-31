@@ -81,6 +81,7 @@ from ..resources.constants import (
     PWD_VISIBLE_SECONDS_DEFAULT,
 )
 from ..resources.icons import GENERATE
+from ..resources.strings import DLG_TITLE_ERROR, DLG_TITLE_INFO
 from ..resources.theme_colors import c
 
 if TYPE_CHECKING:
@@ -478,43 +479,44 @@ class EntryDialog(QDialog):
         if new_type == self._current_type:
             return
 
-        # 检查当前类型的专用字段是否有用户输入数据，编辑和新建两种模式均检查
-        if self._current_type:
-            old_fields = get_schema(self._current_type).visible_fields
-            has_data = False
-            for key in old_fields:
-                # QComboBox（如协议选择）的当前选项也算用户输入，纳入「有数据」
-                # 判定，避免切换类型前选过协议却被当作无数据而漏确认。
-                edit = self._special_edits.get(key)
-                combo = self._special_combos.get(key)
-                if edit is not None:
-                    text = edit.text()
-                elif combo is not None:
-                    text = combo.currentText()
-                else:
-                    continue
-                if text.strip():
-                    has_data = True
-                    break
-            # 新建模式下，标题、密码、备注等通用字段已有内容时也应确认
-            if not has_data and self._entry is None:
-                if (self._title_edit.text().strip()
-                        or self._password_edit.text().strip()
-                        or self._notes_edit.toPlainText().strip()):
-                    has_data = True
+        # 检查当前类型的专用字段是否有用户输入数据，编辑和新建两种模式均检查。
+        # _current_type 恒为非空 ENTRY_TYPE_* 常量（首设默认 login，其余从 combo
+        # currentData() or ENTRY_TYPE_LOGIN 赋值），无需空值守卫。
+        old_fields = get_schema(self._current_type).visible_fields
+        has_data = False
+        for key in old_fields:
+            # QComboBox（如协议选择）的当前选项也算用户输入，纳入「有数据」
+            # 判定，避免切换类型前选过协议却被当作无数据而漏确认。
+            edit = self._special_edits.get(key)
+            combo = self._special_combos.get(key)
+            if edit is not None:
+                text = edit.text()
+            elif combo is not None:
+                text = combo.currentText()
+            else:
+                continue
+            if text.strip():
+                has_data = True
+                break
+        # 新建模式下，标题、密码、备注等通用字段已有内容时也应确认
+        if not has_data and self._entry is None:
+            if (self._title_edit.text().strip()
+                    or self._password_edit.text().strip()
+                    or self._notes_edit.toPlainText().strip()):
+                has_data = True
 
-            if has_data:
-                reply = QMessageBox.question(
-                    self, '切换类型',
-                    '切换条目类型后，当前类型的专用字段数据将不被保存。\n是否继续？',
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                )
-                if reply == QMessageBox.StandardButton.No:
-                    # 恢复之前的类型
-                    idx = self._type_combo.findData(self._current_type)
-                    if idx >= 0:
-                        self._type_combo.setCurrentIndex(idx)
-                    return
+        if has_data:
+            reply = QMessageBox.question(
+                self, '切换类型',
+                '切换条目类型后，当前类型的专用字段数据将不被保存。\n是否继续？',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.No:
+                # 恢复之前的类型
+                idx = self._type_combo.findData(self._current_type)
+                if idx >= 0:
+                    self._type_combo.setCurrentIndex(idx)
+                return
 
         self._current_type = new_type
         self._apply_type_visibility(new_type)
@@ -672,7 +674,7 @@ class EntryDialog(QDialog):
     def _on_save(self) -> None:
         title = self._title_edit.text().strip()
         if not title:
-            QMessageBox.warning(self, '提示', '请输入标题')
+            QMessageBox.warning(self, DLG_TITLE_INFO, '请输入标题')
             return
 
         entry_type = self._type_combo.currentData() or ENTRY_TYPE_LOGIN
@@ -737,7 +739,7 @@ class EntryDialog(QDialog):
             logger.error(
                 "保存条目失败: %s: %s", type(exc).__name__, exc, exc_info=True,
             )
-            QMessageBox.critical(self, '错误', to_user_message(exc))
+            QMessageBox.critical(self, DLG_TITLE_ERROR, to_user_message(exc))
         except ValueError as exc:
             # 业务层字段校验失败（纯 ValueError，非 DecryptionError），提示用户修改后重试
             logger.warning("条目校验失败: %s", exc)
@@ -749,7 +751,7 @@ class EntryDialog(QDialog):
                 "保存条目时出现意外错误: %s: %s", type(exc).__name__, exc, exc_info=True,
             )
             QMessageBox.critical(
-                self, '错误',
+                self, DLG_TITLE_ERROR,
                 '出现意外错误，未能保存条目。详细信息已记录到日志，请重试。',
             )
 

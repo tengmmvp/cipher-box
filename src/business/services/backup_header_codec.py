@@ -37,6 +37,7 @@ class BackupFlag(enum.IntEnum):
 
 
 def derive_backup_key(password: str, salt: bytes) -> bytearray:
+    """用备份密码与 salt 派生 backup_key，使用 DEFAULT_KDF_PARAMS（备份恒以默认参数创建）。"""
     return MasterKeyManager.derive_backup_key(password, salt, DEFAULT_KDF_PARAMS)
 
 

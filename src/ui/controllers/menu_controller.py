@@ -1,0 +1,354 @@
+"""MainWindow 菜单与对话框调度控制器（组合化，从 _MainWindowMenuMixin 迁移）。
+
+普通类（非 QObject），遵循 AutoLockController/AutoBackupController 范式：``__init__``
+注入 manager 与跨 controller 回调（``MenuSlots`` frozen dataclass），``setup(parent,
+search_edit)`` 接收 QObject 父（MainWindow）构建菜单栏/快捷键。跨 controller 协作
+一律走 ``MenuSlots`` 回调，消除原 Menu Mixin 跨 ``self`` 的隐式调用——pyright 在
+MainWindow 装配点逐字段校验每个回调的绑定方法名（原 Mixin 跨 self 调用 mypy/pyright
+不校验，是重构重命名后运行时 AttributeError 的根因）。
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QAction, QKeySequence, QShortcut
+from PyQt6.QtWidgets import QLineEdit, QMainWindow, QMessageBox
+
+from ..dialogs.about_dialog import AboutDialog
+from ..dialogs.backup_dialog import BackupDialog
+from ..dialogs.change_master_dialog import ChangeMasterDialog
+from ..dialogs.import_export_dialog import ImportExportDialog
+from ..dialogs.password_generator_dialog import PasswordGeneratorDialog
+from ..dialogs.security_dashboard import SecurityDashboard
+from ..dialogs.settings_dialog import SettingsDialog
+from ..resources.icons import (
+    CLOSE,
+    FOLDER,
+    GENERATE,
+    HELP,
+    KEY,
+    LOCK_SOLID,
+    PLUS,
+    SETTINGS,
+    SHIELD,
+    SHORTCUT,
+    UPLOAD,
+    icon,
+)
+
+if TYPE_CHECKING:
+    from ...business.managers.backup_restore import BackupRestoreManager
+    from ...business.managers.entry_manager import EntryManager
+    from ...business.managers.import_export import ImportExportManager
+    from ...business.managers.vault_manager import VaultManager
+    from ...business.services.security_analyzer import SecurityAnalyzer
+    from ...config import ConfigManager
+    from ..components.detail_panel import DetailPanel
+    from ..utils.clipboard import ClipboardManager
+    from .auto_backup_controller import AutoBackupController
+
+logger = logging.getLogger(__name__)
+
+# 快捷键定义：每个条目由按键序列和显示描述组成，供 setup_shortcuts 与 show_shortcuts 共享。
+_SHORTCUT_DISPLAY = [
+    ('Ctrl+N', '新增条目'),
+    ('Ctrl+E', '编辑选中条目'),
+    ('Ctrl+F', '搜索'),
+    ('Ctrl+G', '密码生成器'),
+    ('Ctrl+L', '锁定保险库'),
+    ('Ctrl+,', '偏好设置'),
+    ('Ctrl+Q', '退出'),
+    ('Delete', '删除选中条目'),
+    ('Escape', '清空搜索/取消选择'),
+]
+
+
+@dataclass(frozen=True)
+class MenuSlots:
+    """菜单/快捷键触发的跨 controller 回调，由 MainWindow 装配（绑定 EntryActions/
+    ListRefresh/host 方法）。
+
+    每个字段即一条显式契约：pyright 在装配点校验绑定方法存在且签名匹配，替代原
+    Menu Mixin 经 ``self._xxx`` 解析、mypy 不跨 Mixin 校验的隐式契约。
+    """
+
+    add_entry: Callable[[], None]
+    edit_entry: Callable[[int], None]
+    edit_selected_entry: Callable[[], None]
+    delete_selected_entry: Callable[[], None]
+    on_password_selected: Callable[[str], None]
+    clear_search: Callable[[], None]
+    refresh_all_data: Callable[[], None]
+    apply_theme: Callable[[], None]
+    apply_runtime_settings: Callable[[], None]
+    lock: Callable[[], None]
+
+
+class MenuController:
+    """菜单栏、全局快捷键与对话框调度（从 _MainWindowMenuMixin 组合化迁移）。
+
+    ``_show_from_tray`` 操纵窗口可见性 + 查找 LoginWindow + 读锁定态，属窗口编排，
+    保留在 MainWindow（不迁入本控制器）。
+    """
+
+    _parent: QMainWindow
+    _search_edit: QLineEdit
+
+    def __init__(
+        self,
+        config: ConfigManager,
+        vault: VaultManager,
+        entry_mgr: EntryManager,
+        security: SecurityAnalyzer,
+        import_export: ImportExportManager,
+        backup: BackupRestoreManager,
+        clipboard: ClipboardManager,
+        detail_panel: DetailPanel,
+        auto_backup: AutoBackupController,
+        slots: MenuSlots,
+    ) -> None:
+        self._config = config
+        self._vault = vault
+        self._entry_mgr = entry_mgr
+        self._security = security
+        self._import_export = import_export
+        self._backup = backup
+        self._clipboard = clipboard
+        self._detail_panel = detail_panel
+        self._auto_backup = auto_backup
+        self._slots = slots
+        self._shortcuts: list[QShortcut] = []
+
+    def setup(self, parent: QMainWindow, search_edit: QLineEdit) -> None:
+        """构建菜单栏与快捷键。须在 MainWindow 控件创建后调用。
+
+        parent 用于 QAction/QShortcut 的 Qt 父关系（析构自动断开信号）与 menuBar()/
+        close()；search_edit 供 Ctrl+F 聚焦。
+        """
+        self._parent = parent
+        self._search_edit = search_edit
+        self._setup_menubar()
+        self._setup_shortcuts()
+
+    # ----- 菜单栏 -----
+
+    def _setup_menubar(self) -> None:
+        parent = self._parent
+        menubar = parent.menuBar()
+        if menubar is None:
+            return
+
+        # 文件菜单
+        file_menu = menubar.addMenu('文件')
+        if file_menu is None:
+            return
+
+        add_act = QAction('新增条目', parent)
+        add_act.setShortcut('Ctrl+N')
+        add_act.setIcon(icon(PLUS))
+        add_act.setData(PLUS)
+        add_act.triggered.connect(self._slots.add_entry)
+        file_menu.addAction(add_act)
+
+        file_menu.addSeparator()
+
+        import_act = QAction('导入 / 导出', parent)
+        import_act.setIcon(icon(UPLOAD))
+        import_act.setData(UPLOAD)
+        import_act.triggered.connect(self.show_import_export)
+        file_menu.addAction(import_act)
+
+        backup_act = QAction('备份与恢复', parent)
+        backup_act.setIcon(icon(FOLDER))
+        backup_act.setData(FOLDER)
+        backup_act.triggered.connect(self.show_backup)
+        file_menu.addAction(backup_act)
+
+        file_menu.addSeparator()
+
+        lock_act = QAction('锁定保险库', parent)
+        lock_act.setShortcut('Ctrl+L')
+        lock_act.setIcon(icon(LOCK_SOLID))
+        lock_act.setData(LOCK_SOLID)
+        lock_act.triggered.connect(self._slots.lock)
+        file_menu.addAction(lock_act)
+
+        quit_act = QAction('退出', parent)
+        quit_act.setShortcut('Ctrl+Q')
+        quit_act.setIcon(icon(CLOSE))
+        quit_act.setData(CLOSE)
+        quit_act.triggered.connect(parent.close)
+        file_menu.addAction(quit_act)
+
+        # 工具菜单
+        tools_menu = menubar.addMenu('工具')
+        if tools_menu is None:
+            return
+
+        gen_act = QAction('密码生成器', parent)
+        gen_act.setIcon(icon(GENERATE))
+        gen_act.setData(GENERATE)
+        gen_act.triggered.connect(self.show_password_generator)
+        tools_menu.addAction(gen_act)
+
+        security_act = QAction('安全仪表盘', parent)
+        security_act.setIcon(icon(SHIELD))
+        security_act.setData(SHIELD)
+        security_act.triggered.connect(self.show_security_dashboard)
+        tools_menu.addAction(security_act)
+
+        # 设置菜单
+        settings_menu = menubar.addMenu('设置')
+        if settings_menu is None:
+            return
+
+        prefs_act = QAction('偏好设置', parent)
+        prefs_act.setIcon(icon(SETTINGS))
+        prefs_act.setData(SETTINGS)
+        prefs_act.triggered.connect(self.show_settings)
+        settings_menu.addAction(prefs_act)
+
+        change_pwd_act = QAction('修改主密码', parent)
+        change_pwd_act.setIcon(icon(KEY))
+        change_pwd_act.setData(KEY)
+        change_pwd_act.triggered.connect(self.show_change_master)
+        settings_menu.addAction(change_pwd_act)
+
+        # 帮助菜单
+        help_menu = menubar.addMenu('帮助')
+        if help_menu is None:
+            return
+
+        shortcuts_act = QAction('快捷键', parent)
+        shortcuts_act.setIcon(icon(SHORTCUT))
+        shortcuts_act.setData(SHORTCUT)
+        shortcuts_act.triggered.connect(self.show_shortcuts)
+        help_menu.addAction(shortcuts_act)
+
+        help_menu.addSeparator()
+
+        about_act = QAction('关于 CipherBox', parent)
+        about_act.setIcon(icon(HELP))
+        about_act.setData(HELP)
+        about_act.triggered.connect(self.show_about)
+        help_menu.addAction(about_act)
+
+    # ----- 快捷键 -----
+
+    def _setup_shortcuts(self) -> None:
+        """注册全局快捷键。"""
+        parent = self._parent
+        search_edit = self._search_edit
+        shortcuts = [
+            ('Ctrl+F', lambda: search_edit.setFocus()),
+            ('Ctrl+E', self._slots.edit_selected_entry),
+            ('Ctrl+G', self.show_password_generator),
+            ('Ctrl+,', self.show_settings),
+            ('Delete', self._slots.delete_selected_entry),
+            ('Escape', self._slots.clear_search),
+        ]
+        # 保留引用防止 GC 回收：虽然 Qt parent=parent 持有引用，
+        # 但显式保存更安全，避免 PyPy 等非引用计数实现的回收风险
+        self._shortcuts = []
+        for key, callback in shortcuts:
+            shortcut = QShortcut(QKeySequence(key), parent)
+            shortcut.activated.connect(callback)
+            self._shortcuts.append(shortcut)
+
+    def update_menu_icons(self) -> None:
+        """刷新菜单栏图标，主题切换时颜色需要更新。
+
+        按 ``QAction.data()`` 存储的 icon name 重建，而非 ``action.text()`` 反查——
+        后者在菜单文案变更（如国际化）时会让图标丢失。
+        """
+        from PyQt6.QtWidgets import QMenu
+
+        parent = self._parent
+        if parent is None:
+            return
+        menubar = parent.menuBar()
+        if menubar is None:
+            return
+        for menu in menubar.findChildren(QMenu):
+            for action in menu.actions():
+                icon_name = action.data()
+                if icon_name:
+                    action.setIcon(icon(icon_name))
+
+    # ----- 对话框 -----
+
+    def show_password_generator(self) -> None:
+        dialog = PasswordGeneratorDialog(self._clipboard, self._parent, config=self._config)
+        dialog.password_selected.connect(self._slots.on_password_selected)
+        dialog.exec()
+
+    def show_settings(self) -> None:
+        dialog = SettingsDialog(self._config, self._parent)
+        if dialog.exec() == SettingsDialog.DialogCode.Accepted:
+            self._slots.apply_theme()
+            self._slots.apply_runtime_settings()
+
+    def show_import_export(self) -> None:
+        dialog = ImportExportDialog(
+            self._import_export, self._entry_mgr, self._parent,
+        )
+        dialog.import_completed.connect(self._slots.refresh_all_data)
+        dialog.exec()
+
+    def show_backup(self) -> None:
+        dialog = BackupDialog(self._backup, self._parent, config=self._config)
+        dialog.exec()
+        # 仅在对话框实际执行了备份/恢复操作时才全量刷新
+        if dialog.data_changed:
+            self._slots.refresh_all_data()
+            self._detail_panel.show_empty()
+
+    def show_change_master(self) -> None:
+        dialog = ChangeMasterDialog(self._vault, self._config, self._parent)
+        result = dialog.exec()
+        if result == ChangeMasterDialog.DialogCode.Accepted:
+            self._slots.refresh_all_data()
+            self._detail_panel.show_empty()
+            # 改密后强制创建当前保险库快照（force=True 绕过自动备份开关）。
+            # 即使用户已禁用自动备份，改密快照仍会创建以保留改密前的可回滚点；
+            # 显式 Toast 告知，避免用户误以为禁用自动备份后没有任何快照产生。
+            self._auto_backup.trigger_check(force=True)
+            from ..components.toast import Toast
+            from ..resources.constants import MS_TOAST_DEFAULT
+            # 备份异步进行，文案不谎称"已创建"（force=True 绕过开关，可能被并发跳过
+            # 或后台失败）。完成后用户可在「备份与恢复」查看。
+            Toast.show(
+                self._parent, '正在创建改密快照，完成后可在「备份与恢复」中查看或恢复',
+                Toast.INFO, duration=MS_TOAST_DEFAULT,
+            )
+            logger.info("改密成功，已触发强制快照")
+
+    def show_about(self) -> None:
+        dialog = AboutDialog(self._parent)
+        dialog.exec()
+
+    def show_security_dashboard(self) -> None:
+        dialog = SecurityDashboard(
+            self._security, self._entry_mgr, self._config, self._parent,
+        )
+        # fix_requested 经仪表盘 singleShot(0) 延迟 emit 触发 edit_entry；
+        # 实际刷新由 EntryDialog.saved 信号驱动，此处不依赖 Accepted 状态刷新。
+        dialog.fix_requested.connect(self._slots.edit_entry)
+        dialog.exec()
+
+    def show_shortcuts(self) -> None:
+        rows = ''.join(
+            f'<tr><td>{key}</td><td style="padding-left:12px">{desc}</td></tr>'
+            for key, desc in _SHORTCUT_DISPLAY
+        )
+        text = f'<table>{rows}</table>'
+        msg = QMessageBox(self._parent)
+        msg.setWindowTitle('快捷键')
+        msg.setTextFormat(Qt.TextFormat.RichText)
+        msg.setText(text)
+        msg.exec()

@@ -41,7 +41,7 @@ class TOTPGenerator:
 
     @staticmethod
     def _parse_secret(secret: str) -> tuple[str, str]:
-        """解析密钥字符串，提取算法和实际密钥
+        """解析密钥字符串，提取算法和实际密钥。
 
         如果 secret 以 'SHA256:' 或 'SHA512:' 开头，则自动提取算法和密钥；
         否则默认使用 SHA1。
@@ -159,7 +159,7 @@ class TOTPGenerator:
 
     @staticmethod
     def generate(secret: str, algorithm: str = 'SHA1', period: int = DEFAULT_PERIOD, digits: int = DEFAULT_DIGITS) -> str:
-        """生成当前 TOTP 验证码
+        """生成当前 TOTP 验证码。
 
         Args:
             secret: Base32 编码的密钥，支持 'SHA256:SECRET' 或 'SHA512:SECRET' 前缀
@@ -243,7 +243,7 @@ class TOTPGenerator:
 
     @staticmethod
     def validate_secret(secret: str, algorithm: str = 'SHA1') -> bool:
-        """验证 Base32 密钥格式是否有效
+        """验证 Base32 密钥格式是否有效。
 
         支持带算法前缀的密钥格式，例如 'SHA256:BASE32SECRET'。
         前缀存在时自动提取算法并忽略 algorithm 参数。

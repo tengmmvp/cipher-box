@@ -97,7 +97,9 @@ class CategoryRepository:
     def get_category(self, category_id: int, *, verify: bool = True) -> Category | None:
         """获取单个分类。verify 语义同 :meth:`get_categories`。"""
         row = self._conn.execute(
-            "SELECT * FROM categories WHERE id = ?", (category_id,)
+            "SELECT id, name, icon_char, color, sort_order, created_at, metadata_mac "
+            "FROM categories WHERE id = ?",
+            (category_id,),
         ).fetchone()
         if row is None:
             return None

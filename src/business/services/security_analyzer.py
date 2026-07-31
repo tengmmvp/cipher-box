@@ -53,7 +53,7 @@ class _SecurityReportBase(TypedDict):
 class SecurityReport(_SecurityReportBase, total=False):
     """安全分析报告结构（full_analysis / get_cached_report 返回值的类型契约）。
 
-    生产者（SecurityAnalyzer）与消费者（main_window_filters / SecurityDashboard）
+    生产者（SecurityAnalyzer）与消费者（ListRefreshController / SecurityDashboard）
     共享此 TypedDict，使两侧键集一致——新增/改名字段时类型检查即时捕获漂移，
     而非运行时 KeyError。``_summaries_with_dates`` 与 ``_key_epoch`` 为缓存分层
     内部键（``total=False`` 可选）：前者供不同 days 重过滤，后者供 epoch 失效判定；
@@ -75,6 +75,21 @@ class SecurityCounts(NamedTuple):
     weak_count: int
     duplicate_count: int
     old: int
+
+
+class _ClassifyResult(NamedTuple):
+    """单条条目安全分类结果（full_analysis 循环体抽取，降低嵌套）。
+
+    summary 为 None 表示完全跳过（integrity/摘要损坏，不计入 summaries 仅
+    skipped_count）；fingerprint 为 None 表示无密码或解密失败（不计入重复检测，
+    但 summary 仍计入 summaries/weak）。
+    """
+
+    summary: Entry | None
+    changed_utc: datetime | None
+    is_weak: bool
+    fingerprint: bytes | None
+    counted_in_skipped: bool
 
 
 class SecurityAnalyzer:
@@ -392,7 +407,7 @@ class SecurityAnalyzer:
             password_map: dict[bytes, list[Entry]] = {}
             cutoff = datetime.now(timezone.utc) - timedelta(days=days)
             # 保存所有条目的 summary + changed_at_utc，供缓存后不同 days 重新过滤
-            _summaries_with_dates: list[tuple] = []
+            _summaries_with_dates: list[tuple[Entry, datetime | None]] = []
 
             skipped_count = 0
             # 循环外取一次主密钥副本，供重复检测的 HMAC 指纹复用。
@@ -408,40 +423,16 @@ class SecurityAnalyzer:
                 # 与改密/重加密/备份的取消探针模式对齐。
                 if (idx & _CANCEL_CHECK_MASK) == 0 and self._vault.is_cancel_requested():
                     raise VaultLockedError('安全分析因锁定/取消请求而中止')
-                if raw.integrity_error:
-                    logger.debug("安全分析跳过元数据完整性失败条目 id=%s", raw.id)
+                result = self._classify_entry(raw, vault_key)
+                if result.counted_in_skipped:
                     skipped_count += 1
+                if result.summary is None:
                     continue
-                try:
-                    summary = self._make_summary(raw)
-                except EntryIntegrityError:
-                    logger.debug("安全分析跳过损坏条目 id=%s", raw.id, exc_info=True)
-                    skipped_count += 1
-                    continue
-
-                changed_utc = self._parse_changed_utc(raw)
-                _summaries_with_dates.append((summary, changed_utc))
-
-                if (raw.password_strength or 0) <= 1 and raw.password:
-                    weak_entries.append(summary)
-
-                if not raw.password:
-                    continue
-
-                try:
-                    password = decrypt_field(
-                        raw.password, vault_key, raw.crypto_id, 'password', strict=True,
-                    )
-                except DecryptionError:
-                    logger.debug("安全分析跳过损坏条目 id=%s，原因：密码解密失败", raw.id)
-                    skipped_count += 1
-                    continue
-                if not password:
-                    continue
-
-                fingerprint = self._password_fingerprint(password, vault_key)
-                del password
-                password_map.setdefault(fingerprint, []).append(summary)
+                _summaries_with_dates.append((result.summary, result.changed_utc))
+                if result.is_weak:
+                    weak_entries.append(result.summary)
+                if result.fingerprint is not None:
+                    password_map.setdefault(result.fingerprint, []).append(result.summary)
 
             old_entries = [
                 s for s, dt in _summaries_with_dates
@@ -464,3 +455,35 @@ class SecurityAnalyzer:
             'old': len(old_entries),
             '_summaries_with_dates': _summaries_with_dates,  # 缓存分层：供不同 days 重过滤
         }
+
+    def _classify_entry(self, raw: RawEntry, vault_key: bytes | bytearray) -> _ClassifyResult:
+        """对单条目做安全分类（弱/日期/重复指纹），抽取自 full_analysis 循环体。
+
+        返回 :class:`_ClassifyResult`：summary 为 None 表示完全跳过（integrity/摘要
+        损坏，不计入 summaries 仅 skipped_count）；fingerprint 为 None 表示无密码或
+        解密失败（不计入重复检测，但 summary 仍计入 summaries/weak）。
+        """
+        if raw.integrity_error:
+            logger.debug("安全分析跳过元数据完整性失败条目 id=%s", raw.id)
+            return _ClassifyResult(None, None, False, None, True)
+        try:
+            summary = self._make_summary(raw)
+        except EntryIntegrityError:
+            logger.debug("安全分析跳过损坏条目 id=%s", raw.id, exc_info=True)
+            return _ClassifyResult(None, None, False, None, True)
+        changed_utc = self._parse_changed_utc(raw)
+        is_weak = (raw.password_strength or 0) <= 1 and bool(raw.password)
+        if not raw.password:
+            return _ClassifyResult(summary, changed_utc, is_weak, None, False)
+        try:
+            password = decrypt_field(
+                raw.password, vault_key, raw.crypto_id, 'password', strict=True,
+            )
+        except DecryptionError:
+            logger.debug("安全分析跳过损坏条目 id=%s，原因：密码解密失败", raw.id)
+            return _ClassifyResult(summary, changed_utc, is_weak, None, True)
+        if not password:
+            return _ClassifyResult(summary, changed_utc, is_weak, None, False)
+        fingerprint = self._password_fingerprint(password, vault_key)
+        del password
+        return _ClassifyResult(summary, changed_utc, is_weak, fingerprint, False)

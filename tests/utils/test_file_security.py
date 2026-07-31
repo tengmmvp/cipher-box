@@ -6,6 +6,7 @@
 
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -391,6 +392,73 @@ class TestRejectReparseBranches:
         target.write_text('x')
         file_security._reject_reparse_points(target)
         assert call_count['n'] > 1, 'Windows 分支应逐级 lstat 祖先'
+
+
+class TestValidateFilePathStrictAncestors:
+    """``validate_file_path(check_ancestors=True)`` 祖先符号链接检测（S3）。
+
+    默认 ``check_ancestors=False`` 保持 Unix 仅检测叶子（避开 macOS /var 误伤）；
+    高敏感用户路径（backup_directory）显式 opt-in 后，Unix 逐级 lstat 祖先并拒绝
+    非系统规范的符号链接，收缩「替换祖先为 symlink 重定向含明文写入」的威胁。
+    """
+
+    def test_strict_rejects_symlink_ancestor(self, tmp_path):
+        """check_ancestors=True：非系统规范符号链接祖先应被拒绝（跨平台）。"""
+        from src.utils.file_security import validate_file_path
+        real_dir = tmp_path / 'real_dir'
+        real_dir.mkdir()
+        (real_dir / 'file.txt').write_text('data')
+        link_dir = tmp_path / 'link_dir'
+        try:
+            os.symlink(real_dir, link_dir)
+        except (OSError, NotImplementedError):
+            pytest.skip('当前环境不支持创建符号链接')
+        # link_dir 是深层（非顶层 /private 规范）符号链接祖先 → 拒绝
+        with pytest.raises(ValueError, match='符号链接'):
+            validate_file_path(str(link_dir / 'file.txt'), check_ancestors=True)
+
+    def test_default_still_allows_symlink_ancestor_unix(self, tmp_path):
+        """check_ancestors 默认 False：Unix 仍放行祖先符号链接（回归守护）。"""
+        from src.utils.file_security import validate_file_path
+        real_dir = tmp_path / 'real_dir'
+        real_dir.mkdir()
+        (real_dir / 'file.txt').write_text('data')
+        link_dir = tmp_path / 'link_dir'
+        try:
+            os.symlink(real_dir, link_dir)
+        except (OSError, NotImplementedError):
+            pytest.skip('当前环境不支持创建符号链接')
+        if os.name == 'nt':
+            with pytest.raises(ValueError):
+                validate_file_path(str(link_dir / 'file.txt'))
+        else:
+            result = validate_file_path(str(link_dir / 'file.txt'))
+            assert result.is_absolute()
+
+    def test_canonical_system_link_only_darwin_toplevel(self):
+        """_is_canonical_system_link：仅 darwin 顶层 /x→/private/x 视为系统规范。"""
+        from src.utils import file_security
+        if sys.platform != 'darwin':
+            # 非 darwin：任何符号链接祖先即可疑（Linux 系统目录非符号链接）
+            assert file_security._is_canonical_system_link(Path('/var')) is False
+        else:
+            # darwin：/var→/private/var、/tmp→/private/tmp 为系统规范链接（放行）
+            assert file_security._is_canonical_system_link(Path('/var')) is True
+            assert file_security._is_canonical_system_link(Path('/tmp')) is True
+            # 深层路径不视作顶层系统规范链接（即便其存在）
+            assert file_security._is_canonical_system_link(Path('/var/folders')) is False
+
+    def test_strict_allows_macos_temp_path(self, tmp_path):
+        """check_ancestors=True 经系统临时目录的合法路径不误伤（macOS /var 回归守护）。
+
+        非 darwin 平台 tmp_path 无系统符号链接祖先，本测试平凡通过；macOS 上
+        tmp_path 位于 /var/folders（/var→/private/var），验证系统规范链接被放行。
+        """
+        from src.utils.file_security import validate_file_path
+        target = tmp_path / 'sub' / 'snapshot.cbox'
+        target.parent.mkdir(parents=True)
+        result = validate_file_path(str(target), check_ancestors=True)
+        assert result.is_absolute()
 
 
 class TestAtomicWritePermissions:

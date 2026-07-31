@@ -177,7 +177,7 @@ class CipherBoxApp:
         if not self._running:
             return
 
-        login = LoginWindow(self._vault)
+        login = LoginWindow(self._vault, self._config)
 
         def on_login() -> None:
             first_show = self._main_window is None

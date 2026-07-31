@@ -1,8 +1,8 @@
-from tests.helpers import make_entry_manager
-
 """测试 EntryManager 搜索元数据缓存的 epoch 失效行为。"""
 
 from unittest.mock import MagicMock, PropertyMock
+
+from tests.helpers import make_entry_manager
 
 
 class TestSearchMetadataCacheEpochInvalidation:

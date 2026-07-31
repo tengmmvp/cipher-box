@@ -2,8 +2,8 @@
 
 两者共享「列别名匹配 + 行解析」逻辑（``_CsvLikeImporter`` 基类），仅列别名、
 Entry 字段映射与日志标签不同。Chrome/Edge CSV 与 CipherBox CSV 列名格式
-相同，由 ``ImportExportManager.import_from_chrome_csv`` 委托 ``CsvImporter``
-处理。
+相同，由 :class:`ImportExportManager` 经 ``import_file(format_key='chrome_csv')``
+分发到 ``CsvImporter`` 处理。
 """
 
 import csv

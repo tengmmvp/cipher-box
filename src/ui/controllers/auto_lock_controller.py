@@ -39,8 +39,7 @@ class _SessionLockFilter(QAbstractNativeEventFilter):
     """Windows 会话锁屏事件过滤器，捕获 WM_WTSSESSION_CHANGE 触发保险库锁定。
 
     用 QAbstractNativeEventFilter 挂载 QApplication，而非重写 MainWindow.nativeEvent：
-    后者在 MainWindow 多继承（FiltersMixin/MenuMixin/QMainWindow）MRO 下会触发
-    C 层 access violation；独立过滤器规避该问题，是 Qt 推荐的原生消息拦截方式。
+    独立过滤器在应用级拦截原生消息，不耦合窗口子类化逻辑，是 Qt 推荐的原生消息拦截方式。
     """
 
     def __init__(self, on_lock: Callable[[], None]) -> None:

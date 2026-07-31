@@ -309,6 +309,7 @@ class TestRequireVaultKey:
     def test_returns_key_when_unlocked(self, aes_key):
         class FakeVaultManager:
             key = aes_key
+            is_unlocked = True
 
         result = require_vault_key(cast(VaultManager, FakeVaultManager()))
         assert result == aes_key
@@ -316,6 +317,7 @@ class TestRequireVaultKey:
     def test_raises_when_locked(self):
         class FakeVaultManager:
             key = None
+            is_unlocked = False
 
         with pytest.raises(VaultLockedError):
             require_vault_key(cast(VaultManager, FakeVaultManager()))

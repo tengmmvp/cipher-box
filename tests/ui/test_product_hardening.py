@@ -173,6 +173,10 @@ def test_change_master_success_triggers_force_backup(monkeypatch):
         vault = make_vault(config)
         assert vault.initialize('MasterPassword!2026')[0]
         make_entry_manager(vault).add_entry(Entry(title='t', password='p'))
+        # MenuSlots.refresh_all_data 在 MainWindow 构造时捕获 list_refresh.refresh_all_data
+        # 的绑定方法；实例级 monkeypatch 不影响已持有 bound method，故构造前打类级桩。
+        from src.ui.controllers.list_refresh_controller import ListRefreshController
+        monkeypatch.setattr(ListRefreshController, 'refresh_all_data', lambda self: None)
         window = MainWindow(build_business_context(config, vault))
         try:
             # mock 改密对话框直接返回 Accepted，跳过真实改密 UI 与 Argon2id 派生
@@ -182,7 +186,6 @@ def test_change_master_success_triggers_force_backup(monkeypatch):
             )
             # 屏蔽改密成功路径的 UI 副作用，聚焦 trigger_check 调用断言
             monkeypatch.setattr(Toast, 'show', lambda *args, **kwargs: None)
-            monkeypatch.setattr(window, '_refresh_all_data', lambda: None)
             monkeypatch.setattr(window._detail_panel, 'show_empty', lambda: None)
             called: list[bool] = []
             monkeypatch.setattr(
@@ -190,7 +193,7 @@ def test_change_master_success_triggers_force_backup(monkeypatch):
                 lambda force=False: called.append(force),
             )
 
-            window._show_change_master()
+            window._menu.show_change_master()
 
             assert called == [True]
         finally:
@@ -324,13 +327,15 @@ def test_selecting_first_entry_opens_detail_panel_without_crash():
         vault.close()
 
 
-def test_first_time_login_password_fields_have_matching_dimensions():
+def test_first_time_login_password_fields_have_matching_dimensions(tmp_path):
     app_widget = cast(QWidget, _APP)
     previous_style = app_widget.styleSheet()
     app_widget.setStyleSheet(get_style('light'))
     try:
-        vault = type('FirstTimeVault', (), {'is_initialized': False})()
-        dialog = LoginWindow(vault)
+        vault = type('FirstTimeVault', (), {
+            'is_initialized': False, 'data_dir': tmp_path,
+        })()
+        dialog = LoginWindow(vault)  # pyright: ignore[reportArgumentType]
         dialog.show()
         _APP.processEvents()
 
@@ -347,19 +352,23 @@ def test_first_time_login_password_fields_have_matching_dimensions():
         app_widget.setStyleSheet(previous_style)
 
 
-def test_visible_branding_uses_single_product_name():
-    vault = type('FirstTimeVault', (), {'is_initialized': False})()
-    dialog = LoginWindow(vault)
+def test_visible_branding_uses_single_product_name(tmp_path):
+    vault = type('FirstTimeVault', (), {
+        'is_initialized': False, 'data_dir': tmp_path,
+    })()
+    dialog = LoginWindow(vault)  # pyright: ignore[reportArgumentType]
 
     assert dialog.windowTitle() == 'CipherBox - 登录'
     assert all('密匣' not in label.text() for label in dialog.findChildren(QLabel))
     dialog.close()
 
 
-def test_login_failure_clears_password_input():
+def test_login_failure_clears_password_input(tmp_path):
     """认证失败后主密码明文须立即从输入框清除，缩短敏感驻留时间。"""
-    vault = type('LoginVault', (), {'is_initialized': True})()
-    dialog = LoginWindow(vault)
+    vault = type('LoginVault', (), {
+        'is_initialized': True, 'data_dir': tmp_path,
+    })()
+    dialog = LoginWindow(vault)  # pyright: ignore[reportArgumentType]
     dialog._password_edit.setText('user-typed-secret')
     dialog._on_auth_result(False, '主密码错误')
     assert dialog._password_edit.text() == ''
@@ -400,7 +409,7 @@ def test_bitwarden_import_preserves_folder_totp_and_custom_fields():
         }
         path = Path(root) / 'bitwarden.json'
         path.write_text(json.dumps(payload), encoding='utf-8')
-        assert importer.import_from_bitwarden_json(str(path)) == 1
+        assert importer.import_file(str(path), 'bitwarden_json') == 1
         entry = manager.get_entries()[0]
         assert entry.category_name == 'Work'
         assert entry.totp_secret == 'JBSWY3DPEHPK3PXP'
@@ -433,7 +442,7 @@ def test_import_rolls_back_when_any_entry_fails():
         # 使整个导入事务回滚，不留部分写入的数据。
         with patch.object(manager, 'add_entries', side_effect=RuntimeError('simulated import failure')):
             try:
-                importer.import_from_json(str(path))
+                importer.import_file(str(path), 'json')
             except RuntimeError:
                 pass
         assert manager.get_entry_count() == 0
@@ -490,7 +499,7 @@ def test_passwordless_overwrite_import_preserves_existing_secrets():
         payload = json.loads(path.read_text(encoding='utf-8'))
         payload['entries'][0]['notes'] = 'updated'
         path.write_text(json.dumps(payload), encoding='utf-8')
-        assert exporter.import_from_json(str(path), duplicate_action='overwrite') == 1
+        assert exporter.import_file(str(path), 'json', duplicate_action='overwrite') == 1
 
         restored = manager.get_entry(entry_id)
         assert restored is not None
@@ -649,8 +658,8 @@ def test_import_all_does_not_decrypt_existing_vault():
             manager, 'get_entry_summaries',
             side_effect=AssertionError('import_all 不应扫描现有条目'),
         ):
-            assert importer.import_from_json(
-                str(path), duplicate_action='import_all'
+            assert importer.import_file(
+                str(path), 'json', duplicate_action='import_all'
             ) == 1
         assert manager.get_entry_count() == 2
         vault.close()

@@ -77,6 +77,19 @@ class BitwardenItemType(enum.IntEnum):
     IDENTITY = 4
 
 
+class BitwardenFieldType(enum.IntEnum):
+    """Bitwarden 自定义字段的 type 字段值映射。
+
+    Bitwarden 导出 JSON 中字段 type 为整数：0=Text, 1=Hidden, 2=Boolean。与
+    ``BitwardenItemType`` 同样用 IntEnum 避免裸魔法数字；hidden 字段映射到
+    CipherBox 的 ``password`` 自定义字段类型（见 ``_bitwarden_entry_fields``）。
+    """
+
+    TEXT = 0
+    HIDDEN = 1
+    BOOLEAN = 2
+
+
 def _bitwarden_entry_fields(item: dict[str, Any]) -> tuple[str, list[CustomField]]:
     """解析 Bitwarden item 的条目类型与自定义字段。
 
@@ -91,7 +104,7 @@ def _bitwarden_entry_fields(item: dict[str, Any]) -> tuple[str, list[CustomField
         CustomField(
             name=_as_str(field.get('name')) or '自定义字段',
             value=_as_str(field.get('value')),
-            field_type='password' if field.get('type') == 1 else 'text',
+            field_type='password' if field.get('type') == BitwardenFieldType.HIDDEN else 'text',
         )
         for field in _as_list(item.get('fields'))
         if isinstance(field, dict) and field.get('value') is not None
@@ -154,6 +167,8 @@ class BitwardenImporter:
         with open(filepath, encoding='utf-8') as f:
             data = json.load(f)
 
+        if not isinstance(data, dict):
+            raise ValueError('Bitwarden 导入结构无效')
         items = data.get('items', [])
         if not isinstance(items, list):
             raise ValueError('Bitwarden 导入结构无效')

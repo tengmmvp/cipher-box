@@ -61,12 +61,22 @@ if not STRING_ENCRYPTED_FIELDS:
 _missing_enc_fields = set(STRING_ENCRYPTED_FIELDS) - REQUIRED_ENTRY_KEYS
 if _missing_enc_fields:
     raise RuntimeError(
-        f'STRING_ENCRYPTED_FIELDS 未全部纳入 REQUIRED_ENTRY_KEYS，'
+        'STRING_ENCRYPTED_FIELDS 未全部纳入 REQUIRED_ENTRY_KEYS，'
         f'校验会因键缺失而失败：{sorted(_missing_enc_fields)}'
     )
 
 
 def validate_restore_data(data: dict[str, Any]) -> None:
+    """恢复前对完整备份数据做结构、键完整性与数量上限的总校验。
+
+    校验顶层 format/version 标识与必备键后，委托 :func:`validate_categories` /
+    :func:`validate_entries` / :func:`validate_history` 分项校验。任一项不符即抛出，
+    使恢复在写入数据库前中止，避免半成品数据入库。
+
+    Raises:
+        BackupError: 格式标识、版本、顶层结构或子项内容不符。
+        PayloadTooLargeError: 条目/历史/分类数量超出上限。
+    """
     if data.get('format') != BACKUP_FORMAT:
         raise BackupError('备份格式标识无效')
     version = data.get('version')
@@ -236,6 +246,11 @@ def require_keys(item: dict[str, Any], expected: Set[str], label: str) -> None:
 
 
 def require_text(value: Any, label: str, max_bytes: int, allow_empty: bool = True) -> None:
+    """校验 value 为字符串且 UTF-8 字节长度不超过 max_bytes。
+
+    allow_empty 为 False 时额外拒绝空白字符串；超长抛 :class:`PayloadTooLargeError`，
+    其余类型/空失败抛 :class:`BackupError`，二者经 ``to_user_message`` 呈现不同文案。
+    """
     if not isinstance(value, str):
         raise BackupError(f'{label}类型无效')
     if not allow_empty and not value.strip():

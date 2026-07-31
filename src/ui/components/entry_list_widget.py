@@ -59,7 +59,7 @@ class EntryListModel(QAbstractItemModel):
     无法 SQL 过滤，需内存匹配），但 item 对象开销与逐项 setData 消除。
     """
 
-    def __init__(self, parent: QObject | None = None):
+    def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._entries: list[Entry] = []
 
@@ -122,7 +122,7 @@ class EntryItemDelegate(QStyledItemDelegate):
     _DELETE_BADGE_Y_OFFSET = 20  # 已删除徽章 Y 偏移
     _DELETE_BADGE_X_BACK = 9   # 已删除徽章距右侧标记的回退量
 
-    def __init__(self, parent: QObject | None = None):
+    def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._color_cache: dict[str, str] = {}
         self._font_cache: dict[tuple, QFont] = {}

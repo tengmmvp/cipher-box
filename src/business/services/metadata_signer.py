@@ -16,12 +16,14 @@ from ...utils.memory import secure_zero_buffer
 logger = logging.getLogger(__name__)
 
 # vault_meta 完整性签名覆盖的安全相关键（密码派生与密钥版本元数据）。
-# 不含 snapshot_key_enc（已由主密钥加密保护，其篡改会在 _load_snapshot_key
-# 解密时失败）；不含 vault_meta_mac 自身（签名不能包含自身）。
+# 含 snapshot_key_enc：虽由主密钥加密保护（随机篡改会在 _load_snapshot_key 解密
+# 时失败），但 GCM 用常量 AAD 不防重放——有 DB 写权限者可用旧有效密文替换而绕过；
+# 纳入签名后此类回滚/重放使 mac 失配而被 unlock 拒绝。不含 vault_meta_mac 自身
+# （签名不能包含自身）。
 VAULT_META_SIGNED_KEYS = (
     'master_salt', 'master_verify',
     'master_kdf_time_cost', 'master_kdf_memory_cost', 'master_kdf_parallelism',
-    'ciphertext_format', 'key_epoch',
+    'ciphertext_format', 'key_epoch', 'snapshot_key_enc',
 )
 
 # 签名绑定的加密字段及固定顺序（子集 + 顺序单一源）。必须等于
@@ -56,7 +58,7 @@ class MetadataSigner:
         原地清零；传入不可变 bytes 时转为 bytearray 副本，避免清零失效。
         compute_domain_key 已返回 bytearray，归一化对其为 no-op。
         """
-        self._domain_key = key if isinstance(key, bytearray) else bytearray(key)
+        self._domain_key = self._normalize_domain_key(key)
 
     @property
     def domain_key(self) -> bytearray | None:
@@ -67,9 +69,19 @@ class MetadataSigner:
     def domain_key(self, value: bytearray | None) -> None:
         # 与 set_domain_key 归一一致：防经 setter 传入 bytes 绕过 bytearray 持有
         # 使清零失效。VaultManager 经此传 None 清零，None 保留。
-        self._domain_key = (
-            value if value is None or isinstance(value, bytearray) else bytearray(value)
-        )
+        self._domain_key = self._normalize_domain_key(value)
+
+    @staticmethod
+    def _normalize_domain_key(value: bytes | bytearray | None) -> bytearray | None:
+        """归一域密钥为 bytearray：None 透传，bytes|bytearray 转 bytearray 副本。
+
+        统一 set_domain_key 与 domain_key setter 的归一逻辑：始终以 bytearray 持有，
+        使 secure_zero_buffer 能原地清零；传入不可变 bytes 时转为 bytearray 副本，
+        避免清零失效。compute_domain_key 已返回 bytearray，对其为 no-op。
+        """
+        if value is None:
+            return None
+        return value if isinstance(value, bytearray) else bytearray(value)
 
     @staticmethod
     def compute_domain_key(key: bytes | bytearray) -> bytearray:
@@ -81,6 +93,17 @@ class MetadataSigner:
         return bytearray(hmac.new(key, b'cipherbox:entry-metadata-key', hashlib.sha256).digest())
 
     @staticmethod
+    def compute_vault_meta_domain_key(key: bytes | bytearray) -> bytearray:
+        """从主密钥派生 vault_meta 完整性签名的独立域密钥，返回 bytearray 以便清零。
+
+        与 :meth:`compute_domain_key`（条目/分类元数据签名）显式域分离：vault_meta
+        完整性（保险库级密码派生参数/密钥版本）与条目/分类元数据（条目级）是两类
+        不同用途的签名，使用各自独立的 HKDF-style info 标签派生密钥，遵循与主密钥/
+        备份密钥域分离一致的原则，避免未来消息空间扩展时产生跨协议交互。
+        """
+        return bytearray(hmac.new(key, b'cipherbox:vault-meta-key', hashlib.sha256).digest())
+
+    @staticmethod
     def compute_vault_meta_mac(meta: dict, key: bytes | bytearray) -> str:
         """计算 vault_meta 安全相关字段的 HMAC-SHA256，用主密钥派生的域密钥签名。
 
@@ -90,7 +113,7 @@ class MetadataSigner:
         对未导致派生失败的篡改提供统一的完整性校验与明确拒绝。域密钥为局部副本，
         用后清零收缩驻留。
         """
-        dk = MetadataSigner.compute_domain_key(key)
+        dk = MetadataSigner.compute_vault_meta_domain_key(key)
         try:
             payload = MetadataSigner._canonical_json_bytes(
                 {k: meta.get(k) for k in VAULT_META_SIGNED_KEYS}

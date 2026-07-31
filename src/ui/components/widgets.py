@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from collections.abc import Iterable
 from pathlib import Path
@@ -27,12 +26,13 @@ from PyQt6.QtWidgets import (
 
 from ...business.services.password_service import PasswordService
 from ...config import RATE_LIMITS
-from ...utils.file_security import secure_file
+from ...utils.file_security import atomic_write, secure_file
 from ..resources.constants import BTN_DIALOG, BTN_ICON
 from ..resources.icons import EYE, LOCK, set_icon
 from ..resources.theme_colors import get_strength_color
 
 if TYPE_CHECKING:
+    from ...config import ConfigManager
     from .workers import BackgroundWorker
 
 # ======== 信号断开与取消按钮 ========
@@ -301,10 +301,15 @@ class RateLimiter:
         secs = limiter.record_failure()  # 返回锁定秒数，0 表示不锁定
     """
 
-    def __init__(self, state_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        state_path: str | Path | None = None,
+        config: ConfigManager | None = None,
+    ) -> None:
         self._fail_count: int = 0
         self._lock_until: float = 0.0
         self._state_path = Path(state_path) if state_path is not None else None
+        self._config = config
         self._load_state()
 
     @property
@@ -318,13 +323,29 @@ class RateLimiter:
             return None
         return self._state_path.with_name(self._state_path.name + '.sentinel')
 
+    @property
+    def _sentinel_name(self) -> str | None:
+        """哨兵在签名 config 中的登记名（取状态文件 stem，如 ``login_rate_limit``）。
+
+        供 :meth:`_register_sentinel_in_config` / :meth:`_sentinel_established_via_config`
+        与签名 config 的 ``security_sentinels`` 登记对接。
+        """
+        if self._state_path is None:
+            return None
+        return self._state_path.stem
+
     def _ensure_sentinel(self) -> None:
         """首次成功持久化状态时创建哨兵，标记限流系统已初始化。
 
         创建失败仅告警不中断——哨兵缺失最坏退化为「无法检测删除」，与改造前
-        行为一致，不会比原实现更弱。
+        行为一致，不会比原实现更弱。同时把哨兵登记到签名 config（幂等），使
+        「状态文件 + 哨兵被同时删除」亦可经签名 config 检测。
         """
         sentinel = self._sentinel_path
+        # 先登记到签名 config（幂等）：即便哨兵文件已存在（既有安装升级路径），
+        # 也补登登记，避免升级后「同时删除」检测失效。登记失败不阻断——退化为
+        # 仅哨兵文件配对检测，与改造前行为一致。
+        self._register_sentinel_in_config()
         if sentinel is None or sentinel.exists():
             return
         try:
@@ -336,18 +357,70 @@ class RateLimiter:
                 "限流哨兵文件创建失败，删除检测将降级", exc_info=True,
             )
 
+    def _register_sentinel_in_config(self) -> None:
+        """把哨兵登记到签名 config（幂等）。无 config 时为无操作。"""
+        cfg = self._config
+        name = self._sentinel_name
+        if cfg is None or name is None:
+            return
+        try:
+            cfg.register_security_sentinel(name)
+        except Exception:
+            # config 写盘失败/校验失败等：不阻断限流，退化为仅哨兵文件配对检测。
+            logging.getLogger(__name__).warning(
+                "限流哨兵签名登记失败，同时删除检测将降级", exc_info=True,
+            )
+
+    def _sentinel_established_via_config(self) -> bool:
+        """经签名 config 判定哨兵是否曾建立（用于「状态+哨兵均缺失」分支）。
+
+        - 无 config：返回 False（退回「首次使用」，与改造前行为一致，不削弱）。
+        - config 完整性失败：保守返回 True——签名 config 被篡改本身已可疑，按
+          「恶意删除」降级锁定，而非采信可能被篡改的登记内容。
+        - config 完整性通过：查 ``security_sentinels`` 登记记录。
+        """
+        cfg = self._config
+        if cfg is None:
+            return False
+        try:
+            if not cfg.check_integrity():
+                return True
+            name = self._sentinel_name
+            return name is not None and cfg.is_security_sentinel_established(name)
+        except Exception:
+            # config 读取异常不阻断限流：退回「首次使用」最保守（不锁定），
+            # 避免配置读取故障误锁用户；同时删除检测在此退化为仅哨兵文件配对。
+            logging.getLogger(__name__).warning(
+                "限流哨兵签名见证读取失败，按首次使用处理", exc_info=True,
+            )
+            return False
+
     def _load_state(self) -> None:
+        """加载持久化的限流状态；文件缺失或损坏时降级最高阶梯锁定以抵抗绕过。"""
         if self._state_path is None:
             return
         if not self._state_path.exists():
             # 状态文件缺失：区分「首次使用」与「被恶意删除」。首次成功持久化
             # 状态时会同步写哨兵（见 _ensure_sentinel），故哨兵存在而状态文件
             # 缺失意味着状态被外部删除——降级到最高阶梯锁定，与「文件损坏」
-            # 路径一致，避免删文件直接绕过限流。哨兵缺失则为首次正常使用，
-            # 计数保持 0，不误伤新用户。
+            # 路径一致，避免删文件直接绕过限流。
             if self._sentinel_path is not None and self._sentinel_path.exists():
                 logging.getLogger(__name__).warning(
                     "限流状态文件缺失但哨兵存在，判定为被删除，降级最高阶梯锁定"
+                )
+                self._fail_count = RATE_LIMITS[-1][0]
+                self._lock_until = time.monotonic() + RATE_LIMITS[-1][1]
+                self._save_state()
+                return
+            # 哨兵亦缺失：区分「首次使用」与「状态文件 + 哨兵被同时删除」。
+            # 文件可被一并删除，但签名 config（HMAC）登记过哨兵建立——攻击者无法
+            # 伪造签名抹除登记，故签名 config 记录已建立而两文件悉缺即判定为恶意删除，
+            # 降级最高阶梯锁定，关闭「同时删两文件即归零计数」的绕过。无 config 见证
+            # （或读取异常）时退回「首次使用」，不误伤新用户、不削弱既有保护。
+            if self._sentinel_established_via_config():
+                logging.getLogger(__name__).warning(
+                    "限流状态文件与哨兵均缺失但签名 config 记录已建立，"
+                    "判定为被删除，降级最高阶梯锁定"
                 )
                 self._fail_count = RATE_LIMITS[-1][0]
                 self._lock_until = time.monotonic() + RATE_LIMITS[-1][1]
@@ -377,10 +450,9 @@ class RateLimiter:
             self._save_state()
 
     def _save_state(self) -> None:
+        """持久化失败计数与剩余锁定秒数，经原子写入落地并补建哨兵。"""
         if self._state_path is None:
             return
-        self._state_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self._state_path.with_name(self._state_path.name + '.tmp')
         # 持久化「剩余锁定秒数」而非绝对时间戳：单调时钟在进程间不连续，
         # 无法跨会话还原绝对到期点；存剩余秒数后加载时基于当前 monotonic 重算，
         # 既保留跨会话退避阶梯（fail_count 一并持久化），又抵抗系统时钟回拨绕过。
@@ -392,24 +464,23 @@ class RateLimiter:
             'fail_count': self._fail_count,
             'remaining_seconds': remaining_seconds,
         })
+
+        def _write_state(f: Any) -> bool:
+            f.write(payload)
+            return True
+
         try:
-            with open(temp_path, 'w', encoding='utf-8') as file:
-                file.write(payload)
-                file.flush()
-                os.fsync(file.fileno())
-            secure_file(temp_path)
-            os.replace(temp_path, self._state_path)
-            secure_file(self._state_path)
+            # 经 atomic_write 落地即 0600（opener 回调）：消除「写入限流状态 → 关闭 →
+            # secure_file 收紧」间的世界可读窗口（与 SEC-2 一致）。写盘失败（只读盘/
+            # 磁盘满/权限）不中断登录流程：RateLimiter 是内存限流，持久化仅为跨会话
+            # 保留；失败时内存状态仍生效，仅记日志。
+            atomic_write(self._state_path, _write_state, mode='w', encoding='utf-8')
             # 状态已成功落盘：确保哨兵存在，使后续「状态文件被删除」可被检测。
             self._ensure_sentinel()
         except OSError:
-            # 写盘失败（只读盘/磁盘满/权限）不应中断登录流程：RateLimiter 是
-            # 内存限流，持久化仅为跨会话保留；失败时内存状态仍生效，仅记日志。
             logging.getLogger(__name__).warning(
                 "登录限流状态写盘失败，本次仅内存生效", exc_info=True
             )
-        finally:
-            temp_path.unlink(missing_ok=True)
 
     def check(self) -> str | None:
         """检查是否处于锁定状态。

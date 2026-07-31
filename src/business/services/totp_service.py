@@ -97,24 +97,29 @@ class TotpService:
             return None
         return TOTPGenerator.generate(secret)
 
-    def get_state(self, entry_id: int) -> TotpState | None:
+    def get_state(
+        self, entry_id: int, *, preloaded_secret: str | None = None,
+    ) -> TotpState | None:
         """获取指定条目的 TOTP 完整状态，含验证码、倒计时和周期。
 
-        经 ``_resolve_totp_secret`` 的单一解密路径取 secret（与 generate/
-        generate_cached 统一），供 detail_panel 的 TOTP 显示和刷新定时器使用。
-        首次调用后将 secret 写入 totp_secret 缓存，使后续 generate_cached 命中缓存，
-        避免定时器每秒重复解密。
+        preloaded_secret：调用方已解密的 totp_secret 明文（如详情面板经 get_entry
+        解密得到），传入则直接用它并预热缓存，跳过 resolve_totp_secret 的重复解密
+        （P3：消除选中含 TOTP 条目时 totp_secret 的二次解密）。为 None 或空时走
+        resolve_totp_secret 的单一解密路径（use_cache=True：命中缓存或解密后缓存），
+        供 detail_panel 的 TOTP 显示和刷新定时器使用——首次后 generate_cached 命中。
 
         Returns:
             包含验证码 code、剩余秒数 remaining、周期 period 三个键的字典；
             条目不存在或无 TOTP 密钥时返回 None。
         """
         self._cache.invalidate_if_epoch_changed()
-        secret = self._resolve_totp_secret(entry_id)
-        if not secret:
-            return None
-        # 预热缓存，供 generate_cached 复用。
-        self._cache.store_totp(entry_id, secret)
+        if preloaded_secret:
+            secret = preloaded_secret
+            self._cache.store_totp(entry_id, secret)
+        else:
+            secret = self._resolve_totp_secret(entry_id, use_cache=True)
+            if not secret:
+                return None
         return {
             'code': TOTPGenerator.generate(secret),
             'remaining': TOTPGenerator.get_remaining_seconds(secret=secret),

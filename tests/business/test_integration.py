@@ -643,7 +643,7 @@ def test_json_roundtrip(import_export_env):
     assert len(entry_mgr.get_entries()) == 0
 
     # 4. 导入 JSON
-    count = import_export.import_from_json(json_path)
+    count = import_export.import_file(json_path, 'json')
     assert count == 1
 
     # 5. 验证数据完整
@@ -685,7 +685,7 @@ def test_csv_roundtrip(import_export_env):
     assert len(entry_mgr.get_entries()) == 0
 
     # 4. 导入 CSV
-    count = import_export.import_from_csv(csv_path)
+    count = import_export.import_file(csv_path, 'csv')
     assert count == 1
 
     # 5. 验证 title、username、url 等基本字段

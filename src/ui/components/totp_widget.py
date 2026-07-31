@@ -59,6 +59,7 @@ class TOTPWidget(QWidget):
         entry_id: int,
         entry_manager: EntryManager,
         content_layout: QVBoxLayout,
+        secret: str | None = None,
     ) -> None:
         """启动 TOTP 刷新。
 
@@ -66,10 +67,11 @@ class TOTPWidget(QWidget):
             entry_id: 条目 ID
             entry_manager: EntryManager 实例，用于获取 TOTP 状态
             content_layout: TOTP 区域加入的目标布局（DetailPanel._content_layout）
+            secret: 调用方已解密的 totp_secret 明文（可选，P3：避免 get_state 二次解密）
         """
         self._entry_mgr = entry_manager
         self._content_layout = content_layout
-        self._build(entry_id)
+        self._build(entry_id, secret)
 
     def stop(self) -> None:
         """停止定时器。"""
@@ -101,11 +103,11 @@ class TOTPWidget(QWidget):
 
     # ---- 内部方法 ----
 
-    def _build(self, entry_id: int) -> None:
-        """构建 TOTP 区域并启动刷新。"""
+    def _build(self, entry_id: int, secret: str | None = None) -> None:
+        """构建 TOTP 区域并启动刷新。secret 为调用方已解密的 totp_secret（可选）。"""
         if not self._entry_mgr:
             return
-        state = self._entry_mgr.totp.get_state(entry_id)
+        state = self._entry_mgr.totp.get_state(entry_id, preloaded_secret=secret)
         if not state:
             return
         self._entry_id = entry_id

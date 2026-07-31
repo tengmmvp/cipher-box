@@ -506,7 +506,7 @@ class RawEntry:
         """RawEntry 是密文态，调用此方法说明误把密文当明文使用。"""
         raise ValueError(
             f'RawEntry (id={self.id}, title={self.title!r}) 是密文态，'
-            f'需先经 EntryManager.decrypt_entry 解密为 Entry'
+            '需先经 EntryManager.decrypt_entry 解密为 Entry'
         )
 
     @property
@@ -516,17 +516,21 @@ class RawEntry:
 
     @property
     def type_icon(self) -> str:
+        """获取条目类型图标。"""
         return _entry_type_icon(self.entry_type)
 
     @property
     def type_label(self) -> str:
+        """获取条目类型标签。"""
         return _entry_type_label(self.entry_type)
 
     @property
     def has_totp(self) -> bool:
+        """是否配置了 TOTP。"""
         return _entry_has_totp(self.totp_present, self.totp_secret)
 
     def get_tag_list(self) -> list[str]:
+        """获取标签列表。"""
         return _parse_tag_list(self.tags)
 
 

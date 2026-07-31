@@ -76,7 +76,7 @@ class PasswordGenerator:
         symbols: bool = True,
         exclude_ambiguous: bool = False,
     ) -> str:
-        """生成随机密码
+        """生成随机密码。
 
         Args:
             length: 密码长度，会被静默 clamp 到 ``[4, 128]``——低于 4 无法覆盖各
@@ -144,7 +144,7 @@ class PasswordGenerator:
 
     @staticmethod
     def check_strength(password: str) -> StrengthResult:
-        """检测密码强度
+        """检测密码强度。
 
         Args:
             password: 待检测的密码

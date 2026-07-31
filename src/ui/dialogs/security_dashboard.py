@@ -36,6 +36,7 @@ from ..resources.constants import (
     DIALOG_SECURITY_DASHBOARD_MIN_SIZE,
     FONT_FAMILY_DISPLAY,
 )
+from ..resources.strings import DLG_TITLE_ERROR
 from ..resources.theme_colors import c, get_strength_color
 
 if TYPE_CHECKING:
@@ -52,7 +53,7 @@ _BADGE_BG_ALPHA = 0.13
 class _HealthScoreWidget(QWidget):
     """以圆环进度形式绘制安全健康评分的自定义组件。"""
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._score = 100
         self.setFixedSize(160, 160)
@@ -126,7 +127,7 @@ class _HealthScoreWidget(QWidget):
 class _StatCard(QFrame):
     """统计卡片。"""
 
-    def __init__(self, title: str, count: int, color: str, button_text: str, parent: QWidget | None = None):
+    def __init__(self, title: str, count: int, color: str, button_text: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._setup_ui(title, count, color, button_text)
 
@@ -347,7 +348,7 @@ class SecurityDashboard(QDialog):
             # 避免"正在分析..."提示残留
             self._clear_layout(self._weak_layout)
             self._status_hint = None
-            QMessageBox.critical(self, '错误', '加载安全数据失败，请重试')
+            QMessageBox.critical(self, DLG_TITLE_ERROR, '加载安全数据失败，请重试')
             return
         finally:
             # 统一释放当前 worker：成功与异常两个出口合并到 finally，
@@ -386,7 +387,7 @@ class SecurityDashboard(QDialog):
         self._clear_layout(self._weak_layout)
         self._status_hint = None
         logger.error("加载安全数据失败: %s", error_msg)
-        QMessageBox.critical(self, '错误', '加载安全数据失败，请重试')
+        QMessageBox.critical(self, DLG_TITLE_ERROR, '加载安全数据失败，请重试')
 
     def _populate_weak_tab(self) -> None:
         """填充弱密码列表。"""

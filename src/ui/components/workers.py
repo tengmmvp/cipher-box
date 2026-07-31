@@ -91,6 +91,17 @@ class BackgroundWorker(QThread, Generic[_T]):
         """请求协作取消。工作函数需自行检查 is_cancelled 并提前返回。"""
         self._cancel_event.set()
 
+    def cancel_check(self) -> bool:
+        """取消探针的 :class:`Callable[[], bool]` 形式，供业务层 ``cancel_check``
+        形参直接传入 ``worker.cancel_check``，替代各消费方自行包
+        ``lambda: worker.is_cancelled`` 与 holder 列表解耦时序的重复模式。
+
+        与 :attr:`is_cancelled` 同义：``is_cancelled`` 是属性访问形态，
+        ``cancel_check`` 是无参方法形态，后者可作为绑定方法直接传入期望
+        ``Callable[[], bool]`` 的形参。
+        """
+        return self._cancel_event.is_set()
+
     def emit_progress(self, current: int, total: int) -> None:
         """从工作函数内部发射进度信号，线程安全。
 
