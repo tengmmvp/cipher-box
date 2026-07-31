@@ -31,7 +31,7 @@ class TestLoginLockPersistence:
         restarted = RateLimiter(lock_file)
         assert restarted.check() is None  # 到期允许重试
         # 退避保留：到期后 fail_count 保留以使后续失败爬升退避档位，
-        # 仅 lock_until 清零解除锁定（原先到期清零会让退避退化为固定最低档）。
+        # 仅 lock_until 清零解除锁定。
         assert restarted._lock_until == 0.0
         assert restarted._fail_count == 5
 

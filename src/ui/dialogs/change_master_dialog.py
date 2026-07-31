@@ -1,8 +1,7 @@
 """修改主密码对话框。
 
-修改主密码会触发全量数据重新加密，耗时较高，在后台线程执行以避免
-冻结 UI。内置速率限制与失败锁定，校验旧密码、新密码强度与两次一致性
-后才提交，完成或失败后立即清除旧密码输入以缩短明文驻留时间。
+全量重新加密耗时较高，在后台线程执行。内置速率限制与失败锁定，校验
+旧密码、新密码强度与两次一致性后才提交，完成后立即清除明文输入。
 """
 
 from __future__ import annotations
@@ -61,8 +60,7 @@ class ChangeMasterDialog(QDialog):
         super().__init__(parent)
         self._vault = vault_manager
         self._config = config
-        # data_dir 是 VaultManager 的有类型 property（恒返回 Path）；直接索引使其
-        # 缺失在静态检查/运行时即时暴露，而非 getattr 静默退化为仅内存限流。
+        # 直接索引 data_dir：缺失时即时暴露，而非 getattr 静默退化为仅内存限流。
         state_path = self._vault.data_dir / 'change_master_rate_limit.json'
         # 传入 config：使 RateLimiter 把哨兵登记到签名 config，关闭「同时删除
         # 状态文件+哨兵即归零计数」的绕过。config=None 时退回仅文件配对检测。
@@ -173,8 +171,8 @@ class ChangeMasterDialog(QDialog):
         update_strength_label(self._strength_label, text)
 
     def _on_change(self) -> None:
-        # 重复提交守卫：后台重加密运行期间，confirm_pwd 的 returnPressed 仍可触发
-        # 本方法（setEnabled(False) 只禁按钮点击），与 login_window 对齐显式拦截。
+        # 重复提交守卫：重加密期间 returnPressed 仍可触发本方法（setEnabled
+        # 只禁按钮点击），需显式拦截。
         if self._worker is not None and self._worker.isRunning():
             return
         msg = self._rate_limiter.check()
@@ -196,10 +194,9 @@ class ChangeMasterDialog(QDialog):
         if not valid:
             self._msg_label.setText(error)
             return
-        # 常量时间比较，避免短路 == 的时序侧信道（首个不同字符即返回，泄露公共
-        # 前缀长度）。encode('utf-8') 是必须的：主密码可含 Unicode（如中文），而
-        # hmac.compare_digest 对 str 仅接受 ASCII，非 ASCII 会抛 TypeError。与
-        # vault_manager._change_master_password_locked 的比较保持一致。
+        # 常量时间比较，避免短路 == 的时序侧信道泄露公共前缀长度。
+        # encode('utf-8') 必须：主密码可含非 ASCII 字符，而 compare_digest 对 str
+        # 仅接受 ASCII。与 vault_manager._change_master_password_locked 保持一致。
         if not hmac.compare_digest(new.encode('utf-8'), confirm.encode('utf-8')):
             self._msg_label.setText('两次输入的新密码不一致')
             return

@@ -2,8 +2,8 @@
 
 补充近期重构后的安全不变量：
 - snapshot_key 随主密钥 epoch 轮换，改密时旧 snapshot 备份失效并清理
-- VaultManager 拆出 KeyManager 后改密重加密的回滚仍保证密钥与数据匹配
-- epoch 写守卫去掉 TTL 缓存后，导入期间并发改密仍能被守卫拦截
+- 改密重加密的回滚仍保证密钥与数据匹配
+- epoch 写守卫在导入期间并发改密时仍能拦截
 
 覆盖三类场景：
 1. 改密中途重加密失败 → 事务回滚 → 原主密码仍可用、原条目可正常解密
@@ -27,8 +27,6 @@ from src.business.services.backup_header_codec import (
 from src.exceptions import VaultKeyEpochMismatchError
 from src.models import CustomField, Entry
 from tests.helpers import make_entry_manager, make_test_config, make_vault
-
-# 1. 改密回滚一致性：重加密中途失败时，原密钥与数据仍匹配
 
 
 class TestChangePasswordRollbackConsistency:
@@ -92,7 +90,6 @@ class TestChangePasswordRollbackConsistency:
                 self._master_pwd, 'NewMaster!2026'
             )
 
-        # 改密应失败
         assert not ok
 
         # 关键一致性验证：原主密码仍可解锁，密钥与数据匹配且未损坏
@@ -207,9 +204,6 @@ class TestChangePasswordRollbackConsistency:
             )
         assert ok  # 改密本身成功
         assert '未能删除' in msg  # 附带 purge 失败 warning
-
-
-# 2. 备份恢复中途失败回滚 + 恢复点清理
 
 
 class TestBackupRestoreRollbackAndRestorePointCleanup:
@@ -381,9 +375,6 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
         # 恢复应成功：secure_checkpoint 失败非致命，数据已事务提交完整，
         # snapshot_key 正确 apply（若被误清零，restore 会失败返回 False）
         assert success, f'secure_checkpoint 失败不应使恢复失败: {error}'
-
-
-# 3. 导入期间并发改密触发 epoch 守卫
 
 
 class TestImportEpochGuard:

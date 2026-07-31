@@ -1,17 +1,8 @@
 """保险库安全边界核心 — 密钥持有、数据库连接、写守卫与原子状态操作。
 
-生命周期流程（初始化/解锁/锁定/改密/关闭）已拆出至
-:class:`src.business.managers.vault_lifecycle.VaultLifecycleOrchestrator`；
-vault_meta 元数据写入拆出至 :mod:`src.business.services.vault_meta_store`；
-数据库引导拆出至 :mod:`src.business.services.database_bootstrap`。本类聚焦于：
-
-- 密钥材料的安全持有与清零（经 :class:`KeyManager`）；
-- 数据库连接与 schema 状态（``is_initialized`` / ``ensure_db_open``）；
-- 写守卫（``enforce_key_epoch`` / ``epoch_guarded_transaction`` / ``vault_write_lock``），
-  拒绝锁定态或旧 epoch 会话的写入；
-- 解锁/改密/恢复所需的原子状态操作（``activate_keys`` / ``clear_vault_state`` /
-  ``load_snapshot_key`` 等），供生命周期编排调用；
-- 锁定回调注册与触发、取消信号、snapshot_key 操作、备份清理。
+生命周期流程（初始化/解锁/锁定/改密/关闭）拆至
+:class:`VaultLifecycleOrchestrator`；本类聚焦密钥清零、写守卫（拒绝锁定态或
+旧 epoch 会话写入）与供生命周期编排调用的原子状态操作。
 """
 
 from __future__ import annotations
@@ -53,14 +44,12 @@ logger = logging.getLogger(__name__)
 class VaultManager:
     """保险库安全边界核心：密钥、数据库、写守卫与原子状态操作。
 
-    生命周期编排（unlock/lock/initialize/change_master_password/close）由
-    :class:`VaultLifecycleOrchestrator` 承担，本类提供这些流程所需的原子操作
-    （激活密钥、清零状态、加载 snapshot_key 等），自身不实现完整流程。
+    完整生命周期流程由 :class:`VaultLifecycleOrchestrator` 编排，本类仅提供其
+    所需的原子操作（激活密钥、清零状态、加载 snapshot_key 等）。
     """
 
     def __init__(self, config: ConfigManager, db: DatabaseManager, signer: MetadataSigner):
-        # db 与 signer 由组合根（composition）经 DatabaseBootstrap 创建并注入，消除
-        # 原先内部 new DatabaseManager 形成的隐藏第二组合根（架构审查 P1）。
+        # db 与 signer 由组合根（composition）经 DatabaseBootstrap 创建并注入。
         self._config = config
         self._db = db
         self._signer = signer
@@ -109,7 +98,7 @@ class VaultManager:
     def register_on_lock(self, callback: Callable[[], None]) -> None:
         """注册锁定与密钥版本轮换时自动调用的回调，用于清除缓存等。
 
-        注册的回调在两类事件触发：(1) ``VaultLifecycleOrchestrator.lock`` 锁定时；
+        回调在两类事件触发：(1) ``VaultLifecycleOrchestrator.lock`` 锁定时；
         (2) :meth:`update_key_epoch` 备份恢复后密钥版本轮换时（保险库仍解锁，但数据
         整体替换需失效按 crypto_id 索引的明文缓存，防命中旧明文）。注册方须确保回调
         在两种语义下均安全——当前注册的均为纯缓存清除、幂等，故复用同一列表（ARCH-2）。
@@ -119,10 +108,9 @@ class VaultManager:
     def invoke_lock_callbacks(self) -> None:
         """触发全部锁定回调（清缓存等）。
 
-        两个调用点：``VaultLifecycleOrchestrator.lock`` 清零密钥后、
-        :meth:`update_key_epoch` 备份恢复轮换密钥版本后（保险库仍解锁）。回调异常不
-        中断后续回调，仅记 WARNING——单个回调失败不应阻止其余缓存清理，但安全相关
-        失效（如锁定时明文缓存未清）应在生产日志可见（QL-3）。
+        调用点为 lock 清零密钥后与 update_key_epoch 轮换密钥版本后。回调异常不中断
+        后续回调，仅记 WARNING——单个回调失败不应阻止其余缓存清理，但安全相关失效
+        （如锁定时明文缓存未清）应在生产日志可见（QL-3）。
         """
         for cb in self._on_lock_callbacks:
             try:
@@ -135,11 +123,8 @@ class VaultManager:
     def db(self) -> VaultDataStore:
         """对外暴露收窄为 VaultDataStore 协议视图（不含 set_write_guard 等装配 setter）。
 
-        业务 manager 经此 property 拿到协议视图，收窄暴露面。完整 DatabaseManager
-        仅作为 ``__init__`` 注入与 VaultLifecycleOrchestrator 构造参数在内部流转，
-        不再经 property 对外暴露——原先的 ``database``/``signer`` property 无外部调用
-        （orchestrator 经构造函数直收 db/signer），仅留下「经 ctx.vault.database 绕过
-        协议收窄拿到完整 DB 能力」的风险面，故删除。
+        业务 manager 经此 property 拿到协议视图，收窄暴露面。完整 DatabaseManager 仅
+        作为 ``__init__`` 注入与 orchestrator 构造参数在内部流转，不再经 property 对外暴露。
         """
         return self._db
 
@@ -151,8 +136,8 @@ class VaultManager:
     def backup_directories(self) -> list[Path]:
         """备份相关目录列表：默认目录 + 用户自定义 backup_directory（若配置）。
 
-        作为 purge/清理路径的目录单一真相源，统一默认目录与用户自定义目录，避免
-        部分清理路径漏扫自定义目录导致含明文的恢复点/快照残留。
+        作为 purge/清理路径的目录单一真相源，避免漏扫自定义目录导致含明文的
+        恢复点/快照残留。
         """
         directories = [self.data_dir / BACKUPS_DIR_NAME]
         custom = self._config.get('backup_directory', '')
@@ -165,8 +150,8 @@ class VaultManager:
         """保险库是否已初始化，即是否设置了主密码。
 
         仅「数据库不存在」返回 False；schema 损坏（``SchemaError``）或元数据完整性
-        失败（``VaultIntegrityError``）向上传播，不吞为 False，避免让 UI 误判为未
-        初始化后在损坏库上重新初始化导致数据覆盖。
+        失败（``VaultIntegrityError``）向上传播，不吞为 False，避免 UI 误判为未初始化
+        后在损坏库上重新初始化导致数据覆盖。
         """
         if not self._config.db_path.exists():
             return False
@@ -190,8 +175,8 @@ class VaultManager:
     def close_db_safely(self) -> None:
         """关闭探测期间打开的数据库连接，避免文件锁阻碍临时目录清理。
 
-        is_initialized 等探测方法打开连接后若失败，连接未关会导致 Windows 下
-        tempfile 清理抛 WinError 32。失败路径主动关闭，回滚到未打开状态。
+        探测方法打开连接后若失败，连接未关会导致 Windows 下 tempfile 清理抛
+        WinError 32。失败路径主动关闭，回滚到未打开状态。
         """
         if self._db.is_open:
             try:
@@ -232,9 +217,8 @@ class VaultManager:
     def update_key_epoch(self, new_epoch: str) -> None:
         """更新 key_epoch 并触发缓存失效回调，用于备份恢复后同步状态。
 
-        恢复会整体替换数据，触发缓存失效回调清除恢复前的明文缓存。例如 username
-        缓存按 crypto_id 索引，而恢复保留 crypto_id，若不清除会命中旧明文而与新
-        数据不一致。复用 on_lock 回调列表，其当前仅注册缓存清除。
+        恢复整体替换数据，需失效按 crypto_id 索引的明文缓存（恢复保留 crypto_id，
+        不清则命中旧明文）。复用 on_lock 回调列表，其当前仅注册缓存清除。
         """
         self._key_epoch = new_epoch
         self.invoke_lock_callbacks()
@@ -244,21 +228,19 @@ class VaultManager:
         """拒绝锁定状态或主密钥已轮换的旧会话写入数据库。
 
         每次写入都比对 key_epoch，不做时间缓存，避免改密后旧会话在窗口内用旧密钥
-        写入导致数据按旧密钥落盘、新会话解密失败的损坏窗口。检测到 epoch 不匹配
-        时调用 clear_vault_state 而非完整 lock：本守卫经 db 写路径在持有 db_lock 时
-        调用，lock 会触发业务回调（清缓存等），回调中访问数据库形成 db_lock 重入与
-        潜在锁顺序风险；clear_vault_state 仅清密钥状态、不触发回调，更可控。
+        写入导致新会话解密失败的损坏窗口。检测到 epoch 不匹配时调用 clear_vault_state
+        而非完整 lock：本守卫经 db 写路径在持有 db_lock 时调用，lock 会触发业务回调
+        （清缓存等），回调中访问数据库形成 db_lock 重入与潜在锁顺序风险；
+        clear_vault_state 仅清密钥状态、不触发回调，更可控。
         """
         if self._db.in_transaction:
-            # 事务进行中跳过：写路径已在事务边界校验过 epoch，事务内重复比对无意义
-            # （get_meta 经 @_db_operation 重入 RLock 不会死锁，但属冗余）。代价是整个
-            # 事务期间的写入不受此守卫保护，故每个事务化写路径必须在事务开始时自行
-            # 比对 epoch（见 epoch_guarded_transaction 的复查）。
+            # 事务进行中跳过：写路径已在事务边界校验过 epoch，事务内重复比对属冗余。
+            # 代价是事务期间的写入不受此守卫保护，故每个事务化写路径必须在事务开始时
+            # 自行比对 epoch（见 epoch_guarded_transaction 的复查）。
             return
         # 曾解锁过但当前未解锁 = 已锁定：拒绝写（含后台线程持旧 key 副本在 lock 后
         # 提交写入的竞态）。用 _ever_unlocked 区分「从未激活」（initialize 前，允许
-        # 写 vault_meta）与「已锁定」（lock 清零 key_epoch，单看 epoch is None 无法
-        # 区分二者）。
+        # 写 vault_meta）与「已锁定」（lock 清零 key_epoch，单看 epoch is None 无法区分）。
         if self._ever_unlocked and not self.is_unlocked:
             raise VaultLockedError("保险库已锁定，不能写入数据")
         if self._key_epoch is None:
@@ -272,9 +254,8 @@ class VaultManager:
     def vault_write_lock(self) -> Iterator[None]:
         """获取保险库写锁，串行化接触全量明文的长操作（改密/重加密/备份/恢复）。
 
-        外部协作者（BackupRestoreManager / VaultLifecycleOrchestrator）须通过此公共
-        上下文访问锁，而非直接访问受保护的 ``_lock``，使「持锁才能接触全量明文」契约
-        显式化，避免重构锁结构时静默破坏串行化保护。
+        外部协作者须通过此公共上下文访问锁，使「持锁才能接触全量明文」契约显式化，
+        避免重构锁结构时静默破坏串行化保护。
         """
         with self._lock:
             yield
@@ -283,11 +264,9 @@ class VaultManager:
     def epoch_guarded_transaction(self, *, operation: str = '操作') -> Iterator[None]:
         """事务 + epoch 守卫：进入时快照 key_epoch，事务内复查防并发改密。
 
-        收敛 entry_manager / import_export / backup_restore 的「pre_epoch 快照 →
-        开事务 → 事务内复查 key_epoch → 业务写入」重复样板，使新增长写操作不漏掉
-        epoch 守卫。``db.transaction()`` 持有的 db_lock 已串行化改密（改密重加密同经
-        该锁），epoch 复查是冗余纵深防御——check 置于 yield 前，yield 块内的写入
-        由此获得「事务期间密钥未变」的保证。
+        收敛各长写路径「pre_epoch 快照 → 开事务 → 事务内复查 key_epoch → 业务写入」
+        重复样板。db_lock 已串行化改密，epoch 复查是冗余纵深防御——check 置于 yield 前，
+        yield 块内的写入由此获得「事务期间密钥未变」的保证。
         """
         pre_epoch = self.key_epoch
         with self.db.transaction():
@@ -355,11 +334,10 @@ class VaultManager:
     def clear_vault_state(self) -> None:
         """清除密钥材料和加密缓存，并触发 gc 回收 AESGCM 缓存副本。
 
-        用于 lock 与 enforce_key_epoch 等需要安全清除密钥状态的场景。末尾 gc.collect()
-        尽快回收 EncryptionEngine.clear_cache 释放的 AESGCM 实例（其内部 C 层持有密钥
-        拷贝），缩短密钥材料在内存/swap 的驻留窗口。不触发业务回调（由
-        invoke_lock_callbacks 单独触发），避免在持有数据库锁时回调中再获取数据库锁
-        导致死锁。
+        用于 lock 与 enforce_key_epoch 等。末尾 gc.collect() 尽快回收 clear_cache 释放的
+        AESGCM 实例（内部 C 层持有密钥拷贝），缩短密钥在内存/swap 的驻留。不触发业务
+        回调（由 invoke_lock_callbacks 单独触发），避免持数据库锁时回调再获取数据库锁
+        死锁。
         """
         # 密钥材料由 KeyManager 集中清零，含主密钥、快照密钥与 epoch
         self._key_mgr.clear()
@@ -410,10 +388,8 @@ class VaultManager:
     def purge_restore_points(self) -> list[Path]:
         """删除所有恢复前安全快照（pre_restore_*.cbox），返回未能删除的文件。
 
-        恢复点为恢复操作前的临时全量明文快照，恢复成功后应删除。启动时重试清理之前
-        因文件占用等原因 purge 失败的残留，覆盖默认与自定义备份目录以彻底收缩泄漏面。
-        仅清理 pre_restore_*（一次性恢复点），不动 cipherbox_snapshot_*（可能为有效的
-        定期自动快照）。
+        恢复点为恢复前的临时全量明文快照，恢复成功后应删除；启动时重试清理之前 purge
+        失败的残留。仅清理 pre_restore_*（一次性恢复点），不动 cipherbox_snapshot_*。
         """
         return secure_purge(self.backup_directories, [PRE_RESTORE_GLOB])
 
@@ -428,9 +404,8 @@ class VaultManager:
     def is_cancel_requested(self) -> bool:
         """是否有进行中的取消/锁定请求，供长操作轮询提前退出。
 
-        lock()/close()/request_cancel() 均会设置取消事件。全量安全分析等长循环据此
-        在锁定请求到来时主动中止并释放 vault 写锁，避免主线程 lock() 阻塞等锁导致
-        UI 冻结与明文驻留。
+        全量安全分析等长循环据此在锁定请求到来时主动中止并释放 vault 写锁，避免
+        主线程 lock() 阻塞等锁导致 UI 冻结与明文驻留。
         """
         return self._cancel_event.is_set()
 
@@ -440,9 +415,8 @@ class VaultManager:
         return self._cancel_event
 
     # ---- 生命周期门面委托 ----
-    # 生命周期实现见 VaultLifecycleOrchestrator；此处保留对外接口为薄委托，使调用方
-    # （app/login/dialog/test）无需感知 orchestrator，最小化迁移面。orchestrator 经
-    # attach_lifecycle 由组合根注入（紧接 VaultManager 构造之后），故委托时必已就位。
+    # 薄委托使调用方（app/login/dialog/test）无需感知 orchestrator。orchestrator 经
+    # attach_lifecycle 由组合根紧接 VaultManager 构造之后注入，故委托时必已就位。
     def attach_lifecycle(self, lifecycle: VaultLifecycleOrchestrator) -> None:
         """注入生命周期编排器，使本类的生命周期方法委托给它。
 
@@ -453,10 +427,8 @@ class VaultManager:
     def _require_lifecycle(self) -> VaultLifecycleOrchestrator:
         """获取已注入的生命周期编排器，未注入时抛 RuntimeError。
 
-        用显式 ``raise`` 替代原先各委托方法的 ``assert``：``python -O`` 会剔除 assert，
-        导致未注入时抛出无信息的 ``AttributeError`` 而非清晰的「attach_lifecycle 未
-        调用」。集中此守卫消除 5 处重复断言，与项目「显式 raise 而非 assert 用于运行
-        期契约校验」的约定一致（见 entry_repository / config / models）。
+        用显式 ``raise`` 而非 ``assert``：``python -O`` 会剔除 assert，导致未注入时
+        抛无信息的 ``AttributeError`` 而非清晰的「attach_lifecycle 未调用」。
         """
         if self._lifecycle is None:
             raise RuntimeError('attach_lifecycle 未调用')

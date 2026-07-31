@@ -1,10 +1,7 @@
 """备份与恢复对话框，提供加密备份的创建与还原。
 
-备份采用独立密码派生密钥，可跨主密码恢复。恢复前由业务层自动创建
-安全快照，本对话框另提供手动清理恢复点的入口以收缩泄漏面。耗时的
-备份与恢复在后台线程执行，恢复有写入副作用不可中途取消，备份可安全
-取消。worker 闭包捕获备份或恢复密码，操作结束或对话框关闭后立即释放
-引用以缩短密码驻留时间。
+备份采用独立密码派生密钥可跨主密码恢复；备份可安全取消，恢复有写入
+副作用不可中途取消。worker 闭包捕获密码，结束后立即释放。
 """
 
 from __future__ import annotations
@@ -104,8 +101,7 @@ class BackupDialog(QDialog):
         self._btn_group.addButton(self._restore_radio, 1)
         mode_layout.addWidget(self._restore_radio)
 
-        # 警告文本：去掉 ASCII [!]（屏幕阅读器会朗读该符号），改用语义化 objectName
-        # 供 QSS 控制颜色；颜色暂保留内联。
+        # 去掉 ASCII [!]（屏幕阅读器会朗读该符号），用语义化 objectName 供 QSS 控制颜色
         info2 = QLabel('恢复将覆盖当前所有数据！请谨慎操作')
         info2.setObjectName('warningText')
         info2.setStyleSheet(f'color: {c("danger")}; font-size: 12px;')
@@ -181,9 +177,8 @@ class BackupDialog(QDialog):
     def reject(self) -> None:
         """关闭对话框前等待后台 worker 完成。
 
-        恢复操作有数据库写入副作用，不取消 worker 以确保数据一致性；
-        备份创建无副作用，可安全取消。
-        完成后释放 worker 引用，缩短密码闭包驻留时间。
+        恢复有写入副作用不取消 worker 以确保一致性，备份可安全取消；
+        完成后释放 worker 引用。
         """
         # 备份可安全取消，恢复有写入副作用仅等待完成
         wait_worker_shutdown(self._worker, cancel=self._worker_is_backup)
@@ -262,10 +257,8 @@ class BackupDialog(QDialog):
         self._worker_is_backup = True
 
         def _run(pwd: str = password) -> tuple[bool, str]:
-            # worker 是下方赋值的自由变量，闭包延迟绑定：_run 在 worker.run 时执行，
-            # 此时 worker 已赋值。默认参数 pwd 在定义时拷贝 password，下方 del 局部
-            # password 不影响 worker 执行。cancel_check 直接用 BackgroundWorker 提供
-            # 的绑定方法，消除 holder 列表与 lambda 包装。
+            # worker 是下方赋值的自由变量，闭包延迟绑定（_run 在 worker.run 时执行）；
+            # 默认参数 pwd 在定义时拷贝 password，下方 del 局部 password 不影响 worker。
             return self._backup_mgr.create_backup(
                 path, pwd, cancel_check=worker.cancel_check,
             )
@@ -275,9 +268,8 @@ class BackupDialog(QDialog):
         worker.finished.connect(self._on_backup_done)
         worker.error.connect(self._on_backup_error)
         worker.start()
-        # 删除局部变量引用以缩短密码驻留：_run 默认参数已拷贝 password，del 局部
-        # password 不影响 worker 执行；真正释放需等 worker 结束被 release_worker
-        # 释放。CPython 下 str 不可变，此处仅缩短局部引用。
+        # 删除局部 password 仅缩短局部引用；真正释放需等 worker 结束由 release_worker 完成
+        # （_run 默认参数已拷贝 password，del 不影响 worker）。
         del password
 
     def _on_backup_done(self, result: object) -> None:
@@ -318,10 +310,8 @@ class BackupDialog(QDialog):
         try:
             info = inspect_backup(path)
         except (OSError, BackupError) as exc:
-            # 不含裸 ValueError：PayloadTooLargeError 是 BackupError 子类仍被捕获；
-            # inspect_backup 的格式错误已归一为 BackupError，validate_params 的
-            # ValueError 已在 read_backup_header 内转为 BackupError。裸 ValueError
-            # 会先于 BackupError 吞掉 PayloadTooLargeError 等领域异常（多重继承陷阱）。
+            # 不含裸 ValueError：PayloadTooLargeError 等领域异常是 BackupError 子类，
+            # 裸 ValueError 会先于 BackupError 吞掉它们（多重继承陷阱）。
             QMessageBox.critical(self, DLG_TITLE_ERROR, str(exc))
             return
         password = None
@@ -342,9 +332,7 @@ class BackupDialog(QDialog):
         self._worker.finished.connect(self._on_restore_done)
         self._worker.error.connect(self._on_restore_error)
         self._worker.start()
-        # 删除局部变量引用以缩短密码驻留，与 _do_backup 对齐（_run 经默认参数在定义时
-        # 捕获 pwd 值，del 局部 password 不影响 worker 执行；真正释放需等 worker 结束
-        # 被 release_worker 释放，此处局部清零与其他对话框对齐）。
+        # 删除局部 password 仅缩短局部引用，与 _do_backup 对齐。
         del password
 
     def _on_restore_done(self, result: object) -> None:

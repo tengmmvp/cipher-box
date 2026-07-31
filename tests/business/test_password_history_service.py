@@ -67,7 +67,6 @@ class TestDecrypt:
 
         assert len(result) == 1
         assert result[0]['password'] == 'good-pwd'
-        # 损坏项被记录告警
         assert any('解密失败' in r.message for r in caplog.records)
 
     def test_decrypt_holds_vault_write_lock(self):

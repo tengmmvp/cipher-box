@@ -28,10 +28,7 @@ from src.database.category_repository import CategoryRepository
 from src.database.db_manager import DatabaseManager
 from src.database.entry_repository import EntryRepository
 
-# 豁免透传断言的 (Repository 类, 方法名) 对。
-# clear_category_signatures：EntryRepository 暴露给 DatabaseManager.delete_category
-# 的跨表编排接口（事务内清条目分类签名 + 重算），由 DatabaseManager 显式调用，
-# 不作为对称 CRUD 透传暴露给业务层。新增豁免项须在此登记并说明理由。
+# 豁免透传断言的 (Repository 类, 方法名) 对；新增项须在此登记并说明理由（理由见模块 docstring）。
 _DELEGATION_EXEMPT: set[tuple[type, str]] = {
     (EntryRepository, 'clear_category_signatures'),
 }

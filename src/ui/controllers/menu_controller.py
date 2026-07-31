@@ -1,11 +1,9 @@
-"""MainWindow 菜单与对话框调度控制器（组合化，从 _MainWindowMenuMixin 迁移）。
+"""MainWindow 菜单与对话框调度控制器。
 
-普通类（非 QObject），遵循 AutoLockController/AutoBackupController 范式：``__init__``
-注入 manager 与跨 controller 回调（``MenuSlots`` frozen dataclass），``setup(parent,
-search_edit)`` 接收 QObject 父（MainWindow）构建菜单栏/快捷键。跨 controller 协作
-一律走 ``MenuSlots`` 回调，消除原 Menu Mixin 跨 ``self`` 的隐式调用——pyright 在
-MainWindow 装配点逐字段校验每个回调的绑定方法名（原 Mixin 跨 self 调用 mypy/pyright
-不校验，是重构重命名后运行时 AttributeError 的根因）。
+普通类（非 QObject）：``__init__`` 注入 manager 与跨 controller 回调
+（``MenuSlots`` frozen dataclass），``setup(parent, search_edit)`` 构建
+菜单栏/快捷键。跨 controller 协作一律走 ``MenuSlots`` 回调，pyright 在
+装配点逐字段校验每个回调的绑定方法名。
 """
 
 from __future__ import annotations
@@ -73,8 +71,7 @@ class MenuSlots:
     """菜单/快捷键触发的跨 controller 回调，由 MainWindow 装配（绑定 EntryActions/
     ListRefresh/host 方法）。
 
-    每个字段即一条显式契约：pyright 在装配点校验绑定方法存在且签名匹配，替代原
-    Menu Mixin 经 ``self._xxx`` 解析、mypy 不跨 Mixin 校验的隐式契约。
+    每个字段即一条显式契约，pyright 在装配点校验绑定方法存在且签名匹配。
     """
 
     add_entry: Callable[[], None]
@@ -109,10 +106,10 @@ class MenuDeps:
 
 
 class MenuController:
-    """菜单栏、全局快捷键与对话框调度（从 _MainWindowMenuMixin 组合化迁移）。
+    """菜单栏、全局快捷键与对话框调度。
 
-    ``_show_from_tray`` 操纵窗口可见性 + 查找 LoginWindow + 读锁定态，属窗口编排，
-    保留在 MainWindow（不迁入本控制器）。
+    ``_show_from_tray`` 操纵窗口可见性、查找 LoginWindow 并读锁定态，属窗口编排，
+    保留在 MainWindow。
     """
 
     _parent: QMainWindow

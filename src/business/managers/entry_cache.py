@@ -1,11 +1,10 @@
 """条目明文缓存管理 — 搜索摘要、分类名、TOTP secret、标签计数。
 
-从 EntryManager 抽离的缓存关注点：集中 5 套明文缓存与统一失效矩阵，
-由 ``_cache_lock`` 保护，消除 TOTP 定时器与锁定失效的并发竞态。缓存填充需
-主密钥解密，经 vault 访问；``key_epoch`` 变化（改密/锁定）整体失效。
+集中 5 套明文缓存与统一失效矩阵，由 ``_cache_lock`` 保护，消除 TOTP 定时器
+与锁定失效的并发竞态。缓存填充需主密钥解密；``key_epoch`` 变化（改密/锁定）
+整体失效。
 
-约定（与原 EntryManager 一致）：锁内不调用数据库方法或变更回调，避免与
-db 事务锁构成顺序反转死锁。
+约定：锁内不调用数据库方法或变更回调，避免与 db 事务锁构成顺序反转死锁。
 """
 
 import logging
@@ -38,8 +37,7 @@ class EntryCacheManager:
     """条目明文缓存的存储、填充与失效。
 
     持有搜索摘要 / 失败字段 / 分类名 / TOTP secret / 标签计数 5 套缓存，
-    统一 ``_cache_lock`` 保护。缓存填充（解密）与失效逻辑从 EntryManager
-    迁入，使缓存成为独立可测试的关注点。
+    统一 ``_cache_lock`` 保护。
     """
 
     def __init__(self, vault: 'VaultManager'):
@@ -208,12 +206,9 @@ class EntryCacheManager:
     ) -> tuple[str, str, str, str]:
         """返回摘要字段的小写形式 (title, username, url, tags)，供搜索匹配复用。
 
-        无 epoch 校验、无逐条解密：直接复用 :meth:`_cached_search_metadata_no_check`
-        已填充的缓存条目取后 4 项（命中缓存时为纯锁内 dict 查询）。供批量搜索循环
-        （如 :meth:`EntryManager.get_entry_summaries`）在摘要已由 ``_decrypt_summary``
-        填充后调用，跳过 :func:`matches_search` 每条目 4 字段实时 ``.lower()``。
-
-        调用方须在循环外已调用 ``invalidate_if_epoch_changed``。
+        直接复用 :meth:`_cached_search_metadata_no_check` 已填充的缓存取后 4 项
+        （命中缓存时为纯锁内 dict 查询），跳过 :func:`matches_search` 每条目 4 字段
+        实时 ``.lower()``。调用方须在循环外已调用 ``invalidate_if_epoch_changed``。
         """
         return self._cached_search_metadata_no_check(raw_entry)[4:]
 
@@ -316,14 +311,12 @@ class EntryCacheManager:
         if cached is not None:
             return cached
         tag_count: dict[str, int] = {}
-        # 标签聚合仅需 tags 字段：用 VerifyMode.SKIP 跳过逐行元数据 HMAC 验签（PERF-1，
-        # 每行省去 14 键 dict + SHA-256 + canonical JSON + HMAC 的验签开销）。tags_enc
-        # 的完整性由 _decrypt_tags 解密时的 GCM 认证保护——篡改会使 GCM 解密失败回退
-        # 空串；且 _decrypt_tags 优先复用列表 worker 以 LENIENT 验签后填充的摘要缓存，
-        # 命中时 tags 已经过验签。故标签聚合正确性不依赖元数据 HMAC。
-        # 注：与列表 worker 的扫描仍各自独立（_tags_cache 命中时本方法直接返回、不扫描；
-        # 失效时才扫描），复用列表 worker 已填充的摘要缓存需串行化保证填充完整性，
-        # 修复并不廉价，故此处仅取「SKIP 验签」这一廉价且安全的省 CPU 改进。
+        # 标签聚合仅需 tags 字段：用 VerifyMode.SKIP 跳过逐行元数据 HMAC 验签（PERF-1）。
+        # tags_enc 的完整性由 _decrypt_tags 解密时的 GCM 认证保护——篡改会使 GCM 解密
+        # 失败回退空串；且 _decrypt_tags 优先复用列表 worker 以 LENIENT 验签后填充的
+        # 摘要缓存，命中时 tags 已经过验签。故标签聚合正确性不依赖元数据 HMAC。
+        # 注：复用列表 worker 已填充的摘要缓存需串行化保证填充完整性，此处仅取
+        # 「SKIP 验签」这一廉价且安全的省 CPU 改进。
         for raw in self._vault.db.get_entries(
             EntryQuery(include_deleted=False, verify=VerifyMode.SKIP)
         ):

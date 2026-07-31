@@ -1,20 +1,10 @@
 """数据库管理器 — SQLite 数据库操作。
 
-本模块定义 ``DatabaseManager``，负责：
-- 数据库连接的打开/关闭和文件安全
-- 事务管理（begin / commit / rollback / savepoint）
-- vault_meta 表的元数据读写
-
-线程安全与连接校验经 ``_db_operation`` / ``_db_write`` 装饰器提供
-（定义在 :mod:`._decorators`，作用于本类与各 Repository 的方法）。
-
-CRUD 操作已委托给子 Repository：
-- ``entries`` → :class:`EntryRepository`
-- ``categories`` → :class:`CategoryRepository`
-- ``schema`` → :class:`SchemaManager`
-
-DatabaseManager 作为统一数据访问入口，将所有公共方法委托给子 Repository，
-为调用方提供简化的单一接口。
+负责连接打开/关闭与文件安全、事务管理（begin/commit/rollback/savepoint）、
+vault_meta 元数据读写。线程安全与连接校验经 ``_db_operation`` / ``_db_write``
+装饰器提供（:mod:`._decorators`）。CRUD 委托给子 Repository：entries→
+:class:`EntryRepository`、categories→:class:`CategoryRepository`、schema→
+:class:`SchemaManager`，本类作为统一数据访问入口。
 """
 
 from __future__ import annotations
@@ -40,10 +30,8 @@ from .types import EntryQuery, ReEncryptedEntry, ReEncryptedHistory
 logger = logging.getLogger(__name__)
 
 
-# 提交后刷新文件权限的防抖间隔，单位为秒。批量写入时每行操作都会触发 commit，
-# 若每次都重新设置文件权限开销过大，因此仅在距上次刷新达到此间隔后才再次执行。
-# 跨层时序常量未集中到 UI 层，以避免数据层反向依赖 UI 模块；本常量作为数据层
-# 时序参数的命名事实来源。
+# 提交后刷新文件权限的防抖间隔（秒）。批量写入每次 commit 都重设权限开销过大，
+# 故仅在距上次刷新达此间隔后才再次执行。常量置于数据层避免反向依赖 UI 模块。
 SECURE_FILES_DEBOUNCE_SECONDS = 1.0
 
 
@@ -51,11 +39,10 @@ SECURE_FILES_DEBOUNCE_SECONDS = 1.0
 _B64_CHARS = frozenset('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=')
 
 
-# 数据库连接 PRAGMA 配置（单一事实源）。集中定义使 open() 的连接初始化语义可读、
-# 调参一处生效，避免散落的字面量在调整耐久性/性能取舍时被遗漏。
-# foreign_keys：强制外键约束；secure_delete：覆写删除页防物理恢复；
+# 数据库连接 PRAGMA 配置（单一事实源），集中定义使调参一处生效。
+# foreign_keys：强制外键；secure_delete：覆写删除页防物理恢复；
 # busy_timeout：锁竞争等待 5s；synchronous=FULL：每次 commit 强 fsync（耐久性优先）；
-# cache_size=-8000：约 8MB 页缓存（默认 2MB）；mmap_size=256MB：只读路径减少系统调用。
+# cache_size=-8000：约 8MB 页缓存；mmap_size=256MB：只读路径减少系统调用。
 _PRAGMAS = (
     'PRAGMA foreign_keys=ON',
     'PRAGMA secure_delete=ON',
@@ -66,7 +53,7 @@ _PRAGMAS = (
 )
 
 
-# 签名/验证函数的类型协议，替代弱类型 Callable
+# 签名/验证函数的类型协议（替代弱类型 Callable）
 @runtime_checkable
 class EntrySigner(Protocol):
     def __call__(self, entry: RawEntry) -> str: ...
@@ -108,8 +95,7 @@ class DatabaseManager:
         self._category_verifier: CategoryVerifier | None = None
         self._last_secure_ts: float = 0.0
         self._schema_validated: bool = False
-        # 实例级加密断言开关。test_mode 下自动关闭，允许测试直接写入明文。
-        # 生产环境保持 True，确保密文前缀断言生效。
+        # 实例级加密断言开关：test_mode 下关闭允许测试写明文，生产环境保持 True。
         self._enforce_encrypted_fields: bool = not test_mode
 
         # 子 Repository
@@ -118,7 +104,7 @@ class DatabaseManager:
         self._schema_mgr = SchemaManager(self)
 
     # ==================== 子 Repository 公共访问接口 ====================
-    # 替代 Repository 中的 _mgr._conn / _mgr._lock 等私有属性访问。
+    # 暴露连接/锁等供 Repository 使用，替代 _mgr._conn 等私有属性访问。
 
     @property
     def connection(self) -> sqlite3.Connection:
@@ -151,23 +137,23 @@ class DatabaseManager:
         self._schema_validated = value
 
     def guard_write(self) -> None:
-        """写入前校验，公共接口。"""
+        """写入前校验。"""
         self._guard_write()
 
     def auto_commit(self) -> None:
-        """非事务模式下自动提交，公共接口。"""
+        """非事务模式下自动提交。"""
         self._auto_commit()
 
     def sign_entry(self, entry: RawEntry) -> str:
-        """条目元数据签名，公共接口。"""
+        """条目元数据签名。"""
         return self._sign_entry(entry)
 
     def sign_category(self, category: Category) -> str:
-        """分类元数据签名，公共接口。"""
+        """分类元数据签名。"""
         return self._sign_category(category)
 
     def assert_encrypted(self, value: str, field_name: str) -> None:
-        """断言加密字段的值格式正确，公共接口。"""
+        """断言加密字段的值格式正确。"""
         self._assert_encrypted(value, field_name)
 
     def set_write_guard(self, guard: Callable[[], None]) -> None:
@@ -211,13 +197,13 @@ class DatabaseManager:
         """事务上下文；嵌套事务使用 SAVEPOINT 独立回滚。
 
         线程安全契约：
-        - 整个事务期间持有 db_lock，阻止其他线程在此共享连接上插队写入，
-          避免 check_same_thread=False 下跨线程事务的部分回滚。
-        - 持锁还保证改密重加密、备份恢复等长事务期间，其他线程不会读到
-          半完成的中间状态密文（部分新密钥、部分旧密钥），避免解密失败。
-          此为有意设计：数据一致性优先于改密/导入期间的 UI 读响应性。
-        - RLock 可重入，事务内嵌套的 @_db_operation 可正常重入获取锁。
-        - 调用方无需再保证无并发写同一表，本方法通过持锁强制写串行化。
+        - 事务期间持有 db_lock，阻止其他线程在共享连接上插队写入，避免
+          check_same_thread=False 下跨线程事务的部分回滚。
+        - 持锁还保证改密重加密、备份恢复等长事务期间，其他线程不会读到半完成
+          中间状态密文（部分新/旧密钥），避免解密失败。此为有意设计：数据一致性
+          优先于改密/导入期间 UI 读响应性。
+        - RLock 可重入，事务内嵌套 @_db_operation 可正常重入；调用方无需自行
+          保证无并发写同一表，本方法持锁强制写串行化。
         """
         if self._conn is None:
             raise DatabaseError("数据库未连接")
@@ -232,23 +218,20 @@ class DatabaseManager:
                     raise
                 return
 
-            # 此分支仅在 in_transaction 为真时进入，而 in_transaction 要求
-            # _transaction_depth > 0，事务开始必然先经过 begin_transaction 的
-            # _conn is None 断言，故此处 conn 必非 None，无需重复检查。
+            # 此分支仅在 in_transaction 为真时进入；事务开始必先经 begin_transaction
+            # 的 _conn is None 断言，故此处 conn 必非 None，无需重复检查。
             self._guard_write()
             self._savepoint_counter += 1
             savepoint = f'"cipherbox_sp_{self._savepoint_counter}"'
             self._conn.execute(f'SAVEPOINT {savepoint}')
-            # depth 语义不变量：外层事务 begin_transaction 设 depth=1；嵌套 savepoint
-            # 每次 +=1 至 2..N，finally 中 -=1 还原。commit_transaction 要求 depth==1
-            # （仅外层事务可 commit），嵌套层只 RELEASE SAVEPOINT 不 commit。
+            # depth 不变量：外层事务 begin 设 depth=1，嵌套 savepoint 每次 +=1，finally
+            # 中还原。commit_transaction 要求 depth==1（仅外层可 commit），嵌套层只 RELEASE。
             self._transaction_depth += 1
             try:
                 yield
                 self._conn.execute(f'RELEASE SAVEPOINT {savepoint}')
             except Exception:
-                # savepoint 回滚失败不应掩盖原始异常；记录后交由外层事务的
-                # rollback_transaction 统一处理，原始异常照常向上抛出。
+                # savepoint 回滚失败不掩盖原始异常；记录后交由外层事务统一处理。
                 try:
                     self._conn.execute(f'ROLLBACK TO SAVEPOINT {savepoint}')
                     self._conn.execute(f'RELEASE SAVEPOINT {savepoint}')
@@ -261,9 +244,8 @@ class DatabaseManager:
     def begin_transaction(self) -> None:
         """开始事务，并抑制内部 commit。
 
-        注意：此方法未加 ``@_db_operation`` 锁，必须在已持有锁的
-        上下文内调用，例如 ``@_db_operation`` 装饰的方法内或
-        ``transaction()`` 上下文管理器内，不可直接从外部线程调用。
+        Note: 未加 ``@_db_operation`` 锁，须在已持锁上下文内调用
+        （``@_db_operation`` 装饰方法内或 ``transaction()`` 内），不可直接从外部线程调用。
         """
         if self._conn is None:
             raise DatabaseError("数据库未连接")
@@ -273,18 +255,16 @@ class DatabaseManager:
         try:
             self._conn.execute("BEGIN TRANSACTION")
         except sqlite3.OperationalError as exc:
-            # 纵深防御：正常路径下 in_transaction 守卫已排除重复 BEGIN。若仍触发
-            # 'cannot start a transaction within a transaction'（如 standalone
-            # @_db_write 写失败后隐式事务悬挂的遗留态），归一为 DatabaseError 而非
-            # 让裸驱动异常上泄（与 @_db_write 的失败回滚契约共同关闭连接毒化路径）。
+            # 纵深防御：in_transaction 守卫已排除重复 BEGIN。若仍触发（如 standalone
+            # @_db_write 写失败后隐式事务悬挂的遗留态），归一为 DatabaseError 而非裸
+            # 驱动异常上泄（与 @_db_write 失败回滚契约共同关闭连接毒化路径）。
             raise DatabaseError(f'开始事务失败：{exc}') from exc
         self._transaction_depth = 1
 
     def commit_transaction(self) -> None:
         """提交事务。
 
-        注意：此方法未加 ``@_db_operation`` 锁，必须在已持有锁的
-        上下文内调用。参见 :meth:`begin_transaction`。
+        Note: 未加 ``@_db_operation`` 锁，须在已持锁上下文内调用。参见 :meth:`begin_transaction`。
         """
         if self._conn is None:
             raise DatabaseError("数据库未连接")
@@ -293,10 +273,8 @@ class DatabaseManager:
         self._conn.execute("COMMIT")
         self._transaction_depth = 0
         self._savepoint_counter = 0
-        # 事务已成功提交；文件权限刷新是后续加固，失败不应让调用方误以为事务
-        # 失败而重试写入（WAL/SHM 可能因 checkpoint 暂不存在）。参照 secure_checkpoint 降级。
-        # _secure_database_files 经 secure_file(strict=True) 仅可能抛 OSError（chmod/
-        # icacls/ACL 失败），缩窄为 OSError 避免吞掉未来引入的逻辑 bug。
+        # 事务已提交；权限刷新是后续加固，失败不应让调用方误以为事务失败而重试
+        # （WAL/SHM 可能因 checkpoint 暂不存在）。缩窄为 OSError 避免吞掉逻辑 bug。
         try:
             self._secure_database_files()
         except OSError:
@@ -305,17 +283,15 @@ class DatabaseManager:
     def rollback_transaction(self) -> None:
         """回滚事务。
 
-        注意：此方法未加 ``@_db_operation`` 锁，必须在已持有锁的
-        上下文内调用。参见 :meth:`begin_transaction`。
+        Note: 未加 ``@_db_operation`` 锁，须在已持锁上下文内调用。参见 :meth:`begin_transaction`。
         """
         if self._conn is None:
             raise DatabaseError("数据库未连接")
         try:
             self._conn.execute("ROLLBACK")
         except sqlite3.OperationalError as exc:
-            # 仅吞无活动事务这类良性错误（重复回滚或事务已结束）；
-            # 其余 OperationalError（磁盘满、I/O 错误、数据库锁定）意味着
-            # 回滚未生效，事务可能仍开着，必须升级处理而非静默通过。
+            # 仅吞「无活动事务」良性错误（重复回滚或事务已结束）；其余 OperationalError
+            # （磁盘满/I/O 错误/数据库锁定）意味着回滚未生效，须升级处理。
             message = str(exc).lower()
             if 'no transaction' in message or 'no active' in message:
                 logger.debug("回滚时无活动事务（良性）：%s", exc)
@@ -331,8 +307,7 @@ class DatabaseManager:
     def _auto_commit(self) -> None:
         """内部提交：仅在非事务模式下执行 commit。
 
-        权限刷新按 ``SECURE_FILES_DEBOUNCE_SECONDS`` 防抖（理由见该常量定义），
-        仅在距上次刷新达到间隔后才执行。
+        权限刷新按 ``SECURE_FILES_DEBOUNCE_SECONDS`` 防抖（理由见该常量）。
         """
         if not self.in_transaction and self._conn:
             try:
@@ -344,8 +319,7 @@ class DatabaseManager:
                 raise
             now = _time.monotonic()
             if now - self._last_secure_ts >= SECURE_FILES_DEBOUNCE_SECONDS:
-                # 提交已成功；权限刷新失败仅告警，不污染已成功的事务。
-                # secure_file(strict=True) 仅可能抛 OSError，缩窄避免吞掉逻辑 bug。
+                # 提交已成功；权限刷新失败仅告警，缩窄为 OSError 避免吞掉逻辑 bug。
                 try:
                     self._secure_database_files()
                 except OSError:
@@ -362,10 +336,9 @@ class DatabaseManager:
             # （RLock）提供，所有 DB 操作须通过 @_db_operation 或在已持锁上下文中调用。
             self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
-            # 校验 WAL 是否真正生效：不支持 WAL 的文件系统（网络共享、部分 FAT/exFAT）
-            # 上 SQLite 会静默回退到其它日志模式并返回该模式名。WAL 未生效时
-            # wal_checkpoint(TRUNCATE) 与 -wal/-shm 权限收紧等安全清理会静默降级为
-            # no-op，须记可观测告警让降级可见，而非误以为安全清理仍在工作。
+            # 校验 WAL 是否生效：不支持 WAL 的文件系统（网络共享、部分 FAT/exFAT）上
+            # SQLite 会静默回退。WAL 未生效时 wal_checkpoint(TRUNCATE) 与 -wal/-shm 权限
+            # 收紧等安全清理会静默降级为 no-op，须记告警让降级可见。
             mode_row = self._conn.execute("PRAGMA journal_mode=WAL").fetchone()
             actual_mode = mode_row[0] if mode_row else ''
             if str(actual_mode).lower() != 'wal':
@@ -374,12 +347,8 @@ class DatabaseManager:
                     "建议将数据目录置于支持 WAL 的本地文件系统",
                     actual_mode,
                 )
-            # page cache 与内存映射：本地库虽小，但全量扫描（get_entries + 逐行
-            # HMAC 验签）在数千条目下从更大的 cache 受益。cache_size=-8000（约
-            # 8MB）远大于默认 2MB；mmap_size=256MB 让只读路径减少系统调用。
-            # synchronous=FULL 是耐久性安全取舍，不降级。各 PRAGMA 字面量集中
-            # 于模块级 _PRAGMAS 单一源（含 foreign_keys/secure_delete/busy_timeout/
-            # synchronous/cache_size/mmap_size），见其注释。
+            # 全量扫描（get_entries + 逐行 HMAC 验签）在数千条目下受益于更大 cache。
+            # synchronous=FULL 是耐久性取舍不降级。PRAGMA 字面量集中于 _PRAGMAS 单一源。
             for pragma in _PRAGMAS:
                 self._conn.execute(pragma)
             self._secure_database_files()
@@ -400,9 +369,8 @@ class DatabaseManager:
     def close(self) -> None:
         """关闭数据库连接。
 
-        持有 db_lock 以避免与活动事务并发关闭连接：若改密等长事务正在进行，
-        close 会等其提交或回滚（释放 db_lock）后再关闭，防止连接在事务中途
-        被关闭导致损坏。
+        持有 db_lock 以避免与活动事务并发关闭：若改密等长事务进行中，close 会
+        等其提交/回滚释放锁后再关闭，防止事务中途关闭连接导致损坏。
         """
         with self._lock:
             if self._conn:
@@ -411,9 +379,8 @@ class DatabaseManager:
                         "数据库关闭时存在未提交事务 (depth=%d)，将回滚",
                         self._transaction_depth,
                     )
-                    # 先回滚再关闭，确保事务状态机被显式清理；仅 close 会
-                    # 把 _transaction_depth 留在 > 0，后续若在同实例重开连接，
-                    # transaction() 会误判仍处事务内而走 savepoint 分支。
+                    # 先回滚再关闭，显式清理事务状态机；仅 close 会留 _transaction_depth > 0，
+                    # 后续重开连接时 transaction() 会误判走 savepoint 分支。
                     self.rollback_transaction()
                 self._conn.close()
                 self._conn = None
@@ -438,7 +405,7 @@ class DatabaseManager:
             keys: 要获取的元数据键名列表。
 
         Returns:
-            字典，键为请求的键名，值为对应的元数据值，不存在则为 None。
+            ``{键名: 值}``，不存在的键为 None。
         """
         if not keys:
             return {}
@@ -467,13 +434,12 @@ class DatabaseManager:
     def secure_checkpoint(self) -> None:
         """截断 WAL，降低已删除或重加密数据残留。
 
-        截断后立即刷新 WAL/SHM 文件权限：checkpoint 会改写这些文件，
-        需重新收紧 ACL，而非依赖后续提交的防抖刷新或目录继承 ACL。
+        截断后立即刷新 WAL/SHM 权限：checkpoint 改写这些文件，需重新收紧 ACL，
+        而非依赖防抖刷新或目录继承 ACL。
 
         Note:
-            事务内调用时静默跳过（checkpoint 会干扰进行中的事务）。此时 WAL
-            清除依赖事务提交时 SQLite 的自动 checkpoint；若调用方需保证 WAL
-            被显式截断以清除已删密文残留，应在事务提交后调用本方法。
+            事务内调用静默跳过（checkpoint 会干扰进行中的事务）。此时 WAL 清除依赖
+            提交时 SQLite 的自动 checkpoint；需显式截断以清除密文残留时应在提交后调用。
         """
         if self._conn is not None and not self.in_transaction:
             try:
@@ -488,23 +454,15 @@ class DatabaseManager:
     def _assert_encrypted(self, value: str, field_name: str) -> None:
         """格式自检（非密码学保证）：加密列须为受支持前缀的 base64 密文，或空。
 
-        仅校验密文形态以拦截明显的明文误写（明文常含 @、空格、下划线等非 base64
-        字符），不验证密文真实性——真正的认证由 GCM 认证标签在解密时完成。纯字母
-        数字的明文理论上能通过此字符集校验，但解密时会被 GCM 拒绝，故此处为防御性
-        编程提示而非安全边界。防止绕过 EntryManager 直接调用 db.add_entry/
-        update_entry 时明文静默落入加密列。空值允许通过，未填写字段存储为空字符串。
-        读取实例级 _enforce_encrypted_fields，避免测试覆写泄漏到其他实例。
-
-        适用范围：接受 ``cb2:`` 前缀的文本密文；
-        ``encrypt_bytes`` 的字节前缀路径不经过此加密列断言。
+        仅校验密文形态以拦截明显明文误写，不验真实性——真正认证由 GCM 标签在解密时
+        完成。防止绕过 EntryManager 直接调用 db.add_entry/update_entry 时明文静默落库。
+        读实例级 _enforce_encrypted_fields 避免测试覆写泄漏到其他实例。仅覆盖 ``cb2:``
+        前缀文本密文；``encrypt_bytes`` 的字节前缀路径不经此断言。
         """
         if self._enforce_encrypted_fields and value:
-            # 加密层始终产出 CIPHERTEXT_PREFIX 前缀密文；强制要求此前缀，
-            # 使纯字母数字明文（如 abc123，恰为 base64 字符子集）无法再以「无前缀
-            # 合法密文」名义通过字符集校验。真正认证仍由 GCM 标签在解密时完成，
-            # 此处为防御性拦截，防止绕过 EntryManager 直接写库时明文静默落入加密列。
-            # 引用共享层 CIPHERTEXT_PREFIX 单一事实源（不经 crypto 层，保持 Data 层
-            # 零 crypto 依赖）：前缀重命名时此校验与错误提示自动同步，避免字面量漂移。
+            # 强制 CIPHERTEXT_PREFIX 前缀，使纯字母数字明文（恰为 base64 子集）无法
+            # 冒充合法密文。引用共享层前缀单一事实源（不经 crypto 层，保持 Data 层零依赖），
+            # 前缀重命名时校验与错误提示自动同步。
             prefix = CIPHERTEXT_PREFIX
             if not value.startswith(prefix):
                 raise ValueError(
@@ -529,11 +487,8 @@ class DatabaseManager:
         return category.metadata_mac
 
     # ==================== 委托与编排 ====================
-    # DatabaseManager 作为统一数据访问入口。纯透传方法（get_entries、add_category
-    # 等）在下方显式手写委托给子 Repository——保留显式委托而非 __getattr__ 动态
-    # 委托：Pyright 严格模式下动态委托会让调用方丢失返回类型推断。调用方一律经
-    # db.get_entries() 等透传方法访问（保留完整返回类型）。仅当需要跨表事务编排
-    # （如 delete_category）时才在下方显式定义编排方法。
+    # 纯透传方法显式手写委托而非 __getattr__ 动态委托：Pyright 严格模式下动态委托
+    # 会让调用方丢失返回类型推断。跨表事务编排（如 delete_category）另在下方定义。
 
     def init_tables(self) -> None:
         return self._schema_mgr.init_tables()
@@ -563,16 +518,14 @@ class DatabaseManager:
         return self._category_repo.get_category_entry_counts()
 
     # ======== 跨表编排（非委托透传）========
-    # 以下方法含显式事务与多 Repository 协调，锁与事务由本编排层统一管理。
-    # 新增编排逻辑请保持此注释边界。
+    # 含显式事务与多 Repository 协调，锁与事务由本编排层统一管理。
 
     def delete_category(self, category_id: int) -> None:
         """删除分类：事务内先解关联条目并重算签名，再删除分类行。
 
-        解关联条目与删除分类两步跨表编排由本层协调，各 Repository 仅负责
-        单表操作，从而消除跨 Repository 的私有访问越权。``transaction()`` 已内部
-        持 ``db_lock`` 并经 ``begin_transaction`` 调用 ``_guard_write``，故此处无需
-        再外层包 ``with self._lock`` + ``_guard_write``（原先的重复获取是冗余）。
+        两步跨表编排由本层协调，各 Repository 仅负责单表操作以消除跨 Repository
+        私有访问越权。``transaction()`` 已持 ``db_lock`` 并经 ``begin_transaction``
+        调用 ``_guard_write``，故此处无需重复包锁。
         """
         with self.transaction():
             self._entry_repo.clear_category_signatures(category_id)

@@ -1,11 +1,4 @@
-"""Importer 边界用例：超大字段、畸形结构、类型守卫、BOM 回归、别名隔离。
-
-补强审查未覆盖区域（计划阶段 3）：Bitwarden ``login`` 守卫（现有 robustness 测试
-唯独漏了最常见入口）、CSV BOM 回归与短行容错、KeePass 严格别名负向隔离、
-JSON 顶层结构拒绝与 secrets_included 错型。聚焦 ``importer.parse`` 级——编排层
-（cancel_check 部分导入、非 UTF-8 友好编码错误、25MB 上限）由 test_import_export /
-test_import_orchestration 覆盖。
-"""
+"""Importer 边界用例：超大字段、畸形结构、类型守卫、BOM 回归、别名隔离（聚焦 importer.parse 级）。"""
 
 import json
 
@@ -27,9 +20,6 @@ def _write_csv(tmp_path, name: str, text: str) -> str:
     path = tmp_path / name
     path.write_text(text, encoding='utf-8')
     return str(path)
-
-
-# ===== Bitwarden =====
 
 
 class TestBitwardenBoundaries:
@@ -71,9 +61,6 @@ class TestBitwardenBoundaries:
         assert cf[0].name == 'a'
 
 
-# ===== JSON（CipherBox 导出）=====
-
-
 class TestJsonBoundaries:
     def test_top_level_list_rejected(self, tmp_path):
         path = _write_json(tmp_path, 'b.json', [{'app': 'CipherBox'}])
@@ -110,9 +97,6 @@ class TestJsonBoundaries:
         assert result.entries == []
 
 
-# ===== CSV =====
-
-
 class TestCsvBoundaries:
     def test_bom_stripped(self, tmp_path):
         """utf-8-sig 剥离 BOM：含 BOM 的 CSV 正常解析（回归保护，防改回 utf-8）。"""
@@ -139,9 +123,6 @@ class TestCsvBoundaries:
         assert len(result.entries) == 1
         assert result.entries[0].title == 'GitHub'
         assert result.entries[0].username == ''
-
-
-# ===== KeePass 别名隔离 =====
 
 
 class TestKeePassAliasIsolation:

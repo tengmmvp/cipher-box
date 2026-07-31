@@ -1,8 +1,6 @@
-"""lock()/close() 清零链端到端守护 — 审查标注的「头号安全属性」。
+"""lock()/close() 清零链端到端守护（真实保险库，非 mock）。
 
-close() 此前零覆盖；lock() → clear_vault_state → KeyManager 的密钥字节清零链亦无
-集成守护。本模块用真实保险库（make_vault + initialize + unlock，非 mock）覆盖四条
-核心安全契约：
+覆盖四条核心安全契约：
 
 1. ``lock()`` 清零 KeyManager 的主密钥与快照密钥并标记未解锁；
 2. ``clear_vault_state`` 清空 ``EncryptionEngine._cipher_cache``（AESGCM 实例缓存，

@@ -1,11 +1,9 @@
 """条目变更通知总线 — 缓存失效与回调编排。
 
-统一「条目变更 → 缓存失效 → 回调」通知管线（从 EntryManager 抽离，使
-SecurityAnalyzer 等订阅方与缓存失效逻辑解耦，EntryManager 不再持有回调列表）。
+统一「条目变更 → 缓存失效 → 回调」通知管线，使订阅方与缓存失效逻辑解耦。
 
-关键约束（严格保留原 _notify_entry_change 顺序）：必须先
-``cache.apply_change``（持 cache_lock）后跑回调（锁外），且回调吞异常。
-否则 SecurityAnalyzer 回调重入 cache 会与失效竞态。
+关键约束：必须先 ``cache.apply_change``（持 cache_lock）后跑回调（锁外），
+且回调吞异常——否则回调重入 cache 会与失效竞态。
 """
 
 import logging

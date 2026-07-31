@@ -1,14 +1,11 @@
-"""MainWindow 条目 CRUD、分类管理与右键菜单控制器（组合化，从 _MainWindowEntriesMixin 迁移）。
+"""MainWindow 条目 CRUD、分类管理与右键菜单控制器。
 
-普通类（非 QObject），遵循 MenuController/AutoLockController 范式：``__init__`` 注入
-manager 与跨 controller 回调（``EntryActionsDeps``），``setup(parent, view)`` 接收
-QObject 父（MainWindow）与冻结 dataclass view-handle（``EntryActionsView``），创建
-选择防抖定时器并连接控件信号。
-
-跨 controller 协作（条目增删改后的刷新、对话框分类/标签获取）一律走 ``EntryActionsDeps``
-回调，消除原 Entries Mixin 跨 ``self`` 调 Filters Mixin 方法的隐式契约——pyright 在
-MainWindow 装配点逐字段校验每个回调的绑定方法名。锁定态守卫用本控制器的 ``_locked``
-（经 ``set_locked()`` / ``prepare_for_lock()`` 广播），由 ``_locked_guard`` 统一承载。
+普通类（非 QObject）：``__init__`` 注入 manager 与跨 controller 回调
+（``EntryActionsDeps``），``setup(parent, view)`` 接收 QObject 父与冻结
+dataclass view-handle（``EntryActionsView``），创建选择防抖定时器并连接控件信号。
+跨 controller 协作一律走 ``EntryActionsDeps`` 回调，pyright 在装配点逐字段校验每个
+回调的绑定方法名。锁定态守卫经 ``set_locked()`` / ``prepare_for_lock()`` 广播，
+由 ``_locked_guard`` 统一承载。
 """
 
 from __future__ import annotations
@@ -48,9 +45,9 @@ if TYPE_CHECKING:
 class EntryActionsView:
     """EntryActionsController 操作的列表控件引用（由 MainWindow 装配）。
 
-    控件本身仍是 MainWindow 的 host 属性（``test_product_hardening`` 等对
-    ``window._entry_list`` / ``window._category_list`` 的访问零改动），controller
-    经此冻结 dataclass 取引用，不持有 host 自身以避免环依赖。
+    控件仍是 MainWindow 的 host 属性（``test_product_hardening`` 等直接访问
+    ``window._entry_list`` / ``window._category_list``），controller 经此冻结 dataclass
+    取引用，不持有 host 自身以避免环依赖。
     """
 
     entry_list: QListView
@@ -75,9 +72,9 @@ class EntryActionsDeps:
 
 
 class EntryActionsController:
-    """条目 CRUD、分类管理与右键菜单（从 _MainWindowEntriesMixin 组合化迁移）。
+    """条目 CRUD、分类管理与右键菜单。
 
-    选择防抖定时器（``_select_timer``）与 pending 选择态随迁；锁定态经 ``_locked``
+    选择防抖定时器与 pending 选择态由本控制器持有；锁定态经 ``_locked``
     守卫，host 在 prepare_for_lock / refresh_after_unlock 经 ``set_locked`` 广播。
     """
 
@@ -107,9 +104,7 @@ class EntryActionsController:
         """创建选择防抖定时器并连接控件信号。须在 MainWindow 控件创建后调用。
 
         parent 作 QWidget 父（QMenu/QAction/QTimer 的 Qt 父关系，析构自动断开信号）
-        与 Toast/对话框的父窗口；view 提供列表控件与新增按钮引用。路由到本控制器
-        的控件信号在此连接（同 AutoLockController.setup），``_build_*`` 仅建控件不再
-        ``connect``。
+        与 Toast/对话框的父窗口；view 提供列表控件与新增按钮引用。
         """
         self._parent = parent
         self._view = view
@@ -264,10 +259,8 @@ class EntryActionsController:
     ) -> tuple[QMenu, dict[QAction, Callable[[], None]]]:
         """构造活跃条目右键菜单及其「动作→处理函数」映射。
 
-        dict dispatch 替代 if/elif 链；收藏切换复用本类 ``toggle_favorite`` 方法
-        （消除原 Mixin 局部 ``_toggle_favorite`` 与方法 ``_toggle_favorite`` 的重复）；
-        复制类处理延迟解密（菜单打开期间可能触发自动锁定，处理函数内经
-        ``@require_unlocked`` 守卫避免锁定态访问已清零密钥）。
+        dict dispatch 替代 if/elif 链；复制类处理延迟解密，处理函数内经
+        ``@require_unlocked`` 守卫避免锁定态访问已清零密钥。
         """
         entry_id = summary.id
         parent = self._parent

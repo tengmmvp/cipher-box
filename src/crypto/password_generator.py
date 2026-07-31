@@ -1,7 +1,6 @@
 """密码生成器与强度检测。
 
-生成时可排除模糊字符，强度检测基于长度、字符种类、常见密码模式
-和重复字符比例综合评分，分数区间为 0 至 4 分，并给出具体改进建议。
+生成时可排除模糊字符，强度检测综合长度、字符种类、常见模式与重复比例评分（0–4）。
 """
 
 import logging
@@ -20,18 +19,17 @@ _RNG = secrets.SystemRandom()
 # 模糊字符集
 AMBIGUOUS_CHARS = 'Il1O0o'
 
-# ---- 密码生成/强度/主密码策略的魔法数字集中为命名常量（单一事实源）----
-# generate 长度区间：低于 4 无法覆盖各字符类至少 1 个的要求，高于 128 无实际
-# 安全收益且拖慢生成；越界仅 warning + clamp，兼容 UI 滑块等调用方。
+# ---- 生成/强度/主密码策略的魔法数字集中为命名常量 ----
+# generate 长度区间：低于 4 无法覆盖各字符类至少 1 个，高于 128 无安全收益且拖慢生成；
+# 越界仅 warning + clamp，兼容 UI 滑块等调用方。
 PASSWORD_LENGTH_MIN = 4
 PASSWORD_LENGTH_MAX = 128
-# 强度评分上限（0..MAX_STRENGTH_SCORE），backup_validator 与本模块复用，避免 4 字面量
-# 漂移（如未来调整为 0..5 评分刻度时一处生效）。
+# 强度评分上限，backup_validator 与本模块复用，避免 4 字面量漂移。
 MAX_STRENGTH_SCORE = 4
 # 重复字符比例低于此阈值扣分（unique_chars / len），0.4 即 10 字符密码唯一字符少于 4。
 WEAK_UNIQUE_RATIO = 0.4
-# 主密码策略：至少 15 字符（OWASP 建议的最低门槛），上限复用条目密码字段上限
-# MAX_FIELD_PASSWORD，使「密码最大长度」在主密码与条目密码两处单一对齐。
+# 主密码策略：至少 15 字符（OWASP 最低门槛），上限复用 MAX_FIELD_PASSWORD 使
+# 主密码与条目密码的「最大长度」单一对齐。
 MIN_MASTER_PASSWORD_LENGTH = 15
 MASTER_PASSWORD_MAX_LENGTH = MAX_FIELD_PASSWORD
 
@@ -96,9 +94,7 @@ class PasswordGenerator:
         """生成随机密码。
 
         Args:
-            length: 密码长度，会被静默 clamp 到 ``[4, 128]``——低于 4 无法覆盖各
-                字符类至少 1 个的要求，高于 128 无实际安全收益且拖慢生成。调用方
-                应在此区间内取值；越界仅记录 warning 不抛错，以兼容 UI 滑块等调用方。
+            length: 密码长度，越界静默 clamp 到 ``[4, 128]``（见模块常量说明）
             uppercase: 包含大写字母
             lowercase: 包含小写字母
             digits: 包含数字
@@ -191,10 +187,8 @@ class PasswordGenerator:
                 logger.debug("检测到常见密码模式")
                 break
 
-        # 评分体系共 5 档：0 非常弱、1 弱、2 一般、3 强、4 非常强。
-        # 理论原始满分 6 分，分别来自长度达 8、长度达 12、含大写、含小写、
-        # 含数字、含特殊字符六项；再经常见密码惩罚与重复字符惩罚下调，
-        # 最终限制在 0 到 4 区间。
+        # 评分体系 5 档（0..4）：原始满分 6 分（长度 8、长度 12、大小写、数字、
+        # 特殊字符六项），经常见密码与重复字符惩罚下调，最终 clamp 到 0..4。
         score = 0
         feedback = []
 
@@ -233,8 +227,8 @@ class PasswordGenerator:
             score = min(score, 1)
             feedback.append('这是一个常见密码，极易被破解')
 
-        # 先 clamp 到 [0, MAX_STRENGTH_SCORE]，再应用重复惩罚：确保强密码（原始分 5-6）
-        # 的重复问题能实际降档，而非被最终 clamp 重新拉回 MAX_STRENGTH_SCORE。
+        # 先 clamp 再应用重复惩罚：确保强密码（原始分 5-6）的重复问题能实际降档，
+        # 而非被最终 clamp 重新拉回上限。
         score = min(MAX_STRENGTH_SCORE, max(0, score))
 
         # 有重复字符惩罚：降低 1 分，但不低于 0

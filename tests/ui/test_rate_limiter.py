@@ -104,7 +104,7 @@ class TestRateLimiterSentinel:
         assert rl.check() is None
 
     def test_corrupt_state_triggers_lockdown(self, tmp_path):
-        """状态文件存在但损坏 → 降级最高阶梯（原有行为保持）。"""
+        """状态文件存在但损坏 → 降级最高阶梯。"""
         state = tmp_path / 'rate_limit.json'
         state.write_text('{invalid json', encoding='utf-8')
         rl = RateLimiter(state)
@@ -116,7 +116,7 @@ class TestRateLimiterConfigWitness:
     """签名 config 见证：状态文件 + 哨兵被同时删除亦不归零计数（S5）。
 
     文件可被一并删除，但 HMAC 签名的 config 登记无法被伪造抹除——据此判定
-    「同时删除」为恶意删除并降级最高阶梯锁定，关闭改造前「删两文件即归零」的绕过。
+    「同时删除」为恶意删除并降级最高阶梯锁定。
     """
 
     def test_both_deleted_with_config_witness_lockdown(self, tmp_path):
@@ -127,7 +127,7 @@ class TestRateLimiterConfigWitness:
         rl = RateLimiter(state, config)
         rl.record_success()  # 写状态 + 哨兵 + 签名 config 登记
         assert config.is_security_sentinel_established('login_rate_limit')
-        # 同时删除状态文件与哨兵（改造前会判为「首次使用」归零）
+        # 同时删除状态文件与哨兵
         state.unlink()
         (tmp_path / 'login_rate_limit.json.sentinel').unlink()
         rl2 = RateLimiter(state, config)
@@ -157,9 +157,9 @@ class TestRateLimiterConfigWitness:
         assert rl._fail_count == RATE_LIMITS[-1][0]
 
     def test_no_config_witness_preserves_first_use(self, tmp_path):
-        """无 config 见证（config=None）退回原有哨兵配对行为，不削弱保护。"""
+        """无 config 见证（config=None）退回哨兵配对行为，不削弱保护。"""
         state = tmp_path / 'login_rate_limit.json'
-        # 无 config：状态+哨兵均缺失 → 首次使用（与改造前一致）
+        # 无 config：状态+哨兵均缺失 → 首次使用
         rl = RateLimiter(state)
         assert rl._fail_count == 0
         assert rl.check() is None

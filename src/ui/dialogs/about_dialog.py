@@ -35,7 +35,6 @@ class AboutDialog(QDialog):
         layout.setSpacing(12)
         layout.setContentsMargins(36, 30, 36, 30)
 
-        # 图标和名称
         pixmap = draw_logo_pixmap(size=64, font_size=28)
 
         icon = QLabel()
@@ -75,7 +74,6 @@ class AboutDialog(QDialog):
 
         layout.addStretch()
 
-        # 关闭按钮
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         close_btn = QPushButton('关闭')

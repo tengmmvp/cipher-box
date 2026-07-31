@@ -39,8 +39,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# 导入方法返回类型 TypeVar：@_validate_import_input 装饰的导入方法均返回 int（导入条目数），
-# 用 TypeVar 透传返回类型而非硬编码 int，保留装饰器对返回类型签名的通用透传契约。
+# 导入方法返回类型 TypeVar：用 TypeVar 透传返回类型，保留装饰器的通用透传契约。
 T = TypeVar('T')
 
 MAX_IMPORT_FILE_SIZE = 25 * 1024 * 1024
@@ -49,15 +48,11 @@ MAX_IMPORT_FILE_SIZE = 25 * 1024 * 1024
 def _validate_import_input(method: Callable[..., T]) -> Callable[..., T]:
     """导入路径校验装饰器。
 
-    通过 inspect 绑定被装饰方法的签名，从任意调用方式（位置或关键字）稳健
-    提取 filepath 参数，校验并替换为 resolved 路径（避免校验后原始路径被
-    替换为符号链接的 TOCTOU 窗口）。
+    通过 inspect 绑定方法签名，从任意调用方式稳健提取 filepath 参数，校验并
+    替换为 resolved 路径（避免校验后原始路径被替换为符号链接的 TOCTOU 窗口）。
 
-    文件读取与解析在方法体内、事务之外完成（由 importer.parse 在
-    ``_run_importer`` 中调用）；事务与 epoch 守卫由 ``_run_import_transaction``
-    在写入阶段开启。这样大文件导入的 I/O 与解析不持有 db_lock，避免阻塞
-    TOTP 定时器等其他数据库访问。UnicodeDecodeError 仅可能发生在事务外的
-    读取阶段，此处统一替换为友好提示。
+    文件读取与解析在事务外完成；事务与 epoch 守卫由 ``_run_import_transaction``
+    在写入阶段开启，使大文件 I/O 与解析不持有 db_lock，避免阻塞 TOTP 定时器等。
     """
     method_sig = inspect.signature(method)
     # 装饰器应用即校验被装饰方法含 filepath 参数，让重命名/漏参在导入时立即暴露，
@@ -165,10 +160,9 @@ class ImportExportManager:
     ) -> dict[int, RawEntry]:
         """批量预读待覆盖条目的密文 raw（不解密），单次 SQL 查询替代 N+1。
 
-        返回 ``{idx: raw}``：仅预读密文，解密推迟到覆盖循环逐条执行并立即清零，
-        使任一时刻仅 1 条覆盖目标的完整明文（含 password/totp_secret）驻留内存，
-        与单条路径的「用毕即清」纪律一致（原先一次性解密全部覆盖目标并全程驻留）。
-        raw 供 ``update_entry`` 经 ``preloaded_raw`` 复用（跳过重复 ``get_entry``）。
+        仅预读密文，解密推迟到覆盖循环逐条执行并立即清零，使任一时刻仅 1 条
+        覆盖目标的完整明文驻留内存，与单条路径的「用毕即清」纪律一致。raw 供
+        ``update_entry`` 经 ``preloaded_raw`` 复用（跳过重复 ``get_entry``）。
         """
         ids_by_idx: dict[int, int] = {}
         for idx, summary in overwrite.items():
@@ -444,14 +438,13 @@ class ImportExportManager:
         """覆盖单条：解密 existing、合并、保留 password_changed_at、提取 old_password、用毕即清。
 
         返回 ``(合并后的 entry, old_password)``。解密/合并异常向上传播，由
-        :meth:`_dedupe_and_classify` 的 try/except 捕获（解密损坏/合并校验错误逐条跳过；
-        注意 GCM 认证失败的 :class:`DecryptionError` 不在该捕获范围，向上中止导入）。
+        :meth:`_dedupe_and_classify` 捕获（GCM 认证失败的 :class:`DecryptionError` 不在
+        该捕获范围，向上中止导入）。
 
         ``existing`` 用毕即清：明文 password/totp_secret 经 replace 重新绑定到空串，
-        旧明文 str 失去引用由 GC 回收（Python 字符串不可变，原赋值同样是重新绑定，
-        frozen 不改变此清零语义）。任一时刻仅 1 条覆盖目标完整明文驻留内存，
-        与单条路径的「用毕即清」纪律一致（原先一次性解密全部覆盖目标并全程驻留）。
-        raw 供 ``update_entry`` 经 ``preloaded_raw`` 复用（跳过重复 ``get_entry``）。
+        旧明文 str 失去引用由 GC 回收。任一时刻仅 1 条覆盖目标完整明文驻留内存，
+        与单条路径的「用毕即清」纪律一致。raw 供 ``update_entry`` 经 ``preloaded_raw``
+        复用（跳过重复 ``get_entry``）。
         """
         existing = self._entry_mgr.decrypt_entry(raw)
         try:
@@ -467,9 +460,7 @@ class ImportExportManager:
             )
             old_password = existing.password or ''
         finally:
-            # 用毕即清：明文 password/totp_secret 经 replace 重新绑定到空串，
-            # 旧明文 str 失去引用由 GC 回收（Python 字符串本就不可变，原赋值
-            # 同样是重新绑定，frozen 不改变此清零语义）。
+            # 用毕即清：明文 password/totp_secret 重新绑定到空串，旧明文由 GC 回收。
             existing = replace(existing, password='', totp_secret='')
             del existing
         return entry, old_password
@@ -481,9 +472,7 @@ class ImportExportManager:
     ) -> tuple[int, int]:
         """批量写入新条目，返回 ``(成功数, 跳过数)``。
 
-        加密列由 ``_build_encrypted_entry`` 产出合法 cb2: 密文，逐条
-        ``_assert_entry_encrypted_fields`` 不会失败；用 executemany 替代逐条 INSERT，
-        缩短导入事务持 db_lock 的时间（期间 UI 侧栏/列表读请求被阻塞）。
+        用 executemany 替代逐条 INSERT，缩短导入事务持 db_lock 的时间。
         ``add_entries`` 原子写入（全成功或全回滚），失败时整批计为跳过。
         """
         if not new_entries:
@@ -505,13 +494,13 @@ class ImportExportManager:
     ) -> tuple[int, int]:
         """批量执行覆盖更新，返回 ``(成功数, 跳过数)``。
 
-        收敛逐条 ``update_entry`` 的 per-item SAVEPOINT/epoch 复查/取时开销。
-        ``preloaded_raw``/``preloaded_old_password`` 复用 ``_prepare_overwrite_map``
-        的密文预读与覆盖循环提取的 old_password，跳过重复 ``get_entry`` 与旧密码解密。
+        收敛逐条 ``update_entry`` 的 per-item SAVEPOINT/epoch 复查开销。
+        ``preloaded_raw``/``preloaded_old_password`` 复用预读与覆盖循环提取值，
+        跳过重复 ``get_entry`` 与旧密码解密。
 
-        per-item 错误隔离：验证/解密错误跳过单条（计入跳过数），写/epoch 错误向上
-        中止。``batch_failures`` 索引对齐 ``overwrite_plans``（同序），取原 source idx
-        记日志，不打印标题（可能含敏感信息）。
+        per-item 错误隔离：验证/解密错误跳过单条，写/epoch 错误向上中止。
+        ``batch_failures`` 索引对齐 ``overwrite_plans``（同序），取原 source idx 记日志，
+        不打印标题（可能含敏感信息）。
         """
         if not overwrite_plans:
             return 0, 0
@@ -526,12 +515,11 @@ class ImportExportManager:
         )
         skipped = 0
         # batch_failures 索引对齐 batch_items（与 overwrite_plans 同序）；
-        # 取原 source idx（导入数据中的位置）记日志，不打印标题（可能含敏感信息）。
+        # 取原 source idx 记日志，不打印标题（可能含敏感信息）。
         for batch_idx, failure_exc in batch_failures:
             source_idx, entry_for_log, _raw, _old = overwrite_plans[batch_idx]
             # 防御性：preloaded_old_password 已使批量路径跳过旧密码解密，理论上不抛
-            # DecryptionError；保留区分仅为语义清晰（解密损坏用 ERROR，校验失败用
-            # WARNING），与原逐条覆盖循环的日志级别一致。
+            # DecryptionError；保留区分仅为语义清晰（解密损坏用 ERROR，校验失败用 WARNING）。
             if isinstance(failure_exc, DecryptionError):
                 skipped += 1
                 logger.error(

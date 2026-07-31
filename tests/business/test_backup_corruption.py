@@ -194,7 +194,6 @@ class TestBackupCorruption:
         success, error = self._backup_mgr.restore_backup(path, 'DeletedEntry!26')
         assert success, f'恢复失败: {error}'
 
-        # 验证已删除条目也被恢复
         all_entries = self._entry_mgr.get_entries(include_deleted=True)
         deleted = [e for e in all_entries if e.is_deleted]
         assert len(deleted) >= 1

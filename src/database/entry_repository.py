@@ -1,7 +1,6 @@
 """条目数据访问层 — 条目 CRUD、批量操作、密码历史。
 
-从 DatabaseManager 拆分而来，职责单一：条目及密码历史表的增删改查。
-通过 DatabaseManager 委托提供统一数据访问接口。
+职责单一：条目及密码历史表的增删改查，经 DatabaseManager 委托提供统一数据访问接口。
 """
 
 import logging
@@ -21,12 +20,11 @@ from .types import ConnectionProvider, EntryQuery, ReEncryptedEntry, ReEncrypted
 
 logger = logging.getLogger(__name__)
 
-# _ENTRY_COLUMNS 是 entries 表非 id 列名的单一事实来源。
-# 重要：新增 entries 表列时必须在此元组追加，INSERT/UPDATE/SELECT 等派生 SQL
-# 会自动跟随；同时须同步纳入 MetadataSigner._payload 的签名载荷
-# （由 test_entry_signature_coverage 断言守护，防止漏签）。
-# 用 tuple（不可变）而非 list：误用 ``_ENTRY_COLUMNS.append(...)`` 会在运行时抛
-# AttributeError，防止模块级列序常量被无意改写致 SQL 列错位（ARCH-024）。
+# _ENTRY_COLUMNS 是 entries 表非 id 列名的单一事实源。
+# 新增列必须在此追加，INSERT/UPDATE/SELECT 派生 SQL 自动跟随；同时须同步纳入
+# MetadataSigner._payload 签名载荷（由 test_entry_signature_coverage 断言守护）。
+# 用 tuple（不可变）：误用 append 会在运行时抛 AttributeError，防止列序被无意改写
+# 致 SQL 列错位（ARCH-024）。
 _ENTRY_COLUMNS = (
     'crypto_id', 'title_enc', 'username_enc', 'password_enc', 'url_enc',
     'category_id', 'tags_enc', 'notes_enc', 'custom_fields_enc',
@@ -35,11 +33,9 @@ _ENTRY_COLUMNS = (
     'password_changed_at', 'metadata_mac',
 )
 
-# entries 表列名 → 取值函数。INSERT/UPDATE 参数元组与加密字段断言均从此单一来源
-# 派生（列序来自 _ENTRY_COLUMNS，取值来自本映射），消除手写参数元组靠人工保持
-# 列序一致导致的错位风险：新增列只需在此追加 getter，SQL、INSERT/UPDATE 元组、
-# 加密断言自动跟随。bool 列(is_favorite/is_deleted)存为 INTEGER 经 int() 转换；
-# custom_fields_enc 取密文形态属性 custom_fields_db_value。
+# entries 表列名 → 取值函数。INSERT/UPDATE 参数元组与加密断言均从此派生（列序来自
+# _ENTRY_COLUMNS，取值来自本映射），消除手写元组列序错位。bool 列(is_favorite/
+# is_deleted)经 int() 转 INTEGER；custom_fields_enc 取密文属性 custom_fields_db_value。
 _ENTRY_COLUMN_GETTERS: dict[str, Callable[[RawEntry], object]] = {
     'crypto_id': lambda e: e.crypto_id,
     'title_enc': lambda e: e.title,
@@ -61,16 +57,13 @@ _ENTRY_COLUMN_GETTERS: dict[str, Callable[[RawEntry], object]] = {
     'password_changed_at': lambda e: e.password_changed_at,
     'metadata_mac': lambda e: e.metadata_mac,
 }
-# 键集守护：getter 须覆盖 _ENTRY_COLUMNS 的全部列。新增列忘加 getter 在模块加载
-# 时即报错，防止 INSERT/UPDATE 参数取值错位与加密断言漏列。
+# 键集守护：getter 须覆盖 _ENTRY_COLUMNS 全部列，新增列忘加 getter 在模块加载即报错。
 if set(_ENTRY_COLUMN_GETTERS) != set(_ENTRY_COLUMNS):
     raise RuntimeError('_ENTRY_COLUMN_GETTERS 与 _ENTRY_COLUMNS 列集不一致，参数取值将错位')
 
-# 取值属性存在性守护：键集守护只校验 getter 的「键」覆盖列集，不校验 lambda 内
-# 取值的「属性」是否存在。用一个全默认 RawEntry 遍历所有 getter，捕获最常见的
-# getter typo——属性名拼写错误（AttributeError）或签名错配（TypeError），在模块
-# 加载时即报错。不校验取值的语义正确性（如 title_enc 误取 username：属性存在但
-# 取错字段），那由端到端 test_re_encrypt（改密后逐字段解密比对）兜底。
+# 属性存在性守护：键集守护只校验 getter 键覆盖，不校验 lambda 内属性是否存在。
+# 用全默认 RawEntry 遍历所有 getter，捕获属性拼写错误（AttributeError）或签名错配
+# （TypeError），模块加载即报错。语义正确性（如取错字段）由 test_re_encrypt 兜底。
 _PROBE_ENTRY = RawEntry()
 for _col, _getter in _ENTRY_COLUMN_GETTERS.items():
     try:
@@ -85,8 +78,7 @@ del _PROBE_ENTRY
 def _entry_column_values(entry: RawEntry, columns: Sequence[str]) -> tuple[Any, ...]:
     """按给定列序从 entry 取值生成参数元组，供 INSERT/UPDATE 位置绑定。
 
-    取值经 _ENTRY_COLUMN_GETTERS（列名→取值），与 SQL 列序（_ENTRY_COLUMNS /
-    _UPDATE_ENTRY_COLUMNS）由同一映射驱动，消除手写元组列错位风险。
+    取值经 _ENTRY_COLUMN_GETTERS，与 SQL 列序由同一映射驱动，消除手写元组错位。
     """
     return tuple(_ENTRY_COLUMN_GETTERS[column](entry) for column in columns)
 
@@ -108,14 +100,12 @@ _UPDATE_ENTRY_SQL = (
     "WHERE id=?"
 )
 
-# 重加密批量更新列：改密重写除删除状态与创建时间外的全部列（含全部密文列）。
-# 直接从 _UPDATE_ENTRY_COLUMNS 派生（同样排除 is_deleted/deleted_at/created_at），
-# 使新增加密列只需加入 _ENTRY_COLUMNS 即自动被改密重写——消除手工维护
-# _RE_ENCRYPT_COLUMNS 漏列导致该列保留旧密钥密文、新密钥无法解密的数据损坏风险。
+# 重加密列：改密重写除删除状态与创建时间外的全部列（含全部密文列）。直接从
+# _UPDATE_ENTRY_COLUMNS 派生，使新增加密列只需加入 _ENTRY_COLUMNS 即被改密重写，
+# 避免漏列保留旧密钥密文、新密钥无法解密的数据损坏。
 _RE_ENCRYPT_COLUMNS = list(_UPDATE_ENTRY_COLUMNS)
 
-# 运行时断言：所有加密列（_enc 后缀）必须被改密重写，否则该列保留旧密钥密文
-# 将导致改密后无法解密。模块加载时执行，捕获未来 _ENTRY_COLUMNS 扩展漏配。
+# 运行时断言：所有 *_enc 加密列必须被改密重写，否则保留旧密钥密文致改密后无法解密。
 if not all(
     col in _RE_ENCRYPT_COLUMNS
     for col in _ENTRY_COLUMNS
@@ -125,9 +115,8 @@ if not all(
         '加密列未被纳入改密重写集合，将导致改密后数据损坏'
     )
 
-# ReEncryptedEntry 字段序须与 _RE_ENCRYPT_BATCH_UPDATE_SQL 的列序（_RE_ENCRYPT_COLUMNS
-# + id）一一对应，供 update_entries_batch 的 executemany 位置绑定。字段重排或新增列时
-# 此断言捕获错位，避免重加密写错列导致数据损坏。
+# ReEncryptedEntry 字段序须与 _RE_ENCRYPT_BATCH_UPDATE_SQL 列序（_RE_ENCRYPT_COLUMNS
+# + id）一一对应，供 executemany 位置绑定；错位会被此断言捕获，避免写错列。
 if ReEncryptedEntry._fields != tuple(_RE_ENCRYPT_COLUMNS) + ('id',):
     raise RuntimeError(
         'ReEncryptedEntry 字段序与 _RE_ENCRYPT_COLUMNS + id 不一致，executemany 会错位'
@@ -138,18 +127,17 @@ _RE_ENCRYPT_BATCH_UPDATE_SQL = (
     "WHERE id=?"
 )
 
-# 预计算签名查询 SQL，使用 LEFT JOIN 提供与其他查询一致的列，包括 category_name，
-# 避免在 _row_to_entry 中对缺失列做特殊处理。
+# 签名查询 SQL：LEFT JOIN 提供与其他查询一致的列（含 category_name），避免
+# _row_to_entry 对缺失列做特殊处理。
 _SELECT_ENTRY_SIGN_SQL = (
     f"SELECT {', '.join(['e.id'] + [f'e.{c}' for c in _ENTRY_COLUMNS])}, "  # nosec B608 - 列名硬编码
     "c.name_enc as category_name "
     "FROM entries e LEFT JOIN categories c ON e.category_id = c.id WHERE e.id=?"
 )
 
-# 条目带分类名的 JOIN 基础查询（e.* 形态）。供 get_entries / get_entry /
-# get_entries_by_ids / clear_category_signatures 复用，消除 4 处复制粘贴的
-# JOIN 片段。_SELECT_ENTRY_SIGN_SQL 用显式列名（e.id, e.<col>...）而非 e.*，
-# 因签名查询需精确列序与 _ENTRY_COLUMNS 对齐，故独立不合并。
+# 条目带分类名的 JOIN 基础查询（e.* 形态），供 get_entries / get_entry /
+# get_entries_by_ids / clear_category_signatures 复用。_SELECT_ENTRY_SIGN_SQL 用
+# 显式列名（需与 _ENTRY_COLUMNS 精确对齐），故独立不合并。
 _SELECT_ENTRY_WITH_CATEGORY_SQL = (
     "SELECT e.*, c.name_enc as category_name "
     "FROM entries e LEFT JOIN categories c ON e.category_id = c.id"
@@ -161,8 +149,8 @@ _SELECT_PASSWORD_HISTORY_SQL = (
     "SELECT h.*, e.crypto_id AS entry_crypto_id "
     "FROM password_history h JOIN entries e ON e.id=h.entry_id"
 )
-# 密码历史 INSERT 与按条目截断到 MAX_PASSWORD_HISTORY 的 DELETE；
-# add_password_history 与 add_password_history_batch 共用，消除复制粘贴。
+# 密码历史 INSERT 与截断到 MAX_PASSWORD_HISTORY 的 DELETE；add_password_history
+# 与 batch 共用。
 _INSERT_PASSWORD_HISTORY_SQL = (
     "INSERT INTO password_history (entry_id, old_password_enc, changed_at) VALUES (?, ?, ?)"
 )
@@ -173,8 +161,7 @@ _TRUNCATE_PASSWORD_HISTORY_SQL = (
     ")"
 )
 
-# get_entries_by_ids 的 ID 分批阈值：SQLite 默认限制 999 个主机变量，
-# 取 500 留出余量。提取为常量以便统一调整并避免魔法数字。
+# ID 分批阈值：SQLite 默认限制 999 个主机变量，取 500 留余量。
 _ID_BATCH_SIZE = 500
 
 
@@ -182,7 +169,7 @@ def _classify_entry_integrity_error(prefix: str, exc: sqlite3.IntegrityError) ->
     """按 sqlite 原始文案分流 IntegrityError 成因，避免一律误标为「crypto_id 冲突」。
 
     entries 表除 crypto_id UNIQUE 外还有 category_id 外键约束；FK/NOT NULL 违规被
-    误标为唯一约束会误导排障方向（开发者看到「crypto_id 冲突」却实为外键违例）。
+    误标为唯一约束会误导排障方向。
     """
     message = str(exc).lower()
     if 'foreign key' in message:
@@ -197,14 +184,12 @@ def _classify_entry_integrity_error(prefix: str, exc: sqlite3.IntegrityError) ->
 class EntryRepository:
     """条目数据访问层 — 条目 CRUD、批量操作、密码历史。
 
-    通过 ``conn_provider`` 获取 sqlite3.Connection，支持外部注入连接，
-    通常为 DatabaseManager 实例。
+    经 ``conn_provider`` 获取 sqlite3.Connection（通常为 DatabaseManager 实例）。
     """
 
     def __init__(self, conn_provider: ConnectionProvider):
-        # conn_provider 为 DatabaseManager 实例（满足 ConnectionProvider 协议），
-        # 提供连接、锁与编排方法。以 Protocol 类型标注替代原先无注解，便于静态
-        # 校验 self._mgr.xxx 访问与测试替身。
+        # conn_provider（通常 DatabaseManager 实例）提供连接、锁与编排方法。
+        # 以 Protocol 类型标注便于静态校验与测试替身。
         self._mgr = conn_provider
 
     # ======== 连接与锁代理 ========
@@ -245,16 +230,14 @@ class EntryRepository:
     def _assert_entry_encrypted_fields(self, entry: RawEntry) -> None:
         """防御性断言：条目的全部加密字段(*_enc 列对应)应为受支持格式的密文或空。
 
-        加密字段集从 _ENTRY_COLUMNS 的 *_enc 列派生(经 _ENTRY_COLUMN_GETTERS
-        取值)，单一事实源：新增 *_enc 列只需在 _ENTRY_COLUMN_GETTERS 追加 getter，
-        本断言自动覆盖，消除原先手写 8 字段清单与新增加密列漏断言的漂移风险。
+        加密字段集从 _ENTRY_COLUMNS 的 *_enc 列派生，单一事实源：新增 *_enc 列只需
+        在 _ENTRY_COLUMN_GETTERS 追加 getter，本断言自动覆盖。
         """
         for column in _ENTRY_COLUMNS:
             if column.endswith('_enc'):
                 # custom_fields_enc 对应密文属性 custom_fields_db_value，其余 *_enc
-                # 去后缀即 RawEntry 同名 str 属性。经 getattr 取值消除原先依赖
-                # _ENTRY_COLUMN_GETTERS 统一 object 返回类型所需的 cast，且保持
-                # 加密字段集从 _ENTRY_COLUMNS 单一来源派生。
+                # 去后缀即 RawEntry 同名 str 属性。经 getattr 取值保持加密字段集从
+                # _ENTRY_COLUMNS 单一来源派生。
                 attr = (
                     'custom_fields_db_value'
                     if column == 'custom_fields_enc'
@@ -268,8 +251,7 @@ class EntryRepository:
     def _entry_insert_params(entry: RawEntry) -> tuple[Any, ...]:
         """构造 INSERT 参数元组，列序与 _ENTRY_COLUMNS 一致。
 
-        供 add_entry 与 add_entries_batch 共用。取值经 _ENTRY_COLUMN_GETTERS 驱动，
-        新增列只需更新 getter 映射，此处自动跟随，避免漏改致列错位。
+        供 add_entry 与 add_entries_batch 共用，取值经 _ENTRY_COLUMN_GETTERS 驱动。
         """
         return _entry_column_values(entry, _ENTRY_COLUMNS)
 
@@ -278,8 +260,7 @@ class EntryRepository:
         """构造 UPDATE SET 参数元组（不含 WHERE id），列序与 _UPDATE_ENTRY_COLUMNS 一致。
 
         与 _entry_insert_params 对称：UPDATE 不写 is_deleted/deleted_at/created_at，
-        其余列（含全部密文列）与元数据一并更新。取值同样经 _ENTRY_COLUMN_GETTERS
-        驱动，与 UPDATE SQL 列序由同一映射守护，消除手写元组的列错位风险。
+        取值经 _ENTRY_COLUMN_GETTERS 驱动，列序由同一映射守护。
         """
         return _entry_column_values(entry, _UPDATE_ENTRY_COLUMNS)
 
@@ -287,15 +268,14 @@ class EntryRepository:
         """获取密码条目列表，过滤/排序/limit/verify 经 ``EntryQuery`` 单一传入。
 
         ``query.sort_by_updated`` 为 True 时仅按 updated_at DESC 排序（不带
-        is_favorite），供「近期更新」视图下推 LIMIT 到 SQL，避免全量内存排序再截断。
+        is_favorite），供「近期更新」视图下推 LIMIT 到 SQL，免全量内存排序再截断。
 
-        ``query.verify``：完整性校验模式，默认 LENIENT（逐行 HMAC 验签并标记异常
-        条目，不抛异常）。列表/搜索/标签等只读路径沿用默认 LENIENT 以检测元数据
-        篡改；SKIP 仅用于签名计算前的原始读取（_select_entry_for_sign 等，不能先
-        验签再算签名）。单条详情用 STRICT 在校验失败时抛异常。
+        ``query.verify`` 完整性校验模式：默认 LENIENT（逐行 HMAC 验签并标记异常，
+        不抛异常），列表/搜索/标签等只读路径沿用默认以检测篡改；SKIP 仅用于签名
+        计算前的原始读取（不能先验签再算签名）；STRICT 单条详情用，失败抛异常。
         """
-        # ARCH-005：本方法手写 with self._lock 而非挂 @_db_operation，跳过了装饰器
-        # 的连接校验；显式补齐，使未连接时抛领域 DatabaseError 而非无诊断的 AttributeError。
+        # ARCH-005：本方法手写 with self._lock 而非挂 @_db_operation，跳过装饰器连接
+        # 校验，显式补齐使未连接时抛 DatabaseError 而非无诊断的 AttributeError。
         if self._conn is None:
             raise DatabaseError("数据库未连接")
         sql = _SELECT_ENTRY_WITH_CATEGORY_SQL + " WHERE 1=1"
@@ -346,12 +326,9 @@ class EntryRepository:
     ) -> RawEntry:
         """填充 INSERT 所需的默认字段(crypto_id/时间戳/删除状态/签名)。
 
-        add_entry 与 add_entries_batch 共用，消除两处复制粘贴的规范化逻辑漂移。
-        password_changed_at 回退到 created_at（"未改过密码即创建时间"语义），而非
-        updated_at/now，避免导入/恢复时用导入时刻覆盖历史时间。
-
-        RawEntry 为 frozen dataclass，返回经 replace 产生的新实例（含签名），
-        调用方须承接返回值。
+        add_entry 与 add_entries_batch 共用。password_changed_at 回退到 created_at
+        （"未改过密码即创建时间"），而非 updated_at/now，避免导入/恢复时用导入时刻
+        覆盖历史时间。RawEntry 为 frozen，返回经 replace 的新实例，调用方须承接。
         """
         crypto_id = entry.crypto_id or uuid.uuid4().hex
         created_at = entry.created_at or now
@@ -386,8 +363,7 @@ class EntryRepository:
                 self._entry_insert_params(entry),
             )
         except sqlite3.IntegrityError as exc:
-            # 归一化为领域异常，避免裸驱动异常泄漏给上层；按文案分流 FK/NOT NULL/唯一，
-            # 避免一律误标为 crypto_id 冲突（真实 sqlite 文案随 {exc} 附出供进一步诊断）。
+            # 归一化为领域异常并按文案分流 FK/NOT NULL/唯一，真实 sqlite 文案随 {exc} 附出。
             raise _classify_entry_integrity_error('条目写入', exc) from exc
         self._auto_commit()
         return cursor.lastrowid or 0
@@ -399,12 +375,9 @@ class EntryRepository:
         """批量添加条目（恢复路径专用），返回 ``{crypto_id: new_id}``。
 
         逐条计算 ``metadata_mac`` 后用 ``executemany`` 一次性 INSERT，将 N 次单独
-        INSERT + ``_auto_commit``（每次 commit 即一次 fsync）合并为 1 次 executemany
-        + 1 次 commit，显著缩短恢复长事务持 ``vault_write_lock`` 的时间（否则 UI
-        完全冻结）。``preserve_metadata`` 语义同 :meth:`add_entry`。
-
-        ``executemany`` 不返回逐条 ``lastrowid``，故按 ``crypto_id`` 反查 ``id``
-        建立 crypto_id→new_id 映射，供调用方关联旧 entry_id。
+        INSERT+commit（每次 fsync）合并为 1 次 executemany+1 次 commit，缩短恢复
+        长事务持锁时间（否则 UI 冻结）。``executemany`` 不返回逐条 lastrowid，故
+        按 ``crypto_id`` 反查 ``id`` 建立映射，供调用方关联旧 entry_id。
 
         Args:
             entries: 待写入的 RawEntry 列表（加密字段须已加密）。
@@ -416,8 +389,8 @@ class EntryRepository:
         params = []
         normalized: list[RawEntry] = []
         for entry in entries:
-            # 恢复数据来自外部备份，逐条断言加密列防止明文静默落库（与 add_entry
-            # 一致，不采样护栏——恢复是低频全量写入，逐条断言开销可接受）。
+            # 恢复数据来自外部备份，逐条断言加密列防明文落库（与 add_entry 一致，
+            # 恢复低频全量写入，逐条断言开销可接受）。
             self._assert_entry_encrypted_fields(entry)
             entry = self._normalize_for_insert(
                 entry, now=now, preserve_metadata=preserve_metadata,
@@ -429,9 +402,8 @@ class EntryRepository:
         except sqlite3.IntegrityError as exc:
             raise _classify_entry_integrity_error('批量条目写入', exc) from exc
         self._auto_commit()
-        # executemany 不提供逐条 lastrowid，按 crypto_id 反查 id 建立映射。
-        # 按 _ID_BATCH_SIZE 分批，避免恢复 >999 条目时 crypto_id IN(...) 超出
-        # SQLite 主机变量上限（与 get_entries_by_ids 一致）。
+        # executemany 不提供逐条 lastrowid，按 crypto_id 反查 id。按 _ID_BATCH_SIZE
+        # 分批，避免 >999 条目时 IN(...) 超出 SQLite 主机变量上限。
         crypto_ids = [entry.crypto_id for entry in normalized]
         id_map: dict[str, int] = {}
         for start in range(0, len(crypto_ids), _ID_BATCH_SIZE):
@@ -453,9 +425,8 @@ class EntryRepository:
     ) -> None:
         """更新条目。
 
-        注意：此方法不写入 is_deleted 和 deleted_at 字段，这两个字段
-        仅由 soft_delete_entry / restore_entry 管理。若需修改删除状态，
-        请使用上述专用方法。
+        Note: 不写 is_deleted/deleted_at，删除状态仅由 soft_delete_entry /
+        restore_entry 管理。
         """
         # 防御性断言，防止明文静默写入加密列
         self._assert_entry_encrypted_fields(entry)
@@ -464,12 +435,11 @@ class EntryRepository:
             if preserve_updated_at and entry.updated_at
             else utc_now_iso()
         )
-        # RawEntry 为 frozen，用 replace 产生带新时间戳与签名的新实例供写库。
+        # RawEntry 为 frozen，replace 产生带新时间戳与签名的新实例供写库。
         entry = replace(entry, updated_at=updated_at)
         entry = replace(entry, metadata_mac=self._sign_entry(entry))
-        # SET 参数经 _entry_update_params 取值（_UPDATE_ENTRY_COLUMNS 列序），末尾
-        # 追加 WHERE id 绑定。列序由 _ENTRY_COLUMN_GETTERS 单一来源守护，
-        # 与 INSERT 路径对称，消除手写 17 字段元组的列错位风险。
+        # SET 参数经 _entry_update_params 取值，末尾追加 WHERE id 绑定。列序由
+        # _ENTRY_COLUMN_GETTERS 守护，与 INSERT 路径对称。
         self._conn.execute(
             _UPDATE_ENTRY_SQL,
             (*self._entry_update_params(entry), entry.id),
@@ -487,10 +457,9 @@ class EntryRepository:
         """
         if not rows:
             return
-        # 采样首条的加密列做格式自检，防止重加密流程 bug 导致明文静默落入加密列。
-        # 逐行断言开销不可接受（改密可达数万条），故仅采样首条作护栏；字段集从
-        # ReEncryptedEntry._fields 的 *_enc 派生，与列序单一来源统一，新增 *_enc
-        # 列时采样断言自动覆盖（无需手动同步 8 字段清单）。
+        # 采样首条加密列做格式自检，防重加密 bug 致明文落库。改密可达数万条，
+        # 逐行断言开销不可接受故仅采样；字段集从 ReEncryptedEntry._fields 的 *_enc
+        # 派生，新增 *_enc 列时采样断言自动覆盖。
         first = rows[0]
         for field in ReEncryptedEntry._fields:
             if field.endswith('_enc'):
@@ -575,11 +544,8 @@ class EntryRepository:
     def get_entries_by_ids(self, entry_ids: list[int]) -> list[RawEntry]:
         """按 ID 列表批量获取条目。
 
-        用于导入覆盖等需要一次性获取多个条目的场景，
-        替代逐条 get_entry 的 N+1 查询模式。
-
-        ID 数量超过 SQLite 主机变量数限制（默认 999）时分批查询，
-        避免 too many SQL variables 错误。
+        用于导入覆盖等场景，替代逐条 get_entry 的 N+1 查询。ID 数量超 SQLite
+        主机变量上限（默认 999）时分批查询，避免 too many SQL variables 错误。
 
         Args:
             entry_ids: 要获取的条目 ID 列表。
@@ -621,9 +587,9 @@ class EntryRepository:
             _INSERT_PASSWORD_HISTORY_SQL,
             (entry_id, old_password_enc, changed_at or utc_now_iso()),
         )
-        # 无条件截断：NOT IN 子查询对未超限条目不匹配任何行，幂等且高效，
-        # 比先 COUNT 再 DELETE 少一次查询。隐式依赖 id 为 INTEGER PRIMARY KEY
-        # （NOT NULL）：若子查询结果含 NULL，NOT IN 对所有行返回 UNKNOWN 而不删除。
+        # 无条件截断：NOT IN 子查询对未超限条目不匹配任何行，幂等且高效，比先 COUNT
+        # 再 DELETE 少一次查询。隐式依赖 id 为 INTEGER PRIMARY KEY（NOT NULL）：若子查询
+        # 含 NULL，NOT IN 对所有行返回 UNKNOWN 而不删除。
         self._conn.execute(
             _TRUNCATE_PASSWORD_HISTORY_SQL,
             (entry_id, entry_id, MAX_PASSWORD_HISTORY),
@@ -638,8 +604,7 @@ class EntryRepository:
     ) -> None:
         """批量添加密码历史，末尾统一截断到 MAX_PASSWORD_HISTORY 条。
 
-        相比逐条调用 add_password_history，避免每条记录触发一次截断 DELETE。
-        用于备份恢复等需一次性写入多条历史的场景。
+        相比逐条调用 add_password_history，避免每条触发一次截断 DELETE。
 
         Args:
             entry_id: 条目 ID。
@@ -711,12 +676,12 @@ class EntryRepository:
     def update_password_history_batch(self, rows: list[ReEncryptedHistory]) -> None:
         """批量更新密码历史记录的密文。
 
-        改密重加密时将逐条 UPDATE 合并为单次 executemany，减少数据库往返次数。
+        改密重加密时将逐条 UPDATE 合并为单次 executemany。
 
         Args:
             rows: ``ReEncryptedHistory`` NamedTuple 列表（re_encryption 产出）。
-                NamedTuple 自动适配 executemany 的位置参数绑定；不接受普通二元组——
-                解包 ``for encrypted, _history_id in rows`` 依赖字段语义，普通 tuple 易错位。
+                NamedTuple 自动适配 executemany 位置绑定；不接受普通二元组——解包
+                ``for encrypted, _history_id in rows`` 依赖字段语义，普通 tuple 易错位。
         """
         if not rows:
             return
@@ -733,9 +698,8 @@ class EntryRepository:
     def _select_entry_for_sign(self, entry_id: int) -> RawEntry | None:
         """按 ID 查询签名所需的完整行并返回 Entry 对象。
 
-        供 soft_delete_entry / restore_entry 等需要重算签名的操作复用，
-        避免在多处重复维护列名列表。跳过完整性校验，因为签名操作本身
-        需要读取原始数据来计算 MAC。
+        供 soft_delete_entry / restore_entry 等重算签名操作复用。跳过完整性校验，
+        因签名需读原始数据来计算 MAC（不能先验签再算签名）。
         """
         row = self._conn.execute(
             _SELECT_ENTRY_SIGN_SQL,
@@ -746,23 +710,17 @@ class EntryRepository:
     def clear_category_signatures(self, category_id: int) -> None:
         """将指定分类下所有条目的 category_id 置空并重算元数据签名。
 
-        供删除分类时由 DatabaseManager 编排调用，保持条目元数据完整性。
-        批量执行，将 N+1 模式降为 2 次操作。不校验旧签名，因签名将被覆盖。
-        作为公开的跨 Repository 编排接口（非私有）供
-        ``DatabaseManager.delete_category`` 显式调用——原先以下划线前缀标记
-        「内部接口」却仍被 db_manager 跨对象访问，反而违背 db_manager 自身
-        「消除跨 Repository 私有访问越权」的声明，故提升为公开方法。
+        供删除分类时由 DatabaseManager.delete_category 编排调用。批量执行将 N+1
+        模式降为 2 次操作；不校验旧签名，因签名将被覆盖。作为公开跨 Repository
+        编排接口供 DatabaseManager 显式调用。
 
-        锁与事务契约：本方法未使用 ``@_db_operation`` 装饰器，不自行获取
-        ``db_lock``。调用方（DatabaseManager.delete_category）须已持有
-        ``db_lock`` 并处于活动事务内，以保证 SELECT 与 executemany UPDATE
-        的原子性及跨表一致性。入口断言将此契约从注释升级为运行期检查，
-        防止未来误在无事务上下文中直接调用。
+        锁与事务契约：未用 ``@_db_operation``，不自行获取 ``db_lock``。调用方
+        须已持锁并处活动事务内，保证 SELECT 与 executemany UPDATE 的原子性与跨表
+        一致性。入口断言将此契约升级为运行期检查。
 
-        已知取舍（性能）：持 ``db_lock`` 下对分类下全部条目逐条 ``_row_to_entry``
-        + ``_sign_entry``（HMAC）是 O(N) Python 循环，大分类（数千条目）下会阻塞
-        其他数据库访问。彻底优化需 ``MetadataSigner`` 提供批量签名接口，当前作为
-        已知取舍保留——删除分类是低频操作，阻塞窗口可接受。
+        已知取舍（性能）：持锁下对全部条目逐条 ``_row_to_entry`` + ``_sign_entry``
+        （HMAC）是 O(N) Python 循环，大分类下会阻塞其他数据库访问。彻底优化需
+        ``MetadataSigner`` 提供批量签名接口；删除分类是低频操作，阻塞窗口可接受。
         """
         if not self.in_transaction:
             raise TransactionError(
@@ -790,9 +748,8 @@ class EntryRepository:
 
         Args:
             row: 数据库查询返回的行，需包含所有条目列。
-            verify: 完整性校验模式，取 STRICT、LENIENT 或 SKIP。
-                STRICT 在校验失败时抛出异常；LENIENT 仅设置
-                integrity_error 标志并继续；SKIP 完全跳过校验。
+            verify: 完整性校验模式。STRICT 失败抛异常；LENIENT 仅设置
+                integrity_error 标志并继续；SKIP 完全跳过。
         """
         entry = RawEntry(
             id=row['id'],
@@ -830,8 +787,7 @@ class EntryRepository:
                     integrity_message='元数据完整性校验失败',
                 )
             except VaultLockedError:
-                # 未解锁状态（如锁定期间后台分析线程读到已清零的域密钥）
-                # 不是完整性错误，向上传播让调用方处理
+                # 未解锁态（锁定期间后台线程读到已清零域密钥）非完整性错误，向上传播。
                 raise
         return entry
 

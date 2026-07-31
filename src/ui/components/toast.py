@@ -361,11 +361,7 @@ class ToastManager:
 
     @staticmethod
     def cancel_all_for(parent: QWidget) -> None:
-        """取消指定 parent 窗口的所有活跃 Toast，作为公共 API 暴露。
-
-        替代直接访问 ``ToastManager._instances`` 私有属性的模式，
-        供 MainWindow.prepare_for_lock 等外部调用方使用。
-        """
+        """取消指定 parent 窗口的所有活跃 Toast，供 MainWindow.prepare_for_lock 等外部调用。"""
         mgr = ToastManager._instances.get(parent)
         if mgr:
             mgr.cancel_all()

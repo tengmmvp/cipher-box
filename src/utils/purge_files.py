@@ -1,8 +1,6 @@
 """批量安全删除文件工具 — 统一备份/恢复点/快照的清理逻辑。
 
-集中 ``backup_restore`` 与 ``vault_manager`` 中重复的「目录遍历 + glob +
-secure_delete_file + 失败收集/告警」模式，参数化目录、模式、保留数与失败策略，
-消除 6 处逐字重复实现。底层复用 :func:`secure_delete_file` 保持覆写删除强度，
+参数化目录、模式、保留数与失败策略；复用 :func:`secure_delete_file` 保持覆写删除强度，
 确保含明文的恢复点/快照不被仅 unlink。
 """
 
@@ -25,17 +23,14 @@ def secure_purge(
     """按 glob 模式安全删除目录下匹配文件，返回未能删除的文件列表。
 
     Args:
-        directories: 待清理的目录（不存在的目录跳过）。
-        patterns: glob 模式集合（如 ``['pre_restore_*.cbox', 'cipherbox_snapshot_*.cbox']``）。
-        keep: ``None`` 表示全部删除；``N`` 表示每个 ``(directory, pattern)`` 组合
-            按文件名降序保留最新 N 个、删除其余。文件名降序比 ``st_mtime`` 更精确，
-            与原恢复点/快照 retention 语义一致（避免秒级精度问题）。
-        collect_failures: ``True`` 时删除失败的文件收集到返回列表供调用方上报；
-            ``False`` 时失败仅记录告警、返回空列表。
+        directories: 待清理目录（不存在则跳过）。
+        patterns: glob 模式集合（如 ``['pre_restore_*.cbox', ...]``）。
+        keep: ``None`` 全删；``N`` 表示每个 ``(directory, pattern)`` 按文件名降序
+            保留最新 N 个（与恢复点/快照 retention 语义一致，避开 ``st_mtime`` 秒级精度问题）。
+        collect_failures: ``True`` 收集失败文件到返回列表供上报；``False`` 仅告警返回空。
 
     Returns:
-        删除失败的 ``Path`` 列表；``collect_failures=False`` 时恒为空。调用方据此
-        区分「全清成功」与「部分残留」（残留文件含明文，需可见反馈）。
+        删除失败的 ``Path`` 列表；``collect_failures=False`` 时恒为空（残留文件含明文，需可见反馈）。
     """
     failed: list[Path] = []
     for directory in directories:

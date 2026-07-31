@@ -1,9 +1,8 @@
 """Bitwarden 导入器对畸形/被污染导出 JSON 的容错测试。
 
-回归守护：外部 Bitwarden 导出可能被污染或损坏（嵌套字段为非预期类型、item 本身
-非对象、字段超长）。解析须对这些结构容错——以类型守卫避免 AttributeError 中断整个
-导入（单个畸形 item 导致的拒绝服务），并以 validate_plain_entry 跳过类型混淆/
-超长字段，使 ImportExportManager 的 skip_validation=True 假设对本路径成立。
+外部导出可能被污染（字段错型、item 非对象、字段超长）：以类型守卫避免单个畸形 item
+的 AttributeError 中断整个导入，并以 validate_plain_entry 跳过类型混淆/超长字段，
+使 ImportExportManager 的 skip_validation=True 假设对本路径成立。
 """
 
 import json

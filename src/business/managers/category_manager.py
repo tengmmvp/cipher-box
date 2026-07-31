@@ -1,12 +1,11 @@
-"""分类管理器 — 从 EntryManager 抽离的分类 CRUD 与加解密。
+"""分类管理器 — 分类的加密 CRUD 与加解密。
 
-分类名经 crypto_utils 加密落库；读取时经 EntryCacheManager 解密并缓存。
-写操作经 EntryChangeBus 通知缓存失效与回调（category_changed=True，
-保留搜索摘要缓存，因分类变更不改变条目摘要内容）。
+分类名经 crypto_utils 加密落库，读取时经 EntryCacheManager 解密并缓存。写操作
+经 EntryChangeBus 通知（category_changed=True，保留搜索摘要缓存）。
 
-add_category 采用两阶段加密事务：先用 pending_id 占位加密写入获得真实
-id，再在事务内用真实 category_crypto_id 重加密分类名并更新。该事务必须
-整体迁移，不能拆，否则会残留 pending_id 密文。
+add_category 采用两阶段加密事务：先用 pending_id 占位加密写入获得真实 id，
+再在事务内用真实 category_crypto_id 重加密分类名并更新。该事务必须整体迁移，
+不能拆，否则会残留 pending_id 密文。
 """
 
 import uuid
@@ -78,12 +77,12 @@ class CategoryManager:
     def add_category(self, category: Category, *, notify: bool = True) -> int:
         """新增分类（两阶段加密事务）。
 
-        先用 pending_id 占位加密分类名写入数据库获得真实 id，再在事务内用
-        真实 category_crypto_id 重加密并更新。事务必须整体迁移不能拆，否则
-        会残留 pending_id 加密的分类名密文。
+        先用 pending_id 占位加密写入获得真实 id，再在事务内用真实
+        category_crypto_id 重加密并更新。事务必须整体迁移不能拆，否则残留
+        pending_id 加密的分类名密文。
 
-        查重在事务内进行，与写入原子化，避免并发两次同名分类都通过查重后
-        各自写入的 TOCTOU 竞态（分类名以密文落库，UNIQUE 约束对密文无效）。
+        查重在事务内进行，避免并发两次同名分类都通过查重后各自写入的 TOCTOU
+        竞态（分类名以密文落库，UNIQUE 约束对密文无效）。
         """
         plaintext_name = category.name.strip()
         if not plaintext_name:

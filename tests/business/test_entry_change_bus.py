@@ -102,13 +102,11 @@ class TestEntryChangeBusEndToEnd:
         cat_id = entry_mgr.categories.add_category(Category(name='Orig'))
         cache = entry_mgr._category_mgr._cache  # noqa: SLF001 测试取内部缓存
 
-        # 填充分类名缓存
         cats = entry_mgr.categories.get_categories()
         orig_name = next(c.name for c in cats if c.id == cat_id)
         assert orig_name == 'Orig'
         assert cat_id in cache._category_name_cache  # noqa: SLF001
 
-        # 经 change_bus notify 分类变更，缓存应被清空
         entry_mgr._change_bus.notify(  # noqa: SLF001
             password_changed=False, tags_changed=False,
             category_changed=True, clear_summaries=False,

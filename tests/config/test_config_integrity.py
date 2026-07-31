@@ -40,7 +40,6 @@ class TestConfigIntegrity:
         json_text = lines[0]
         sig_line = lines[1]
 
-        # 修改一个值
         tampered = json_text.replace('"theme": "light"', '"theme": "dark"')
         config._config_path.write_text(tampered + '\n' + sig_line, encoding='utf-8')
 

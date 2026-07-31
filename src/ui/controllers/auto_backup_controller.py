@@ -1,8 +1,7 @@
-"""自动备份控制器 — 从 MainWindow 抽离的定时快照编排。
+"""自动备份控制器：定时快照编排。
 
 持有自动备份定时器与后台 worker，封装 ``maybe_auto_backup`` 的启用判断、
-异步执行与协作取消。MainWindow 经此类委托，自身不再直接持有 ``_backup_timer``
-与 ``_backup_worker`` 状态，使自动备份成为独立、可测试的关注点。
+异步执行与协作取消。
 """
 
 from __future__ import annotations

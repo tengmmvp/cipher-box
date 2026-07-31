@@ -113,7 +113,6 @@ class TestWrite:
 
         set_meta_calls = db.set_meta.call_args_list
         written_keys = [c.args[0] for c in set_meta_calls]
-        # 全部持久化字段
         expected_keys = {
             'master_salt', 'master_verify', 'master_kdf', 'master_kdf_time_cost',
             'master_kdf_memory_cost', 'master_kdf_parallelism',
@@ -122,5 +121,4 @@ class TestWrite:
         assert expected_keys.issubset(set(written_keys))
         # vault_meta_mac 是最后一个 set_meta（所有被签字段写完后再回读签名）
         assert written_keys[-1] == 'vault_meta_mac'
-        # mac 经 get_meta_batch 回读刚写入的值再计算
         db.get_meta_batch.assert_called_once()

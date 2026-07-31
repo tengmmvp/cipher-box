@@ -23,9 +23,8 @@ logger = logging.getLogger(__name__)
 class EntryOverrides(TypedDict, total=False):
     """copy_entry_fields 的可选覆盖字段，键集合与 :class:`Entry` 字段一一对应。
 
-    total=False：所有字段均可选，调用方按需覆盖子集。custom_fields 在解密路径
-    传入 ``list[CustomField]``；password 运行时可为 :class:`Sensitive`（str 子类），
-    标注为 str 兼容二者。
+    total=False 全可选。custom_fields 解密路径传 ``list[CustomField]``；password
+    运行时可为 :class:`Sensitive`（str 子类），标注为 str 兼容二者。
     """
 
     id: int | None
@@ -55,18 +54,15 @@ class EntryOverrides(TypedDict, total=False):
     totp_present: bool
 
 
-# 条目中需加密的敏感字段名（RawEntry/Entry 逻辑属性名，非 DB 列名）。单一事实
-# 来源：ReEncryptionService 重加密、下方 decrypt_entry_to_portable_dict /
-# build_encrypted_entry_fields 的加解密字段集均与此一致。custom_fields 在加解密
-# 时序列化为 JSON 字符串再加密，字段名仍计入此集合。新增加密字段须同步更新
-# decrypt/build 的显式字段处理与 metadata_signer._payload 的 _enc_hash 绑定。
+# 条目需加密的敏感字段名（逻辑属性名）。加解密字段集的单一事实源，新增加密字段
+# 须同步 decrypt/build 与 metadata_signer._payload 的 _enc_hash 绑定。custom_fields
+# 序列化为 JSON 字符串再加密。
 SENSITIVE_ENCRYPTED_FIELDS: tuple[str, ...] = (
     'title', 'username', 'password', 'url', 'tags', 'notes',
     'totp_secret', 'custom_fields',
 )
 
-# 字符串型加密字段（custom_fields 为 list[CustomField]，单独校验）。
-# 供 entry_validation.validate_plain_entry 等明文条目校验复用，单一来源。
+# 字符串型加密字段（custom_fields 为 list，单独校验），供明文校验复用的单一来源。
 STRING_ENCRYPTED_FIELDS: tuple[str, ...] = tuple(
     f for f in SENSITIVE_ENCRYPTED_FIELDS if f != 'custom_fields'
 )
@@ -75,11 +71,9 @@ STRING_ENCRYPTED_FIELDS: tuple[str, ...] = tuple(
 def require_vault_key(vault_manager: VaultManager) -> bytes:
     """获取保险库加密密钥，未解锁时抛出 VaultLockedError。
 
-    优先查 ``is_unlocked`` 而非仅查 ``key is None``：unlock 流程在 vault_meta_mac
-    校验通过前 key 已装入但 ``is_unlocked`` 仍为 False，查 is_unlocked 收紧此窄窗，
-    避免并发调用在解锁未完成时获取 key。is_unlocked=True 蕴含 key 非 None（其定义
-    即 ``_is_unlocked and _key is not None``），第二个 None 检查仅为类型 narrow
-    与防御（解锁态下不达）。
+    优先查 ``is_unlocked`` 而非仅查 ``key is None``：unlock 在 vault_meta_mac 校验
+    通过前 key 已装入但 is_unlocked 仍为 False，查 is_unlocked 收紧此窄窗。第二个
+    None 检查仅为类型 narrow（解锁态下不达）。
     """
     if not vault_manager.is_unlocked:
         raise VaultLockedError("保险库未解锁")
@@ -98,21 +92,13 @@ def entry_aad(crypto_id: str, field_name: str) -> str:
 def category_crypto_id(category_id: int) -> str:
     """构造分类名加密的 crypto_id。
 
-    统一此字面量（曾散落于 entry_manager._category_crypto_id、re_encryption、
-    security_analyzer），使分类名加解密 AAD 为单一真相源，避免漂移导致解密失败。
-    与 entry_aad 组合：``entry_aad(category_crypto_id(id), 'category_name')``。
+    分类名 AAD 的单一真相源，与 entry_aad 组合：``entry_aad(category_crypto_id(id), 'category_name')``。
     """
     return f'category-{category_id}'
 
 
 def encrypt_field(plaintext: str, key: bytes | bytearray, crypto_id: str, field_name: str) -> str:
-    """加密单个条目字段。
-
-    统一入口，替代各处内联的 EncryptionEngine.encrypt 调用（EntryManager、
-    backup_restore 等），保证 AAD 构造一致。
-
-    空字符串也直接经过 AES-GCM 加密，确保 AAD 始终参与认证。
-    """
+    """加密单个条目字段。统一入口保证 AAD 构造一致；空串亦经 AES-GCM 加密确保 AAD 始终参与认证。"""
     return EncryptionEngine.encrypt(
         plaintext, key, entry_aad(crypto_id, field_name)
     )
@@ -126,10 +112,7 @@ def decrypt_field(
     *,
     strict: bool = False,
 ) -> str:
-    """解密单个条目字段。
-
-    统一入口，替代各处内联的 EncryptionEngine.decrypt 调用（EntryManager、
-    backup_restore、security_analyzer 等），保证 AAD 与容错策略一致。
+    """解密单个条目字段，统一入口保证 AAD 与容错策略一致。
 
     Args:
         encrypted: 密文字符串。
@@ -145,10 +128,8 @@ def decrypt_field(
             encrypted, key, entry_aad(crypto_id, field_name)
         )
     except DecryptionError:
-        # EncryptionEngine.decrypt 已把 InvalidTag/格式错误/_get_cipher 密钥长度等
-        # 所有失败统一包装为 DecryptionError（ValueError 子类）。显式捕获
-        # DecryptionError 而非宽泛 ValueError，使「密文损坏」语义清晰，且不吞掉
-        # 其他 ValueError（容错路径记日志、strict 路径 raise）。
+        # 显式捕获 DecryptionError（ValueError 子类）而非宽泛 ValueError，使
+        # 「密文损坏」语义清晰，不吞掉其他 ValueError。
         if strict:
             raise
         logger.warning(
@@ -159,11 +140,11 @@ def decrypt_field(
 
 
 def matches_search(entry: Entry | RawEntry, query: str) -> bool:
-    """检查条目是否匹配搜索关键词，大小写不敏感，搜索 title/username/url/tags。
+    """检查条目是否匹配搜索关键词（大小写不敏感，搜 title/username/url/tags）。
 
     Args:
         entry: 待匹配的明文 Entry 摘要。生产路径不应传入 RawEntry。
-        query: 搜索关键词，空字符串匹配所有条目。
+        query: 搜索关键词，空串匹配所有。
     """
     if not query:
         return True
@@ -178,17 +159,13 @@ def matches_search(entry: Entry | RawEntry, query: str) -> bool:
 def matches_search_lower(
     lower: tuple[str, str, str, str], query: str,
 ) -> bool:
-    """检查条目是否匹配搜索关键词，使用预计算的小写字段值。
+    """检查条目是否匹配搜索关键词，复用预计算的小写字段值，省去每条目 4 次 ``.lower()``。
 
-    与 :func:`matches_search` 的区别：跳过每条目 4 字段实时 ``.lower()``，
-    复用摘要缓存内的小写形式 (title_lower, username_lower, url_lower,
-    tags_lower)，供批量搜索热路径（如 :meth:`EntryManager.get_entry_summaries`）
-    消除每次搜索 N×4 次 ``.lower()`` 的重复开销。匹配语义与 :func:`matches_search`
-    完全一致（关键词 ``.lower()`` 后对小写字段做 ``in`` 子串匹配）。
+    供批量搜索热路径消除 N×4 次 ``.lower()`` 开销，匹配语义与 :func:`matches_search` 一致。
 
     Args:
         lower: 预计算小写形式的 (title, username, url, tags)。
-        query: 搜索关键词，空字符串匹配所有条目。
+        query: 搜索关键词，空串匹配所有。
     """
     if not query:
         return True
@@ -197,11 +174,7 @@ def matches_search_lower(
 
 
 def matches_tag(entry: Entry, tag: str) -> bool:
-    """检查条目是否包含指定标签，大小写不敏感的精确匹配。
-
-    与 ``Entry.get_tag_list()`` 使用一致的解析逻辑：
-    以逗号分隔、逐元素 strip 空白、大小写不敏感比较。
-    """
+    """检查条目是否含指定标签（大小写不敏感精确匹配），解析逻辑与 ``Entry.get_tag_list()`` 一致。"""
     if not tag:
         return True
     tag_lower = tag.strip().lower()
@@ -212,10 +185,8 @@ def matches_tag(entry: Entry, tag: str) -> bool:
 def copy_entry_fields(raw: RawEntry, **overrides: Unpack[EntryOverrides]) -> Entry:
     """从密文态 RawEntry 构建明文 Entry，按需覆盖字段。
 
-    RawEntry 与 Entry 是不同 dataclass，不能用 ``dataclasses.replace`` 跨类型
-    （会产出 RawEntry）。直接构造 Entry，逐字段从 raw 取值；可变字段（username/
-    password/notes/totp_secret/custom_fields 等）经 overrides 覆盖。``custom_fields``
-    默认空 list，调用方解密路径应在 ``overrides`` 传入解密后的 ``list[CustomField]``。
+    RawEntry 与 Entry 是不同 dataclass，不能跨类型 ``dataclasses.replace``（产出 RawEntry），
+    故直接构造。custom_fields 默认空 list，解密路径应在 overrides 传入解密后的 list。
     """
     return Entry(
         id=overrides.get('id', raw.id),
@@ -247,11 +218,7 @@ def copy_entry_fields(raw: RawEntry, **overrides: Unpack[EntryOverrides]) -> Ent
 
 
 def build_entry_summary(raw: RawEntry, username: str = '') -> Entry:
-    """从原始数据库字段构建摘要 Entry，可选附带已解密的用户名。
-
-    Summary 条目不含 password/notes/totp_secret/custom_fields 等敏感字段，
-    仅用于列表显示和安全分析。
-    """
+    """从原始数据库字段构建摘要 Entry（不含敏感字段，仅用于列表显示与安全分析）。"""
     return copy_entry_fields(
         raw,
         username=username,
@@ -268,14 +235,7 @@ def decrypt_entry_to_portable_dict(
     *,
     include_secrets: bool = True,
 ) -> dict[str, Any]:
-    """将原始 Entry 解密为明文字典，任一字段损坏抛异常。
-
-    供备份、导出等需要整条解密的场景。与原先返回 ``dict | None`` 不同：失败不再
-    返回 None 让调用方判断，而是直接抛 :class:`DecryptionError`（元数据完整性失败
-    或字段解密失败）或 :exc:`json.JSONDecodeError`（自定义字段 JSON 损坏），由调用
-    方 catch 决定中止或跳过。消除「None 既可能=损坏跳过也可能=完整性失败」的二义，
-    且与项目其余「失败抛 DecryptionError」约定一致——原先唯一调用方
-    ``_collect_portable_entries`` 在 None 时本就立即 raise BackupError，None 路径冗余。
+    """将原始 Entry 解密为明文字典，任一字段损坏抛异常。供备份/导出等整条解密场景。
 
     Args:
         raw_entry: 数据库层原始 Entry，加密字段为密文字符串。
@@ -283,16 +243,15 @@ def decrypt_entry_to_portable_dict(
         include_secrets: 是否包含密码和 TOTP 密钥等敏感字段。
 
     Raises:
-        DecryptionError: ``raw_entry`` 元数据完整性失败，或任一加密字段解密失败。
+        DecryptionError: 元数据完整性失败，或任一加密字段解密失败。
         json.JSONDecodeError: 自定义字段密文解密成功但 JSON 结构损坏。
     """
     if raw_entry.integrity_error:
         raise DecryptionError(
             f'条目 {raw_entry.crypto_id} 元数据完整性校验失败'
         )
-    # 全部加密字段统一 strict=True：任一字段损坏即抛 DecryptionError 冒泡至调用方。
-    # 实际触发极少——metadata_mac 的 _enc_hash 已覆盖全部加密字段密文，单字段损坏
-    # 会先触发元数据完整性失败使 raw_entry.integrity_error=True，在上方检查即抛出。
+    # 全部加密字段统一 strict=True：任一字段损坏即抛 DecryptionError。实际触发极少，
+    # 因 metadata_mac 的 _enc_hash 已覆盖全部加密字段密文，损坏会先触发完整性失败。
     custom_json = decrypt_field(
         raw_entry.custom_fields_db_value,
         key, raw_entry.crypto_id, 'custom_fields', strict=True,
@@ -342,17 +301,12 @@ def decrypt_entry_to_portable_dict(
 def build_encrypted_entry_fields(item: dict[str, Any], key: bytes | bytearray, crypto_id: str) -> dict[str, Any]:
     """加密条目的敏感字段，与 decrypt_entry_to_portable_dict 对称。
 
-    供备份恢复等需要从明文字典重建加密条目的场景使用。加密字段集与
-    decrypt_entry_to_portable_dict 的解密字段集保持一致，避免加/解密两侧
-    字段集漂移。
+    供备份恢复等从明文字典重建加密条目场景，字段集与解密侧保持一致避免漂移。
 
     Args:
         item: 含明文字段的字典（来自备份 JSON）。
         key: AES-256 密钥。
         crypto_id: 条目加密标识，参与 AAD。
-
-    Returns:
-        由字段名到加密密文的字典。
     """
     custom_fields = item.get('custom_fields', [])
     custom_json = json.dumps(custom_fields, ensure_ascii=False) if custom_fields else ''
@@ -371,11 +325,9 @@ def build_encrypted_entry_fields(item: dict[str, Any], key: bytes | bytearray, c
 def encrypt_plaintext_category_names(db: DatabaseManager, key: bytes | bytearray) -> None:
     """加密 data 层以明文写入的默认分类名（首次初始化后补加密）。
 
-    ``SchemaManager.init_tables`` 建表时插入默认分类（如"未分类"），但 data 层不持
-    密钥无法加密；首次初始化后在 business 层补加密，使全部 category.name 以密文存储，
-    满足改密时 ``re_encrypt_categories`` 的解密契约。已加密（cb2: 前缀）的分类跳过，
-    故重复调用幂等。从 EntryManager 提取为纯函数，供 VaultManager.initialize 直接
-    调用，消除二者间的循环依赖（原经延迟 import 调用 EntryManager 方法）。
+    data 层建表插入默认分类时不持密钥无法加密，故在 business 层补加密，使全部
+    category.name 以密文存储，满足改密时 re_encrypt_categories 的解密契约。已加密
+    （cb2: 前缀）的分类跳过，重复调用幂等。
     """
     with db.transaction():
         for category in db.get_categories():

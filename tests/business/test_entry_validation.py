@@ -120,7 +120,6 @@ def test_validate_plain_entry_accepts_within_limit():
             for i in range(MAX_CUSTOM_FIELDS_PER_ENTRY)
         ],
     )
-    # 不抛异常即通过
     validate_plain_entry(entry)
 
 

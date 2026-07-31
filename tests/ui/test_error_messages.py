@@ -33,7 +33,7 @@ class TestToUserMessage:
 
     def test_vault_key_epoch_mismatch(self):
         msg = to_user_message(VaultKeyEpochMismatchError('epoch'))
-        # 收敛后采用「操作期间检测到主密码已被修改」文案：准确描述改密/恢复/导入
+        # 采用「操作期间检测到主密码已被修改」文案：准确描述改密/恢复/导入
         # 期间 epoch 复查失败的场景（多数为同进程另一操作改密，非字面「其他进程」）。
         assert '已被修改' in msg or '重试' in msg
 
@@ -108,9 +108,6 @@ def test_all_messages_are_user_friendly(exc):
     assert msg.endswith('。') or msg.endswith('！')
 
 
-# ======== IO / 格式异常分支（驱动层错误归一为固定友好文案）========
-
-
 class TestIOAndFormatErrors:
     """FileNotFoundError / PermissionError / IsADirectoryError / JSONDecodeError /
     binascii.Error / OSError(ENOSPC) 各分支的固定文案映射。
@@ -166,9 +163,6 @@ class TestIOAndFormatErrors:
         exc = OSError('I/O boom')
         msg = to_user_message(exc)
         assert '读写' in msg or '文件' in msg
-
-
-# ======== ValueError 分支：str(exc) 空与非空 ========
 
 
 class TestValueErrorBranch:

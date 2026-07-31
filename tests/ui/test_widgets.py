@@ -1,8 +1,7 @@
 """UI 共享工具函数测试。
 
 覆盖被多个对话框复用的纯函数与 GUI 辅助函数：setup_dialog_flags（移除帮助按钮）、
-set_label_severity（severity 动态属性）。这些函数原先仅经集成测试间接覆盖，
-本测试补充直接单元覆盖以加强回归保护。
+set_label_severity（severity 动态属性）。
 """
 
 from PyQt6.QtCore import Qt

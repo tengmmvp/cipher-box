@@ -24,9 +24,9 @@ def _worker_error_message(exc: Exception) -> str:
     """归一化 worker 异常为 error 信号消息。
 
     领域异常（CipherBoxError 家族）经 to_user_message 翻译为友好文案，避免内部
-    细节或潜在明文经 ``str(exc)`` 泄漏到 UI；非领域异常（如 ValueError 字段校验）
-    保留 ``str(exc)`` 的可操作消息。完整堆栈已在调用方经 ``logger.error(exc_info=True)``
-    记录，故 error 信号只承载用户可见文案，不承担诊断职责。
+    细节或潜在明文经 ``str(exc)`` 泄漏到 UI；非领域异常保留 ``str(exc)`` 的可操作
+    消息。完整堆栈已在调用方经 ``logger.error(exc_info=True)`` 记录，error 信号只
+    承载用户可见文案，不承担诊断职责。
     """
     if isinstance(exc, CipherBoxError):
         return to_user_message(exc)
@@ -92,13 +92,11 @@ class BackgroundWorker(QThread, Generic[_T]):
         self._cancel_event.set()
 
     def cancel_check(self) -> bool:
-        """取消探针的 :class:`Callable[[], bool]` 形式，供业务层 ``cancel_check``
-        形参直接传入 ``worker.cancel_check``，替代各消费方自行包
-        ``lambda: worker.is_cancelled`` 与 holder 列表解耦时序的重复模式。
+        """取消探针的 :class:`Callable[[], bool]` 形式，可作为绑定方法直接传入
+        业务层 ``cancel_check`` 形参。
 
-        与 :attr:`is_cancelled` 同义：``is_cancelled`` 是属性访问形态，
-        ``cancel_check`` 是无参方法形态，后者可作为绑定方法直接传入期望
-        ``Callable[[], bool]`` 的形参。
+        与 :attr:`is_cancelled` 同义，前者是属性访问形态，本方法是无参方法形态，
+        可直接传入期望 ``Callable[[], bool]`` 的形参。
         """
         return self._cancel_event.is_set()
 
@@ -148,7 +146,7 @@ def wait_worker_shutdown(
             仅等待其自然完成以确保数据一致性。
         timeout: 等待超时毫秒，默认 WORKER_WAIT_TIMEOUT_MS。
 
-    供对话框 reject 与主窗口锁定/关闭时复用，消除重复的 cancel()+wait() 模式。
+    供对话框 reject 与主窗口锁定/关闭时复用。
     """
     if worker is None or not worker.isRunning():
         return True

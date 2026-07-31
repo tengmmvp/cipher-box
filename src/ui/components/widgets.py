@@ -40,8 +40,7 @@ if TYPE_CHECKING:
 def disconnect_all(connections: Iterable[tuple[Any, object]]) -> None:
     """断开一组 (signal, slot) 连接，未连接的吞 TypeError。
 
-    Qt 重复断开已断开的信号会抛 TypeError，此 helper 统一吞掉，消除各组件复制的
-    ``for signal, slot in ...: try: signal.disconnect(slot) except TypeError: pass`` 样板。
+    Qt 重复断开已断开的信号会抛 TypeError，此 helper 统一吞掉。
     """
     for signal, slot in connections:
         try:
@@ -51,11 +50,7 @@ def disconnect_all(connections: Iterable[tuple[Any, object]]) -> None:
 
 
 def create_cancel_button(parent_dialog: QDialog) -> QPushButton:
-    """构造统一的「取消」按钮：固定尺寸并绑定 reject。
-
-    消除各对话框复制的 ``QPushButton('取消') + setFixedSize(*BTN_DIALOG) +
-    clicked.connect(reject)`` 样板。
-    """
+    """构造统一的「取消」按钮：固定尺寸并绑定 reject。"""
     btn = QPushButton('取消')
     btn.setFixedSize(*BTN_DIALOG)
     btn.clicked.connect(parent_dialog.reject)
@@ -71,8 +66,6 @@ def create_icon_button(
 ) -> QPushButton:
     """构造统一的图标按钮：固定 BTN_ICON 尺寸、语义 objectName、图标与提示。
 
-    消除各组件复制的 ``QPushButton() + setObjectName('iconBtn') +
-    setFixedSize(*BTN_ICON) + set_icon(...) + setToolTip(...)`` 5 步样板。
     返回未连接 clicked 信号的按钮，由调用方按需连接。
     """
     btn = QPushButton()
@@ -115,9 +108,8 @@ def create_password_toggle_btn(
 class PasswordToggleBtn(QPushButton):
     """密码显示/隐藏切换按钮，封装 echoMode 切换与可选自动隐藏定时器。
 
-    暴露 ``show_password`` / ``hide_password`` 公共方法，替代此前通过 Qt
-    动态属性 ``autoHideTimer`` 反射取回定时器的脆弱契约：属性名拼写错误或
-    改用其他可见时长来源时旧实现会静默失效（定时器不启动 → 密码长时间明文）。
+    暴露 ``show_password`` / ``hide_password`` 公共方法而非经 Qt 动态属性反射
+    取回定时器，避免属性名拼写错误导致定时器不启动、密码长时间明文。
     """
 
     def __init__(
@@ -290,8 +282,7 @@ def apply_rate_limit(fail_count: int) -> int:
 class RateLimiter:
     """登录/改密等敏感操作的速率限制器，采用递增退避策略。
 
-    封装失败计数、锁定时间戳、过期重置等状态管理，
-    消除 LoginWindow / ChangeMasterDialog 中的重复逻辑。
+    封装失败计数、锁定时间戳、过期重置等状态管理。
 
     Usage::
 
@@ -495,11 +486,10 @@ class RateLimiter:
             remaining = int(self._lock_until - now) + 1
             return f'尝试次数过多，请等待 {remaining} 秒后重试'
         if self._lock_until and now >= self._lock_until:
-            # 锁定到期：允许重试，但**保留 fail_count**，使下一轮失败仍能爬升到
-            # 更高退避档位。原先到期即清零会让攻击者每轮重置回最低档
-            # （3 次→10s→清零→3 次→10s…），递增退避名存实亡。保留计数后，持续
-            # 失败者会逐档爬升到 30/60/120 秒；合法用户最终成功登录时由
-            # record_success 清零，不受影响。
+            # 锁定到期：允许重试，但保留 fail_count，使下一轮失败仍能爬升到更高
+            # 退避档位。若到期即清零，攻击者每轮重置回最低档（3 次→10s→清零→…），
+            # 递增退避名存实亡。保留计数后持续失败者逐档爬升；合法用户最终成功
+            # 登录时由 record_success 清零，不受影响。
             self._lock_until = 0.0
             self._save_state()
         return None
@@ -529,14 +519,12 @@ class RateLimiter:
 class WorkerHost(Protocol):
     """持有 BackgroundWorker 的对话框协议，约束 release_worker 的入参类型。
 
-    所有运行后台 worker 的对话框（backup/import_export/change_master/login/
-    security_dashboard）声明 ``_worker: BackgroundWorker | None`` 即满足本协议。
-    用 Protocol 而非具体 QDialog 子类：release_worker 只依赖「持有 _worker」这一
-    结构契约。相较原先的 ``getattr(dialog, '_worker', None)`` 宽容访问，属性访问
-    使「_worker 被重命名」能在静态类型检查阶段暴露（而非运行时静默返回 None、
-    worker 信号未断开、关闭后回调访问已销毁控件）。``sender`` 源自 QObject，
-    所有 WorkerHost 实现者均为 QDialog（QObject 子类），故纳入协议以支持
-    :func:`finalize_worker_if_current` 的过期 worker 守卫。
+    所有运行后台 worker 的对话框声明 ``_worker: BackgroundWorker | None`` 即满足
+    本协议。用 Protocol 而非具体 QDialog 子类：release_worker 只依赖「持有 _worker」
+    这一结构契约，且属性访问使「_worker 被重命名」能在静态类型检查阶段暴露，
+    而非运行时静默返回 None、worker 信号未断开、关闭后回调访问已销毁控件。
+    ``sender`` 源自 QObject，所有实现者均为 QDialog（QObject 子类），故纳入协议
+    以支持 :func:`finalize_worker_if_current` 的过期 worker 守卫。
     """
 
     _worker: BackgroundWorker | None
@@ -565,11 +553,10 @@ def release_worker(dialog: WorkerHost) -> None:
 
 
 def finalize_worker_if_current(dialog: WorkerHost) -> bool:
-    """过期 worker 守卫 + 当前 worker 释放（收敛 5 对话框的完成槽样板）。
+    """过期 worker 守卫 + 当前 worker 释放。
 
-    合并 ``if self.sender() is not self._worker: return`` 与 ``release_worker(self)``
-    两步样板：若回调来自当前 worker 则释放并返回 True，否则返回 False（调用方
-    应直接 ``return`` 忽略过期 worker 的结果）。典型用法::
+    若回调来自当前 worker 则释放并返回 True，否则返回 False（调用方应直接
+    ``return`` 忽略过期 worker 的结果）。典型用法::
 
         if not finalize_worker_if_current(self):
             return
@@ -595,9 +582,6 @@ def set_label_severity(label: QLabel, severity: str) -> None:
     QLabel#formMessage[severity=...] / QLabel#formStatus[severity=...] 颜色。
     setProperty 后需 unpolish+polish 触发 QSS 属性选择器重算，主题切换时由
     app.setStyleSheet 全局刷新，运行时改 severity 由本函数局部刷新。
-
-    供 change_master/login 的消息标签与 backup/import_export 的状态标签复用，
-    消除重复的 setStyleSheet 颜色字符串。
     """
     label.setProperty('severity', severity)
     style = label.style()

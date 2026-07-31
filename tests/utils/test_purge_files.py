@@ -12,7 +12,6 @@ from src.utils.purge_files import count_files, secure_purge
 
 
 def _touch(directory: Path, name: str) -> Path:
-    """在 directory 下创建名为 name 的空文件，返回其 Path。"""
     p = directory / name
     p.write_bytes(b'x')
     return p

@@ -1,8 +1,7 @@
 """EntryCacheManager 多级明文缓存的行为测试。
 
-EntryCacheManager 此前仅被集成测试顺带执行（覆盖率靠路径覆盖，非行为断言），
-缓存返回脏数据、失效遗漏、LRU 拼接错误都不会被发现。本文件补齐缓存命中、
-失效矩阵（单条/全清）、TOTP secret 缓存清理、invalidate_all、LRU 驱逐等关键行为。
+覆盖缓存命中、失效矩阵（单条/全清）、TOTP secret 缓存清理、invalidate_all、
+LRU 驱逐等关键行为。
 """
 
 import pytest

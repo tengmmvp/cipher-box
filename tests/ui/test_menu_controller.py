@@ -1,14 +1,11 @@
 """MenuController 直接单测（rank 10）。
 
-菜单栏/快捷键/对话框调度此前经 ``_MainWindowMenuMixin`` 隐式覆盖，组合化迁出
-（Mixin→普通类 + ``MenuSlots`` 回调注入）后首次直接单测：菜单与快捷键构建、
-菜单动作→``MenuSlots`` 回调连通、对话框 Accepted/Rejected 路径触发 refresh/theme
-副作用、改密成功触发强制快照（force=True）、``update_menu_icons`` 按
-``QAction.data()`` 重建图标。
+覆盖菜单与快捷键构建、菜单动作→``MenuSlots`` 回调连通、对话框 Accepted/Rejected
+路径触发 refresh/theme 副作用、改密成功触发强制快照（force=True）、
+``update_menu_icons`` 按 ``QAction.data()`` 重建图标。
 
 与 ``test_product_hardening`` 的端到端守护互补：后者经真实 ``MainWindow`` 验证装配
-正确，本文件聚焦 controller 内部状态与回调契约（原 Mixin 跨 self 隐式调用无法
-在 mypy/pyright 期校验，迁为 ``MenuSlots`` 后此处显式断言每条回调绑定）。
+正确，本文件聚焦 controller 内部状态与回调契约，显式断言每条 ``MenuSlots`` 回调绑定。
 """
 
 # 测试大量用 MagicMock 注入依赖，抑制其属性访问的静态类型告警
@@ -117,7 +114,7 @@ class TestMenuControllerSetup:
 
 
 class TestMenuActionWiring:
-    """菜单动作经 MenuSlots 回调连通（替代原 Mixin 跨 self 隐式调用）。"""
+    """菜单动作经 MenuSlots 回调连通。"""
 
     def test_add_entry_action_triggers_slot(self, qapp):
         ctrl, calls = _make_controller()

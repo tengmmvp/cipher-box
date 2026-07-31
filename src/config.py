@@ -30,9 +30,8 @@ logger = logging.getLogger(__name__)
 def get_data_dir() -> Path:
     """获取应用数据目录。"""
     if sys.platform == 'win32':
-        # APPDATA 正常存在；极端缺失（环境异常/被清空）时逐级回退 LOCALAPPDATA →
-        # USERPROFILE\AppData\Roaming，避免直接回退裸 ~ 把 vault.db 写到主目录根，
-        # 破坏 %APPDATA%\CipherBox 的路径约定并与已有数据不一致。
+        # APPDATA 缺失时逐级回退 LOCALAPPDATA → USERPROFILE\AppData\Roaming，
+        # 避免回退裸 ~ 把 vault.db 写到主目录根，破坏 %APPDATA%\CipherBox 路径约定。
         base = (
             os.environ.get('APPDATA')
             or os.environ.get('LOCALAPPDATA')
@@ -50,18 +49,13 @@ def get_data_dir() -> Path:
     return secure_directory(data_dir)
 
 
-# 密码过期警告天数默认值。单一真相源，供 DEFAULT_CONFIG 与各 UI 处的
-# config.get('old_password_warning_days')（依赖此默认）共享，避免字面量 90
-# 散落多处导致默认值修改漂移。
+# 密码过期警告天数默认值：DEFAULT_CONFIG 与 UI config.get 共用的单一事实源。
 OLD_PASSWORD_WARNING_DAYS_DEFAULT = 90
 
-# 窗口几何位置(hex 字符串)允许的最大字节数。Qt saveGeometry 实际输出约 40-60
-# 字节，256 字节留足余量供未来 Qt 版本增长。config._is_valid（hex 字符数 = 字节数 × 2）
-# 与 MainWindow 窗口位置恢复（解码后字节数）共用此单一常量，消除校验端与消费端
-# 各自硬编码导致上限不一致、合法 geometry 被静默丢弃的问题。
+# 窗口几何(hex 字符串)允许的最大字节数。Qt saveGeometry 实际约 40-60 字节，留足余量。
+# config._is_valid 与 MainWindow 窗口恢复共用此单一事实源，避免上限不一致致合法 geometry 被丢弃。
 MAX_WINDOW_GEOMETRY_BYTES = 256
-# 主题默认值（light/dark）：DEFAULT_CONFIG 与 UI 层 get('theme', DEFAULT_THEME)
-# 兜底共用此单一事实源，避免 'light' 字面量散落多处导致重命名时漂移。
+# 主题默认值（light/dark）：DEFAULT_CONFIG 与 UI 兜底共用的单一事实源。
 DEFAULT_THEME = 'light'
 DEFAULT_CONFIG: dict[str, Any] = {
     'theme': DEFAULT_THEME,
@@ -87,17 +81,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     'sort_order': 'desc',             # asc, desc
     'window_geometry': None,
     'splitter_sizes': None,
-    # 已建立的安全哨兵登记名（RateLimiter 首次持久化状态时登记）。HMAC 签名覆盖，
-    # 用于检测「状态文件 + 哨兵被同时删除」的速率限制绕过：文件可删，但删除后签名
-    # config 仍记录哨兵曾建立 → 加载时判定为恶意删除并降级最高阶梯锁定。非用户面向。
+    # 安全哨兵登记名（RateLimiter 首次持久化状态时登记）。HMAC 签名覆盖，用于检测
+    # 「状态文件 + 哨兵被同时删除」的速率限制绕过——文件可删，但删后签名 config 仍记录
+    # 哨兵曾建立 → 加载时判定恶意删除并降级最高阶梯锁定。非用户面向。
     'security_sentinels': [],
 }
 
-# 整型配置字段规范：(文件可接受下限, 上限, 运行时安全下限 or None)。
-# 单一真相源：_INT_RANGES（供 _is_valid 校验文件值）与 _SECURITY_MINIMUMS
-# （供 get_safe 在使用时强制下限）均由此派生，避免两处常量各自维护导致改一处漏一处。
-# 文件下限允许 0（如 auto_lock_minutes=0 表「禁用」），运行时安全下限由 get_safe 强制，
-# 防止配置文件被篡改后降低安全策略；为 None 表示该字段无额外运行时约束。
+# 整型配置字段规范：(文件可接受下限, 上限, 运行时安全下限 or None)。单一事实源，
+# _INT_RANGES（校验文件值）与 _SECURITY_MINIMUMS（运行时下限钳制）均由此派生。
+# 文件下限允许 0（如 auto_lock_minutes=0 表禁用），运行时安全下限防配置被篡改降低安全策略。
 _INT_SPECS: dict[str, tuple[int, int, int | None]] = {
     'auto_lock_minutes': (0, 60, 1),
     'clipboard_clear_seconds': (0, 300, 10),
@@ -107,10 +99,7 @@ _INT_SPECS: dict[str, tuple[int, int, int | None]] = {
     'auto_backup_retention': (2, 50, None),
     'old_password_warning_days': (30, 365, None),
 }
-# 只读映射：MappingProxyType 防止误用 ``_INT_RANGES[k] = ...`` / ``_SECURITY_MINIMUMS[k] = ...
-# 改写模块常量（ARCH-024）。两者皆派生自 _INT_SPECS 的只读查找表，读取路径
-# （``in`` / ``[]`` / ``set(...)``）与原 dict 一致。``_SECURITY_MINIMUMS`` 供
-# get_safe 运行时下限钳制与 _INTEGRITY_SENSITIVE_KEYS 派生，均无写入需求。
+# 只读映射（MappingProxyType 防误写，ARCH-024）：均派生自 _INT_SPECS。
 _INT_RANGES = MappingProxyType(
     {k: (lo, hi) for k, (lo, hi, _) in _INT_SPECS.items()}
 )
@@ -122,11 +111,8 @@ _SECURITY_MINIMUMS = MappingProxyType(
 def get_ui_int_range(key: str) -> tuple[int, int]:
     """返回 UI Spinner 的可选范围 (min, max)，派生自 _INT_SPECS 单一事实源。
 
-    下限取 config 下限与运行时安全下限的较大者——避免 UI 提供 ``get_safe`` 读取时会
-    钳制的值（如 ``clipboard_clear_seconds`` 文件下限 0，但 ``get_safe`` 强制 ≥10，故
-    UI 下限为 10，防止界面选 0 而实际生效 10 的脱节）。``auto_lock_minutes`` 例外：
-    0 是合法的「禁用」选项（``get_safe`` 在配置完整性通过时豁免 0），故 UI 下限仍为 0。
-    供 settings_dialog 构建 SpinBox，消除 UI 与 config 范围的双源漂移。
+    下限取 config 下限与运行时安全下限的较大者，避免 UI 提供 ``get_safe`` 会钳制的值
+    脱节。``auto_lock_minutes`` 例外：0 是合法的禁用选项，UI 下限仍为 0。
     """
     config_min, config_max = _INT_RANGES[key]
     security_min = _SECURITY_MINIMUMS.get(key)
@@ -135,11 +121,9 @@ def get_ui_int_range(key: str) -> tuple[int, int]:
     return config_min, config_max
 
 
-# 完整性校验失败（签名缺失/不符）时必须回退默认值的键集合：除安全下限相关
-# 整型键外，还包含 backup_directory——完整性失败时其值不可信（可能被定向篡改
-# 以诱导明文备份落入攻击者可读目录），与安全键同等回退默认。security_sentinels
-# 同列：完整性失败时其值不可信，回退默认（空），由 RateLimiter 据完整性失败本身
-# 保守降级，不采信被篡改的登记内容。
+# 完整性校验失败时必须回退默认的键集合：安全下限整型键 + backup_directory
+# （可能被篡改诱导明文备份落入攻击者可读目录）+ security_sentinels
+# （由 RateLimiter 据完整性失败保守降级，不采信被篡改登记）。
 _INTEGRITY_SENSITIVE_KEYS: set[str] = (
     set(_SECURITY_MINIMUMS) | {'backup_directory', 'security_sentinels'}
 )
@@ -149,9 +133,8 @@ _BOOL_KEYS = {
     'show_tray_icon', 'minimize_to_tray', 'close_to_tray',
 }
 
-# 速率限制策略：每组为失败次数和对应锁定秒数。最高阶梯封顶至 10 分钟，
-# 提高持续在线暴力破解的成本（配合 check() 到期保留 fail_count 的累进机制）。
-# 状态文件损坏/删除降级使用 RATE_LIMITS[-1]，故最高阶梯时长也是降级锁定时长。
+# 速率限制阶梯：(失败次数, 锁定秒数)。最高阶梯 10 分钟提高在线暴破成本；
+# 状态文件损坏/删除降级使用 RATE_LIMITS[-1]，故最高阶梯亦为降级锁定时长。
 RATE_LIMITS: list[tuple[int, int]] = [(3, 10), (5, 30), (8, 60), (10, 120), (15, 600)]
 
 
@@ -163,9 +146,8 @@ class ConfigManager:
         self._config_path = self._data_dir / 'config.json'
         self._integrity_key_path = self._data_dir / 'config.key'
         self._integrity_key = self._load_or_create_integrity_key()
-        # deepcopy 而非 dict()：security_sentinels 等 nested list 浅拷贝会在多个
-        # ConfigManager 实例间共享同一 list 对象，任一实例原地突变（append/extend）
-        # 会串扰其他实例的默认值。deepcopy 确保嵌套可变值独立。
+        # deepcopy 而非 dict()：security_sentinels 等嵌套 list 浅拷贝会在多实例间共享，
+        # 任一原地突变串扰其他实例默认值。
         self._config: dict = copy.deepcopy(DEFAULT_CONFIG)
         self._integrity_warning = False
         self._integrity_reason: str | None = None
@@ -174,10 +156,7 @@ class ConfigManager:
 
     @classmethod
     def for_testing(cls, data_dir: str | Path) -> 'ConfigManager':
-        """创建用于测试的 ConfigManager 实例。
-
-        使用指定目录作为数据目录，不加载真实配置文件。
-        """
+        """创建测试用 ConfigManager，使用指定数据目录且不加载真实配置。"""
         cfg = cls.__new__(cls)
         cfg._data_dir = Path(data_dir)
         cfg._config_path = Path(data_dir) / 'config.json'
@@ -191,21 +170,18 @@ class ConfigManager:
         return cfg
 
     def _load_or_create_integrity_key(self) -> bytes:
-        """加载安装级配置签名密钥；缺失或损坏时原子生成新密钥。
+        """加载安装级配置签名密钥；缺失/损坏时原子生成新密钥。
 
-        Windows 下密钥经 DPAPI（当前用户凭据）封装存储，使 config.key 即便被
-        同权限进程读取也无法在别处解密重算签名——收缩「本地攻击者读 config.key
-        重算签名绕过配置完整性校验」的攻击面。非 Windows 或 DPAPI 不可用时回退
-        明文存储（靠文件权限保护），绝不阻断启动。
+        Windows 下经 DPAPI（当前用户凭据）封装存储，使 config.key 被读取也无法在别处
+        解密重算签名，收缩篡改配置绕过完整性校验的攻击面。非 Windows 回退明文存储，
+        绝不阻断启动。
         """
         secure_directory(self._data_dir, strict=True)
         if self._integrity_key_path.exists():
             try:
                 blob = self._integrity_key_path.read_bytes()
             except (FileNotFoundError, OSError):
-                # exists() 与 read_bytes() 间 TOCTOU（文件被外部删除）或瞬时 IO/权限
-                # 错误：与「损坏时生成新密钥」分支一致 fall-through，绝不阻断启动
-                # （与 docstring 承诺的启动韧性一致，与下方写路径的完整兜底对称）。
+                # exists() 与 read_bytes() 间 TOCTOU 或瞬时 IO 错误：与损坏分支一致 fall-through，绝不阻断启动。
                 logger.warning('读取配置签名密钥失败，将生成新密钥', exc_info=True)
                 blob = None
             if blob is not None:
@@ -223,9 +199,7 @@ class ConfigManager:
         stored = protect_with_dpapi(key)
         if stored is None:
             stored = key
-        # 经 atomic_write 落地即 0600（opener 回调）：消除「写入明文签名密钥 → 关闭 →
-        # secure_file 收紧」间的世界可读窗口（与 SEC-2 一致；config.key 在 Unix 无
-        # DPAPI 时以明文存储签名密钥，是密码学密钥不应宽松落盘）。
+        # 经 atomic_write 落地即 0600，消除「写明文密钥 → 关闭 → secure_file 收紧」间的世界可读窗口（SEC-2）。
         def _write_key(f: Any) -> bool:
             f.write(stored)
             return True
@@ -254,10 +228,8 @@ class ConfigManager:
             if self._config_path.exists():
                 try:
                     raw_text = self._config_path.read_text(encoding='utf-8')
-                    # 分离末尾签名行：按行 splitlines 取最后一行判断是否签名行，比
-                    # rsplit('\n',1) 更鲁棒——后者按最后一个换行盲切，若 JSON 体内恰好
-                    # 有以签名前缀开头的行会误切；此处明确取末行，并按长度截断还原
-                    # json_text（与 save 写入的 json_text + '\n' + sig 结构对称，HMAC 一致）。
+                    # 分离末尾签名行：按 splitlines 取末行判断，比 rsplit('\n',1) 鲁棒——
+                    # 后者按最后一个换行盲切，JSON 体内若有签名前缀开头的行会误切。
                     json_text = raw_text
                     stored_sig = ''
                     text = raw_text.rstrip()
@@ -280,10 +252,9 @@ class ConfigManager:
                             self._integrity_warning = True
                             self._integrity_reason = 'mismatch'
                     else:
-                        # 无签名行：攻击者删除签名即可绕过 HMAC 校验。容错加载
-                        # （避免配置损坏导致无法启动），但 check_integrity 反映此风险，
-                        # 供调用方提示用户或触发重写带签名的配置。缺失签名比签名不符
-                        # 更可疑（主动删除篡改痕迹），以独立 reason 区分供调用方分级提示。
+                        # 无签名行：攻击者删签名即可绕过 HMAC。容错加载（避免损坏致无法启动），
+                        # 但 check_integrity 反映风险供调用方提示。缺失签名比签名不符更可疑
+                        # （主动删除篡改痕迹），独立 reason 区分供分级提示。
                         self._integrity_warning = True
                         self._integrity_reason = 'missing'
                     saved = json.loads(json_text)
@@ -292,11 +263,9 @@ class ConfigManager:
                     for key, value in saved.items():
                         if key in DEFAULT_CONFIG:
                             if self._is_valid(key, value):
-                                # 完整性校验失败（签名不符或缺失）时，安全关键键强制
-                                # 使用默认值——HMAC 密钥硬编码不防有意篡改，此时文件中
-                                # 的安全配置值不可信，回退默认以收缩篡改面（如攻击者
-                                # 删除签名后将 auto_lock_minutes 改为 0 禁用自动锁定）。
-                                # 与 get_safe 的运行时钳制叠加，构成 load + 读取双层防御。
+                                # 完整性失败时安全关键键强制默认：HMAC 密钥硬编码不防有意篡改，
+                                # 此时文件安全配置不可信，回退默认收缩篡改面（如删签名后把
+                                # auto_lock_minutes 改 0 禁用自动锁定）。与 get_safe 叠加双层防御。
                                 if self._integrity_warning and key in _INTEGRITY_SENSITIVE_KEYS:
                                     logger.warning(
                                         '配置完整性失败，敏感键 %s 回退默认值', key,
@@ -316,9 +285,9 @@ class ConfigManager:
 
     @property
     def integrity_reason(self) -> str | None:
-        """完整性失败原因：``'mismatch'`` 签名不符、``'missing'`` 签名行缺失，None 表示通过。
+        """完整性失败原因：``'mismatch'`` 签名不符、``'missing'`` 签名缺失，None 表示通过。
 
-        供调用方分级提示——缺失签名行比签名不符更可疑（主动删除篡改痕迹）。
+        供调用方分级提示——缺失签名比不符更可疑（主动删除篡改痕迹）。
         """
         return self._integrity_reason
 
@@ -331,17 +300,15 @@ class ConfigManager:
                 content.encode('utf-8'),
                 hashlib.sha256,
             ).hexdigest()
-            # 经 atomic_write 落地即 0600（opener 回调）：消除「写入含安全关键配置的
-            # 明文 → 关闭 → secure_file 收紧」间的世界可读窗口（与 SEC-2 一致）。
+            # 经 atomic_write 落地即 0600，消除「写含安全配置明文 → 关闭 → secure_file 收紧」间的世界可读窗口（SEC-2）。
             def _write_config(f: Any) -> bool:
                 f.write(content)
                 f.write(f'\n{_CONFIG_SIG_PREFIX}{sig}')
                 return True
 
             atomic_write(self._config_path, _write_config, mode='w', encoding='utf-8')
-            # 成功写出带有效签名的配置，清除会话内的完整性告警状态：避免此前
-            # 检测到的篡改/缺失状态在 save 后仍粘滞，导致 get_safe 的 auto_lock
-            # 豁免被持续钳制而误伤合法用户，以及内存状态与磁盘实际不一致。
+            # 清除会话内完整性告警：避免此前篡改/缺失状态在 save 后粘滞，致 get_safe
+            # 的 auto_lock 豁免被误钳或内存与磁盘不一致。
             self._integrity_warning = False
             self._integrity_reason = None
 
@@ -351,29 +318,18 @@ class ConfigManager:
             return self._config.get(key, default)
 
     def get_safe(self, key: str, default: Any = None) -> Any:
-        """获取配置值，对安全关键键强制运行时下限。
+        """获取配置值，对安全关键键（``_SECURITY_MINIMUMS``）强制运行时下限，防篡改降低安全策略。
 
-        与 get() 相同，但对模块级 ``_SECURITY_MINIMUMS`` 中定义的键，
-        返回值不低于安全阈值，防止配置文件被篡改后降低安全策略。
+        ``auto_lock_minutes=0`` 是合法的禁用语义，不受下限约束（直接返回 0）。
 
-        设计折衷：``auto_lock_minutes=0`` 是用户主动禁用自动锁定的合法语义，
-        不受安全下限约束，直接返回 0。这优先尊重用户选择而非强制安全策略。
-        负值等非法篡改值仍会被修正为安全下限。
-
-        威胁模型边界：config.key 经 Windows DPAPI（当前用户凭据）封装（见
-        _load_integrity_key），仅防「窃取文件后离线重算签名」，不防「能以当前
-        用户身份运行代码的攻击者」——其可直接调 CryptProtectData 重算签名使
-        _integrity_warning 保持 False，继而放行 auto_lock_minutes=0。此为本地
-        威胁模型的固有限制；外层防御依赖 secure_file 将配置文件收紧到当前用户
-        独占。彻底修复（如独立、签名强制保护的「禁用自动锁定」开关）属 feature
-        级改动，不在本层处理。
+        威胁模型边界：config.key 经 Windows DPAPI 封装，仅防「窃取文件后离线重算签名」，
+        不防「能以当前用户身份运行代码的攻击者」（可直接重算签名使 _integrity_warning 保持 False）；
+        彻底修复属 feature 级改动，不在本层处理。
         """
         value = self.get(key, default)
         if isinstance(value, int) and key in _SECURITY_MINIMUMS:
             minimum = _SECURITY_MINIMUMS[key]
-            # auto_lock_minutes=0 是合法的"禁用"语义，不受安全下限约束。
-            # 但仅在配置完整性通过时豁免：若配置已被篡改或签名缺失，0 视为可疑，
-            # 修正到安全下限，防止攻击者篡改配置文件以禁用自动锁定。
+            # auto_lock_minutes=0 是合法禁用，但仅在完整性通过时豁免：完整性失败时 0 视为可疑，修正到安全下限防篡改禁用锁定。
             if key == 'auto_lock_minutes' and value == 0 and not self._integrity_warning:
                 return value
             if value < minimum:
@@ -391,14 +347,11 @@ class ConfigManager:
             self._config[key] = value
 
     def register_security_sentinel(self, name: str) -> None:
-        """登记某安全哨兵已建立（写入签名 config，幂等）。
+        """登记安全哨兵已建立（写入签名 config，幂等）。
 
-        供 :class:`~src.ui.components.widgets.RateLimiter` 在持久化状态时调用。建立后，
-        若状态文件与哨兵被同时删除，签名 config 仍记录其曾建立——加载时据此判定为
-        恶意删除并降级最高阶梯锁定，关闭「删两文件即归零计数」的绕过。攻击者无法伪造
-        签名（config.key 经 DPAPI/文件权限保护），删哨兵后无法从 config 抹除登记。
-
-        幂等：已登记时直接返回，不再触发 save，避免每次登录都写盘。
+        供 RateLimiter 持久化状态时调用。状态文件与哨兵被同时删除时，签名 config 仍记录其
+        曾建立 → 加载时判定恶意删除并降级最高阶梯锁定。攻击者无法伪造签名抹除登记。
+        幂等：已登记时直接返回，不重复 save。
         """
         with self._lock:
             current = list(self._config.get('security_sentinels', []))
@@ -409,10 +362,9 @@ class ConfigManager:
             self.save()
 
     def is_security_sentinel_established(self, name: str) -> bool:
-        """该安全哨兵是否已在签名 config 中登记为已建立。
+        """哨兵是否已登记。
 
-        调用方应先查 :meth:`check_integrity`：完整性失败时本方法返回值不可信
-        （登记可能被篡改），应保守视为「已建立」降级锁定，而非采信返回值。
+        调用方应先查 :meth:`check_integrity`——完整性失败时返回值不可信，应保守视为已建立降级锁定。
         """
         with self._lock:
             return name in self._config.get('security_sentinels', [])
@@ -449,8 +401,7 @@ class ConfigManager:
                 and all(is_real_int(item) and 1 <= item <= 10000 for item in value)
             )
         if key == 'security_sentinels':
-            # 登记名为限长、无 NUL 的纯字符串列表（RateLimiter 状态文件 stem），
-            # 拒绝其它类型与重复外的脏值；长度上限防御异常膨胀。
+            # 登记名为限长、无 NUL 的纯字符串列表（RateLimiter 状态文件 stem）。
             return (
                 isinstance(value, list)
                 and len(value) <= 64

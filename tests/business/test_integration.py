@@ -24,7 +24,6 @@ from src.database.db_manager import DatabaseManager
 from src.models import Category, CustomField, Entry, RawEntry
 from tests.helpers import make_entry_manager, make_test_config, make_vault
 
-# TestEntryManagerIntegration
 
 @pytest.fixture()
 def entry_mgr_env():
@@ -221,8 +220,6 @@ def test_get_all_tags(entry_mgr_env):
     assert tag_dict['金融'] == 1
 
 
-# TestVaultManagerLifecycle
-
 @pytest.fixture()
 def vault_lifecycle_env():
     """创建临时目录和 config，返回 (config, tmp_dir)。"""
@@ -324,8 +321,6 @@ def test_change_password_re_encrypts(vault_lifecycle_env):
     vault.close()
 
 
-# TestBackupRestore
-
 @pytest.fixture()
 def backup_restore_env():
     """创建 VaultManager + EntryManager + BackupRestoreManager。"""
@@ -367,7 +362,7 @@ def test_backup_and_restore_preserves_all_fields(backup_restore_env):
     )
     entry_mgr.update_entry(entry)
 
-    # 3. 创建备份：必须指定密码或使用快照密钥，纯 flags=0 的无密钥格式已移除
+    # 必须指定密码或使用快照密钥
     backup_path = str(Path(tmp_dir) / 'test_backup.cbox')
     assert backup_mgr.create_backup(backup_path, use_snapshot_key=True)
     assert os.path.exists(backup_path)
@@ -409,8 +404,7 @@ def test_rejects_unknown_format(backup_restore_env):
 
     success, error = backup_mgr.restore_backup(backup_path)
     assert not success
-    # BackupError 归一为固定友好文案（任务12 收敛：防 str 泄漏内部细节）；
-    # 「无效的备份文件格式」具体诊断记入日志，用户层文案含「格式」/「损坏」。
+    # BackupError 归一为固定友好文案；诊断记入日志，用户层文案含「格式」/「损坏」。
     assert '格式' in error or '损坏' in error
 
 
@@ -469,8 +463,6 @@ def test_unlock_after_master_change_verifies_vault_meta_mac(entry_mgr_env):
     assert any(e.title == '改密前条目' for e in entries)
 
 
-# TestSecurityAnalyzer
-
 @pytest.fixture()
 def security_analyzer_env():
     """创建 VaultManager + EntryManager + SecurityAnalyzer。"""
@@ -524,8 +516,6 @@ def test_full_analysis(security_analyzer_env):
     assert result['duplicate_count'] == 1
 
 
-# TestDatabaseTransaction
-
 @pytest.fixture()
 def db_env():
     """创建 DatabaseManager。"""
@@ -577,7 +567,6 @@ def test_transaction_rollback(db_env):
 
     db.begin_transaction()
     try:
-        # custom_fields 必须为字符串，不能为 list
         e = RawEntry(title='回滚条目', username='rb_user', password='rb_pwd',
                   notes='', custom_fields='')
         db.add_entry(e)
@@ -598,8 +587,6 @@ def test_transaction_rollback(db_env):
     cat_names = [c.name for c in categories]
     assert '回滚分类' not in cat_names
 
-
-# TestImportExport 集成
 
 @pytest.fixture()
 def import_export_env():
@@ -695,8 +682,6 @@ def test_csv_roundtrip(import_export_env):
     assert restored[0].username == 'csv_user@example.com'
     assert restored[0].url == 'https://csv.example.com'
 
-
-# TestErrorPaths
 
 def test_decrypt_with_wrong_key():
     """用错误密钥解密应抛出 ValueError。"""

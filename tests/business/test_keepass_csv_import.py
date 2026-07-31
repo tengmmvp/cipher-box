@@ -3,10 +3,8 @@
 验证 ``import_file('keepass_csv')`` 经 ``KeePassCsvImporter`` 正确映射
 KeePass 导出 CSV 的 ``Title/UserName/Password/URL/Notes/Group`` 列，
 其中 ``Group`` 列映射到内部 ``category_name`` 字段（由 ``_KEEPASS_COLUMN_ALIASES``
-声明、经 ``_build_col_map`` 大小写不敏感匹配）。
-
-该路径此前无测试覆盖，仅靠人工核对；与 ``test_chrome_csv_import.py`` 平行，
-固化 KeePass 导出列名到内部字段的映射关系，防止列别名回归。
+声明、经 ``_build_col_map`` 大小写不敏感匹配）。与 ``test_chrome_csv_import.py``
+平行，固化列名映射以防止列别名回归。
 """
 
 from src.business.managers.import_export import ImportExportManager
@@ -48,7 +46,6 @@ def test_import_from_keepass_csv_maps_columns(entry_mgr, tmp_path):
     assert gm.username == 'bob'
     assert gm.password == 'Secret456@'
     assert gm.category_name == '工作'
-    # 空备注字段保留为空串
     assert gm.notes == ''
 
     # 分类经 _resolve_category 创建（category_name 能回填依赖分类已落库）

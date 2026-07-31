@@ -1,8 +1,8 @@
 """``to_user_message`` 错误文案映射测试。
 
-覆盖此前 0 覆盖的分支：ENOSPC（磁盘满）→「磁盘空间不足」。现有 secure_delete_file
-测试抛 ``OSError('disk full')`` 未设 ``errno``，不匹配 ``errno.ENOSPC``，故该文案
-分支从未被触发；此处直接对统一翻译层 ``to_user_message`` 做分支覆盖。
+补 ENOSPC（磁盘满）→「磁盘空间不足」分支：secure_delete_file 测试抛
+``OSError('disk full')`` 未设 ``errno``，不匹配 ``errno.ENOSPC``，故此处直接对
+统一翻译层 ``to_user_message`` 做分支覆盖。
 """
 
 import errno

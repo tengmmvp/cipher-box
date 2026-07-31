@@ -64,7 +64,6 @@ def test_storage_names_are_namespaced_with_underscore():
     by_storage = all_special_fields_by_storage()
     assert by_storage, '应至少有一个专用字段'
     assert all(name.startswith('_') for name in by_storage)
-    # storage_name 全局唯一（一个 storage_name 只归属一个 spec）
     assert len(by_storage) == len(set(by_storage))
 
 

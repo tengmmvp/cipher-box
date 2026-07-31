@@ -19,10 +19,7 @@ def _make_entry(**kwargs) -> RawEntry:
 
 @pytest.fixture
 def db(tmp_path):
-    """创建一个临时数据库并初始化表结构，关闭加密断言。
-
-    tmp_path 由 pytest 提供并自动清理，无需手动删除数据库文件。
-    """
+    """创建一个临时数据库并初始化表结构，关闭加密断言。"""
     _db_path = tmp_path / 'test_vault.db'
     _db = DatabaseManager(_db_path, test_mode=True)
     _db.open()

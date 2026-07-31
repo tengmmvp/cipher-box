@@ -163,8 +163,7 @@ def test_lock_preparation_clears_decrypted_ui_and_clipboard():
 def test_change_master_success_triggers_force_backup(monkeypatch):
     """改密成功触发强制快照（force=True）。
 
-    回归守护 P0：``_show_change_master`` 应委托 ``AutoBackupController.trigger_check``，
-    而非已迁移删除的 ``_run_backup_async``（后者会导致改密成功 AttributeError）。
+    回归守护 P0：``_show_change_master`` 应委托 ``AutoBackupController.trigger_check``。
     """
     from src.ui.components.toast import Toast
     from src.ui.dialogs.change_master_dialog import ChangeMasterDialog

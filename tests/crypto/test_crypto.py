@@ -36,7 +36,6 @@ def test_empty_string():
     assert encrypted.startswith(EncryptionEngine.TEXT_PREFIX)
     decrypted = EncryptionEngine.decrypt(encrypted, key, AAD)
     assert decrypted == ''
-    # 空密文是非法输入，应抛出 ValueError。
     with pytest.raises(ValueError):
         EncryptionEngine.decrypt('', key, AAD)
 

@@ -1,29 +1,13 @@
-"""KeyManager 单元测试。
-
-验证从 VaultManager 拆出的密钥持有与清零职责：
-- activate 原子设置 key/snapshot_key/key_epoch
-- 单字段更新方法只改动目标字段，不影响其余字段
-- clear 清零密钥材料并释放全部引用
-- clear 真正调用 secure_zero_buffer 清零 bytearray 密钥
-- 重复 activate→clear→activate 的状态转换
-- 单字段置空（传入 None）
-- key/snapshot_key property 返回 bytes 副本，不暴露内部 bytearray 身份
-"""
+"""KeyManager 单元测试：密钥持有、清零与 property 副本语义。"""
 
 
 from src.business.services import key_manager as key_manager_module
 from src.business.services.key_manager import KeyManager
 
-# 辅助函数：生成 32 字节 bytearray 测试密钥，对应 AES-256 宽度，
-# 便于真实清零验证
-
 
 def _make_bytearray_key(value: int = 0xAB) -> bytearray:
     """构造内容为 value 的 32 字节 bytearray 测试密钥。"""
     return bytearray([value] * 32)
-
-
-# activate 后三个属性正确返回传入值（property 返回 bytes 副本，值相等）
 
 
 def test_activate_sets_all_three_fields():
@@ -35,15 +19,11 @@ def test_activate_sets_all_three_fields():
 
     km.activate(key, snapshot, epoch)
 
-    # property 返回 bytes 副本，值与传入 bytearray 相等
     assert km.key == key
     assert isinstance(km.key, bytes)
     assert km.snapshot_key == snapshot
     assert isinstance(km.snapshot_key, bytes)
     assert km.key_epoch == epoch
-
-
-# 单字段更新：update_key/update_snapshot_key/update_epoch
 
 
 def test_update_key_changes_only_key():
@@ -90,9 +70,6 @@ def test_update_epoch_changes_only_epoch():
     assert km.key_epoch == 42
 
 
-# clear 后三个属性均为 None
-
-
 def test_clear_sets_all_fields_none():
     """clear 释放全部引用，key/snapshot_key/key_epoch 均为 None。"""
     km = KeyManager()
@@ -103,9 +80,6 @@ def test_clear_sets_all_fields_none():
     assert km.key is None
     assert km.snapshot_key is None
     assert km.key_epoch is None
-
-
-# clear 真正清零 bytearray 密钥，验证 secure_zero_buffer 被调用且内容归零
 
 
 def test_clear_zeroes_internal_key_content(monkeypatch):
@@ -157,9 +131,6 @@ def test_clear_invokes_secure_zero_buffer_for_each_secret(monkeypatch):
     assert call_count == 2
 
 
-# 重复 activate→clear→activate 的状态转换
-
-
 def test_repeated_activate_clear_cycle():
     """activate→clear→activate 状态转换：clear 后能正确激活一组全新密钥材料。"""
     km = KeyManager()
@@ -178,9 +149,6 @@ def test_repeated_activate_clear_cycle():
     assert km.key == key2
     assert km.snapshot_key == snapshot2
     assert km.key_epoch == 2
-
-
-# 单字段置空，传入 None
 
 
 def test_update_key_none():
@@ -236,9 +204,6 @@ def test_clear_on_empty_manager_is_noop_safe():
     assert km.key_epoch is None
 
 
-# property 返回 bytes 副本，不暴露内部 bytearray 身份
-
-
 def test_key_property_returns_independent_copy():
     """key property 返回 bytes 副本，clear 内部 bytearray 不影响已发出的副本。
 
@@ -254,9 +219,6 @@ def test_key_property_returns_independent_copy():
     # 清零内部 bytearray 后，先前发出的副本内容不变
     km.clear()
     assert key_copy == bytes([0x11] * 32)
-
-
-# activate 总复制：调用方可独立清零自己的 bytearray，不影响 KeyManager 内部副本
 
 
 def test_activate_copies_caller_can_zero_independently():

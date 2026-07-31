@@ -1,9 +1,7 @@
 """导入导出对话框，支持多格式数据的导入与导出。
 
-导入支持 CipherBox JSON、CSV 以及 Chrome、Bitwarden、KeePass 等外部格式，
-导出支持 JSON 与 CSV。耗时的导入导出在后台线程执行，避免阻塞 UI。
-导入涉及数据库写入且不可中途取消，导出无副作用可安全取消。导出文件
-统一加做权限收紧处理。
+耗时操作在后台线程执行；导入有写入副作用不可取消，导出可安全取消，
+导出文件统一做权限收紧。
 """
 
 from __future__ import annotations
@@ -51,7 +49,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# 支持的导入导出格式定义
 _EXPORT_FORMATS = ['JSON', 'CSV']
 _IMPORT_FILTERS = {
     'JSON (CipherBox)':  ('JSON 文件 (*.json)', 'cipherbox_import.json'),
@@ -62,9 +59,6 @@ _IMPORT_FILTERS = {
 }
 _IMPORT_FORMATS = list(_IMPORT_FILTERS.keys())
 # UI 格式名 → 业务层 import_file 的 format_key（单一 dispatch 入口）。
-# 替代原先的 _IMPORT_HANDLERS 方法名字符串映射 + getattr 动态分派：方法名与
-# ImportExportManager 真实方法漂移会在运行时抛 AttributeError，本映射仅依赖
-# _IMPORTERS 注册表的稳定格式键。
 _IMPORT_FORMAT_KEYS = {
     'JSON (CipherBox)': 'json',
     'CSV': 'csv',
@@ -106,10 +100,8 @@ class ImportExportDialog(QDialog):
     def reject(self) -> None:
         """关闭对话框前等待后台 worker 完成。
 
-        导入操作有数据库写入副作用，不取消 worker 以确保数据一致性；
-        导出操作无副作用，可安全取消。
+        导入有写入副作用，仅等待完成以确保数据一致性；导出无副作用可取消。
         """
-        # 导出可安全取消，导入有写入副作用仅等待完成
         wait_worker_shutdown(self._worker, cancel=self._worker_is_export)
         release_worker(self)
         super().reject()
@@ -303,8 +295,7 @@ class ImportExportDialog(QDialog):
 
         def _export_task() -> int:
             # worker 是下方赋值的自由变量，闭包延迟绑定（_export_task 在 worker.run
-            # 时执行，worker 已赋值）。cancel_check 直接用 BackgroundWorker 提供的绑定
-            # 方法，消除 holder 列表与 lambda 包装。
+            # 时执行，worker 已赋值）。
             entries = self._entry_mgr.get_entries_for_export(
                 include_pwd, cancel_check=worker.cancel_check,
             )
@@ -330,11 +321,9 @@ class ImportExportDialog(QDialog):
     def _on_export_done(self, count: int) -> None:
         if self.sender() is not self._worker:
             return
-        # 在 release_worker 前采样取消状态：取消时 export_to_json/csv 内部已清理
-        # temp 文件（未 os.replace），目标文件未生成/未更新，不应报「成功导出」
-        # 以免误导用户以为导出成功而留下空/损坏的明文文件。
-        # 守卫 `sender() is not self._worker` 已保证 self._worker 非 None；
-        # `is not None` 同时收窄类型满足静态检查。
+        # 在 release_worker 前采样取消状态：取消时内部已清理 temp 文件且目标
+        # 未生成，报「成功」会误导用户留下空/损坏明文文件。
+        # `is not None` 用于收窄类型满足静态检查（sender 守卫已保证非 None）。
         cancelled = self._worker is not None and self._worker.is_cancelled
         release_worker(self)
         self._set_busy(False)
@@ -343,9 +332,8 @@ class ImportExportDialog(QDialog):
             self._status_label.setText('导出已取消')
             set_label_severity(self._status_label, 'accent')
             return
-        # 防御性加保：即使业务层已对导出文件调用 secure_file，UI 层仍
-        # 再次收紧权限。使用 _selected_path 而非文本框内容判空，避免
-        # 用户编辑文本框导致路径不可靠。
+        # 防御性加保：业务层已调用 secure_file，UI 层再次收紧权限。
+        # 用 _selected_path 而非文本框内容判空，避免用户编辑导致路径不可靠。
         path = self._selected_path
         perm_warning = False
         if path:
@@ -393,10 +381,8 @@ class ImportExportDialog(QDialog):
         self._progress.show()
 
         def _import_task() -> int:
-            # worker 是下方赋值的自由变量，闭包延迟绑定。progress/cancel 直接用
-            # BackgroundWorker 提供的绑定方法，消除 holder 列表与 lambda 包装。
-            # 经 _IMPORT_FORMAT_KEYS 映射到 format_key，调 import_file 单一 dispatch
-            # 入口，消除原先 getattr(method_name) 动态分派与业务层 5 个别名方法。
+            # worker 是下方赋值的自由变量，闭包延迟绑定。经 _IMPORT_FORMAT_KEYS
+            # 映射到 format_key，调 import_file 单一 dispatch 入口。
             fmt_name = _IMPORT_FORMATS[fmt_index] if 0 <= fmt_index < len(_IMPORT_FORMATS) else ''
             format_key = _IMPORT_FORMAT_KEYS.get(fmt_name)
             if format_key is None:

@@ -1,6 +1,6 @@
 """自动快照 ``maybe_auto_backup`` 测试。
 
-覆盖间隔跳过、强制备份与保留数清理三条主路径，该方法此前无测试覆盖。
+覆盖间隔跳过、强制备份与保留数清理三条主路径。
 """
 
 from src.business.managers.backup_restore import BackupRestoreManager

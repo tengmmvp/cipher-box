@@ -1,9 +1,8 @@
 """ListRefreshController 直接单测（rank 10）。
 
-筛选、排序、列表刷新、状态栏、worker 生命周期此前经 ``_MainWindowFiltersMixin``
-隐式覆盖，组合化迁出（Mixin→普通类 + ``ListRefreshDeps`` 回调 + ``ListRefreshView``
-控件引用）后首次直接单测：3 定时器创建、锁定态守卫、``@require_unlocked`` 跳过、
-刷新防抖定时器、排序配置委托、``clear_search`` 分支、生命周期方法与缓存 property。
+覆盖筛选、排序、列表刷新、状态栏、worker 生命周期：3 定时器创建、锁定态守卫、
+``@require_unlocked`` 跳过、刷新防抖定时器、排序配置委托、``clear_search`` 分支、
+生命周期方法与缓存 property。
 
 worker 异步刷新的状态机（generation 守卫、锁定丢弃回调）经 ``test_product_hardening``
 端到端守护覆盖；本文件聚焦 controller 同步路径与状态。``_make_controller`` 配置

@@ -126,7 +126,6 @@ class TestSecureDeleteFile:
 
 
 class TestSecureDirectory:
-    """secure_directory 测试。"""
 
     def test_creates_directory(self, tmp_path):
         target = tmp_path / 'new_dir'
@@ -161,7 +160,6 @@ class TestSecureDirectory:
 
 
 class TestSecureFile:
-    """secure_file 测试。"""
 
     def test_existing_file_sets_permissions(self, tmp_path):
         target = tmp_path / 'test_file.dat'
@@ -189,7 +187,6 @@ class TestSecureFile:
         """Windows 下调用 ACL 限制不应报错。"""
         target = tmp_path / 'acl_test.txt'
         target.write_text('secret', encoding='utf-8')
-        # 不应抛出异常
         secure_file(target)
         assert target.exists()
 
@@ -233,7 +230,6 @@ class TestValidateFilePath:
         """正常路径应通过验证。"""
         test_file = tmp_path / "test.txt"
         test_file.write_text("hello")
-        # validate_file_path 对正常路径不应抛异常
         from src.utils.file_security import validate_file_path
         result = validate_file_path(str(test_file))
         assert isinstance(result, Path)
@@ -304,7 +300,7 @@ class TestValidateFilePathReparse:
         """Windows junction（reparse point）祖先应被拒绝。
 
         junction 非符号链接，``is_symlink()`` 不识别，须靠
-        ``st_file_attributes & 0x400`` 检测——此为旧实现静默失效的根因。
+        ``st_file_attributes & 0x400`` 检测。
         """
         import subprocess
 

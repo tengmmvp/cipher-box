@@ -1,9 +1,9 @@
 """Repository 边界测试：密码历史截断、批量 ID 查询分页与批量写 happy-path。
 
-覆盖此前仅被间接路径触及的边界：add_password_history 截断到 MAX_PASSWORD_HISTORY
+覆盖以下边界：add_password_history 截断到 MAX_PASSWORD_HISTORY
 （off-by-one）、get_entries_by_ids 在 ID 数超过 SQLite 主机变量上限时的分批查询，
 以及批量写（add_entries_batch / update_entries_batch / update_password_history_batch）
-此前仅有空输入短路面、缺失真实加密落库的 happy-path。
+的真实加密落库 happy-path。
 """
 
 import os
@@ -27,10 +27,7 @@ def _make_entry(**kwargs) -> RawEntry:
 
 @pytest.fixture
 def db(tmp_path):
-    """临时数据库，test_mode 关闭密文断言。
-
-    tmp_path 由 pytest 提供并自动清理。
-    """
+    """临时数据库，test_mode 关闭密文断言。"""
     _db_path = tmp_path / 'test_boundary.db'
     _db = DatabaseManager(_db_path, test_mode=True)
     _db.open()
@@ -129,7 +126,7 @@ def test_classify_entry_integrity_error_routes_by_message():
 # 顶部 db fixture（test_mode=True）关闭了加密断言，仅覆盖空输入短路等控制流边界。
 # 以下测试用真实 DatabaseManager（_enforce_encrypted_fields=True）+ EncryptionEngine
 # 产出的合法 cb2: 密文，覆盖 add_entries_batch 分页反查、update_entries_batch 与
-# update_password_history_batch 的 happy-path：此前三者仅有空输入短路面或零测试。
+# update_password_history_batch 的 happy-path。
 
 # 真实 AES-256 密钥，仅本模块批量写 happy-path 使用。模块加载时生成一次，
 # 供 _enc 默认引用；新密钥场景（update_*_batch 验证重加密生效）显式传 key。
@@ -264,7 +261,7 @@ def test_update_entries_batch_happy_path(secure_db):
 def test_update_password_history_batch_happy_path(secure_db):
     """update_password_history_batch 批量重加密密码历史，可按条目读回新密文。
 
-    覆盖此前零测试的 update_password_history_batch：逐条 _assert_encrypted 放行 +
+    覆盖 update_password_history_batch：逐条 _assert_encrypted 放行 +
     executemany（old_password_enc, id）位置绑定，读回解密验证密文已更新为新密钥。
     """
     crypto_id = 'hist-1'

@@ -2,8 +2,8 @@
 
 from ...config import DEFAULT_CONFIG
 
-# 密码可见秒数、剪贴板清除秒数、生成密码长度等默认值从 config.DEFAULT_CONFIG
-# 派生为单一真相源，避免与配置默认双源漂移；其余为本模块独有的 UI 常量。
+# 密码可见秒数等默认值从 config.DEFAULT_CONFIG 派生为单一源，避免双源漂移；
+# 其余为本模块独有 UI 常量。
 
 # ---------- 按钮尺寸 ----------
 BTN_DIALOG = (90, 34)       # 对话框主操作按钮
@@ -113,14 +113,12 @@ SORT_OPTIONS = [
 ]
 
 # ---------- 条目字段校验 ----------
-# 服务器条目端口校验范围（QIntValidator 边界）。TCP/UDP 端口合法区间 1-65535，
-# 0 为保留值不接受。供 entry_dialog 构造端口输入校验器，消除字面量散落。
+# 服务器端口校验范围（QIntValidator 边界），TCP/UDP 合法区间 1-65535，0 不接受。
 SERVER_PORT_MIN = 1
 SERVER_PORT_MAX = 65535
 
 # ---------- 主题标识 ----------
-# 主题字符串单例（与 config.DEFAULT_THEME 同值）：config 层的 'light'/'dark' 字面量
-# 归 config 所有（_is_valid / DEFAULT_THEME），此处仅为 UI 层（settings_dialog 读写
-# 主题控件）提供单一源，避免 'light'/'dark' 在 UI 多处内联漂移。
+# 主题字符串单例（与 config.DEFAULT_THEME 同值）：'light'/'dark' 字面量归 config
+# 所有，此处仅为 UI 层提供单一源，避免多处内联漂移。
 THEME_LIGHT = 'light'
 THEME_DARK = 'dark'

@@ -1,8 +1,7 @@
-"""自定义字段动态编辑器，从 EntryDialog 拆分。
+"""自定义字段动态编辑器。
 
 管理自定义字段行的增删与收集，每行包含字段名、类型与值。
-EntryDialog 通过组合持有其实例，将自定义字段的 UI 状态与逻辑
-从近 900 行的对话框中分离，降低单类职责负载。
+EntryDialog 通过组合持有其实例，将自定义字段的 UI 状态与逻辑分离。
 """
 
 from PyQt6.QtWidgets import (
@@ -38,11 +37,7 @@ class CustomFieldsEditor:
         self._rows: list[tuple[QLineEdit, QComboBox, QLineEdit, QHBoxLayout]] = []
 
     def _on_type_change(self, idx: int, value_edit: QLineEdit) -> None:
-        """类型下拉框切换回调，按新类型切换值输入框的回显模式。
-
-        作为具名方法替代内联 lambda，与项目其它处具名回调风格一致，
-        便于阅读、调试栈追踪与后续扩展（如 url/email 校验提示）。
-        """
+        """类型下拉框切换回调，按新类型切换值输入框的回显模式。"""
         field_type = self._INDEX_TYPE_MAP.get(idx)
         if field_type == 'password':
             value_edit.setEchoMode(QLineEdit.EchoMode.Password)

@@ -1,10 +1,8 @@
 """条目类型 schema 注册表——类型特化字段与行为的单一事实源。
 
-上提自 ``entry_dialog._SpecialFieldSpec`` / ``_SPECIAL_SCHEMA`` / ``_TYPE_FIELDS``，
-消除 UI 层定义类型 schema（C1 数据迁移，行为不变）。``EntryTypeSchema`` 含专用
-字段 spec、可见字段顺序与类型特化行为钩子（C2 填充），供 entry_dialog /
-custom_fields_renderer / import_export 等消费。新增条目类型只需扩展注册表，
-无需散弹式修改多处 ``if entry_type ==`` 分支。
+``EntryTypeSchema`` 含专用字段 spec、可见字段顺序与类型特化行为钩子，供
+entry_dialog / custom_fields_renderer / import_export 等消费。新增条目类型只需
+扩展注册表，无需散弹式修改多处 ``if entry_type ==`` 分支。
 
 label/icon 从 ``models.ENTRY_TYPES`` 派生（单一源），专用字段 storage_name 复用
 ``models.SPECIAL_FIELD_*`` 常量，确保导入路径与 UI schema 写出一致的 storage_name。

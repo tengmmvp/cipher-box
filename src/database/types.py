@@ -25,9 +25,8 @@ class VerifyMode(Enum):
 class EntryQuery:
     """entries 表查询参数（过滤 + 排序 + limit + verify），get_entries 的单一入口。
 
-    封装原先 8 个独立参数，并在构造时校验 ``deleted_only`` / ``include_deleted``
-    互斥——二者同时为 True 语义矛盾（前者仅回收站、后者含回收站），原先代码以
-    ``deleted_only`` 优先静默忽略 ``include_deleted``，现改为构造即拒绝。
+    构造时校验 ``deleted_only`` / ``include_deleted`` 互斥——前者仅回收站、后者含
+    全部（含回收站），同时为 True 语义矛盾，须构造即拒绝。
     """
 
     deleted_only: bool = False
@@ -51,10 +50,9 @@ class EntryQuery:
 class ConnectionProvider(Protocol):
     """Repository 所需的 DatabaseManager 接口协议（结构化类型）。
 
-    EntryRepository / CategoryRepository / SchemaManager 通过 ``conn_provider``
-    访问 DatabaseManager 的连接、锁与编排方法。以 Protocol 显式声明所需成员，
-    使 ``conn_provider`` 参数有明确类型（替代原先无注解的 Any），便于静态检查
-    与测试替身。DatabaseManager 满足此协议；仿 ``ReEncryptionService.ReEncryptionDB``。
+    EntryRepository / CategoryRepository / SchemaManager 经 ``conn_provider`` 访问
+    DatabaseManager 的连接、锁与编排方法。以 Protocol 显式声明所需成员，便于静态
+    检查与测试替身。DatabaseManager 满足此协议。
     """
 
     @property
@@ -66,9 +64,8 @@ class ConnectionProvider(Protocol):
     @property
     def in_transaction(self) -> bool: ...
 
-    # schema_validated 可读写：DatabaseManager 提供 property + setter，SchemaManager
-    # 在校验后赋值。Protocol 以 property + setter 声明精确匹配（Pyright 下可读写
-    # 数据属性不接受 property+setter 实现）。
+    # schema_validated 可读写：Protocol 须以 property + setter 声明，Pyright 下
+    # 可读写数据属性不接受 property+setter 实现。
     @property
     def schema_validated(self) -> bool: ...
 
@@ -198,20 +195,17 @@ class VaultDataConnection(Protocol):
 class VaultDataStore(EntryStore, CategoryStore, VaultDataConnection, Protocol):
     """Business 层访问数据库的统一协议：EntryStore + CategoryStore + VaultDataConnection。
 
-    DatabaseManager 满足此协议；Business manager 经 ``VaultManager.db`` 拿到此协议
-    视图，收窄暴露面（不含 ``set_write_guard`` / ``set_entry_integrity_handlers``
-    等装配期 setter，仅 VaultManager 内部经 ``self._db`` 使用）。替代各 manager
-    直接依赖具体 DatabaseManager，便于测试替身与未来替换实现。
+    Business manager 经 ``VaultManager.db`` 拿到此协议视图，收窄暴露面（不含装配期
+    setter，仅 VaultManager 内部经 ``self._db`` 使用），便于测试替身。
     """
 
 
 class ReEncryptedEntry(NamedTuple):
     """重加密后条目的批量更新 DTO（数据库行结构）。
 
-    归属数据层：字段顺序与 ``EntryRepository._RE_ENCRYPT_BATCH_UPDATE_SQL``
-    一一对应，供改密重加密批量 executemany 写入。业务层 ``ReEncryptionService``
-    构造、``EntryRepository`` 消费，故定义在数据层类型模块，避免业务层 DTO 被
-    数据层反向依赖。
+    字段顺序与 ``EntryRepository._RE_ENCRYPT_BATCH_UPDATE_SQL`` 一一对应，供改密
+    重加密 executemany 位置绑定。``ReEncryptionService`` 构造、``EntryRepository``
+    消费，故定义于数据层避免反向依赖。
     """
     crypto_id: str
     title_enc: str

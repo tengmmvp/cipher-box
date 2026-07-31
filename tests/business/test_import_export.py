@@ -91,12 +91,10 @@ def test_sanitize_url_scheme_rejects_dangerous_schemes():
     防止恶意 scheme 被详情面板渲染为可点击链接导致钓鱼/协议注入。
     """
     from src.business.managers.importers.base import _sanitize_url_scheme
-    # 危险 scheme 清空
     assert _sanitize_url_scheme('javascript:alert(1)') == ''
     assert _sanitize_url_scheme('data:text/html,<script>') == ''
     assert _sanitize_url_scheme('file:///etc/passwd') == ''
     assert _sanitize_url_scheme('vbscript:msgbox') == ''
-    # 白名单 scheme 保留
     assert _sanitize_url_scheme('http://example.com') == 'http://example.com'
     assert _sanitize_url_scheme('https://example.com/path?q=1') == 'https://example.com/path?q=1'
     assert _sanitize_url_scheme('ftp://ftp.example.com') == 'ftp://ftp.example.com'
@@ -105,7 +103,6 @@ def test_sanitize_url_scheme_rejects_dangerous_schemes():
     # 空 scheme（裸域名/相对路径）保留，UI 点击按默认 http 处理
     assert _sanitize_url_scheme('example.com') == 'example.com'
     assert _sanitize_url_scheme('/relative/path') == '/relative/path'
-    # 空串
     assert _sanitize_url_scheme('') == ''
     # 大小写不敏感
     assert _sanitize_url_scheme('JavaScript:alert(1)') == ''
@@ -119,15 +116,10 @@ def test_sanitize_totp_secret_rejects_invalid():
     损坏密钥静默入库导致后续验证码生成失败且用户无反馈。
     """
     from src.business.managers.importers.base import _sanitize_totp_secret
-    # 无效 base32（含非法字符）清空
     assert _sanitize_totp_secret('not-valid-base32!!!') == ''
-    # 解码后过短（< 10 字节）清空
     assert _sanitize_totp_secret('ABCD') == ''
-    # 空串保留为空
     assert _sanitize_totp_secret('') == ''
-    # 合法 base32（base32('1234567890')，解码 10 字节）保留
     assert _sanitize_totp_secret('GEZDGNBVGY3TQOJQ') == 'GEZDGNBVGY3TQOJQ'
-    # otpauth URI 保留（secret 参数为合法 base32）
     otpauth = 'otpauth://totp/Example:alice@google.com?secret=GEZDGNBVGY3TQOJQ&issuer=Example'
     assert _sanitize_totp_secret(otpauth) == otpauth
 

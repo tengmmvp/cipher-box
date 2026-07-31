@@ -1,15 +1,13 @@
 """ListRefreshController 的纯渲染辅助：空态解析与状态栏渲染。
 
-从 :class:`.list_refresh_controller.ListRefreshController` 抽出的两类无状态视图逻辑：
+两类无状态视图逻辑：
 
 - :class:`EmptyStateResolver` 按优先级解析当前空态（7 种场景），消费冻结
   :class:`EmptyStateContext`（过滤态 + 总数 + 分析中标志 + 回调），不访问 controller 状态；
 - :class:`StatusBarRenderer` 据四项安全计数渲染状态栏控件，消费冻结
   :class:`StatusBarView`（stats/status_bar/warning_label 控件）。
 
-worker 生命周期（status_worker 创建/回收/锁定守卫）刻意留在 controller，与
-``cancel_all_workers`` / ``prepare_for_lock`` / ``shutdown`` 协同的关闭路径不变量
-不在本模块触及。本模块仅依赖 PyQt6 控件与图标常量，零 controller 依赖。
+worker 生命周期刻意留在 controller，本模块仅依赖 PyQt6 控件与图标常量，零 controller 依赖。
 """
 
 from __future__ import annotations

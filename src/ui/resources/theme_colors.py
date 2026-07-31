@@ -1,11 +1,9 @@
-"""主题颜色系统 — 统一管理所有颜色常量。
+"""主题颜色系统 — 定义浅色/深色配色 token，供 styles 与运行时 c() 取色。
 
-单例契约：本模块使用模块级可变状态追踪当前主题，相关变量为 _current_theme
-与 _current_colors。set_theme() 必须在任何 c() 调用之前执行，通常由
-styles.get_style() 或 MainWindow._apply_theme() 触发。
-
-线程安全：PyQt6 采用单线程 UI 模型，所有 c() 调用均在主线程上发生，
-无需额外同步。后台线程不应直接调用 c()。
+单例契约：模块级可变状态追踪当前主题（_current_theme/_current_colors），
+set_theme() 必须在任何 c() 调用之前执行（由 styles.get_style 或
+MainWindow._apply_theme 触发）。线程安全：PyQt6 单线程 UI，所有 c() 调用
+均在主线程，无需同步；后台线程不应直接调用 c()。
 """
 
 import logging
@@ -192,14 +190,13 @@ DARK_COLORS = {
     'icon_btn_hover': 'rgba(200,200,200,0.15)',
 }
 
-# 模块加载即校验浅色/深色主题颜色 key 集合一致，早失败而非等首次
-# set_theme 触发。新增颜色 token 时若遗漏某一主题会立刻报错。
-# 用显式 raise 而非 assert：python -O 会剔除 assert，导致该校验失效。
+# 加载即校验浅色/深色 key 集合一致，遗漏主题立即报错（早失败）。
+# 用显式 raise 而非 assert：python -O 会剔除 assert 致校验失效。
 if set(LIGHT_COLORS) != set(DARK_COLORS):
     raise RuntimeError('浅色/深色主题颜色 key 不一致')
 
-# 模块初始主题。须与 config.DEFAULT_THEME 保持一致：config 层是配置默认的单一
-# 事实源，本模块作为零上层依赖的纯色板不 import config，故以注释声明一致性约定。
+# 模块初始主题须与 config.DEFAULT_THEME 一致：本模块为零上层依赖的纯色板不
+# import config，故以注释声明该一致性约定。
 _current_theme = 'light'
 _current_colors = dict(LIGHT_COLORS)
 

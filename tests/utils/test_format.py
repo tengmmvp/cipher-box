@@ -16,7 +16,6 @@ class TestFormatDatetime:
     def test_z_suffix_parsed_on_py310(self):
         """Python 3.10 fromisoformat 不接受 'Z'，归一化后应解析（#12 回归）。"""
         result = format_datetime('2024-01-15T10:30:00Z')
-        # 应解析为本地时间格式（YYYY-MM-DD HH:MM:SS，19 字符），非原样返回
         assert result != '2024-01-15T10:30:00Z'
         assert len(result) == 19
 

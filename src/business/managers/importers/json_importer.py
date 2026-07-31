@@ -56,9 +56,8 @@ class JsonImporter:
         secrets_included = data['secrets_included']
 
         # secrets_included=False 时导出本就不含 password/totp_secret，但对抗性构造
-        # 的文件可能仍带这些字段。主动清除，使“导入值必为空”成为代码保证而非
-        # 数据假设，避免 _merge_non_exported_secrets 在覆盖路径误保留对抗输入的
-        # totp_secret（原合并注释假设导入值为空，仅对正常文件成立）。
+        # 的文件可能仍带这些字段。主动清除，使"导入值必为空"成为代码保证而非
+        # 数据假设，避免 _merge_non_exported_secrets 在覆盖路径误保留对抗输入的 totp_secret。
         if not secrets_included:
             for item in items:
                 if isinstance(item, dict):

@@ -1,6 +1,6 @@
 """utils.memory 安全清零工具测试。
 
-secure_zero_buffer 是密钥清零的核心安全原语，此前无测试守护。覆盖 bytearray
+secure_zero_buffer 是密钥清零的核心安全原语。覆盖 bytearray
 原地清零、bytes 误传仅告警（原对象不变）、空输入短路、mark_secret_discarded
 对临时副本清零不抛异常。
 """
@@ -17,7 +17,6 @@ class TestSecureZeroBuffer:
         assert bytes(buf) == b'\x00' * len(buf)
 
     def test_empty_input_short_circuits(self):
-        # 空输入不应抛异常，也不应触发 memset
         secure_zero_buffer(bytearray())
         secure_zero_buffer(b'')
 

@@ -63,7 +63,6 @@ class TestKeyManagerZeroing:
         key = bytearray(b'k' * 32)
         km.activate(key, bytearray(b's' * 32), epoch=1)
         km.update_key(bytearray(b'new' * 10 + b'nn'))
-        # 调用方原对象不被清零（KeyManager 持独立副本）
         assert bytes(key) == b'k' * 32
 
     def test_activate_zeroes_previous_internal_keys(self, monkeypatch):

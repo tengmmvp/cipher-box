@@ -1,9 +1,8 @@
-"""自动锁定控制器 — 从 MainWindow 抽离的空闲超时与系统锁屏联动。
+"""自动锁定控制器：空闲超时与系统锁屏联动。
 
 持有自动锁定定时器与 Windows 会话锁屏事件过滤器，封装 ``auto_lock_minutes``
 驱动的超时重置与 WTS 锁屏即时锁定。MainWindow 的 eventFilter/showEvent 等 Qt
-重写检测到用户活动或窗口显示时委托本控制器，自身不再直接持有 ``_lock_timer``
-与 ``_session_filter`` 状态。
+重写检测到用户活动或窗口显示时委托本控制器。
 """
 
 from __future__ import annotations
@@ -28,9 +27,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Windows 会话锁屏通知消息常量。系统锁屏（Win+L）时立即锁定保险库（1Password/
-# Bitwarden 等行业惯例），而非等应用内 QTimer 到期。非 Windows 平台不注册
-# （setup_session_notification 以 sys.platform 短路），降级为仅超时锁定。
+# Windows 会话锁屏通知消息常量。系统锁屏（Win+L）时立即锁定保险库（行业惯例），
+# 而非等应用内 QTimer 到期。非 Windows 平台不注册，降级为仅超时锁定。
 _WM_WTSSESSION_CHANGE = 0x02B1
 _WTS_SESSION_LOCK = 0x7
 
@@ -38,8 +36,8 @@ _WTS_SESSION_LOCK = 0x7
 class _SessionLockFilter(QAbstractNativeEventFilter):
     """Windows 会话锁屏事件过滤器，捕获 WM_WTSSESSION_CHANGE 触发保险库锁定。
 
-    用 QAbstractNativeEventFilter 挂载 QApplication，而非重写 MainWindow.nativeEvent：
-    独立过滤器在应用级拦截原生消息，不耦合窗口子类化逻辑，是 Qt 推荐的原生消息拦截方式。
+    用 QAbstractNativeEventFilter 挂载 QApplication 而非重写 MainWindow.nativeEvent，
+    独立过滤器在应用级拦截原生消息，不耦合窗口子类化逻辑。
     """
 
     def __init__(self, on_lock: Callable[[], None]) -> None:
@@ -113,10 +111,10 @@ class AutoLockController:
         if self._wts_setup_attempted:
             return
         self._wts_setup_attempted = True
-        # 仅 Windows 交互会话注册。测试环境（经 CIPHERBOX_DISABLE_WTS 显式标记）的窗口
-        # 未进入真实消息循环，WTSRegisterSessionNotification 会触发 C 层 access violation
-        # （无法 try/except 捕获）；真实交互运行时窗口进入消息循环，WTS 正常工作。用环境
-        # 变量替代 'pytest' in sys.modules 探测，避免生产代码分支于测试框架存在性（MAINT-1）。
+        # 仅 Windows 交互会话注册。测试环境（经 CIPHERBOX_DISABLE_WTS 标记）的窗口未进入
+        # 真实消息循环，WTSRegisterSessionNotification 会触发 C 层 access violation（无法
+        # try/except 捕获）。用环境变量替代 'pytest' in sys.modules 探测，避免生产代码
+        # 分支于测试框架存在性（MAINT-1）。
         if sys.platform != 'win32' or os.environ.get('CIPHERBOX_DISABLE_WTS'):
             return
         try:

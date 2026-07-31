@@ -1,8 +1,6 @@
-"""EntryManager 核心加密 CRUD 与编排行为测试。
+"""EntryManager 核心加密 CRUD 与编排行为测试（真实 vault，不 mock EncryptionEngine）。
 
-EntryManager（条目 CRUD/加密编排的中央管理器，约 800 行）此前仅经其他测试
-间接覆盖，本文件用真实 vault（真实 AES-256-GCM 加解密，不 mock EncryptionEngine）
-补齐专属行为断言：
+覆盖：
 
 1. add_entry：明文加密入库、get_entry 读回解密一致、password_strength 自动计算。
 2. update_entry：字段更新读回一致、密码变更归档历史、密码不变不归档。
@@ -118,7 +116,6 @@ class TestUpdateEntry:
         assert read.url == 'https://example.com'
         assert read.notes == 'updated notes'
         assert read.tags == 'tag1,tag2'
-        # 密码未改，仍可读回原密码
         assert read.password == 'Pass123!@#'
 
     def test_password_change_archives_history(self, entry_mgr, make_entry):
@@ -182,7 +179,6 @@ class TestToggleFavorite:
         assert entry_mgr.password_history.get_count(entry_id) == 0
         read = entry_mgr.get_entry(entry_id)
         assert read.password == pwd
-        # 来回切换两次后回到初始 False
         assert read.is_favorite is False
 
     def test_toggle_favorite_missing_entry_returns_none(self, entry_mgr):

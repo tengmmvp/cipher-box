@@ -1,13 +1,8 @@
 """保险库生命周期编排 — 初始化、解锁、锁定、改密、关闭的状态机。
 
-从 VaultManager 拆出的生命周期流程：跨密钥派生（Argon2id）、元数据持久化
-（:class:`~src.business.services.vault_meta_store.VaultMetaStore`）、完整性校验
-（vault_meta_mac）、全量重加密（ReEncryptionService）、snapshot_key 轮换与备份清理。
-VaultManager 收窄为密钥/db/写守卫核心，仅保留这些流程所需的原子操作
-（activate_keys / clear_vault_state / load_snapshot_key 等）。
-
-VaultManager 的 ``initialize`` / ``unlock`` / ``lock`` / ``change_master_password`` /
-``close`` 经薄委托调用本类，使调用方（app/login/dialog/test）无需感知 orchestrator。
+编排跨密钥派生（Argon2id）、元数据持久化（:class:`VaultMetaStore`）、完整性
+校验（vault_meta_mac）、全量重加密（ReEncryptionService）、snapshot_key 轮换与
+备份清理。VaultManager 经薄委托调用本类，使调用方无需感知 orchestrator。
 """
 
 from __future__ import annotations

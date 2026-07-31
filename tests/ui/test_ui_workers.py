@@ -18,7 +18,6 @@ class TestBackgroundWorker:
         worker.finished.connect(lambda r: results.append(r))
         worker.start()
 
-        # 等待线程完成
         worker.wait(5000)
         # 处理待发信号
         qapp.processEvents()
@@ -58,7 +57,6 @@ class TestBackgroundWorker:
         worker.finished.connect(lambda r: results.append(r))
         worker.start()
 
-        # 立即取消
         worker.cancel()
         barrier.set()  # 让函数继续
 

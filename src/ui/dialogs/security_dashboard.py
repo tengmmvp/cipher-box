@@ -1,8 +1,7 @@
 """安全仪表盘，可视化展示保险库的安全概况。
 
-通过后台线程运行安全分析，汇总弱密码、重复密码与过期密码三类风险，
-并以健康评分圆环、统计卡片与详细列表呈现。用户可针对具体条目请求
-修复，由对话框发出携带 entry_id 的信号交由主窗口处理。
+后台线程汇总弱密码/重复/过期三类风险，以健康评分圆环、统计卡片与详细
+列表呈现；用户请求修复时由信号携带 entry_id 上报主窗口。
 """
 
 from __future__ import annotations
@@ -51,7 +50,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# 徽章背景色透明度，用于 entry row 的 badge 背景叠层
 _BADGE_BG_ALPHA = 0.13
 
 
@@ -82,7 +80,6 @@ class _HealthScoreWidget(QWidget):
             radius = side / 2 - 12  # 12px 内边距，圆环与控件边缘的间距
             pen_width = 10  # 圆环线条粗细，单位为像素
 
-            # 背景圆环
             bg_pen = QPen(QColor(c('progress_bg')), pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
             painter.setPen(bg_pen)
             draw_rect = QRectF(
@@ -91,7 +88,6 @@ class _HealthScoreWidget(QWidget):
             )
             painter.drawArc(draw_rect, 0, 360 * 16)
 
-            # 进度圆环
             score_color = self._health_score_color(self._score)
             fg_pen = QPen(QColor(score_color), pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
             painter.setPen(fg_pen)
@@ -99,12 +95,10 @@ class _HealthScoreWidget(QWidget):
             start_angle = 90 * 16  # 起始角位于顶部，正值顺时针为 Qt 约定
             painter.drawArc(draw_rect, start_angle, -span_angle)
 
-            # 中心文字 — 分数
             painter.setPen(QColor(c('text_primary')))
             painter.setFont(self._score_font)
             painter.drawText(draw_rect, Qt.AlignmentFlag.AlignCenter, str(self._score))
 
-            # 底部小标签
             painter.setFont(self._label_font)
             painter.setPen(QColor(c('text_secondary')))
             label_rect = QRectF(
@@ -130,14 +124,11 @@ class _HealthScoreWidget(QWidget):
 
 
 class _StatCard(QFrame):
-    """统计卡片。"""
-
     def __init__(self, title: str, count: int, color: str, button_text: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._setup_ui(title, count, color, button_text)
 
     def update_count(self, count: int) -> None:
-        """更新卡片显示的数字。"""
         self._count_label.setText(str(count))
 
     def _setup_ui(self, title: str, count: int, color: str, button_text: str) -> None:
@@ -147,20 +138,17 @@ class _StatCard(QFrame):
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
 
-        # 标题
         title_label = QLabel(title)
         title_label.setObjectName('statCardTitle')
         layout.addWidget(title_label)
 
-        # 数字
         count_label = QLabel(str(count))
         count_label.setStyleSheet(
             f"font-size: 32px; font-weight: bold; color: {color};"
         )
-        self._count_label = count_label  # 保存引用以便后续刷新数字
+        self._count_label = count_label  # 保存引用供 update_count 刷新
         layout.addWidget(count_label)
 
-        # 操作按钮
         action_btn = QPushButton(button_text)
         action_btn.setObjectName('statActionBtn')
         action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -173,8 +161,8 @@ class _StatCard(QFrame):
 class SecurityDashboard(QDialog):
     """安全仪表盘主对话框，展示风险概况并提供修复入口。
 
-    后台线程加载安全报告，避免主线程长时间阻塞。关闭对话框前会等待
-    分析 worker 结束，防止对已销毁部件发出信号。
+    后台线程加载报告避免阻塞 UI；关闭前等待 worker 结束，防止对已销毁
+    部件发出信号。
     """
 
     fix_requested = pyqtSignal(int)  # 请求修复条目，参数为对应 entry_id
@@ -193,7 +181,7 @@ class SecurityDashboard(QDialog):
         self._weak_entries: list[Entry] = []
         self._duplicate_groups: list[list[Entry]] = []
         self._old_entries: list[Entry] = []
-        self._worker: BackgroundWorker | None = None  # 预先声明，确保 reject 时可安全判空
+        self._worker: BackgroundWorker | None = None  # 预声明，确保 reject 可安全判空
         self._status_hint: QLabel | None = None
         self._setup_ui()
         self._load_data()
@@ -202,8 +190,7 @@ class SecurityDashboard(QDialog):
         """关闭前等待后台 worker 完成，并清空已解密的明文条目引用。"""
         wait_worker_shutdown(self._worker)
         release_worker(self)
-        # 清空含明文密码的条目列表，与 DetailPanel/EntryDialog 主动清理策略一致，
-        # 缩短敏感数据在对话框关闭后的驻留时间
+        # 清空明文条目，缩短敏感数据在对话框关闭后的驻留时间
         self._weak_entries = []
         self._duplicate_groups = []
         self._old_entries = []
@@ -221,14 +208,12 @@ class SecurityDashboard(QDialog):
         top_layout = QHBoxLayout()
         top_layout.setSpacing(20)
 
-        # 健康评分
         score_container = QVBoxLayout()
         score_container.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._health_widget = _HealthScoreWidget()
         score_container.addWidget(self._health_widget, alignment=Qt.AlignmentFlag.AlignCenter)
         top_layout.addLayout(score_container)
 
-        # 三个统计卡片
         cards_layout = QHBoxLayout()
         cards_layout.setSpacing(12)
 
@@ -247,7 +232,6 @@ class SecurityDashboard(QDialog):
         top_layout.addLayout(cards_layout, stretch=1)
         main_layout.addLayout(top_layout)
 
-        # 分隔线
         separator = QFrame()
         separator.setFixedHeight(1)
         separator.setObjectName('detailDivider')
@@ -260,7 +244,6 @@ class SecurityDashboard(QDialog):
         self._tabs.addTab(self._create_old_tab(), '过期密码')
         main_layout.addWidget(self._tabs, stretch=1)
 
-        # 底部关闭按钮
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         close_btn = QPushButton('关闭')
@@ -270,7 +253,6 @@ class SecurityDashboard(QDialog):
         main_layout.addLayout(btn_layout)
 
     def _create_weak_tab(self) -> QWidget:
-        """创建弱密码标签页容器。"""
         widget = QWidget()
         self._weak_layout = QVBoxLayout(widget)
         self._weak_layout.setSpacing(6)
@@ -278,7 +260,6 @@ class SecurityDashboard(QDialog):
         return widget
 
     def _create_duplicate_tab(self) -> QWidget:
-        """创建重复密码标签页容器，内含滚动区域。"""
         widget = QWidget()
         scroll = QScrollArea(widget)
         scroll.setWidgetResizable(True)
@@ -297,7 +278,6 @@ class SecurityDashboard(QDialog):
         return widget
 
     def _create_old_tab(self) -> QWidget:
-        """创建过期密码标签页容器。"""
         widget = QWidget()
         self._old_layout = QVBoxLayout(widget)
         self._old_layout.setSpacing(6)
@@ -308,7 +288,6 @@ class SecurityDashboard(QDialog):
         """在后台线程加载安全分析数据，避免冻结 UI。"""
         days = self._config.get('old_password_warning_days')
 
-        # 显示加载状态
         self._health_widget.set_score(0)
         self._status_hint = QLabel('正在分析安全数据...')
         self._status_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -329,15 +308,14 @@ class SecurityDashboard(QDialog):
         # 校验回调来源仍是当前 worker，防止 reject 后旧 worker 回调访问已销毁控件
         if self.sender() is not self._worker:
             return
-        # 加载提示 _status_hint 位于 _weak_layout 中，由随后 _populate_weak_tab 的
-        # _clear_layout 统一回收，此处仅清除属性引用，避免手动 deleteLater 造成双重回收。
+        # _status_hint 位于 _weak_layout 中，由后续 _populate_weak_tab 的 _clear_layout
+        # 统一回收，此处仅清属性引用，避免 deleteLater 造成双重回收。
         self._status_hint = None
 
         import dataclasses
 
         def _project(e: Entry) -> Entry:
-            # 清空敏感字段，仅保留展示所需（title/username/strength/时间戳/id），
-            # 避免仪表盘打开期间不必要地驻留完整明文 Entry。
+            # 清空敏感字段，仅保留展示所需，避免驻留完整明文 Entry
             return dataclasses.replace(
                 e, password='', totp_secret='', notes='', url='', custom_fields=[]
             )
@@ -350,16 +328,14 @@ class SecurityDashboard(QDialog):
             self._old_entries = [_project(e) for e in analysis['old_entries']]
         except Exception as exc:
             logger.error("加载安全报告失败: %s", type(exc).__name__, exc_info=True)
-            # 异常出口也用 _clear_layout 回收 _status_hint，与成功路径一致，
-            # 避免"正在分析..."提示残留
+            # 异常出口同样回收 _status_hint，避免提示残留
             self._clear_layout(self._weak_layout)
             self._status_hint = None
             QMessageBox.critical(self, DLG_TITLE_ERROR, '加载安全数据失败，请重试')
             return
         finally:
-            # 统一释放当前 worker：成功与异常两个出口合并到 finally，
-            # 避免未来新增分支时漏调 release_worker 造成 worker 引用泄漏。
-            # _on_data_error（worker.error 信号）是另一独立路径，自行 release。
+            # 成功与异常出口合并到 finally，避免漏调 release_worker 造成引用泄漏；
+            # _on_data_error（worker.error 信号）是另一独立路径，自行 release
             release_worker(self)
 
         weak_count = len(self._weak_entries)
@@ -369,33 +345,27 @@ class SecurityDashboard(QDialog):
 
         score = SecurityAnalyzer.compute_health_score(weak_count, dup_count, old_count, total)
 
-        # 更新评分圆环
         self._health_widget.set_score(score)
 
-        # 更新统计卡片
         self._weak_card.update_count(weak_count)
         self._dup_card.update_count(dup_count)
         self._old_card.update_count(old_count)
 
-        # 填充详细列表
         self._populate_weak_tab()
         self._populate_duplicate_tab()
         self._populate_old_tab()
 
     def _on_data_error(self, error_msg: str) -> None:
-        """后台分析失败（worker.error 信号路径，独立于 _on_data_loaded 的成功/异常出口）。"""
-        # 校验回调来源仍是当前 worker，与 _on_data_loaded 对称，防止 reject
-        # 后旧 worker 回调访问已销毁控件。
+        """worker.error 信号路径，独立于 _on_data_loaded 的成功/异常出口。"""
+        # 与 _on_data_loaded 对称，防止 reject 后旧 worker 回调访问已销毁控件
         if not finalize_worker_if_current(self):
             return
-        # 统一用 _clear_layout 回收 _status_hint，与 _on_data_loaded 出口一致
         self._clear_layout(self._weak_layout)
         self._status_hint = None
         logger.error("加载安全数据失败: %s", error_msg)
         QMessageBox.critical(self, DLG_TITLE_ERROR, '加载安全数据失败，请重试')
 
     def _populate_weak_tab(self) -> None:
-        """填充弱密码列表。"""
         self._clear_layout(self._weak_layout)
 
         if not self._weak_entries:
@@ -415,7 +385,6 @@ class SecurityDashboard(QDialog):
             self._weak_layout.addWidget(row)
 
     def _populate_duplicate_tab(self) -> None:
-        """填充重复密码分组列表。"""
         self._clear_layout(self._dup_layout)
 
         if not self._duplicate_groups:
@@ -428,12 +397,10 @@ class SecurityDashboard(QDialog):
             group_layout = QVBoxLayout(group_widget)
             group_layout.setSpacing(4)
 
-            # 组标题
             group_label = QLabel(f'同一密码被 {len(group)} 个条目使用')
             group_label.setObjectName('dupGroupLabel')
             group_layout.addWidget(group_label)
 
-            # 组内条目
             for entry in group:
                 if entry.id is None:
                     continue
@@ -449,7 +416,6 @@ class SecurityDashboard(QDialog):
             self._dup_layout.addWidget(group_widget)
 
     def _populate_old_tab(self) -> None:
-        """填充过期密码列表。"""
         self._clear_layout(self._old_layout)
 
         if not self._old_entries:
@@ -461,8 +427,7 @@ class SecurityDashboard(QDialog):
             if entry.id is None:
                 continue
             updated = entry.password_changed_at or entry.updated_at or entry.created_at or '未知'
-            # format_datetime 统一处理 naive/aware 时间戳，[:10] 取日期部分
-            formatted = format_datetime(updated)[:10]
+            formatted = format_datetime(updated)[:10]  # 统一处理 naive/aware，取日期部分
             row = self._create_entry_row(
                 title=entry.title or '未命名',
                 subtitle=f'上次更新: {formatted}',
@@ -488,7 +453,6 @@ class SecurityDashboard(QDialog):
         row_layout = QHBoxLayout(row_widget)
         row_layout.setContentsMargins(12, 8, 12, 8)
 
-        # 左侧：标题与副标题
         info_layout = QVBoxLayout()
         info_layout.setSpacing(2)
 
@@ -503,7 +467,6 @@ class SecurityDashboard(QDialog):
 
         row_layout.addLayout(info_layout, stretch=1)
 
-        # 徽章
         badge = QLabel(badge_text)
         bc = QColor(badge_color)
         bc.setAlpha(int(255 * _BADGE_BG_ALPHA))
@@ -518,7 +481,6 @@ class SecurityDashboard(QDialog):
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         row_layout.addWidget(badge)
 
-        # 操作按钮
         fix_btn = QPushButton('修复')
         fix_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         fix_btn.setFixedSize(*BTN_FIX)
@@ -529,7 +491,6 @@ class SecurityDashboard(QDialog):
         return row_widget
 
     def _create_empty_hint(self, text: str) -> QLabel:
-        """创建居中显示的空状态提示标签。"""
         label = QLabel(text)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setObjectName('secEmptyHint')
@@ -540,12 +501,10 @@ class SecurityDashboard(QDialog):
         clear_layout(layout)
 
     def _on_fix_weak(self) -> None:
-        """点击弱密码卡片的立即修复按钮，切换到弱密码标签页。"""
         self._tabs.setCurrentIndex(0)
 
     def _request_fix(self, entry_id: int) -> None:
-        # 先 accept 关闭仪表盘，再延迟到下一个事件循环 emit，确保仪表盘
-        # 模态事件循环已退出，避免在其内嵌套打开编辑对话框形成双层模态。
-        # emit 由 _show_security_dashboard 连接到 _edit_entry，在仪表盘关闭后打开。
+        # 先 accept 退出仪表盘模态循环，再延迟到下一事件循环 emit，避免嵌套
+        # 打开编辑对话框形成双层模态
         self.accept()
         QTimer.singleShot(0, lambda: self.fix_requested.emit(entry_id))

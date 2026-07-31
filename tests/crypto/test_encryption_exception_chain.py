@@ -23,7 +23,6 @@ class TestEncryptionExceptionChain:
             EncryptionEngine.decrypt(EncryptionEngine.TEXT_PREFIX + 'invalid_data', key, 'aad')
         # DecryptionError 双继承 ValueError
         assert isinstance(exc_info.value, ValueError)
-        # __cause__ 应保留原始异常（base64 解码错误），方便开发者追踪根因。
         assert exc_info.value.__cause__ is not None
 
     def test_decrypt_bytes_invalid_data_raises_decryption_error(self):

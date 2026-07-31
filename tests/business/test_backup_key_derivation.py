@@ -95,10 +95,8 @@ def test_create_and_restore_non_password_backup(vault_and_key):
 
     info = inspect_backup(str(backup_path))
     assert info is not None
-    # 快照密钥备份不要求用户提供密码
     assert not info.get('password_required', True)
 
-    # 先软删除再永久删除，使保险库清空
     entry_mgr.delete_entry(entry_id)
     entry_mgr.permanent_delete_entry(entry_id)
     assert entry_mgr.get_entry_count(include_deleted=True) == 0
@@ -126,7 +124,6 @@ def test_derive_key_rejects_short_or_empty_salt():
     with pytest.raises(ValueError):
         MasterKeyManager.derive_key('pw', b'short')  # 5 字节 < MIN_SALT_SIZE
 
-    # 合法长度盐正常派生 32 字节密钥
     key = MasterKeyManager.derive_key('pw', os.urandom(32))
     assert len(key) == 32
 

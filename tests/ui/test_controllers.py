@@ -1,8 +1,7 @@
 """UI 控制器纯数据逻辑单元测试。
 
-EntryListController 与 SidebarController 从 MainWindow 拆分，设计为不依赖
-PyQt6 控件的纯数据逻辑，便于直接单测。本文件覆盖其无副作用的纯方法，填补此前
-仅被 ListRefreshController 间接覆盖的盲区。
+EntryListController 与 SidebarController 设计为不依赖 PyQt6 控件的纯数据逻辑，
+便于直接单测。本文件覆盖其无副作用的纯方法。
 """
 
 # 测试文件大量使用 MagicMock 注入依赖，抑制其属性/函数成员访问的静态类型推断告警

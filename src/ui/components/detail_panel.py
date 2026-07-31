@@ -86,9 +86,8 @@ class DetailPanel(QWidget):
     favorite_toggled = pyqtSignal(int)
     copy_feedback = pyqtSignal()
 
-    # 复制反馈定时器上限：防止极端情况下定时器泄漏（可取消定时器替代
-    # QTimer.singleShot，控件销毁前需逐个 stop）。类常量而非实例属性，遵循
-    # PEP 8 全大写常量命名约定。
+    # 复制反馈定时器上限：可取消定时器替代 QTimer.singleShot，控件销毁前需逐个
+    # stop，上限防止极端情况下的定时器泄漏。
     _COPY_FEEDBACK_TIMERS_MAX = 20
 
     def __init__(
@@ -114,10 +113,9 @@ class DetailPanel(QWidget):
         # 主条目中非主密码敏感字段的间接引用字典，自定义字段由 renderer 管理
         self._secret_values_main: dict[str, str] = {}
         # 非主密码敏感字段与历史密码的自动掩码定时器，持久且可取消，
-        # 替代不可取消的 QTimer.singleShot，便于 _clear_content 统一停止并清空。
+        # 便于 _clear_content 统一停止并清空。
         self._field_hide_timers: list[QTimer] = []
-        # 复制反馈定时器，可取消，替代不可取消的 QTimer.singleShot，
-        # 避免控件销毁后回调访问已删对象。设置上限 20 以防止极端情况下的泄漏。
+        # 复制反馈定时器，可取消，避免控件销毁后回调访问已删对象；上限 20 防泄漏。
         self._copy_feedback_timers: OrderedDict[QTimer, QPushButton] = OrderedDict()
 
         # ---- 子组件 ----
@@ -491,8 +489,7 @@ class DetailPanel(QWidget):
                 self._copy_with_feedback(btn, v)
 
             copy_btn.clicked.connect(_copy_value)
-            # 与敏感字段复制按钮一致：复制后发 copy_feedback，经主窗口在状态栏提示
-            # 「已复制到剪贴板」。原先仅按钮打勾无状态栏文案，与敏感字段反馈不一致。
+            # 与敏感字段复制按钮一致：复制后发 copy_feedback，经主窗口在状态栏提示。
             copy_btn.clicked.connect(self.copy_feedback.emit)
             row_layout.addWidget(copy_btn)
 

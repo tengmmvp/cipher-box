@@ -1,11 +1,4 @@
-"""MetadataSigner 单元测试。
-
-覆盖签名生成、未篡改条目验证、篡改检测、域密钥派生与预置、
-缺密钥与缺签名的异常路径，以及不同条目产生不同签名。
-补充：跨 epoch/密钥轮换的签名失效、vault_meta MAC 字段绑定边界、
-分类空签名拒绝——这些是审查标注的「最高杠杆」盲区，重构若误使旧签名
-在新 key 下验证通过会静默破坏完整性边界且全测试仍绿。
-"""
+"""MetadataSigner 单元测试：签名往返、篡改检测、域密钥派生、跨 epoch 签名失效与 vault_meta MAC 字段绑定。"""
 
 import dataclasses
 import os
@@ -210,14 +203,7 @@ def test_verify_detects_ciphertext_field_tamper():
         signer.verify(entry)
 
 
-# ---------------------------------------------------------------------------
-# 跨 epoch / 密钥轮换的签名失效（最高杠杆盲区）
-#
-# 域密钥从主密钥派生，改密/恢复轮换主密钥即产生新域密钥，旧签名在新域密钥下验证
-# 必然失败。若重构误使旧签名在新 key 下验证通过（如误把 payload 里的密钥分量移除、
-# 或 verify 误读成常量时间比较的恒真分支），会静默破坏完整性边界且全测试仍绿——
-# 此组测试以真实 compute_domain_key(os.urandom(32)) 派生两把不同域密钥守护此边界。
-# ---------------------------------------------------------------------------
+# 跨 epoch / 密钥轮换的签名失效：旧签名在新域密钥下验证必须失败。
 
 
 def test_verify_fails_after_domain_key_rotation():
@@ -318,11 +304,6 @@ def test_compute_vault_meta_mac_ignores_unsigned_field():
     mac_tampered = MetadataSigner.compute_vault_meta_mac(meta, master_key)
 
     assert mac_original == mac_tampered
-
-
-# ---------------------------------------------------------------------------
-# 分类空签名拒绝（与条目 test_verify_no_mac_raises_integrity_error 对称）
-# ---------------------------------------------------------------------------
 
 
 def test_verify_category_no_mac_raises_integrity_error():

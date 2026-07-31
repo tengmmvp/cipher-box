@@ -1,17 +1,8 @@
 """条目管理器，负责密码条目的加密 CRUD 操作。
 
-架构说明：EntryManager 直接依赖 crypto_utils 的 encrypt_field 与 decrypt_field，
-这属于 Business → Crypto 的同层依赖，符合架构约束。UI 层通过 EntryManager
-间接访问这些加密原语，不直接导入 crypto 模块。
-
-职责拆分（阶段D SRP 重构）：
-- 分类 CRUD → ``CategoryManager``（含两阶段加密事务）
-- TOTP 生成/状态 → ``TotpService``
-- 密码历史读取/解密 → ``PasswordHistoryService``
-- 明文条目校验 → ``entry_validation.validate_plain_entry``
-- 条目变更通知管线 → ``EntryChangeBus``（缓存失效 + 回调）
-本类保留条目 CRUD、视图解密、加解密编排原语与搜索匹配等条目核心关注点，
-通过 property 暴露分类/TOTP/历史子服务供 UI 属性访问。
+直接依赖 crypto_utils 的加解密原语（Business → Crypto 同层依赖）；分类/TOTP/
+密码历史/校验/变更通知等职责拆至子服务与独立模块，本类聚焦条目 CRUD、视图
+解密与搜索匹配，经 property 暴露分类/TOTP/历史子服务。
 """
 
 import hmac
@@ -58,8 +49,7 @@ from .entry_change_bus import EntryChangeBus
 
 logger = logging.getLogger(__name__)
 
-# 完整性失败字段→中文标签映射，构造 integrity_message 用。模块级常量避免
-# _make_summary 每次调用重建字典。键为加密字段名子集 + 'category'。
+# 完整性失败字段→中文标签映射，构造 integrity_message 用。模块级常量避免重建。
 _INTEGRITY_FIELD_LABELS: dict[str, str] = {
     'title': '标题', 'username': '账号', 'url': 'URL',
     'tags': '标签', 'category': '分类',
@@ -76,12 +66,11 @@ class EntryManager:
         change_bus: EntryChangeBus,
     ):
         self._vault = vault_manager
-        # 明文缓存矩阵（搜索摘要/分类名/TOTP/标签）委托 EntryCacheManager，
-        # 集中缓存与失效逻辑（独立模块 entry_cache.py，含填充与失效）。
+        # 明文缓存（搜索摘要/分类名/TOTP/标签）与失效委托 EntryCacheManager。
         self._cache = cache
         # 条目变更通知管线：先失效缓存，再在锁外跑注册回调。
         self._change_bus = change_bus
-        # 子服务：分类 / TOTP / 密码历史（SRP 拆分后由 property 暴露）
+        # 子服务：分类 / TOTP / 密码历史（经 property 暴露）
         self._category_mgr = CategoryManager(vault_manager, cache, change_bus)
         self._totp_svc = TotpService(vault_manager, cache)
         self._history_svc = PasswordHistoryService(vault_manager)
@@ -113,9 +102,7 @@ class EntryManager:
     def key_epoch(self) -> str | None:
         """当前密钥版本，委托 vault。
 
-        供 ImportExportManager 等跨管理器操作做 epoch 守卫，避免直接穿透
-        ``_vault`` 私有属性。EntryManager 内部（``_invalidate_if_epoch_changed``）
-        本就经此路径访问 key_epoch。
+        供 ImportExportManager 等跨管理器操作做 epoch 守卫，避免直接穿透 ``_vault``。
         """
         return self._vault.key_epoch
 
@@ -124,7 +111,7 @@ class EntryManager:
         """epoch 守卫事务，委托 vault。
 
         供 ImportExportManager 等跨管理器操作做带 epoch 守卫的事务包裹，避免直接
-        穿透 ``_vault`` 私有属性。语义与 ``VaultManager.epoch_guarded_transaction`` 一致。
+        穿透 ``_vault``。语义与 ``VaultManager.epoch_guarded_transaction`` 一致。
         """
         with self._vault.epoch_guarded_transaction(operation=operation):
             yield
@@ -144,11 +131,9 @@ class EntryManager:
         password_override: str | None = None,
         entry_id: int | None = None,
     ) -> RawEntry:
-        """构建加密 RawEntry 对象，统一处理字段加密逻辑。
+        """构建加密 RawEntry，add_entry 与 update_entry 共用，避免加密字段遗漏。
 
-        add_entry 和 update_entry 共用此方法，避免加密字段遗漏。返回密文态
-        RawEntry（custom_fields 为密文 str），供 EntryRepository 写入数据库。
-        password_override: 若提供，视为已加密的密文，直接赋值，不再重复加密。
+        password_override: 若提供，视为已加密的密文直接赋值，不再重复加密。
         """
         # password_override 已是密文，即 update_entry 场景，直接赋值；
         # 否则加密明文密码，即 add_entry 场景。
@@ -245,11 +230,10 @@ class EntryManager:
     def _decrypt_custom_fields(self, encrypted: str, crypto_id: str) -> list[CustomField]:
         """解密自定义字段列表。
 
-        密文通过 GCM 认证后内容仍可能损坏（如序列化 bug 或部分写入）：
-        ``json.loads`` 失败或结构不符时抛 :class:`EntryIntegrityError`（而非裸
-        ``ValueError``），使调用方可与 :class:`DecryptionError` 一并精确捕获，
-        避免被外层 ``except ValueError`` 兜底吞掉其他无关 ValueError（多重继承
-        陷阱：DecryptionError 亦是 ValueError 子类）。
+        密文通过 GCM 认证后内容仍可能损坏：``json.loads`` 失败或结构不符时抛
+        :class:`EntryIntegrityError`（而非裸 ``ValueError``），可与 :class:`DecryptionError`
+        一并精确捕获，避免外层 ``except ValueError`` 兜底吞掉无关 ValueError
+        （DecryptionError 亦是 ValueError 子类）。
         """
         if not encrypted:
             return []
@@ -296,19 +280,10 @@ class EntryManager:
     ) -> Entry:
         """解密条目字段并构建 Entry，decrypt_entry 与 decrypt_entry_for_export 的共用实现。
 
-        两条路径的差异由 ``mode`` 收敛（替代原先的 ``strict_integrity`` 布尔，调用点
-        语义更清晰——读 ``mode='export'`` 比读 ``strict_integrity=True`` 直观），避免
-        字段遍历与 copy_entry_fields 调用重复：
-
-        - ``mode='export'``：完整性/解密失败立即抛 DecryptionError，password/totp
-          返回已解密明文（普通 str，不包 Sensitive）供备份序列化。
-        - ``mode='detail'``：失败字段收集到 integrity_message，password/totp 包
-          :class:`Sensitive` 防明文意外进入日志/repr；隐含 ``include_secrets=True``。
-        - ``include_secrets=False``：仅 export 模式有意义，跳过 password/totp_secret
-          解密（导出默认不入密）。
-
-        category_name 解密失败：export 路径转 DecryptionError（等价于原 export 的
-        外层 except 归一），detail 路径保持抛 ValueError（与原 decrypt_entry 一致）。
+        ``mode='export'``：完整性/解密失败立即抛 DecryptionError（拒绝导出损坏数据），
+        password/totp 返回明文（普通 str）供备份序列化；``mode='detail'``：失败字段
+        汇总到 integrity_message，password/totp 包 :class:`Sensitive` 防明文进入
+        日志/repr。``include_secrets=False``（仅 export）跳过 password/totp_secret 解密。
         """
         strict_integrity = mode == 'export'
         if strict_integrity and raw_entry.integrity_error:
@@ -321,9 +296,8 @@ class EntryManager:
             integrity_errors.append(raw_entry.integrity_message or '元数据')
 
         def record_failure(name: str) -> None:
-            """字段解密失败的统一处置：strict（导出）抛 DecryptionError 拒绝损坏数据，
-            lenient（详情）记入失败列表供 integrity_message 汇总。收敛原先散落于各
-            字段的 ``if strict_integrity: raise ... else: append`` 重复分叉。"""
+            """字段解密失败的统一处置：strict（导出）抛 DecryptionError，lenient（详情）
+            记入失败列表供 integrity_message 汇总。"""
             if strict_integrity:
                 raise DecryptionError(
                     f'条目 {raw_entry.id} 导出失败，数据可能已损坏'
@@ -342,12 +316,9 @@ class EntryManager:
                 raw_entry.custom_fields_db_value, raw_entry.crypto_id,
             )
         except (DecryptionError, EntryIntegrityError) as exc:
-            # 精确捕获两类损坏（不吞其他异常类型），并区分故障层记日志以便排障：
-            # DecryptionError=密文层损坏（GCM 认证失败/密钥问题，可能指向数据迁移
-            # 或攻击）；EntryIntegrityError=结构层损坏（密文已解密但内容损坏——
-            # 非合法 JSON 或结构不符，多指向序列化 bug 或部分写入）。两类根因排查
-            # 路径不同，故日志区分。原先 except (DecryptionError, ValueError) 的裸
-            # ValueError 会连带吞掉无关 ValueError（多重继承陷阱），现已收窄。
+            # 精确捕获两类损坏（不吞其他异常），区分故障层记日志：DecryptionError=
+            # 密文层损坏（GCM 认证失败/密钥问题）；EntryIntegrityError=结构层损坏
+            # （已解密但内容损坏——非合法 JSON 或结构不符）。
             layer = '密文' if isinstance(exc, DecryptionError) else '结构'
             logger.warning(
                 '条目 %s 自定义字段%s层损坏', raw_entry.crypto_id, layer,
@@ -479,22 +450,17 @@ class EntryManager:
             preserve_metadata=bool(entry.created_at or entry.updated_at),
         )
         if notify:
-            # 新增条目不改变既有条目的 title/username/url/tags 摘要，clear_summaries=False
-            # 保留摘要缓存，新条目摘要下次列表查询时自然解密填充，避免全量重解密。
-            # tags 分布与 total/重复分组变化仍由默认 tags_changed=True、
-            # password_changed=True 失效。对齐 toggle_favorite 的精细失效策略。
+            # 新增不改变既有摘要，clear_summaries=False 保留缓存避免全量重解密；
+            # tags 分布与 total/重复分组变化仍由默认 tags_changed/password_changed 失效。
             self._change_bus.notify(clear_summaries=False)
         return result
 
     def add_entries(self, entries: list[Entry], *, notify: bool = True) -> None:
         """批量添加条目（导入路径），加密后用 executemany 一次性写入。
 
-        对每个条目检测强度、生成 crypto_id、构建加密 RawEntry，末尾单次
-        :meth:`EntryRepository.add_entries_batch` 写入，将 N 次单独 INSERT 合并为
-        1 次 executemany，缩短导入事务持 ``db_lock`` 的时间（期间 UI 侧栏/列表的
-        读请求被阻塞）。``entries`` 须已由 ``Entry.from_dict`` 校验（与单条
-        ``add_entry(skip_validation=True)`` 对齐，不再重复长度校验）；``metadata_mac``
-        签名由 repository 层 ``_normalize_for_insert`` 统一计算，与单条路径一致。
+        单次 add_entries_batch 将 N 次 INSERT 合并为 1 次 executemany，缩短导入事务
+        持 db_lock 的时间（期间 UI 侧栏/列表读请求被阻塞）。``entries`` 须已由
+        ``Entry.from_dict`` 校验（与单条 add_entry(skip_validation=True) 对齐）。
         """
         if not entries:
             if notify:
@@ -535,15 +501,11 @@ class EntryManager:
         ``get_entry`` 与旧密码解密（消除覆盖路径的双重读取与解密）。其他调用方
         留空，走默认 read-modify-write。
 
-        线程安全说明：此方法采用 read-modify-write 模式，先在事务外读取旧条目
-        与旧密码、完成加解密与 enc_entry 构建，仅在最后写入时进入事务并复查
-        ``key_epoch``（事务内 ``_enforce_key_epoch`` 会跳过，故单条写路径须自行
-        复查）。这是有意为之：相比 ``toggle_favorite``（单字段、用事务内 read）
-        采用事务外 read 以缩短 ``db_lock`` 持有时间，避免加解密期间长时间阻塞
-        改密等长事务；epoch 复查保证若 read 到 commit 期间发生改密重加密，本
-        写入会中止而非把旧密钥密文落到已重写的历史表。单用户桌面应用中同一时
-        刻仅一个 UI 操作修改同一条目，竞态窗口极小；未来若引入并发写入，需在
-        调用方加锁串行化。
+        线程安全：采用事务外 read-modify-write + 事务内复查 key_epoch——相比
+        toggle_favorite（事务内 read），事务外 read 缩短 db_lock 持有时间，避免
+        加解密期间阻塞改密；epoch 复查保证若 read 到 commit 期间发生改密重加密，
+        本写入中止而非把旧密钥密文落到已重写的历史表。单用户桌面应用同一时刻仅
+        一个 UI 操作修改同一条目，竞态窗口极小。
         """
         validate_plain_entry(entry)
         if entry.integrity_error:
@@ -608,22 +570,15 @@ class EntryManager:
     ) -> tuple[int, list[tuple[int, Exception]]]:
         """批量更新条目（导入覆盖路径），返回 ``(成功条数, 失败项)``。
 
-        失败项为 ``[(items 中的索引, 异常)]``，仅收集验证/解密阶段的
-        :class:`EntryError` / :class:`EntryIntegrityError` / :class:`DecryptionError`
-        ——与原覆盖循环逐条 ``update_entry`` 的 ``except`` 集合一致，调用方据此记
-        skip 日志。写阶段的 :class:`DatabaseError` / :class:`VaultKeyEpochMismatchError`
-        向上传播中止整个导入（与原语义一致：单条写失败非用户输入问题，应回滚而非
-        静默跳过）。
+        失败项 ``[(items 索引, 异常)]`` 仅收集验证/解密阶段的 EntryError /
+        EntryIntegrityError / DecryptionError；写阶段的 DatabaseError /
+        VaultKeyEpochMismatchError 向上传播中止整个导入（单条写失败非用户输入问题，
+        应回滚而非静默跳过）。
 
-        收敛 per-item 开销：验证与加密在 SAVEPOINT 外的预处理循环完成（单次
-        ``utc_now_iso``、单次 epoch 快照），写入逐条经独立 SAVEPOINT 隔离，保持
-        per-entry 错误隔离语义——单条验证失败仅跳过该条，不波及其他。导入整体已由
-        外层 ``_run_import_transaction`` 包裹单事务，本方法的 SAVEPOINT 在该外层事务
-        内嵌套（不会触发额外 fsync）。
-
-        ``items`` 的 ``preloaded_raw`` / ``preloaded_old_password`` 由
-        :meth:`ImportExportManager._prepare_overwrite_map` 批量预读与覆盖循环提取，
-        跳过重复 ``get_entry`` 与旧密码解密。
+        收敛 per-item 开销：验证与加密在 SAVEPOINT 外预处理（单次 utc_now_iso、
+        单次 epoch 快照），写入逐条经独立 SAVEPOINT 隔离保持 per-entry 错误隔离——
+        单条验证失败仅跳过该条，不波及其他。导入整体已由外层 ``_run_import_transaction``
+        包裹单事务，本方法的 SAVEPOINT 在该外层事务内嵌套（不会触发额外 fsync）。
         """
         if not items:
             return 0, []
@@ -696,11 +651,10 @@ class EntryManager:
     ) -> tuple[str, bool]:
         """检测密码变更并加密新密码，返回 (新密码密文, 是否变更)。
 
-        安全-性能权衡：必须解密旧密码与明文比较来检测变更——AES-256-GCM 每次
-        加密使用随机 nonce，相同明文产生不同密文，密文比较不可行；HMAC 指纹方案
-        需额外存储指纹字段（要求 schema 变更），当前解密比较是无需迁移的合理选择。
-        常量时间比较（hmac.compare_digest）避免明文密码比较的时序侧信道。
-        preloaded_old_password 用于导入覆盖路径已解密的旧密码，跳过重复解密。
+        必须解密旧密码与明文比较——AES-GCM 用随机 nonce，密文比较不可行；HMAC 指纹
+        方案需 schema 变更，当前解密比较是无需迁移的合理选择。常量时间比较
+        （hmac.compare_digest）避免时序侧信道。preloaded_old_password 用于导入覆盖
+        路径已解密的旧密码，跳过重复解密。
         """
         old_pwd_enc = raw.password
         if preloaded_old_password is not None:
@@ -754,8 +708,7 @@ class EntryManager:
         self._change_bus.notify(
             password_changed,
             crypto_id=raw.crypto_id,
-            # 解密失败时保守视为 tags 已变以失效标签缓存；old_tags 始终为 str，
-            # 避免原先 None 哨兵混入 str 类型。
+            # 解密失败时保守视为 tags 已变以失效标签缓存。
             tags_changed=tags_decrypt_failed or (old_tags != entry.tags),
         )
 
@@ -764,9 +717,8 @@ class EntryManager:
         if not self._vault.db.soft_delete_entry(entry_id):
             return False
         self._cache.pop_totp(entry_id)
-        # 软删除仅切换 is_deleted，不改变摘要内容（title/username/url/tags），保留摘要缓存
-        # 避免全量重解密；tags 分布与 total/重复分组变化由默认 tags_changed=True、
-        # password_changed=True 失效。对齐 toggle_favorite 的精细失效策略。
+        # 软删除仅切换 is_deleted，不改变摘要内容，保留摘要缓存避免全量重解密；
+        # tags 分布与 total/重复分组变化由默认 tags_changed/password_changed 失效。
         self._change_bus.notify(clear_summaries=False)
         return True
 
@@ -787,9 +739,9 @@ class EntryManager:
     def empty_trash(self) -> None:
         """清空回收站。
 
-        批量删除后统一 secure_checkpoint：收缩 WAL（清除已删除条目的旧密文扇区
-        残留）并刷新 -wal/-shm 文件权限，替代原先每条 DELETE 各自 checkpoint
-        的 O(n) 次 TRUNCATE+fsync。
+        批量删除后统一 secure_checkpoint：收缩 WAL（清除已删除条目旧密文扇区残留）
+        并刷新 -wal/-shm 文件权限，避免每条 DELETE 各自 checkpoint 的 O(n) 次
+        TRUNCATE+fsync。
         """
         self._vault.db.empty_trash()
         self._cache.clear_totp()
@@ -869,9 +821,8 @@ class EntryManager:
         # 循环外一次性 epoch 校验：本批 raw 在单次调用内 epoch 不可能变化
         # （调用方事务内已固定），循环内走无校验路径避免每条目重复加锁取 epoch。
         self._invalidate_if_epoch_changed()
-        # search 与非 search 共用同一循环：search 时在 append 前做 matches_search
-        # 过滤，消除原先两段近乎相同的循环。摘要字段首次搜索后进入会话缓存，
-        # 后续搜索无重复解密成本。
+        # search 与非 search 共用同一循环：search 时在 append 前做 matches_search 过滤。
+        # 摘要字段首次搜索后进入会话缓存，后续搜索无重复解密成本。
         summaries = []
         for raw in raw_entries:
             if cancel_check and cancel_check():

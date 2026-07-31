@@ -1,12 +1,11 @@
 """CipherBox 主窗口。
 
-编排侧边栏、条目列表与详情面板，集成快捷键、排序、Toast 通知、分类管理、
-标签筛选、撤销删除、主题刷新、自动锁定与备份、安全仪表盘等功能。职责分离经
-组合化 controller 实现（Mixin 已全部消除）：MenuController（菜单/对话框调度）、
-EntryActionsController（条目 CRUD/分类/右键菜单）、ListRefreshController（筛选/
-排序/列表刷新/状态栏/worker）。各 controller 经冻结 dataclass 回调协作，host 仅
-保留控件创建、生命周期编排（锁定/关闭/托盘/主题）与 ``_locked_ui`` 状态广播；
-锁定态守卫统一用 ``_locked_guard.require_unlocked``（读各 controller 自有 ``_locked``）。
+编排侧边栏、条目列表与详情面板，集成快捷键、排序、Toast、分类管理、标签筛选、
+撤销删除、主题刷新、自动锁定与备份、安全仪表盘等。职责经组合化 controller 分离：
+MenuController（菜单/对话框调度）、EntryActionsController（条目 CRUD/分类/右键菜单）、
+ListRefreshController（筛选/排序/列表刷新/状态栏/worker），经冻结 dataclass 回调协作；
+host 仅保留控件创建、生命周期编排（锁定/关闭/托盘/主题/事件过滤）与 ``_locked_ui``
+状态广播。
 """
 
 import logging
@@ -99,26 +98,20 @@ class MainWindow(QMainWindow):
         self._security = ctx.security
         self._import_export = ctx.import_export
         self._backup = ctx.backup
-        # 三个组合化 controller 在下方 helper 内构造；此处显式标注类型，使 mypy
-        # 能在 helper 外的引用点（如 self._menu.setup）解析属性类型。三者同模式，
-        # 一并标注消除同源风险（仅 _menu 此前报 has-type，余二者为潜在隐患）。
+        # 显式标注类型，使 mypy 能解析 helper 外的引用点（如 self._menu.setup）。
         self._menu: MenuController
         self._list_refresh: ListRefreshController
         self._entry_actions: EntryActionsController
         self._create_ui_controllers()
         self._tray: TrayIcon | None = None
         self._locked_ui = False
-        # 首次解锁标志：MainWindow 构造紧跟 app.py 的 refresh_after_unlock（show 前），
-        # 而构造期 ListRefreshController.setup 已刷新 categories/tags/entries，故首次
-        # 解锁跳过重复刷新，避免构造期 worker 与本次 worker 双重全量解密（W1+W2）。
+        # 首次解锁跳过刷新：构造期 setup 已加载，避免重复 worker 双重全量解密。
         self._first_unlock = True
 
         self._setup_ui()
-        # 三个组合化 controller 须在 _setup_ui 后创建（依赖控件）。顺序保证依赖：
-        # list_refresh（初始填充，建立 cached_categories/tags）→ entry_actions（deps
-        # 读 list_refresh 缓存与方法）→ menu（slots 绑 entry_actions）。list_refresh
-        # 的空态 on_add_entry 经 lambda 延迟绑定 entry_actions.add_entry（跨控制器回调
-        # 唯一的创建顺序环，运行时 entry_actions 已就绪）。
+        # 顺序保证依赖：list_refresh（建立缓存）→ entry_actions（deps 读其缓存/方法）
+        # → menu（slots 绑 entry_actions）。list_refresh 空态 on_add_entry 经 lambda
+        # 延迟绑定 entry_actions.add_entry（运行时 entry_actions 已就绪）。
         self._create_list_refresh_controller()
         self._create_entry_actions_controller()
         self._list_refresh.setup(self, self._list_refresh_view())
@@ -135,11 +128,9 @@ class MainWindow(QMainWindow):
     def _create_ui_controllers(self) -> None:
         """组装依赖 Qt 线程亲和性或 UI 配置的控制器。
 
-        纯 Python business manager 由 BusinessContext 注入（见 composition.py）；
-        此处仅创建 QObject 控制器（AutoLock/AutoBackup/Clipboard）与依赖 UI 配置的
-        控制器（EntryList/Sidebar），它们有线程亲和性或需 config，不适合放入
-        frozen dataclass。跨 manager 连线（锁定/变更回调）已在 build_business_context
-        完成。
+        BusinessContext 注入纯 Python business manager；此处仅创建有线程亲和性或
+        需 config 的 QObject 控制器（AutoLock/AutoBackup/Clipboard/EntryList/Sidebar），
+        不适合放入 frozen dataclass。
         """
         self._entry_list_ctrl = EntryListController(
             self._entry_mgr, self._security, self._config,
@@ -152,10 +143,10 @@ class MainWindow(QMainWindow):
         )
 
     def _create_menu_controller(self) -> None:
-        """组装菜单控制器（需在 _setup_ui 与三个 controller 创建后）。
+        """组装菜单控制器（需在 _setup_ui 与各 controller 创建后）。
 
-        MenuSlots 的条目操作回调绑 EntryActionsController，clear_search/refresh_all_data
-        绑 ListRefreshController，apply_*/lock 绑 host 方法。
+        条目操作回调绑 entry_actions，clear_search/refresh 绑 list_refresh，
+        apply_*/lock 绑 host 方法。
         """
         self._menu = MenuController(
             MenuDeps(
@@ -179,11 +170,10 @@ class MainWindow(QMainWindow):
         )
 
     def _create_list_refresh_controller(self) -> None:
-        """组装列表刷新控制器（吸收原 Filters Mixin，需在 _setup_ui 后，依赖控件）。
+        """组装列表刷新控制器（须在 _setup_ui 与 entry_actions 之前，依赖控件）。
 
-        须在 _create_entry_actions_controller 前创建：EntryActionsDeps 的 refresh_*
-        绑本控制器方法。空态 on_add_entry 经 lambda 延迟绑定 entry_actions.add_entry
-        （entry_actions 在本方法之后创建，空态回调运行时已就绪）。
+        EntryActionsDeps 的 refresh_* 绑本控制器方法；空态 on_add_entry 经 lambda
+        延迟绑定 entry_actions.add_entry（运行时已就绪）。
         """
         self._list_refresh = ListRefreshController(
             self._config, self._entry_mgr, self._security,
@@ -211,10 +201,10 @@ class MainWindow(QMainWindow):
         )
 
     def _create_entry_actions_controller(self) -> None:
-        """组装条目操作控制器（吸收原 Entries Mixin，需在 _setup_ui 后，依赖控件）。
+        """组装条目操作控制器（须在 _setup_ui 与 list_refresh 之后，依赖控件）。
 
-        EntryActionsDeps 的 refresh_* 绑 ListRefreshController 方法，get_dialog_options
-        绑 host 缓存读取（转发 list_refresh.cached_*），供新增/编辑对话框预填分类与标签。
+        refresh_* 绑 list_refresh 方法；get_dialog_options 转发 list_refresh 缓存，
+        供新增/编辑对话框预填分类与标签。
         """
         self._entry_actions = EntryActionsController(
             self._config, self._entry_mgr, self._clipboard, self._detail_panel,
@@ -242,11 +232,7 @@ class MainWindow(QMainWindow):
         return self._list_refresh.cached_categories, self._list_refresh.cached_tag_names
 
     def _show_from_tray(self) -> None:
-        """托盘「显示窗口」回调：锁定态激活登录窗，解锁态显示主窗并刷新状态栏。
-
-        操纵窗口可见性 + 查找 LoginWindow + 读
-        _locked_ui/_status_timer，属窗口编排而非菜单调度。
-        """
+        """托盘「显示窗口」回调：锁定态激活登录窗，解锁态显示主窗并刷新状态栏。"""
         if not self._vault.is_unlocked or self._locked_ui:
             from ..dialogs.login_window import LoginWindow
             for widget in QApplication.topLevelWidgets():
@@ -259,8 +245,7 @@ class MainWindow(QMainWindow):
             return
         self.showNormal()
         self.activateWindow()
-        # 从托盘恢复后刷新状态栏：close_to_tray 清了详情面板与 worker，状态栏可能
-        # 停留在隐藏前的陈旧文本，重启定时器触发刷新。
+        # 从托盘恢复后状态栏可能停留在隐藏前的陈旧文本，重启定时器刷新。
         self._list_refresh.start_status_timer()
 
     def _setup_ui(self) -> None:
@@ -307,21 +292,17 @@ class MainWindow(QMainWindow):
         if saved_geo:
             try:
                 geo_bytes = bytes.fromhex(saved_geo)
-                # 上限与 config._is_valid 共用 MAX_WINDOW_GEOMETRY_BYTES 单一常量，
-                # 消除校验端与消费端各自硬编码导致合法 geometry 被静默丢弃。
+                # 与 config._is_valid 共用 MAX_WINDOW_GEOMETRY_BYTES，消除两端硬编码分歧。
                 if len(geo_bytes) <= MAX_WINDOW_GEOMETRY_BYTES:
                     self.restoreGeometry(geo_bytes)
             except (ValueError, RuntimeError):
                 logger.debug("窗口几何位置恢复失败，已忽略", exc_info=True)
-
-        # 详情面板信号连接迁 EntryActionsController.setup（edit/delete/favorite/copy_feedback）
 
         # 状态栏
         self._status_bar = QStatusBar()
         self._warning_label = QLabel()
         self._warning_label.setObjectName('warningText')
         self.setStatusBar(self._status_bar)
-        # 状态栏安全摘要初始化迁 ListRefreshController.setup（update_status_bar）
 
     def _build_sidebar(self) -> None:
         self._sidebar = QWidget()
@@ -353,12 +334,10 @@ class MainWindow(QMainWindow):
         self._search_edit.setPlaceholderText('搜索标题、账号或标签')
         self._search_edit.setClearButtonEnabled(True)
         self._search_edit.addAction(icon(SEARCH), QLineEdit.ActionPosition.LeadingPosition)
-        # 搜索防抖定时器与 textChanged 连接迁 ListRefreshController.setup
         sidebar_layout.addWidget(self._search_edit)
 
         self._tag_combo = QComboBox()
         self._tag_combo.setToolTip('按标签筛选条目')
-        # currentIndexChanged 连接与初始填充迁 ListRefreshController.setup
         sidebar_layout.addWidget(self._tag_combo)
 
         # 筛选标签
@@ -370,7 +349,6 @@ class MainWindow(QMainWindow):
         self._filter_list = QListWidget()
         self._filter_list.setMaximumHeight(FILTER_MAX_HEIGHT)
         self._build_filter_list()
-        # currentItemChanged 连接迁 ListRefreshController.setup
         sidebar_layout.addWidget(self._filter_list)
 
         # 筛选区域分割线
@@ -395,8 +373,6 @@ class MainWindow(QMainWindow):
 
         # 分类列表
         self._category_list = QListWidget()
-        # currentItemChanged 连接与初始填充迁 ListRefreshController.setup
-        # customContextMenuRequested 连接迁 EntryActionsController.setup
         sidebar_layout.addWidget(self._category_list)
 
         # 分类区域分割线
@@ -422,7 +398,6 @@ class MainWindow(QMainWindow):
             0,
         )
         self._sort_combo.setCurrentIndex(sort_idx)
-        # currentIndexChanged 连接迁 ListRefreshController.setup
         sidebar_layout.addWidget(self._sort_combo)
 
         # 统计
@@ -492,8 +467,7 @@ class MainWindow(QMainWindow):
         # 条目列表，使用 QStackedWidget 切换列表和空状态
         self._list_stack = QStackedWidget()
 
-        # Model/View：QListView + EntryListModel 替代 QListWidget，
-        # set_entries 一次替换数据，视图按需经 delegate 绘制，消除逐项 item 创建。
+        # Model/View：set_entries 一次替换数据，delegate 按需绘制，消除逐项 item 创建。
         self._entry_list = QListView()
         self._entry_list.setObjectName('entryList')
         self._entry_model = EntryListModel(self._entry_list)
@@ -502,8 +476,6 @@ class MainWindow(QMainWindow):
         self._entry_list.setItemDelegate(self._entry_delegate)
         self._entry_list.setUniformItemSizes(True)
         self._entry_list.setAlternatingRowColors(True)
-        # selectionModel.currentChanged 与 customContextMenuRequested 连接迁
-        # EntryActionsController.setup（_build_* 仅建控件不再 connect）
         self._list_stack.addWidget(self._entry_list)
 
         list_layout.addWidget(self._list_stack, 1)
@@ -522,14 +494,13 @@ class MainWindow(QMainWindow):
     def _setup_tray(self) -> None:
         if not self._config.get('show_tray_icon', True):
             return
-        # 与 _apply_runtime_settings 的 disable 分支对称：若已存在旧托盘实例
-        # （如运行期设置变更或重建路径调用此方法），先清理避免孤儿 QSystemTrayIcon
-        # 残留并占用任务栏图标槽位。deleteLater 由 Qt 事件循环安全回收。
+        # 清理旧托盘实例，避免孤儿 QSystemTrayIcon 残留占用任务栏槽位
+        # （deleteLater 由 Qt 事件循环安全回收）。
         if self._tray is not None:
             self._tray.hide()
             self._tray.deleteLater()
             self._tray = None
-        # 先断开旧连接，避免禁用→重启用托盘时 _on_lock_tray 重复连接
+        # 断开旧连接，避免禁用→重启用托盘时 _on_lock_tray 重复连接
         disconnect_all([(self.lock_requested, self._on_lock_tray)])
         self._tray = TrayIcon(self)
         self._tray.show_window.connect(self._show_from_tray)
@@ -544,22 +515,18 @@ class MainWindow(QMainWindow):
     def showEvent(self, event: QShowEvent | None) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
         super().showEvent(event)
         # WTS 注册须在窗口 show 后（HWND 有效）；__init__ 时未 show 会触发 C 层
-        # access violation。注册逻辑由 AutoLockController 负责（内部幂等，仅首次显示时注册）。
+        # access violation。注册由 AutoLockController 负责（内部幂等）。
         self._auto_lock.setup_session_notification(self)
 
     def _setup_auto_backup(self) -> None:
-        # 定时器创建与 worker 生命周期由 AutoBackupController 管理；不在此启动
-        # （vault 未解锁时空转），由 refresh_after_unlock 在解锁后启动。
+        # 仅创建定时器；vault 未解锁前不启动，由 refresh_after_unlock 在解锁后启动。
         self._auto_backup.setup(self)
 
     def eventFilter(self, watched: QObject | None, event: QEvent | None) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
-        """捕获整个应用的用户活动，重置自动锁定计时器。
+        """捕获用户活动重置自动锁定计时器。
 
-        排除修饰键即 Shift/Ctrl/Alt/Meta，仅有意义的按键才重置。
-        仅对按键、鼠标点击、滚轮与触摸开始重置；不包含 MouseMove，
-        因为鼠标静止悬停时系统仍会持续产生移动事件，纳入它会使
-        超时锁定被无限推迟，违背密码管理器的安全预期。
-        此过滤器替代了 keyPressEvent/mousePressEvent 的双重功能。
+        排除修饰键；仅按键/鼠标点击/滚轮/触摸开始重置。不含 MouseMove——鼠标
+        静止悬停时系统仍持续产生移动事件，纳入它会使超时锁定被无限推迟。
         """
         if event is not None and event.type() == QEvent.Type.KeyPress:
             key_event = cast(QKeyEvent, event)
@@ -592,29 +559,24 @@ class MainWindow(QMainWindow):
     def _shutdown_workers(self) -> None:
         """取消并等待所有后台 worker 结束，避免 QThread running 析构崩溃。
 
-        列表/标签/状态 worker 经 ListRefreshController.shutdown 取消并等待；自动备份
-        worker 单独 shutdown。锁定、退出、隐藏到托盘前调用，确保这些路径不再持有
-        密钥或对已锁定 vault 发信号、继续解密条目。
+        锁定、退出、隐藏到托盘前调用，确保这些路径不再持有密钥或对已锁定 vault
+        发信号、继续解密条目。
         """
         self._list_refresh.shutdown()
         self._auto_backup.shutdown()
 
     def _quit_app(self) -> None:
-        # 托盘退出：与 closeEvent 退出分支清理对齐——先移除事件过滤器，防止
-        # 已销毁对象仍被 QApplication 引用、排队的原生消息派发到已删闭包。
+        # 与 closeEvent 退出分支对齐：移除事件过滤器，防止已销毁对象仍被引用。
         app = QApplication.instance()
         if app:
             app.removeEventFilter(self)
-        # 移除会话锁屏原生事件过滤器（与 removeEventFilter 对称），解除
-        # QApplication 对其闭包（绑定 lock_requested）的引用。
+        # 解除 QApplication 对会话锁屏过滤器闭包（绑定 lock_requested）的引用。
         self._auto_lock.remove_session_filter()
-        # 等待后台 worker 退出（避免 QThread running 析构崩溃），清剪贴板明文，
-        # 再关闭 vault
+        # 等待后台 worker 退出，清剪贴板明文，再关闭 vault。
         self._shutdown_workers()
-        # reject 模态对话框（备份/改密/导入等）：托盘菜单是平台原生菜单，不受
-        # application-modal 阻拦，故 _quit_app 可达；须在 vault.close 前 reject
-        # 对话框使其 worker 退出，否则 vault 关闭撕裂共享 sqlite 事务 + QThread
-        # running 析构崩溃（与 prepare_for_lock 的 reject 对齐，闭合 ARCH-019）。
+        # reject 模态对话框：托盘菜单是原生菜单不受 application-modal 阻拦，故可达；
+        # 须在 vault.close 前 reject 使其 worker 退出，否则 vault 关闭撕裂共享
+        # sqlite 事务 + QThread running 析构崩溃（ARCH-019）。
         for widget in list(QApplication.topLevelWidgets()):
             if widget is self or not isinstance(widget, QDialog):
                 continue
@@ -638,29 +600,25 @@ class MainWindow(QMainWindow):
             app = QApplication.instance()
             if isinstance(app, QApplication):
                 app.setStyleSheet(style)  # pyright: ignore[reportAttributeAccessIssue]
-            # 重建侧边栏筛选图标，因为颜色已烘焙到 QIcon 中需要重建
+            # 颜色烘焙到 QIcon，需重建筛选/分类列表与菜单图标
             self._build_filter_list()
-            # 刷新菜单栏图标
             self._menu.update_menu_icons()
             self._brand_icon.setPixmap(icon_pixmap(SHIELD, 'accent', 24))
             if self._tray:
                 self._tray.set_locked(False)
-            # 主题切换时数据未变，只需强制重绘列表控件
+            # 数据未变，强制重绘列表控件即可
             self._entry_delegate.clear_color_cache()
             self._entry_list.update()
-            # 分类列表的 FOLDER 图标颜色已烘焙到 QIcon，update() 不会刷新，
-            # 需重建分类列表以用新主题颜色重新生成图标。
-            # 分类列表 FOLDER 图标与空态 EmptyStateWidget 的颜色烘焙到 QIcon/对象，
-            # update() 不刷新，需重建。统一委托 ListRefreshController。
+            # FOLDER 图标与空态 EmptyStateWidget 颜色烘焙到 QIcon/对象，update()
+            # 不刷新，需重建。统一委托 list_refresh。
             self._list_refresh.rebuild_for_theme()
-            # 刷新详情面板：force=True 强制重建以刷新内联样式
-            # 仅在详情面板已有内容时刷新，避免主题切换意外恢复用户已取消选择的条目
+            # 仅在有内容时 force 刷新详情面板，避免恢复用户已取消选择的条目
             current_entry = self._detail_panel.current_entry
             if current_entry:
                 self._detail_panel.show_entry(current_entry, force=True)
             else:
                 self._detail_panel.show_empty()
-            # 刷新活跃 Toast 的烘焙配色（背景/文本/按钮颜色随主题变化）
+            # 刷新活跃 Toast 的烘焙配色
             from ..components.toast import ToastManager
             ToastManager.refresh_for(self)
 
@@ -669,19 +627,17 @@ class MainWindow(QMainWindow):
     def _stop_ui_timers(self) -> None:
         """停止所有 UI 去抖定时器（搜索/选择/条目变更/状态栏）。
 
-        收敛锁定、隐藏到托盘等状态转换路径的定时器停止集合为单一调用，避免新增
-        定时器时遗漏某个——``_status_timer`` 曾在 ``_secure_hide_to_tray`` 漏停，
-        致托盘态 pending 触发仍启动全量解密的安全分析 worker。
+        收敛状态转换路径的定时器停止为单一调用，避免新增时遗漏——``_status_timer``
+        曾在 ``_secure_hide_to_tray`` 漏停，致托盘态 pending 触发仍启动全量解密 worker。
         """
         self._list_refresh.stop_timers()
         self._entry_actions.stop_timers()
 
     def _secure_hide_to_tray(self) -> None:
-        """隐藏到托盘前的安全清理：清详情面板明文、清剪贴板、停 worker 与定时器。
+        """隐藏到托盘前的安全清理：清详情面板明文、剪贴板，停 worker 与定时器。
 
-        close_to_tray 与 minimize_to_tray 共用：保持 vault 解锁与列表模型，
-        但清除瞬时明文（详情面板、剪贴板）并停止后台解密 worker，避免隐藏到
-        托盘后仍持有密钥/明文。_lock_timer 仍运行，托盘态空闲超时会自动锁定。
+        close_to_tray 与 minimize_to_tray 共用：保持 vault 解锁与列表模型，但清除
+        瞬时明文并停止后台解密 worker；_lock_timer 仍运行，托盘态空闲超时自动锁定。
         """
         self._detail_panel.show_empty()
         self._clipboard.clear_now()
@@ -707,10 +663,9 @@ class MainWindow(QMainWindow):
             logger.debug("保存窗口状态失败", exc_info=True)
 
         if self._config.get('close_to_tray', False) and self._tray:
-            # 隐藏到托盘（非退出、非锁定）：安全清理后隐藏。保持 vault 解锁、
-            # 列表模型与备份/状态定时器；_lock_timer 仍运行，托盘态空闲超时会
-            # 自动锁定（安全设计）。从托盘恢复时窗口立即可用；详情面板已清空，
-            # 恢复后由用户重新选择条目。
+            # 隐藏到托盘（非退出、非锁定）：安全清理后隐藏。保持 vault 解锁、列表模型
+            # 与定时器；_lock_timer 仍运行，托盘态空闲超时自动锁定。恢复后详情面板
+            # 已清空，由用户重新选择条目。
             self._secure_hide_to_tray()
             a0.ignore()
             self.hide()
@@ -719,13 +674,11 @@ class MainWindow(QMainWindow):
             app = QApplication.instance()
             if app:
                 app.removeEventFilter(self)
-            # 移除会话锁屏原生事件过滤器（与 removeEventFilter 对称），解除
-            # QApplication 对其闭包（绑定 lock_requested）的引用。
+            # 解除 QApplication 对会话锁屏过滤器闭包（绑定 lock_requested）的引用。
             self._auto_lock.remove_session_filter()
-            # 统一用 _shutdown_workers 取消并等待后台 worker 结束，
-            # 与 prepare_for_lock 的关闭模式一致，确保退出前 worker 不再持有密钥。
+            # 取消并等待后台 worker 结束，确保退出前不再持有密钥。
             self._shutdown_workers()
-            # 完全退出时清除剪贴板中的明文密码，防止应用关闭后残留
+            # 完全退出时清除剪贴板明文密码
             self._clipboard.clear_now()
             self._vault.close()
             if self._tray:
@@ -738,10 +691,9 @@ class MainWindow(QMainWindow):
         if a0.type() == a0.Type.WindowStateChange:
             if self.windowState() & Qt.WindowState.WindowMinimized:
                 if self._config.get('minimize_to_tray', True) and self._tray:
-                    # 最小化到托盘同样视为「离开交互」，执行与 close_to_tray 一致
-                    # 的安全清理，避免最小化比关闭更不安全（详情明文、剪贴板明文、
-                    # 后台解密 worker 继续运行）。hide 延迟到下一事件循环避免
-                    # 在 changeEvent 内直接 hide 的 Qt 重入问题。
+                    # 最小化同样视为「离开交互」，执行与 close_to_tray 一致的安全清理，
+                    # 避免最小化比关闭更不安全。hide 延迟到下一事件循环避免 changeEvent
+                    # 内直接 hide 的 Qt 重入问题。
                     self._secure_hide_to_tray()
                     QTimer.singleShot(0, self.hide)
         super().changeEvent(a0)
@@ -752,8 +704,7 @@ class MainWindow(QMainWindow):
         self._entry_actions.set_locked(False)
         self._list_refresh.set_locked(False)
         if self._first_unlock:
-            # 首次解锁紧跟构造：ListRefreshController.setup 已刷新 categories/tags/entries，
-            # 跳过重复全量加载（否则构造期 worker 与本处 worker 双重解密）。
+            # 首次解锁紧跟构造：setup 已加载，跳过重复全量加载避免双重解密 worker。
             self._first_unlock = False
         else:
             self._list_refresh.refresh_after_unlock()
@@ -761,8 +712,7 @@ class MainWindow(QMainWindow):
         self._auto_lock.reset_timer()
         # 解锁后刷新状态栏安全摘要，避免停留在锁定前的陈旧或空白状态
         self._list_refresh.start_status_timer()
-        # 重启自动备份定时器：prepare_for_lock 已停止它，解锁后须恢复，
-        # 否则任意一次锁定→解锁后本地自动快照将永久失效。
+        # prepare_for_lock 已停止自动备份定时器，解锁后须恢复，否则锁定→解锁后失效。
         self._auto_backup.start_timer()
         self._auto_backup.schedule_initial_check()
         if self._tray:
@@ -771,27 +721,23 @@ class MainWindow(QMainWindow):
     def emergency_clear_clipboard(self) -> None:
         """紧急清空剪贴板，供 app 层崩溃/退出兜底经公共 API 调用。
 
-        避免崩溃兜底路径直接 getattr 访问 ``_clipboard`` 私有属性——重命名该属性时
-        getattr 返回 None 会无声错过清理，而崩溃兜底恰是最不应静默失效的安全路径。
+        公共 API 而非直接 getattr 私有属性——重命名时 getattr 返回 None 会无声错过清理，
+        崩溃兜底恰是最不应静默失效的安全路径。
         """
         clipboard = getattr(self, '_clipboard', None)
         if clipboard is not None:
             try:
                 clipboard.clear_now()
             except Exception:
-                # 崩溃兜底路径清空的是可能残留的明文密码，属最严重的安全事件；
-                # 用 error 级确保生产默认 INFO 输出仍可见，便于发现静默失效。
+                # 崩溃兜底清空的是可能残留的明文，用 error 级确保生产 INFO 可见。
                 logger.error("崩溃兜底紧急清空剪贴板失败，明文可能残留", exc_info=True)
 
     def emergency_cancel_workers(self, *, wait_timeout_ms: float = 0.0) -> None:
         """紧急取消后台 worker，供 app 层 aboutToQuit 等不阻塞退出路径。
 
-        与 ``_shutdown_workers`` 的区别：默认仅取消不等待（避免阻塞退出）；
-        ``wait_timeout_ms > 0`` 时取消后等待该超时（aboutToQuit 用短超时，让持密钥
-        解密的 worker 退出协作循环后再 lock 清零，收缩「已锁定」后明文残留窗口；
-        超时放弃不阻塞退出）。遍历 ``_entry_workers`` 全集快照（含并发 entry worker），
-        而非仅 ``_entry_worker`` 单引用（最后一个），避免漏 cancel 并发 worker 残留
-        持密钥继续解密、与 lock() 清零竞态。
+        与 ``_shutdown_workers`` 区别：默认仅取消不等待（避免阻塞退出）；``wait_timeout_ms
+        > 0`` 时取消后等待该超时（aboutToQuit 用短超时让持密钥 worker 退出后再 lock 清零，
+        收缩「已锁定」后明文残留窗口，超时放弃不阻塞）。
         """
         self._auto_backup.cancel()
         self._list_refresh.cancel_all_workers()
@@ -801,37 +747,28 @@ class MainWindow(QMainWindow):
     def prepare_for_lock(self) -> None:
         """在清除主密钥前销毁界面和剪贴板中的明文副本。
 
-        清理顺序原则：先立即收敛主窗口自身的明文/密钥/可见性（列表模型、详情面板、
-        剪贴板、定时器、缓存、后台 worker），**再**关闭对话框——后者经
-        ``wait_worker_shutdown`` 可能阻塞主线程等待后台写入完成（恢复/导入 worker
-        不可中断）。若先等对话框，恢复/导入进行中触发锁定会使主密钥与明文 UI 在
-        用户「已请求锁定」后仍持续可见数秒至数十秒；先清主窗口可把暴露面收敛到
-        对话框自身的敏感控件（由各对话框 reject 路径清零）。
+        清理顺序：先立即收敛主窗口自身的明文/密钥/可见性（列表模型、详情面板、
+        剪贴板、定时器、缓存、worker），**再**关闭对话框——后者经
+        ``wait_worker_shutdown`` 可能阻塞等待后台写入（恢复/导入 worker 不可中断）。
+        先清主窗口可把暴露面收敛到对话框自身的敏感控件（由其 reject 路径清零）。
         """
         self._locked_ui = True
         self._entry_actions.prepare_for_lock()
         self._auto_lock.stop_timer()
-        # 清除活跃 Toast 的回调，防止锁定后撤销操作触发异常。
+        # 清除活跃 Toast 回调，防止锁定后撤销操作触发异常。
         from ..components.toast import ToastManager
         ToastManager.cancel_all_for(self)
         # —— 先立即清空主窗口敏感 UI 与状态（均不阻塞）——
         # list_refresh.prepare_for_lock 收敛搜索清空、安全缓存失效与 username 缓存清理
         self._list_refresh.prepare_for_lock()
         self._stop_ui_timers()
-        # 清空条目列表，移除对 Entry 对象的引用
         self._entry_model.set_entries([])
-        # 安全清除详情面板中的敏感数据和信号连接
         self._detail_panel.secure_clear()
-        # 清除剪贴板中的明文
         self._clipboard.clear_now()
-        # 停止后台定时器
         self._auto_backup.stop_timer()
-        # 取消并等待后台 worker（状态分析/备份/列表刷新），避免锁定后仍运行、对已
-        # 锁定 vault 发信号或继续解密条目
+        # 取消并等待后台 worker，避免锁定后对已锁定 vault 发信号或继续解密
         self._shutdown_workers()
         # —— 最后关闭对话框：reject 经 wait_worker_shutdown 可能阻塞等待后台 worker ——
-        # 各对话框 reject 调用自身的 _clear_sensitive_inputs 清零敏感控件并等待后台
-        # worker 退出；置于末尾使主窗口明文先行清除，对话框等待期间的暴露仅限其自身。
         if QApplication.instance():
             for widget in list(QApplication.topLevelWidgets()):
                 if widget is self or not isinstance(widget, QDialog):
@@ -839,8 +776,7 @@ class MainWindow(QMainWindow):
                 widget.reject()
         self._count_label.setText('0 项')
         self._status_bar.clearMessage()
-        # 托盘锁定状态由 lock_requested 信号驱动（_setup_tray 连接 _on_lock_tray），
-        # 此处不再显式调用，避免与信号链重复触发
+        # 托盘锁定状态由 lock_requested 信号驱动，此处不显式调用避免重复触发
 
     def _on_lock_tray(self) -> None:
         """锁定时更新托盘图标状态。"""

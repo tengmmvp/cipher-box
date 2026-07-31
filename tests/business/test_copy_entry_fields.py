@@ -58,7 +58,6 @@ class TestCopyEntryFields:
         result = copy_entry_fields(raw, title='New', username='new_user')
         assert result.title == 'New'
         assert result.username == 'new_user'
-        # 未覆盖的字段保持原值
         assert result.id == raw.id
         assert result.password == raw.password
 

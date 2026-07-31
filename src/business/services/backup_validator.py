@@ -1,8 +1,4 @@
-"""备份数据校验：恢复前对可移植载荷做结构、键完整性与长度上限校验。
-
-所有函数均无状态：原 ``BackupRestoreManager`` 上的 staticmethod 迁移为模块级
-函数，互调去掉 ``BackupRestoreManager.`` 前缀，改为直接函数名调用。
-"""
+"""备份数据校验：恢复前对可移植载荷做结构、键完整性与长度上限校验。所有函数无状态。"""
 
 import logging
 from collections.abc import Set
@@ -24,16 +20,14 @@ from .crypto_utils import STRING_ENCRYPTED_FIELDS
 
 logger = logging.getLogger(__name__)
 
-# 备份语境别名（指向 models 单一源）：改动上限须同步 models.MAX_ENTRIES_LIMIT /
-# MAX_ENTRY_PAYLOAD_SIZE，此处仅是可读性别名，非独立的第二份上限。
+# 备份语境别名（指向 models 单一源），非独立的第二份上限。
 MAX_BACKUP_ENTRIES = MAX_ENTRIES_LIMIT
 MAX_ENTRY_JSON_SIZE = MAX_ENTRY_PAYLOAD_SIZE
 MAX_TEXT_FIELD_SIZE = 1024 * 1024
 MAX_HISTORY_PER_ENTRY = MAX_PASSWORD_HISTORY * 2  # 每条目历史上限，2 倍余量
 
-# 备份载荷各 TypedDict 的必备键集（与 backup_restore.Portable* 一一对应）。提为
-# 模块级常量供 validate_* 复用；backup_restore 启动期断言 Portable*.__annotations__
-# 与此一致，消除「TypedDict 字段」与「校验 require_keys」双重维护的静默漂移。
+# 备份载荷各 TypedDict 的必备键集。提为模块级常量供 validate_* 复用；
+# backup_payload 启动期断言 Portable*.__annotations__ 与此一致，消除双重维护漂移。
 REQUIRED_CATEGORY_KEYS = frozenset({
     'id', 'name', 'icon_char', 'color', 'sort_order', 'created_at',
 })
@@ -45,18 +39,14 @@ REQUIRED_ENTRY_KEYS = frozenset({
 })
 REQUIRED_HISTORY_KEYS = frozenset({'entry_id', 'password', 'changed_at'})
 
-# 条目时间戳字段（ISO 8601 字符串）。校验时与字符串型加密字段分离：前者 64 字节
-# 上限，后者 MAX_TEXT_FIELD_SIZE。集中为常量供长度校验与日期格式校验复用。
+# 条目时间戳字段（ISO 8601 字符串，64 字节上限），与字符串型加密字段长度上限分离。
 _ENTRY_TIMESTAMP_FIELDS: tuple[str, ...] = (
     'created_at', 'updated_at', 'deleted_at', 'password_changed_at',
 )
 
-# 启动期断言：validate_entry_fields 经 require_text(item[field]) 直接索引字符串型
-# 加密字段，而 require_keys 仅保证 REQUIRED_ENTRY_KEYS 存在。若新增加密字段加入
-# SENSITIVE_ENCRYPTED_FIELDS 却漏加 REQUIRED_ENTRY_KEYS，此处会因键缺失抛出而非
-# 静默跳过校验——模块加载即暴露字段集漂移。用显式 raise 而非 assert：python -O
-# 会剔除 assert。空集同样拒绝，避免 STRING_ENCRYPTED_FIELDS 被误替换为空导致校验
-# 静默放过残缺载荷。
+# 启动期断言：字符串型加密字段须全部纳入 REQUIRED_ENTRY_KEYS，否则 validate_entry_fields
+# 直接索引会键缺失；模块加载即暴露字段集漂移。用显式 raise 而非 assert（python -O
+# 会剔除 assert），空集同样拒绝防校验被静默放过。
 if not STRING_ENCRYPTED_FIELDS:
     raise RuntimeError('STRING_ENCRYPTED_FIELDS 为空，明文长度校验将被静默跳过')
 _missing_enc_fields = set(STRING_ENCRYPTED_FIELDS) - REQUIRED_ENTRY_KEYS
@@ -70,9 +60,8 @@ if _missing_enc_fields:
 def validate_restore_data(data: dict[str, Any]) -> None:
     """恢复前对完整备份数据做结构、键完整性与数量上限的总校验。
 
-    校验顶层 format/version 标识与必备键后，委托 :func:`validate_categories` /
-    :func:`validate_entries` / :func:`validate_history` 分项校验。任一项不符即抛出，
-    使恢复在写入数据库前中止，避免半成品数据入库。
+    校验顶层标识与必备键后委托 validate_categories/validate_entries/validate_history
+    分项校验，任一项不符即抛出，使恢复在写库前中止避免半成品入库。
 
     Raises:
         BackupError: 格式标识、版本、顶层结构或子项内容不符。
@@ -83,8 +72,7 @@ def validate_restore_data(data: dict[str, Any]) -> None:
     version = data.get('version')
     if version != BACKUP_VERSION:
         raise BackupError(f'不支持的备份格式版本：{version}（当前支持 v{BACKUP_VERSION}）')
-    # 严格校验顶层必备键，缺键（如攻击者构造的残缺备份缺 entries）直接拒绝，
-    # 不再以 data.get(..., []) 默认空列表静默放行。允许额外键（备份元数据等）。
+    # 严格校验顶层必备键，缺键直接拒绝（不以默认空列表静默放行），允许额外键。
     required_top_keys = {'format', 'version', 'entries', 'categories', 'password_history'}
     missing = required_top_keys - set(data)
     if missing:
@@ -130,17 +118,13 @@ def validate_categories(categories: list[dict[str, Any]]) -> set[int]:
 
 def validate_entry_fields(item: dict[str, Any], category_ids: set[int]) -> None:
     """验证单条备份条目的必填键、字段类型和文本长度。"""
-    # 先 require_keys 校验键集（O(1) 项数，不触及值），再做字节估算——避免 item
-    # 含超大非必填键时，str(v) 对超大值字符串化触发 DoS。require_keys 后 item 仅含
-    # 合法键，字节估算在合法键集上进行。
+    # 先 require_keys（O(1) 项数，不触及值）再做字节估算，避免超大非必填键触发 DoS。
     require_keys(item, REQUIRED_ENTRY_KEYS, '备份条目')
     if sum(len(str(v).encode('utf-8')) for v in item.values()) > MAX_ENTRY_JSON_SIZE:
         raise BackupError('备份条目格式或大小无效')
 
-    # 字符串型加密字段的明文长度校验：单一事实源 STRING_ENCRYPTED_FIELDS，与加密侧
-    # build_encrypted_entry_fields / decrypt_entry_to_portable_dict 的字段集对称。
-    # 新增加密字段时此处自动跟随，避免校验侧漏字段导致残缺载荷静默放行。custom_fields
-    # 为 list，由 validate_entry_custom_fields 单独校验，不在 STRING_ENCRYPTED_FIELDS 内。
+    # 字符串型加密字段明文长度校验，与加密侧字段集对称，新增加密字段自动跟随。
+    # custom_fields 为 list，由 validate_entry_custom_fields 单独校验。
     for field in STRING_ENCRYPTED_FIELDS:
         require_text(item[field], f'条目字段 {field}', MAX_TEXT_FIELD_SIZE)
     # 时间戳字段：64 字节上限（ISO 8601 字符串）
@@ -171,11 +155,7 @@ def validate_entry_fields(item: dict[str, Any], category_ids: set[int]) -> None:
 
 
 def validate_entry_custom_fields(fields: list[dict[str, Any]]) -> None:
-    """验证自定义字段列表结构，包含数量、键完整性与类型。
-
-    数量上限与 ``Entry.from_dict`` 保持一致，为 100，确保恢复后
-    条目能通过 ``from_dict`` 的校验。
-    """
+    """验证自定义字段列表结构（数量、键完整性、类型）。数量上限与 ``Entry.from_dict`` 一致。"""
     if not isinstance(fields, list) or len(fields) > MAX_CUSTOM_FIELDS_PER_ENTRY:
         raise BackupError('备份自定义字段结构无效')
     for field in fields:
@@ -249,8 +229,8 @@ def require_keys(item: dict[str, Any], expected: Set[str], label: str) -> None:
 def require_text(value: Any, label: str, max_bytes: int, allow_empty: bool = True) -> None:
     """校验 value 为字符串且 UTF-8 字节长度不超过 max_bytes。
 
-    allow_empty 为 False 时额外拒绝空白字符串；超长抛 :class:`PayloadTooLargeError`，
-    其余类型/空失败抛 :class:`BackupError`，二者经 ``to_user_message`` 呈现不同文案。
+    allow_empty 为 False 时额外拒绝空白串；超长抛 :class:`PayloadTooLargeError`，
+    其余失败抛 :class:`BackupError`（二者经 ``to_user_message`` 呈现不同文案）。
     """
     if not isinstance(value, str):
         raise BackupError(f'{label}类型无效')

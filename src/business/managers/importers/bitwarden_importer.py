@@ -159,9 +159,8 @@ class BitwardenImporter:
     （见 ``_merge_bitwarden_secrets``）。
 
     对畸形/被污染的导出 JSON 容错：嵌套结构经类型守卫避免 AttributeError 中断整个
-    导入；每个条目构造后经 ``validate_plain_entry`` 校验（类型、长度、自定义字段
-    结构），失败则跳过该条目并记录，使 ``ImportExportManager`` 的 ``skip_validation=True``
-    假设对本路径成立（与经 ``Entry.from_dict`` 校验的 JSON/CSV 路径对齐）。
+    导入；每个条目构造后经 ``validate_plain_entry`` 校验，失败跳过该条目并记录，
+    使 ``skip_validation=True`` 假设对本路径成立。
     """
 
     def parse(self, filepath: str) -> ParsedImport:

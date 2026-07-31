@@ -96,7 +96,6 @@ def test_emergency_cleanup_swallows_main_window_errors():
         app = CipherBoxApp.__new__(CipherBoxApp)
         app._vault = vault
         app._main_window = _BoomWindow()  # type: ignore[assignment]
-        # main_window 各清理方法抛异常，兜底仍应继续并最终 lock vault
         app._emergency_cleanup(full=True)
         assert not vault.is_unlocked
         vault.close()

@@ -1,8 +1,8 @@
 """HKDF 域分离测试。
 
 守护主密钥与备份密钥经不同 HKDF-Expand info 派生时的域分离不变量（架构文档 §2.1
-重点设计）。审查指出此前仅有 snapshot_key 轮换行为间接覆盖，缺「不同 info → 输出
-独立 / 相同 info → 输出一致」的直接断言——重构 HKDF 派生时可能被无声破坏。
+重点设计）。直接断言「不同 info → 输出独立 / 相同 info → 输出一致」，避免重构
+HKDF 派生时被无声破坏。
 """
 
 from src.crypto.master_key import KdfParams, MasterKeyManager

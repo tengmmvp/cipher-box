@@ -479,9 +479,8 @@ QLabel#hintLabel {{
 def render_style(theme: str) -> str:
     """纯渲染指定主题的样式表，无副作用。
 
-    仅根据主题颜色字典与字体常量格式化 ``STYLE_TEMPLATE``，不触碰
-    ``theme_colors`` 的全局活跃主题状态。调用方需自行决定是否调用
-    ``set_theme`` 激活主题（如仅预览样式表而不切换活跃主题时使用本函数）。
+    仅格式化 ``STYLE_TEMPLATE``，不触碰 ``theme_colors`` 的全局活跃主题；
+    调用方自行决定是否经 ``set_theme`` 激活主题（如仅预览样式表时）。
     """
     from .constants import FONT_FAMILY_CSS, FONT_FAMILY_MONOSPACE
     from .theme_colors import get_colors
@@ -496,11 +495,9 @@ def render_style(theme: str) -> str:
 def get_style(theme: str) -> str:
     """获取指定主题的样式表（纯渲染，无副作用）。
 
-    不再在此调用 ``set_theme`` 激活主题——样式表生成与全局活跃主题激活解耦，
-    由调用方显式经 ``set_theme(theme)`` 激活（ARCH-009）。原先的隐式副作用会让
-    「仅预览样式表」无意中切换全局活跃主题，导致运行时 ``c()`` 解析的颜色与预期
-    不一致。调用方须在 ``get_style`` 前或同序列显式调用 ``set_theme``，保证样式表
-    与运行时 ``c()`` 配色一致（delegate 等控件经 ``c()`` 取色）。
+    样式表生成与全局活跃主题激活解耦，由调用方显式经 ``set_theme(theme)``
+    激活（ARCH-009）。调用方须在 ``get_style`` 前或同序列调用 ``set_theme``，
+    保证运行时 ``c()`` 配色（delegate 等控件）与样式表一致。
     """
     return render_style(theme)
 

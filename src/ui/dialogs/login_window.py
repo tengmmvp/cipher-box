@@ -1,8 +1,7 @@
 """登录窗口，负责首次设置主密码与日常主密码解锁。
 
-依据保险库是否已初始化切换首次设置与登录两套流程。主密码相关操作
-涉及 Argon2id 内存硬化密钥派生，在后台线程执行以避免冻结 UI。内置速率限制
-与失败锁定，登录成功后立即清除输入框中的明文。
+依据是否已初始化切换首设与登录流程；Argon2id 派生在后台线程执行避免冻结 UI。
+内置速率限制与失败锁定，成功后立即清除明文。
 """
 
 from __future__ import annotations
@@ -65,12 +64,10 @@ class LoginWindow(QDialog):
         self._vault = vault_manager
         self._config = config
         self._is_first_time = not vault_manager.is_initialized
-        # data_dir 是 VaultManager 的有类型 property（恒返回 Path）；直接索引使其
-        # 缺失（重构改名）在静态检查/运行时即时暴露，而非 getattr 静默退化为
-        # 仅内存限流（state_path=None → 跨会话退避与哨兵删文件检测全部失效）。
+        # 直接索引 data_dir（有类型 property）：缺失会在静态检查/运行时即时暴露，
+        # 而非 getattr 静默退化为仅内存限流（跨会话退避与哨兵删文件检测全部失效）。
         state_path = self._vault.data_dir / 'login_rate_limit.json'
-        # 传入 config：使 RateLimiter 把哨兵登记到签名 config，关闭「同时删除
-        # 状态文件+哨兵即归零计数」的绕过。config=None 时退回仅文件配对检测。
+        # 传入 config：把哨兵登记到签名 config，关闭「同时删除状态文件+哨兵即归零计数」的绕过
         self._rate_limiter = RateLimiter(state_path, config)
         self._worker: BackgroundWorker | None = None
         self._setup_ui()
@@ -227,8 +224,7 @@ class LoginWindow(QDialog):
     def _on_auth_result(self, success: bool, error_msg: str = '', is_auth_failure: bool = True) -> None:
         """处理初始化/解锁的结果。
 
-        is_auth_failure 为 False 时（如后台 worker 抛异常等系统错误）不计入
-        速率锁定，避免系统故障触发账户级递增锁定。
+        is_auth_failure 为 False（系统错误）时不计入速率锁定，避免故障触发账户级锁定。
         """
         if success:
             self._rate_limiter.record_success()
@@ -237,9 +233,8 @@ class LoginWindow(QDialog):
             self.login_success.emit()
             self.accept()
         else:
-            # 失败后立即清除主密码明文，缩短敏感输入在控件中的驻留时间，
-            # 与成功路径及 change_master_dialog 的清零策略对齐。失败尝试的
-            # 主密码仍是用户真实密码，残留于 QLineEdit 会扩大肩窥/内存 dump 暴露面。
+            # 失败后立即清除主密码明文，与成功路径及 change_master_dialog 的清零策略对齐；
+            # 失败尝试的密码仍是用户真实密码，残留会扩大肩窥/内存 dump 暴露面。
             self._clear_password_inputs()
             if is_auth_failure:
                 lock_seconds = self._rate_limiter.record_failure()
@@ -251,8 +246,7 @@ class LoginWindow(QDialog):
     def _clear_password_inputs(self) -> None:
         """清除主密码与确认密码输入框，缩短明文在控件中的驻留时间。
 
-        _confirm_edit 在 _setup_ui 中无条件创建（首设显示，登录态隐藏），故无需
-        hasattr 守卫；登录态下隐藏控件 clear() 是安全的无副作用操作。
+        _confirm_edit 无条件创建（首设显示，登录态隐藏），故无需 hasattr 守卫。
         """
         self._password_edit.clear()
         self._confirm_edit.clear()
@@ -299,8 +293,7 @@ class LoginWindow(QDialog):
         self._message_label.setText('')
         self._worker = BackgroundWorker(lambda: action(password), parent=self)
         self._worker.finished.connect(self._on_auth_done)
-        # worker.error 携带异常的 str(e)，透传给 _on_auth_error 优先展示真实系统错误
-        # 信息，仅当无具体信息时回退到 error_default（"初始化失败/主密码错误"）
+        # worker.error 携带 str(e)，透传给 _on_auth_error 优先展示真实系统错误，无信息时回退 error_default
         self._worker.error.connect(lambda msg: self._on_auth_error(msg, error_default))
         self._worker.start()
 
@@ -315,9 +308,7 @@ class LoginWindow(QDialog):
     def _on_auth_error(self, error_msg: str, error_default: str) -> None:
         """后台认证异常回调（系统错误，非认证失败）。
 
-        优先展示 worker 抛出的真实异常信息（如 IO 错误、KDF 失败），
-        无具体信息时回退到 error_default。is_auth_failure=False 保持不变，
-        系统错误不计入速率锁定，避免故障触发账户级递增锁定。
+        优先展示真实异常信息，无信息时回退 error_default。系统错误不计入速率锁定。
         """
         if not finalize_worker_if_current(self):
             return

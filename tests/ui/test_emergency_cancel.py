@@ -1,11 +1,10 @@
 """验证 ListRefreshController.cancel_all_workers / wait_workers 与 host 编排。
 
-覆盖 A4 修复（从原 host emergency_cancel_workers 迁入 controller）：遍历
-``_entry_workers`` 全集（含并发 entry worker）+ ``_status_worker``，而非仅
-``_entry_worker`` 单引用（最后一个）；``wait_timeout_ms > 0`` 时取消后短超时等待，
-让持密钥解密的 worker 退出协作循环后再 lock 清零，收缩「已锁定」后明文残留窗口。
+覆盖：遍历 ``_entry_workers`` 全集（含并发 entry worker）+ ``_status_worker``，
+而非仅 ``_entry_worker`` 单引用（最后一个）；``wait_timeout_ms > 0`` 时取消后短超时
+等待，让持密钥解密的 worker 退出协作循环后再 lock 清零，收缩「已锁定」后明文残留窗口。
 
-host ``emergency_cancel_workers`` 现 thin wrapper（auto_backup.cancel +
+host ``emergency_cancel_workers`` 为 thin wrapper（auto_backup.cancel +
 list_refresh.cancel_all_workers + 可选 wait_workers），其编排在此一并验证。
 """
 
@@ -45,8 +44,7 @@ class TestCancelAllWorkers:
     def test_cancels_all_entry_workers_and_status(self):
         """遍历 _entry_workers 全集 + _status_worker，全部取消。
 
-        修复前仅 cancel _entry_worker 单引用（最后一个并发 worker），漏 cancel 其余
-        并发 entry worker——它们残留持密钥继续解密，与 lock() 清零竞态。
+        漏 cancel 并发 entry worker 会让它们残留持密钥继续解密，与 lock() 清零竞态。
         """
         ctrl = _make_controller()
         status = _FakeWorker('status')

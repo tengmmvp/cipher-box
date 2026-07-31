@@ -92,8 +92,7 @@ class BackupRestoreManager:
         entry_manager: 'EntryManager',
     ) -> None:
         self._vault = vault_manager
-        # 复用调用方（MainWindow）持有的 EntryManager 单例，共享分类名缓存，
-        # 避免备份/恢复时新建临时实例导致分类名重复解密与缓存双份明文驻留。
+        # 复用调用方持有的 EntryManager 单例，共享分类名缓存，避免重复解密与双份明文驻留。
         self._entry_mgr = entry_manager
         self._restore_points = RestorePointManager(vault_manager)
 
@@ -115,9 +114,7 @@ class BackupRestoreManager:
     ) -> tuple[bool, str]:
         """创建加密备份；密码备份可跨安装恢复，快照使用稳定快照密钥。
 
-        ``cancel_check`` 可选取消探针，在全量解密循环中周期性调用，返回真值
-        时中止备份并返回 (False, '备份已取消')，避免后台备份在隐藏/锁定后
-        继续持有密钥解密。
+        ``cancel_check`` 在全量解密循环中周期调用，返回真值时中止备份。
 
         A4（备份锁外解密）：``vault_write_lock`` 仅持有快速 prepare 阶段（DB 读 +
         snapshot_key 副本采集 + 数量校验），全量解密与 PASSWORD 密钥派生（Argon2id）
@@ -127,7 +124,7 @@ class BackupRestoreManager:
         （property 返回拷贝），锁外使用不受 KeyManager 内部 bytearray 清零影响。
 
         ``_create_backup_locked`` 保留为持锁全流程入口，供 :meth:`_create_restore_point`
-        在已持锁上下文复用（恢复点快照体积小、持锁全程可接受，无需 A4 优化）。
+        在已持锁上下文复用（恢复点快照体积小，无需 A4 优化）。
         """
         try:
             filepath = str(validate_file_path(filepath))
@@ -162,8 +159,7 @@ class BackupRestoreManager:
         """备份全流程；调用方须已持有 ``vault_write_lock``。
 
         持锁顺序执行 prepare + finalize，供 :meth:`_create_restore_point` 在已持锁
-        上下文复用（恢复点快照体积小、持锁全程可接受，不经 A4 锁外优化）。本方法
-        保留为持锁全流程的单一入口，亦为测试 monkeypatch 拦截恢复点创建的桩点
+        上下文复用。亦为测试 monkeypatch 拦截恢复点创建的桩点
         （见 test_restore_point_cleaned_on_creation_exception）。
         """
         prepared = self._prepare_backup_locked(filepath, backup_password, use_snapshot_key)
@@ -177,15 +173,13 @@ class BackupRestoreManager:
     ) -> PreparedBackup:
         """锁内快速采集 finalize 所需全部输入；调用方须已持有 ``vault_write_lock``。
 
-        A4：仅在此完成需持锁串行的快速操作——生成 salt、读 raw_entries/
-        history_rows/categories、条目数量上限校验、确定 flags、SNAPSHOT 路径取
-        snapshot_key 副本。PASSWORD 密钥派生（Argon2id）与全量解密**不**在此，
-        推迟到锁外 :meth:`_finalize_backup`，缩短 ``lock()`` 经 cancel_check 中止前
-        的阻塞窗口。
+        仅完成需持锁串行的快速操作——生成 salt、读 raw_entries/history_rows/
+        categories、数量上限校验、确定 flags、SNAPSHOT 路径取 snapshot_key 副本。
+        PASSWORD 密钥派生（Argon2id）与全量解密推迟到锁外 :meth:`_finalize_backup`，
+        缩短 ``lock()`` 经 cancel_check 中止前的阻塞窗口。
 
-        snapshot_key 经 ``VaultManager.snapshot_key`` property 取 bytes 副本：锁外
-        finalize 持此副本加密，主线程 ``lock()`` 清零 KeyManager 内部 bytearray 不
-        影响该独立拷贝（与 KeyManager.snapshot_key「返回副本」契约一致）。
+        snapshot_key 经 property 取 bytes 副本，锁外 finalize 持此副本加密，
+        不受 KeyManager 内部 bytearray 清零影响。
         """
         salt = os.urandom(BACKUP_SALT_SIZE)
         raw_entries = self._vault.db.get_entries(EntryQuery(include_deleted=True))
@@ -225,11 +219,9 @@ class BackupRestoreManager:
     ) -> tuple[bool, str]:
         """锁外完成密钥派生、全量解密、加密与落盘（A4：缩短 vault_write_lock 持有）。
 
-        PASSWORD 路径在此派生 backup_key（Argon2id，锁外）；SNAPSHOT 路径用 prepared
-        锁内取的 snapshot_key 副本。``cancel_check`` 在解密循环中及时中止（返回
-        ``(False, '备份已取消')``）。AAD（``header_aad(flags, salt, DEFAULT_KDF_PARAMS)``）、
-        header 写入、payload/数量上限与原持锁实现完全一致，备份格式不变。
-        backup_key 的清零（``zero_backup_key_if_owned``）在 finally 完成，PASSWORD
+        PASSWORD 路径在此派生 backup_key；SNAPSHOT 路径用 prepared 锁内取的 snapshot_key
+        副本。``cancel_check`` 在解密循环中及时中止。AAD、header 写入、payload/数量上限
+        与原持锁实现完全一致，备份格式不变。backup_key 的清零在 finally 完成，PASSWORD
         路径派生密钥在所有退出路径均被清零；SNAPSHOT 路径借用 snapshot_key 不清零。
         """
         t0 = time.monotonic()
@@ -298,11 +290,7 @@ class BackupRestoreManager:
                 return result
         except Exception as exc:
             # 所有异常（validate_file_path 的 ValueError、BackupError、OSError 等）统一
-            # 经 to_user_message 翻译为用户友好消息。原先独立的
-            # except ValueError 分支注释声称透传 _restore_current 的消息，但 _restore_current
-            # 只 return 不 raise，实际仅捕获 validate_file_path 的 ValueError——该职责已由
-            # 统一翻译层承接，消除「未来 _restore_current 误抛 ValueError 绕过翻译直暴露
-            # 内部消息」的风险。
+            # 经 to_user_message 翻译为用户友好消息，避免内部消息直接暴露。
             logger.error("恢复失败: %s", exc, exc_info=True)
             return False, to_user_message(exc, default='操作失败，请检查文件和磁盘。')
 
@@ -335,16 +323,13 @@ class BackupRestoreManager:
                         return False, '恢复快照备份需要先解锁保险库'
                     backup_key = self._vault.snapshot_key
                 # backup_key 必非 None：PASSWORD 在锁外已派生，SNAPSHOT 在上方分支已读取。
-                # 显式检查替代 assert（项目约定：python -O 下 assert 跳过，显式检查仍捕获
-                # 意外状态），同时满足类型检查的 narrow 需求。
+                # 显式检查替代 assert（python -O 下 assert 跳过），同时满足类型 narrow 需求。
                 if backup_key is None:
                     raise RuntimeError('备份密钥未初始化')
                 try:
-                    # S8 TOCTOU 防护：header 锁外读取（供 PASSWORD 锁外派生决策）后，
-                    # 锁内读 payload 前重读 header 比对——检测文件在「锁外读 header →
-                    # 锁内读 payload」窗口内被替换。GCM-AAD 只绑定单次 header+payload，
-                    # 整个合法备份替换需此额外校验拦截。read_backup_header 把指针留在
-                    # payload 开头，故重读后 file.read 仍从 payload 起始。
+                    # S8 TOCTOU 防护：header 锁外读取后，锁内读 payload 前重读 header
+                    # 比对——检测文件在「锁外读 header → 锁内读 payload」窗口内被替换。
+                    # GCM-AAD 只绑定单次 header+payload，整个合法备份替换需此额外校验拦截。
                     file.seek(0)
                     if read_backup_header(file) != (flags, salt, kdf_params):
                         return False, '备份文件在读取期间已变更，请重试'
@@ -382,8 +367,7 @@ class BackupRestoreManager:
                             logger.debug("清理恢复点失败", exc_info=True)
                     raise
                 finally:
-                    # plaintext/data 在内层 try 成功后必然已赋值（内层 try 异常走
-                    # except return，不会到达此处），直接释放明文引用，无需 locals 反射。
+                    # 内层 try 成功后 plaintext/data 必然已赋值，直接释放明文引用。
                     del plaintext
                     del data
                 # 事务已提交，key_epoch 与 snapshot_key_enc 均已在同一事务内原子写入。
@@ -493,13 +477,12 @@ class BackupRestoreManager:
         """在 epoch 守卫事务内用当前主密钥重建全部数据并轮换 key_epoch 与 snapshot_key。
 
         恢复不改主密码，故用 ``self._key`` 重新加密备份载荷。事务内清空库后重建
-        分类、条目、密码历史，再同事务写入新的 key_epoch 与 snapshot_key_enc（消除
-        事务外崩溃的不一致窗口），并据新 epoch 重算 vault_meta_mac。
+        分类/条目/密码历史，同事务写入新的 key_epoch 与 snapshot_key_enc（消除事务外
+        崩溃的不一致窗口），并据新 epoch 重算 vault_meta_mac。
 
         返回 ``(new_epoch, new_snapshot_key)``：调用方在事务提交后、释放锁前经
-        :meth:`VaultManager.update_key_epoch` 与 :meth:`apply_snapshot_key` 同步内存
-        状态。``new_snapshot_key`` 为 bytearray 便于失败时原地清零（成功路径由调用方
-        在 apply 后清零自身引用）。
+        :meth:`update_key_epoch` 与 :meth:`apply_snapshot_key` 同步内存状态。
+        ``new_snapshot_key`` 为 bytearray 便于失败时原地清零。
         """
         db = self._vault.db
         key = self._key
@@ -533,17 +516,14 @@ class BackupRestoreManager:
                     'vault_meta_mac',
                     MetadataSigner.compute_vault_meta_mac(meta_snapshot, key),
                 )
-            # WAL 截断已移至调用方 _restore_current（事务提交后在 vault_write_lock 内
-            # 显式 secure_checkpoint，失败纳入返回警告让降级可见）。此处不再截断，避免
-            # 与调用方重复；success 在 return 前置 True，保证 finally 不误清零已落库的
-            # snapshot_key（调用方 apply_snapshot_key 复制到 KeyManager 后才清零自身引用）。
+            # WAL 截断已移至调用方 _restore_current（事务提交后显式 secure_checkpoint）。
+            # 此处不再截断避免重复；success 在 return 前置 True，保证 finally 不误清零
+            # 已落库的 snapshot_key（调用方 apply_snapshot_key 复制后才清零自身引用）。
             success = True
             return new_epoch, new_snapshot_key
         finally:
             # 事务失败（success 未置 True）时局部 snapshot_key 未被 apply_snapshot_key
             # 接管，原地清零收缩崩溃 dump 窗口；成功路径由调用方在 apply 后清零自己的引用。
-            # 用 try/finally + 标志位替代原先 except Exception + raise，避免过宽捕获掩盖
-            # 本应快速失败的编程错误（如 KeyError/TypeError）。
             if not success:
                 secure_zero_buffer(new_snapshot_key)
 

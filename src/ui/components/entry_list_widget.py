@@ -19,8 +19,8 @@ FAVORITE_MARKER = '★ '
 
 # paint 行内垂直布局不变量（单位：像素）。
 # 标题区域必须完整落在副标题区域之前，避免两段文本垂直重叠。
-_TITLE_Y_OFFSET = 7        # 标题绘制基线 Y 偏移（相对 rect.top()）
-_TITLE_HEIGHT = 22         # 标题绘制区域高度
+_TITLE_Y_OFFSET = 7  # 绘制基线 Y 偏移（相对 rect.top()）
+_TITLE_HEIGHT = 22
 # 副标题紧接标题区域之后留 1px 间隔，由前两个不变量派生，
 # 改标题区几何时副标题自动跟随，杜绝两段文本重叠的回归。
 _SUBTITLE_Y_OFFSET = _TITLE_Y_OFFSET + _TITLE_HEIGHT + 1
@@ -39,8 +39,7 @@ def _resolve_font_family() -> str:
     PyQt6 ≥ 6.5 不再支持 QFontDatabase() 构造，需使用静态方法 families()。
     """
     from PyQt6.QtGui import QFontDatabase
-    # PyQt6 ≥ 6.5: families() 为静态方法，无需构造 QFontDatabase 实例。
-    # Pyright 类型桩仍将其标注为实例方法，需忽略。
+    # PyQt6 ≥ 6.5: families() 为静态方法；Pyright 类型桩仍标注为实例方法，需忽略。
     available = QFontDatabase.families()  # pyright: ignore[reportCallIssue]
     if FONT_FAMILY_PRIMARY in available:
         return FONT_FAMILY_PRIMARY
@@ -54,9 +53,9 @@ class EntryListModel(QAbstractItemModel):
     """条目列表数据模型，按需向 delegate 提供 Entry 摘要。
 
     替代 QListWidget + 逐项 QListWidgetItem：``set_entries`` 一次替换全部数据，
-    QListView 仅对可见行调用 ``data()``/``paint``，避免为每条目创建常驻 item
-    对象，降低大库下的内存占用与刷新开销。Entry 摘要仍整体存于模型（加密字段
-    无法 SQL 过滤，需内存匹配），但 item 对象开销与逐项 setData 消除。
+    QListView 仅对可见行调用 ``data()``/``paint``，避免为每条目创建常驻 item 对象，
+    降低大库下的内存占用与刷新开销。加密字段无法 SQL 过滤需内存匹配，但 item
+    对象开销与逐项 setData 消除。
     """
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -97,24 +96,23 @@ class EntryItemDelegate(QStyledItemDelegate):
 
     ROW_HEIGHT = 62
     # 布局常量，单位为像素
-    CARD_PADDING_H = 4       # 卡片水平内边距
-    CARD_PADDING_V = 2       # 卡片垂直内边距
-    CARD_RADIUS = 7          # 卡片圆角
-    ACCENT_BAR_WIDTH = 3     # 选中时左侧高亮条宽度
-    ICON_SIZE = 28           # 类型图标尺寸
-    ICON_OFFSET_X = 10       # 图标距左边距离
-    ICON_OFFSET_Y = 13       # 图标距顶部距离
-    TEXT_LEFT_OFFSET = 48    # 文本起始水平位置，图标区域之后
-    MARKER_RIGHT_MARGIN = 22 # 右侧标记距离右边距离
-    DELETE_BADGE_WIDTH = 48  # "已删除"徽章宽度
+    CARD_PADDING_H = 4
+    CARD_PADDING_V = 2
+    CARD_RADIUS = 7
+    ACCENT_BAR_WIDTH = 3  # 选中时左侧高亮条宽度
+    ICON_SIZE = 28
+    ICON_OFFSET_X = 10
+    ICON_OFFSET_Y = 13
+    TEXT_LEFT_OFFSET = 48  # 图标区域之后的文本起始位置
+    MARKER_RIGHT_MARGIN = 22  # 右侧强度/警示标记距右边距离
+    DELETE_BADGE_WIDTH = 48
     DELETE_BADGE_HEIGHT = 20
-    _TEXT_RIGHT_MARGIN = 38           # 文本区域右侧保留宽度
-    _DELETE_TEXT_RIGHT_EXTRA = 28     # 删除徽章额外保留宽度
+    _TEXT_RIGHT_MARGIN = 38
+    _DELETE_TEXT_RIGHT_EXTRA = 28  # 删除徽章额外保留宽度
     # paint 内行内垂直坐标偏移（相对 rect.top()）。
     # _TITLE_Y_OFFSET / _TITLE_HEIGHT / _SUBTITLE_Y_OFFSET 直接引用模块级不变量
-    # 常量（三者在模块加载时由 raise RuntimeError 校验几何关系），不再以类属性
-    # 复制，消除「改模块级常量而类属性不跟随」的双份真相源风险。
-    _SUBTITLE_HEIGHT = 19     # 副标题绘制区域高度
+    # 常量（模块加载时由 raise RuntimeError 校验几何关系），避免类属性复制的双份真相源。
+    _SUBTITLE_HEIGHT = 19
     _MARKER_DOT_Y_OFFSET = 10 # 强度圆点 Y 偏移
     _MARKER_DOT_WIDTH = 12    # 强度圆点绘制区域宽度
     _MARKER_DOT_HEIGHT = 16   # 强度圆点绘制区域高度

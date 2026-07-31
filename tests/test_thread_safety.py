@@ -12,7 +12,6 @@ from src.models import Category, RawEntry
 
 
 class TestDatabaseThreadSafety:
-    """测试 DatabaseManager 在并发访问下的行为。"""
 
     def test_concurrent_reads(self, tmp_path):
         """多个线程同时读取不应崩溃。"""
@@ -78,7 +77,6 @@ class TestDatabaseThreadSafety:
         db.open()
         db.init_tables()
 
-        # 先插入一些初始数据
         cat = Category(name='initial_cat')
         cat_id = db.add_category(cat)
         for j in range(5):
@@ -127,7 +125,6 @@ class TestDatabaseThreadSafety:
 
 
 class TestVaultThreadSafety:
-    """测试 VaultManager 在并发访问下的行为。"""
 
     def test_concurrent_vault_reads(self, vault):
         """多线程同时通过 VaultManager.db 读取条目。"""

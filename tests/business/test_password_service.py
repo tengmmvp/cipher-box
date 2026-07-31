@@ -1,9 +1,4 @@
-"""PasswordService 冒烟测试，验证静态方法代理正确性。
-
-PasswordService 作为代理层将调用转发到底层 PasswordGenerator 与
-TOTPGenerator，本测试覆盖生成、强度检查、主密码校验、TOTP 校验等
-公开静态方法的基本行为。
-"""
+"""PasswordService 冒烟测试，验证静态方法代理正确性。"""
 
 from src.business.services.password_service import PasswordService
 

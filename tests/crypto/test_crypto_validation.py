@@ -116,7 +116,6 @@ class TestEncryptionValidation:
         """decrypt_bytes 对篡改的密文返回脱敏错误信息。"""
         key = b'\x00' * 32
         encrypted = EncryptionEngine.encrypt_bytes(b"secret", key, "aad")
-        # 篡改密文。
         tampered = bytearray(encrypted)
         tampered[-1] ^= 0xFF
         with pytest.raises(ValueError):

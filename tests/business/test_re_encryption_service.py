@@ -27,14 +27,9 @@ from src.database.types import EntryQuery
 from src.exceptions import DecryptionError
 from src.models import Category, PasswordHistory, RawEntry
 
-# 辅助函数：生成随机 AES-256 密钥
-
 
 def _random_key() -> bytes:
     return os.urandom(32)
-
-
-# 辅助函数：构建数据库原始状态的 Entry，加密字段为密文字符串
 
 
 def _make_raw_entry(
@@ -75,9 +70,6 @@ def _make_raw_entry(
     )
 
 
-# MockDB：内存实现 ReEncryptionDB Protocol
-
-
 class MockDB:
     """内存 mock，实现 ReEncryptionDB Protocol。"""
 
@@ -90,8 +82,6 @@ class MockDB:
         self.updated_history_batches: list[list] = []
         self.updated_categories: list[Category] = []
 
-    # 填充接口
-
     def add_entry(self, entry: RawEntry):
         self._entries.append(entry)
 
@@ -100,8 +90,6 @@ class MockDB:
 
     def add_category(self, category: Category):
         self._categories.append(category)
-
-    # ReEncryptionDB Protocol 实现
 
     def get_entries(self, query: EntryQuery) -> list[RawEntry]:
         """按 id 升序分页返回条目。"""
@@ -141,9 +129,6 @@ class MockDB:
         self.updated_categories.extend(categories)
 
 
-# re_encrypt_entries：旧密钥加密的条目用新密钥重加密后可正确解密
-
-
 def test_re_encrypt_entries_round_trip():
     """旧密钥加密的条目用新密钥重加密后，用新密钥可正确解密所有敏感字段。"""
     old_key = _random_key()
@@ -165,14 +150,12 @@ def test_re_encrypt_entries_round_trip():
 
     service.re_encrypt_entries(old_key, new_key)
 
-    # 应产生一批更新行
     assert len(db.updated_entry_batches) == 1
     rows = db.updated_entry_batches[0]
     assert len(rows) == 1
     row = rows[0]
     assert isinstance(row, ReEncryptedEntry)
 
-    # 用新密钥解密验证
     crypto_id = row.crypto_id
     assert decrypt_field(row.username_enc, new_key, crypto_id, 'username') == 'alice@example.com'
     assert decrypt_field(row.password_enc, new_key, crypto_id, 'password') == 'S3cure!Pass'
@@ -185,13 +168,9 @@ def test_re_encrypt_entries_round_trip():
     assert custom_fields[0]['name'] == 'API Key'
     assert custom_fields[0]['value'] == 'sk-12345'
 
-    # 签名应为有效 MAC
     assert len(row.metadata_mac) == 64  # HMAC-SHA256 hex digest
 
     EncryptionEngine.clear_cache()
-
-
-# re_encrypt_entries 批处理：多批次正确处理
 
 
 def test_re_encrypt_entries_batching():
@@ -215,12 +194,10 @@ def test_re_encrypt_entries_batching():
 
     service.re_encrypt_entries(old_key, new_key)
 
-    # 应产生 2 批：第一批 200 条，第二批 50 条
     assert len(db.updated_entry_batches) == 2
     assert len(db.updated_entry_batches[0]) == 200
     assert len(db.updated_entry_batches[1]) == 50
 
-    # 验证所有条目都可用新密钥解密
     all_rows = db.updated_entry_batches[0] + db.updated_entry_batches[1]
     for row in all_rows:
         plain_user = decrypt_field(row.username_enc, new_key, row.crypto_id, 'username')
@@ -231,9 +208,6 @@ def test_re_encrypt_entries_batching():
         assert plain_notes.startswith('note')
 
     EncryptionEngine.clear_cache()
-
-
-# re_encrypt_history：密码历史重加密正确
 
 
 def test_re_encrypt_history_round_trip():
@@ -259,7 +233,6 @@ def test_re_encrypt_history_round_trip():
 
     service.re_encrypt_history(old_key, new_key)
 
-    # 应产生一批更新行
     assert len(db.updated_history_batches) == 1
     rows = db.updated_history_batches[0]
     assert len(rows) == 1
@@ -267,14 +240,10 @@ def test_re_encrypt_history_round_trip():
     assert isinstance(row, ReEncryptedHistory)
     assert row.id == 1
 
-    # 用新密钥解密验证
     plain = decrypt_field(row.ciphertext, new_key, crypto_id, 'password')
     assert plain == 'old_password_123'
 
     EncryptionEngine.clear_cache()
-
-
-# re_encrypt_entries 损坏中止：解密失败时抛出 DecryptionError
 
 
 def test_re_encrypt_entries_corruption_raises_decryption_error():
@@ -304,13 +273,9 @@ def test_re_encrypt_entries_corruption_raises_decryption_error():
     with pytest.raises(DecryptionError):
         service.re_encrypt_entries(old_key, new_key)
 
-    # 中止在第一条损坏条目，不应有更新操作
     assert len(db.updated_entry_batches) == 0
 
     EncryptionEngine.clear_cache()
-
-
-# re_encrypt_history 损坏中止：密码历史解密失败时抛出 DecryptionError
 
 
 def test_re_encrypt_history_corruption_raises_decryption_error():
@@ -325,7 +290,6 @@ def test_re_encrypt_history_corruption_raises_decryption_error():
     wrong_key = _random_key()
     crypto_id = uuid.uuid4().hex
 
-    # 用错误密钥加密，导致用 old_key 解密时失败
     encrypted_password = encrypt_field('some_password', wrong_key, crypto_id, 'password')
 
     db = MockDB()
@@ -343,13 +307,9 @@ def test_re_encrypt_history_corruption_raises_decryption_error():
     with pytest.raises(DecryptionError):
         service.re_encrypt_history(old_key, new_key)
 
-    # 不应有任何更新操作
     assert len(db.updated_history_batches) == 0
 
     EncryptionEngine.clear_cache()
-
-
-# re_encrypt_categories：分类名称重加密正确
 
 
 def test_re_encrypt_categories_round_trip():
@@ -368,7 +328,6 @@ def test_re_encrypt_categories_round_trip():
 
     service.re_encrypt_categories(old_key, new_key)
 
-    # 应记录一次分类更新
     assert len(db.updated_categories) == 1
     updated = db.updated_categories[0]
     assert updated.id == cat_id
@@ -378,9 +337,6 @@ def test_re_encrypt_categories_round_trip():
     assert plain == '工作分类'
 
     EncryptionEngine.clear_cache()
-
-
-# re_encrypt_categories 损坏中止：分类名称解密失败时抛出 DecryptionError
 
 
 def test_re_encrypt_categories_corruption_raises_decryption_error():
@@ -405,7 +361,6 @@ def test_re_encrypt_categories_corruption_raises_decryption_error():
     with pytest.raises(DecryptionError):
         service.re_encrypt_categories(old_key, new_key)
 
-    # 解析失败前不应记录任何更新
     assert len(db.updated_categories) == 0
 
     EncryptionEngine.clear_cache()

@@ -140,7 +140,7 @@ def test_permanent_delete(db):
 
 
 def test_search(db):
-    """DB 层不再负责关键字搜索，get_entries 仅返回全部条目。"""
+    """get_entries 仅返回全部条目（关键字搜索由 EntryManager 负责）。"""
     db.add_entry(_make_entry(title='GitHub 账号'))
     db.add_entry(_make_entry(title='Gitee 账号'))
     db.add_entry(_make_entry(title='Google 邮箱'))
@@ -148,7 +148,6 @@ def test_search(db):
     results = db.get_entries(EntryQuery())
     assert len(results) == 3
 
-    # 实际的内存搜索由 EntryManager.get_entries 负责。
     all_entries = db.get_entries(EntryQuery())
     assert len(all_entries) == 3
 

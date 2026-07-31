@@ -1,14 +1,7 @@
 """加密引擎 — AES-256-GCM 加密/解密。
 
-内存安全说明：``_cipher_cache`` 使用密钥的 SHA-256 摘要作为缓存键，
-不再以原始密钥 bytes 作为 dict key，避免缓存字典持有原始密钥材料的额外
-引用。缓存在 ``clear_cache`` 被显式调用前会一直驻留进程内存，
-``VaultManager.lock`` 与 ``_re_encrypt_all`` 负责调用。
-调用方必须在密钥失效时调用 ``clear_cache``，例如锁定或改密场景。
-
-CPython 固有限制：``bytes`` 对象不可变，无法从 Python 层面原地清零。
-``clear_cache`` 仅清除缓存字典的引用，原始 ``bytes`` 对象依赖 GC 回收。
-这是 CPython 的根本限制，非代码缺陷——如需更强保障需使用 C 扩展或 mmap。
+``_cipher_cache`` 以密钥 SHA-256 摘要索引 AESGCM（不持原始密钥），密钥失效
+（锁定/改密）须 ``clear_cache``。bytes 不可变，彻底清零依赖 GC（CPython 限制）。
 """
 
 import base64
@@ -33,14 +26,10 @@ def _cache_key(key: bytes | bytearray) -> bytes:
 
 
 _cache_lock = threading.RLock()
-# AESGCM 实例缓存容量上限。正常使用仅 1 个活跃主密钥；改密瞬间旧+新两个密钥
-# 并存，取 2 恰好容纳双密钥窗口，避免任一方反复 evict 重建（key schedule 开销），
-# 同时最小化历史密钥的 AESGCM 副本（内部持有 C 层密钥拷贝）驻留进程内存，
-# 收缩崩溃 dump 攻击面。上限过大（原 16）会扩大内存 dump 攻击面。
+# 容量 2：改密瞬间旧+新两个密钥并存，恰好容纳双密钥窗口避免反复 evict 重建；
+# 超过 2 会扩大历史密钥 AESGCM 副本（持 C 层密钥拷贝）驻留，增大崩溃 dump 攻击面。
 _MAX_CACHE_SIZE = 2
-# AESGCM 实例缓存：按密钥摘要索引，通常仅含当前活跃密钥。模块级缓存会跨
-# VaultManager 实例共享（如同一进程内的测试创建多个实例），经 SHA-256 摘要索引，
-# 缓存键不持有也不泄漏明文密钥材料。
+# 模块级缓存：经 SHA-256 摘要索引，键不持有也不泄漏明文密钥材料。
 _cipher_cache: OrderedDict[bytes, AESGCM] = OrderedDict()
 
 
@@ -51,8 +40,7 @@ class EncryptionEngine:
     TAG_SIZE = 16    # GCM 认证标签长度，128 位
     KEY_SIZE = 32    # AES-256 密钥长度
     FORMAT_ID = 'aes-256-gcm-aad'
-    # 密文格式前缀取自共享层单一事实源（models.CIPHERTEXT_PREFIX），使数据层密文自检
-    # 与日志脱敏不经 crypto 层即可引用同一前缀；保留为类属性以兼容既有引用。
+    # 前缀取自共享层 models.CIPHERTEXT_PREFIX（单一事实源），数据层密文自检与日志脱敏共用。
     TEXT_PREFIX = CIPHERTEXT_PREFIX
     BYTES_PREFIX = CIPHERTEXT_BYTES_PREFIX
 
@@ -81,11 +69,7 @@ class EncryptionEngine:
 
     @classmethod
     def clear_cache(cls) -> None:
-        """清除 AESGCM 实例缓存。
-
-        密钥失效后调用，例如锁定或改密。清除引用后依赖 GC 回收，
-        VaultManager.lock 已负责触发 gc.collect。
-        """
+        """清除 AESGCM 实例缓存。密钥失效（锁定/改密）后调用。"""
         with _cache_lock:
             _cipher_cache.clear()
 
@@ -108,14 +92,12 @@ class EncryptionEngine:
             associated_data: 参与认证的附加数据，解密时需原样提供
 
         Returns:
-            形如 ``cb2:`` 前缀加 base64 的密文字符串。密文内部由随机 nonce、
-            密文与 GCM 认证标签拼接后编码得到。
+            ``cb2:`` 前缀加 base64 的密文字符串（随机 nonce + 密文 + GCM 标签）。
         """
         nonce = os.urandom(cls.NONCE_SIZE)
         aesgcm = cls._get_cipher(key)
         aad = cls._aad_bytes(associated_data)
         ciphertext = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), aad)
-        # nonce + ciphertext，ciphertext 已包含 GCM 认证标签
         encoded = base64.b64encode(nonce + ciphertext).decode('ascii')
         return cls.TEXT_PREFIX + encoded
 
@@ -137,16 +119,14 @@ class EncryptionEngine:
             解密后的明文字符串
 
         Raises:
-            DecryptionError: 密文为空、格式不符、长度不足、base64 非法或 GCM 认证
-                失败时抛出，各类原因携带细分消息。注意 DecryptionError 双继承
-                ValueError——调用方若同时兜底 ValueError，须先捕获 DecryptionError。
+            DecryptionError: 密文为空、格式不符、长度不足、base64 非法或 GCM
+                认证失败时抛出。注意 DecryptionError 双继承 ValueError——调用方
+                若同时兜底 ValueError，须先捕获 DecryptionError。
         """
         if not encrypted_b64:
             raise DecryptionError('收到空密文')
-        # 格式 / 长度校验置于 try 之外（与 decrypt_bytes 对称）：这些是客户端逻辑
-        # 错误，应保留细分诊断消息。注意 DecryptionError 双继承 ValueError，若放进
-        # 下方 try，会被自身 ``except (..., ValueError, ...)`` 捕获并改写为通用文案，
-        # 丢失「格式不符 / 长度无效」的原始区分。
+        # 格式/长度校验置于 try 之外：DecryptionError 双继承 ValueError，放进 try
+        # 会被下方 ``except (..., ValueError, ...)`` 改写为通用文案，丢失细分诊断。
         if not encrypted_b64.startswith(cls.TEXT_PREFIX):
             raise DecryptionError('不支持的密文格式')
         encoded = encrypted_b64[len(cls.TEXT_PREFIX):]
@@ -176,10 +156,9 @@ class EncryptionEngine:
         key: bytes | bytearray,
         associated_data: str | bytes,
     ) -> bytes:
-        """加密字节数据，返回带 ``CB2`` 字节前缀的密文。
+        """加密字节数据，返回带 ``CB2`` 字节前缀的密文（与 encrypt 对称）。
 
-        与 encrypt 对称，区别在于处理 bytes 并以字节前缀返回；空数据直接
-        经 AES-GCM 加密，保证附加数据始终参与认证。
+        空数据也经 AES-GCM 加密，保证 AAD 始终参与认证。
         """
         nonce = os.urandom(cls.NONCE_SIZE)
         aesgcm = cls._get_cipher(key)
@@ -206,8 +185,8 @@ class EncryptionEngine:
             解密后的原始字节数据
 
         Raises:
-            DecryptionError: 密文格式不符、长度不足或认证失败时抛出。DecryptionError
-                双继承 ValueError，旧的 ``except ValueError`` 兜底仍能捕获。
+            DecryptionError: 密文格式不符、长度不足或认证失败时抛出。双继承
+                ValueError，旧 ``except ValueError`` 兜底仍能捕获。
         """
         if not data.startswith(cls.BYTES_PREFIX):
             raise DecryptionError('不支持的密文字节格式')

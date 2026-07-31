@@ -44,11 +44,9 @@ class BusinessContext:
 def build_vault(config: ConfigManager, *, test_mode: bool = False) -> VaultManager:
     """创建并完整装配 VaultManager（db、signer、生命周期编排器）。
 
-    集中 vault 装配：DatabaseBootstrap 创建 db+signer 并注入条目/分类完整性 handler，
+    集中 vault 装配：DatabaseBootstrap 创建 db+signer 并注入完整性 handler，
     VaultManager 持有 db+signer 并注入 write_guard，VaultLifecycleOrchestrator 注入
-    生命周期委托（initialize/unlock/lock/change_master_password/close）。app.py 与测试
-    经此单一入口取得完全装配的 vault，消除原先 VaultManager 内部 ``new DatabaseManager``
-    的隐藏第二组合根与分散装配步骤。
+    生命周期委托。app.py 与测试经此单一入口取得完全装配的 vault。
 
     Args:
         config: 配置管理器。
@@ -68,12 +66,10 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
     ImportExportManager → BackupRestoreManager 的依赖链，并注册锁定/变更回调
     使缓存失效事件驱动化。调用方（app.py 解锁成功后）取得 ctx 传给 MainWindow。
 
-    连线集中于此使依赖关系显式且单一：锁定时失效 entry 缓存（``register_on_lock``），
-    条目变更时失效安全分析缓存（``register_on_change``）。``register_on_lock`` 注册的
-    回调也会在备份恢复（``update_key_epoch``）后触发——恢复整体替换数据，按 crypto_id
-    索引的明文缓存须失效以防命中旧明文；当前注册的均为纯缓存清除、幂等，复用安全。
-    原先散落在 MainWindow._register_callbacks，现上提至组装根，使 MainWindow 不再承担
-    跨 manager 连线职责。
+    连线集中于此使依赖关系显式且单一：锁定时失效 entry 缓存，条目变更时失效安全
+    分析缓存。``register_on_lock`` 注册的回调也会在备份恢复（``update_key_epoch``）
+    后触发——恢复整体替换数据，按 crypto_id 索引的明文缓存须失效以防命中旧明文；
+    当前注册的均为纯缓存清除、幂等，复用安全。
     """
     cache = EntryCacheManager(vault)
     change_bus = EntryChangeBus(cache)

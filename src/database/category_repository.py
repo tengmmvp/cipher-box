@@ -1,7 +1,6 @@
 """分类数据访问层 — 分类 CRUD 及条目统计。
 
-从 DatabaseManager 拆分而来，职责单一：categories 表的增删改查。
-通过 DatabaseManager 委托提供统一数据访问接口。
+职责单一：categories 表的增删改查，经 DatabaseManager 委托提供统一数据访问接口。
 """
 
 import logging
@@ -22,8 +21,7 @@ logger = logging.getLogger(__name__)
 class CategoryRepository:
     """分类数据访问层。
 
-    通过 ``conn_provider`` 获取 sqlite3.Connection，支持外部注入连接，
-    通常为 DatabaseManager 实例。
+    经 ``conn_provider`` 获取 sqlite3.Connection（通常为 DatabaseManager 实例）。
     """
 
     def __init__(self, conn_provider: ConnectionProvider):
@@ -55,11 +53,10 @@ class CategoryRepository:
     def _verify_category_if_signed(self, category: Category) -> Category:
         """LENIENT 验签分类完整性：有签名（metadata_mac 非空）才验，失败记日志并标记。
 
-        首次初始化的默认分类在 encrypt_plaintext_category_names 签名前 mac 为空，
-        属合法未签名状态，跳过验签避免噪音；其余分类有签名则验，篡改记 warning 并
-        置 ``category.integrity_error = True``，供 UI（sidebar ⚠ 标识）对用户可见。
-        分类名密文仍由 GCM 认证兜底；本验签覆盖 icon/color/sort_order 等非加密元数据。
-        改密重签路径以 verify=False 跳过本验签，避免旧签名在新域密钥下的假阳性告警。
+        默认分类在首次签名前 mac 为空属合法未签名状态，跳过避免噪音；其余分类有签名
+        则验，篡改置 ``integrity_error=True`` 供 UI 可见。分类名密文由 GCM 兜底，本验签
+        覆盖 icon/color/sort_order 等非加密元数据。改密重签路径传 verify=False 跳过，
+        避免旧签名在新域密钥下的假阳性告警。
         """
         verifier = self._mgr.category_verifier
         if verifier and category.metadata_mac:
@@ -70,8 +67,7 @@ class CategoryRepository:
                 return replace(category, integrity_error=True)
             except VaultLockedError:
                 # 锁定竞态：域密钥在取行后被 prepare_for_lock 清零，锁定态验签无意义，
-                # 静默跳过避免 get_categories/get_category 崩溃（entry 路径 re-raise 由
-                # 调用方处理；分类读路径为 LENIENT 日志，锁定态直接跳过）。
+                # 静默跳过避免读路径崩溃（entry 路径 re-raise 由调用方处理）。
                 pass
         return category
 
@@ -113,20 +109,17 @@ class CategoryRepository:
     def add_category(self, category: Category) -> int:
         """添加分类，返回 ID。
 
-        名称在数据层以加密形态存储（每次 nonce 不同），故同名明文加密后互异，
-        categories.name 的 UNIQUE 约束与本处查重均无法对加密名触发。本查重仅
-        对直接传入明文名的调用方（含本层测试）作防御性兜底；生产路径的真正
-        明文查重在 CategoryManager.add_category 完成。
+        名称以加密形态存储（每次 nonce 不同，同名明文加密后互异），categories.name
+        的 UNIQUE 约束与本处查重均无法对加密名触发。本查重仅对直接传明文名的调用方
+        （含本层测试）兜底；生产路径的明文查重在 CategoryManager.add_category。
         """
         if self._conn.execute(
             "SELECT 1 FROM categories WHERE name_enc=? LIMIT 1", (category.name,)
         ).fetchone():
             raise ValueError(f'分类名称「{category.name}」已存在')
-        # 确定最终 created_at 并回填内存对象：保证后续 update_category（两阶段重签）
-        # 与本次 INSERT 用同一 created_at。否则 DB 层用 `created_at or utc_now_iso()`
-        # 写入真实时间戳但内存对象仍为空，两阶段重签会用空 created_at 算 mac，
-        # 导致持久化行 created_at 与签名载荷错配、重载后 verify_category 永久失败
-        # （category HMAC 纵深防御对该分类失效）。
+        # 回填 created_at 至内存对象：保证两阶段重签与 INSERT 用同一值。否则 DB 层
+        # 写真实时间戳而内存对象为空，重签用空 created_at 算 mac 致签名与持久化行错配、
+        # 重载后验签永久失败。
         created_at = category.created_at or utc_now_iso()
         category = replace(category, created_at=created_at)
         category = replace(category, metadata_mac=self._sign_category(category))
@@ -149,7 +142,7 @@ class CategoryRepository:
 
     def _update_category_row(self, category: Category) -> None:
         """写入分类行（不含查重/created_at 回填/签名），供 update_category 与
-        update_category_reencrypted 复用同一 UPDATE SQL，消除列序重复维护。"""
+        update_category_reencrypted 复用同一 UPDATE SQL。"""
         self._conn.execute(
             "UPDATE categories SET name_enc=?, icon_char=?, color=?, sort_order=?, metadata_mac=? WHERE id=?",
             self._category_update_tuple(category),
@@ -160,19 +153,16 @@ class CategoryRepository:
     def update_category(self, category: Category) -> None:
         """更新分类。
 
-        名称在数据层以加密形态存储（每次 nonce 不同），同名明文加密后互异，
-        故本查重无法对加密名触发，仅对直接传入明文名的调用方作防御性兜底；
-        生产路径的真正明文查重在 CategoryManager.update_category 完成。
+        加密名每次 nonce 不同致本处查重无法触发，仅对直接传明文名的调用方兜底；
+        生产路径的明文查重在 CategoryManager.update_category。
         """
         if category.id is not None and self._conn.execute(
             "SELECT 1 FROM categories WHERE name_enc=? AND id!=? LIMIT 1",
             (category.name, category.id),
         ).fetchone():
             raise ValueError(f'分类名称「{category.name}」已被其他分类占用')
-        # created_at 创建后不可变（SQL 不写该列）：签名须用 DB 现有值，而非调用方
-        # 传入值，否则调用方传空/不一致的 created_at 会使签名与持久化行错配、重载
-        # 验签失败（与 add_category 的 created_at 回填守护对称，闭合第二轮 P0 修复
-        # 在对称路径上的遗漏）。
+        # created_at 创建后不可变（SQL 不写该列）：签名须用 DB 现有值，否则调用方传
+        # 空/不一致值会使签名与持久化行错配、重载验签失败（与 add_category 回填对称）。
         existing = self._conn.execute(
             "SELECT created_at FROM categories WHERE id=?", (category.id,)
         ).fetchone()
@@ -187,11 +177,9 @@ class CategoryRepository:
 
         与 update_category 的区别：跳过签名（调用方已用新域密钥经
         :meth:`MetadataSigner.sign_category_with_domain_key` 预签名）与明文查重
-        （name 为密文，每次 nonce 不同，查重无意义），直接 UPDATE。``category``
-        来自 ``get_categories``，``created_at`` 已是 DB 值，SQL 不写 created_at
-        列保持不变。与条目 ``update_entries_batch``（改密专用不签名写）对称——
-        reencrypt 路径自己用新域密钥预签名，写入路径不再重复签名，使重加密不依赖
-        「临时切换 signer 全局 _domain_key」的隐含契约。
+        （密文名每次 nonce 不同，查重无意义），直接 UPDATE。``category`` 来自
+        ``get_categories``，``created_at`` 已是 DB 值，SQL 不写该列。与条目
+        ``update_entries_batch`` 对称：reencrypt 路径自行预签名，写入路径不重复签名。
         """
         self._update_category_row(category)
 
@@ -199,10 +187,9 @@ class CategoryRepository:
     def update_categories_batch(self, categories: list[Category]) -> None:
         """改密重加密专用批量写入：executemany 一次性更新已预签名的分类。
 
-        与 :meth:`update_category_reencrypted` 语义一致（不重算签名、不查重），仅把
-        逐条 UPDATE 合并为单次 executemany，与条目/历史的 ``update_entries_batch`` /
-        ``update_password_history_batch`` 改密路径对称。``_auto_commit`` 在活动事务内
-        不真正提交，故批量只触发一次权限刷新。
+        语义同 :meth:`update_category_reencrypted`（不重算签名、不查重），仅合并逐条
+        UPDATE 为单次 executemany。``_auto_commit`` 在活动事务内不真正提交，批量只
+        触发一次权限刷新。
         """
         if not categories:
             return
@@ -215,15 +202,13 @@ class CategoryRepository:
     def delete_category(self, category_id: int) -> None:
         """删除分类行。
 
-        仅删除 categories 表的行；关联条目的解关联与元数据重签由
+        仅删 categories 行；关联条目的解关联与重签由
         DatabaseManager.delete_category 编排 EntryRepository.clear_category_signatures
-        完成（公开的跨表编排接口），避免本 Repository 跨表访问 EntryRepository。
+        完成，避免本 Repository 跨表访问。
 
-        锁与事务契约：本方法未使用 ``@_db_operation`` 装饰器，不自行获取
-        ``db_lock``。调用方（DatabaseManager.delete_category）须已持有
-        ``db_lock`` 并处于活动事务内，使本 DELETE 与条目解关联在同事务内
-        原子提交或回滚。入口断言将此契约从注释升级为运行期检查，防止未来
-        误在无事务上下文中直接调用导致裸 DELETE。
+        锁与事务契约：未用 ``@_db_operation``，不自行获取 ``db_lock``。调用方
+        （DatabaseManager.delete_category）须已持锁并处活动事务内，使 DELETE 与条目
+        解关联原子提交/回滚。入口断言将此契约升级为运行期检查。
         """
         if not self.in_transaction:
             raise TransactionError(

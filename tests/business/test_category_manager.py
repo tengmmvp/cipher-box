@@ -34,7 +34,6 @@ class TestCategoryManagerAdd:
         )
         assert isinstance(cat_id, int) and cat_id > 0
 
-        # 数据库层分类名应为加密密文（cb2: 前缀），而非明文
         raw = vault.db.get_category(cat_id)
         assert raw is not None
         assert raw.name.startswith('cb2:'), (
@@ -74,7 +73,6 @@ class TestCategoryManagerAdd:
             Category(name=name), notify=False,
         )
         assert cat_id > 0
-        # 仍可读回
         cats = entry_mgr.categories.get_categories()
         assert any(c.name == name for c in cats)
 

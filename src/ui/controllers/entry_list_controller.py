@@ -1,7 +1,7 @@
-"""条目列表控制器 — 从 MainWindow 筛选逻辑中提取的纯数据操作。
+"""条目列表控制器：纯数据操作。
 
-负责排序配置读取、条目排序、各过滤器数据获取及搜索/标签过滤。
-不导入任何 PyQt6 控件，不操作 UI。
+负责排序配置读取、条目排序、各过滤器数据获取及搜索/标签过滤，
+不导入任何 PyQt6 控件、不操作 UI。
 """
 
 from __future__ import annotations
@@ -20,11 +20,7 @@ if TYPE_CHECKING:
 
 
 class EntryListController:
-    """条目列表的纯数据逻辑控制器。
-
-    通过构造函数注入 ``entry_manager`` 和 ``config``，
-    不持有任何 UI 控件引用。
-    """
+    """条目列表的纯数据逻辑控制器，不持有任何 UI 控件引用。"""
 
     def __init__(
         self,

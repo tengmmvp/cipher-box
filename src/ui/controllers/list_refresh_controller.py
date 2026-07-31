@@ -1,15 +1,14 @@
-"""MainWindow 筛选、排序、数据刷新控制器（组合化，从 _MainWindowFiltersMixin 迁移）。
+"""MainWindow 筛选、排序、数据刷新控制器。
 
-普通类（非 QObject），遵循 EntryActionsController/MenuController 范式：``__init__``
-注入 manager 与跨 controller 回调（``ListRefreshDeps``），``setup(parent, view)`` 接收
-QObject 父（MainWindow）与冻结 dataclass view-handle（``ListRefreshView``），创建 3 个
-防抖/状态定时器、连接 8 个控件信号、初始化填充列表。
+普通类（非 QObject）：``__init__`` 注入 manager 与跨 controller 回调
+（``ListRefreshDeps``），``setup(parent, view)`` 接收 QObject 父与冻结
+dataclass view-handle（``ListRefreshView``），创建 3 个防抖/状态定时器、连接 8 个
+控件信号、初始化填充列表。
 
-吸收原 Filters Mixin 的全部刷新/过滤/状态栏/worker 逻辑：6 个 worker/generation
-（entry_worker/entry_workers/tag_worker/status_worker + entry/tag 两个 generation）、
-3 定时器（search/entry_change/status）、过滤器/分类/标签/搜索/缓存状态。host 生命周期
-（锁定/关闭/隐藏到托盘/紧急取消）经 ``shutdown`` / ``cancel_all_workers`` / ``stop_timers``
-/ ``prepare_for_lock`` 委托本控制器，消除原 Filters Mixin 跨 ``self`` 的隐式契约。
+持有 6 个 worker/generation（entry_worker/entry_workers/tag_worker/status_worker +
+entry/tag 两个 generation）、3 定时器（search/entry_change/status）、过滤器/分类/
+标签/搜索/缓存状态。host 生命周期（锁定/关闭/隐藏到托盘/紧急取消）经 ``shutdown`` /
+``cancel_all_workers`` / ``stop_timers`` / ``prepare_for_lock`` 委托本控制器。
 """
 
 from __future__ import annotations
@@ -111,9 +110,9 @@ class ListRefreshDeps:
 class ListRefreshController:
     """筛选、排序、列表刷新（含异步）、状态栏、空态与相关事件处理。
 
-    worker / generation / 定时器 / 过滤器态全迁入本控制器；host 经生命周期方法
-    （``shutdown`` / ``cancel_all_workers`` / ``stop_timers`` / ``prepare_for_lock`` /
-    ``refresh_after_unlock``）委托，保持原有 6 条关闭路径的 worker 不变量。
+    host 经生命周期方法（``shutdown`` / ``cancel_all_workers`` / ``stop_timers`` /
+    ``prepare_for_lock`` / ``refresh_after_unlock``）委托，保持原有 6 条关闭路径的
+    worker 不变量。
     """
 
     _parent: QMainWindow
@@ -346,8 +345,8 @@ class ListRefreshController:
         self._cached_categories = categories
 
     def refresh_tag_filter(self, entry_count: int | None = None) -> None:
-        # 标签下拉的 get_all_tags() 在缓存失效（改密/锁定/标签变更）时需全量解密全部
-        # 条目 tags 字段，大库下同步会卡主线程。仅在「大库 且 缓存失效」时移入后台线程；
+        # get_all_tags() 在缓存失效（改密/锁定/标签变更）时需全量解密全部条目 tags
+        # 字段，大库下同步会卡主线程。仅在「大库 且 缓存失效」时移入后台线程；
         # 缓存命中或小库时直接同步重建下拉，省去无谓的 QThread 创建与跨线程信号开销。
         count = (
             entry_count
@@ -728,10 +727,9 @@ class ListRefreshController:
     def _do_refresh_after_entry_change(self) -> None:
         """执行条目变更后的全量刷新，由防抖定时器触发。
 
-        分类和标签看似总与上次相同，但编辑/删除操作可能改变分类下的条目计数、
-        移除某条目使用的最后一个标签等。防抖定时器以 100ms 间隔已合并快速连续操作，
-        三次轻量查询即分类、计数和标签的开销可接受。对于确定不改变分类/标签的操作
-        如切换收藏，使用 refresh_entries_only。
+        分类和标签看似总与上次相同，但编辑/删除可能改变分类下条目计数、移除某条目
+        使用的最后一个标签。防抖定时器已合并快速连续操作，三次轻量查询开销可接受；
+        确定不改变分类/标签的操作（如切换收藏）用 refresh_entries_only。
         """
         # 安全缓存失效已通过 EntryManager 回调自动完成，此处无需再调用
         self._cached_total_entries = -1

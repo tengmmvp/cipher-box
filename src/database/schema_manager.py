@@ -1,7 +1,6 @@
 """数据库 schema 创建与验证。
 
-从 DatabaseManager 拆分而来，职责单一：数据库表结构的初始化与校验。
-通过 DatabaseManager 委托提供统一数据访问接口。
+职责单一：数据库表结构的初始化与校验，经 DatabaseManager 委托提供统一数据访问接口。
 """
 
 import logging
@@ -16,18 +15,16 @@ from .types import ConnectionProvider
 logger = logging.getLogger(__name__)
 
 
-# 索引定义：CREATE INDEX 与 _validate_current_schema 的单一事实来源。
-# 新增索引只需在此追加——建表循环与 schema 校验自动跟随，避免建表 SQL 与
-# 校验集合两份硬编码漂移（只改一处忘记另一处）。
+# 索引定义：CREATE INDEX 与 _validate_current_schema 的单一事实源，新增索引只需在此
+# 追加，建表与校验自动跟随，避免两份硬编码漂移。
 # tuple 形式：(索引名, 表名, 列定义, 是否 UNIQUE)
 _INDEX_DEFINITIONS: list[tuple[str, str, tuple[str, ...], bool]] = [
     ('idx_entries_category', 'entries', ('category_id',), False),
     ('idx_entries_deleted', 'entries', ('is_deleted',), False),
     ('idx_entries_favorite', 'entries', ('is_favorite',), False),
     ('idx_entries_updated', 'entries', ('updated_at',), False),
-    # 复合索引：服务列表默认视图与「近期更新」视图的 WHERE is_deleted=0 +
-    # ORDER BY updated_at DESC，免内存排序。单列 is_deleted/updated_at 索引无法
-    # 同时满足过滤与排序，组合后才能让 SQLite 走索引扫描而非全表 + filesort。
+    # 复合索引：服务 WHERE is_deleted=0 + ORDER BY updated_at DESC，单列索引无法同时
+    # 覆盖过滤与排序，组合后让 SQLite 走索引扫描而非全表 + filesort。
     (
         'idx_entries_active_updated',
         'entries',
@@ -55,9 +52,9 @@ _INDEX_DEFINITIONS: list[tuple[str, str, tuple[str, ...], bool]] = [
     ),
 ]
 
-# 列预期四元组：(type, notnull, pk, dflt_value)。dflt_value 为 PRAGMA table_info
-# 返回的默认值原文（带引号字符串如 "'login'"、裸数字如 "0"、无默认为 None），覆盖列
-# 默认值校验，防止被篡改默认值（如 entry_type DEFAULT）的库仍通过结构校验。
+# 列预期四元组：(type, notnull, pk, dflt_value)。dflt_value 覆盖默认值校验，防止
+# 被篡改默认值（如 entry_type DEFAULT）的库仍通过结构校验。PRAGMA table_info 返回
+# 带引号原文（如 "'login'"、"0"），无默认为 None。
 _TABLE_COLUMNS = {
     'vault_meta': {
         'key': ('TEXT', 0, 1, None), 'value': ('TEXT', 1, 0, None),
@@ -96,8 +93,7 @@ _FOREIGN_KEYS = {
 class SchemaManager:
     """数据库 schema 管理 — 表创建、索引创建、schema 验证。
 
-    通过 ``conn_provider`` 获取 sqlite3.Connection，支持外部注入连接，
-    通常为 DatabaseManager 实例。
+    经 ``conn_provider`` 获取 sqlite3.Connection（通常为 DatabaseManager 实例）。
     """
 
     SCHEMA_FORMAT = 'cipherbox-schema'
@@ -186,8 +182,7 @@ class SchemaManager:
             );
 
         """)
-        # 索引由 _INDEX_DEFINITIONS 统一定义，循环创建以与 schema 校验共用单一来源，
-        # 避免建表 SQL 与校验集合两份硬编码漂移。
+        # 索引由 _INDEX_DEFINITIONS 统一定义，与 schema 校验共用单一来源。
         for index_name, table, columns, is_unique in _INDEX_DEFINITIONS:
             cursor.execute(
                 f"CREATE {'UNIQUE ' if is_unique else ''}INDEX IF NOT EXISTS "  # nosec B608 - 硬编码常量
@@ -222,9 +217,8 @@ class SchemaManager:
     def _check_is_new_database(self, cursor: sqlite3.Cursor) -> bool:
         """检查是否为空数据库。返回 True 表示新库需初始化，False 表示已有数据。
 
-        注意：方法名暗示返回布尔，但在返回前会对非空却不兼容的数据库
-        （缺 vault_meta、schema_format 不符）直接抛出 SchemaError，调用方
-        须同时处理 True / False / 异常三种结果。"""
+        Note: 返回前会对非空却不兼容的库（缺 vault_meta、schema_format 不符）直接抛
+        SchemaError，调用方须同时处理 True / False / 异常三种结果。"""
         tables = {
             row['name'] for row in cursor.execute(
                 "SELECT name FROM sqlite_master "
@@ -249,13 +243,10 @@ class SchemaManager:
     def _validate_current_schema(cursor: sqlite3.Cursor) -> None:
         """校验当前数据库的表结构和索引是否符合预期。"""
         for table, expected_columns in _TABLE_COLUMNS.items():
-            # table 来自上方硬编码的 required 字典键，安全无注入风险。
-            # SQLite PRAGMA 不支持参数化查询，f-string 是唯一方式。
+            # table 来自硬编码字典键，安全无注入风险；SQLite PRAGMA 不支持参数化，
+            # f-string 是唯一方式。
             rows = cursor.execute(f'PRAGMA table_info({table})').fetchall()
-            # 比对 (type, notnull, pk, dflt_value) 四元组：dflt_value 覆盖列默认值，
-            # 防止被篡改默认值的库仍通过结构校验。PRAGMA table_info 的 dflt_value
-            # 返回带引号原文（如 "'login'"、"0"），无默认时为 None，与 _TABLE_COLUMNS
-            # 第四位预期一一对应。
+            # 比对四元组（含 dflt_value），与 _TABLE_COLUMNS 预期一一对应。
             columns = {
                 row['name']: (row['type'].upper(), row['notnull'], row['pk'], row['dflt_value'])
                 for row in rows

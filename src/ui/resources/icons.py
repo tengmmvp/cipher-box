@@ -18,9 +18,8 @@ from PyQt6.QtWidgets import QPushButton
 from . import theme_colors
 from .theme_colors import c
 
-# QIcon 实例缓存：按 (name, color_key, theme) 缓存。delegate 等高频路径重复调
-# icon(name) 时复用 QIcon，省 qta.icon 的字体渲染开销。主题切换时 theme 变化使
-# 缓存键改变，自动 miss 重建（颜色烘焙到 QIcon，须随主题刷新）。
+# QIcon 实例缓存（键为 name/color_key/theme）：高频路径复用 QIcon 省 qta.icon
+# 字体渲染开销。主题切换使缓存键变化自动 miss 重建（颜色烘焙到 QIcon，须刷新）。
 _icon_cache: OrderedDict[tuple[str, str | None, str], QIcon] = OrderedDict()
 _icon_cache_lock = threading.Lock()
 _ICON_CACHE_MAX = 200
@@ -156,10 +155,8 @@ _ICON_MAP: dict[str, tuple[str, str]] = {
 def _make_icon(name: str, color_key: str | None = None) -> QIcon:
     """内部：创建或复用缓存的 QIcon 实例。
 
-    颜色在创建时烘焙到 QIcon 中，主题颜色通过 c() 获取。QIcon 按
-    (name, color_key, theme) 缓存——主题切换时 set_theme 改 theme_colors._current_theme，
-    缓存键变化自动 miss，新主题首次访问重建图标；旧主题条目由 LRU 淘汰。
-    高频路径（delegate 滚动、菜单/过滤列表重建）复用 QIcon，省 qta.icon 字体渲染开销。
+    颜色创建时烘焙进 QIcon，故缓存键含 theme：主题切换时键变化自动 miss 重建，
+    旧主题条目由 LRU 淘汰。高频路径复用 QIcon 省 qta.icon 字体渲染开销。
     """
     if name not in _ICON_MAP:
         raise ValueError(f'未注册图标常量: {name}')

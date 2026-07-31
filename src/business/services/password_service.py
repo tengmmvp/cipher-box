@@ -1,11 +1,8 @@
 """业务层密码服务，封装密码生成、强度检测与 TOTP 操作。
 
-消除 UI 层对 crypto 层的直接依赖，确保依赖方向为 UI → Business → Crypto。
-所有方法为纯静态方法，不持有状态，不依赖 VaultManager。
-
-架构说明：EntryManager 同层直接导入 PasswordGenerator/TOTPGenerator，
-属 Business → Crypto 的同层依赖，这是可接受的。PasswordService 的存在
-是为了切断 UI → Crypto 的跨层依赖，而非在 Business 内部再增加一层间接。
+切断 UI → Crypto 的跨层依赖，确保依赖方向为 UI → Business → Crypto。所有方法为
+纯静态方法，不持状态。EntryManager 同层导入 PasswordGenerator/TOTPGenerator 属
+Business → Crypto 同层依赖可接受；本服务存在仅为切断 UI → Crypto 跨层依赖。
 """
 
 from ...crypto.password_generator import PasswordGenerator, StrengthResult
@@ -50,9 +47,8 @@ class PasswordService:
     ) -> tuple[bool, str]:
         """校验密码生成至少选中一种字符集，返回 ``(是否有效, 错误信息)``。
 
-        settings_dialog 与 password_generator_dialog 的字符类型校验原先各持一份副本，
-        文案已漂移；抽此共享 helper 统一为单一事实源（MAINT-019）。有效时错误信息为
-        空字符串，无效时返回固定文案供调用方直接经 ``QMessageBox.warning`` 展示。
+        统一字符类型校验为单一事实源（MAINT-019）。有效时错误信息为空串，无效时返回
+        固定文案供直接经 ``QMessageBox.warning`` 展示。
         """
         if not any((uppercase, lowercase, digits, symbols)):
             return False, '至少需要选择一种密码字符类型。'

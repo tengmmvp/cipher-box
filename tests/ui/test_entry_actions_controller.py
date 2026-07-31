@@ -1,14 +1,11 @@
 """EntryActionsController 直接单测（rank 10）。
 
-条目 CRUD、分类管理、右键菜单、选择防抖此前经 ``_MainWindowEntriesMixin`` 隐式覆盖，
-组合化迁出（Mixin→普通类 + ``EntryActionsDeps`` 回调 + ``EntryActionsView`` 控件引用）
-后首次直接单测：选择防抖状态机（pending 校验 / 锁定跳过）、``@require_unlocked`` 守卫、
+覆盖选择防抖状态机（pending 校验 / 锁定跳过）、``@require_unlocked`` 守卫、
 跨 controller 回调连通（refresh_* / get_dialog_options）、对话框确认删除路径、
 生命周期（set_locked / prepare_for_lock / stop_timers / cancel_pending_selection）。
 
 与 ``test_product_hardening`` 端到端守护互补：后者经真实 ``MainWindow`` 验证装配正确，
-本文件聚焦 controller 内部状态机与回调契约——原 Mixin 跨 ``self`` 的隐式调用无法在
-pyright 期校验，迁为 ``EntryActionsDeps`` 后此处显式断言每条回调绑定。
+本文件聚焦 controller 内部状态机与回调契约，显式断言每条 ``EntryActionsDeps`` 回调绑定。
 """
 
 # 测试大量用 MagicMock 注入依赖，抑制其属性访问的静态类型告警

@@ -32,7 +32,6 @@ class TestLenientVerify:
             title='正常条目', username='user', password='pass', entry_type='login',
         ))
 
-        # 设置一个会抛 VaultIntegrityError 的 verifier
         def bad_verifier(entry: RawEntry):
             raise VaultIntegrityError('元数据签名不匹配')
 
@@ -87,7 +86,6 @@ class TestLenientVerify:
         entry_id = entries[0].id
         assert entry_id is not None
 
-        # 单条 get_entry 为严格模式，应抛出异常
         with pytest.raises(VaultIntegrityError):
             self._vault.db.get_entry(entry_id)
 

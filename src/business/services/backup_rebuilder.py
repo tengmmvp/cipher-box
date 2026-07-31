@@ -1,10 +1,6 @@
 """备份恢复重建：在事务内把可移植载荷重新加密写回数据库。
 
-从 :class:`..managers.backup_restore.BackupRestoreManager` 下沉的纯变换逻辑：原
-``_restore_entries`` / ``_restore_history`` staticmethod 与 ``_restore_categories``
-迁移为模块级函数，全入参注入（``db`` / ``backup`` / ``key`` / 映射），不依赖
-manager 实例状态，便于独立测试与未来恢复流程复用。
-
+纯变换：全入参注入（``db`` / ``backup`` / ``key`` / 映射），不依赖 manager 状态。
 调用方（``BackupRestoreManager._restore_data``）负责事务、epoch 守卫与
 key_epoch/snapshot_key 轮换编排；本模块仅做载荷→加密行的逐表重建。
 """
@@ -27,9 +23,8 @@ def restore_categories(
     """重建分类，返回旧 ID 到新 ID 的映射。"""
     category_map: dict[int, int] = {}
     for item in backup['categories']:
-        # PortableCategory(TypedDict)经 cast 桥接到 from_dict 的 dict 参数：
-        # pyright 严格模式不允许 TypedDict 隐式赋给 dict（结构化类型限制），
-        # validator 已保证键集，cast 安全。
+        # PortableCategory(TypedDict)经 cast 桥接到 dict 参数：pyright 不允许
+        # TypedDict 隐式赋给 dict，validator 已保证键集，cast 安全。
         category = Category.from_dict(cast(dict[str, Any], item))
         if not category.name:
             continue
@@ -47,18 +42,14 @@ def restore_entries(
 ) -> tuple[dict[int, int], dict[int, str]]:
     """重建条目，加密敏感字段，返回 (entry_map, crypto_id_map)。
 
-    全部条目先在内存构建为 RawEntry，再经 ``add_entries_batch`` 一次性
-    executemany 写入，避免逐条 INSERT+commit 的 N 次 fsync 拖长恢复期间
-    ``vault_write_lock`` 的持锁时间（UI 冻结窗口）。
-
-    item 经 validator 校验类型/长度，直接索引 PortableEntry 字段，消除原先
-    .get(default) 的死分支（键集由 require_keys 精确匹配保证存在）。
+    全部条目先在内存构建再经 ``add_entries_batch`` 一次性 executemany 写入，
+    避免逐条 INSERT+commit 的 N 次 fsync 拖长 vault_write_lock 持锁（UI 冻结窗口）。
+    item 经 validator 校验，直接索引字段，无 .get(default) 死分支。
     """
     items = backup['entries']
     entries: list[RawEntry] = []
     for item in items:
-        # PortableEntry(TypedDict)经 cast 桥接到 build_encrypted_entry_fields 的
-        # dict 参数（同 from_dict，TypedDict 不隐式兼容 dict）。
+        # PortableEntry(TypedDict)经 cast 桥接到 dict 参数（同上，TypedDict 不兼容 dict）。
         enc = build_encrypted_entry_fields(cast(dict[str, Any], item), key, item['crypto_id'])
         entries.append(RawEntry(
             crypto_id=item['crypto_id'],
@@ -93,8 +84,7 @@ def restore_entries(
     entry_map: dict[int, int] = {}
     crypto_id_map: dict[int, str] = {}  # 旧 entry_id 到 crypto_id 的映射
     for item, entry in zip(items, entries, strict=True):
-        # item['id'] 由 validate_entries 保证为正整数（require_keys + is_real_int），
-        # 直接索引建立映射，与 PortableEntry 文档「无 .get 死分支」契约一致。
+        # item['id'] 经 validate_entries 保证为正整数，直接索引建立映射。
         entry_map[item['id']] = crypto_id_to_new_id[entry.crypto_id]
         crypto_id_map[item['id']] = entry.crypto_id
     return entry_map, crypto_id_map
@@ -113,8 +103,7 @@ def restore_history(
         new_entry_id = entry_map.get(item['entry_id'])
         if not new_entry_id:
             continue
-        # entry_map 命中则 crypto_id_map 必同步存在（restore_entries 同填充），
-        # 直接取而非 get 默认 ''，避免空 crypto_id 产生 AAD 不一致的密文。
+        # entry_map 命中则 crypto_id_map 必存在（同填充），直接取避免空 crypto_id 致 AAD 不一致。
         crypto_id = crypto_id_map[item['entry_id']]
         ciphertext = encrypt_field(item['password'], key, crypto_id, 'password')
         if ciphertext:

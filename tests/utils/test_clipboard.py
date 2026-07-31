@@ -13,7 +13,6 @@ from src.ui.utils.clipboard import _CLIPBOARD_HMAC_KEY, ClipboardManager
 
 
 class TestClipboardManager:
-    """ClipboardManager 核心逻辑测试。"""
 
     @pytest.fixture(autouse=True)
     def _ensure_qapp(self, qapp):

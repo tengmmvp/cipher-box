@@ -14,7 +14,6 @@ class TestVaultWriteLock:
         """正常退出后锁已释放，可再次获取（无泄漏）。"""
         with vault.vault_write_lock():
             pass
-        # 再次获取不应阻塞或死锁
         with vault.vault_write_lock():
             pass
 
@@ -23,7 +22,6 @@ class TestVaultWriteLock:
         with pytest.raises(ValueError, match='boom'):
             with vault.vault_write_lock():
                 raise ValueError('boom')
-        # 异常后锁已释放，可再次获取
         with vault.vault_write_lock():
             pass
 

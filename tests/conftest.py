@@ -45,7 +45,7 @@ def _weak_kdf_for_tests(monkeypatch):
     """测试全局注入弱 KDF，加速保险库主密钥派生（initialize / change_master）。
 
     覆盖范围：仅 ``vault_lifecycle.DEFAULT_KDF_PARAMS``（initialize / change_master
-    经此派生，生命周期流程已拆出至 vault_lifecycle）。**有意不覆盖**
+    经此派生）。**有意不覆盖**
     ``backup_restore.DEFAULT_KDF_PARAMS``——备份密码派生用 backup_restore 模块自有的
     导入副本，保持真实 OWASP 参数：``test_rejects_downgraded_kdf_params`` 需创建真实
     参数备份再篡改为更弱值以验证防降级守卫；若一并弱化会使创建出的备份已是最低合法

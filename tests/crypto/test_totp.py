@@ -117,6 +117,5 @@ def test_generate_sha256_prefix_overrides_algorithm_param(patched_time):
     带 SHA256 前缀的 secret 仍按 SHA256 计算。
     """
     patched_time(59)
-    # 传入 algorithm='SHA1' 但 secret 带 SHA256: 前缀 → 实际用 SHA256
     code = TOTPGenerator.generate('SHA256:' + _SHA256_SEED, algorithm='SHA1', digits=8)
     assert code == '46119246'

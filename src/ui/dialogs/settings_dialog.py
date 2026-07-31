@@ -1,7 +1,6 @@
 """设置对话框，按标签页组织通用、安全、密码生成与备份四类配置。
 
-所有配置项通过 _SETTINGS_MAP 与控件属性建立映射，加载与保存统一遍历
-该映射完成，新增配置只需扩展映射表。保存时执行原子写入。
+配置项经 _SETTINGS_MAP 与控件属性映射，新增配置只需扩展映射表。
 """
 
 from __future__ import annotations
@@ -117,9 +116,8 @@ class SettingsDialog(QDialog):
         clip_group = QGroupBox('剪贴板')
         clip_layout = QFormLayout(clip_group)
         self._clipboard_spin = QSpinBox()
-        # 范围派生自 config.get_ui_int_range 单一源（下限取运行时安全下限 10）：
-        # get_safe('clipboard_clear_seconds') 会将低于 10 的值钳制到 10，故 UI 不提供
-        # 0 /「不自动清空」选项，避免界面值与运行时实际值脱节。
+        # 下限取运行时安全下限 10：get_safe('clipboard_clear_seconds') 会将低于 10 的值钳制到 10，
+        # 故 UI 不提供 0 /「不自动清空」选项，避免界面值与运行时实际值脱节。
         self._clipboard_spin.setRange(*get_ui_int_range('clipboard_clear_seconds'))
         self._clipboard_spin.setSuffix(' 秒')
         clip_layout.addRow('复制后自动清空：', self._clipboard_spin)
@@ -206,8 +204,7 @@ class SettingsDialog(QDialog):
         self._auto_backup_check.toggled.connect(self._update_backup_options)
         layout.addWidget(auto_group)
 
-        # 用 QLabel 而非禁用的 QPushButton 承载提示文本：语义正确，避免屏幕阅读器
-        # 将其识别为禁用按钮。objectName 供 QSS 控制为弱化提示色。
+        # 用 QLabel 而非禁用的 QPushButton 承载提示文本，避免屏幕阅读器将其识别为禁用按钮
         hint = QLabel('手动备份可跨安装恢复；自动快照仅用于当前保险库。')
         hint.setObjectName('hintLabel')
         hint.setWordWrap(True)
@@ -221,10 +218,8 @@ class SettingsDialog(QDialog):
         if path:
             self._backup_path_edit.setText(path)
 
-    # 配置项映射表，每个元素为四元组，依次是配置键、控件属性、访问类型与默认值。
-    # 访问类型取值为 combo、check 或 spin，决定读写控件的方式
-    # 默认值统一引用 DEFAULT_CONFIG（单一事实源），消除此处字面量与 config 双源
-    # 漂移——改某项默认值只需改 config.DEFAULT_CONFIG 一处。
+    # 配置项映射表：四元组（配置键、控件属性、访问类型 combo/check/spin、默认值）。
+    # 默认值统一引用 DEFAULT_CONFIG 单一事实源，改某项默认值只需改 config.DEFAULT_CONFIG 一处。
     _SETTINGS_MAP = [
         ('theme', '_theme_combo', 'combo', DEFAULT_CONFIG['theme']),
         ('show_tray_icon', '_show_tray_check', 'check', DEFAULT_CONFIG['show_tray_icon']),
@@ -251,8 +246,8 @@ class SettingsDialog(QDialog):
         accessor_type: str,
         value: Any,
     ) -> None:
-        # accessor_type 与 widget 子类型在 _SETTINGS_MAP 中一一配对；isinstance 既
-        # 满足类型 narrowing，又与运行时契约一致（不配对属编程错误，静默跳过）。
+        # accessor_type 与 widget 子类型在 _SETTINGS_MAP 中一一配对；isinstance 兼顾
+        # 类型 narrowing 与运行时契约（不配对属编程错误，静默跳过）。
         if accessor_type == 'combo' and isinstance(widget, QComboBox):
             widget.setCurrentIndex(0 if value == THEME_LIGHT else 1)
         elif accessor_type == 'check' and isinstance(widget, QCheckBox):
@@ -285,7 +280,7 @@ class SettingsDialog(QDialog):
         self._backup_retention_spin.setEnabled(enabled)
 
     def _save_settings(self) -> None:
-        # 密码生成至少需要一种字符集：校验文案经共享 helper 单一源，避免漂移
+        # 至少需要一种字符集，校验文案经共享 helper 单一源
         ok, error = PasswordService.validate_charset_selection(
             self._default_upper_check.isChecked(),
             self._default_lower_check.isChecked(),
@@ -295,8 +290,8 @@ class SettingsDialog(QDialog):
         if not ok:
             QMessageBox.warning(self, '生成规则无效', error)
             return
-        # 快照当前内存配置：save 失败时回滚，避免内存已写入新值而磁盘仍为旧值，
-        # 导致用户取消后同进程后续 config.get 读到未持久化的脏值。
+        # 快照当前内存配置：save 失败时回滚，避免内存已写新值而磁盘仍为旧值，
+        # 后续 config.get 读到未持久化的脏值。
         snapshot: dict[str, object] = {
             key: self._config.get(key) for key, *_ in self._SETTINGS_MAP
         }

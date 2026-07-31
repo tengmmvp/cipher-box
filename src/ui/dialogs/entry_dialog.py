@@ -95,8 +95,7 @@ _T = TypeVar('_T')
 
 
 # 条目类型 schema（专用字段 / 可见字段顺序）的单一事实源在 business 层
-# entry_type_schema.py，本模块经 get_schema / ENTRY_TYPE_SCHEMAS /
-# all_special_fields_by_storage 读取，新增类型只扩展注册表。
+# entry_type_schema.py，本模块经 get_schema / ENTRY_TYPE_SCHEMAS 读取。
 
 
 class EntryDialog(QDialog):
@@ -130,9 +129,7 @@ class EntryDialog(QDialog):
         self._current_type = entry.entry_type if entry else ENTRY_TYPE_LOGIN
         self._field_rows: dict[str, tuple[QLabel, QWidget]] = {}
         # 专用字段按控件类型分类存储：combo → _special_combos，其余（QLineEdit）→
-        # _special_edits。键→类型映射由存储侧（_build_type_fields 归类）保证，使后续
-        # 访问无需 cast——原先 dict[str, QLineEdit | QComboBox] 联合类型丢失映射，被迫
-        # 在每个访问点 cast 赎回类型（12+ 处），且 schema 改字段类型时 cast 会静默放过。
+        # _special_edits。键→类型映射由存储侧归类保证，使后续访问无需 cast。
         self._special_edits: dict[str, QLineEdit] = {}
         self._special_combos: dict[str, QComboBox] = {}
 
@@ -254,7 +251,7 @@ class EntryDialog(QDialog):
         self._tags_edit.setPlaceholderText('用逗号分隔多个标签')
         self._tags_edit.setMaxLength(MAX_FIELD_TAGS)
         if self._all_tags:
-            # 复用 MAX_TAG_DISPLAY：标签占位提示的展示数量与详情面板标签显示上限同语义
+            # 复用 MAX_TAG_DISPLAY：占位提示展示数量与详情面板标签上限同语义
             hint = ', '.join(self._all_tags[:MAX_TAG_DISPLAY])
             self._tags_edit.setPlaceholderText(f'常用：{hint}' if hint else '用逗号分隔多个标签')
         self._add_field_row(form, 'tags', '标签：', self._tags_edit)
@@ -320,11 +317,10 @@ class EntryDialog(QDialog):
         return btn_layout
 
     def _build_type_fields(self, form: QFormLayout) -> None:
-        """按 schema 创建各条目类型的专用字段并按控件类型注册到 _special_edits / _special_combos。
+        """按 schema 创建专用字段并按控件类型注册到 _special_edits/_special_combos。
 
-        所有字段初始隐藏，由 _apply_type_visibility 按当前类型切换显隐。
-        schema 驱动通用创建逻辑；卡号/有效期格式化与端口校验等类型特有行为
-        在控件创建后按 field_key 连接，保持 schema 的纯粹性。
+        字段初始隐藏，由 _apply_type_visibility 切换显隐。卡号/有效期格式化与端口
+        校验等类型特有行为在控件创建后按 field_key 连接，保持 schema 纯粹。
         """
         for schema in ENTRY_TYPE_SCHEMAS.values():
             for spec in schema.special_fields:
@@ -389,9 +385,8 @@ class EntryDialog(QDialog):
     def _compose_server_url(self) -> str:
         """按 protocol://host[:port] 拼接服务器地址，作为单一拼接来源。
 
-        host 为空时返回空串，避免生成无意义的 ``ssh://``。供
-        ``_on_save`` 写入与 ``_validate_field_lengths`` 校验长度共用，
-        防止两处拼接逻辑漂移。
+        host 为空返回空串。供 ``_on_save`` 写入与 ``_validate_field_lengths``
+        共用，防止两处拼接漂移。
         """
         host = self._special_edits['server_host'].text().strip()
         if not host:
@@ -403,12 +398,9 @@ class EntryDialog(QDialog):
     def _validate_field_lengths(self, entry_type: str) -> bool:
         """校验无法在控件层硬限制的字段长度，失败时弹出警告并返回 False。
 
-        多数单行字段已通过 ``setMaxLength`` 在输入时截断，无需在此重复检查。
-        此处只覆盖两类控件层无法限制的字段：
-        - 备注使用 QTextEdit，无 setMaxLength，上限为 ``MAX_FIELD_NOTES``；
-        - 服务器类型由 host、port、protocol 拼接得到的 url，上限为 ``MAX_FIELD_URL``。
-        校验上限与 ``src/models.py`` 的 ``Entry.from_dict`` 保持一致，使 UI
-        反馈与导入校验共用同一组常量作为单一事实来源。
+        多数单行字段已由 ``setMaxLength`` 截断。此处只覆盖：备注（QTextEdit，
+        无 setMaxLength，上限 ``MAX_FIELD_NOTES``）与服务器类型拼接 url（上限
+        ``MAX_FIELD_URL``）。上限与 ``Entry.from_dict`` 共用常量作为单一事实源。
         """
         notes = self._notes_edit.toPlainText().strip()
         if len(notes) > MAX_FIELD_NOTES:
@@ -430,11 +422,10 @@ class EntryDialog(QDialog):
 
     @staticmethod
     def _safe_set_formatted(widget: QLineEdit, original: str, formatted: str, cursor_at_end: bool = False) -> None:
-        """阻塞信号地写入格式化文本，并尽量保留原光标位置。
+        """写入格式化文本并尽量保留光标位置。
 
-        格式化回调本身由 textChanged 触发，若直接 setText 会再次引发回调，
-        因此调用方需先 blockSignals；此处只负责根据光标是否在末尾选择不同
-        的定位策略，避免格式化时光标跳变。
+        调用方需先 blockSignals（textChanged 回调直接 setText 会再次引发回调）；
+        此处按光标是否在末尾选择定位策略，避免格式化时光标跳变。
         """
         if formatted == original:
             return
@@ -475,22 +466,19 @@ class EntryDialog(QDialog):
     def _on_type_changed(self, index: int) -> None:
         """条目类型变更，刷新字段可见性。
 
-        若当前类型已有用户输入，先二次确认以免静默丢弃专用字段数据，
-        用户拒绝时回退到原类型选择项。
+        若当前类型已有用户输入，先二次确认以免静默丢弃专用字段数据。
         """
         new_type = self._type_combo.currentData() or ENTRY_TYPE_LOGIN
 
         if new_type == self._current_type:
             return
 
-        # 检查当前类型的专用字段是否有用户输入数据，编辑和新建两种模式均检查。
-        # _current_type 恒为非空 ENTRY_TYPE_* 常量（首设默认 login，其余从 combo
-        # currentData() or ENTRY_TYPE_LOGIN 赋值），无需空值守卫。
+        # 检查当前类型的专用字段是否有用户输入（编辑/新建均检查）。
+        # _current_type 恒为非空 ENTRY_TYPE_* 常量（默认 login，余从 combo 赋值）。
         old_fields = get_schema(self._current_type).visible_fields
         has_data = False
         for key in old_fields:
-            # QComboBox（如协议选择）的当前选项也算用户输入，纳入「有数据」
-            # 判定，避免切换类型前选过协议却被当作无数据而漏确认。
+            # QComboBox（如协议选择）的当前选项也算用户输入，避免漏确认。
             edit = self._special_edits.get(key)
             combo = self._special_combos.get(key)
             if edit is not None:
@@ -541,7 +529,7 @@ class EntryDialog(QDialog):
             label.setVisible(show)
             widget.setVisible(show)
 
-        # 笔记类型：放大备注区域（经 schema.notes_expanded 标志驱动，消除类型身份判断）
+        # 笔记类型：经 schema.notes_expanded 标志放大备注区域，消除类型身份判断
         if get_schema(entry_type).notes_expanded:
             self._notes_edit.setMaximumHeight(self._NOTES_HEIGHT_EXPANDED)
         else:
@@ -580,8 +568,8 @@ class EntryDialog(QDialog):
         if entry.totp_secret:
             self._totp_edit.setText(entry.totp_secret)
 
-        # 从 custom_fields 恢复专用字段值：按 storage_name 精确匹配（替代前缀 startswith），
-        # 消除用户自定义字段名以 _card_/_id_/_server_ 开头时被误判为专用字段的碰撞风险。
+        # 按 storage_name 精确匹配恢复专用字段值，避免用户自定义字段名以
+        # _card_/_id_/_server_ 开头时被误判为专用字段。
         cf_raw = entry.custom_fields
         if isinstance(cf_raw, list) and cf_raw:
             type_specific = []
@@ -623,9 +611,8 @@ class EntryDialog(QDialog):
             exclude_ambiguous=self._cfg('default_exclude_ambiguous', False),
         )
         self._password_edit.setText(password)
-        # 通过按钮公共方法显示密码并按配置启动自动隐藏。
-        # visible_seconds 用 _cfg 而非 get_safe：「显示多久」无安全下限语义（多看几
-        # 秒明文不构成篡改风险），get_safe 钳制仅用于防篡改类键（auto_lock 等）。
+        # visible_seconds 用 _cfg 而非 get_safe：「显示多久」无安全下限语义，
+        # get_safe 钳制仅用于防篡改类键（auto_lock 等）。
         visible_seconds = self._cfg('password_visible_seconds', PWD_VISIBLE_SECONDS_DEFAULT)
         self._toggle_pwd_btn.show_password(seconds=visible_seconds)
 
@@ -688,9 +675,8 @@ class EntryDialog(QDialog):
             if not self._validate_card_fields():
                 return
 
-        # 字段长度前置校验。QLineEdit 已通过 setMaxLength 限制多数字段，
-        # 此处补充对 QTextEdit 备注、服务器拼接 url 等无法在控件层硬限制
-        # 的字段做即时提示，避免到达业务层后才以 ValueError 形式暴露。
+        # 字段长度前置校验：补充 QTextEdit 备注、服务器拼接 url 等控件层
+        # 无法硬限制的字段，避免到业务层才以 ValueError 暴露。
         if not self._validate_field_lengths(entry_type):
             return
 
@@ -737,20 +723,18 @@ class EntryDialog(QDialog):
             self._clear_sensitive_inputs()
             self.accept()
         except (DatabaseError, DecryptionError, EntryIntegrityError) as exc:
-            # 领域异常：DB/解密/完整性错误，翻译为用户可理解的文案。
             # 必须在 ValueError 之前：DecryptionError 双继承 ValueError，若放后会被
-            # 字段校验分支误捕为「输入有误」，掩盖解密/完整性问题的领域文案。
+            # 字段校验分支误捕为「输入有误」，掩盖领域文案。
             logger.error(
                 "保存条目失败: %s: %s", type(exc).__name__, exc, exc_info=True,
             )
             QMessageBox.critical(self, DLG_TITLE_ERROR, to_user_message(exc))
         except ValueError as exc:
-            # 业务层字段校验失败（纯 ValueError，非 DecryptionError），提示用户修改后重试
+            # 业务层字段校验失败（纯 ValueError，非 DecryptionError）
             logger.warning("条目校验失败: %s", exc)
             QMessageBox.warning(self, '输入有误', str(exc))
         except Exception as exc:
-            # 意外异常（编程错误）：与领域错误区分文案，避免把开发期 bug 经
-            # to_user_message 归并为「用户数据问题」而误导排查。完整栈已记录。
+            # 意外异常：与领域错误区分文案，避免经 to_user_message 归并为「用户数据问题」。
             logger.error(
                 "保存条目时出现意外错误: %s: %s", type(exc).__name__, exc, exc_info=True,
             )
@@ -762,24 +746,20 @@ class EntryDialog(QDialog):
     def _clear_sensitive_inputs(self) -> None:
         """清除所有敏感输入框中的明文。
 
-        在保存成功、用户取消或关闭对话框时调用。QLineEdit.clear() 会重置
-        控件文本，主要消除对话结束后的残留可见密码风险，涉及控件缓存与
-        截图等场景。注意这并非 CPython 下的密码学清除保证，字符串对象的
-        回收仍依赖 GC。
+        保存成功、取消或关闭对话框时调用。``QLineEdit.clear()`` 重置控件文本，
+        消除对话结束后的残留可见密码（控件缓存、截图等）。非 CPython 密码学清除
+        保证，字符串对象回收仍依赖 GC。
         """
         self._password_edit.clear()
         self._totp_edit.clear()
-        # 通用字段：username/url 对 login/server 类型是核心凭据，notes 可能含敏感
-        # 备注，tags 可能含敏感标识。关闭对话框时一并清除，使清理范围与威胁模型一致
-        # （避免清了 CVV 却残留同等敏感的 username）。
+        # 通用字段一并清除：username/url 是核心凭据，notes/tags 可能含敏感内容，
+        # 使清理范围与威胁模型一致。
         self._username_edit.clear()
         self._url_edit.clear()
         self._tags_edit.clear()
         self._notes_edit.clear()
-        # 专用字段统一清除：遍历 ENTRY_TYPE_SCHEMAS 全表，覆盖 card_*（卡号/CVV 等）、
-        # id_*（PII）以及 server_host 等所有专用字段。新增类型或字段时自动纳入清除
-        # 范围，避免硬编码 key 列表遗漏导致的安全回归。QComboBox（如协议选择）非
-        # 敏感输入，由 isinstance(QLineEdit) 守卫跳过。
+        # 遍历 ENTRY_TYPE_SCHEMAS 全表清除专用字段：新增类型/字段自动纳入，避免
+        # 硬编码 key 列表遗漏。QComboBox（如协议选择）非敏感输入，由守卫跳过。
         for schema in ENTRY_TYPE_SCHEMAS.values():
             for spec in schema.special_fields:
                 edit = self._special_edits.get(spec.field_key)
@@ -791,8 +771,8 @@ class EntryDialog(QDialog):
     def reject(self) -> None:
         """取消/关闭前清除敏感输入框。
 
-        QDialog 通过窗口关闭按钮（X）、Esc、调用 reject() 或 done(Rejected) 退出时
-        均走此入口，故无需再重写 closeEvent 重复清理，避免双重 _clear_sensitive_inputs。
+        QDialog 经 X/Esc/reject()/done(Rejected) 退出均走此入口，无需再重写
+        closeEvent 重复清理。
         """
         self._clear_sensitive_inputs()
         super().reject()

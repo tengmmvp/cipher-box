@@ -15,10 +15,8 @@ logger = logging.getLogger(__name__)
 # Base32 标准化时一次性剥离的常见分隔符（空格、连字符、点、下划线）。
 _BASE32_STRIP_TABLE = str.maketrans('', '', ' -._')
 
-# otpauth URI 解析时 period 的合理上界：恶意/损坏 secret 构造超长 period（如 999999）
-# 会让 TOTP 几乎不变（退化为静态码），用户难以察觉验证码异常。1–300 秒覆盖所有合法
-# 场景（RFC 6238 默认 30s，少数服务用 60s），拒绝极端值防退化。与 url scheme 白名单
-# 清洗一致，拦截导入路径的异常 otpauth URI。
+# period 上限：超长 period（如 999999）会让 TOTP 几乎不变、退化为静态码，用户难
+# 察觉异常。1–300 秒覆盖所有合法场景（RFC 默认 30s，少数 60s），拒绝极端值防退化。
 _MAX_TOTP_PERIOD = 300
 
 
@@ -34,17 +32,15 @@ class TOTPGenerator:
         'SHA512': 'sha512',
     }
 
-    # 密钥前缀 -> 算法。SHA1 是默认算法故不设 ``SHA1:`` 前缀识别：若密钥以 ``SHA1:``
-    # 开头，该前缀不会被剥离，而是当作 secret 的一部分原样保留（后续 base32 解码
-    # 时 ':' 为非法字符会报错）。从 ALGO_MAP 派生，新增算法仅需改 ALGO_MAP，此表自动跟随。
+    # 密钥前缀 -> 算法。SHA1 是默认故不设前缀识别：若密钥以 ``SHA1:`` 开头会原样保留，
+    # 后续 base32 解码时 ':' 非法会报错。从 ALGO_MAP 派生，新增算法自动跟随。
     _PREFIX_MAP = {f'{a}:': a for a in ALGO_MAP if a != 'SHA1'}
 
     @staticmethod
     def _parse_secret(secret: str) -> tuple[str, str]:
         """解析密钥字符串，提取算法和实际密钥。
 
-        如果 secret 以 'SHA256:' 或 'SHA512:' 开头，则自动提取算法和密钥；
-        否则默认使用 SHA1。
+        'SHA256:'/'SHA512:' 前缀触发对应算法，否则默认 SHA1。
 
         Args:
             secret: 可能带算法前缀的密钥字符串
@@ -67,11 +63,8 @@ class TOTPGenerator:
     ) -> tuple[str, str, int, int]:
         """解析 Base32、算法前缀或标准 otpauth URI。
 
-        算法优先级（高 → 低）：secret 内嵌前缀（``SHA256:``/``SHA512:``） >
-        otpauth URI 的 ``algorithm`` 参数 > 调用方传入的 ``algorithm`` 默认值。
-        即当 secret 自带非 SHA1 前缀时，它覆盖 URI 与默认值；URI ``algorithm``
-        覆盖默认值。冲突场景（如 URI ``algorithm=SHA1`` 但 secret 带 ``SHA256:``
-        前缀）下，secret 前缀胜出。
+        算法优先级（高 → 低）：secret 内嵌前缀 > otpauth URI ``algorithm`` 参数 >
+        调用方传入的默认值。冲突时 secret 前缀胜出。
         """
         value = secret.strip()
         if value.lower().startswith('otpauth://'):
@@ -79,8 +72,8 @@ class TOTPGenerator:
             if parsed.netloc.lower() != 'totp':
                 raise ValueError('仅支持 TOTP URI')
             query = parse_qs(parsed.query)
-            # parse_qs 已对返回值做一次百分号解码，勿再 unquote（双重解码会把
-            # secret 中的 %XX 当转义再次解码，损坏密钥）。
+            # parse_qs 已做百分号解码，勿再 unquote（双重解码会把 secret 中 %XX 当
+            # 转义再次解码，损坏密钥）。
             value = query.get('secret', [''])[0].strip()
             if not value:
                 raise ValueError('otpauth URI 中缺少 secret 参数')
@@ -113,12 +106,10 @@ class TOTPGenerator:
     ) -> str:
         """核心 TOTP 计算：HMAC + 动态截断 + 取模。
 
-        ``now`` 为可选的注入时钟（Unix 秒），默认取 ``time.time()``。供计数器边界
-        测试精确控制时间步，无需 monkeypatch 全局 ``time.time``；生产路径不传，保持
-        默认实时取值。
+        ``now`` 为可注入时钟（Unix 秒），供计数器边界测试精确控制时间步，无需
+        monkeypatch 全局 ``time.time``；生产路径不传，保持实时取值。
         """
-        # 防御 period<=0 导致除零：正常经 _parse_config 校验，此守卫防止绕过
-        # _parse_config 直接调用 _compute_totp（如未来重构）时 ZeroDivisionError。
+        # 防御 period<=0 除零：绕过 _parse_config 直接调用时（如未来重构）的守卫。
         if period <= 0:
             raise ValueError('TOTP period 必须为正数')
         counter = int(time.time() if now is None else now) // period
@@ -141,8 +132,8 @@ class TOTPGenerator:
     ) -> tuple[str, Exception | None]:
         """TOTP 生成的共享实现。
 
-        ``now`` 透传至 :meth:`_compute_totp` 的注入时钟，供计数器边界测试精确控制
-        时间步。生产路径（:meth:`generate` / :meth:`generate_or_raise`）不传，保持实时。
+        ``now`` 透传至 :meth:`_compute_totp`，供计数器边界测试控制时间步；生产路径
+        （:meth:`generate` / :meth:`generate_or_raise`）不传。
 
         Returns:
             由验证码和错误对象组成的元组。成功时错误对象为 None，失败时验证码为空字符串。
@@ -159,13 +150,12 @@ class TOTPGenerator:
 
         algo_name = TOTPGenerator.ALGO_MAP.get(algorithm)
         if algo_name is None:
-            # _parse_config 已校验 algorithm，此分支为纵深防御，防止未来校验
-            # 逻辑改动或绕过 _parse_config 直接调用时 KeyError 冒泡至调用方。
+            # _parse_config 已校验 algorithm，此分支为纵深防御，防止绕过校验时 KeyError 冒泡。
             return '', ValueError('不支持的 TOTP 算法')
 
         try:
-            # 解码为 bytearray 以便用毕经 secure_zero_buffer 原地清零（bytes 不可变，
-            # 只能清零副本）。TOTP 种子是长效认证机密，与主密钥清零纪律对齐。
+            # 解码为 bytearray 以便用毕原地清零（bytes 不可变只能清零副本）。
+            # TOTP 种子是长效认证机密，与主密钥清零纪律对齐。
             key = bytearray(
                 base64.b32decode(TOTPGenerator._normalize_base32(raw_secret), casefold=True)
             )
@@ -193,8 +183,8 @@ class TOTPGenerator:
             TOTP 验证码字符串，失败时返回空字符串。
 
         Note:
-            静默失败是有意设计：此方法用于定时器驱动的 TOTP 刷新等非交互场景，
-            弹出错误框会干扰用户体验。如需错误传播，使用 generate_or_raise()。
+            静默失败是有意设计：用于定时器刷新等非交互场景，弹出错误框干扰用户。
+            如需错误传播，使用 generate_or_raise()。
         """
         code, error = TOTPGenerator._generate_impl(secret, algorithm, period, digits)
         if error is not None:
@@ -206,9 +196,7 @@ class TOTPGenerator:
     def generate_or_raise(secret: str, algorithm: str = 'SHA1', period: int = DEFAULT_PERIOD, digits: int = DEFAULT_DIGITS) -> str:
         """生成当前 TOTP 验证码，失败时抛出异常而非静默返回空串。
 
-        参数和返回值与 generate() 相同，但在密钥解析或解码失败时抛出 ValueError，
-        而非记录警告并返回空字符串。适用于密钥验证等用户交互场景，
-        使调用方能向用户展示具体错误信息。
+        参数和返回值与 generate() 相同，适用于密钥验证等需向用户展示具体错误的场景。
 
         Raises:
             ValueError: 密钥格式无效或 Base32 解码失败
@@ -223,8 +211,7 @@ class TOTPGenerator:
         """获取当前时间步长剩余秒数。"""
         if secret:
             period = TOTPGenerator._extract_period(secret, period)
-        # 防御 period<=0（secret 为空且调用方误传非正值）导致取模除零或负倒计时，
-        # 与 _extract_period 的正数校验语义对齐。
+        # 防御 period<=0 导致取模除零或负倒计时，与 _extract_period 的正数校验对齐。
         if period <= 0:
             period = TOTPGenerator.DEFAULT_PERIOD
         return period - (int(time.time()) % period)
@@ -238,10 +225,9 @@ class TOTPGenerator:
     def _extract_period(secret: str, default: int = DEFAULT_PERIOD) -> int:
         """从 otpauth URI 中提取 period，避免完整 _parse_config 的开销。
 
-        与 _parse_config 复用同一合法区间 ``1 <= period <= _MAX_TOTP_PERIOD``（单一
-        事实源）：period<=0 会让 get_remaining_seconds 取模抛 ZeroDivisionError 或返回
-        负倒计时；超长 period（如 999999）让 TOTP 几乎不变（退化为静态码），UI 倒计时
-        显示异常超大值而验证码恒为空，用户难以察觉配置损坏。
+        与 _parse_config 复用同一合法区间 ``1 <= period <= _MAX_TOTP_PERIOD``：
+        period<=0 会取模除零或返回负倒计时；超长 period 让 TOTP 退化为静态码（见
+        :data:`_MAX_TOTP_PERIOD`）。
         """
         value = secret.strip()
         if value.lower().startswith('otpauth://'):
@@ -297,11 +283,9 @@ class TOTPGenerator:
             logger.debug("TOTP 密钥验证失败", exc_info=True)
             return False
         try:
-            # 拒绝解码后过短的 secret：RFC 6238 建议 ≥160 位（20 字节），但实践中
-            # Google Authenticator 等广泛使用 10 字节（80 位，16 个 base32 字符）secret，
-            # 30s 窗口 + 6 位码下在线爆破 80 位 secret 仍不可行（需 ~2^80/10^6 次尝试）。
-            # 故下限放宽到 10 字节，仅拦截明显损坏/截断的极短输入（其生成的码永不匹配，
-            # 用户难以察觉）。
+            # 下限放宽到 10 字节：RFC 6238 建议 ≥20 字节，但 Google Authenticator 等
+            # 广泛使用 10 字节（80 位）secret，30s 窗口下在线爆破仍不可行。仅拦截
+            # 损坏/截断的极短输入（其生成的码永不匹配，用户难以察觉）。
             if len(decoded) < 10:
                 logger.debug("TOTP 密钥解码后长度不足：%d 字节", len(decoded))
                 return False

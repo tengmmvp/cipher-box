@@ -1,10 +1,7 @@
 """数据模型定义 — 全局共享层。
 
-Entry、Category 等模型类与字段常量是纯数据结构，不依赖任何
-数据库或加密实现。放在 src 顶层使 UI、Business、Database 三层
-均可安全引用，无需跨层依赖。
-
-与 src/exceptions.py 类似，此模块是零依赖的共享基础设施。
+纯数据结构（Entry/Category 等）与字段常量，不依赖数据库或加密实现；
+置于 src 顶层供 UI/Business/Data 三层引用，无跨层依赖。
 """
 
 import logging
@@ -18,17 +15,16 @@ logger = logging.getLogger(__name__)
 
 
 def is_real_int(value: object) -> bool:
-    """判断是否为真正的 int，排除 bool（bool 是 int 子类，需显式排除）。
+    """判断是否为真正的 int，排除 bool（bool 是 int 子类）。
 
-    单一来源，供 models / backup_restore 等多处「排除 bool 的 int 校验」复用，
-    消除 ``isinstance(x, int) or isinstance(x, bool)`` 的重复与笔误风险。
+    供 models / backup_restore 等多处复用，避免 ``isinstance(x, int) or isinstance(x, bool)``
+    重复与笔误。
     """
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-# 字段最大长度常量，作为单一事实来源。
-# 明文长度上限（密文不受此限，base64 后更长）：这些常量约束加密前的明文输入，
-# 加密后存储的密文经 base64 编码 + nonce + tag，长度会显著超出上限。
+# 字段最大长度常量。约束加密前的明文输入；密文经 base64+nonce+tag 后显著更长，
+# 故密文不受此限。
 MAX_FIELD_TITLE = 1024
 MAX_FIELD_USERNAME = 1024
 MAX_FIELD_URL = 2048
@@ -42,22 +38,19 @@ MAX_CUSTOM_FIELD_VALUE = 65536
 MAX_CATEGORY_NAME = 256
 MAX_PASSWORD_HISTORY = 10
 
-# 导入/备份共享的条目数与单条目载荷上限（单一事实源，供 import_export 与
-# backup_validator 复用，避免两处独立声明数值漂移产生「能导入却无法备份」的边界）。
+# 导入/备份共享的条目数与单条目载荷上限，供 import_export 与 backup_validator 复用，
+# 避免两处独立声明漂移产生「能导入却无法备份」的边界。
 MAX_ENTRIES_LIMIT = 50_000
 MAX_ENTRY_PAYLOAD_SIZE = 2 * 1024 * 1024
 
-# 加密字段密文格式前缀（密文以此标识，跨层共享的单一事实源）。EncryptionEngine 的
-# TEXT_PREFIX/BYTES_PREFIX、数据层密文格式自检（db_manager._assert_encrypted）与日志
-# 脱敏正则（logging_config）均引用此处，避免「cb2:」字面量散落多处于格式升级时静默
-# 漂移——尤其脱敏正则失效会致密文明文落入日志文件。
+# 加密密文格式前缀，跨层单一事实源：EncryptionEngine、db_manager._assert_encrypted
+# 与日志脱敏正则均引用此处。格式升级时字面量散落多处会静默漂移——脱敏正则失效会
+# 致密文明文落入日志文件。
 CIPHERTEXT_PREFIX = 'cb2:'
 CIPHERTEXT_BYTES_PREFIX = b'CB2'
 
-# 字段名 → (中文标签, 最大字符数)。表驱动长度校验的单一事实源，供
-# Entry.from_dict / entry_validation.validate_plain_entry / ImportExportManager._parse_csv_like
-# 复用，避免三处手工拼装字典漂移。仅含长度受限的字符串型字段（custom_fields 另有
-# 数量与结构校验，category_name 有独立上限 MAX_CATEGORY_NAME）。
+# 字段名 → (中文标签, 最大字符数)，表驱动长度校验单一事实源，供 from_dict /
+# validate_plain_entry / CSV 导入复用。仅含长度受限的字符串型字段。
 ENTRY_FIELD_LIMITS: tuple[tuple[str, str, int], ...] = (
     ('title', '标题', MAX_FIELD_TITLE),
     ('username', '用户名', MAX_FIELD_USERNAME),

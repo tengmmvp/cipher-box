@@ -1,7 +1,6 @@
 """ImportExportManager 导入编排边界测试。
 
-覆盖导入入口的共享编排逻辑（路径/大小校验、去重策略、CipherBox JSON 结构性
-校验），这些路径此前无专门测试：
+覆盖导入入口的共享编排逻辑：
 
 - ``MAX_IMPORT_FILE_SIZE`` 超限文件在路径校验阶段被拒绝。
 - ``duplicate_action='skip'``：与现有库重复的条目跳过，新条目照常导入。
@@ -11,8 +10,7 @@
   ``entries`` 非 list、条目非对象。
 
 结构性拒绝的 ImportError 由 ``JsonImporter.parse`` 抛出，经 ``import_file`` →
-``_run_importer`` 冒泡（``_validate_import_input`` 仅捕获 UnicodeDecodeError），
-此处经 ``import_file`` 端到端验证错误正确传播。
+``_run_importer`` 冒泡（``_validate_import_input`` 仅捕获 UnicodeDecodeError）。
 """
 
 import json
@@ -68,7 +66,6 @@ def test_import_skip_action_skips_duplicates(entry_mgr, tmp_path):
 
     count = mgr.import_file(str(json_path), 'json', duplicate_action='skip')
 
-    # 重复 1 条被跳过，仅新条目计入返回值
     assert count == 1
     by_title = {e.title: e for e in entry_mgr.get_entries()}
     assert set(by_title) == {'Existing', 'Brand New'}

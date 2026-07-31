@@ -1,6 +1,4 @@
-"""侧边栏控制器 — 从 MainWindow 分类管理中提取的纯数据操作。
-
-负责分类数据的读取和 CRUD 逻辑，不操作 UI 控件。
+"""侧边栏控制器：分类管理的纯数据操作，不操作 UI 控件。
 """
 
 from __future__ import annotations
@@ -14,11 +12,7 @@ if TYPE_CHECKING:
 
 
 class SidebarController:
-    """侧边栏分类管理的纯数据逻辑控制器。
-
-    通过构造函数注入 ``entry_manager`` 和 ``config``，
-    不持有任何 UI 控件引用。
-    """
+    """侧边栏分类管理的纯数据逻辑控制器，不持有任何 UI 控件引用。"""
 
     def __init__(
         self,
@@ -61,8 +55,7 @@ class SidebarController:
         """构建分类列表项的显示文本。
 
         分类元数据完整性校验失败时（``cat.integrity_error``）在名称前加 ⚠ 警告标识，
-        使分类层 HMAC 篡改对用户可见（原先仅记日志，用户无法察觉 icon/color/sort_order
-        等非加密元数据被篡改）。
+        使分类层 HMAC 篡改对用户可见（icon/color/sort_order 等非加密元数据被篡改）。
         """
         name = f'⚠ {cat.name}' if cat.integrity_error else cat.name
         if count > 0:

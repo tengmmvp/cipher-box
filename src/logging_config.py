@@ -1,9 +1,8 @@
-"""应用日志配置。
+"""应用日志配置 — 仅记录运行状态，不记录敏感字段。
 
-日志只记录运行状态，不记录密码等敏感字段。为防御未来误写或第三方库
-（cryptography/argon2 等）意外输出敏感信息，对 handler 挂载
-:class:`SensitiveDataFilter`，对常见敏感模式（cb2: 前缀的密文、password=/key=/
-secret= 等赋值）做正则打码，作为纵深防御。
+为防御未来误写或第三方库（cryptography/argon2）意外输出敏感信息，对 handler 挂载
+:class:`SensitiveDataFilter` 对常见敏感模式（cb2: 密文、password=/key=/secret= 赋值）
+做正则打码，作为纵深防御。
 """
 
 import logging
@@ -17,41 +16,26 @@ from .utils.file_security import secure_directory, secure_file
 
 
 class SensitiveDataFilter(logging.Filter):
-    """对日志记录中的敏感模式做正则打码。
+    """对日志记录中的敏感模式做正则打码（纵深防御，防未来误写或第三方库 DEBUG 泄漏）。
 
-    CipherBox 自身代码已自律不记录密码/密钥，此 filter 防御未来误写
-    ``logger.debug("pwd=%s", pwd)`` 或第三方库的 DEBUG 输出将明文落盘到
-    ``%APPDATA%\\CipherBox\\logs\\``。匹配并打码：
-
-    - ``cb2:`` 前缀的密文标记（含 base64 主体）
-    - ``password=``/``pwd=``/``key=``/``secret=``/``token=``/``密码=``/``密钥=``
-      等赋值后的值
-
-    打码作用于 ``record.getMessage()`` 的结果：改写后的文本回填 ``record.msg``
-    并清空 ``record.args``，避免 handler 二次 ``%`` 插值还原原值。getMessage
-    异常时不打码（保留原始 record 以免丢失日志）。
-
-    注意：filter 仅覆盖 message，异常 traceback 由 :class:`RedactingFormatter`
-    的 :meth:`RedactingFormatter.formatException` 单独打码——标准 Formatter 在
-    format() 末尾拼接 traceback，该文本不经 filter。
+    打码作用于 ``record.getMessage()`` 结果，回填 ``record.msg`` 并清空 ``record.args``
+    避免 handler 二次插值还原原值。匹配模式：``cb2:`` 密文标记、``otpauth://``、
+    ``password=``/``key=``/``密码=`` 等赋值。异常 traceback 由 :class:`RedactingFormatter`
+    单独打码（标准 Formatter 在 format() 末尾拼接 traceback，不经 filter）。
     """
 
     _PATTERNS = (
-        # 密文标记（CIPHERTEXT_PREFIX）+ base64 主体（至少 8 字符），整段打码。
-        # 前缀经 re.escape 取自共享层单一事实源，避免格式升级时正则与实际前缀漂移
-        # 致脱敏静默失效（密文明文落入日志）。
+        # 密文标记（CIPHERTEXT_PREFIX）+ base64 主体，整段打码。前缀取自共享层单一事实源，
+        # 避免格式升级时正则与实际前缀漂移致脱敏静默失效。
         (
             re.compile(re.escape(CIPHERTEXT_PREFIX) + r'[A-Za-z0-9+/=]{8,}'),
             CIPHERTEXT_PREFIX + '[REDACTED]',
         ),
         # otpauth:// URI（TOTP 配置，含 secret 参数与账户名），整段打码
         (re.compile(r'otpauth://\S+'), 'otpauth://[REDACTED]'),
-        # key=value / key:value 形式的敏感赋值，等号或冒号后的值打码。
-        # 值贪婪到行尾（.+）：含空格的 passphrase（如 'correct horse battery staple'）
-        # 整段打码，原 \S+ 仅打码首个词致其余明文泄漏。过度打码（一行多赋值时整行
-        # 打码）优于漏打码，符合纵深防御宁可误杀的安全侧取舍。
-        # 关键词前置否定环视 (?<![A-Za-z])：避免 mid-word 误匹配（如 donkey=… 被当作
-        # key= 打码）。中文关键词（密码/密钥/令牌）前字符非 A-Za-z，环视通过，不受影响。
+        # key=value / key:value 敏感赋值，等号/冒号后值贪婪到行尾（含空格 passphrase 整段打码）。
+        # 过度打码（一行多赋值整行打码）优于漏打码。关键词前置否定环视 (?<![A-Za-z]) 避免
+        # mid-word 误匹配（donkey=…），中文关键词（密码/密钥/令牌）不受影响。
         (
             re.compile(
                 r'(?i)(?<![A-Za-z])(password|pwd|passwd|secret|token|api[_-]?key|key|密码|密钥|令牌)'
@@ -63,11 +47,7 @@ class SensitiveDataFilter(logging.Filter):
 
     @staticmethod
     def redact(text: str) -> str:
-        """对文本应用敏感模式打码。
-
-        供 :meth:`filter`（message）与 :class:`RedactingFormatter`（traceback）
-        复用同一打码逻辑，确保日志的两类敏感来源被一致处理。
-        """
+        """对文本应用敏感模式打码，供 :meth:`filter`（message）与 :class:`RedactingFormatter`（traceback）复用同一逻辑。"""
         for pattern, replacement in SensitiveDataFilter._PATTERNS:
             text = pattern.sub(replacement, text)
         return text
@@ -85,15 +65,11 @@ class SensitiveDataFilter(logging.Filter):
 
 
 class RedactingFormatter(logging.Formatter):
-    """对异常 traceback 应用与 message 相同的敏感打码。
+    """对异常 traceback 应用与 message 相同的打码。
 
-    标准 ``logging.Formatter`` 在 ``format()`` 末尾拼接 ``record.exc_info`` 产生
-    的 traceback，该文本不经过 ``SensitiveDataFilter``（filter 仅作用于
-    ``record.getMessage()``）。于是 ``logger.error(..., exc_info=True)`` 在异常
-    ``str(exc)`` 或栈帧变量 repr 中含 ``cb2:`` 密文 / ``password=...`` 赋值时，
-    会以明文落入日志文件。
-
-    覆盖 :meth:`formatException` 对 traceback 文本应用同一打码正则，闭合该缺口。
+    标准 ``Formatter.format()`` 末尾拼接 traceback 不经 ``SensitiveDataFilter``，
+    ``logger.error(..., exc_info=True)`` 的异常 str 或栈帧变量含 ``cb2:`` 密文 /
+    ``password=`` 赋值时会明文落盘。覆盖 :meth:`formatException` 闭合该缺口。
     """
 
     def formatException(
@@ -117,8 +93,7 @@ def configure_logging(data_dir: Path) -> None:
     )
     secure_file(log_path)
     handler.setFormatter(RedactingFormatter(
-        # 含 threadName：BackgroundWorker 在子线程执行，调试锁定时序、worker
-        # 与主线程日志交织问题时线程名是关键定位信息。
+        # 含 threadName：BackgroundWorker 在子线程执行，调试锁定时序/worker 与主线程日志交织时线程名是关键定位信息。
         '%(asctime)s %(levelname)s %(name)s [%(threadName)s]: %(message)s'
     ))
     # 挂载脱敏过滤器：纵深防御，避免敏感数据意外落入日志文件

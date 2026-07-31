@@ -1,8 +1,7 @@
 """密码生成器独立对话框。
 
-按长度与字符集规则即时生成密码并展示强度，支持复制到剪贴板或通过
-信号回填到条目编辑界面。生成结果视为敏感数据，关闭或使用后清除以
-缩短明文驻留时间。
+按长度与字符集规则即时生成密码并展示强度，支持复制或经信号回填。
+生成结果视为敏感数据，关闭或使用后清除以缩短明文驻留时间。
 """
 
 from __future__ import annotations
@@ -171,7 +170,7 @@ class PasswordGeneratorDialog(QDialog):
         lowercase = self._lower_check.isChecked()
         digits = self._digits_check.isChecked()
         symbols = self._symbols_check.isChecked()
-        # 至少需要一种字符集：校验文案经共享 helper 单一源，避免与 settings_dialog 漂移
+        # 至少需要一种字符集，校验文案经共享 helper 单一源
         ok, error = PasswordService.validate_charset_selection(
             uppercase, lowercase, digits, symbols,
         )
@@ -207,9 +206,7 @@ class PasswordGeneratorDialog(QDialog):
         else:
             # 剪贴板管理器不可用时直接返回，避免绕过自动清除机制直接写入系统剪贴板
             return
-        # 按钮反馈：复用单个 QTimer（首次创建并连接，后续仅 restart），
-        # 避免快速连续点击累积多个已 stop 但未释放的 QTimer 对象。
-        # 成功态同样使用 set_icon_with_text，与复位态保持视觉一致（带图标）
+        # 复用单个 QTimer（首次创建并连接，后续仅 restart），避免连续点击累积未释放的 QTimer
         set_icon_with_text(self._copy_btn, '已复制 ✓', COPY)
         if self._copy_feedback_timer is None:
             self._copy_feedback_timer = QTimer(self)
@@ -237,9 +234,8 @@ class PasswordGeneratorDialog(QDialog):
     def reject(self) -> None:
         """取消/关闭前清除敏感输入。
 
-        仅重写 reject（不重写 closeEvent）以避免双重清理：QDialog 默认
-        closeEvent 会触发 reject，故 X 关闭、Esc、close() 均经此单一入口，
-        与 entry_dialog 的既定实践一致。
+        仅重写 reject（不重写 closeEvent）避免双重清理：X 关闭、Esc、close()
+        均经此单一入口。
         """
         self._clear_sensitive()
         super().reject()
