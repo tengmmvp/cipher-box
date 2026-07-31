@@ -4,9 +4,6 @@
 覆盖无历史记录、新增历史记录后计数，以及不同条目历史记录互不干扰的场景。
 """
 
-import tempfile
-from pathlib import Path
-
 import pytest
 
 from src.database.db_manager import DatabaseManager
@@ -21,19 +18,17 @@ def _make_entry(**kwargs) -> RawEntry:
 
 
 @pytest.fixture
-def db():
-    """创建一个临时数据库并初始化表结构，关闭加密断言。"""
-    _tmp_dir = tempfile.mkdtemp()
-    _db_path = Path(_tmp_dir) / 'test_vault.db'
+def db(tmp_path):
+    """创建一个临时数据库并初始化表结构，关闭加密断言。
+
+    tmp_path 由 pytest 提供并自动清理，无需手动删除数据库文件。
+    """
+    _db_path = tmp_path / 'test_vault.db'
     _db = DatabaseManager(_db_path, test_mode=True)
     _db.open()
     _db.init_tables()
     yield _db
     _db.close()
-    try:
-        _db_path.unlink(missing_ok=True)
-    except Exception:
-        pass
 
 
 def test_count_zero_when_no_history(db):

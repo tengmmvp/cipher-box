@@ -17,6 +17,7 @@ from .business.composition import build_business_context, build_vault
 from .config import DEFAULT_THEME, ConfigManager
 from .logging_config import configure_logging
 from .ui.dialogs.login_window import LoginWindow
+from .ui.resources.constants import ABOUT_TO_QUIT_WAIT_TIMEOUT_MS
 from .ui.resources.styles import get_style
 from .ui.windows.main_window import MainWindow
 
@@ -141,7 +142,7 @@ class CipherBoxApp:
                     # aboutToQuit 取消 worker 并短超时等待（400ms），让持密钥解密的
                     # worker 退出协作循环后再 lock 清零，收缩「已锁定」后明文残留窗口；
                     # 超时放弃不阻塞退出，与 _shutdown_workers 的长等待语义区分。
-                    main_window.emergency_cancel_workers(wait_timeout_ms=400)
+                    main_window.emergency_cancel_workers(wait_timeout_ms=ABOUT_TO_QUIT_WAIT_TIMEOUT_MS)
                 # 经公共方法而非 getattr 访问 _clipboard 私有属性：崩溃兜底路径
                 # 最不应静默失效，私有属性重命名时 getattr 返回 None 会无声错过清理。
                 main_window.emergency_clear_clipboard()
@@ -151,8 +152,10 @@ class CipherBoxApp:
 
     def run(self) -> int:
         """启动应用。"""
-        # 应用全局样式
+        # 应用全局样式；显式激活主题，使运行时 c() 解析的颜色与样式表一致（ARCH-009）
         theme = self._config.get('theme', DEFAULT_THEME)
+        from .ui.resources.theme_colors import set_theme
+        set_theme(theme)
         self._app.setStyleSheet(get_style(theme))  # type: ignore[attr-defined]
 
         # 设置应用属性

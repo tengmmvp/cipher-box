@@ -9,6 +9,7 @@ from collections.abc import Set
 from datetime import datetime
 from typing import Any
 
+from ...crypto.password_generator import MAX_STRENGTH_SCORE
 from ...exceptions import BackupError, PayloadTooLargeError
 from ...models import (
     ENTRY_TYPES,
@@ -18,7 +19,7 @@ from ...models import (
     MAX_PASSWORD_HISTORY,
     is_real_int,
 )
-from .backup_header_codec import BACKUP_FORMAT
+from .backup_header_codec import BACKUP_FORMAT, BACKUP_VERSION
 from .crypto_utils import STRING_ENCRYPTED_FIELDS
 
 logger = logging.getLogger(__name__)
@@ -80,8 +81,8 @@ def validate_restore_data(data: dict[str, Any]) -> None:
     if data.get('format') != BACKUP_FORMAT:
         raise BackupError('备份格式标识无效')
     version = data.get('version')
-    if version != 1:
-        raise BackupError(f'不支持的备份格式版本：{version}（当前支持 v1）')
+    if version != BACKUP_VERSION:
+        raise BackupError(f'不支持的备份格式版本：{version}（当前支持 v{BACKUP_VERSION}）')
     # 严格校验顶层必备键，缺键（如攻击者构造的残缺备份缺 entries）直接拒绝，
     # 不再以 data.get(..., []) 默认空列表静默放行。允许额外键（备份元数据等）。
     required_top_keys = {'format', 'version', 'entries', 'categories', 'password_history'}
@@ -163,7 +164,7 @@ def validate_entry_fields(item: dict[str, Any], category_ids: set[int]) -> None:
     if not isinstance(item['is_favorite'], bool) or not isinstance(item['is_deleted'], bool):
         raise BackupError('备份条目布尔字段无效')
     strength = item['password_strength']
-    if not is_real_int(strength) or not 0 <= strength <= 4:
+    if not is_real_int(strength) or not 0 <= strength <= MAX_STRENGTH_SCORE:
         raise BackupError('备份条目密码强度无效')
     if item['entry_type'] not in ENTRY_TYPES:
         raise BackupError('备份条目类型无效')

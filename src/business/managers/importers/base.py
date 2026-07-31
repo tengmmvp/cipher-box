@@ -11,11 +11,12 @@
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from ....crypto.totp import TOTPGenerator
+from ....exceptions import ImportSizeError
 from ....models import MAX_ENTRIES_LIMIT, MAX_ENTRY_PAYLOAD_SIZE, Entry
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,7 @@ def _validate_items(items: list[dict[str, Any]]) -> None:
     使用字段长度估算防止恶意构造的巨大字段在后续处理中引发内存问题。
     """
     if len(items) > MAX_ENTRIES_LIMIT:
-        raise ValueError(f'导入条目过多，最大允许 {MAX_ENTRIES_LIMIT} 条')
+        raise ImportSizeError(f'导入条目过多，最大允许 {MAX_ENTRIES_LIMIT} 条')
     for item in items:
         # 跳过非对象项（被污染导出中可能是数字/字符串）：各策略类的 parse 循环
         # 同样跳过非 dict item，此处不对其求大小，避免 item.values() 对非 dict
@@ -77,7 +78,7 @@ def _validate_items(items: list[dict[str, Any]]) -> None:
             else len(str(v).encode('utf-8'))
             for v in item.values()
         ) > MAX_ENTRY_PAYLOAD_SIZE:
-            raise ValueError('导入条目字段过大')
+            raise ImportSizeError('导入条目字段过大')
 
 
 def _retain_password_custom_fields(
@@ -85,7 +86,7 @@ def _retain_password_custom_fields(
     existing: Entry,
     *,
     replace_all: bool = True,
-) -> None:
+) -> Entry:
     """合并密码型自定义字段：从 existing 中保留 entry 缺失的密码型字段。
 
     Args:
@@ -97,50 +98,53 @@ def _retain_password_custom_fields(
             但可能不包含已有字段的场景。
     """
     if not isinstance(entry.custom_fields, list):
-        return
+        return entry
     existing_pwd = [
         f for f in (existing.custom_fields if isinstance(existing.custom_fields, list) else [])
         if f.field_type == 'password'
     ]
     if replace_all:
         # CSV / 非导出：源无法表达密码型字段，完全替换
-        entry.custom_fields = [
+        merged = [
             f for f in entry.custom_fields if f.field_type != 'password'
         ] + existing_pwd
     else:
         # Bitwarden JSON：按名称增量补充已有但导入中不存在的
         import_pwd_names = {f.name for f in entry.custom_fields if f.field_type == 'password'}
         missing = [f for f in existing_pwd if f.name not in import_pwd_names]
-        entry.custom_fields = entry.custom_fields + missing
+        merged = entry.custom_fields + missing
+    return replace(entry, custom_fields=merged)
 
 
-def _merge_csv_secrets(entry: Entry, existing: Entry, source_has_password: bool) -> None:
+def _merge_csv_secrets(entry: Entry, existing: Entry, source_has_password: bool) -> Entry:
     """CSV 覆盖导入的敏感字段合并。
 
     CSV 是不可靠的往返格式，密码型自定义字段无法可靠映射，因此对源文件
-    未携带的敏感字段始终保留 existing 的值。
+    未携带的敏感字段始终保留 existing 的值。返回合并后的新 Entry（frozen 不可变）。
     """
-    if not source_has_password or not entry.password:
-        entry.password = existing.password
-    if not entry.totp_secret:
-        entry.totp_secret = existing.totp_secret
-    _retain_password_custom_fields(entry, existing, replace_all=True)
+    password = (
+        existing.password if (not source_has_password or not entry.password) else entry.password
+    )
+    totp_secret = existing.totp_secret if not entry.totp_secret else entry.totp_secret
+    entry = replace(entry, password=password, totp_secret=totp_secret)
+    return _retain_password_custom_fields(entry, existing, replace_all=True)
 
 
-def _merge_bitwarden_secrets(entry: Entry, existing: Entry) -> None:
+def _merge_bitwarden_secrets(entry: Entry, existing: Entry) -> Entry:
     """Bitwarden JSON 覆盖导入的敏感字段合并。
 
     Bitwarden JSON 可完整表达 password、totp_secret 和密码型自定义字段，
-    因此信任导入数据。仅当导入值为空时保留已有值。
+    因此信任导入数据。仅当导入值为空时保留已有值。返回合并后的新 Entry。
     """
-    if not entry.password:
-        entry.password = existing.password
-    if not entry.totp_secret:
-        entry.totp_secret = existing.totp_secret
-    _retain_password_custom_fields(entry, existing, replace_all=False)
+    entry = replace(
+        entry,
+        password=entry.password or existing.password,
+        totp_secret=entry.totp_secret or existing.totp_secret,
+    )
+    return _retain_password_custom_fields(entry, existing, replace_all=False)
 
 
-def _merge_non_exported_secrets(entry: Entry, existing: Entry) -> None:
+def _merge_non_exported_secrets(entry: Entry, existing: Entry) -> Entry:
     """JSON 导出未包含敏感字段时的合并。
 
     ``secrets_included=False`` 路径下导入数据中 password/totp_secret 必为空，
@@ -148,7 +152,7 @@ def _merge_non_exported_secrets(entry: Entry, existing: Entry) -> None:
     时无条件保留 existing 的密码，totp_secret 仅在空时保留（此处数据流上等价
     于无条件保留，因导入值本就为空）。
     """
-    _merge_csv_secrets(entry, existing, source_has_password=False)
+    return _merge_csv_secrets(entry, existing, source_has_password=False)
 
 
 @dataclass
@@ -160,7 +164,7 @@ class ParsedImport:
     """
     entries: list[Entry]
     entries_data: list[dict[str, str]]
-    overwrite_merger: Callable[[Entry, Entry], None]
+    overwrite_merger: Callable[[Entry, Entry], Entry]
     source_label: str
 
 

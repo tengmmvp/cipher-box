@@ -5,6 +5,7 @@ import json
 import logging
 from typing import Any
 
+from ....exceptions import EntryError, ImportFormatError
 from ....models import (
     ENTRY_TYPE_CARD,
     ENTRY_TYPE_IDENTITY,
@@ -168,10 +169,10 @@ class BitwardenImporter:
             data = json.load(f)
 
         if not isinstance(data, dict):
-            raise ValueError('Bitwarden 导入结构无效')
+            raise ImportFormatError('Bitwarden 导入结构无效')
         items = data.get('items', [])
         if not isinstance(items, list):
-            raise ValueError('Bitwarden 导入结构无效')
+            raise ImportFormatError('Bitwarden 导入结构无效')
         _validate_items(items)
         if not items:
             return ParsedImport(
@@ -218,7 +219,7 @@ class BitwardenImporter:
             # 单条而非中断整个导入，与 _import_entries 的逐条容错语义一致。
             try:
                 validate_plain_entry(entry)
-            except ValueError as exc:
+            except EntryError as exc:
                 logger.warning(
                     "跳过校验失败的 Bitwarden 条目（crypto_id=%s）: %s",
                     entry.crypto_id or '(未生成)', exc,

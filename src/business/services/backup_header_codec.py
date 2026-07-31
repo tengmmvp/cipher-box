@@ -12,9 +12,13 @@ from typing import IO, Any
 from ...crypto.master_key import DEFAULT_KDF_PARAMS, KdfParams, MasterKeyManager
 from ...exceptions import BackupError, PayloadTooLargeError
 from ...utils.file_security import validate_file_path
+from ...utils.memory import secure_zero_buffer
 
 BACKUP_MAGIC = b'CipherBoxBackup\x00'
 BACKUP_FORMAT = 'CipherBoxBackup'
+# 备份数据格式的版本号（写入 JSON 顶层 ``version`` 字段，恢复时由 backup_validator
+# 校验）。与 BACKUP_FORMAT 同属备份格式标识的单一事实源——升级格式时同步 bump。
+BACKUP_VERSION = 1
 BACKUP_AAD = b'CipherBox:backup'
 BACKUP_SALT_SIZE = 32
 
@@ -71,7 +75,13 @@ def read_backup_header(file: IO[bytes]) -> tuple[BackupFlag, bytes, KdfParams]:
     if flag_value not in (BackupFlag.PASSWORD, BackupFlag.SNAPSHOT):
         raise BackupError('备份文件格式无效或已损坏')
     params = KdfParams(time_cost, memory_cost, parallelism)
-    MasterKeyManager.validate_params(params)
+    try:
+        MasterKeyManager.validate_params(params)
+    except ValueError as exc:
+        # 头中的 KDF 参数非法属于「备份文件已损坏/被篡改」，归一为 BackupError，
+        # 使调用方经 ``except BackupError`` 即可覆盖全部格式错误，无需裸 ValueError
+        # 兜底（裸 ValueError 会连带吞掉 PayloadTooLargeError 等领域异常）。
+        raise BackupError('备份文件 KDF 参数无效，可能已损坏') from exc
     return BackupFlag(flag_value), salt, params
 
 
@@ -142,7 +152,6 @@ def zero_backup_key_if_owned(flags: BackupFlag, key: bytearray | bytes | None) -
     （派生阶段异常致 backup_key 未定义的兜底）。
     """
     if flags == BackupFlag.PASSWORD and key is not None:
-        from ...utils.memory import secure_zero_buffer
         secure_zero_buffer(key)
 
 
@@ -174,6 +183,7 @@ def inspect_backup(filepath: str) -> dict[str, Any]:
 __all__ = [
     'BACKUP_AAD',
     'BACKUP_FORMAT',
+    'BACKUP_VERSION',
     'BACKUP_HEADER_SIZE',
     'BACKUP_HEADER_STRUCT',
     'BACKUP_MAGIC',

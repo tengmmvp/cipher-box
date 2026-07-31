@@ -10,6 +10,7 @@ LoginWindow/MainWindow 的 GUI 交互，难以在无头测试中端到端驱动�
 """
 
 import tempfile
+from unittest.mock import MagicMock
 
 from src.app import CipherBoxApp
 from tests.helpers import make_test_config, make_vault
@@ -99,3 +100,70 @@ def test_emergency_cleanup_swallows_main_window_errors():
         app._emergency_cleanup(full=True)
         assert not vault.is_unlocked
         vault.close()
+
+
+def test_main_window_construction_failure_rolls_back(monkeypatch):
+    """MainWindow 构造抛异常时回滚：_main_window 置 None、提示用户、锁定保险库、退出。
+
+    ``_show_login`` 的 ``on_login`` 回调内构造 MainWindow 涉及 UI 组件、托盘、定时器、
+    WTS 注册等多个子系统，任一环节抛异常会留下半构造窗口与已连接的部分信号槽。
+    捕获后须回滚引用为 None、向用户提示、锁定已解锁的保险库并退出，而非继续 show
+    一个状态不一致的窗口——后者会让用户误以为应用就绪，但关键信号槽未连接。
+
+    经 ``__new__`` 绕过 ``__init__``，手动注入 mock 状态；LoginWindow 替换为捕获
+    ``login_success.connect`` 的桩，从中提取 ``on_login`` 闭包直接调用，避免驱动
+    真实登录事件循环。MainWindow / build_business_context 分别替换为抛异常与桩上下文。
+    """
+
+    app = CipherBoxApp.__new__(CipherBoxApp)
+    app._vault = MagicMock()
+    app._config = MagicMock()
+    app._app = MagicMock()
+    app._main_window = None
+    app._running = True
+
+    captured: dict = {}
+
+    class _FakeLogin:
+        """LoginWindow 桩：捕获 login_success 信号注册的回调，exec 立即返回 Accepted。"""
+
+        class DialogCode:
+            Accepted = 1
+
+        def __init__(self, vault, config):
+            self.login_success = MagicMock()
+            captured['login'] = self
+
+        def exec(self):
+            return _FakeLogin.DialogCode.Accepted
+
+        def deleteLater(self):
+            pass
+
+    monkeypatch.setattr('src.app.LoginWindow', _FakeLogin)
+    monkeypatch.setattr('src.app.build_business_context', lambda c, v: MagicMock())
+
+    def _boom(_ctx):
+        raise RuntimeError('construct fail')
+
+    monkeypatch.setattr('src.app.MainWindow', _boom)
+
+    critical_calls: list = []
+    monkeypatch.setattr(
+        'src.app.QMessageBox.critical', lambda *a, **k: critical_calls.append(a),
+    )
+
+    app._show_login()
+    # on_login 经 login_success.connect 注册；手动触发模拟登录成功后进入主窗口构造
+    on_login = captured['login'].login_success.connect.call_args[0][0]
+    on_login()
+
+    # 回滚：_main_window 归 None，未留半构造引用（信号槽半连接的不一致窗口）
+    assert app._main_window is None
+    # 用户可见的失败提示
+    assert critical_calls
+    # 已解锁的保险库被锁定，收缩明文密钥残留面
+    app._vault.lock.assert_called_once()
+    # 停止运行并退出事件循环
+    assert app._running is False
+    app._app.quit.assert_called_once()

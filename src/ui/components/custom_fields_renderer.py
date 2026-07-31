@@ -26,7 +26,7 @@ from ...utils.memory import mark_secret_discarded
 from ..resources.constants import BTN_COPY, FONT_FAMILY_MONOSPACE
 from ..resources.icons import COPY, set_icon
 from ..resources.theme_colors import c
-from .secret_field import make_secret_field_row
+from .secret_field import SecretFieldEnv, make_secret_field_row
 
 if TYPE_CHECKING:
     from ...models import Entry
@@ -165,14 +165,15 @@ class CustomFieldsRenderer:
         row_id = self._secret_row_counter
         self._secret_row_counter += 1
         return make_secret_field_row(
-            label, value,
-            store=self._secret_values,
-            store_key=row_id,
-            timers=timers,
-            parent_widget=parent_widget,
-            get_pwd_visible_ms=self._get_pwd_visible_ms,
-            on_copy=self._copy_callback,
-            on_copy_feedback=self._copy_feedback_callback,
+            SecretFieldEnv(
+                store=self._secret_values,
+                timers=timers,
+                parent_widget=parent_widget,
+                get_pwd_visible_ms=self._get_pwd_visible_ms,
+                on_copy=self._copy_callback,
+                on_copy_feedback=self._copy_feedback_callback,
+            ),
+            label, value, store_key=row_id,
             name_label_style=f'font-weight: bold; color: {c("text_secondary")};',
             val_label_style=(
                 f'font-family: {FONT_FAMILY_MONOSPACE}; font-size: 13px;'

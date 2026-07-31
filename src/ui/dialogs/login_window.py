@@ -32,13 +32,20 @@ if TYPE_CHECKING:
 from ..components.widgets import (
     RateLimiter,
     create_password_toggle_btn,
+    finalize_worker_if_current,
     release_worker,
     set_label_severity,
     setup_dialog_flags,
     update_strength_label,
 )
 from ..components.workers import BackgroundWorker, wait_worker_shutdown
-from ..resources.constants import LOGIN_HEIGHT_FIRST, LOGIN_HEIGHT_LOGIN
+from ..resources.constants import (
+    BTN_PRIMARY,
+    LOGIN_HEIGHT_FIRST,
+    LOGIN_HEIGHT_LOGIN,
+    LOGIN_TITLE_FONT_SIZE_PX,
+    LOGIN_WIDTH,
+)
 from ..resources.icons import EYE, LOCK, SHIELD, icon_pixmap
 from ..resources.theme_colors import c
 
@@ -76,7 +83,7 @@ class LoginWindow(QDialog):
 
     def _setup_ui(self) -> None:
         self.setWindowTitle('CipherBox - 登录')
-        self.setFixedWidth(500)
+        self.setFixedWidth(LOGIN_WIDTH)
         setup_dialog_flags(self)
 
         outer = QVBoxLayout(self)
@@ -112,7 +119,9 @@ class LoginWindow(QDialog):
         title = QLabel('CipherBox')
         title.setObjectName('sectionLabel')
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet(f'font-size: 24px; font-weight: 700; color: {c("text_primary")};')
+        title.setStyleSheet(
+            f'font-size: {LOGIN_TITLE_FONT_SIZE_PX}px; font-weight: 700; color: {c("text_primary")};'
+        )
         layout.addWidget(title)
 
         product_note = QLabel('本地优先 · 端到端加密 · 数据不离开设备')
@@ -205,7 +214,7 @@ class LoginWindow(QDialog):
 
         self._confirm_btn = QPushButton('确认')
         self._confirm_btn.setObjectName('primaryBtn')
-        self._confirm_btn.setFixedSize(120, 38)
+        self._confirm_btn.setFixedSize(*BTN_PRIMARY)
         self._confirm_btn.clicked.connect(self._on_confirm)
         btn_layout.addWidget(self._confirm_btn)
         btn_layout.addStretch()
@@ -297,9 +306,8 @@ class LoginWindow(QDialog):
 
     def _on_auth_done(self, result: tuple[bool, str]) -> None:
         """后台认证完成回调，result 为来自 VaultManager 的元组。"""
-        if self.sender() is not self._worker:
+        if not finalize_worker_if_current(self):
             return
-        release_worker(self)
         self._reset_confirm_btn()
         success, error_msg = result
         self._on_auth_result(success, error_msg)
@@ -311,9 +319,8 @@ class LoginWindow(QDialog):
         无具体信息时回退到 error_default。is_auth_failure=False 保持不变，
         系统错误不计入速率锁定，避免故障触发账户级递增锁定。
         """
-        if self.sender() is not self._worker:
+        if not finalize_worker_if_current(self):
             return
-        release_worker(self)
         self._reset_confirm_btn()
         self._on_auth_result(False, error_msg or error_default, is_auth_failure=False)
 

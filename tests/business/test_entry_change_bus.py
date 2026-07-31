@@ -5,6 +5,7 @@
 同时用真实 vault fixture 跑一条端到端路径。
 """
 
+import dataclasses
 from unittest.mock import MagicMock
 
 from src.business.managers.entry_change_bus import EntryChangeBus
@@ -121,7 +122,7 @@ class TestEntryChangeBusEndToEnd:
         cache = entry_mgr._category_mgr._cache  # noqa: SLF001
         cid = uuid.uuid4().hex
         entry = make_entry(title='Hello')
-        entry.crypto_id = cid
+        entry = dataclasses.replace(entry, crypto_id=cid)
         entry_mgr.add_entry(entry)
 
         # 手动填充一条摘要缓存（模拟列表访问后缓存命中）
@@ -139,9 +140,9 @@ class TestEntryChangeBusEndToEnd:
         cid_a = uuid.uuid4().hex
         cid_b = uuid.uuid4().hex
         entry_a = make_entry(title='A')
-        entry_a.crypto_id = cid_a
+        entry_a = dataclasses.replace(entry_a, crypto_id=cid_a)
         entry_b = make_entry(title='B')
-        entry_b.crypto_id = cid_b
+        entry_b = dataclasses.replace(entry_b, crypto_id=cid_b)
         entry_mgr.add_entry(entry_a)
         entry_mgr.add_entry(entry_b)
         cache._search_metadata_cache[cid_a] = ('A', '', '', '')  # noqa: SLF001

@@ -4,9 +4,6 @@
 数据库固定格式标识存储、entry_type 列落库，以及分类的条目计数与删除级联行为。
 """
 
-import tempfile
-from pathlib import Path
-
 import pytest
 
 from src.crypto.totp import TOTPGenerator
@@ -109,19 +106,14 @@ def test_entry_to_dict_with_type():
 
 
 @pytest.fixture
-def db_history():
+def db_history(tmp_path):
     """创建一个临时数据库并初始化表结构，供密码历史测试使用。"""
-    _tmp_dir = tempfile.mkdtemp()
-    _db_path = Path(_tmp_dir) / 'test_vault.db'
+    _db_path = tmp_path / 'test_vault.db'
     _db = DatabaseManager(_db_path, test_mode=True)
     _db.open()
     _db.init_tables()
     yield _db
     _db.close()
-    try:
-        _db_path.unlink(missing_ok=True)
-    except Exception:
-        pass
 
 
 def test_add_password_history(db_history):
@@ -163,10 +155,9 @@ def test_password_history_order(db_history):
 # --- TestDatabaseFormat ---
 
 
-def test_schema_format_stored():
+def test_schema_format_stored(tmp_path):
     """数据库保存固定格式标识。"""
-    tmp_dir = tempfile.mkdtemp()
-    db_path = Path(tmp_dir) / 'test.db'
+    db_path = tmp_path / 'test.db'
     db = DatabaseManager(db_path, test_mode=True)
     db.open()
     db.init_tables()
@@ -174,13 +165,11 @@ def test_schema_format_stored():
     schema_format = db.get_meta('schema_format')
     assert schema_format == 'cipherbox-schema'
     db.close()
-    db_path.unlink(missing_ok=True)
 
 
-def test_entry_type_column():
+def test_entry_type_column(tmp_path):
     """新条目落库后保留 entry_type 与 totp_secret 字段。"""
-    tmp_dir = tempfile.mkdtemp()
-    db_path = Path(tmp_dir) / 'test.db'
+    db_path = tmp_path / 'test.db'
     db = DatabaseManager(db_path, test_mode=True)
     db.open()
     db.init_tables()
@@ -193,26 +182,20 @@ def test_entry_type_column():
     assert retrieved.entry_type == 'server'
     assert retrieved.totp_secret == 'SECRET'
     db.close()
-    db_path.unlink(missing_ok=True)
 
 
 # --- TestCategoryManagement ---
 
 
 @pytest.fixture
-def db_category():
+def db_category(tmp_path):
     """创建一个临时数据库并初始化表结构，供分类管理测试使用。"""
-    _tmp_dir = tempfile.mkdtemp()
-    _db_path = Path(_tmp_dir) / 'test.db'
+    _db_path = tmp_path / 'test.db'
     _db = DatabaseManager(_db_path, test_mode=True)
     _db.open()
     _db.init_tables()
     yield _db
     _db.close()
-    try:
-        _db_path.unlink(missing_ok=True)
-    except Exception:
-        pass
 
 
 def test_get_category_entry_count(db_category):

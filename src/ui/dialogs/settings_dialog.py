@@ -26,9 +26,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ...business.services.password_service import PasswordService
 from ...config import DEFAULT_CONFIG, ConfigManager, get_ui_int_range
 from ..components.widgets import create_cancel_button, setup_dialog_flags
-from ..resources.constants import BTN_DIALOG, DIALOG_SETTINGS_MIN_SIZE
+from ..resources.constants import BTN_DIALOG, DIALOG_SETTINGS_MIN_SIZE, THEME_DARK, THEME_LIGHT
 
 
 class SettingsDialog(QDialog):
@@ -253,7 +254,7 @@ class SettingsDialog(QDialog):
         # accessor_type 与 widget 子类型在 _SETTINGS_MAP 中一一配对；isinstance 既
         # 满足类型 narrowing，又与运行时契约一致（不配对属编程错误，静默跳过）。
         if accessor_type == 'combo' and isinstance(widget, QComboBox):
-            widget.setCurrentIndex(0 if value == 'light' else 1)
+            widget.setCurrentIndex(0 if value == THEME_LIGHT else 1)
         elif accessor_type == 'check' and isinstance(widget, QCheckBox):
             widget.setChecked(value)
         elif accessor_type == 'spin' and isinstance(widget, QSpinBox):
@@ -261,7 +262,7 @@ class SettingsDialog(QDialog):
 
     def _get_widget_value(self, widget: QComboBox | QCheckBox | QSpinBox, accessor_type: str) -> Any:
         if accessor_type == 'combo' and isinstance(widget, QComboBox):
-            return 'light' if widget.currentIndex() == 0 else 'dark'
+            return THEME_LIGHT if widget.currentIndex() == 0 else THEME_DARK
         if accessor_type == 'check' and isinstance(widget, QCheckBox):
             return widget.isChecked()
         if accessor_type == 'spin' and isinstance(widget, QSpinBox):
@@ -284,14 +285,15 @@ class SettingsDialog(QDialog):
         self._backup_retention_spin.setEnabled(enabled)
 
     def _save_settings(self) -> None:
-        # 密码生成至少需要一种字符集，否则无法生成密码
-        if not any((
+        # 密码生成至少需要一种字符集：校验文案经共享 helper 单一源，避免漂移
+        ok, error = PasswordService.validate_charset_selection(
             self._default_upper_check.isChecked(),
             self._default_lower_check.isChecked(),
             self._default_digits_check.isChecked(),
             self._default_symbols_check.isChecked(),
-        )):
-            QMessageBox.warning(self, '生成规则无效', '至少需要选择一种密码字符类型。')
+        )
+        if not ok:
+            QMessageBox.warning(self, '生成规则无效', error)
             return
         # 快照当前内存配置：save 失败时回滚，避免内存已写入新值而磁盘仍为旧值，
         # 导致用户取消后同进程后续 config.get 读到未持久化的脏值。

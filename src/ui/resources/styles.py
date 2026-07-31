@@ -494,15 +494,13 @@ def render_style(theme: str) -> str:
 
 
 def get_style(theme: str) -> str:
-    """获取指定主题的样式表并激活该主题。
+    """获取指定主题的样式表（纯渲染，无副作用）。
 
-    Note:
-        会调用 set_theme(theme) 设置全局活跃主题作为副作用。
-        这是设计上的有意耦合，样式表生成与主题激活必须同步：
-        样式中部分控件使用运行时 ``c()`` 解析的颜色（如 delegate），
-        若样式表已切到新主题但全局活跃主题仍为旧值，会得到不一致配色。
+    不再在此调用 ``set_theme`` 激活主题——样式表生成与全局活跃主题激活解耦，
+    由调用方显式经 ``set_theme(theme)`` 激活（ARCH-009）。原先的隐式副作用会让
+    「仅预览样式表」无意中切换全局活跃主题，导致运行时 ``c()`` 解析的颜色与预期
+    不一致。调用方须在 ``get_style`` 前或同序列显式调用 ``set_theme``，保证样式表
+    与运行时 ``c()`` 配色一致（delegate 等控件经 ``c()`` 取色）。
     """
-    from .theme_colors import set_theme
-    set_theme(theme)
     return render_style(theme)
 

@@ -5,6 +5,9 @@
 （ValueError 等非家族异常）由调用方保留原消息，不应走本函数。
 """
 
+import binascii
+import json
+
 import pytest
 
 from src.exceptions import (
@@ -103,3 +106,89 @@ def test_all_messages_are_user_friendly(exc):
     assert msg.strip()
     # 翻译结果应以中文标点或句号结尾（友好提示风格）
     assert msg.endswith('。') or msg.endswith('！')
+
+
+# ======== IO / 格式异常分支（驱动层错误归一为固定友好文案）========
+
+
+class TestIOAndFormatErrors:
+    """FileNotFoundError / PermissionError / IsADirectoryError / JSONDecodeError /
+    binascii.Error / OSError(ENOSPC) 各分支的固定文案映射。
+
+    这些是驱动层（文件系统 / JSON 解析 / base64 解码）抛出的非 CipherBoxError
+    异常，``to_user_message`` 按类型分别归一为面向用户的固定提示，避免把
+    ``str(exc)`` 的路径/技术细节透传给用户。各分支文案互不相同，可据返回值
+    锁定命中的分支，守护「具体→一般」匹配顺序不回归。
+    """
+
+    def test_file_not_found_error(self):
+        """FileNotFoundError → 找不到文件提示。"""
+        msg = to_user_message(FileNotFoundError('/secret/path/vault.db'))
+        assert '找不到' in msg
+        # 不泄漏内部路径
+        assert '/secret/path' not in msg
+
+    def test_permission_error(self):
+        """PermissionError → 权限提示。"""
+        msg = to_user_message(PermissionError('/root/config.json'))
+        assert '权限' in msg
+        assert '/root/' not in msg
+
+    def test_is_a_directory_error(self):
+        """IsADirectoryError → 选择文件而非目录的提示。"""
+        msg = to_user_message(IsADirectoryError('/some/dir'))
+        assert '目录' in msg
+        assert '文件' in msg
+
+    def test_json_decode_error(self):
+        """json.JSONDecodeError → 格式无效/损坏提示。"""
+        msg = to_user_message(json.JSONDecodeError('Expecting value', '{bad', 1))
+        assert '格式' in msg
+        # 不透传解析器内部诊断
+        assert 'Expecting' not in msg
+
+    def test_binascii_error(self):
+        """binascii.Error（非法 base64）→ 数据格式错误提示。"""
+        msg = to_user_message(binascii.Error('Non-base64 digit'))
+        assert '格式' in msg or '损坏' in msg
+        assert 'base64' not in msg.lower() or '格式' in msg
+
+    def test_os_error_no_space(self):
+        """OSError errno=ENOSPC → 磁盘空间不足（细分分支）。"""
+        import errno
+
+        exc = OSError(errno.ENOSPC, 'No space left on device')
+        msg = to_user_message(exc)
+        assert '磁盘空间' in msg
+
+    def test_os_error_generic(self):
+        """其余 OSError → 通用文件读写失败提示。"""
+        exc = OSError('I/O boom')
+        msg = to_user_message(exc)
+        assert '读写' in msg or '文件' in msg
+
+
+# ======== ValueError 分支：str(exc) 空与非空 ========
+
+
+class TestValueErrorBranch:
+    """用户输入校验类 ValueError：保留 str(exc) 作为面向用户的可操作消息。
+
+    ``DecryptionError`` 虽双继承 ValueError，但已在上方按 CipherBoxError 归一，
+    不会落入此处。本组守护两条边界：非空消息透传、空消息回退 default。
+    """
+
+    def test_non_empty_message_passthrough(self):
+        """str(exc) 非空时原样返回（保留可操作校验消息）。"""
+        exc = ValueError('标题过长')
+        assert to_user_message(exc) == '标题过长'
+
+    def test_empty_message_falls_back_to_default(self):
+        """str(exc) 为空时回退 default 文案（不返回空串）。"""
+        assert to_user_message(ValueError('')) == '操作失败，请重试。'
+        assert to_user_message(ValueError('   ')) == '操作失败，请重试。'
+
+    def test_empty_message_uses_custom_default(self):
+        """调用方可定制 default 文案，空消息时使用之。"""
+        exc = ValueError('')
+        assert to_user_message(exc, default='备份失败') == '备份失败'

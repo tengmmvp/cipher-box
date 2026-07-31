@@ -24,6 +24,7 @@ from ...exceptions import (
     BackupError,
     DatabaseError,
     DecryptionError,
+    ImportError,
     PayloadTooLargeError,
     SchemaError,
     VaultIntegrityError,
@@ -71,6 +72,13 @@ def to_user_message(exc: BaseException, *, default: str = '操作失败，请重
         # 消息理论上有含技术细节（列名/crypto_id）风险，统一归一避免泄漏。诊断信息
         # 已由调用方记日志（exc_info），用户层只需友好提示。
         return '备份文件已损坏或格式无效，无法读取。'
+    # ---- ImportError 域（导入解析/校验，携带面向用户的消息）----
+    # ImportError 非 ValueError 子类（纯 CipherBoxError），不会落入下方 ValueError
+    # 分支，须显式处理。其 str(exc) 本就是面向用户的可操作消息（如「不是 CipherBox
+    # JSON 导出文件」「导入文件过大」），保留以提供诊断。
+    if isinstance(exc, ImportError):
+        msg = str(exc).strip()
+        return msg or '导入文件格式无效或已损坏。'
     # ---- IO / 格式异常（驱动层，归一为固定文案）----
     if isinstance(exc, FileNotFoundError):
         return '找不到指定的文件。'

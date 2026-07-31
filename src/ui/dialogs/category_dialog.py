@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -263,9 +264,12 @@ class CategoryDialog(QDialog):
 
         try:
             if self._category:
-                self._category.name = name
-                self._category.icon_char = icon_char
-                self._category.color = self._selected_color
+                self._category = replace(
+                    self._category,
+                    name=name,
+                    icon_char=icon_char,
+                    color=self._selected_color,
+                )
                 self._entry_mgr.categories.update_category(self._category)
             else:
                 category = Category(

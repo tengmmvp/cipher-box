@@ -12,19 +12,20 @@ import logging
 from ...exceptions import VaultIntegrityError, VaultLockedError
 from ...models import Category, RawEntry
 from ...utils.memory import secure_zero_buffer
+from .vault_meta_keys import VAULT_META_SIGNED_KEYS
 
 logger = logging.getLogger(__name__)
 
-# vault_meta 完整性签名覆盖的安全相关键（密码派生与密钥版本元数据）。
-# 含 snapshot_key_enc：虽由主密钥加密保护（随机篡改会在 _load_snapshot_key 解密
-# 时失败），但 GCM 用常量 AAD 不防重放——有 DB 写权限者可用旧有效密文替换而绕过；
-# 纳入签名后此类回滚/重放使 mac 失配而被 unlock 拒绝。不含 vault_meta_mac 自身
-# （签名不能包含自身）。
-VAULT_META_SIGNED_KEYS = (
-    'master_salt', 'master_verify',
-    'master_kdf_time_cost', 'master_kdf_memory_cost', 'master_kdf_parallelism',
-    'ciphertext_format', 'key_epoch', 'snapshot_key_enc',
-)
+# 域分离 info 标签：HMAC 派生独立域密钥时使用的固定字节串。对齐 master_key 的
+# ``_DOMAIN_INFO_*`` 范式——将域标签提为模块级常量，避免散落在 compute 方法内成为
+# 魔法字节串。两类签名（条目/分类元数据 vs vault_meta 完整性）经各自 info 派生
+# 独立域密钥，遵循与主密钥/备份密钥域分离一致的原则。
+_DOMAIN_INFO_ENTRY_METADATA = b'cipherbox:entry-metadata-key'
+_DOMAIN_INFO_VAULT_META = b'cipherbox:vault-meta-key'
+
+# vault_meta 完整性签名覆盖的键集由 :mod:`vault_meta_keys` 单一源派生（消除与本
+# 模块手工键集的漂移）。该常量在此 re-export 供既有调用方（vault_meta_store /
+# backup_restore）经 ``from .metadata_signer import VAULT_META_SIGNED_KEYS`` 继续引用。
 
 # 签名绑定的加密字段及固定顺序（子集 + 顺序单一源）。必须等于
 # crypto_utils.SENSITIVE_ENCRYPTED_FIELDS 减 {title, url, tags}（这三者在 _payload
@@ -90,7 +91,7 @@ class MetadataSigner:
         返回 bytearray（而非 bytes）使 _clear_vault_state 的 secure_zero_buffer
         能原地清零，与 KeyManager 的清零策略一致；bytes 不可变只能清零副本。
         """
-        return bytearray(hmac.new(key, b'cipherbox:entry-metadata-key', hashlib.sha256).digest())
+        return bytearray(hmac.new(key, _DOMAIN_INFO_ENTRY_METADATA, hashlib.sha256).digest())
 
     @staticmethod
     def compute_vault_meta_domain_key(key: bytes | bytearray) -> bytearray:
@@ -101,7 +102,7 @@ class MetadataSigner:
         不同用途的签名，使用各自独立的 HKDF-style info 标签派生密钥，遵循与主密钥/
         备份密钥域分离一致的原则，避免未来消息空间扩展时产生跨协议交互。
         """
-        return bytearray(hmac.new(key, b'cipherbox:vault-meta-key', hashlib.sha256).digest())
+        return bytearray(hmac.new(key, _DOMAIN_INFO_VAULT_META, hashlib.sha256).digest())
 
     @staticmethod
     def compute_vault_meta_mac(meta: dict, key: bytes | bytearray) -> str:

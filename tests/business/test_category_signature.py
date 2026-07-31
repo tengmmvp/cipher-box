@@ -5,6 +5,7 @@
 条目签名虽共享域密钥但因载荷结构不同而互异。
 """
 
+import dataclasses
 import os
 
 import pytest
@@ -21,20 +22,18 @@ def _make_signer() -> MetadataSigner:
 
 
 def _make_category(**overrides) -> Category:
-    cat = Category(
+    return Category(
         id=1, name='cb2:ciphertext', icon_char='[X]', color='#abcdef',
         sort_order=2, created_at='2025-01-01T00:00:00',
+        **overrides,
     )
-    for key, value in overrides.items():
-        setattr(cat, key, value)
-    return cat
 
 
 def test_sign_verify_category_roundtrip():
     """签名后验签通过。"""
     signer = _make_signer()
     cat = _make_category()
-    cat.metadata_mac = signer.sign_category(cat)
+    cat = dataclasses.replace(cat, metadata_mac=signer.sign_category(cat))
     signer.verify_category(cat)  # 不抛即通过
 
 
@@ -42,8 +41,8 @@ def test_verify_category_detects_name_tamper():
     """篡改分类名密文（绑定 name_hash）应验签失败。"""
     signer = _make_signer()
     cat = _make_category()
-    cat.metadata_mac = signer.sign_category(cat)
-    cat.name = 'cb2:tampered'
+    cat = dataclasses.replace(cat, metadata_mac=signer.sign_category(cat))
+    cat = dataclasses.replace(cat, name='cb2:tampered')
     with pytest.raises(VaultIntegrityError):
         signer.verify_category(cat)
 
@@ -52,9 +51,8 @@ def test_verify_category_detects_metadata_tamper():
     """篡改非密文元数据（color/sort_order 等）应验签失败。"""
     signer = _make_signer()
     cat = _make_category()
-    cat.metadata_mac = signer.sign_category(cat)
-    cat.color = '#000000'
-    cat.sort_order = 99
+    cat = dataclasses.replace(cat, metadata_mac=signer.sign_category(cat))
+    cat = dataclasses.replace(cat, color='#000000', sort_order=99)
     with pytest.raises(VaultIntegrityError):
         signer.verify_category(cat)
 
@@ -87,8 +85,8 @@ def test_category_signature_constant_time_compare():
     """verify 用 hmac.compare_digest，篡改签名不抛非 VaultIntegrityError 的异常。"""
     signer = _make_signer()
     cat = _make_category()
-    cat.metadata_mac = signer.sign_category(cat)
+    cat = dataclasses.replace(cat, metadata_mac=signer.sign_category(cat))
     # 篡改签名本身（模拟 MAC 被替换）
-    cat.metadata_mac = '0' * len(cat.metadata_mac)
+    cat = dataclasses.replace(cat, metadata_mac='0' * len(cat.metadata_mac))
     with pytest.raises(VaultIntegrityError):
         signer.verify_category(cat)

@@ -11,8 +11,6 @@
 
 import logging
 import sqlite3
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -21,19 +19,17 @@ from src.exceptions import SchemaError
 
 
 @pytest.fixture
-def db():
-    """临时数据库，test_mode 关闭密文断言，便于直接写测试数据。"""
-    tmp_dir = tempfile.mkdtemp()
-    db_path = Path(tmp_dir) / 'test_db_manager.db'
+def db(tmp_path):
+    """临时数据库，test_mode 关闭密文断言，便于直接写测试数据。
+
+    tmp_path 由 pytest 提供并自动清理。
+    """
+    db_path = tmp_path / 'test_db_manager.db'
     database = DatabaseManager(db_path, test_mode=True)
     database.open()
     database.init_tables()
     yield database
     database.close()
-    try:
-        db_path.unlink(missing_ok=True)
-    except Exception:
-        pass
 
 
 class _StubConn:

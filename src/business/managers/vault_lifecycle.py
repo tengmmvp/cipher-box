@@ -41,6 +41,7 @@ from ..services.crypto_utils import encrypt_plaintext_category_names
 from ..services.error_messages import to_user_message
 from ..services.metadata_signer import MetadataSigner
 from ..services.re_encryption import ReEncryptionService
+from ..services.vault_meta_keys import VAULT_META_ALL_KEYS
 from ..services.vault_meta_store import VaultMetaStore
 from .vault_manager import VaultManager
 
@@ -51,13 +52,8 @@ logger = logging.getLogger(__name__)
 AUTH_FAILED_MESSAGE = '当前主密码错误'
 
 
-# unlock 单次批量读取的 vault_meta 键，避免多次独立 DB 锁获取。
-_VAULT_META_KEYS = [
-    'master_salt', 'master_verify', 'master_kdf_time_cost',
-    'master_kdf_memory_cost', 'master_kdf_parallelism',
-    'master_kdf', 'ciphertext_format', 'key_epoch',
-    'snapshot_key_enc', 'vault_meta_mac',
-]
+# unlock 单次批量读取的 vault_meta 键（单一源见 vault_meta_keys）。
+_VAULT_META_KEYS = list(VAULT_META_ALL_KEYS)
 
 
 class VaultLifecycleOrchestrator:
@@ -362,6 +358,14 @@ class VaultLifecycleOrchestrator:
             # 事务已提交。密钥赋值放在 commit 之后，避免后台线程在 commit 前读到新密钥、
             # 解密尚未提交的旧数据，造成解密窗口问题。若提交失败 transaction() 已回滚，
             # 下方 except 会清除密钥保证一致性。
+            #
+            # ARCH-021 顺序不变式：commit（释放 db_lock）与 activate_keys（更新内存
+            # _key/key_epoch）之间存在微秒窗口——DB 已是新密文+新 epoch，内存密钥仍旧。
+            # 并发读路径（get_entry_summaries/get_all_tags/get_entries_for_export，仅持
+            # db_lock 不取 vault_write_lock）会读到新密文配旧密钥致 GCM 失败。当前此窗口
+            # 被「改密运行于模态 exec() 对话框、阻塞并发 UI 编辑」闸住，不可触发；引入
+            # 任何后台写者前，须为读路径加 epoch_guarded_read（对称写路径
+            # epoch_guarded_transaction）或让其取共享 vault_write_lock。
             self._vault.activate_keys(new_key, new_snapshot_key, new_epoch)
             EncryptionEngine.clear_cache()  # 旧密钥 cipher 已失效，确保后续用新密钥
             logger.info("重加密完成 (%.1fms)", (time.monotonic() - t0) * 1000)

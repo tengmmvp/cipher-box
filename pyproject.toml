@@ -10,9 +10,9 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = [
-  "PyQt6>=6.6.0",
-  "cryptography>=42.0.0",
-  "argon2-cffi>=25.1.0",
+  "PyQt6>=6.6.0,<6.10",
+  "cryptography>=42.0.0,<46",
+  "argon2-cffi>=25.1.0,<27",
   "QtAwesome>=1.3.0",
 ]
 
@@ -40,13 +40,14 @@ addopts = "-q"
 
 [tool.coverage.run]
 source = ["src"]
+branch = true
 
 [tool.coverage.report]
-# 分层覆盖率门槛（非 UI 85% / UI 30%）在 CI 工作流经命令行 `--fail-under` 分别定义
-# （pyproject 的单一 fail_under 无法表达分层语义，设全局值会因 UI 30% 拉低全量而误伤）。
-# 本地验证用 CI 等价命令：
-#   uv run coverage report --omit="*/src/ui/*" --fail-under=85
-#   uv run coverage report --include="*/src/ui/*" --fail-under=30
+# 分层覆盖率门槛（非 UI 75% / UI 25%，分支覆盖）在 CI 工作流经命令行 `--fail-under`
+# 分别定义（pyproject 的单一 fail_under 无法表达分层语义，设全局值会因 UI 拉低全量
+# 而误伤）。本地验证用 CI 等价命令：
+#   uv run coverage report --branch --omit="*/src/ui/*" --fail-under=75
+#   uv run coverage report --branch --include="*/src/ui/*" --fail-under=25
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",

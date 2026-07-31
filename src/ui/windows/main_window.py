@@ -59,11 +59,13 @@ from ..controllers.list_refresh_controller import (
     ListRefreshDeps,
     ListRefreshView,
 )
-from ..controllers.menu_controller import MenuController, MenuSlots
+from ..controllers.menu_controller import MenuController, MenuDeps, MenuSlots
 from ..controllers.sidebar_controller import SidebarController
 from ..resources.constants import (
     CLIPBOARD_CLEAR_SECONDS_DEFAULT,
     FILTER_MAX_HEIGHT,
+    SIDEBAR_ICON_SIZE,
+    SIDEBAR_ICON_SIZE_SMALL,
     SIDEBAR_WIDTH,
     SORT_OPTIONS,
     SPLITTER_SIZES,
@@ -79,6 +81,7 @@ from ..resources.icons import (
     set_icon_with_text,
 )
 from ..resources.styles import get_style
+from ..resources.theme_colors import set_theme
 from ..utils.clipboard import ClipboardManager
 
 logger = logging.getLogger(__name__)
@@ -96,6 +99,12 @@ class MainWindow(QMainWindow):
         self._security = ctx.security
         self._import_export = ctx.import_export
         self._backup = ctx.backup
+        # 三个组合化 controller 在下方 helper 内构造；此处显式标注类型，使 mypy
+        # 能在 helper 外的引用点（如 self._menu.setup）解析属性类型。三者同模式，
+        # 一并标注消除同源风险（仅 _menu 此前报 has-type，余二者为潜在隐患）。
+        self._menu: MenuController
+        self._list_refresh: ListRefreshController
+        self._entry_actions: EntryActionsController
         self._create_ui_controllers()
         self._tray: TrayIcon | None = None
         self._locked_ui = False
@@ -149,9 +158,12 @@ class MainWindow(QMainWindow):
         绑 ListRefreshController，apply_*/lock 绑 host 方法。
         """
         self._menu = MenuController(
-            self._config, self._vault, self._entry_mgr, self._security,
-            self._import_export, self._backup, self._clipboard, self._detail_panel,
-            self._auto_backup,
+            MenuDeps(
+                config=self._config, vault=self._vault, entry_mgr=self._entry_mgr,
+                security=self._security, import_export=self._import_export,
+                backup=self._backup, clipboard=self._clipboard,
+                detail_panel=self._detail_panel, auto_backup=self._auto_backup,
+            ),
             MenuSlots(
                 add_entry=self._entry_actions.add_entry,
                 edit_entry=self._entry_actions.edit_entry,
@@ -232,7 +244,7 @@ class MainWindow(QMainWindow):
     def _show_from_tray(self) -> None:
         """托盘「显示窗口」回调：锁定态激活登录窗，解锁态显示主窗并刷新状态栏。
 
-        从 _MainWindowMenuMixin 迁入 host——操纵窗口可见性 + 查找 LoginWindow + 读
+        操纵窗口可见性 + 查找 LoginWindow + 读
         _locked_ui/_status_timer，属窗口编排而非菜单调度。
         """
         if not self._vault.is_unlocked or self._locked_ui:
@@ -257,6 +269,8 @@ class MainWindow(QMainWindow):
         self.resize(*WINDOW_DEFAULT_SIZE)
 
         theme = self._config.get('theme', DEFAULT_THEME)
+        # 显式激活主题，使运行时 c() 解析的颜色与样式表一致（ARCH-009）
+        set_theme(theme)
         self.setStyleSheet(get_style(theme))
         self._current_theme: str = theme
 
@@ -320,7 +334,7 @@ class MainWindow(QMainWindow):
         brand_row = QHBoxLayout()
         self._brand_icon = QLabel()
         self._brand_icon.setPixmap(icon_pixmap(SHIELD, 'accent', 24))
-        self._brand_icon.setFixedSize(28, 28)
+        self._brand_icon.setFixedSize(*SIDEBAR_ICON_SIZE)
         brand_row.addWidget(self._brand_icon)
         brand_text = QVBoxLayout()
         brand_text.setSpacing(0)
@@ -373,7 +387,7 @@ class MainWindow(QMainWindow):
         cat_header.addStretch()
         self._add_category_btn = QPushButton('+')
         self._add_category_btn.setObjectName('iconBtn')
-        self._add_category_btn.setFixedSize(22, 22)
+        self._add_category_btn.setFixedSize(*SIDEBAR_ICON_SIZE_SMALL)
         self._add_category_btn.setToolTip('管理分类')
         self._add_category_btn.setStyleSheet('font-size: 14px;')
         cat_header.addWidget(self._add_category_btn)
@@ -597,6 +611,14 @@ class MainWindow(QMainWindow):
         # 等待后台 worker 退出（避免 QThread running 析构崩溃），清剪贴板明文，
         # 再关闭 vault
         self._shutdown_workers()
+        # reject 模态对话框（备份/改密/导入等）：托盘菜单是平台原生菜单，不受
+        # application-modal 阻拦，故 _quit_app 可达；须在 vault.close 前 reject
+        # 对话框使其 worker 退出，否则 vault 关闭撕裂共享 sqlite 事务 + QThread
+        # running 析构崩溃（与 prepare_for_lock 的 reject 对齐，闭合 ARCH-019）。
+        for widget in list(QApplication.topLevelWidgets()):
+            if widget is self or not isinstance(widget, QDialog):
+                continue
+            widget.reject()
         self._clipboard.clear_now()
         self._vault.close()
         if self._tray:
@@ -610,6 +632,8 @@ class MainWindow(QMainWindow):
         theme = self._config.get('theme', DEFAULT_THEME)
         if theme != self._current_theme:
             self._current_theme = theme
+            # 显式激活主题，使运行时 c() 解析的颜色与样式表一致（ARCH-009）
+            set_theme(theme)
             style = get_style(theme)
             app = QApplication.instance()
             if isinstance(app, QApplication):

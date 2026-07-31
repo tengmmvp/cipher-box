@@ -28,7 +28,12 @@ from PyQt6.QtWidgets import (
 
 from ...business.services.security_analyzer import SecurityAnalyzer
 from ...utils.format import format_datetime
-from ..components.widgets import clear_layout, release_worker, setup_dialog_flags
+from ..components.widgets import (
+    clear_layout,
+    finalize_worker_if_current,
+    release_worker,
+    setup_dialog_flags,
+)
 from ..components.workers import BackgroundWorker, wait_worker_shutdown
 from ..resources.constants import (
     BTN_DIALOG,
@@ -87,7 +92,7 @@ class _HealthScoreWidget(QWidget):
             painter.drawArc(draw_rect, 0, 360 * 16)
 
             # 进度圆环
-            score_color = self._score_color(self._score)
+            score_color = self._health_score_color(self._score)
             fg_pen = QPen(QColor(score_color), pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
             painter.setPen(fg_pen)
             span_angle = int(self._score / 100 * 360 * 16)
@@ -113,7 +118,7 @@ class _HealthScoreWidget(QWidget):
             painter.end()
 
     @staticmethod
-    def _score_color(score: int) -> str:
+    def _health_score_color(score: int) -> str:
         if score >= 80:
             return c('success')
         elif score >= 60:
@@ -310,10 +315,11 @@ class SecurityDashboard(QDialog):
         self._status_hint.setObjectName('secStatusHint')
         self._weak_layout.addWidget(self._status_hint)
 
-        self._worker = BackgroundWorker(
-            lambda: self._analyzer.get_or_compute_report(days),
+        worker = BackgroundWorker(
+            lambda: self._analyzer.get_or_compute_report(days, cancel_check=worker.cancel_check),
             parent=self,
         )
+        self._worker = worker
         self._worker.finished.connect(self._on_data_loaded)
         self._worker.error.connect(self._on_data_error)
         self._worker.start()
@@ -380,9 +386,8 @@ class SecurityDashboard(QDialog):
         """后台分析失败（worker.error 信号路径，独立于 _on_data_loaded 的成功/异常出口）。"""
         # 校验回调来源仍是当前 worker，与 _on_data_loaded 对称，防止 reject
         # 后旧 worker 回调访问已销毁控件。
-        if self.sender() is not self._worker:
+        if not finalize_worker_if_current(self):
             return
-        release_worker(self)
         # 统一用 _clear_layout 回收 _status_hint，与 _on_data_loaded 出口一致
         self._clear_layout(self._weak_layout)
         self._status_hint = None

@@ -4,6 +4,7 @@
 锁定清理、登录窗口渲染等端到端场景，作为发布前的整体回归防线。
 """
 
+import dataclasses
 import json
 import sqlite3
 import tempfile
@@ -56,7 +57,7 @@ def test_password_history_survives_master_password_change():
         entry_id = manager.add_entry(Entry(title='Account', password='FirstPassword!2026'))
         entry = manager.get_entry(entry_id)
         assert entry is not None
-        entry.password = 'SecondPassword!2026'
+        entry = dataclasses.replace(entry, password='SecondPassword!2026')
         manager.update_entry(entry)
 
         assert vault.change_master_password(
@@ -81,7 +82,7 @@ def test_portable_backup_restores_into_different_vault():
         ))
         edited = source_manager.get_entry(entry_id)
         assert edited is not None
-        edited.password = 'SecondPassword!2026'
+        edited = dataclasses.replace(edited, password='SecondPassword!2026')
         source_manager.update_entry(edited)
         source_manager.delete_entry(entry_id)
         backup_path = str(Path(source_root) / 'portable.cbox')
@@ -264,7 +265,7 @@ def test_context_bound_ciphertext_rejects_cross_entry_swap():
         second_raw = vault.db.get_entry(second_id)
         assert first_raw is not None
         assert second_raw is not None
-        first_raw.password = second_raw.password
+        first_raw = dataclasses.replace(first_raw, password=second_raw.password)
         vault.db.update_entry(first_raw, preserve_updated_at=True)
 
         swapped = manager.get_entry(first_id)

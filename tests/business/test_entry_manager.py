@@ -14,6 +14,8 @@ teardown ``v.close()`` 释放 Windows 文件锁；fixture teardown 比逐测试 
 更健壮——断言失败时仍会执行关闭）。
 """
 
+import dataclasses
+
 from src.crypto.password_generator import PasswordGenerator
 from src.models import CIPHERTEXT_PREFIX, CustomField
 
@@ -76,9 +78,9 @@ class TestAddEntry:
 
         entry_id = entry_mgr.add_entry(entry)
         expected = PasswordGenerator.check_strength(pwd).score
-        # 入库后原地设置传入 Entry 的 password_strength
-        assert entry.password_strength == expected
-        # 读回的解密条目携带相同的 strength
+        # frozen：传入 Entry 不被原地修改，password_strength 仍为默认 0
+        assert entry.password_strength == 0
+        # 读回的解密条目携带 add_entry 计算出的 strength
         read = entry_mgr.get_entry(entry_id)
         assert read.password_strength == expected
 
@@ -100,11 +102,14 @@ class TestUpdateEntry:
             title='Old', username='u', password='Pass123!@#',
         ))
         entry = entry_mgr.get_entry(entry_id)
-        entry.title = 'New Title'
-        entry.username = 'new_user'
-        entry.url = 'https://example.com'
-        entry.notes = 'updated notes'
-        entry.tags = 'tag1,tag2'
+        entry = dataclasses.replace(
+            entry,
+            title='New Title',
+            username='new_user',
+            url='https://example.com',
+            notes='updated notes',
+            tags='tag1,tag2',
+        )
         entry_mgr.update_entry(entry)
 
         read = entry_mgr.get_entry(entry_id)
@@ -122,7 +127,7 @@ class TestUpdateEntry:
         assert entry_mgr.password_history.get_count(entry_id) == 0
 
         entry = entry_mgr.get_entry(entry_id)
-        entry.password = 'NewStrongPass456!@#'
+        entry = dataclasses.replace(entry, password='NewStrongPass456!@#')
         entry_mgr.update_entry(entry)
 
         assert entry_mgr.password_history.get_count(entry_id) == 1
@@ -133,7 +138,7 @@ class TestUpdateEntry:
         entry_id = entry_mgr.add_entry(make_entry(password='StablePass123!@#'))
         entry = entry_mgr.get_entry(entry_id)
         # get_entry 解密回的 password 即原明文，不改它 → update 检测为未变更
-        entry.title = 'Renamed Only'
+        entry = dataclasses.replace(entry, title='Renamed Only')
         entry_mgr.update_entry(entry)
 
         assert entry_mgr.password_history.get_count(entry_id) == 0
@@ -144,7 +149,7 @@ class TestUpdateEntry:
         entry_id = entry_mgr.add_entry(make_entry(password='Pass1-aaa!'))
         for new_pwd in ('Pass2-bbb!', 'Pass3-ccc!', 'Pass4-ddd!'):
             entry = entry_mgr.get_entry(entry_id)
-            entry.password = new_pwd
+            entry = dataclasses.replace(entry, password=new_pwd)
             entry_mgr.update_entry(entry)
 
         assert entry_mgr.password_history.get_count(entry_id) == 3

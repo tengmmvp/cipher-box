@@ -117,9 +117,13 @@ class TotpService:
             secret = preloaded_secret
             self._cache.store_totp(entry_id, secret)
         else:
-            secret = self._resolve_totp_secret(entry_id, use_cache=True)
-            if not secret:
+            # 用临时变量承接 str | None 并收窄后再赋给 secret（推断为 str），
+            # 避免跨分支变量类型冲突（原 else 直接赋 str|None 给被首分支
+            # 推断为 str 的 secret，触发 mypy 赋值类型冲突）。
+            resolved = self._resolve_totp_secret(entry_id, use_cache=True)
+            if not resolved:
                 return None
+            secret = resolved
         return {
             'code': TOTPGenerator.generate(secret),
             'remaining': TOTPGenerator.get_remaining_seconds(secret=secret),

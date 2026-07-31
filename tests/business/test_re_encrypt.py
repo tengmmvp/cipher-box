@@ -5,6 +5,7 @@
 并验证写入失败时事务回滚保障数据完整性。
 """
 
+import dataclasses
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -121,7 +122,7 @@ class TestReEncryptEdgeCases:
         # 修改密码触发历史记录
         entry = self._entry_mgr.get_entry(eid)
         assert entry is not None
-        entry.password = 'second_password'
+        entry = dataclasses.replace(entry, password='second_password')
         self._entry_mgr.update_entry(entry)
 
         # 验证密码历史存在
@@ -332,7 +333,10 @@ class TestReEncryptEdgeCases:
         wrong_key = _os.urandom(32)
         raw = self._vault.db.get_entry(corrupt_id)
         assert raw is not None
-        raw.password = encrypt_field('corrupted', wrong_key, raw.crypto_id, 'password')
+        raw = dataclasses.replace(
+            raw,
+            password=encrypt_field('corrupted', wrong_key, raw.crypto_id, 'password'),
+        )
         self._vault.db.update_entry(raw)
 
         # 改密因损坏条目解密失败抛 DecryptionError，事务回滚并 lock

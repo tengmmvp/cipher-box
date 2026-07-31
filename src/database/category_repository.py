@@ -7,9 +7,10 @@
 import logging
 import sqlite3
 import threading
+from dataclasses import replace
 from typing import Any
 
-from ..exceptions import VaultIntegrityError, VaultLockedError
+from ..exceptions import TransactionError, VaultIntegrityError, VaultLockedError
 from ..models import Category
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation, _db_write
@@ -51,7 +52,7 @@ class CategoryRepository:
     def _sign_category(self, category: Category) -> str:
         return self._mgr.sign_category(category)
 
-    def _verify_category_if_signed(self, category: Category) -> None:
+    def _verify_category_if_signed(self, category: Category) -> Category:
         """LENIENT 验签分类完整性：有签名（metadata_mac 非空）才验，失败记日志并标记。
 
         首次初始化的默认分类在 encrypt_plaintext_category_names 签名前 mac 为空，
@@ -66,12 +67,13 @@ class CategoryRepository:
                 verifier(category)
             except VaultIntegrityError:
                 logger.warning("分类 %s 元数据完整性校验失败", category.id)
-                category.integrity_error = True
+                return replace(category, integrity_error=True)
             except VaultLockedError:
                 # 锁定竞态：域密钥在取行后被 prepare_for_lock 清零，锁定态验签无意义，
                 # 静默跳过避免 get_categories/get_category 崩溃（entry 路径 re-raise 由
                 # 调用方处理；分类读路径为 LENIENT 日志，锁定态直接跳过）。
                 pass
+        return category
 
     # ==================== 分类 ====================
 
@@ -84,20 +86,19 @@ class CategoryRepository:
                 改密重签等路径传 False 跳过，避免旧签名在新域密钥下的假阳性告警。
         """
         rows = self._conn.execute(
-            "SELECT id, name, icon_char, color, sort_order, created_at, metadata_mac "
-            "FROM categories ORDER BY sort_order, name"
+            "SELECT id, name_enc, icon_char, color, sort_order, created_at, metadata_mac "
+            "FROM categories ORDER BY sort_order, name_enc"
         ).fetchall()
         categories = [self._row_to_category(r) for r in rows]
         if verify:
-            for category in categories:
-                self._verify_category_if_signed(category)
+            categories = [self._verify_category_if_signed(c) for c in categories]
         return categories
 
     @_db_operation
     def get_category(self, category_id: int, *, verify: bool = True) -> Category | None:
         """获取单个分类。verify 语义同 :meth:`get_categories`。"""
         row = self._conn.execute(
-            "SELECT id, name, icon_char, color, sort_order, created_at, metadata_mac "
+            "SELECT id, name_enc, icon_char, color, sort_order, created_at, metadata_mac "
             "FROM categories WHERE id = ?",
             (category_id,),
         ).fetchone()
@@ -105,7 +106,7 @@ class CategoryRepository:
             return None
         category = self._row_to_category(row)
         if verify:
-            self._verify_category_if_signed(category)
+            category = self._verify_category_if_signed(category)
         return category
 
     @_db_write
@@ -118,7 +119,7 @@ class CategoryRepository:
         明文查重在 CategoryManager.add_category 完成。
         """
         if self._conn.execute(
-            "SELECT 1 FROM categories WHERE name=? LIMIT 1", (category.name,)
+            "SELECT 1 FROM categories WHERE name_enc=? LIMIT 1", (category.name,)
         ).fetchone():
             raise ValueError(f'分类名称「{category.name}」已存在')
         # 确定最终 created_at 并回填内存对象：保证后续 update_category（两阶段重签）
@@ -127,10 +128,10 @@ class CategoryRepository:
         # 导致持久化行 created_at 与签名载荷错配、重载后 verify_category 永久失败
         # （category HMAC 纵深防御对该分类失效）。
         created_at = category.created_at or utc_now_iso()
-        category.created_at = created_at
-        category.metadata_mac = self._sign_category(category)
+        category = replace(category, created_at=created_at)
+        category = replace(category, metadata_mac=self._sign_category(category))
         cursor = self._conn.execute(
-            "INSERT INTO categories (name, icon_char, color, sort_order, created_at, metadata_mac) "
+            "INSERT INTO categories (name_enc, icon_char, color, sort_order, created_at, metadata_mac) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (category.name, category.icon_char, category.color, category.sort_order,
              created_at, category.metadata_mac),
@@ -150,7 +151,7 @@ class CategoryRepository:
         """写入分类行（不含查重/created_at 回填/签名），供 update_category 与
         update_category_reencrypted 复用同一 UPDATE SQL，消除列序重复维护。"""
         self._conn.execute(
-            "UPDATE categories SET name=?, icon_char=?, color=?, sort_order=?, metadata_mac=? WHERE id=?",
+            "UPDATE categories SET name_enc=?, icon_char=?, color=?, sort_order=?, metadata_mac=? WHERE id=?",
             self._category_update_tuple(category),
         )
         self._auto_commit()
@@ -164,7 +165,7 @@ class CategoryRepository:
         生产路径的真正明文查重在 CategoryManager.update_category 完成。
         """
         if category.id is not None and self._conn.execute(
-            "SELECT 1 FROM categories WHERE name=? AND id!=? LIMIT 1",
+            "SELECT 1 FROM categories WHERE name_enc=? AND id!=? LIMIT 1",
             (category.name, category.id),
         ).fetchone():
             raise ValueError(f'分类名称「{category.name}」已被其他分类占用')
@@ -176,8 +177,8 @@ class CategoryRepository:
             "SELECT created_at FROM categories WHERE id=?", (category.id,)
         ).fetchone()
         if existing is not None:
-            category.created_at = existing['created_at']
-        category.metadata_mac = self._sign_category(category)
+            category = replace(category, created_at=existing['created_at'])
+        category = replace(category, metadata_mac=self._sign_category(category))
         self._update_category_row(category)
 
     @_db_write
@@ -206,7 +207,7 @@ class CategoryRepository:
         if not categories:
             return
         self._conn.executemany(
-            "UPDATE categories SET name=?, icon_char=?, color=?, sort_order=?, metadata_mac=? WHERE id=?",
+            "UPDATE categories SET name_enc=?, icon_char=?, color=?, sort_order=?, metadata_mac=? WHERE id=?",
             [self._category_update_tuple(c) for c in categories],
         )
         self._auto_commit()
@@ -225,7 +226,7 @@ class CategoryRepository:
         误在无事务上下文中直接调用导致裸 DELETE。
         """
         if not self.in_transaction:
-            raise RuntimeError(
+            raise TransactionError(
                 'delete_category 须在活动事务内调用（由 DatabaseManager.delete_category 编排）'
             )
         self._conn.execute("DELETE FROM categories WHERE id=?", (category_id,))
@@ -256,7 +257,7 @@ class CategoryRepository:
     def _row_to_category(row: sqlite3.Row) -> Category:
         return Category(
             id=row['id'],
-            name=row['name'],
+            name=row['name_enc'],
             icon_char=row['icon_char'],
             color=row['color'],
             sort_order=row['sort_order'],

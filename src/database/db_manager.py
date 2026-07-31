@@ -51,6 +51,21 @@ SECURE_FILES_DEBOUNCE_SECONDS = 1.0
 _B64_CHARS = frozenset('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=')
 
 
+# 数据库连接 PRAGMA 配置（单一事实源）。集中定义使 open() 的连接初始化语义可读、
+# 调参一处生效，避免散落的字面量在调整耐久性/性能取舍时被遗漏。
+# foreign_keys：强制外键约束；secure_delete：覆写删除页防物理恢复；
+# busy_timeout：锁竞争等待 5s；synchronous=FULL：每次 commit 强 fsync（耐久性优先）；
+# cache_size=-8000：约 8MB 页缓存（默认 2MB）；mmap_size=256MB：只读路径减少系统调用。
+_PRAGMAS = (
+    'PRAGMA foreign_keys=ON',
+    'PRAGMA secure_delete=ON',
+    'PRAGMA busy_timeout=5000',
+    'PRAGMA synchronous=FULL',
+    'PRAGMA cache_size=-8000',
+    'PRAGMA mmap_size=268435456',
+)
+
+
 # 签名/验证函数的类型协议，替代弱类型 Callable
 @runtime_checkable
 class EntrySigner(Protocol):
@@ -359,16 +374,14 @@ class DatabaseManager:
                     "建议将数据目录置于支持 WAL 的本地文件系统",
                     actual_mode,
                 )
-            self._conn.execute("PRAGMA foreign_keys=ON")
-            self._conn.execute("PRAGMA secure_delete=ON")
-            self._conn.execute("PRAGMA busy_timeout=5000")
-            self._conn.execute("PRAGMA synchronous=FULL")
-            # page cache 与内存映射：本地库虽小，但全表扫描（get_entries + 逐行
+            # page cache 与内存映射：本地库虽小，但全量扫描（get_entries + 逐行
             # HMAC 验签）在数千条目下从更大的 cache 受益。cache_size=-8000（约
             # 8MB）远大于默认 2MB；mmap_size=256MB 让只读路径减少系统调用。
-            # synchronous=FULL 是耐久性安全取舍，不降级。
-            self._conn.execute("PRAGMA cache_size=-8000")
-            self._conn.execute("PRAGMA mmap_size=268435456")
+            # synchronous=FULL 是耐久性安全取舍，不降级。各 PRAGMA 字面量集中
+            # 于模块级 _PRAGMAS 单一源（含 foreign_keys/secure_delete/busy_timeout/
+            # synchronous/cache_size/mmap_size），见其注释。
+            for pragma in _PRAGMAS:
+                self._conn.execute(pragma)
             self._secure_database_files()
             self._schema_validated = False  # 新连接需要重新验证 schema
             return True
@@ -557,13 +570,13 @@ class DatabaseManager:
         """删除分类：事务内先解关联条目并重算签名，再删除分类行。
 
         解关联条目与删除分类两步跨表编排由本层协调，各 Repository 仅负责
-        单表操作，从而消除跨 Repository 的私有访问越权。
+        单表操作，从而消除跨 Repository 的私有访问越权。``transaction()`` 已内部
+        持 ``db_lock`` 并经 ``begin_transaction`` 调用 ``_guard_write``，故此处无需
+        再外层包 ``with self._lock`` + ``_guard_write``（原先的重复获取是冗余）。
         """
-        with self._lock:
-            self._guard_write()
-            with self.transaction():
-                self._entry_repo.clear_category_signatures(category_id)
-                self._category_repo.delete_category(category_id)
+        with self.transaction():
+            self._entry_repo.clear_category_signatures(category_id)
+            self._category_repo.delete_category(category_id)
 
     # -- 委托透传：Entries --
 

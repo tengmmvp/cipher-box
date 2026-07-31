@@ -1,12 +1,15 @@
 """配置管理模块 — 管理 CipherBox 应用的所有配置项。"""
 
+import copy
 import hashlib
 import hmac
 import json
 import logging
 import os
+import sys
 import threading
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from .models import is_real_int
@@ -26,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 def get_data_dir() -> Path:
     """获取应用数据目录。"""
-    if os.name == 'nt':
+    if sys.platform == 'win32':
         # APPDATA 正常存在；极端缺失（环境异常/被清空）时逐级回退 LOCALAPPDATA →
         # USERPROFILE\AppData\Roaming，避免直接回退裸 ~ 把 vault.db 写到主目录根，
         # 破坏 %APPDATA%\CipherBox 的路径约定并与已有数据不一致。
@@ -104,10 +107,16 @@ _INT_SPECS: dict[str, tuple[int, int, int | None]] = {
     'auto_backup_retention': (2, 50, None),
     'old_password_warning_days': (30, 365, None),
 }
-_INT_RANGES = {k: (lo, hi) for k, (lo, hi, _) in _INT_SPECS.items()}
-_SECURITY_MINIMUMS: dict[str, int] = {
-    k: sm for k, (_, _, sm) in _INT_SPECS.items() if sm is not None
-}
+# 只读映射：MappingProxyType 防止误用 ``_INT_RANGES[k] = ...`` / ``_SECURITY_MINIMUMS[k] = ...
+# 改写模块常量（ARCH-024）。两者皆派生自 _INT_SPECS 的只读查找表，读取路径
+# （``in`` / ``[]`` / ``set(...)``）与原 dict 一致。``_SECURITY_MINIMUMS`` 供
+# get_safe 运行时下限钳制与 _INTEGRITY_SENSITIVE_KEYS 派生，均无写入需求。
+_INT_RANGES = MappingProxyType(
+    {k: (lo, hi) for k, (lo, hi, _) in _INT_SPECS.items()}
+)
+_SECURITY_MINIMUMS = MappingProxyType(
+    {k: sm for k, (_, _, sm) in _INT_SPECS.items() if sm is not None}
+)
 
 
 def get_ui_int_range(key: str) -> tuple[int, int]:
@@ -154,7 +163,10 @@ class ConfigManager:
         self._config_path = self._data_dir / 'config.json'
         self._integrity_key_path = self._data_dir / 'config.key'
         self._integrity_key = self._load_or_create_integrity_key()
-        self._config: dict = dict(DEFAULT_CONFIG)
+        # deepcopy 而非 dict()：security_sentinels 等 nested list 浅拷贝会在多个
+        # ConfigManager 实例间共享同一 list 对象，任一实例原地突变（append/extend）
+        # 会串扰其他实例的默认值。deepcopy 确保嵌套可变值独立。
+        self._config: dict = copy.deepcopy(DEFAULT_CONFIG)
         self._integrity_warning = False
         self._integrity_reason: str | None = None
         self._lock = threading.RLock()
@@ -171,7 +183,7 @@ class ConfigManager:
         cfg._config_path = Path(data_dir) / 'config.json'
         cfg._integrity_key_path = Path(data_dir) / 'config.key'
         cfg._integrity_key = cfg._load_or_create_integrity_key()
-        cfg._config = dict(DEFAULT_CONFIG)
+        cfg._config = copy.deepcopy(DEFAULT_CONFIG)
         cfg._config['show_tray_icon'] = False
         cfg._integrity_warning = False
         cfg._integrity_reason = None
@@ -238,7 +250,7 @@ class ConfigManager:
         with self._lock:
             self._integrity_warning = False
             self._integrity_reason = None
-            self._config = dict(DEFAULT_CONFIG)
+            self._config = copy.deepcopy(DEFAULT_CONFIG)
             if self._config_path.exists():
                 try:
                     raw_text = self._config_path.read_text(encoding='utf-8')
@@ -453,7 +465,7 @@ class ConfigManager:
         logger.debug("配置键 %s 无验证规则，已拒绝", key)
         return False
 
-    def get_all(self) -> dict:
+    def get_all(self) -> dict[str, Any]:
         """获取所有配置。"""
         with self._lock:
             return dict(self._config)

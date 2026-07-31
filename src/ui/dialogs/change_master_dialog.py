@@ -30,6 +30,7 @@ from ..components.widgets import (
     RateLimiter,
     create_cancel_button,
     create_password_toggle_btn,
+    finalize_worker_if_current,
     release_worker,
     set_label_severity,
     setup_dialog_flags,
@@ -228,9 +229,8 @@ class ChangeMasterDialog(QDialog):
         self._worker.start()
 
     def _on_change_done(self, result: tuple[bool, str]) -> None:
-        if self.sender() is not self._worker:
+        if not finalize_worker_if_current(self):
             return
-        release_worker(self)
         self._change_btn.setEnabled(True)
         set_label_severity(self._msg_label, 'error')
         success, error_msg = result
@@ -259,9 +259,8 @@ class ChangeMasterDialog(QDialog):
                 self._msg_label.setText(display_msg)
 
     def _on_change_error(self, error_msg: str) -> None:
-        if self.sender() is not self._worker:
+        if not finalize_worker_if_current(self):
             return
-        release_worker(self)
         self._change_btn.setEnabled(True)
         set_label_severity(self._msg_label, 'error')
         self._msg_label.setText('')

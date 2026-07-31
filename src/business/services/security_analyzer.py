@@ -5,6 +5,7 @@ import hmac
 import logging
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
 
@@ -14,7 +15,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-from ...database.types import EntryQuery
+from ...database.types import EntryQuery, VerifyMode
 from ...exceptions import DecryptionError, EntryIntegrityError, VaultLockedError
 from ...models import Entry, RawEntry
 from .crypto_utils import build_entry_summary, decrypt_field, require_vault_key
@@ -165,22 +166,21 @@ class SecurityAnalyzer:
         if self._cache.get_failed_fields(raw.crypto_id):
             raise EntryIntegrityError(f'条目 {raw.crypto_id} 摘要字段解密失败')
         summary = build_entry_summary(raw, username)
-        summary.title = title
-        summary.url = url
-        summary.tags = tags
+        summary = dataclasses.replace(summary, title=title, url=url, tags=tags)
         if raw.category_id is not None and raw.category_name:
             # 分类名密文损坏时 decrypt_category_name 抛 DecryptionError（strict=True
             # 透传）。统一转 EntryIntegrityError，使 _make_summary 只抛这一种类型——
             # full_analysis 的跳过分支据此 skip 损坏条目，不因 DecryptionError 透传
             # 而终止整次分析（保持与摘要字段损坏一致的容错）。
             try:
-                summary.category_name = self._cache.decrypt_category_name(
+                category_name = self._cache.decrypt_category_name(
                     raw.category_id, raw.category_name,
                 )
             except DecryptionError:
                 raise EntryIntegrityError(
                     f'条目 {raw.crypto_id} 分类名解密失败'
                 ) from None
+            summary = dataclasses.replace(summary, category_name=category_name)
         return summary
 
     def _password_fingerprint(self, password: str, key: bytes | None = None) -> bytes:
@@ -241,7 +241,9 @@ class SecurityAnalyzer:
             cache['_summaries_with_dates'] = list(cache['_summaries_with_dates'])
         return cache
 
-    def _cached_analysis(self, days: int = 90) -> SecurityReport:
+    def _cached_analysis(
+        self, days: int = 90, *, cancel_check: Callable[[], bool] | None = None,
+    ) -> SecurityReport:
         """带缓存的安全分析。采用缓存分层设计，基础分析不依赖 days 参数。
 
         缓存有效期由 ``_cache_ttl_seconds`` 控制，默认为
@@ -262,7 +264,7 @@ class SecurityAnalyzer:
                     and cached.get('_key_epoch') == current_epoch):
                 return self._refilter_cache(cached, days)
         try:
-            result = self.full_analysis(days)
+            result = self.full_analysis(days, cancel_check=cancel_check)
         except VaultLockedError:
             # 分析期间保险库被锁定（并发改密/自动锁），密钥不可用无法完成解密。
             # 返回空报告且不缓存，避免后台线程崩溃；下次解锁后重新计算填充。
@@ -331,9 +333,11 @@ class SecurityAnalyzer:
                 old,
             )
 
-    def get_or_compute_report(self, days: int = 90) -> SecurityReport:
+    def get_or_compute_report(
+        self, days: int = 90, *, cancel_check: Callable[[], bool] | None = None,
+    ) -> SecurityReport:
         """返回缓存报告，若无效则重新计算并缓存。"""
-        return self._cached_analysis(days)
+        return self._cached_analysis(days, cancel_check=cancel_check)
 
     def invalidate_cache(self, password_changed: bool = True) -> None:
         """清除分析缓存，下次访问时将重新计算。
@@ -378,7 +382,9 @@ class SecurityAnalyzer:
             logger.debug('条目 %s 日期解析失败: %s', raw.id, changed_at_str)
             return None
 
-    def full_analysis(self, days: int = 90) -> SecurityReport:
+    def full_analysis(
+        self, days: int = 90, *, cancel_check: Callable[[], bool] | None = None,
+    ) -> SecurityReport:
         """一次性完成所有安全分析，避免重复解密。
 
         设计说明：此方法始终执行全部三种分析，即弱密码、重复密码和过期密码，
@@ -401,7 +407,12 @@ class SecurityAnalyzer:
         # 操作锁，使 lock() 必须等待分析释放密钥后才能清零并返回，避免后台
         # Worker 超时后在“已锁定”状态继续持有主密钥和明文。
         with self._vault.vault_write_lock():
-            entries = self._vault.db.get_entries(EntryQuery(include_deleted=False))
+            # PERF-002：full_analysis 会对每个条目解密（GCM 认证已覆盖密文篡改检测），
+            # 且 _classify_entry 经 raw.integrity_error 与解密失败双重判定损坏条目，
+            # 故此处跳过 HMAC 验签（与 get_all_tags 对齐），省去全量 HMAC-SHA256 重算。
+            entries = self._vault.db.get_entries(
+                EntryQuery(include_deleted=False, verify=VerifyMode.SKIP)
+            )
             total = len(entries)
             weak_entries = []
             password_map: dict[bytes, list[Entry]] = {}
@@ -421,7 +432,10 @@ class SecurityAnalyzer:
                 # vault 写锁；此处主动中止并抛 VaultLockedError（已被 _cached_analysis
                 # 捕获返回空报告），释放写锁让 lock() 尽快完成，避免 UI 冻结与明文驻留。
                 # 与改密/重加密/备份的取消探针模式对齐。
-                if (idx & _CANCEL_CHECK_MASK) == 0 and self._vault.is_cancel_requested():
+                if (idx & _CANCEL_CHECK_MASK) == 0 and (
+                    self._vault.is_cancel_requested()
+                    or (cancel_check is not None and cancel_check())
+                ):
                     raise VaultLockedError('安全分析因锁定/取消请求而中止')
                 result = self._classify_entry(raw, vault_key)
                 if result.counted_in_skipped:
@@ -456,7 +470,7 @@ class SecurityAnalyzer:
             '_summaries_with_dates': _summaries_with_dates,  # 缓存分层：供不同 days 重过滤
         }
 
-    def _classify_entry(self, raw: RawEntry, vault_key: bytes | bytearray) -> _ClassifyResult:
+    def _classify_entry(self, raw: RawEntry, vault_key: bytes) -> _ClassifyResult:
         """对单条目做安全分类（弱/日期/重复指纹），抽取自 full_analysis 循环体。
 
         返回 :class:`_ClassifyResult`：summary 为 None 表示完全跳过（integrity/摘要

@@ -19,11 +19,49 @@ from unittest.mock import MagicMock
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QListWidgetItem, QMainWindow
 
+import src.ui.controllers.list_refresh_controller as list_refresh_module
 from src.ui.controllers.list_refresh_controller import (
     ListRefreshController,
     ListRefreshDeps,
     ListRefreshView,
 )
+
+
+class _FakeSignal:
+    """pyqtSignal 替身：记录 connect 的槽，供测试手动发射。"""
+
+    def __init__(self) -> None:
+        self.slots: list = []
+
+    def connect(self, slot) -> None:
+        self.slots.append(slot)
+
+
+class _FakeAsyncWorker:
+    """BackgroundWorker 替身：捕获 finished 槽，不启动真实线程。
+
+    供 ``_start_async_entry_refresh`` 的代际守卫测试：让测试能在锁定/过滤变更后
+    手动发射 worker.finished，断言过期结果被丢弃而不刷新 UI。
+    """
+
+    instances: list['_FakeAsyncWorker'] = []
+
+    def __init__(self, func=None, parent=None) -> None:
+        self.func = func
+        self.finished = _FakeSignal()
+        self.error = _FakeSignal()
+        self.cancelled = _FakeSignal()
+        self.cancel_calls = 0
+        type(self).instances.append(self)
+
+    def cancel(self) -> None:
+        self.cancel_calls += 1
+
+    def isRunning(self) -> bool:
+        return False
+
+    def start(self) -> None:
+        pass
 
 
 def _make_view() -> ListRefreshView:
@@ -180,3 +218,81 @@ class TestCallbacks:
         ctrl.clear_search()
         view.entry_list.setCurrentIndex.assert_called_once()
         view.detail_panel.show_empty.assert_called_once()
+
+
+class TestStaleWorkerResultDiscarded:
+    """异步刷新的代际守卫：锁定后完成 / 过滤键变更后，旧 worker 结果被丢弃。
+
+    ``_start_async_entry_refresh`` 的 ``_done`` 回调在应用结果前校验
+    ``_locked / generation / filter_key / category_id / search`` 五项，任一过期即
+    ``_release()`` 丢弃、不调 ``_apply_entry_results``。经 ``_FakeAsyncWorker``
+    捕获 finished 槽后手动发射，模拟 worker 延迟完成时 controller 状态已变。
+    """
+
+    @staticmethod
+    def _fire_finished(worker: _FakeAsyncWorker, result) -> None:
+        """手动发射 worker.finished，模拟后台线程完成回调主线程。"""
+        for slot in list(worker.finished.slots):
+            slot(result)
+
+    def _async_controller(self, monkeypatch):
+        """构造 controller 并 patch BackgroundWorker，配置超阈值计数触发异步路径。"""
+        monkeypatch.setattr(list_refresh_module, 'BackgroundWorker', _FakeAsyncWorker)
+        _FakeAsyncWorker.instances = []
+        ctrl = _make_controller()
+        view = _setup(ctrl)
+        # 超过 ASYNC_SEARCH_THRESHOLD(=50) 触发异步刷新（filter 'all' 无论搜索均异步）
+        ctrl._entry_mgr.get_entry_count.return_value = 100
+        # _apply_entry_results 的滚动恢复比较需 int 返回值（saved_row / rowCount）
+        view.entry_list.currentIndex.return_value.row.return_value = -1
+        view.entry_model.rowCount.return_value = 0
+        # setup 初始同步填充已调过 set_entries，重置以隔离异步路径的调用计数
+        view.entry_model.set_entries.reset_mock()
+        return ctrl, view
+
+    def test_stale_worker_result_after_lock_discarded(self, qapp, monkeypatch):
+        """锁定后完成的 worker 不刷新 UI（_done 的 _locked 短路）。"""
+        ctrl, view = self._async_controller(monkeypatch)
+
+        ctrl.refresh_entries()  # 启动异步 worker（filter 'all'）
+        worker = _FakeAsyncWorker.instances[-1]
+        ctrl.prepare_for_lock()  # _locked=True，模拟锁定请求已到来
+        self._fire_finished(worker, ([], '过期结果'))
+
+        # 锁定态丢弃结果，不刷新列表
+        view.entry_model.set_entries.assert_not_called()
+
+    def test_stale_worker_result_after_generation_bump_discarded(self, qapp, monkeypatch):
+        """被更新的刷新取代（代际计数器推进）后，旧 worker 结果丢弃。"""
+        ctrl, view = self._async_controller(monkeypatch)
+
+        ctrl.refresh_entries()  # generation → G，启动 worker_old
+        worker_old = _FakeAsyncWorker.instances[-1]
+        # 模拟用户再次触发刷新：代际推进，worker_old 的 generation 已过期
+        ctrl._entry_refresh_generation += 1
+        self._fire_finished(worker_old, ([], '过期结果'))
+
+        view.entry_model.set_entries.assert_not_called()
+
+    def test_stale_worker_result_after_filter_change_discarded(self, qapp, monkeypatch):
+        """过滤键变更后，旧 filter_key 的 worker 结果丢弃（_done 的 filter_key 校验）。"""
+        ctrl, view = self._async_controller(monkeypatch)
+
+        ctrl.refresh_entries()  # worker 捕获 filter_key='all'
+        worker = _FakeAsyncWorker.instances[-1]
+        # 模拟用户切换过滤器，旧 worker 的 filter_key='all' 已与当前 _current_filter 不符
+        ctrl._current_filter = 'favorite'
+        self._fire_finished(worker, ([], '过期结果'))
+
+        view.entry_model.set_entries.assert_not_called()
+
+    def test_fresh_worker_result_applies_to_ui(self, qapp, monkeypatch):
+        """正向对照：未过期 worker 结果正常应用到 UI（证明丢弃测试非假阴性）。"""
+        ctrl, view = self._async_controller(monkeypatch)
+
+        ctrl.refresh_entries()
+        worker = _FakeAsyncWorker.instances[-1]
+        # 状态未变，worker 结果新鲜 → 应用
+        self._fire_finished(worker, ([], '新结果'))
+
+        view.entry_model.set_entries.assert_called_once_with([])

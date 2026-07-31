@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 
 from PyQt6.QtWidgets import QDialog, QLineEdit, QMainWindow, QMenu
 
-from src.ui.controllers.menu_controller import MenuController, MenuSlots
+from src.ui.controllers.menu_controller import MenuController, MenuDeps, MenuSlots
 
 
 def _make_slots() -> tuple[MenuSlots, dict[str, list[tuple]]]:
@@ -51,11 +51,18 @@ def _make_slots() -> tuple[MenuSlots, dict[str, list[tuple]]]:
 def _make_controller() -> tuple[MenuController, dict[str, list[tuple]]]:
     """构造注入全 MagicMock 依赖的 MenuController，返回 (controller, calls)。"""
     slots, calls = _make_slots()
-    ctrl = MenuController(
-        MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        MagicMock(), MagicMock(), MagicMock(), MagicMock(), MagicMock(),
-        slots,
+    deps = MenuDeps(
+        config=MagicMock(),
+        vault=MagicMock(),
+        entry_mgr=MagicMock(),
+        security=MagicMock(),
+        import_export=MagicMock(),
+        backup=MagicMock(),
+        clipboard=MagicMock(),
+        detail_panel=MagicMock(),
+        auto_backup=MagicMock(),
     )
+    ctrl = MenuController(deps, slots)
     return ctrl, calls
 
 

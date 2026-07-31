@@ -10,7 +10,7 @@
 - CipherBox JSON 结构性拒绝：``app`` 字段错、缺 ``secrets_included`` 布尔声明、
   ``entries`` 非 list、条目非对象。
 
-结构性拒绝的 ValueError 由 ``JsonImporter.parse`` 抛出，经 ``import_file`` →
+结构性拒绝的 ImportError 由 ``JsonImporter.parse`` 抛出，经 ``import_file`` →
 ``_run_importer`` 冒泡（``_validate_import_input`` 仅捕获 UnicodeDecodeError），
 此处经 ``import_file`` 端到端验证错误正确传播。
 """
@@ -21,6 +21,7 @@ import pytest
 
 from src.business.managers import import_export as ie_module
 from src.business.managers.import_export import ImportExportManager
+from src.exceptions import ImportFormatError, ImportSizeError
 from src.models import Entry
 
 
@@ -39,7 +40,7 @@ def test_import_rejects_oversized_file(entry_mgr, tmp_path, monkeypatch):
         encoding='utf-8',
     )  # 内容远超 10 字节阈值
 
-    with pytest.raises(ValueError, match='导入文件过大'):
+    with pytest.raises(ImportSizeError, match='导入文件过大'):
         mgr.import_file(str(csv_path), 'csv')
 
 
@@ -86,7 +87,7 @@ def test_import_rejects_non_cipherbox_json(entry_mgr, tmp_path):
         'entries': [],
     }), encoding='utf-8')
 
-    with pytest.raises(ValueError, match='不是 CipherBox JSON 导出文件'):
+    with pytest.raises(ImportFormatError, match='不是 CipherBox JSON 导出文件'):
         mgr.import_file(str(path), 'json')
 
 
@@ -104,7 +105,7 @@ def test_import_rejects_json_without_secrets_declaration(entry_mgr, tmp_path):
         'entries': [{'title': 'x', 'password': 'leak'}],
     }), encoding='utf-8')
 
-    with pytest.raises(ValueError, match='缺少敏感字段声明'):
+    with pytest.raises(ImportFormatError, match='缺少敏感字段声明'):
         mgr.import_file(str(path), 'json')
 
 
@@ -118,7 +119,7 @@ def test_import_rejects_json_entries_not_list(entry_mgr, tmp_path):
         'entries': {'not': 'a list'},
     }), encoding='utf-8')
 
-    with pytest.raises(ValueError, match='JSON 导入结构无效'):
+    with pytest.raises(ImportFormatError, match='JSON 导入结构无效'):
         mgr.import_file(str(path), 'json')
 
 
@@ -136,5 +137,5 @@ def test_import_rejects_json_non_dict_item(entry_mgr, tmp_path):
         'entries': ['a-string-item', {'title': 'valid'}],
     }), encoding='utf-8')
 
-    with pytest.raises(ValueError, match='不是有效的对象'):
+    with pytest.raises(ImportFormatError, match='不是有效的对象'):
         mgr.import_file(str(path), 'json')

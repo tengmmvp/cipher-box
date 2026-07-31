@@ -35,12 +35,13 @@ jobs:
       - run: uv run ruff check src tests
       - run: uv run mypy src
       - name: Tests with coverage
-        run: uv run pytest --cov=src --cov-report=term-missing --cov-report=xml
-      # 分层覆盖率门槛：非 UI 85% / UI 30%，复用同一 .coverage
+        run: uv run pytest --cov=src --cov-branch --cov-report=term-missing --cov-report=xml
+      # 分层覆盖率门槛（分支覆盖，MAINT-010）：开启 --cov-branch 后分支率严格 ≤ 行率，
+      # 门槛务实下调。复用同一 .coverage，按 --omit/--include 路径切片。
       - name: Non-UI coverage gate
-        run: uv run coverage report --omit="*/src/ui/*" --fail-under=85
+        run: uv run coverage report --omit="*/src/ui/*" --fail-under=73
       - name: UI coverage gate
-        run: uv run coverage report --include="*/src/ui/*" --fail-under=30
+        run: uv run coverage report --include="*/src/ui/*" --fail-under=18
       # pip-audit 经 --with 临时运行，不入 uv.lock
       - name: Dependency vulnerability scan
         run: uv run --with pip-audit pip-audit

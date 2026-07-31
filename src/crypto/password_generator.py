@@ -10,6 +10,8 @@ import secrets
 import string
 from dataclasses import dataclass
 
+from ..models import MAX_FIELD_PASSWORD
+
 logger = logging.getLogger(__name__)
 
 # 模块级安全随机数生成器，避免每次调用重复创建
@@ -17,6 +19,21 @@ _RNG = secrets.SystemRandom()
 
 # 模糊字符集
 AMBIGUOUS_CHARS = 'Il1O0o'
+
+# ---- 密码生成/强度/主密码策略的魔法数字集中为命名常量（单一事实源）----
+# generate 长度区间：低于 4 无法覆盖各字符类至少 1 个的要求，高于 128 无实际
+# 安全收益且拖慢生成；越界仅 warning + clamp，兼容 UI 滑块等调用方。
+PASSWORD_LENGTH_MIN = 4
+PASSWORD_LENGTH_MAX = 128
+# 强度评分上限（0..MAX_STRENGTH_SCORE），backup_validator 与本模块复用，避免 4 字面量
+# 漂移（如未来调整为 0..5 评分刻度时一处生效）。
+MAX_STRENGTH_SCORE = 4
+# 重复字符比例低于此阈值扣分（unique_chars / len），0.4 即 10 字符密码唯一字符少于 4。
+WEAK_UNIQUE_RATIO = 0.4
+# 主密码策略：至少 15 字符（OWASP 建议的最低门槛），上限复用条目密码字段上限
+# MAX_FIELD_PASSWORD，使「密码最大长度」在主密码与条目密码两处单一对齐。
+MIN_MASTER_PASSWORD_LENGTH = 15
+MASTER_PASSWORD_MAX_LENGTH = MAX_FIELD_PASSWORD
 
 # 常见弱密码模式，预编译以避免 check_strength 每次调用重新编译
 _COMMON_WEAK = r'^(123456|password|qwerty|abc123|111111|admin|letmein|welcome|monkey|dragon)'
@@ -91,12 +108,12 @@ class PasswordGenerator:
         Returns:
             生成的随机密码
         """
-        if length < 4:
-            logger.warning("密码长度 %d 低于最小值 4，已自动调整", length)
-            length = 4
-        if length > 128:
-            logger.warning("密码长度 %d 超过上限 128，已自动截断", length)
-            length = 128
+        if length < PASSWORD_LENGTH_MIN:
+            logger.warning("密码长度 %d 低于最小值 %d，已自动调整", length, PASSWORD_LENGTH_MIN)
+            length = PASSWORD_LENGTH_MIN
+        if length > PASSWORD_LENGTH_MAX:
+            logger.warning("密码长度 %d 超过上限 %d，已自动截断", length, PASSWORD_LENGTH_MAX)
+            length = PASSWORD_LENGTH_MAX
 
         charset = ''
         required = []
@@ -216,20 +233,20 @@ class PasswordGenerator:
             score = min(score, 1)
             feedback.append('这是一个常见密码，极易被破解')
 
-        # 先 clamp 到 [0,4]，再应用重复惩罚：确保强密码（原始分 5-6）的重复
-        # 问题能实际降档，而非被最终 clamp 重新拉回 4。
-        score = min(4, max(0, score))
+        # 先 clamp 到 [0, MAX_STRENGTH_SCORE]，再应用重复惩罚：确保强密码（原始分 5-6）
+        # 的重复问题能实际降档，而非被最终 clamp 重新拉回 MAX_STRENGTH_SCORE。
+        score = min(MAX_STRENGTH_SCORE, max(0, score))
 
         # 有重复字符惩罚：降低 1 分，但不低于 0
         unique_ratio = len(set(password)) / len(password) if password else 0
-        if unique_ratio < 0.4:
+        if unique_ratio < WEAK_UNIQUE_RATIO:
             score = max(0, score - 1)
             feedback.append('密码中重复字符过多')
 
         labels = ['非常弱', '弱', '一般', '强', '非常强']
         label = labels[score]
 
-        if score >= 4 and not feedback:
+        if score >= MAX_STRENGTH_SCORE and not feedback:
             feedback.append('密码强度优秀')
 
         return StrengthResult(
@@ -249,10 +266,10 @@ class PasswordGenerator:
         """主密码策略：至少 15 字符，拒绝常见与明显重复密码。"""
         if not password:
             return False, f'{label}不能为空'
-        if len(password) < 15:
-            return False, f'{label}长度不能少于 15 个字符'
-        if len(password) > 1024:
-            return False, f'{label}长度不能超过 1024 个字符'
+        if len(password) < MIN_MASTER_PASSWORD_LENGTH:
+            return False, f'{label}长度不能少于 {MIN_MASTER_PASSWORD_LENGTH} 个字符'
+        if len(password) > MASTER_PASSWORD_MAX_LENGTH:
+            return False, f'{label}长度不能超过 {MASTER_PASSWORD_MAX_LENGTH} 个字符'
         if len(set(password)) <= 2:
             return False, f'{label}包含过多重复字符'
         strength = PasswordGenerator.check_strength(password)

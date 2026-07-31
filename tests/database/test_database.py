@@ -4,8 +4,7 @@
 嵌套事务 savepoint 行为，以及 Entry 模型的 to_dict、from_dict 序列化。
 """
 
-import tempfile
-from pathlib import Path
+import dataclasses
 
 import pytest
 
@@ -25,22 +24,18 @@ def _make_entry(**kwargs) -> RawEntry:
 # Fixture: 创建临时数据库，关闭加密断言
 
 @pytest.fixture
-def db():
+def db(tmp_path):
     """创建一个临时数据库并初始化表结构。
 
     test_mode=True 关闭密文前缀断言，适配测试直接构造的非密文数据。
+    tmp_path 由 pytest 提供并自动清理，无需手动删除数据库文件。
     """
-    tmp_dir = tempfile.mkdtemp()
-    db_path = Path(tmp_dir) / 'test_vault.db'
+    db_path = tmp_path / 'test_vault.db'
     database = DatabaseManager(db_path, test_mode=True)
     database.open()
     database.init_tables()
     yield database
     database.close()
-    try:
-        db_path.unlink(missing_ok=True)
-    except Exception:
-        pass
 
 
 # TestDatabaseManager
@@ -85,7 +80,7 @@ def test_update_category_rejects_duplicate_name(db):
     db.add_category(Category(name='测试分类B'))
     cat1 = db.get_category(cat1_id)
     assert cat1 is not None
-    cat1.name = '测试分类B'
+    cat1 = dataclasses.replace(cat1, name='测试分类B')
     with pytest.raises(ValueError, match='已被其他分类占用'):
         db.update_category(cat1)
 

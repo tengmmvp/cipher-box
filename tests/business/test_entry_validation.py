@@ -1,5 +1,7 @@
 """EntryManager 明文条目校验逻辑测试。"""
 
+import dataclasses
+
 import pytest
 
 from src.business.services.entry_validation import validate_plain_entry
@@ -39,13 +41,13 @@ class TestValidatePlainEntry:
     def test_string_field_non_string_rejected(self):
         """加密字符串字段类型非 str 应拒绝（title 为 int）。"""
         entry = _make_entry()
-        entry.title = 123  # type: ignore[assignment]
+        entry = dataclasses.replace(entry, title=123)  # type: ignore[arg-type]
         with pytest.raises(ValueError, match='类型'):
             validate_plain_entry(entry)
 
     def test_password_non_string_rejected(self):
         entry = _make_entry()
-        entry.password = None  # type: ignore[assignment]
+        entry = dataclasses.replace(entry, password=None)  # type: ignore[arg-type]
         with pytest.raises(ValueError, match='类型'):
             validate_plain_entry(entry)
 
@@ -56,7 +58,7 @@ class TestValidatePlainEntry:
     def test_field_too_long_rejected(self, field_name, max_len):
         """每个长度受限字段超出上限应被拒绝。"""
         entry = _make_entry()
-        setattr(entry, field_name, 'x' * (max_len + 1))
+        entry = dataclasses.replace(entry, **{field_name: 'x' * (max_len + 1)})
         with pytest.raises(ValueError, match='过长'):
             validate_plain_entry(entry)
 
@@ -67,7 +69,7 @@ class TestValidatePlainEntry:
     def test_field_at_limit_passes(self, field_name, max_len):
         """恰等于上限应通过（边界守护）。"""
         entry = _make_entry()
-        setattr(entry, field_name, 'x' * max_len)
+        entry = dataclasses.replace(entry, **{field_name: 'x' * max_len})
         validate_plain_entry(entry)
 
     def test_custom_fields_non_list_rejected(self):
@@ -77,13 +79,16 @@ class TestValidatePlainEntry:
         非 list 的 custom_fields 使 is_decrypted 为 False，应被拒绝。
         """
         entry = _make_entry()
-        entry.custom_fields = 'not-a-list'  # type: ignore[assignment]
+        entry = dataclasses.replace(entry, custom_fields='not-a-list')  # type: ignore[arg-type]
         with pytest.raises(ValueError):
             validate_plain_entry(entry)
 
     def test_custom_fields_contains_non_custom_field_rejected(self):
         entry = _make_entry()
-        entry.custom_fields = [CustomField(name='n', value='v'), 'x']  # type: ignore[list-item]
+        entry = dataclasses.replace(
+            entry,
+            custom_fields=[CustomField(name='n', value='v'), 'x'],  # type: ignore[list-item]
+        )
         with pytest.raises(ValueError, match='自定义字段'):
             validate_plain_entry(entry)
 

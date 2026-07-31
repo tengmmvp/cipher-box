@@ -8,10 +8,12 @@ import logging
 import sqlite3
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
+from dataclasses import replace
+from typing import Any
 
-from ..exceptions import DatabaseError, VaultIntegrityError, VaultLockedError
+from ..exceptions import DatabaseError, TransactionError, VaultIntegrityError, VaultLockedError
 from ..models import MAX_PASSWORD_HISTORY, PasswordHistory, RawEntry
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation, _db_write
@@ -20,16 +22,18 @@ from .types import ConnectionProvider, EntryQuery, ReEncryptedEntry, ReEncrypted
 logger = logging.getLogger(__name__)
 
 # _ENTRY_COLUMNS 是 entries 表非 id 列名的单一事实来源。
-# 重要：新增 entries 表列时必须在此列表追加，INSERT/UPDATE/SELECT 等派生 SQL
+# 重要：新增 entries 表列时必须在此元组追加，INSERT/UPDATE/SELECT 等派生 SQL
 # 会自动跟随；同时须同步纳入 MetadataSigner._payload 的签名载荷
 # （由 test_entry_signature_coverage 断言守护，防止漏签）。
-_ENTRY_COLUMNS = [
+# 用 tuple（不可变）而非 list：误用 ``_ENTRY_COLUMNS.append(...)`` 会在运行时抛
+# AttributeError，防止模块级列序常量被无意改写致 SQL 列错位（ARCH-024）。
+_ENTRY_COLUMNS = (
     'crypto_id', 'title_enc', 'username_enc', 'password_enc', 'url_enc',
     'category_id', 'tags_enc', 'notes_enc', 'custom_fields_enc',
     'is_favorite', 'is_deleted', 'password_strength', 'entry_type',
     'totp_secret_enc', 'created_at', 'updated_at', 'deleted_at',
     'password_changed_at', 'metadata_mac',
-]
+)
 
 # entries 表列名 → 取值函数。INSERT/UPDATE 参数元组与加密字段断言均从此单一来源
 # 派生（列序来自 _ENTRY_COLUMNS，取值来自本映射），消除手写参数元组靠人工保持
@@ -78,7 +82,7 @@ for _col, _getter in _ENTRY_COLUMN_GETTERS.items():
 del _PROBE_ENTRY
 
 
-def _entry_column_values(entry: RawEntry, columns: list[str]) -> tuple:
+def _entry_column_values(entry: RawEntry, columns: Sequence[str]) -> tuple[Any, ...]:
     """按给定列序从 entry 取值生成参数元组，供 INSERT/UPDATE 位置绑定。
 
     取值经 _ENTRY_COLUMN_GETTERS（列名→取值），与 SQL 列序（_ENTRY_COLUMNS /
@@ -138,7 +142,7 @@ _RE_ENCRYPT_BATCH_UPDATE_SQL = (
 # 避免在 _row_to_entry 中对缺失列做特殊处理。
 _SELECT_ENTRY_SIGN_SQL = (
     f"SELECT {', '.join(['e.id'] + [f'e.{c}' for c in _ENTRY_COLUMNS])}, "  # nosec B608 - 列名硬编码
-    "c.name as category_name "
+    "c.name_enc as category_name "
     "FROM entries e LEFT JOIN categories c ON e.category_id = c.id WHERE e.id=?"
 )
 
@@ -147,7 +151,7 @@ _SELECT_ENTRY_SIGN_SQL = (
 # JOIN 片段。_SELECT_ENTRY_SIGN_SQL 用显式列名（e.id, e.<col>...）而非 e.*，
 # 因签名查询需精确列序与 _ENTRY_COLUMNS 对齐，故独立不合并。
 _SELECT_ENTRY_WITH_CATEGORY_SQL = (
-    "SELECT e.*, c.name as category_name "
+    "SELECT e.*, c.name_enc as category_name "
     "FROM entries e LEFT JOIN categories c ON e.category_id = c.id"
 )
 
@@ -261,7 +265,7 @@ class EntryRepository:
     # ==================== 条目 ====================
 
     @staticmethod
-    def _entry_insert_params(entry: RawEntry) -> tuple:
+    def _entry_insert_params(entry: RawEntry) -> tuple[Any, ...]:
         """构造 INSERT 参数元组，列序与 _ENTRY_COLUMNS 一致。
 
         供 add_entry 与 add_entries_batch 共用。取值经 _ENTRY_COLUMN_GETTERS 驱动，
@@ -270,7 +274,7 @@ class EntryRepository:
         return _entry_column_values(entry, _ENTRY_COLUMNS)
 
     @staticmethod
-    def _entry_update_params(entry: RawEntry) -> tuple:
+    def _entry_update_params(entry: RawEntry) -> tuple[Any, ...]:
         """构造 UPDATE SET 参数元组（不含 WHERE id），列序与 _UPDATE_ENTRY_COLUMNS 一致。
 
         与 _entry_insert_params 对称：UPDATE 不写 is_deleted/deleted_at/created_at，
@@ -290,6 +294,10 @@ class EntryRepository:
         篡改；SKIP 仅用于签名计算前的原始读取（_select_entry_for_sign 等，不能先
         验签再算签名）。单条详情用 STRICT 在校验失败时抛异常。
         """
+        # ARCH-005：本方法手写 with self._lock 而非挂 @_db_operation，跳过了装饰器
+        # 的连接校验；显式补齐，使未连接时抛领域 DatabaseError 而非无诊断的 AttributeError。
+        if self._conn is None:
+            raise DatabaseError("数据库未连接")
         sql = _SELECT_ENTRY_WITH_CATEGORY_SQL + " WHERE 1=1"
         params: list = []
 
@@ -335,31 +343,41 @@ class EntryRepository:
 
     def _normalize_for_insert(
         self, entry: RawEntry, *, now: str, preserve_metadata: bool,
-    ) -> None:
+    ) -> RawEntry:
         """填充 INSERT 所需的默认字段(crypto_id/时间戳/删除状态/签名)。
 
         add_entry 与 add_entries_batch 共用，消除两处复制粘贴的规范化逻辑漂移。
         password_changed_at 回退到 created_at（"未改过密码即创建时间"语义），而非
         updated_at/now，避免导入/恢复时用导入时刻覆盖历史时间。
+
+        RawEntry 为 frozen dataclass，返回经 replace 产生的新实例（含签名），
+        调用方须承接返回值。
         """
-        entry.crypto_id = entry.crypto_id or uuid.uuid4().hex
-        entry.created_at = entry.created_at or now
-        entry.updated_at = (
+        crypto_id = entry.crypto_id or uuid.uuid4().hex
+        created_at = entry.created_at or now
+        updated_at = (
             entry.updated_at if preserve_metadata and entry.updated_at else now
         )
-        entry.is_deleted = bool(preserve_metadata and entry.is_deleted)
-        entry.deleted_at = entry.deleted_at if preserve_metadata else ''
-        entry.password_changed_at = (
-            entry.password_changed_at or entry.created_at or now
+        is_deleted = bool(preserve_metadata and entry.is_deleted)
+        deleted_at = entry.deleted_at if preserve_metadata else ''
+        password_changed_at = entry.password_changed_at or created_at or now
+        entry = replace(
+            entry,
+            crypto_id=crypto_id,
+            created_at=created_at,
+            updated_at=updated_at,
+            is_deleted=is_deleted,
+            deleted_at=deleted_at,
+            password_changed_at=password_changed_at,
         )
-        entry.metadata_mac = self._sign_entry(entry)
+        return replace(entry, metadata_mac=self._sign_entry(entry))
 
     @_db_write
     def add_entry(self, entry: RawEntry, preserve_metadata: bool = False) -> int:
         """添加条目，返回 ID。"""
         # 防御性断言，防止明文静默写入加密列
         self._assert_entry_encrypted_fields(entry)
-        self._normalize_for_insert(
+        entry = self._normalize_for_insert(
             entry, now=utc_now_iso(), preserve_metadata=preserve_metadata,
         )
         try:
@@ -396,14 +414,16 @@ class EntryRepository:
             return {}
         now = utc_now_iso()
         params = []
+        normalized: list[RawEntry] = []
         for entry in entries:
             # 恢复数据来自外部备份，逐条断言加密列防止明文静默落库（与 add_entry
             # 一致，不采样护栏——恢复是低频全量写入，逐条断言开销可接受）。
             self._assert_entry_encrypted_fields(entry)
-            self._normalize_for_insert(
+            entry = self._normalize_for_insert(
                 entry, now=now, preserve_metadata=preserve_metadata,
             )
             params.append(self._entry_insert_params(entry))
+            normalized.append(entry)
         try:
             self._conn.executemany(_INSERT_ENTRY_SQL, params)
         except sqlite3.IntegrityError as exc:
@@ -412,7 +432,7 @@ class EntryRepository:
         # executemany 不提供逐条 lastrowid，按 crypto_id 反查 id 建立映射。
         # 按 _ID_BATCH_SIZE 分批，避免恢复 >999 条目时 crypto_id IN(...) 超出
         # SQLite 主机变量上限（与 get_entries_by_ids 一致）。
-        crypto_ids = [entry.crypto_id for entry in entries]
+        crypto_ids = [entry.crypto_id for entry in normalized]
         id_map: dict[str, int] = {}
         for start in range(0, len(crypto_ids), _ID_BATCH_SIZE):
             batch = crypto_ids[start:start + _ID_BATCH_SIZE]
@@ -439,12 +459,14 @@ class EntryRepository:
         """
         # 防御性断言，防止明文静默写入加密列
         self._assert_entry_encrypted_fields(entry)
-        entry.updated_at = (
+        updated_at = (
             entry.updated_at
             if preserve_updated_at and entry.updated_at
             else utc_now_iso()
         )
-        entry.metadata_mac = self._sign_entry(entry)
+        # RawEntry 为 frozen，用 replace 产生带新时间戳与签名的新实例供写库。
+        entry = replace(entry, updated_at=updated_at)
+        entry = replace(entry, metadata_mac=self._sign_entry(entry))
         # SET 参数经 _entry_update_params 取值（_UPDATE_ENTRY_COLUMNS 列序），末尾
         # 追加 WHERE id 绑定。列序由 _ENTRY_COLUMN_GETTERS 单一来源守护，
         # 与 INSERT 路径对称，消除手写 17 字段元组的列错位风险。
@@ -486,9 +508,8 @@ class EntryRepository:
         if entry is None:
             logger.warning("软删除条目 %d 失败：条目不存在", entry_id)
             return False
-        entry.is_deleted = True
-        entry.deleted_at = now
-        entry.metadata_mac = self._sign_entry(entry)
+        entry = replace(entry, is_deleted=True, deleted_at=now)
+        entry = replace(entry, metadata_mac=self._sign_entry(entry))
         self._conn.execute(
             "UPDATE entries SET is_deleted=1, deleted_at=?, metadata_mac=? WHERE id=?",
             (now, entry.metadata_mac, entry_id),
@@ -503,9 +524,8 @@ class EntryRepository:
         if entry is None:
             logger.warning("恢复条目 %d 失败：条目不存在", entry_id)
             return False
-        entry.is_deleted = False
-        entry.deleted_at = ''
-        entry.metadata_mac = self._sign_entry(entry)
+        entry = replace(entry, is_deleted=False, deleted_at='')
+        entry = replace(entry, metadata_mac=self._sign_entry(entry))
         self._conn.execute(
             "UPDATE entries SET is_deleted=0, deleted_at='', metadata_mac=? WHERE id=?",
             (entry.metadata_mac, entry_id),
@@ -566,6 +586,9 @@ class EntryRepository:
         """
         if not entry_ids:
             return []
+        # ARCH-005：手写 with self._lock 绕过 @_db_operation，显式补连接校验。
+        if self._conn is None:
+            raise DatabaseError("数据库未连接")
         # 去重保序：重复 id 致返回行数 < 请求数，调用方按位置对齐会错位。
         unique_ids = list(dict.fromkeys(entry_ids))
         fetched_rows = []
@@ -742,7 +765,7 @@ class EntryRepository:
         已知取舍保留——删除分类是低频操作，阻塞窗口可接受。
         """
         if not self.in_transaction:
-            raise RuntimeError(
+            raise TransactionError(
                 'clear_category_signatures 须在活动事务内调用（由 DatabaseManager.delete_category 编排）'
             )
         rows = self._conn.execute(
@@ -752,8 +775,8 @@ class EntryRepository:
         update_data = []
         for row in rows:
             entry = self._row_to_entry(row, verify=VerifyMode.SKIP)
-            entry.category_id = None
-            entry.metadata_mac = self._sign_entry(entry)
+            entry = replace(entry, category_id=None)
+            entry = replace(entry, metadata_mac=self._sign_entry(entry))
             update_data.append((entry.metadata_mac, entry.id))
         if update_data:
             self._conn.executemany(
@@ -801,8 +824,11 @@ class EntryRepository:
             except VaultIntegrityError:
                 if verify == VerifyMode.STRICT:
                     raise
-                entry.integrity_error = True
-                entry.integrity_message = '元数据完整性校验失败'
+                entry = replace(
+                    entry,
+                    integrity_error=True,
+                    integrity_message='元数据完整性校验失败',
+                )
             except VaultLockedError:
                 # 未解锁状态（如锁定期间后台分析线程读到已清零的域密钥）
                 # 不是完整性错误，向上传播让调用方处理

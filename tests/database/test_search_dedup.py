@@ -13,10 +13,7 @@ class TestMatchesSearch:
 
     def _make_entry(self, **kwargs):
         """构建仅含搜索字段的 Entry，其他字段使用默认值。"""
-        entry = Entry()
-        for key, value in kwargs.items():
-            setattr(entry, key, value)
-        return entry
+        return Entry(**kwargs)
 
     def test_matches_title(self):
         e = self._make_entry(title='GitHub Login')

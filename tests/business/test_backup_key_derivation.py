@@ -6,7 +6,6 @@
 """
 
 import os
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -15,14 +14,17 @@ from src.crypto.master_key import MasterKeyManager
 from tests.helpers import make_entry_manager, make_test_config, make_vault
 
 
-def _make_config(tmp_dir: str):
+def _make_config(tmp_dir):
     return make_test_config(tmp_dir)
 
 
 @pytest.fixture()
-def vault_and_key():
-    """创建并初始化 VaultManager，返回 vault、key、tmp_dir 三元组。"""
-    tmp_dir = tempfile.mkdtemp()
+def vault_and_key(tmp_path):
+    """创建并初始化 VaultManager，返回 vault、key、tmp_dir 三元组。
+
+    tmp_dir 由 pytest ``tmp_path`` 提供（Path 类型）并自动清理，无需手动删除。
+    """
+    tmp_dir = tmp_path
     config = _make_config(tmp_dir)
     vault = make_vault(config)
     vault.initialize('TestBackupKey!2026')

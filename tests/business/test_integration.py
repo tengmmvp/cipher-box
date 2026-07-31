@@ -6,6 +6,7 @@ VaultManager 的初始化与改密重加密、BackupRestoreManager 的备份恢�
 提交与回滚，以及 ImportExportManager 的 JSON 与 CSV 往返。
 """
 
+import dataclasses
 import os
 import shutil
 import tempfile
@@ -94,8 +95,7 @@ def test_update_preserves_password_history(entry_mgr_env):
     entry_id = entry_mgr.add_entry(entry)
 
     # 2. 修改密码
-    entry.id = entry_id
-    entry.password = 'NewPassword456!'
+    entry = dataclasses.replace(entry, id=entry_id, password='NewPassword456!')
     entry_mgr.update_entry(entry)
 
     # 3. 查询密码历史，验证旧密码存在

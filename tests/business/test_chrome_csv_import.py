@@ -8,6 +8,7 @@
 import pytest
 
 from src.business.managers.import_export import ImportExportManager
+from src.exceptions import ImportFormatError
 
 
 def test_import_from_chrome_csv_maps_columns(entry_mgr, tmp_path):
@@ -54,5 +55,5 @@ def test_import_rejects_missing_default_category(entry_mgr, tmp_path):
         encoding='utf-8',
     )
 
-    with pytest.raises(ValueError, match='默认分类不存在'):
+    with pytest.raises(ImportFormatError, match='默认分类不存在'):
         mgr.import_file(str(csv_path), 'chrome_csv', default_category_id=999_999)

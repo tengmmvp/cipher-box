@@ -99,3 +99,29 @@ def make_entry():
         )
         return dataclasses.replace(entry, **overrides)
     return _make_entry
+
+
+@pytest.fixture(autouse=True)
+def _reclaim_qt_widgets():
+    """每个测试后回收 Qt 顶层 widget 的 C++ 对象，阻断全量测试累积崩溃。
+
+    测试里 ``MainWindow``/``Dialog`` 经 ``close()`` 仅隐藏窗口，其底层 C++ 对象
+    要等 Python GC 才释放。全量测试反复构造 ``MainWindow``（每实例持数百子 widget、
+    controller 与去抖定时器），C++ 内存持续累积，Windows 下最终触发 C 层
+    access violation（无法 try/except，进程直接崩溃）。teardown 阶段显式
+    ``deleteLater`` 所有顶层 widget 并 ``processEvents`` 推进 DeferredDelete，
+    及时回收，使每个测试在干净的 Qt 对象基线上运行。
+    """
+    yield
+    from PyQt6.QtWidgets import QApplication
+    app = QApplication.instance()
+    # isinstance 同时排除 None 与非 QApplication（QGuiApplication/QCoreApplication
+    # 无 topLevelWidgets），并窄化为 QApplication 以访问 topLevelWidgets/processEvents。
+    if not isinstance(app, QApplication):
+        return
+    for widget in list(app.topLevelWidgets()):
+        widget.deleteLater()
+    # deleteLater 把对象排入下一轮事件循环的 DeferredDelete 队列；processEvents
+    # 迭代事件循环完成析构。复杂 widget 树可能需额外一轮，故调用两次。
+    app.processEvents()
+    app.processEvents()

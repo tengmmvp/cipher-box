@@ -7,16 +7,14 @@
 """
 
 import os
-import tempfile
-from pathlib import Path
 
 import pytest
 
 from src.crypto.encryption import EncryptionEngine
 from src.database import entry_repository
 from src.database.db_manager import DatabaseManager
-from src.database.types import EntryQuery, ReEncryptedEntry, ReEncryptedHistory
-from src.exceptions import DatabaseError
+from src.database.types import EntryQuery, ReEncryptedEntry, ReEncryptedHistory, VerifyMode
+from src.exceptions import DatabaseError, TransactionError, VaultIntegrityError
 from src.models import MAX_PASSWORD_HISTORY, RawEntry
 
 
@@ -28,18 +26,17 @@ def _make_entry(**kwargs) -> RawEntry:
 
 
 @pytest.fixture
-def db():
-    _tmp_dir = tempfile.mkdtemp()
-    _db_path = Path(_tmp_dir) / 'test_boundary.db'
+def db(tmp_path):
+    """临时数据库，test_mode 关闭密文断言。
+
+    tmp_path 由 pytest 提供并自动清理。
+    """
+    _db_path = tmp_path / 'test_boundary.db'
     _db = DatabaseManager(_db_path, test_mode=True)
     _db.open()
     _db.init_tables()
     yield _db
     _db.close()
-    try:
-        _db_path.unlink(missing_ok=True)
-    except Exception:
-        pass
 
 
 def test_password_history_truncated_to_max(db):
@@ -304,3 +301,58 @@ def test_update_password_history_batch_happy_path(secure_db):
         assert EncryptionEngine.decrypt(
             rec.old_password_enc, new_key, f'entry:{crypto_id}:password',
         ) == f'new-pwd-{h.id}'
+
+
+# === STRICT 验签与事务契约 ===
+
+
+def test_get_entries_strict_raises_on_tampered_metadata_mac(vault, entry_mgr, make_entry):
+    """VerifyMode.STRICT 在 metadata_mac 篡改时抛 VaultIntegrityError。
+
+    vault fixture 经组合根装配真实 MetadataSigner（entry_verifier 已连线），add_entry
+    写入的条目带合法 HMAC 签名。直接 UPDATE 篡改 mac 后，get_entries(STRICT) 验签
+    失败抛出，区别于 LENIENT 仅标记、SKIP 完全跳过。
+    """
+    entry_id = entry_mgr.add_entry(make_entry(title='签名条目'))
+
+    # 经 db 受管事务篡改 metadata_mac，破坏 HMAC 一致性
+    with vault.db.transaction():
+        vault.db._conn.execute(
+            "UPDATE entries SET metadata_mac=? WHERE id=?",
+            ('tampered_mac_value', entry_id),
+        )
+
+    with pytest.raises(VaultIntegrityError):
+        vault.db.get_entries(EntryQuery(verify=VerifyMode.STRICT))
+
+
+def test_get_entries_skip_does_not_raise_on_tampered_mac(vault, entry_mgr, make_entry):
+    """VerifyMode.SKIP 对同一篡改库不抛（正对照），返回条目不验签。"""
+    entry_id = entry_mgr.add_entry(make_entry(title='另一条目'))
+    with vault.db.transaction():
+        vault.db._conn.execute(
+            "UPDATE entries SET metadata_mac=? WHERE id=?",
+            ('tampered_mac_value', entry_id),
+        )
+
+    fetched = vault.db.get_entries(EntryQuery(verify=VerifyMode.SKIP))
+
+    assert any(e.id == entry_id for e in fetched)
+
+
+def test_clear_category_signatures_requires_active_transaction(db):
+    """clear_category_signatures 在无活动事务时抛 TransactionError（契约守卫）。
+
+    本方法不自行获取 db_lock，调用方（DatabaseManager.delete_category）须已在事务内。
+    入口断言将此契约从注释升级为运行期检查，防止裸 DELETE 跨表不一致。
+    """
+    assert not db.in_transaction
+    with pytest.raises(TransactionError, match='活动事务'):
+        db._entry_repo.clear_category_signatures(999)
+
+
+def test_delete_category_requires_active_transaction(db):
+    """CategoryRepository.delete_category 在无活动事务时抛 TransactionError。"""
+    assert not db.in_transaction
+    with pytest.raises(TransactionError, match='活动事务'):
+        db._category_repo.delete_category(1)

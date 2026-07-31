@@ -4,6 +4,8 @@
 build_entry_summary 生成的摘要条目不包含敏感字段。
 """
 
+import dataclasses
+
 from src.business.services.crypto_utils import build_entry_summary, copy_entry_fields
 from src.models import RawEntry
 
@@ -108,5 +110,5 @@ class TestBuildEntrySummary:
     def test_summary_is_independent_copy(self):
         raw = _make_entry(title='Original')
         summary = build_entry_summary(raw, username='test')
-        summary.title = 'Modified'
+        dataclasses.replace(summary, title='Modified')
         assert raw.title == 'Original'

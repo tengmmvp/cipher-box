@@ -9,7 +9,10 @@ Entry、Category 等模型类与字段常量是纯数据结构，不依赖任何
 
 import logging
 from dataclasses import dataclass, field, fields
+from types import MappingProxyType
 from typing import Any
+
+from .exceptions import EntryError
 
 logger = logging.getLogger(__name__)
 
@@ -72,13 +75,16 @@ ENTRY_TYPE_IDENTITY = 'identity'
 ENTRY_TYPE_NOTE = 'note'
 ENTRY_TYPE_SERVER = 'server'
 
-ENTRY_TYPES = {
+# 只读映射：MappingProxyType 使误用 ``ENTRY_TYPES[k] = ...`` / ``.pop()`` 等原地突变
+# 在运行时即抛 TypeError，防止模块级常量被无意改写（ARCH-024）。读取路径
+#（``in`` / ``[]`` / ``.items()`` / ``.get()``）与原 dict 完全一致。
+ENTRY_TYPES = MappingProxyType({
     ENTRY_TYPE_LOGIN: {'label': '登录凭证', 'icon': '[KEY]'},
     ENTRY_TYPE_CARD: {'label': '信用卡', 'icon': '[CARD]'},
     ENTRY_TYPE_IDENTITY: {'label': '身份信息', 'icon': '[ID]'},
     ENTRY_TYPE_NOTE: {'label': '安全笔记', 'icon': '[NOTE]'},
     ENTRY_TYPE_SERVER: {'label': '服务器', 'icon': '[SRV]'},
-}
+})
 
 # 专用字段 storage_name（带 ``_`` 前缀命名空间，与用户自定义字段隔离）。
 # entry_dialog 的 ``_SPECIAL_SCHEMA`` 与 import_export 的 Bitwarden/CSV 导入共用
@@ -98,7 +104,7 @@ SPECIAL_FIELD_SERVER_PORT = '_server_port'
 SPECIAL_FIELD_SERVER_PROTOCOL = '_server_protocol'
 
 
-@dataclass(repr=False)
+@dataclass(repr=False, frozen=True)
 class CustomField:
     """自定义字段。"""
     name: str
@@ -114,7 +120,7 @@ class CustomField:
             f'field_type={self.field_type!r})'
         )
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             'name': self.name,
             'value': self.value,
@@ -135,13 +141,13 @@ class CustomField:
         value = d.get('value', '')
         if strict:
             if not isinstance(name, str) or len(name) > MAX_CUSTOM_FIELD_NAME:
-                raise ValueError('自定义字段名称无效或过长')
+                raise EntryError('自定义字段名称无效或过长')
             if not isinstance(value, str) or len(value) > MAX_CUSTOM_FIELD_VALUE:
-                raise ValueError('自定义字段值无效或过长')
+                raise EntryError('自定义字段值无效或过长')
         field_type = d.get('field_type', 'text')
         if field_type not in cls._VALID_FIELD_TYPES:
             if strict:
-                raise ValueError(f'无效的自定义字段类型: {field_type}')
+                raise EntryError(f'无效的自定义字段类型: {field_type}')
             logger.debug("自定义字段类型 %r 非法，降级为 text", field_type)
             field_type = 'text'
         return cls(
@@ -166,7 +172,7 @@ class Sensitive(str):
         return "Sensitive('<redacted>')"
 
 
-@dataclass
+@dataclass(frozen=True)
 class Category:
     """密码分类。"""
     id: int | None = None
@@ -182,7 +188,7 @@ class Category:
     # 失败（分类名密文仍由 GCM 认证兜底，但元数据篡改可静默通过）。
     integrity_error: bool = False
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             'id': self.id,
             'name': self.name,
@@ -201,24 +207,24 @@ class Category:
         """
         name = data.get('name', '')
         if not isinstance(name, str):
-            raise ValueError('分类名称类型无效，必须为字符串')
+            raise EntryError('分类名称类型无效，必须为字符串')
         name = name.strip()
         if len(name) > MAX_CATEGORY_NAME:
-            raise ValueError(f'分类名称过长（最多 {MAX_CATEGORY_NAME} 字符）')
+            raise EntryError(f'分类名称过长（最多 {MAX_CATEGORY_NAME} 字符）')
         icon_char = data.get('icon_char', '[DIR]')
         if not isinstance(icon_char, str):
-            raise ValueError('分类图标类型无效')
+            raise EntryError('分类图标类型无效')
         if len(icon_char) > 32:
-            raise ValueError('分类图标过长')
+            raise EntryError('分类图标过长')
         color = data.get('color', '#666666')
         if not isinstance(color, str):
-            raise ValueError('分类颜色类型无效')
+            raise EntryError('分类颜色类型无效')
         if len(color) > 32:
-            raise ValueError('分类颜色过长')
+            raise EntryError('分类颜色过长')
         sort_order = data.get('sort_order', 0)
         # 排除 bool（bool 是 int 子类），与 Entry.from_dict 的严格类型校验风格对齐
         if not is_real_int(sort_order):
-            raise ValueError('分类排序值类型无效，必须为整数')
+            raise EntryError('分类排序值类型无效，必须为整数')
         return cls(
             id=data.get('id'),
             name=name,
@@ -229,7 +235,7 @@ class Category:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class PasswordHistory:
     """密码历史记录。"""
     id: int | None = None
@@ -238,7 +244,7 @@ class PasswordHistory:
     changed_at: str = ''
     entry_crypto_id: str = ''
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """转换为字典，用于调试和日志输出。
 
         注意：此方法故意不导出 old_password_enc，避免泄漏加密密文。
@@ -276,7 +282,7 @@ def _parse_tag_list(tags: str) -> list[str]:
     return [t.strip() for t in tags.split(',') if t.strip()]
 
 
-@dataclass(repr=False)
+@dataclass(repr=False, frozen=True)
 class Entry:
     """密码条目（明文态）。
 
@@ -357,7 +363,7 @@ class Entry:
         """获取标签列表。"""
         return _parse_tag_list(self.tags)
 
-    def to_dict(self, include_password: bool = False) -> dict:
+    def to_dict(self, include_password: bool = False) -> dict[str, Any]:
         """转换为字典，供导出流程使用。
 
         非持久化字段不参与导出，包括 id、crypto_id、is_deleted、deleted_at、
@@ -406,7 +412,7 @@ class Entry:
         """
         entry_type = d.get('entry_type', ENTRY_TYPE_LOGIN)
         if entry_type not in ENTRY_TYPES:
-            raise ValueError(f'无效的条目类型: {entry_type}')
+            raise EntryError(f'无效的条目类型: {entry_type}')
 
         # 表驱动长度校验，单一事实源见 models.ENTRY_FIELD_LIMITS
         field_limits = ENTRY_FIELD_LIMITS
@@ -414,9 +420,9 @@ class Entry:
         for key, label, max_len in field_limits:
             value = d.get(key, '')
             if not isinstance(value, str):
-                raise ValueError(f'{label}类型无效，必须为字符串')
+                raise EntryError(f'{label}类型无效，必须为字符串')
             if len(value) > max_len:
-                raise ValueError(f'{label}过长（最多 {max_len} 字符）')
+                raise EntryError(f'{label}过长（最多 {max_len} 字符）')
             values[key] = value
         title = values['title']
         url = values['url']
@@ -433,7 +439,7 @@ class Entry:
         # 限制单条目自定义字段数量，防御恶意或异常导入数据。
         # 与 backup _validate_entries 的结构校验保持一致的防御意图。
         if len(custom_fields) > MAX_CUSTOM_FIELDS_PER_ENTRY:
-            raise ValueError('自定义字段数量过多（最多 100 个）')
+            raise EntryError('自定义字段数量过多（最多 100 个）')
 
         return cls(
             title=title,
@@ -453,7 +459,7 @@ class Entry:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class RawEntry:
     """从数据库读取的密文态条目。
 

@@ -167,19 +167,23 @@ class PasswordGeneratorDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def _generate(self) -> None:
-        # 至少需要一种字符集，否则无法生成密码
-        if not any((
-            self._upper_check.isChecked(), self._lower_check.isChecked(),
-            self._digits_check.isChecked(), self._symbols_check.isChecked(),
-        )):
-            QMessageBox.warning(self, '生成规则无效', '至少需要选择一种字符类型。')
+        uppercase = self._upper_check.isChecked()
+        lowercase = self._lower_check.isChecked()
+        digits = self._digits_check.isChecked()
+        symbols = self._symbols_check.isChecked()
+        # 至少需要一种字符集：校验文案经共享 helper 单一源，避免与 settings_dialog 漂移
+        ok, error = PasswordService.validate_charset_selection(
+            uppercase, lowercase, digits, symbols,
+        )
+        if not ok:
+            QMessageBox.warning(self, '生成规则无效', error)
             return
         password = PasswordService.generate(
             length=self._length_slider.value(),
-            uppercase=self._upper_check.isChecked(),
-            lowercase=self._lower_check.isChecked(),
-            digits=self._digits_check.isChecked(),
-            symbols=self._symbols_check.isChecked(),
+            uppercase=uppercase,
+            lowercase=lowercase,
+            digits=digits,
+            symbols=symbols,
             exclude_ambiguous=self._exclude_ambiguous.isChecked(),
         )
         self._password_display.setText(password)

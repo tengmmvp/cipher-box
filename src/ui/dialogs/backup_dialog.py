@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import hmac
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -37,6 +38,7 @@ from ...business.services.password_service import PasswordService
 from ...exceptions import BackupError
 from ..components.widgets import (
     create_cancel_button,
+    finalize_worker_if_current,
     release_worker,
     set_label_severity,
     setup_dialog_flags,
@@ -253,7 +255,7 @@ class BackupDialog(QDialog):
             self, '确认备份密码', '请再次输入备份密码：',
             QLineEdit.EchoMode.Password,
         )
-        if not ok or confirm != password:
+        if not ok or not hmac.compare_digest(confirm, password):
             QMessageBox.warning(self, '密码不一致', '两次输入的备份密码不一致。')
             return
         self._set_busy(True)
@@ -279,10 +281,9 @@ class BackupDialog(QDialog):
         del password
 
     def _on_backup_done(self, result: object) -> None:
-        if self.sender() is not self._worker:
+        if not finalize_worker_if_current(self):
             return
         self._set_busy(False)
-        release_worker(self)
         success, error_msg = cast(tuple[bool, str], result)
         if success:
             self.data_changed = True
@@ -296,10 +297,9 @@ class BackupDialog(QDialog):
             QMessageBox.critical(self, DLG_TITLE_ERROR, msg)
 
     def _on_backup_error(self, error_msg: str) -> None:
-        if self.sender() is not self._worker:
+        if not finalize_worker_if_current(self):
             return
         self._set_busy(False)
-        release_worker(self)
         self._status_label.setText('备份失败')
         set_label_severity(self._status_label, 'error')
         QMessageBox.critical(self, DLG_TITLE_ERROR, f'备份创建失败：{error_msg}')
@@ -317,7 +317,11 @@ class BackupDialog(QDialog):
 
         try:
             info = inspect_backup(path)
-        except (OSError, BackupError, ValueError) as exc:
+        except (OSError, BackupError) as exc:
+            # 不含裸 ValueError：PayloadTooLargeError 是 BackupError 子类仍被捕获；
+            # inspect_backup 的格式错误已归一为 BackupError，validate_params 的
+            # ValueError 已在 read_backup_header 内转为 BackupError。裸 ValueError
+            # 会先于 BackupError 吞掉 PayloadTooLargeError 等领域异常（多重继承陷阱）。
             QMessageBox.critical(self, DLG_TITLE_ERROR, str(exc))
             return
         password = None
@@ -344,10 +348,9 @@ class BackupDialog(QDialog):
         del password
 
     def _on_restore_done(self, result: object) -> None:
-        if self.sender() is not self._worker:
+        if not finalize_worker_if_current(self):
             return
         self._set_busy(False)
-        release_worker(self)
         success, error_msg = cast(tuple[bool, str], result)
         if success:
             self.data_changed = True
@@ -361,10 +364,9 @@ class BackupDialog(QDialog):
             QMessageBox.critical(self, DLG_TITLE_ERROR, f'恢复失败，请确认备份文件有效且主密码正确。{detail}')
 
     def _on_restore_error(self, error_msg: str) -> None:
-        if self.sender() is not self._worker:
+        if not finalize_worker_if_current(self):
             return
         self._set_busy(False)
-        release_worker(self)
         self._status_label.setText('恢复失败')
         set_label_severity(self._status_label, 'error')
         QMessageBox.critical(self, DLG_TITLE_ERROR, f'恢复失败：{error_msg}')

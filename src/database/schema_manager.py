@@ -34,6 +34,14 @@ _INDEX_DEFINITIONS: list[tuple[str, str, tuple[str, ...], bool]] = [
         ('is_deleted', 'updated_at DESC'),
         False,
     ),
+    # PERF-004：默认列表视图 ORDER BY is_favorite DESC, updated_at DESC 的复合索引，
+    # 免 filesort。与 idx_entries_active_updated 共存（后者服务「近期更新」视图）。
+    (
+        'idx_entries_active_favorite_updated',
+        'entries',
+        ('is_deleted', 'is_favorite DESC', 'updated_at DESC'),
+        False,
+    ),
     ('idx_entries_type', 'entries', ('entry_type',), False),
     ('idx_entries_password_changed', 'entries', ('password_changed_at',), False),
     ('idx_entries_crypto_id', 'entries', ('crypto_id',), True),
@@ -55,7 +63,7 @@ _TABLE_COLUMNS = {
         'key': ('TEXT', 0, 1, None), 'value': ('TEXT', 1, 0, None),
     },
     'categories': {
-        'id': ('INTEGER', 0, 1, None), 'name': ('TEXT', 1, 0, None),
+        'id': ('INTEGER', 0, 1, None), 'name_enc': ('TEXT', 1, 0, None),
         'icon_char': ('TEXT', 0, 0, "'[DIR]'"), 'color': ('TEXT', 0, 0, "'#666666'"),
         'sort_order': ('INTEGER', 0, 0, '0'), 'created_at': ('TEXT', 0, 0, "''"),
         'metadata_mac': ('TEXT', 1, 0, "''"),
@@ -137,7 +145,7 @@ class SchemaManager:
 
             CREATE TABLE IF NOT EXISTS categories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
+                name_enc TEXT NOT NULL UNIQUE,
                 icon_char TEXT DEFAULT '[DIR]',
                 color TEXT DEFAULT '#666666',
                 sort_order INTEGER DEFAULT 0,
@@ -199,7 +207,7 @@ class SchemaManager:
         ]
         for name, icon, color, order in default_categories:
             cursor.execute(
-                "INSERT OR IGNORE INTO categories (name, icon_char, color, sort_order, created_at) VALUES (?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO categories (name_enc, icon_char, color, sort_order, created_at) VALUES (?, ?, ?, ?, ?)",
                 (name, icon, color, order, utc_now_iso()),
             )
 

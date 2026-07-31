@@ -2,6 +2,7 @@
 
 import json
 
+from ....exceptions import ImportFormatError
 from ....models import Entry
 from .base import (
     ParsedImport,
@@ -14,9 +15,9 @@ from .base import (
 _SOURCE_LABEL = 'JSON 导入'
 
 
-def _noop_merger(_entry: Entry, _existing: Entry) -> None:
+def _noop_merger(_entry: Entry, _existing: Entry) -> Entry:
     """secrets_included=True 时导入值完整，覆盖无需合并敏感字段。"""
-    return None
+    return _entry
 
 
 class JsonImporter:
@@ -34,20 +35,20 @@ class JsonImporter:
             data = json.load(f)
 
         if not isinstance(data, dict) or data.get('app') != 'CipherBox':
-            raise ValueError('不是 CipherBox JSON 导出文件')
+            raise ImportFormatError('不是 CipherBox JSON 导出文件')
         # 注意：app 字段检查仅防止误导入错误格式的文件，不防恶意伪造。
         # 真实安全保护在于：导入数据会被重新加密到当前 vault 密钥下，
         # 恶意注入的数据仅能产生垃圾条目，无法获取已有密码。
         if type(data.get('secrets_included')) is not bool:
-            raise ValueError('CipherBox JSON 缺少敏感字段声明')
+            raise ImportFormatError('CipherBox JSON 缺少敏感字段声明')
         items = data.get('entries', [])
         if not isinstance(items, list):
-            raise ValueError('JSON 导入结构无效')
+            raise ImportFormatError('JSON 导入结构无效')
         # 先校验每个元素为 dict，防止非 dict 触发 _validate_items 内 item.values()
         # 的 AttributeError（绕过下方的友好提示）。
         non_dict = [i for i, item in enumerate(items) if not isinstance(item, dict)]
         if non_dict:
-            raise ValueError(
+            raise ImportFormatError(
                 f'JSON 条目列表中第 {non_dict[0] + 1} 项不是有效的对象'
             )
         _validate_items(items)

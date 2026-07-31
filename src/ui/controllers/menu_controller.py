@@ -89,6 +89,25 @@ class MenuSlots:
     lock: Callable[[], None]
 
 
+@dataclass(frozen=True)
+class MenuDeps:
+    """MenuController 依赖的 manager / controller / 控件引用（装配期注入）。
+
+    聚合 9 个依赖为单一参数，对齐既有 ``ListRefreshView`` / ``EntryActionsDeps``
+    范式，收敛 MenuController.__init__ 的 10 参签名。frozen 防装配后意外突变。
+    """
+
+    config: ConfigManager
+    vault: VaultManager
+    entry_mgr: EntryManager
+    security: SecurityAnalyzer
+    import_export: ImportExportManager
+    backup: BackupRestoreManager
+    clipboard: ClipboardManager
+    detail_panel: DetailPanel
+    auto_backup: AutoBackupController
+
+
 class MenuController:
     """菜单栏、全局快捷键与对话框调度（从 _MainWindowMenuMixin 组合化迁移）。
 
@@ -99,28 +118,16 @@ class MenuController:
     _parent: QMainWindow
     _search_edit: QLineEdit
 
-    def __init__(
-        self,
-        config: ConfigManager,
-        vault: VaultManager,
-        entry_mgr: EntryManager,
-        security: SecurityAnalyzer,
-        import_export: ImportExportManager,
-        backup: BackupRestoreManager,
-        clipboard: ClipboardManager,
-        detail_panel: DetailPanel,
-        auto_backup: AutoBackupController,
-        slots: MenuSlots,
-    ) -> None:
-        self._config = config
-        self._vault = vault
-        self._entry_mgr = entry_mgr
-        self._security = security
-        self._import_export = import_export
-        self._backup = backup
-        self._clipboard = clipboard
-        self._detail_panel = detail_panel
-        self._auto_backup = auto_backup
+    def __init__(self, deps: MenuDeps, slots: MenuSlots) -> None:
+        self._config = deps.config
+        self._vault = deps.vault
+        self._entry_mgr = deps.entry_mgr
+        self._security = deps.security
+        self._import_export = deps.import_export
+        self._backup = deps.backup
+        self._clipboard = deps.clipboard
+        self._detail_panel = deps.detail_panel
+        self._auto_backup = deps.auto_backup
         self._slots = slots
         self._shortcuts: list[QShortcut] = []
 

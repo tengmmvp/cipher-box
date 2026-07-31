@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypedDict
 
 if TYPE_CHECKING:
@@ -266,7 +267,7 @@ def decrypt_entry_to_portable_dict(
     key: bytes | bytearray,
     *,
     include_secrets: bool = True,
-) -> dict:
+) -> dict[str, Any]:
     """将原始 Entry 解密为明文字典，任一字段损坏抛异常。
 
     供备份、导出等需要整条解密的场景。与原先返回 ``dict | None`` 不同：失败不再
@@ -338,7 +339,7 @@ def decrypt_entry_to_portable_dict(
     }
 
 
-def build_encrypted_entry_fields(item: dict[str, Any], key: bytes | bytearray, crypto_id: str) -> dict:
+def build_encrypted_entry_fields(item: dict[str, Any], key: bytes | bytearray, crypto_id: str) -> dict[str, Any]:
     """加密条目的敏感字段，与 decrypt_entry_to_portable_dict 对称。
 
     供备份恢复等需要从明文字典重建加密条目的场景使用。加密字段集与
@@ -380,7 +381,7 @@ def encrypt_plaintext_category_names(db: DatabaseManager, key: bytes | bytearray
         for category in db.get_categories():
             if category.id is None or category.name.startswith(EncryptionEngine.TEXT_PREFIX):
                 continue
-            category.name = encrypt_field(
+            encrypted_name = encrypt_field(
                 category.name, key, category_crypto_id(category.id), 'category_name',
             )
-            db.update_category(category)
+            db.update_category(replace(category, name=encrypted_name))

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, TypeVar
 
 from PyQt6.QtCore import pyqtSignal
@@ -47,10 +48,7 @@ from ...exceptions import (
     EntryIntegrityError,
 )
 from ...models import (
-    ENTRY_TYPE_CARD,
     ENTRY_TYPE_LOGIN,
-    ENTRY_TYPE_NOTE,
-    ENTRY_TYPE_SERVER,
     ENTRY_TYPES,
     MAX_FIELD_NOTES,
     MAX_FIELD_PASSWORD,
@@ -76,9 +74,12 @@ from ..resources.constants import (
     BTN_DIALOG,
     BTN_SMALL_ACTION,
     DIALOG_ENTRY_MIN_SIZE,
+    MAX_TAG_DISPLAY,
     PWD_GENERATE_LENGTH_DEFAULT,
     PWD_TOGGLE_AUTO_HIDE_SECONDS,
     PWD_VISIBLE_SECONDS_DEFAULT,
+    SERVER_PORT_MAX,
+    SERVER_PORT_MIN,
 )
 from ..resources.icons import GENERATE
 from ..resources.strings import DLG_TITLE_ERROR, DLG_TITLE_INFO
@@ -253,7 +254,8 @@ class EntryDialog(QDialog):
         self._tags_edit.setPlaceholderText('用逗号分隔多个标签')
         self._tags_edit.setMaxLength(MAX_FIELD_TAGS)
         if self._all_tags:
-            hint = ', '.join(self._all_tags[:5])
+            # 复用 MAX_TAG_DISPLAY：标签占位提示的展示数量与详情面板标签显示上限同语义
+            hint = ', '.join(self._all_tags[:MAX_TAG_DISPLAY])
             self._tags_edit.setPlaceholderText(f'常用：{hint}' if hint else '用逗号分隔多个标签')
         self._add_field_row(form, 'tags', '标签：', self._tags_edit)
 
@@ -335,7 +337,9 @@ class EntryDialog(QDialog):
         # 卡号/有效期格式化与端口校验：类型特有行为，schema 之外的特殊连接
         self._special_edits['card_number'].textChanged.connect(self._format_card_number)
         self._special_edits['card_expiry'].textChanged.connect(self._format_card_expiry)
-        self._special_edits['server_port'].setValidator(QIntValidator(1, 65535, self))
+        self._special_edits['server_port'].setValidator(
+            QIntValidator(SERVER_PORT_MIN, SERVER_PORT_MAX, self)
+        )
 
     @staticmethod
     def _create_special_widget(spec: SpecialFieldSpec) -> QLineEdit | QComboBox:
@@ -414,7 +418,7 @@ class EntryDialog(QDialog):
             )
             return False
 
-        if entry_type == ENTRY_TYPE_SERVER:
+        if get_schema(entry_type).composes_url:
             composed_url = self._compose_server_url()
             if composed_url and len(composed_url) > MAX_FIELD_URL:
                 QMessageBox.warning(
@@ -537,8 +541,8 @@ class EntryDialog(QDialog):
             label.setVisible(show)
             widget.setVisible(show)
 
-        # 笔记类型：放大备注区域
-        if entry_type == ENTRY_TYPE_NOTE:
+        # 笔记类型：放大备注区域（经 schema.notes_expanded 标志驱动，消除类型身份判断）
+        if get_schema(entry_type).notes_expanded:
             self._notes_edit.setMaximumHeight(self._NOTES_HEIGHT_EXPANDED)
         else:
             self._notes_edit.setMaximumHeight(self._NOTES_HEIGHT_DEFAULT)
@@ -679,8 +683,8 @@ class EntryDialog(QDialog):
 
         entry_type = self._type_combo.currentData() or ENTRY_TYPE_LOGIN
 
-        # 信用卡类型需额外校验卡号、有效期与 CVV
-        if entry_type == ENTRY_TYPE_CARD:
+        # 专用字段额外校验（如信用卡卡号/有效期/CVV），经 schema.validate_extra 标志驱动
+        if get_schema(entry_type).validate_extra:
             if not self._validate_card_fields():
                 return
 
@@ -690,13 +694,13 @@ class EntryDialog(QDialog):
         if not self._validate_field_lengths(entry_type):
             return
 
-        # 笔记类型不使用密码字段，强制置空避免保存无意义数据
-        password = self._password_edit.text() if entry_type != ENTRY_TYPE_NOTE else ''
+        # 不使用密码的类型（笔记）强制置空，避免保存无意义数据
+        password = self._password_edit.text() if get_schema(entry_type).uses_password else ''
         username = self._username_edit.text().strip()
         url = self._url_edit.text().strip()
 
-        # 服务器类型由 host 与 port 拼接出 url；username/password 已在上方统一读取
-        if entry_type == ENTRY_TYPE_SERVER:
+        # 由专用字段拼接 url 的类型（服务器）：username/password 已在上方统一读取
+        if get_schema(entry_type).composes_url:
             composed = self._compose_server_url()
             if composed:
                 url = composed
@@ -724,7 +728,7 @@ class EntryDialog(QDialog):
 
         try:
             if self._entry:
-                entry.id = self._entry.id
+                entry = replace(entry, id=self._entry.id)
                 self._entry_mgr.update_entry(entry)
             else:
                 self._entry_mgr.add_entry(entry)

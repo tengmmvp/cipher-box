@@ -103,13 +103,25 @@ class TOTPGenerator:
         return algorithm, value, period, digits
 
     @staticmethod
-    def _compute_totp(key: bytes | bytearray, algo_name: str, period: int, digits: int) -> str:
-        """核心 TOTP 计算：HMAC + 动态截断 + 取模。"""
+    def _compute_totp(
+        key: bytes | bytearray,
+        algo_name: str,
+        period: int,
+        digits: int,
+        *,
+        now: float | None = None,
+    ) -> str:
+        """核心 TOTP 计算：HMAC + 动态截断 + 取模。
+
+        ``now`` 为可选的注入时钟（Unix 秒），默认取 ``time.time()``。供计数器边界
+        测试精确控制时间步，无需 monkeypatch 全局 ``time.time``；生产路径不传，保持
+        默认实时取值。
+        """
         # 防御 period<=0 导致除零：正常经 _parse_config 校验，此守卫防止绕过
         # _parse_config 直接调用 _compute_totp（如未来重构）时 ZeroDivisionError。
         if period <= 0:
             raise ValueError('TOTP period 必须为正数')
-        counter = int(time.time()) // period
+        counter = int(time.time() if now is None else now) // period
         msg = struct.pack('>Q', counter)
         hmac_hash = hmac.new(key, msg, algo_name).digest()
         offset = hmac_hash[-1] & 0x0F
@@ -119,8 +131,18 @@ class TOTPGenerator:
         return str(code).zfill(digits)
 
     @staticmethod
-    def _generate_impl(secret: str, algorithm: str, period: int, digits: int) -> tuple[str, Exception | None]:
+    def _generate_impl(
+        secret: str,
+        algorithm: str,
+        period: int,
+        digits: int,
+        *,
+        now: float | None = None,
+    ) -> tuple[str, Exception | None]:
         """TOTP 生成的共享实现。
+
+        ``now`` 透传至 :meth:`_compute_totp` 的注入时钟，供计数器边界测试精确控制
+        时间步。生产路径（:meth:`generate` / :meth:`generate_or_raise`）不传，保持实时。
 
         Returns:
             由验证码和错误对象组成的元组。成功时错误对象为 None，失败时验证码为空字符串。
@@ -151,7 +173,7 @@ class TOTPGenerator:
             return '', ValueError(f'TOTP Base32 解码失败: {exc}')
 
         try:
-            return TOTPGenerator._compute_totp(key, algo_name, period, digits), None
+            return TOTPGenerator._compute_totp(key, algo_name, period, digits, now=now), None
         finally:
             # CPython 固有限制：hmac.new 内部构造的 ipad/opad 副本仍依赖 GC 回收，
             # 此处只收缩外部一份引用，非完全擦除。

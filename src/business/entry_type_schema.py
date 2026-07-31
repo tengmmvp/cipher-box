@@ -56,11 +56,21 @@ class SpecialFieldSpec:
 
 @dataclass(frozen=True)
 class EntryTypeSchema:
-    """单个条目类型的完整 schema：字段集 + 可见字段顺序。
+    """单个条目类型的完整 schema：字段集 + 可见字段顺序 + 类型特化行为钩子。
 
     type_id / label / icon 标识类型；visible_fields 为通用 + 专用字段的显示顺序，
-    驱动类型切换时的显隐；special_fields 为该类型的专用字段配置。类型特化行为
-    （校验 / 格式化 / 拼接等）在 C2 以钩子形式挂入。
+    驱动类型切换时的显隐；special_fields 为该类型的专用字段配置。
+
+    行为钩子（ARCH-008）以布尔标志形式挂入，消除消费方 ``if entry_type ==``
+    类型身份判断——改为查阅 schema 标志。标志默认无副作用（不会触发密码置空、
+    备注展开、URL 拼接或额外校验）；按类型覆写即可启用对应行为。具体「如何」
+    执行（如卡号校验算法、URL 拼接格式）仍由消费方（entry_dialog）实现，
+    使业务层 schema 不依赖 UI 控件，保持依赖方向 UI → Business。
+
+    - ``uses_password``：该类型是否使用密码字段（NOTE 置 False，保存时密码强制置空）；
+    - ``notes_expanded``：是否放大备注编辑区（NOTE 置 True）；
+    - ``composes_url``：是否由专用字段拼接 URL（SERVER 置 True，host/port/protocol→url）；
+    - ``validate_extra``：是否需要额外的专用字段校验（CARD 置 True，校验卡号/有效期/CVV）。
     """
 
     type_id: str
@@ -68,6 +78,10 @@ class EntryTypeSchema:
     icon: str
     visible_fields: tuple[str, ...]
     special_fields: tuple[SpecialFieldSpec, ...] = ()
+    uses_password: bool = True
+    notes_expanded: bool = False
+    composes_url: bool = False
+    validate_extra: bool = False
 
 
 _CARD_FIELDS = (
@@ -99,6 +113,14 @@ def _build_schemas() -> dict[str, EntryTypeSchema]:
         ENTRY_TYPE_NOTE: (),
         ENTRY_TYPE_SERVER: _SERVER_FIELDS,
     }
+    # 类型特化行为钩子覆写（ARCH-008）。未列出的类型沿用 EntryTypeSchema 默认值
+    #（uses_password=True，其余 False）。新增类型若需特化行为，在此追加覆写即可，
+    # 消费方（entry_dialog）只需查阅 schema 标志，无需新增 ``if entry_type ==`` 分支。
+    behavior_overrides: dict[str, dict[str, bool]] = {
+        ENTRY_TYPE_CARD: {'validate_extra': True},
+        ENTRY_TYPE_NOTE: {'uses_password': False, 'notes_expanded': True},
+        ENTRY_TYPE_SERVER: {'composes_url': True},
+    }
     schemas: dict[str, EntryTypeSchema] = {}
     for type_id, meta in ENTRY_TYPES.items():
         special = special_by_type.get(type_id, ())
@@ -116,6 +138,7 @@ def _build_schemas() -> dict[str, EntryTypeSchema]:
             icon=meta['icon'],
             visible_fields=visible,
             special_fields=special,
+            **behavior_overrides.get(type_id, {}),
         )
     return schemas
 

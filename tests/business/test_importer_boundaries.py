@@ -14,6 +14,7 @@ import pytest
 from src.business.managers.importers.bitwarden_importer import BitwardenImporter
 from src.business.managers.importers.csv_importer import CsvImporter, KeePassCsvImporter
 from src.business.managers.importers.json_importer import JsonImporter
+from src.exceptions import ImportFormatError, ImportSizeError
 
 
 def _write_json(tmp_path, name: str, data) -> str:
@@ -45,12 +46,12 @@ class TestBitwardenBoundaries:
 
     def test_top_level_list_rejected(self, tmp_path):
         path = _write_json(tmp_path, 'b.json', [{'items': []}])
-        with pytest.raises(ValueError):
+        with pytest.raises(ImportFormatError):
             BitwardenImporter().parse(path)
 
     def test_items_non_list_rejected(self, tmp_path):
         path = _write_json(tmp_path, 'b.json', {'items': {'not': 'list'}})
-        with pytest.raises(ValueError):
+        with pytest.raises(ImportFormatError):
             BitwardenImporter().parse(path)
 
     def test_empty_items_returns_empty(self, tmp_path):
@@ -76,20 +77,20 @@ class TestBitwardenBoundaries:
 class TestJsonBoundaries:
     def test_top_level_list_rejected(self, tmp_path):
         path = _write_json(tmp_path, 'b.json', [{'app': 'CipherBox'}])
-        with pytest.raises(ValueError):
+        with pytest.raises(ImportFormatError):
             JsonImporter().parse(path)
 
     def test_top_level_string_rejected(self, tmp_path):
         path = tmp_path / 'b.json'
         path.write_text('"just a string"', encoding='utf-8')
-        with pytest.raises(ValueError):
+        with pytest.raises(ImportFormatError):
             JsonImporter().parse(path)
 
     def test_wrong_app_rejected(self, tmp_path):
         path = _write_json(tmp_path, 'b.json', {
             'app': 'Other', 'secrets_included': True, 'entries': [],
         })
-        with pytest.raises(ValueError):
+        with pytest.raises(ImportFormatError):
             JsonImporter().parse(path)
 
     def test_secrets_included_wrong_type_rejected(self, tmp_path):
@@ -97,7 +98,7 @@ class TestJsonBoundaries:
         path = _write_json(tmp_path, 'b.json', {
             'app': 'CipherBox', 'secrets_included': 1, 'entries': [],
         })
-        with pytest.raises(ValueError):
+        with pytest.raises(ImportFormatError):
             JsonImporter().parse(path)
 
     def test_empty_entries_with_valid_header(self, tmp_path):
@@ -124,10 +125,10 @@ class TestCsvBoundaries:
         assert result.entries[0].title == 'GitHub'
 
     def test_overlong_field_raises(self, tmp_path):
-        """超长字段（title > 1024）整批中止（ValueError）。"""
+        """超长字段（title > 1024）整批中止（ImportSizeError）。"""
         text = f'title,username,password\n{"x" * 2000},u,p\n'
         path = _write_csv(tmp_path, 'b.csv', text)
-        with pytest.raises(ValueError):
+        with pytest.raises(ImportSizeError):
             CsvImporter().parse(path)
 
     def test_row_fewer_fields_than_header(self, tmp_path):

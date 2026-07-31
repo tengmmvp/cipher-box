@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
 from ...utils.file_security import secure_file
 from ..components.widgets import (
     create_cancel_button,
+    finalize_worker_if_current,
     release_worker,
     set_label_severity,
     setup_dialog_flags,
@@ -361,9 +362,8 @@ class ImportExportDialog(QDialog):
         set_label_severity(self._status_label, 'success')
 
     def _on_export_error(self, error_msg: str) -> None:
-        if self.sender() is not self._worker:
+        if not finalize_worker_if_current(self):
             return
-        release_worker(self)
         self._set_busy(False)
         self._progress.hide()
         logger.error("导出失败: %s", error_msg)
@@ -421,9 +421,8 @@ class ImportExportDialog(QDialog):
         self._progress.setValue(current)
 
     def _on_import_done(self, count: int) -> None:
-        if self.sender() is not self._worker:
+        if not finalize_worker_if_current(self):
             return
-        release_worker(self)
         self._set_busy(False)
         self._progress.hide()
         self._status_label.setText(f'成功导入 {count} 条记录')
@@ -432,9 +431,8 @@ class ImportExportDialog(QDialog):
             self.import_completed.emit()
 
     def _on_import_error(self, error_msg: str) -> None:
-        if self.sender() is not self._worker:
+        if not finalize_worker_if_current(self):
             return
-        release_worker(self)
         self._set_busy(False)
         self._progress.hide()
         logger.error("导入失败: %s", error_msg)

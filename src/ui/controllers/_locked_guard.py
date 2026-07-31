@@ -22,6 +22,12 @@ def require_unlocked(method: Callable[..., None]) -> Callable[..., None]:
     ``return None`` 与正常态调用均得 None，签名诚实，无需 ``type: ignore`` 压制
     返回类型。对 Qt 信号连接透明（PyQt6 信号连接不严格检查槽签名，wrapper 经
     ``*args`` 透传信号参数）。
+
+    .. note::
+        未采用 ``ParamSpec`` + ``Concatenate`` 保留被装饰方法的原签名：所有被装饰
+        方法均返回 None 且经 Qt 信号连接调用（PyQt6 不静态校验槽签名），ParamSpec
+        的类型透传收益有限，反而引入额外泛型复杂度。``Callable[..., None]`` 已满足
+        静态检查与运行时语义。
     """
 
     @wraps(method)

@@ -67,7 +67,7 @@ def test_verify_passes_on_untampered_entry():
     signer.set_domain_key(MetadataSigner.compute_domain_key(master_key))
     entry = _make_entry()
 
-    entry.metadata_mac = signer.sign(entry)
+    entry = dataclasses.replace(entry, metadata_mac=signer.sign(entry))
 
     # 不应抛出任何异常
     signer.verify(entry)
@@ -80,9 +80,9 @@ def test_verify_detects_tampered_title():
     signer.set_domain_key(MetadataSigner.compute_domain_key(master_key))
     entry = _make_entry(title='原始标题')
 
-    entry.metadata_mac = signer.sign(entry)
+    entry = dataclasses.replace(entry, metadata_mac=signer.sign(entry))
 
-    entry.title = '被篡改的标题'
+    entry = dataclasses.replace(entry, title='被篡改的标题')
 
     with pytest.raises(VaultIntegrityError):
         signer.verify(entry)
@@ -92,7 +92,7 @@ def test_verify_raises_when_no_key():
     """verify() 无域密钥时抛异常。"""
     signer = MetadataSigner()  # domain_key 为 None
     entry = _make_entry()
-    entry.metadata_mac = 'some-mac-value'
+    entry = dataclasses.replace(entry, metadata_mac='some-mac-value')
 
     with pytest.raises(VaultLockedError):
         signer.verify(entry)
@@ -134,7 +134,7 @@ def test_sign_uses_preset_domain_key():
     assert len(mac) == 64
 
     # 用同一域密钥验证
-    entry.metadata_mac = mac
+    entry = dataclasses.replace(entry, metadata_mac=mac)
     signer.verify(entry)
 
 
@@ -142,7 +142,7 @@ def test_verify_no_mac_raises_integrity_error():
     """verify() 条目 metadata_mac 为空时抛 VaultIntegrityError。"""
     signer = MetadataSigner(domain_key=b'x' * 32)
     entry = _make_entry()
-    entry.metadata_mac = ''
+    entry = dataclasses.replace(entry, metadata_mac='')
 
     with pytest.raises(VaultIntegrityError, match='缺少元数据完整性签名'):
         signer.verify(entry)
@@ -203,9 +203,9 @@ def test_verify_detects_ciphertext_field_tamper():
     master_key = b'test-key-for-cipher-tamper'
     signer = MetadataSigner(domain_key=MetadataSigner.compute_domain_key(master_key))
     entry = _make_entry(password='cb2:original-ciphertext')
-    entry.metadata_mac = signer.sign(entry)
+    entry = dataclasses.replace(entry, metadata_mac=signer.sign(entry))
     # 模拟密文置换/回滚攻击：仅改密文字段，不改明文元数据
-    entry.password = 'cb2:attacker-ciphertext'
+    entry = dataclasses.replace(entry, password='cb2:attacker-ciphertext')
     with pytest.raises(VaultIntegrityError):
         signer.verify(entry)
 
@@ -232,7 +232,7 @@ def test_verify_fails_after_domain_key_rotation():
     signer = MetadataSigner()
     signer.set_domain_key(MetadataSigner.compute_domain_key(master_key_a))
     entry = _make_entry()
-    entry.metadata_mac = signer.sign(entry)
+    entry = dataclasses.replace(entry, metadata_mac=signer.sign(entry))
 
     # 模拟改密/恢复后的域密钥轮换：用不同主密钥派生新域密钥并原地替换
     signer.set_domain_key(MetadataSigner.compute_domain_key(master_key_b))
@@ -253,7 +253,7 @@ def test_verify_category_fails_after_domain_key_rotation():
     signer = MetadataSigner()
     signer.set_domain_key(MetadataSigner.compute_domain_key(master_key_a))
     category = _make_category()
-    category.metadata_mac = signer.sign_category(category)
+    category = dataclasses.replace(category, metadata_mac=signer.sign_category(category))
 
     signer.set_domain_key(MetadataSigner.compute_domain_key(master_key_b))
     with pytest.raises(VaultIntegrityError):
@@ -333,7 +333,7 @@ def test_verify_category_no_mac_raises_integrity_error():
     """
     signer = MetadataSigner(domain_key=b'x' * 32)
     category = _make_category()
-    category.metadata_mac = ''
+    category = dataclasses.replace(category, metadata_mac='')
 
     with pytest.raises(VaultIntegrityError, match='缺少元数据完整性签名'):
         signer.verify_category(category)

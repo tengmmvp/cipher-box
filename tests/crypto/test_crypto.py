@@ -10,8 +10,9 @@ import os
 import pytest
 
 from src.crypto.encryption import EncryptionEngine
-from src.crypto.master_key import MasterKeyManager
+from src.crypto.master_key import KdfParams, MasterKeyManager
 from src.crypto.password_generator import PasswordGenerator
+from src.exceptions import DecryptionError
 
 # TestEncryptionEngine
 
@@ -304,3 +305,106 @@ def test_constant_time_compare_wrong_password():
     salt, verify_token, derived_key = MasterKeyManager.create('test_password')
     result = MasterKeyManager.verify('wrong_password', salt, verify_token)
     assert result is None
+
+
+# ======== AAD 认证绑定负向测试 ========
+
+
+def test_decrypt_with_wrong_aad_raises():
+    """encrypt(AAD1) → decrypt(AAD2) 必抛 DecryptionError（GCM 认证 AAD 绑定）。
+
+    AES-GCM 的 AAD（附加认证数据）参与认证标签计算但不加密；解密时须提供完全一致
+    的 AAD，否则认证失败。这是「字段级域分离」（entry:<crypto_id>:<field>）能防止
+    密文跨字段重放的安全基础——字段域标签作为 AAD 绑定后，A 字段的密文无法在
+    B 字段解密通过。
+    """
+    key = os.urandom(32)
+    encrypted = EncryptionEngine.encrypt('secret', key, 'aad-1')
+    with pytest.raises(DecryptionError):
+        EncryptionEngine.decrypt(encrypted, key, 'aad-2')
+
+
+def test_decrypt_bytes_with_wrong_aad_raises():
+    """encrypt_bytes(AAD1) → decrypt_bytes(AAD2) 必抛 DecryptionError（字节路径对称）。"""
+    key = os.urandom(32)
+    encrypted = EncryptionEngine.encrypt_bytes(b'data', key, b'aad-1')
+    with pytest.raises(DecryptionError):
+        EncryptionEngine.decrypt_bytes(encrypted, key, b'aad-2')
+
+
+def test_decrypt_with_correct_aad_succeeds():
+    """正对照：相同 AAD 加解密正常（AAD 绑定不破坏合法路径）。"""
+    key = os.urandom(32)
+    encrypted = EncryptionEngine.encrypt('secret', key, 'same-aad')
+    assert EncryptionEngine.decrypt(encrypted, key, 'same-aad') == 'secret'
+
+
+def test_aad_empty_vs_nonempty_differ():
+    """空 AAD 与非空 AAD 不可互换：encrypt('') → decrypt('x') 抛 DecryptionError。"""
+    key = os.urandom(32)
+    encrypted = EncryptionEngine.encrypt('secret', key, '')
+    with pytest.raises(DecryptionError):
+        EncryptionEngine.decrypt(encrypted, key, 'non-empty')
+
+
+# ======== PasswordGenerator 每类字符≥1 保证 ========
+
+
+def test_generate_includes_every_enabled_charset():
+    """全类启用时，每种字符类至少出现一次（循环 50 次排除偶发）。
+
+    PasswordGenerator 先从各类各取 1 字符再填充剩余，保证长度 ≥ 类数时每类 ≥1。
+    此守护防止未来重构（如先填充再加类字符）破坏「每类必有」的不变量——后者会让
+    短密码可能缺某类，削弱强度。
+    """
+    for _ in range(50):
+        pwd = PasswordGenerator.generate(length=8)  # 默认全类启用
+        assert any(c.isupper() for c in pwd), f'缺大写字母: {pwd!r}'
+        assert any(c.islower() for c in pwd), f'缺小写字母: {pwd!r}'
+        assert any(c.isdigit() for c in pwd), f'缺数字: {pwd!r}'
+        assert any(not c.isalnum() for c in pwd), f'缺特殊字符: {pwd!r}'
+
+
+def test_generate_min_length_4_satisfies_each_class():
+    """length=4 恰好覆盖 4 类，每类恰好 1 字符（边界：长度==类数）。"""
+    for _ in range(20):
+        pwd = PasswordGenerator.generate(length=4)
+        assert len(pwd) == 4
+        assert any(c.isupper() for c in pwd)
+        assert any(c.islower() for c in pwd)
+        assert any(c.isdigit() for c in pwd)
+        assert any(not c.isalnum() for c in pwd)
+
+
+# ======== MasterKeyManager.validate_params MAX 边界 ========
+
+
+def test_validate_params_accepts_upper_bounds():
+    """上限值通过：time=10 / memory=1GB(1024*1024) / parallelism=16 均合法。
+
+    validate_params 不派生（无 Argon2id 开销），仅范围校验；上界值须通过以兼容
+    未来调参与高安全场景。
+    """
+    MasterKeyManager.validate_params(KdfParams(time_cost=10, memory_cost=1024 * 1024, parallelism=16))
+
+
+@pytest.mark.parametrize('params', [
+    KdfParams(time_cost=11, memory_cost=64 * 1024, parallelism=4),  # time 超上限
+    KdfParams(time_cost=3, memory_cost=1024 * 1024 + 1, parallelism=4),  # memory 超 1GB
+    KdfParams(time_cost=3, memory_cost=64 * 1024, parallelism=17),  # parallelism 超上限
+])
+def test_validate_params_rejects_above_max(params):
+    """超上限的 KDF 参数被拒（防 vault_meta 篡改为异常值后静默接受降级/越界）。"""
+    with pytest.raises(ValueError):
+        MasterKeyManager.validate_params(params)
+
+
+@pytest.mark.parametrize('params', [
+    KdfParams(time_cost=1, memory_cost=64 * 1024, parallelism=4),  # time 低于下限 2
+    KdfParams(time_cost=3, memory_cost=16 * 1024 - 1, parallelism=4),  # memory 低于 16MB
+    KdfParams(time_cost=3, memory_cost=64 * 1024, parallelism=0),  # parallelism 低于下限 1
+])
+def test_validate_params_rejects_below_min(params):
+    """低于下限的参数被拒（防止静默降级到无保护强度）。"""
+    with pytest.raises(ValueError):
+        MasterKeyManager.validate_params(params)

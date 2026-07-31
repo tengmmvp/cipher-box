@@ -326,14 +326,14 @@ class TestCorruptedHeader:
             read_backup_header(buf)
 
     def test_invalid_kdf_in_header_rejected(self):
-        """头部 KDF 参数超出 validate_params 范围应被拒绝。"""
+        """头部 KDF 参数超出 validate_params 范围应被拒绝（归一为 BackupError）。"""
         salt = b'\x00' * BACKUP_SALT_SIZE
         raw = _make_header_bytes(
             BackupFlag.PASSWORD, salt,
             KdfParams(time_cost=1, memory_cost=16 * 1024, parallelism=1),
         )
         buf = io.BytesIO(raw)
-        with pytest.raises(ValueError):
+        with pytest.raises(BackupError):
             read_backup_header(buf)
 
     def test_inspect_bad_magic_rejected(self, tmp_path):

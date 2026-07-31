@@ -10,11 +10,13 @@ id，再在事务内用真实 category_crypto_id 重加密分类名并更新。�
 """
 
 import uuid
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..managers.vault_manager import VaultManager
 
+from ...exceptions import EntryError
 from ...models import Category
 from ..services.crypto_utils import (
     category_crypto_id,
@@ -45,18 +47,24 @@ class CategoryManager:
     def get_categories(self) -> list[Category]:
         """获取全部分类，分类名经缓存解密，按 sort_order 与名称排序。"""
         categories = self._vault.db.get_categories()
+        decrypted: list[Category] = []
         for category in categories:
             if category.id is not None:
-                category.name = self._cache.decrypt_category_name(
-                    category.id, category.name,
+                category = replace(
+                    category,
+                    name=self._cache.decrypt_category_name(category.id, category.name),
                 )
-        return sorted(categories, key=lambda item: (item.sort_order, item.name.casefold()))
+            decrypted.append(category)
+        return sorted(decrypted, key=lambda item: (item.sort_order, item.name.casefold()))
 
     def get_category(self, category_id: int) -> Category | None:
         """获取指定分类，分类名经缓存解密。"""
         category = self._vault.db.get_category(category_id)
         if category is not None:
-            category.name = self._cache.decrypt_category_name(category_id, category.name)
+            category = replace(
+                category,
+                name=self._cache.decrypt_category_name(category_id, category.name),
+            )
         return category
 
     def get_category_entry_count(self, category_id: int) -> int:
@@ -79,14 +87,14 @@ class CategoryManager:
         """
         plaintext_name = category.name.strip()
         if not plaintext_name:
-            raise ValueError('分类名称不能为空')
+            raise EntryError('分类名称不能为空')
         pending_id = f'category-pending-{uuid.uuid4().hex}'
         with self._vault.db.transaction():
             existing_names = {
                 existing.name.casefold() for existing in self.get_categories()
             }
             if plaintext_name.casefold() in existing_names:
-                raise ValueError('分类名称已存在')
+                raise EntryError('分类名称已存在')
             stored = Category(
                 name=encrypt_field(plaintext_name, self._key, pending_id, 'category_name'),
                 icon_char=category.icon_char,
@@ -95,16 +103,18 @@ class CategoryManager:
                 created_at=category.created_at,
             )
             result = self._vault.db.add_category(stored)
-            stored.id = result
-            stored.name = encrypt_field(
-                plaintext_name,
-                self._key,
-                category_crypto_id(result),
-                'category_name',
+            stored = replace(stored, id=result)
+            stored = replace(
+                stored,
+                name=encrypt_field(
+                    plaintext_name,
+                    self._key,
+                    category_crypto_id(result),
+                    'category_name',
+                ),
             )
             self._vault.db.update_category(stored)
-        category.id = result
-        category.name = plaintext_name
+        category = replace(category, id=result, name=plaintext_name)
         # 分类变更不改条目摘要内容（title/url/tags 不变），保留搜索摘要缓存；
         # 仅失效分类名缓存并通知回调刷新侧边栏分类列表。
         if notify:
@@ -117,7 +127,7 @@ class CategoryManager:
     def update_category(self, category: Category) -> None:
         """更新分类，重加密分类名并失效分类名缓存（条目摘要内容不变）。"""
         if category.id is None:
-            raise ValueError('分类 ID 不能为空')
+            raise EntryError('分类 ID 不能为空')
         plaintext_name = category.name.strip()
         stored = Category(
             id=category.id,

@@ -45,6 +45,20 @@ class PasswordService:
         return TOTPGenerator.validate_secret(secret)
 
     @staticmethod
+    def validate_charset_selection(
+        uppercase: bool, lowercase: bool, digits: bool, symbols: bool,
+    ) -> tuple[bool, str]:
+        """校验密码生成至少选中一种字符集，返回 ``(是否有效, 错误信息)``。
+
+        settings_dialog 与 password_generator_dialog 的字符类型校验原先各持一份副本，
+        文案已漂移；抽此共享 helper 统一为单一事实源（MAINT-019）。有效时错误信息为
+        空字符串，无效时返回固定文案供调用方直接经 ``QMessageBox.warning`` 展示。
+        """
+        if not any((uppercase, lowercase, digits, symbols)):
+            return False, '至少需要选择一种密码字符类型。'
+        return True, ''
+
+    @staticmethod
     def generate_totp_or_raise(secret: str) -> str:
         """生成 TOTP 验证码，失败时抛出 ValueError。"""
         return TOTPGenerator.generate_or_raise(secret)

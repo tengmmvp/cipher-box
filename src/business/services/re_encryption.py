@@ -11,8 +11,9 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from threading import Event
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from ...database.types import EntryQuery, ReEncryptedEntry, ReEncryptedHistory, VerifyMode
 from ...exceptions import DecryptionError, VaultError
@@ -134,11 +135,12 @@ class ReEncryptionService:
                     if raw_entry.id is None:
                         raise VaultError('重加密遇到空主键条目，违反 RawEntry 主键非空契约')
                     try:
+                        updates: dict[str, Any] = {}
                         for field in _ENCRYPTED_ENTRY_FIELDS:
                             # custom_fields 在 RawEntry 态为密文字符串，显式取 db_value
                             # 与 _row_to_entry 的状态机解耦，避免误读解密后的 list；
-                            # 写回 setattr 对 custom_fields 同样落入密文 str，
-                            # 与 custom_fields_db_value 的读取一致。
+                            # 各字段独立读取旧密文，累积到 updates 末尾一次 replace，
+                            # custom_fields 同样落入密文 str，与 db_value 读取一致。
                             value = (
                                 raw_entry.custom_fields_db_value
                                 if field == 'custom_fields'
@@ -153,34 +155,35 @@ class ReEncryptionService:
                                     value, old_key, raw_entry.crypto_id, field,
                                     strict=True,
                                 )
-                                new_cipher = _encrypt_field_impl(
+                                updates[field] = _encrypt_field_impl(
                                     plain, new_key, raw_entry.crypto_id, field,
                                 )
-                                setattr(raw_entry, field, new_cipher)
                                 del plain
+                        # RawEntry 为 frozen，累积各字段重加密结果后一次 replace 产生新实例。
+                        re_encrypted = replace(raw_entry, **updates) if updates else raw_entry
                     except DecryptionError as exc:
                         logger.error("重加密中止：条目 id=%s 解密失败", raw_entry.id)
                         raise DecryptionError(
                             "某条目解密失败，数据可能已损坏。中止改密以保护数据完整性。"
                         ) from exc
 
-                    mac = self._signer.sign_with_domain_key(raw_entry, precomputed_domain_key)
+                    mac = self._signer.sign_with_domain_key(re_encrypted, precomputed_domain_key)
                     rows.append(ReEncryptedEntry(
-                        crypto_id=raw_entry.crypto_id,
-                        title_enc=raw_entry.title,
-                        username_enc=raw_entry.username,
-                        password_enc=raw_entry.password,
-                        url_enc=raw_entry.url,
-                        category_id=raw_entry.category_id,
-                        tags_enc=raw_entry.tags,
-                        notes_enc=raw_entry.notes,
-                        custom_fields_enc=raw_entry.custom_fields_db_value,
-                        is_favorite=int(raw_entry.is_favorite),
-                        password_strength=raw_entry.password_strength,
-                        entry_type=raw_entry.entry_type,
-                        totp_secret_enc=raw_entry.totp_secret,
-                        updated_at=raw_entry.updated_at,
-                        password_changed_at=raw_entry.password_changed_at,
+                        crypto_id=re_encrypted.crypto_id,
+                        title_enc=re_encrypted.title,
+                        username_enc=re_encrypted.username,
+                        password_enc=re_encrypted.password,
+                        url_enc=re_encrypted.url,
+                        category_id=re_encrypted.category_id,
+                        tags_enc=re_encrypted.tags,
+                        notes_enc=re_encrypted.notes,
+                        custom_fields_enc=re_encrypted.custom_fields_db_value,
+                        is_favorite=int(re_encrypted.is_favorite),
+                        password_strength=re_encrypted.password_strength,
+                        entry_type=re_encrypted.entry_type,
+                        totp_secret_enc=re_encrypted.totp_secret,
+                        updated_at=re_encrypted.updated_at,
+                        password_changed_at=re_encrypted.password_changed_at,
                         metadata_mac=mac,
                         id=raw_entry.id,
                     ))
@@ -224,11 +227,17 @@ class ReEncryptionService:
                     raise DecryptionError(
                         f'分类 {category.id} 名称解密失败，已中止改密'
                     ) from exc
-                category.name = _encrypt_field_impl(
-                    plaintext, new_key, crypto_id, 'category_name',
+                category = replace(
+                    category,
+                    name=_encrypt_field_impl(
+                        plaintext, new_key, crypto_id, 'category_name',
+                    ),
                 )
-                category.metadata_mac = self._signer.sign_category_with_domain_key(
-                    category, precomputed_domain_key,
+                category = replace(
+                    category,
+                    metadata_mac=self._signer.sign_category_with_domain_key(
+                        category, precomputed_domain_key,
+                    ),
                 )
                 updated.append(category)
             if updated:

@@ -60,7 +60,7 @@ from ..resources.icons import (
 from ..resources.theme_colors import c, get_strength_color
 from .custom_fields_renderer import CustomFieldsRenderer
 from .password_history_widget import PasswordHistoryWidget
-from .secret_field import make_secret_field_row
+from .secret_field import SecretFieldEnv, make_secret_field_row
 from .totp_widget import TOTPWidget
 from .widgets import clear_layout, create_icon_button, disconnect_all
 
@@ -512,14 +512,15 @@ class DetailPanel(QWidget):
             # 非主密码敏感字段复用共享构建逻辑（与 CustomFieldsRenderer 一致），
             # 明文按 label 键存入 _secret_values_main，切换/锁定时统一清零。
             return make_secret_field_row(
-                label, value,
-                store=self._secret_values_main,
-                store_key=label,
-                timers=self._field_hide_timers,
-                parent_widget=self,
-                get_pwd_visible_ms=self._get_pwd_visible_ms,
-                on_copy=self._copy_with_feedback,
-                on_copy_feedback=self.copy_feedback.emit,
+                SecretFieldEnv(
+                    store=self._secret_values_main,
+                    timers=self._field_hide_timers,
+                    parent_widget=self,
+                    get_pwd_visible_ms=self._get_pwd_visible_ms,
+                    on_copy=self._copy_with_feedback,
+                    on_copy_feedback=self.copy_feedback.emit,
+                ),
+                label, value, store_key=label,
             )
         # 主密码字段：使用全局 _pwd_hide_timer 与 _current_password 独立引用，
         # 不复用共享逻辑（共享逻辑为每行使用独立 QTimer）。

@@ -13,16 +13,15 @@ import os
 import time
 import uuid
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
+from typing import IO, TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from ...config import ConfigManager
-    from ...database.types import VaultDataStore
     from .entry_manager import EntryManager
     from .vault_manager import VaultManager
 
+from ...config import DEFAULT_CONFIG
 from ...crypto.encryption import EncryptionEngine
 from ...crypto.master_key import DEFAULT_KDF_PARAMS, KEY_SIZE, MasterKeyManager
 from ...database.types import EntryQuery
@@ -30,11 +29,6 @@ from ...exceptions import (
     BackupError,
     DecryptionError,
     PayloadTooLargeError,
-)
-from ...models import (
-    Category,
-    PasswordHistory,
-    RawEntry,
 )
 from ...utils.file_security import (
     atomic_write,
@@ -45,8 +39,12 @@ from ...utils.file_security import (
 from ...utils.format import utc_now_iso
 from ...utils.memory import secure_zero_buffer
 from ...utils.purge_files import secure_purge
+from ..services.auto_backup_policy import (
+    is_auto_backup_due,
+    purge_expired_auto_backups,
+)
+from ..services.backup_collector import collect_portable_data
 from ..services.backup_header_codec import (
-    BACKUP_FORMAT,
     BACKUP_SALT_SIZE,
     MAX_BACKUP_FILE_SIZE,
     MAX_BACKUP_PAYLOAD_SIZE,
@@ -63,142 +61,26 @@ from ..services.backup_paths import (
     BACKUPS_DIR_NAME,
     PRE_RESTORE_GLOB,
     PRE_RESTORE_PREFIX,
-    SNAPSHOT_GLOB,
     SNAPSHOT_PREFIX,
     build_backup_filename,
 )
+from ..services.backup_payload import PortableBackup, PreparedBackup
+from ..services.backup_rebuilder import (
+    restore_categories,
+    restore_entries,
+    restore_history,
+)
 from ..services.backup_validator import (
     MAX_BACKUP_ENTRIES,
-    MAX_HISTORY_PER_ENTRY,
-    REQUIRED_CATEGORY_KEYS,
-    REQUIRED_ENTRY_KEYS,
-    REQUIRED_HISTORY_KEYS,
     validate_restore_data,
 )
-from ..services.crypto_utils import (
-    build_encrypted_entry_fields,
-    decrypt_entry_to_portable_dict,
-    decrypt_field,
-    encrypt_field,
-    require_vault_key,
-)
+from ..services.crypto_utils import require_vault_key
 from ..services.error_messages import to_user_message
 from ..services.metadata_signer import VAULT_META_SIGNED_KEYS, MetadataSigner
 from ..services.password_service import PasswordService
 from .restore_point_manager import MAX_RESTORE_POINTS, RestorePointManager
 
 logger = logging.getLogger(__name__)
-
-
-class PortableCategory(TypedDict):
-    """备份载荷中的分类项（与 Category.to_dict 对称，不含 metadata_mac：恢复时重签）。"""
-
-    id: int
-    name: str
-    icon_char: str
-    color: str
-    sort_order: int
-    created_at: str
-
-
-class PortableEntry(TypedDict):
-    """备份载荷中的条目项（与 decrypt_entry_to_portable_dict 输出对称）。
-
-    键集与 backup_validator.validate_entry_fields 的 require_keys 精确匹配，
-    故恢复消费端可安全直接索引（无 .get 默认值死分支）。
-    """
-
-    id: int
-    crypto_id: str
-    title: str
-    username: str
-    password: str
-    url: str
-    category_id: int | None
-    tags: str
-    notes: str
-    custom_fields: list[dict[str, Any]]
-    is_favorite: bool
-    is_deleted: bool
-    password_strength: int
-    entry_type: str
-    totp_secret: str
-    created_at: str
-    updated_at: str
-    deleted_at: str
-    password_changed_at: str
-
-
-class PortableHistoryItem(TypedDict):
-    """备份载荷中的密码历史项。"""
-
-    entry_id: int
-    password: str
-    changed_at: str
-
-
-class PortableBackup(TypedDict):
-    """已校验的备份载荷结构（validate_restore_data 通过后 cast 使用）。"""
-
-    format: str
-    version: int
-    created_at: str
-    categories: list[PortableCategory]
-    entries: list[PortableEntry]
-    password_history: list[PortableHistoryItem]
-
-
-# 启动期一致性断言：Portable* TypedDict 字段集须与 backup_validator.REQUIRED_*_KEYS
-# 完全一致。新增字段时若只改 TypedDict 而漏改校验键集（或反之），模块加载即失败，
-# 而非让恢复路径静默放行残缺载荷。用显式 raise 而非 assert：python -O 会剔除 assert。
-_PORTABLE_KEY_ASSERTS = (
-    (set(PortableCategory.__annotations__), REQUIRED_CATEGORY_KEYS, 'PortableCategory'),
-    (set(PortableEntry.__annotations__), REQUIRED_ENTRY_KEYS, 'PortableEntry'),
-    (set(PortableHistoryItem.__annotations__), REQUIRED_HISTORY_KEYS, 'PortableHistoryItem'),
-)
-for _actual, _expected, _name in _PORTABLE_KEY_ASSERTS:
-    if _actual != _expected:
-        raise RuntimeError(
-            f'{_name} 字段集与 backup_validator 校验键集不一致：'
-            f'{sorted(_actual)} != {sorted(_expected)}'
-        )
-
-
-class _BackupCancelled(Exception):
-    """内部哨兵异常：cancel_check 触发时中止备份采集，编排层捕获后返回 None。
-
-    用异常而非返回值传递「取消」，使采集子方法保持单一返回类型（tuple），
-    编排层 ``_collect_portable_data`` 统一在 try/except 中归一为 None。
-    """
-
-
-# payload 字节估算的固定开销常量（JSON 键名 + 结构开销的粗略上界），供
-# _collect_portable_* 增量估算复用，单一来源避免三处魔术数漂移。
-_CATEGORY_OVERHEAD_BYTES = 128
-_ENTRY_OVERHEAD_BYTES = 512
-_HISTORY_OVERHEAD_BYTES = 64
-
-
-class _PreparedBackup(NamedTuple):
-    """``_prepare_backup_locked`` 的输出，承载锁外 ``_finalize_backup`` 的全部输入。
-
-    A4（备份锁外解密）：prepare 在 ``vault_write_lock`` 内完成快速 DB 读与
-    snapshot_key 副本采集；全量解密与 PASSWORD 密钥派生（Argon2id）推迟到锁外
-    finalize，缩短主线程 ``lock()`` 经 ``cancel_check`` 中止备份前的阻塞窗口。
-
-    ``snapshot_key`` 为锁内 ``VaultManager.snapshot_key`` property 返回的 bytes 副本：
-    锁外 finalize 持此副本，主线程 ``lock()`` 经 ``KeyManager.clear`` 原地清零内部
-    bytearray 不影响该独立拷贝（与 KeyManager.snapshot_key「返回副本」契约一致）。
-    PASSWORD 路径 ``backup_password`` 随结构带入锁外，供 finalize 派生 backup_key。
-    """
-    filepath: str
-    salt: bytes
-    flags: BackupFlag
-    backup_password: str | None
-    snapshot_key: bytes | None
-    raw_entries: list[RawEntry]
-    history_rows: list[PasswordHistory]
-    categories: list[dict[str, Any]]
 
 
 class BackupRestoreManager:
@@ -223,159 +105,6 @@ class BackupRestoreManager:
     def restore_points(self) -> RestorePointManager:
         """恢复点统计/清理管理器，供 UI 与清理路径访问。"""
         return self._restore_points
-
-    @staticmethod
-    def _check_payload_limit(estimated_size: int) -> None:
-        """估算的 payload 字节数超限时抛 PayloadTooLargeError，供采集路径复用。"""
-        if estimated_size > MAX_BACKUP_PAYLOAD_SIZE:
-            raise PayloadTooLargeError('备份数据过大')
-
-    def _collect_portable_data(
-        self,
-        cancel_check: Callable[[], bool] | None = None,
-        raw_entries: list[RawEntry] | None = None,
-        history_rows: list[PasswordHistory] | None = None,
-        categories: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any] | None:
-        """收集备份数据：解密所有字段为明文，构建可移植字典。
-
-        编排条目与密码历史的采集：二者各自增量估算 payload 大小，超限抛
-        :class:`PayloadTooLargeError`；``cancel_check`` 触发时经
-        :class:`_BackupCancelled` 中止并整体返回 None（调用方据此不产出残缺备份）。
-
-        A4 后本方法在 ``_finalize_backup`` 锁外调用：``raw_entries``/``history_rows``/
-        ``categories`` 由 ``_prepare_backup_locked`` 在锁内预读并传入，本方法只负责
-        解密（全量解密移出锁以缩短 ``lock()`` 阻塞，``cancel_check`` 在锁外解密循环
-        中及时生效）。三者任一为 None 时回退到自读 DB 的原行为，供
-        ``_create_backup_locked`` 持锁全流程复用。
-
-        返回结构的嵌套 entries/categories/password_history 项值类型混合，故标注
-        ``dict[str, Any]``（结构由 :func:`validate_restore_data` 校验）。
-        """
-        key = self._key
-        if categories is None:
-            categories = [
-                category.to_dict()
-                for category in self._entry_mgr.categories.get_categories()
-            ]
-        # 基于字段原始字节长度的粗略估算，避免逐条 json.dumps 双重序列化开销
-        estimated_size = sum(
-            len(c.get('name', '').encode('utf-8')) + _CATEGORY_OVERHEAD_BYTES
-            for c in categories
-        )
-        try:
-            entries, entry_count, estimated_size = self._collect_portable_entries(
-                key, cancel_check, estimated_size, raw_entries,
-            )
-            history, _ = self._collect_portable_history(
-                key, cancel_check, entry_count, estimated_size, history_rows,
-            )
-        except _BackupCancelled:
-            return None
-        return {
-            'format': BACKUP_FORMAT,
-            'version': 1,
-            'created_at': utc_now_iso(),
-            'categories': categories,
-            'entries': entries,
-            'password_history': history,
-        }
-
-    def _collect_portable_entries(
-        self,
-        key: bytes,
-        cancel_check: Callable[[], bool] | None,
-        estimated_size: int,
-        raw_entries: list[RawEntry] | None = None,
-    ) -> tuple[list[dict[str, Any]], int, int]:
-        """采集并解密全部条目为可移植字典，增量估算 payload 大小。
-
-        返回 ``(entries, entry_count, estimated_size)``。``cancel_check`` 触发时抛
-        :class:`_BackupCancelled`（编排层捕获）；完整性失败抛 :class:`BackupError`；
-        估算超限抛 :class:`PayloadTooLargeError`。
-
-        A4：``raw_entries`` 由 ``_prepare_backup_locked`` 锁内预读时，直接解密传入的
-        raw（跳过 DB 读，保留数量校验、cancel_check、estimated_size 逻辑），使本方法
-        的解密循环可在锁外运行、``cancel_check`` 得以及时中止。
-        """
-        if raw_entries is None:
-            raw_entries = self._vault.db.get_entries(EntryQuery(include_deleted=True))
-        if len(raw_entries) > MAX_BACKUP_ENTRIES:
-            raise PayloadTooLargeError('备份条目数量超出限制')
-        entries: list[dict[str, Any]] = []
-        for raw in raw_entries:
-            if cancel_check and cancel_check():
-                raise _BackupCancelled
-            try:
-                portable_item = decrypt_entry_to_portable_dict(raw, key, include_secrets=True)
-            except (DecryptionError, json.JSONDecodeError) as exc:
-                # decrypt_entry_to_portable_dict 失败抛异常（完整性/解密/JSON 损坏），
-                # 此处转为 BackupError 中止备份（备份不容忍残缺条目）。
-                raise BackupError(
-                    f'条目 {raw.id} 完整性校验或解密失败，备份已中止'
-                ) from exc
-            # 基于字段原始长度的粗略估算，每条目约 512 字节固定开销。估算覆盖全部
-            # 将进入 JSON payload 的字段，以密文长度作上界（base64 密文 ≥ 明文），
-            # 避免大 notes 或 custom_fields 场景下粗估漏判、直至序列化才产生内存峰值。
-            estimated_size += (
-                len(raw.title.encode('utf-8'))
-                + len((raw.username or '').encode('utf-8'))
-                + len((raw.url or '').encode('utf-8'))
-                + len((raw.tags or '').encode('utf-8'))
-                + len((raw.notes or '').encode('utf-8'))
-                + len(raw.custom_fields_db_value.encode('utf-8'))
-                + len((raw.totp_secret or '').encode('utf-8'))
-                + _ENTRY_OVERHEAD_BYTES
-            )
-            self._check_payload_limit(estimated_size)
-            entries.append(portable_item)
-        return entries, len(raw_entries), estimated_size
-
-    def _collect_portable_history(
-        self,
-        key: bytes,
-        cancel_check: Callable[[], bool] | None,
-        entry_count: int,
-        estimated_size: int,
-        history_rows: list[PasswordHistory] | None = None,
-    ) -> tuple[list[dict[str, Any]], int]:
-        """采集并解密密码历史，增量估算 payload 大小。
-
-        返回 ``(history, estimated_size)``。``entry_count`` 用于历史条数上限校验
-        （每条目平均历史数不超过 :data:`MAX_HISTORY_PER_ENTRY`）。
-
-        A4：``history_rows`` 由 ``_prepare_backup_locked`` 锁内预读时直接解密传入
-        （跳过 DB 读），使解密循环可在锁外运行。
-        """
-        if history_rows is None:
-            history_rows = self._vault.db.get_all_password_history()
-        if len(history_rows) > entry_count * MAX_HISTORY_PER_ENTRY:
-            raise PayloadTooLargeError('密码历史数量超出限制')
-        history: list[dict[str, Any]] = []
-        for history_row in history_rows:
-            if cancel_check and cancel_check():
-                raise _BackupCancelled
-            try:
-                pwd = decrypt_field(
-                    history_row.old_password_enc, key,
-                    history_row.entry_crypto_id, 'password', strict=True,
-                )
-            except DecryptionError:
-                raise BackupError(
-                    f'条目 {history_row.entry_id} 的密码历史解密失败，备份已中止'
-                ) from None
-            history.append({
-                'entry_id': history_row.entry_id,
-                'password': pwd,
-                'changed_at': history_row.changed_at,
-            })
-            estimated_size += (
-                len(history_row.changed_at.encode('utf-8'))
-                + len((history_row.old_password_enc or '').encode('utf-8'))
-                + _HISTORY_OVERHEAD_BYTES
-            )
-            self._check_payload_limit(estimated_size)
-        return history, estimated_size
 
     def create_backup(
         self,
@@ -445,7 +174,7 @@ class BackupRestoreManager:
         filepath: str,
         backup_password: str | None,
         use_snapshot_key: bool,
-    ) -> _PreparedBackup:
+    ) -> PreparedBackup:
         """锁内快速采集 finalize 所需全部输入；调用方须已持有 ``vault_write_lock``。
 
         A4：仅在此完成需持锁串行的快速操作——生成 salt、读 raw_entries/
@@ -478,7 +207,7 @@ class BackupRestoreManager:
             snapshot_key = self._vault.snapshot_key
         else:
             raise BackupError('必须指定备份密码或使用快照密钥')
-        return _PreparedBackup(
+        return PreparedBackup(
             filepath=filepath,
             salt=salt,
             flags=flags,
@@ -491,7 +220,7 @@ class BackupRestoreManager:
 
     def _finalize_backup(
         self,
-        prepared: _PreparedBackup,
+        prepared: PreparedBackup,
         cancel_check: Callable[[], bool] | None,
     ) -> tuple[bool, str]:
         """锁外完成密钥派生、全量解密、加密与落盘（A4：缩短 vault_write_lock 持有）。
@@ -518,7 +247,10 @@ class BackupRestoreManager:
                 raise BackupError('快照密钥不可用')
             backup_key = snapshot_key
         try:
-            data = self._collect_portable_data(
+            data = collect_portable_data(
+                self._key,
+                self._vault.db,
+                self._entry_mgr,
                 cancel_check=cancel_check,
                 raw_entries=prepared.raw_entries,
                 history_rows=prepared.history_rows,
@@ -787,9 +519,9 @@ class BackupRestoreManager:
         try:
             with self._vault.epoch_guarded_transaction(operation='恢复'):
                 db.clear_vault_data()
-                category_map = self._restore_categories(backup)
-                entry_map, crypto_id_map = self._restore_entries(db, backup, key, category_map)
-                self._restore_history(db, backup, key, entry_map, crypto_id_map)
+                category_map = restore_categories(self._entry_mgr, backup)
+                entry_map, crypto_id_map = restore_entries(db, backup, key, category_map)
+                restore_history(db, backup, key, entry_map, crypto_id_map)
                 # 轮换 key_epoch 防止旧会话写入恢复后的数据
                 new_epoch = uuid.uuid4().hex
                 db.set_meta('key_epoch', new_epoch)
@@ -815,108 +547,6 @@ class BackupRestoreManager:
             if not success:
                 secure_zero_buffer(new_snapshot_key)
 
-    def _restore_categories(self, backup: PortableBackup) -> dict[int, int]:
-        """重建分类，返回旧 ID 到新 ID 的映射。"""
-        entry_manager = self._entry_mgr
-        category_map: dict[int, int] = {}
-        for item in backup['categories']:
-            # PortableCategory(TypedDict)经 cast 桥接到 from_dict 的 dict 参数：
-            # pyright 严格模式不允许 TypedDict 隐式赋给 dict（结构化类型限制），
-            # validator 已保证键集，cast 安全。
-            category = Category.from_dict(cast(dict[str, Any], item))
-            if not category.name:
-                continue
-            new_id = entry_manager.categories.add_category(category, notify=False)
-            # item['id'] 由 validator 校验为 int（非 None），直接索引建立映射。
-            category_map[item['id']] = new_id
-        return category_map
-
-    @staticmethod
-    def _restore_entries(
-        db: 'VaultDataStore',
-        backup: PortableBackup,
-        key: bytes,
-        category_map: dict[int, int],
-    ) -> tuple[dict[int, int], dict[int, str]]:
-        """重建条目，加密敏感字段，返回 (entry_map, crypto_id_map)。
-
-        全部条目先在内存构建为 RawEntry，再经 ``add_entries_batch`` 一次性
-        executemany 写入，避免逐条 INSERT+commit 的 N 次 fsync 拖长恢复期间
-        ``vault_write_lock`` 的持锁时间（UI 冻结窗口）。
-
-        item 经 validator 校验类型/长度，直接索引 PortableEntry 字段，消除原先
-        .get(default) 的死分支（键集由 require_keys 精确匹配保证存在）。
-        """
-        items = backup['entries']
-        entries: list[RawEntry] = []
-        for item in items:
-            # PortableEntry(TypedDict)经 cast 桥接到 build_encrypted_entry_fields 的
-            # dict 参数（同 from_dict，TypedDict 不隐式兼容 dict）。
-            enc = build_encrypted_entry_fields(cast(dict[str, Any], item), key, item['crypto_id'])
-            entries.append(RawEntry(
-                crypto_id=item['crypto_id'],
-                title=enc['title'],
-                username=enc['username'],
-                password=enc['password'],
-                url=enc['url'],
-                category_id=(
-                    category_map.get(item['category_id'])
-                    if item['category_id'] is not None
-                    else None
-                ),
-                tags=enc['tags'],
-                notes=enc['notes'],
-                custom_fields=enc['custom_fields'],
-                is_favorite=item['is_favorite'],
-                is_deleted=item['is_deleted'],
-                password_strength=item['password_strength'],
-                entry_type=item['entry_type'],
-                totp_secret=enc['totp_secret'],
-                created_at=item['created_at'],
-                updated_at=item['updated_at'],
-                deleted_at=item['deleted_at'],
-                password_changed_at=(
-                    item['password_changed_at']
-                    or item['updated_at']
-                    or item['created_at']
-                    or utc_now_iso()
-                ),
-            ))
-        crypto_id_to_new_id = db.add_entries_batch(entries, preserve_metadata=True)
-        entry_map: dict[int, int] = {}
-        crypto_id_map: dict[int, str] = {}  # 旧 entry_id 到 crypto_id 的映射
-        for item, entry in zip(items, entries, strict=True):
-            # item['id'] 由 validate_entries 保证为正整数（require_keys + is_real_int），
-            # 直接索引建立映射，与 PortableEntry 文档「无 .get 死分支」契约一致。
-            entry_map[item['id']] = crypto_id_to_new_id[entry.crypto_id]
-            crypto_id_map[item['id']] = entry.crypto_id
-        return entry_map, crypto_id_map
-
-    @staticmethod
-    def _restore_history(
-        db: 'VaultDataStore',
-        backup: PortableBackup,
-        key: bytes,
-        entry_map: dict[int, int],
-        crypto_id_map: dict[int, str],
-    ) -> None:
-        """重建密码历史，按 entry_id 分组批量写入并统一截断。"""
-        history_by_entry: dict[int, list[tuple[str, str]]] = {}
-        for item in backup['password_history']:
-            new_entry_id = entry_map.get(item['entry_id'])
-            if not new_entry_id:
-                continue
-            # entry_map 命中则 crypto_id_map 必同步存在（_restore_entries 同填充），
-            # 直接取而非 get 默认 ''，避免空 crypto_id 产生 AAD 不一致的密文。
-            crypto_id = crypto_id_map[item['entry_id']]
-            ciphertext = encrypt_field(item['password'], key, crypto_id, 'password')
-            if ciphertext:
-                history_by_entry.setdefault(new_entry_id, []).append(
-                    (ciphertext, item['changed_at'])
-                )
-        for entry_id, items in history_by_entry.items():
-            db.add_password_history_batch(entry_id, items)
-
     def maybe_auto_backup(
         self,
         config: 'ConfigManager',
@@ -937,17 +567,10 @@ class BackupRestoreManager:
         if not force and not config.get('auto_backup_enabled', False):
             return True, ''
 
-        interval = config.get('auto_backup_interval_hours', 24)
-        last_text = config.get('last_auto_backup_at', '')
-        if not force and last_text:
-            try:
-                elapsed = datetime.now(timezone.utc) - datetime.fromisoformat(last_text)
-                if elapsed < timedelta(hours=interval):
-                    return True, ''
-            except ValueError:
-                # last_auto_backup_at 解析失败（损坏的时间戳）会让间隔检查每次都
-                # 重新备份；记录以便运维发现配置损坏，而非静默持续冗余备份。
-                logger.warning('last_auto_backup_at 解析失败，跳过间隔检查：%s', last_text)
+        # 间隔判定下沉 auto_backup_policy.is_auto_backup_due（纯函数，可独立测试）；
+        # 未到间隔时静默返回成功（与禁用跳过一致：非错误，只是无需备份）。
+        if not is_auto_backup_due(config, force=force):
+            return True, ''
 
         backup_dir = config.get('backup_directory', '')
         if backup_dir:
@@ -984,9 +607,8 @@ class BackupRestoreManager:
             # 冗余备份，非致命；风格与 settings_dialog 的 config.save() 一致。
             logger.warning('无法写入配置文件，请检查磁盘空间和文件权限。', exc_info=True)
 
-        retention = config.get('auto_backup_retention', 10)
-        # 按文件名降序保留最新 retention 个自动快照；过期快照含全量明文，删除失败
-        # 会扩大泄漏面，secure_purge 收集失败仅告警以便人工处理。
-        secure_purge([directory], [SNAPSHOT_GLOB], keep=retention, collect_failures=False)
+        retention = config.get('auto_backup_retention', DEFAULT_CONFIG['auto_backup_retention'])
+        # 过期快照清理下沉 auto_backup_policy.purge_expired_auto_backups（纯策略函数）。
+        purge_expired_auto_backups(directory, retention)
 
         return True, ''

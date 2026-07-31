@@ -28,6 +28,7 @@ MS_TOAST_LONG = 5000        # 长 Toast 显示，用于需用户注意的消息
 PWD_VISIBLE_SECONDS_DEFAULT: int = int(DEFAULT_CONFIG['password_visible_seconds'])
 CLIPBOARD_CLEAR_SECONDS_DEFAULT: int = int(DEFAULT_CONFIG['clipboard_clear_seconds'])
 WORKER_WAIT_TIMEOUT_MS = 3000     # 后台 Worker 等待超时
+ABOUT_TO_QUIT_WAIT_TIMEOUT_MS = 400  # aboutToQuit 短超时等待 worker 退出（不阻塞退出）
 MS_SEARCH_DEBOUNCE = 300    # 搜索输入防抖间隔
 MS_AUTO_BACKUP_CHECK = 10 * 60 * 1000  # 自动备份检查间隔
 MS_STATUS_BAR_DEBOUNCE = 100  # 状态栏安全分析防抖间隔
@@ -40,15 +41,17 @@ MAX_HISTORY_DISPLAY = 5     # 详情面板最多显示密码历史条数
 MAX_TAG_DISPLAY = 5         # 详情面板最多显示标签数
 MAX_TAG_AUTOCOMPLETE = 20   # 标签自动补全最大数量
 RECENT_ENTRY_LIMIT = 20     # 「近期更新」筛选最多显示条目数
-ASYNC_SEARCH_THRESHOLD = 100  # 超过该条目数时列表/搜索移入后台线程
-# 阈值由 200 下调至 100：冷缓存下 100-200 条目的全量摘要解密（每条 4 字段
-# AES-GCM + base64 + 缓存填充）在主线程可达数十毫秒临界卡顿，下调使中等库
-# 也走已有异步路径避免冻结 UI；小库（< 100）仍同步以省去后台线程与「加载中」闪烁。
+ASYNC_SEARCH_THRESHOLD = 50  # 超过该条目数时列表/搜索移入后台线程
+# 阈值由 100 下调至 50（PERF-005）：冷缓存下 50-100 条目的全量摘要解密（每条 4 字段
+# AES-GCM + base64 + 缓存填充）在主线程已达数十毫秒临界卡顿，下调使中小库也走已有
+# 异步路径避免冻结 UI；极小库（< 50）仍同步以省去后台线程与「加载中」闪烁。
 
 # ---------- 窗口尺寸 ----------
 WINDOW_MIN_SIZE = (980, 640)
 WINDOW_DEFAULT_SIZE = (1180, 760)
 SIDEBAR_WIDTH = 220
+SIDEBAR_ICON_SIZE = (28, 28)        # 侧边栏品牌图标尺寸
+SIDEBAR_ICON_SIZE_SMALL = (22, 22)  # 侧边栏小号图标按钮尺寸（如「管理分类」+ 按钮）
 FILTER_MAX_HEIGHT = 240
 SPLITTER_SIZES = [200, 380, 420]
 
@@ -71,8 +74,10 @@ TOAST_MARGIN_RIGHT = 20
 TOAST_HOVER_RESTART_MS = 1000
 
 # ---------- 登录窗口 ----------
+LOGIN_WIDTH = 500                   # 登录窗口固定宽度
 LOGIN_HEIGHT_FIRST = 520
 LOGIN_HEIGHT_LOGIN = 450
+LOGIN_TITLE_FONT_SIZE_PX = 24       # 登录窗口标题字号（QSS 内联，单位 px）
 
 
 # ---------- 字体 ----------
@@ -106,3 +111,16 @@ SORT_OPTIONS = [
     ('创建时间 ↓', 'created_at', 'desc'),
     ('创建时间 ↑', 'created_at', 'asc'),
 ]
+
+# ---------- 条目字段校验 ----------
+# 服务器条目端口校验范围（QIntValidator 边界）。TCP/UDP 端口合法区间 1-65535，
+# 0 为保留值不接受。供 entry_dialog 构造端口输入校验器，消除字面量散落。
+SERVER_PORT_MIN = 1
+SERVER_PORT_MAX = 65535
+
+# ---------- 主题标识 ----------
+# 主题字符串单例（与 config.DEFAULT_THEME 同值）：config 层的 'light'/'dark' 字面量
+# 归 config 所有（_is_valid / DEFAULT_THEME），此处仅为 UI 层（settings_dialog 读写
+# 主题控件）提供单一源，避免 'light'/'dark' 在 UI 多处内联漂移。
+THEME_LIGHT = 'light'
+THEME_DARK = 'dark'

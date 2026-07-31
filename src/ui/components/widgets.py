@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QObject, Qt, QTimer
 from PyQt6.QtWidgets import (
     QDialog,
     QLabel,
@@ -534,10 +534,14 @@ class WorkerHost(Protocol):
     用 Protocol 而非具体 QDialog 子类：release_worker 只依赖「持有 _worker」这一
     结构契约。相较原先的 ``getattr(dialog, '_worker', None)`` 宽容访问，属性访问
     使「_worker 被重命名」能在静态类型检查阶段暴露（而非运行时静默返回 None、
-    worker 信号未断开、关闭后回调访问已销毁控件）。
+    worker 信号未断开、关闭后回调访问已销毁控件）。``sender`` 源自 QObject，
+    所有 WorkerHost 实现者均为 QDialog（QObject 子类），故纳入协议以支持
+    :func:`finalize_worker_if_current` 的过期 worker 守卫。
     """
 
     _worker: BackgroundWorker | None
+
+    def sender(self) -> QObject | None: ...
 
 
 def release_worker(dialog: WorkerHost) -> None:
@@ -558,6 +562,30 @@ def release_worker(dialog: WorkerHost) -> None:
         except (TypeError, RuntimeError):
             pass
     dialog._worker = None
+
+
+def finalize_worker_if_current(dialog: WorkerHost) -> bool:
+    """过期 worker 守卫 + 当前 worker 释放（收敛 5 对话框的完成槽样板）。
+
+    合并 ``if self.sender() is not self._worker: return`` 与 ``release_worker(self)``
+    两步样板：若回调来自当前 worker 则释放并返回 True，否则返回 False（调用方
+    应直接 ``return`` 忽略过期 worker 的结果）。典型用法::
+
+        if not finalize_worker_if_current(self):
+            return
+        self._set_busy(False)  # busy 复位在释放之后，顺序对 UI 状态无影响
+        # ...处理结果...
+
+    Args:
+        dialog: 持有 ``_worker`` 的对话框（满足 :class:`WorkerHost`）。
+
+    Returns:
+        True 表示回调来自当前 worker 且已释放；False 表示来自过期 worker。
+    """
+    if dialog.sender() is not dialog._worker:
+        return False
+    release_worker(dialog)
+    return True
 
 
 def set_label_severity(label: QLabel, severity: str) -> None:

@@ -10,6 +10,7 @@ import csv
 from collections.abc import Callable
 from typing import Any
 
+from ....exceptions import ImportSizeError
 from ....models import ENTRY_FIELD_LIMITS, MAX_ENTRY_PAYLOAD_SIZE, Entry
 from .base import (
     ParsedImport,
@@ -109,7 +110,7 @@ def _parse_csv_like(
             if internal_field in col_map:
                 value = kwargs.get(entry_key_map[internal_field], '')
                 if len(value) > max_len:
-                    raise ValueError(
+                    raise ImportSizeError(
                         f'导入条目字段 {internal_field} 过长（最多 {max_len} 字符）'
                     )
         # totp_secret / url scheme 校验经模块级统一函数，与 JSON/Bitwarden 路径共享单一来源
@@ -123,14 +124,14 @@ def _parse_csv_like(
     return entries, entries_data, password_present
 
 
-def _make_csv_merger(password_present: bool) -> Callable[[Entry, Entry], None]:
+def _make_csv_merger(password_present: bool) -> Callable[[Entry, Entry], Entry]:
     """构造 CSV 类覆盖合并器，绑定解析期确定的 password_present 标志。
 
     source_has_password 在解析期才能确定（取决于 CSV 是否含 password 列），
     故用闭包捕获后返回稳定的合并器，供 ImportExportManager 在覆盖路径调用。
     """
-    def _merge(entry: Entry, existing: Entry) -> None:
-        _merge_csv_secrets(entry, existing, password_present)
+    def _merge(entry: Entry, existing: Entry) -> Entry:
+        return _merge_csv_secrets(entry, existing, password_present)
     return _merge
 
 

@@ -31,16 +31,16 @@ from ..resources.constants import (
     MS_STATUS_BAR_DEBOUNCE,
 )
 from ..resources.icons import (
-    EMPTY_FOLDER,
-    EMPTY_GENERIC,
-    EMPTY_SEARCH,
-    EMPTY_SUCCESS,
-    EMPTY_TRASH,
-    EMPTY_VAULT,
     FOLDER,
     icon,
 )
 from ._locked_guard import require_unlocked
+from .list_refresh_helpers import (
+    EmptyStateContext,
+    EmptyStateResolver,
+    StatusBarRenderer,
+    StatusBarView,
+)
 
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import (
@@ -56,7 +56,7 @@ if TYPE_CHECKING:
     from ...business.managers.entry_manager import EntryManager
     from ...business.services.security_analyzer import SecurityAnalyzer, SecurityReport
     from ...config import ConfigManager
-    from ...models import Category
+    from ...models import Category, Entry
     from ..components.detail_panel import DetailPanel
     from ..components.entry_list_widget import EntryListModel
     from ..controllers.entry_list_controller import EntryListController
@@ -305,7 +305,7 @@ class ListRefreshController:
         self._config.set('sort_order', order)
         self.refresh_entries()
 
-    def _sort_entries(self, entries: list) -> list:
+    def _sort_entries(self, entries: list[Entry]) -> list[Entry]:
         """对条目列表排序。"""
         return self._entry_list_ctrl.sort_entries(entries, self._view.sort_combo.currentIndex())
 
@@ -609,42 +609,33 @@ class ListRefreshController:
             view.list_stack.removeWidget(old)
             old.deleteLater()
 
-        icon_name, title, subtitle, action_text, slot = self._resolve_empty_state()
+        spec = EmptyStateResolver.resolve(self._build_empty_state_context())
         empty = EmptyStateWidget(
-            icon_name=icon_name, title=title, subtitle=subtitle, action_text=action_text,
+            icon_name=spec.icon_name, title=spec.title,
+            subtitle=spec.subtitle, action_text=spec.action_text,
         )
-        if slot is not None:
-            empty.action_clicked.connect(slot)
+        if spec.action_slot is not None:
+            empty.action_clicked.connect(spec.action_slot)
         view.list_stack.addWidget(empty)
         view.list_stack.setCurrentWidget(empty)
 
-    def _resolve_empty_state(self) -> tuple[str, str, str, str, Callable[[], None] | None]:
-        """按优先级解析当前空状态配置（7 种场景线性判断，首个命中即返回）。"""
-        if self._current_search:
-            return (EMPTY_SEARCH, '没有找到匹配的条目', '尝试不同的搜索关键词', '清除搜索', self.clear_search)
-        filter_name = self._current_filter
-        if filter_name == 'trash':
-            return (EMPTY_TRASH, '回收站是空的', '删除的条目会出现在这里', '', None)
-        if filter_name in ('weak', 'duplicate'):
-            # 缓存未就绪时显示「分析中」，避免空列表被误读为「无弱/重复密码」
-            if self._is_security_analyzing():
-                label = '密码强度' if filter_name == 'weak' else '重复密码'
-                return (EMPTY_GENERIC, f'正在分析{label}...', '请稍候', '', None)
-            if filter_name == 'weak':
-                return (EMPTY_SUCCESS, '没有发现弱密码', '所有密码强度良好', '', None)
-            return (EMPTY_SUCCESS, '没有重复密码', '所有密码都是唯一的', '', None)
-        if filter_name == 'recent':
-            return (EMPTY_SUCCESS, '没有近期更新', '最近没有修改过条目', '', None)
-        if self._current_category_id is not None:
-            return (EMPTY_FOLDER, '该分类下暂无条目', '新增或编辑条目时可选择该分类', '', None)
-        # 仅默认/空库分支需要总数，惰性查询避免其他空态场景的无谓 DB 访问
+    def _build_empty_state_context(self) -> EmptyStateContext:
+        """构造空态解析入参快照；总数经 ``_cached_total_entries`` 缓存解析后注入。"""
+        # total_entries 经缓存惰性解析：resolver 为无 DB 访问的纯函数，总数由 controller
+        # 在此解析后注入。缓存命中时零查询，失效（-1）时查一次 COUNT 并回填缓存。
         total_entries = self._cached_total_entries
         if total_entries < 0:
             total_entries = self._entry_mgr.get_entry_count()
             self._cached_total_entries = total_entries
-        if total_entries == 0:
-            return (EMPTY_VAULT, '还没有密码条目', '点击工具栏「新增」按钮开始添加', '新增条目', self._deps.on_add_entry)
-        return (EMPTY_GENERIC, '暂无条目', '', '', None)
+        return EmptyStateContext(
+            current_search=self._current_search,
+            current_filter=self._current_filter,
+            current_category_id=self._current_category_id,
+            total_entries=total_entries,
+            is_analyzing=self._is_security_analyzing(),
+            on_clear_search=self.clear_search,
+            on_add_entry=self._deps.on_add_entry,
+        )
 
     def _is_security_analyzing(self) -> bool:
         """security 分析是否仍在进行（缓存未就绪），供 weak/duplicate 空态共享。"""
@@ -668,7 +659,7 @@ class ListRefreshController:
         if self._status_worker and self._status_worker.isRunning():
             return
         worker = BackgroundWorker(
-            lambda: self._security.get_or_compute_report(days),
+            lambda: self._security.get_or_compute_report(days, cancel_check=worker.cancel_check),
             parent=self._parent,
         )
         self._status_worker = worker
@@ -700,28 +691,15 @@ class ListRefreshController:
     def _render_status(
         self, total: int, weak: int, duplicate: int, old_count: int,
     ) -> None:
-        """据四项安全计数渲染状态栏统计标签、状态栏消息与过期警告。"""
-        view = self._view
-        try:
-            view.stats_label.setText(f'共 {total} 项')
-            parts = [f'总计 {total} 条']
-            if weak > 0:
-                parts.append(f'弱密码 {weak}')
-            if duplicate > 0:
-                parts.append(f'重复 {duplicate}')
-            view.status_bar.showMessage('  |  '.join(parts))
-            # 密码过期警告：复用实例属性，避免 findChild
-            warning_label = view.warning_label
-            if old_count > 0:
-                warning_label.setText(f'  {old_count} 个密码已过期  ')
-                warning_label.show()
-                if warning_label.parent() is not view.status_bar:
-                    view.status_bar.addPermanentWidget(warning_label)
-            else:
-                warning_label.hide()
-        except (ValueError, RuntimeError):
-            logger.debug("状态栏安全分析失败", exc_info=True)
-            view.status_bar.showMessage('安全分析暂时不可用')
+        """据四项安全计数渲染状态栏；纯渲染下沉 StatusBarRenderer，控件引用经快照注入。"""
+        StatusBarRenderer.render(
+            StatusBarView(
+                stats_label=self._view.stats_label,
+                status_bar=self._view.status_bar,
+                warning_label=self._view.warning_label,
+            ),
+            total, weak, duplicate, old_count,
+        )
 
     # ========== 事件处理 ==========
 
