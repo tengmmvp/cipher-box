@@ -2,11 +2,12 @@
 
 from unittest.mock import MagicMock, PropertyMock
 
+from src.business.managers.entry_cache import SearchMetadata
 from tests.helpers import make_entry_manager
 
 
 class TestSearchMetadataCacheEpochInvalidation:
-    """验证 _invalidate_if_epoch_changed 在 key_epoch 变化时清除缓存。"""
+    """验证 invalidate_if_epoch_changed 在 key_epoch 变化时清除缓存。"""
 
     def test_epoch_change_clears_cache(self):
         """key_epoch 变化时，搜索元数据缓存被清空。"""
@@ -16,12 +17,14 @@ class TestSearchMetadataCacheEpochInvalidation:
 
         mgr = make_entry_manager(vault)
         mgr._cache._search_metadata_cache = {
-            'id1': ('title1', 'user1', 'url1', 'tags1'),
-            'id2': ('title2', 'user2', '', ''),
+            'id1': SearchMetadata('title1', 'user1', 'url1', 'tags1',
+                                  'title1', 'user1', 'url1', 'tags1'),
+            'id2': SearchMetadata('title2', 'user2', '', '',
+                                  'title2', 'user2', '', ''),
         }
         mgr._cache._cache_epoch = 'epoch_v1'
 
-        mgr._invalidate_if_epoch_changed()
+        mgr._cache.invalidate_if_epoch_changed()
 
         assert len(mgr._cache._search_metadata_cache) == 0
         assert mgr._cache._cache_epoch == 'epoch_v2'
@@ -37,10 +40,13 @@ class TestSearchMetadataCacheEpochInvalidation:
         type(vault).key_epoch = PropertyMock(return_value=None)
 
         mgr = make_entry_manager(vault)
-        mgr._cache._search_metadata_cache = {'id1': ('title1', 'user1', 'url1', 'tags1')}
+        mgr._cache._search_metadata_cache = {
+            'id1': SearchMetadata('title1', 'user1', 'url1', 'tags1',
+                                  'title1', 'user1', 'url1', 'tags1'),
+        }
         mgr._cache._cache_epoch = None
 
-        mgr._invalidate_if_epoch_changed()
+        mgr._cache.invalidate_if_epoch_changed()
 
         assert len(mgr._cache._search_metadata_cache) == 0
 
@@ -51,12 +57,14 @@ class TestSearchMetadataCacheEpochInvalidation:
         type(vault).key_epoch = PropertyMock(return_value='same_epoch')
 
         mgr = make_entry_manager(vault)
-        mgr._cache._search_metadata_cache = {'id1': ('title1', 'user1', 'url1', 'tags1')}
+        cached = SearchMetadata('title1', 'user1', 'url1', 'tags1',
+                                'title1', 'user1', 'url1', 'tags1')
+        mgr._cache._search_metadata_cache = {'id1': cached}
         mgr._cache._cache_epoch = 'same_epoch'
 
-        mgr._invalidate_if_epoch_changed()
+        mgr._cache.invalidate_if_epoch_changed()
 
-        assert mgr._cache._search_metadata_cache == {'id1': ('title1', 'user1', 'url1', 'tags1')}
+        assert mgr._cache._search_metadata_cache == {'id1': cached}
 
     def test_invalidate_caches_clears_all(self):
         """invalidate_caches() 显式清空所有缓存。"""
@@ -65,7 +73,10 @@ class TestSearchMetadataCacheEpochInvalidation:
         vault.key_epoch = 'some_epoch'
 
         mgr = make_entry_manager(vault)
-        mgr._cache._search_metadata_cache = {'id1': ('title1', 'user1', 'url1', 'tags1')}
+        mgr._cache._search_metadata_cache = {
+            'id1': SearchMetadata('title1', 'user1', 'url1', 'tags1',
+                                  'title1', 'user1', 'url1', 'tags1'),
+        }
         mgr._cache._search_metadata_failed = {'id2': {'username'}}
 
         mgr.invalidate_caches()

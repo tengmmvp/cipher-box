@@ -81,14 +81,29 @@ class AutoLockController:
         self.reset_timer()
 
     def reset_timer(self) -> None:
-        """按 auto_lock_minutes 重置定时器；未解锁或关闭时停止。"""
+        """按 auto_lock_minutes 重置定时器；未解锁或关闭时停止。
+
+        auto_lock_minutes=0 表"禁用空闲锁定、依赖会话锁屏兜底"。仅当会话锁屏联动实际
+        可用(Windows 且 WTS 注册成功,self._wts_registered)时才允许 0;退化路径(非
+        Windows / WTS 注册失败 / 测试环境)下无会话锁屏兜底,0 即彻底无自动锁定,降级为
+        默认值强制一个不可关闭的空闲锁定上限(SEC-005)。
+        """
         if self._lock_timer is None:
             return
-        # 默认值引用 DEFAULT_CONFIG 单一源，与 constants.py 派生 clipboard 默认值的路径一致，
+        # 默认值引用 DEFAULT_CONFIG 单一源,与 constants.py 派生 clipboard 默认值的路径一致,
         # 避免「改了默认却此处仍是字面量 5」的漂移。
         minutes = self._config.get_safe(
             'auto_lock_minutes', DEFAULT_CONFIG['auto_lock_minutes']
         )
+        # 退化路径(无会话锁屏联动)下不允许 0:否则用户设"禁用"即彻底无自动锁定,
+        # 远程/RDP 会话(WTS 注册失败)与非 Windows 平台静默失去全部锁定兜底。
+        # 仅会话锁屏可用时 0 才作为合法禁用放行(依赖系统锁屏即时锁定)。
+        if minutes <= 0 and not self._wts_registered:
+            minutes = DEFAULT_CONFIG['auto_lock_minutes']
+            logger.warning(
+                "auto_lock_minutes=0 在无会话锁屏联动环境下不安全,已降级为默认值 %d 分钟",
+                minutes,
+            )
         if not self._vault.is_unlocked or minutes <= 0:
             self._lock_timer.stop()
             return

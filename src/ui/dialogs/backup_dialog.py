@@ -12,10 +12,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QCloseEvent, QShowEvent
+from PyQt6.QtGui import QShowEvent
 from PyQt6.QtWidgets import (
     QButtonGroup,
-    QDialog,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -34,13 +33,13 @@ from ...business.services.backup_paths import BACKUP_EXT
 from ...business.services.password_service import PasswordService
 from ...exceptions import BackupError
 from ..components.widgets import (
+    WorkerBackedDialog,
     create_cancel_button,
     finalize_worker_if_current,
-    release_worker,
     set_label_severity,
     setup_dialog_flags,
 )
-from ..components.workers import BackgroundWorker, wait_worker_shutdown
+from ..components.workers import BackgroundWorker
 from ..resources.constants import (
     BTN_DIALOG,
     BTN_DIALOG_WIDE,
@@ -56,8 +55,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class BackupDialog(QDialog):
+class BackupDialog(WorkerBackedDialog):
     """备份创建与恢复的统一对话框，按模式切换操作与文案。"""
+
+    # 收窄基类声明（QLabel | None → QLabel）：_setup_ui 构造期赋值，运行时不为 None。
+    _status_label: QLabel
 
     def __init__(
         self,
@@ -66,9 +68,8 @@ class BackupDialog(QDialog):
         config: ConfigManager | None = None,
     ) -> None:
         super().__init__(parent)
-        self._backup_mgr = backup_manager
+        self._backup = backup_manager
         self._config = config
-        self._worker: BackgroundWorker | None = None
         # 记录 worker 启动时的模式，避免 reject 时读取已切换的按钮状态
         self._worker_is_backup: bool = True
         self._selected_path: str | None = None
@@ -145,6 +146,8 @@ class BackupDialog(QDialog):
         self._exec_btn.setObjectName('primaryBtn')
         self._exec_btn.setFixedSize(*BTN_DIALOG_WIDE)
         self._exec_btn.clicked.connect(self._execute)
+        # 经基类 _set_busy 统一禁用/启用主操作按钮
+        self._primary_action_btn = self._exec_btn
         btn_layout.addWidget(self._exec_btn)
 
         layout.addLayout(btn_layout)
@@ -159,31 +162,19 @@ class BackupDialog(QDialog):
     def _update_purge_button(self) -> None:
         """根据是否存在恢复前快照启用或禁用清理按钮。"""
         try:
-            has_points = self._backup_mgr.restore_points.count() > 0
+            has_points = self._backup.restore_points.count() > 0
         except Exception:
             # 统计出错时保持可点，避免误锁功能；记录日志保留可审计痕迹
             logger.warning("统计恢复点数失败，保持清理按钮可点", exc_info=True)
             has_points = True
         self._purge_btn.setEnabled(has_points)
 
-    def closeEvent(self, a0: QCloseEvent | None) -> None:
-        # 恢复 worker 运行时拒绝关闭，避免 QThread 销毁警告与数据不一致
-        if a0 is not None and self._worker and self._worker.isRunning() and not self._worker_is_backup:
-            self._status_label.setText('恢复进行中，请等待完成后再关闭')
-            a0.ignore()
-            return
-        super().closeEvent(a0)
+    def _cancel_on_close(self) -> bool:
+        # 备份可安全取消，恢复有写入副作用仅等待完成不取消
+        return self._worker_is_backup
 
-    def reject(self) -> None:
-        """关闭对话框前等待后台 worker 完成。
-
-        恢复有写入副作用不取消 worker 以确保一致性，备份可安全取消；
-        完成后释放 worker 引用。
-        """
-        # 备份可安全取消，恢复有写入副作用仅等待完成
-        wait_worker_shutdown(self._worker, cancel=self._worker_is_backup)
-        release_worker(self)
-        super().reject()
+    def _on_close_blocked(self) -> None:
+        self._status_label.setText('恢复进行中，请等待完成后再关闭')
 
     def _on_mode_changed(self) -> None:
         is_backup = self._btn_group.checkedId() == 0
@@ -225,15 +216,6 @@ class BackupDialog(QDialog):
         else:
             self._do_restore(self._selected_path)
 
-    def _set_busy(self, busy: bool) -> None:
-        """设置操作进行中状态：禁用/启用按钮。"""
-        self._exec_btn.setEnabled(not busy)
-        if busy:
-            self._status_label.setText('处理中...')
-            set_label_severity(self._status_label, 'accent')
-        else:
-            self._status_label.setText('')
-
     def _do_backup(self, path: str) -> None:
         password, ok = QInputDialog.getText(
             self, '设置备份密码',
@@ -250,7 +232,9 @@ class BackupDialog(QDialog):
             self, '确认备份密码', '请再次输入备份密码：',
             QLineEdit.EchoMode.Password,
         )
-        if not ok or not hmac.compare_digest(confirm, password):
+        # encode('utf-8') 必须：备份密码可含非 ASCII 字符，而 compare_digest 对 str
+        # 仅接受 ASCII，否则抛 TypeError 被 Qt 槽吞掉致加密静默失败。与 change_master_dialog 对齐。
+        if not ok or not hmac.compare_digest(confirm.encode('utf-8'), password.encode('utf-8')):
             QMessageBox.warning(self, '密码不一致', '两次输入的备份密码不一致。')
             return
         self._set_busy(True)
@@ -259,7 +243,7 @@ class BackupDialog(QDialog):
         def _run(pwd: str = password) -> tuple[bool, str]:
             # worker 是下方赋值的自由变量，闭包延迟绑定（_run 在 worker.run 时执行）；
             # 默认参数 pwd 在定义时拷贝 password，下方 del 局部 password 不影响 worker。
-            return self._backup_mgr.create_backup(
+            return self._backup.create_backup(
                 path, pwd, cancel_check=worker.cancel_check,
             )
 
@@ -289,12 +273,11 @@ class BackupDialog(QDialog):
             QMessageBox.critical(self, DLG_TITLE_ERROR, msg)
 
     def _on_backup_error(self, error_msg: str) -> None:
-        if not finalize_worker_if_current(self):
-            return
-        self._set_busy(False)
-        self._status_label.setText('备份失败')
-        set_label_severity(self._status_label, 'error')
-        QMessageBox.critical(self, DLG_TITLE_ERROR, f'备份创建失败：{error_msg}')
+        self._report_worker_error(
+            error_msg,
+            status_text='备份失败',
+            message=f'备份创建失败：{error_msg}',
+        )
 
     def _do_restore(self, path: str) -> None:
         reply = QMessageBox.warning(
@@ -326,7 +309,7 @@ class BackupDialog(QDialog):
         self._worker_is_backup = False
 
         def _run(pwd: str | None = password) -> object:
-            return self._backup_mgr.restore_backup(path, pwd)
+            return self._backup.restore_backup(path, pwd)
 
         self._worker = BackgroundWorker(_run, parent=self)
         self._worker.finished.connect(self._on_restore_done)
@@ -352,12 +335,11 @@ class BackupDialog(QDialog):
             QMessageBox.critical(self, DLG_TITLE_ERROR, f'恢复失败，请确认备份文件有效且主密码正确。{detail}')
 
     def _on_restore_error(self, error_msg: str) -> None:
-        if not finalize_worker_if_current(self):
-            return
-        self._set_busy(False)
-        self._status_label.setText('恢复失败')
-        set_label_severity(self._status_label, 'error')
-        QMessageBox.critical(self, DLG_TITLE_ERROR, f'恢复失败：{error_msg}')
+        self._report_worker_error(
+            error_msg,
+            status_text='恢复失败',
+            message=f'恢复失败：{error_msg}',
+        )
 
     def _purge_restore_points(self) -> None:
         """手动清理恢复前自动创建的安全快照，收缩已删除条目的明文泄漏面。"""
@@ -370,7 +352,7 @@ class BackupDialog(QDialog):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        count = self._backup_mgr.restore_points.clear_all()
+        count = self._backup.restore_points.clear_all()
         self._update_purge_button()
         if count:
             QMessageBox.information(self, '完成', f'已清理 {count} 个恢复点。')

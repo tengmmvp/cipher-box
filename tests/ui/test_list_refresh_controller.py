@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QListWidgetItem, QMainWindow
 
-import src.ui.controllers.list_refresh_controller as list_refresh_module
+import src.ui.controllers.entry_refresh_coordinator as coordinator_module
 from src.ui.controllers.list_refresh_controller import (
     ListRefreshController,
     ListRefreshDeps,
@@ -236,7 +236,9 @@ class TestStaleWorkerResultDiscarded:
 
     def _async_controller(self, monkeypatch):
         """构造 controller 并 patch BackgroundWorker，配置超阈值计数触发异步路径。"""
-        monkeypatch.setattr(list_refresh_module, 'BackgroundWorker', _FakeAsyncWorker)
+        # entry/tag worker 由 EntryRefreshCoordinator 创建，须 patch coordinator 模块的
+        # BackgroundWorker 引用（status worker 在 controller 模块，本测试不涉及）。
+        monkeypatch.setattr(coordinator_module, 'BackgroundWorker', _FakeAsyncWorker)
         _FakeAsyncWorker.instances = []
         ctrl = _make_controller()
         view = _setup(ctrl)
@@ -268,7 +270,7 @@ class TestStaleWorkerResultDiscarded:
         ctrl.refresh_entries()  # generation → G，启动 worker_old
         worker_old = _FakeAsyncWorker.instances[-1]
         # 模拟用户再次触发刷新：代际推进，worker_old 的 generation 已过期
-        ctrl._entry_refresh_generation += 1
+        ctrl._coordinator._entry_refresh_generation += 1
         self._fire_finished(worker_old, ([], '过期结果'))
 
         view.entry_model.set_entries.assert_not_called()

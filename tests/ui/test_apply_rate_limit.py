@@ -4,7 +4,8 @@
 以及 RATE_LIMITS 阶梯定义的升序不变量。
 """
 
-from src.ui.components.widgets import RATE_LIMITS, apply_rate_limit
+from src.business.services.rate_limiter import apply_rate_limit
+from src.config import RATE_LIMITS
 
 
 class TestApplyRateLimit:

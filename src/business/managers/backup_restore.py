@@ -13,6 +13,7 @@ import os
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, cast
 
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
 
 from ...config import DEFAULT_CONFIG
 from ...crypto.encryption import EncryptionEngine
-from ...crypto.master_key import DEFAULT_KDF_PARAMS, KEY_SIZE, MasterKeyManager
+from ...crypto.master_key import DEFAULT_KDF_PARAMS, KEY_SIZE, KdfParams, MasterKeyManager
 from ...database.types import EntryQuery
 from ...exceptions import (
     BackupError,
@@ -38,7 +39,6 @@ from ...utils.file_security import (
 )
 from ...utils.format import utc_now_iso
 from ...utils.memory import secure_zero_buffer
-from ...utils.purge_files import secure_purge
 from ..services.auto_backup_policy import (
     is_auto_backup_due,
     purge_expired_auto_backups,
@@ -59,8 +59,6 @@ from ..services.backup_header_codec import (
 )
 from ..services.backup_paths import (
     BACKUPS_DIR_NAME,
-    PRE_RESTORE_GLOB,
-    PRE_RESTORE_PREFIX,
     SNAPSHOT_PREFIX,
     build_backup_filename,
 )
@@ -78,9 +76,17 @@ from ..services.crypto_utils import require_vault_key
 from ..services.error_messages import to_user_message
 from ..services.metadata_signer import VAULT_META_SIGNED_KEYS, MetadataSigner
 from ..services.password_service import PasswordService
-from .restore_point_manager import MAX_RESTORE_POINTS, RestorePointManager
+from .restore_point_manager import RestorePointManager
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _DecryptedPayload:
+    """恢复载荷解密结果（成功路径），供 _restore_current 阶段方法间传递明文与解析数据。"""
+
+    plaintext: bytes
+    data: dict[str, Any]
 
 
 class BackupRestoreManager:
@@ -95,6 +101,12 @@ class BackupRestoreManager:
         # 复用调用方持有的 EntryManager 单例，共享分类名缓存，避免重复解密与双份明文驻留。
         self._entry_mgr = entry_manager
         self._restore_points = RestorePointManager(vault_manager)
+        # ARCH-006：恢复点创建/统计/清理统一由 RestorePointManager 承载。备份加密管线
+        # （持锁全流程入口）延迟绑定，避免 BackupRestoreManager ↔ RestorePointManager
+        # 构造期循环依赖；恢复点复用与正式备份同一加密格式。
+        self._restore_points.bind_backup_creator(
+            lambda path: self._create_backup_locked(path, None, True, None)
+        )
 
     @property
     def _key(self) -> bytes:
@@ -158,9 +170,10 @@ class BackupRestoreManager:
     ) -> tuple[bool, str]:
         """备份全流程；调用方须已持有 ``vault_write_lock``。
 
-        持锁顺序执行 prepare + finalize，供 :meth:`_create_restore_point` 在已持锁
-        上下文复用。亦为测试 monkeypatch 拦截恢复点创建的桩点
-        （见 test_restore_point_cleaned_on_creation_exception）。
+        持锁顺序执行 prepare + finalize，供 :class:`RestorePointManager` 经
+        ``bind_backup_creator`` 注入的薄包装在已持锁上下文复用以创建恢复点。亦为测试
+        monkeypatch 拦截恢复点创建的桩点（见
+        test_restore_point_cleaned_on_creation_exception）。
         """
         prepared = self._prepare_backup_locked(filepath, backup_password, use_snapshot_key)
         return self._finalize_backup(prepared, cancel_check)
@@ -295,118 +308,207 @@ class BackupRestoreManager:
             return False, to_user_message(exc, default='操作失败，请检查文件和磁盘。')
 
     def _restore_current(self, file: IO[bytes], backup_password: str | None) -> tuple[bool, str]:
+        """恢复备份当前实现：4 阶段编排（头部+密钥 → 解密校验 → 重建+恢复点 → 收尾）。
+
+        各阶段拆为独立私有方法，本方法仅编排阶段顺序与贯穿全程的 try/finally（backup_key
+        清零）。事务边界（``epoch_guarded_transaction`` 在 :meth:`_restore_data` 内）、
+        清零纪律（backup_key / new_snapshot_key / plaintext）、锁范围（``vault_write_lock``
+        包裹解密到 WAL 截断）与异常处理语义与原实现等价（MAINT-001）。
+        """
+        # 阶段 1：头部解析 + KDF 边界 + PASSWORD 密钥派生（锁外，缩短持锁与 UI 冻结）
+        flags, salt, kdf_params = self._read_and_validate_header(file)
+        key_or_abort = self._derive_password_backup_key(
+            flags, salt, kdf_params, backup_password,
+        )
+        if isinstance(key_or_abort, tuple):
+            return key_or_abort  # (False, '请输入创建备份时设置的备份密码')
+        # SNAPSHOT 路径此处为 None（密钥在锁内经 snapshot_key 解析）。
+        backup_key: bytearray | bytes | None = key_or_abort
+        checkpoint_ok = True
+        try:
+            # 持 vault 写锁串行化恢复与改密/备份：从解密全量明文到写库全程持锁。
+            with self._vault.vault_write_lock():
+                # SNAPSHOT 路径借用 snapshot_key，须在锁内读取（消除 is_unlocked 检查与
+                # 读取间主线程 lock() 清零 snapshot_key 的竞态）。
+                snapshot_abort = self._ensure_snapshot_key_locked(flags)
+                if snapshot_abort is not None:
+                    return snapshot_abort
+                if backup_key is None:
+                    backup_key = self._vault.snapshot_key
+                # 显式检查替代 assert（python -O 下 assert 跳过），满足类型 narrow 需求。
+                if backup_key is None:
+                    raise RuntimeError('备份密钥未初始化')
+                # 阶段 2：TOCTOU 复核 + 解密 + 结构校验（锁内）
+                payload = self._decrypt_and_validate_payload_locked(
+                    file, flags, salt, kdf_params, backup_key,
+                )
+                if isinstance(payload, tuple):
+                    return payload  # 解密/结构失败的 (False, msg)
+                # 阶段 3：创建恢复点 + epoch 守卫事务内重建数据（锁内）
+                new_epoch, new_snapshot_key = self._rebuild_with_restore_point_locked(payload)
+                # 阶段 4a：同步内存状态 + WAL 截断（锁内）
+                checkpoint_ok = self._finalize_restored_state_locked(
+                    new_epoch, new_snapshot_key,
+                )
+            # 阶段 4b：清理旧 snapshot_key 加密的快照与恢复点 + 拼装降级警告（锁外）。
+            # 仅 unlink 文件，不读取 snapshot_key property，故无需持锁，减少锁持有时间。
+            return self._assemble_restore_result(checkpoint_ok)
+        finally:
+            # 确保 PASSWORD 派生的 backup_key 在所有退出路径（含密钥派生失败、文件
+            # 过大、解密异常）都清零；SNAPSHOT 路径借用 snapshot_key 不清零。
+            zero_backup_key_if_owned(flags, backup_key)
+
+    def _read_and_validate_header(
+        self, file: IO[bytes],
+    ) -> tuple[BackupFlag, bytes, KdfParams]:
+        """读取备份头并强制 KDF 参数在合法区间（防降级/飙升）。"""
         flags, salt, kdf_params = read_backup_header(file)
         # 防 KDF 参数降级/飙升：在派生密钥前拒绝被篡改的参数。floor 拒绝弱化降级；
         # ceiling 拒绝社会工程下构造的内存耗尽参数（合法备份恒用 DEFAULT_KDF_PARAMS），
         # 避免在持锁派生时 UI 长冻结或 OOM。
         enforce_kdf_floor(kdf_params)
         enforce_kdf_ceiling(kdf_params)
-        # 预声明 backup_key：PASSWORD 派生失败或 SNAPSHOT 路径前的提前 return 会使
-        # backup_key 未赋值，方法级 finally 仍需引用它。预声明 None 避免 locals 反射。
-        backup_key: bytearray | bytes | None = None
-        checkpoint_ok = True
+        return flags, salt, kdf_params
+
+    def _derive_password_backup_key(
+        self,
+        flags: BackupFlag,
+        salt: bytes,
+        kdf_params: KdfParams,
+        backup_password: str | None,
+    ) -> bytearray | tuple[bool, str] | None:
+        """锁外派生 PASSWORD 备份密钥（Argon2id 耗时，移出 vault_write_lock 缩短持锁）。
+
+        SNAPSHOT 路径返回 None（密钥在锁内经 snapshot_key 解析）。PASSWORD 缺密码时返回
+        (False, 提示) 早期中止。派生密钥为本地 bytearray，不涉及 snapshot_key 竞态。
+        """
+        if flags != BackupFlag.PASSWORD:
+            return None
+        if not backup_password:
+            return False, '请输入创建备份时设置的备份密码'
+        return MasterKeyManager.derive_backup_key(backup_password, salt, kdf_params)
+
+    def _ensure_snapshot_key_locked(
+        self, flags: BackupFlag,
+    ) -> tuple[bool, str] | None:
+        """锁内校验 SNAPSHOT 恢复的前置条件（已解锁），PASSWORD 直接放行。
+
+        SNAPSHOT 借用 snapshot_key，须在锁内读取以消除与主线程 lock() 清零的竞态。
+        """
+        if flags == BackupFlag.PASSWORD:
+            return None
+        if not self._vault.is_unlocked:
+            return False, '恢复快照备份需要先解锁保险库'
+        return None
+
+    def _decrypt_and_validate_payload_locked(
+        self,
+        file: IO[bytes],
+        flags: BackupFlag,
+        salt: bytes,
+        kdf_params: KdfParams,
+        backup_key: bytearray | bytes,
+    ) -> _DecryptedPayload | tuple[bool, str]:
+        """锁内 TOCTOU 复核 + 解密 + 结构校验，返回载荷或 (False, 用户提示)。
+
+        S8 TOCTOU 防护：header 锁外读取后，锁内读 payload 前重读 header 比对——检测
+        文件在「锁外读 header → 锁内读 payload」窗口内被替换。GCM-AAD 只绑定单次
+        header+payload，整个合法备份替换需此额外校验拦截。
+        """
         try:
-            # PASSWORD 派生在锁外完成：Argon2id（64MB）耗时，移出 vault_write_lock
-            # 缩短持锁与 UI 冻结窗口。backup_key 为本地派生，不涉及 snapshot_key 竞态。
-            if flags == BackupFlag.PASSWORD:
-                if not backup_password:
-                    return False, '请输入创建备份时设置的备份密码'
-                backup_key = MasterKeyManager.derive_backup_key(
-                    backup_password, salt, kdf_params,
-                )
-            # 持 vault 写锁串行化恢复与改密/备份：从解密全量明文到写库全程持锁。
-            # SNAPSHOT 路径借用 snapshot_key，须在锁内读取（消除 is_unlocked 检查与
-            # 读取间主线程 lock() 清零 snapshot_key 的竞态），故仍在锁内解析。
-            with self._vault.vault_write_lock():
-                if flags != BackupFlag.PASSWORD:
-                    if not self._vault.is_unlocked:
-                        return False, '恢复快照备份需要先解锁保险库'
-                    backup_key = self._vault.snapshot_key
-                # backup_key 必非 None：PASSWORD 在锁外已派生，SNAPSHOT 在上方分支已读取。
-                # 显式检查替代 assert（python -O 下 assert 跳过），同时满足类型 narrow 需求。
-                if backup_key is None:
-                    raise RuntimeError('备份密钥未初始化')
+            file.seek(0)
+            if read_backup_header(file) != (flags, salt, kdf_params):
+                return False, '备份文件在读取期间已变更，请重试'
+            # 内存特征：峰值约 3 倍载荷大小。encrypted 不超过 64MB，plaintext 不超过 32MB，
+            # 外加 JSON 解析树，桌面应用可接受。GCM 认证加密要求完整密文可用，无法流式解密。
+            encrypted = file.read(MAX_BACKUP_FILE_SIZE + 1)
+            if len(encrypted) > MAX_BACKUP_FILE_SIZE:
+                return False, '备份文件过大'
+            plaintext = EncryptionEngine.decrypt_bytes(
+                encrypted, backup_key, header_aad(flags, salt, kdf_params),
+            )
+            if len(plaintext) > MAX_BACKUP_PAYLOAD_SIZE:
+                return False, '备份解密数据过大'
+            data = json.loads(plaintext.decode('utf-8'))
+        except (OSError, DecryptionError, json.JSONDecodeError):
+            # 缩窄为预期的「读文件 / GCM 解密 / JSON 解析」失败，统一提示密码错误或损坏；
+            # 编程错误（KeyError/TypeError 等）不在此列，冒泡由上层 restore_backup 的 except
+            # 经 to_user_message 兜底，避免把真实 bug 静默归为「备份损坏」而掩盖根因。
+            logger.debug("备份读取或解密失败", exc_info=True)
+            return False, '备份密码错误或文件已损坏'
+        if not isinstance(data, dict) or not isinstance(data.get('entries'), list):
+            return False, '备份数据结构无效'
+        validate_restore_data(data)
+        return _DecryptedPayload(plaintext=plaintext, data=data)
+
+    def _rebuild_with_restore_point_locked(
+        self, payload: _DecryptedPayload,
+    ) -> tuple[str, bytearray]:
+        """锁内创建恢复点并在 epoch 守卫事务内重建全部数据。
+
+        事务由 :meth:`_restore_data` 的 ``epoch_guarded_transaction`` 提供；失败时清理
+        刚创建的恢复点（含恢复前明文，避免反复尝试占用磁盘）。无论成败均释放明文引用。
+        恢复点创建经 :class:`RestorePointManager` 单一事实源（ARCH-006）。
+        """
+        plaintext = payload.plaintext
+        data = payload.data
+        restore_path = self._restore_points.create()
+        try:
+            new_epoch, new_snapshot_key = self._restore_data(data)
+        except Exception:
+            # 恢复失败时清理刚创建的恢复点，避免反复尝试时占用磁盘空间。
+            if restore_path is not None:
                 try:
-                    # S8 TOCTOU 防护：header 锁外读取后，锁内读 payload 前重读 header
-                    # 比对——检测文件在「锁外读 header → 锁内读 payload」窗口内被替换。
-                    # GCM-AAD 只绑定单次 header+payload，整个合法备份替换需此额外校验拦截。
-                    file.seek(0)
-                    if read_backup_header(file) != (flags, salt, kdf_params):
-                        return False, '备份文件在读取期间已变更，请重试'
-                    # 内存特征：峰值约 3 倍载荷大小。
-                    # encrypted 不超过 64MB，plaintext 不超过 32MB，外加 JSON 解析树，
-                    # 桌面应用可接受。GCM 认证加密要求完整密文可用，无法流式解密。
-                    encrypted = file.read(MAX_BACKUP_FILE_SIZE + 1)
-                    if len(encrypted) > MAX_BACKUP_FILE_SIZE:
-                        return False, '备份文件过大'
-                    plaintext = EncryptionEngine.decrypt_bytes(
-                        encrypted, backup_key, header_aad(flags, salt, kdf_params)
-                    )
-                    if len(plaintext) > MAX_BACKUP_PAYLOAD_SIZE:
-                        return False, '备份解密数据过大'
-                    data = json.loads(plaintext.decode('utf-8'))
-                except (OSError, DecryptionError, json.JSONDecodeError):
-                    # 缩窄为预期的「读文件 / GCM 解密 / JSON 解析」失败，统一提示密码错误
-                    # 或损坏；编程错误（KeyError/TypeError/AttributeError 等）不在此列，
-                    # 冒泡由上层 restore_backup 的 except 经 to_user_message 兜底，避免
-                    # 把真实 bug 静默归为「备份损坏」而掩盖根因。
-                    logger.debug("备份读取或解密失败", exc_info=True)
-                    return False, '备份密码错误或文件已损坏'
-                if not isinstance(data, dict) or not isinstance(data.get('entries'), list):
-                    return False, '备份数据结构无效'
-                validate_restore_data(data)
-                restore_path = self._create_restore_point()
-                try:
-                    new_epoch, new_snapshot_key = self._restore_data(data)
-                except Exception:
-                    # 恢复失败时清理刚创建的恢复点，避免反复尝试时占用磁盘空间。
-                    if restore_path is not None:
-                        try:
-                            secure_delete_file(restore_path)
-                        except OSError:
-                            logger.debug("清理恢复点失败", exc_info=True)
-                    raise
-                finally:
-                    # 内层 try 成功后 plaintext/data 必然已赋值，直接释放明文引用。
-                    del plaintext
-                    del data
-                # 事务已提交，key_epoch 与 snapshot_key_enc 均已在同一事务内原子写入。
-                # 在释放 vault 锁前同步内存状态（不写库），既消除事务外写库的崩溃窗口，
-                # 也消除旧 snapshot_key 仍可被并发读取（snapshot_key property）的窗口。
-                try:
-                    if new_epoch:
-                        self._vault.update_key_epoch(new_epoch)
-                    self._vault.apply_snapshot_key(new_snapshot_key)
-                finally:
-                    secure_zero_buffer(new_snapshot_key)
-                # 事务提交后截断 WAL：clear_vault_data 删除的是被恢复数据替换的旧条目/
-                # 分类/历史密文，由**当前主密钥**加密（恢复不轮换主密钥，与改密路径残留
-                # 旧密钥不同），持当前主密钥与 WAL 文件者可恢复这些旧明文。须在事务外
-                # 显式截断（事务内 secure_checkpoint 会跳过）；失败非致命（数据已提交完整），
-                # 但纳入返回警告让降级可见，建议重启重试 TRUNCATE。
-                try:
-                    self._vault.db.secure_checkpoint()
-                except Exception:
-                    logger.warning('恢复后 WAL 安全截断失败', exc_info=True)
-                    checkpoint_ok = False
-            # 锁外清理旧 snapshot_key 加密的快照与恢复点：仅 unlink 文件，不读取
-            # snapshot_key property，故无需持锁，减少锁持有时间。
-            failed_purges = self._vault.purge_snapshot_backups()
-            warnings: list[str] = []
-            if not checkpoint_ok:
-                warnings.append(
-                    '恢复完成，但 WAL 安全截断失败，被替换的旧数据（当前主密钥加密）'
-                    '可能残留于 WAL；建议重启应用以完成清理。'
-                )
-            if failed_purges:
-                warnings.append(self._format_purge_warning(failed_purges))
-            if warnings:
-                return True, ' '.join(warnings)
-            return True, ''
+                    secure_delete_file(restore_path)
+                except OSError:
+                    logger.debug("清理恢复点失败", exc_info=True)
+            raise
         finally:
-            # 确保 PASSWORD 派生的 backup_key 在所有退出路径（含密钥派生失败、文件
-            # 过大、解密异常）都清零；SNAPSHOT 路径借用 snapshot_key 不清零。
-            zero_backup_key_if_owned(flags, backup_key)
+            # 释放明文引用（成功路径 plaintext/data 必然已赋值）。
+            del plaintext
+            del data
+        return new_epoch, new_snapshot_key
+
+    def _finalize_restored_state_locked(
+        self, new_epoch: str, new_snapshot_key: bytearray,
+    ) -> bool:
+        """锁内同步内存状态（key_epoch + snapshot_key）并截断 WAL，返回 checkpoint 是否成功。
+
+        事务已提交，key_epoch 与 snapshot_key_enc 均已在同一事务内原子写入。在释放 vault
+        锁前同步内存状态（不写库），既消除事务外写库的崩溃窗口，也消除旧 snapshot_key 仍
+        可被并发读取（snapshot_key property）的窗口。new_snapshot_key 在 apply 后原地清零。
+        """
+        try:
+            if new_epoch:
+                self._vault.update_key_epoch(new_epoch)
+            self._vault.apply_snapshot_key(new_snapshot_key)
+        finally:
+            secure_zero_buffer(new_snapshot_key)
+        # 事务提交后截断 WAL：clear_vault_data 删除的是被恢复数据替换的旧条目/分类/历史
+        # 密文，由当前主密钥加密（恢复不轮换主密钥，与改密路径残留旧密钥不同），持当前
+        # 主密钥与 WAL 文件者可恢复这些旧明文。须在事务外显式截断（事务内
+        # secure_checkpoint 会跳过）；失败非致命（数据已提交完整），纳入返回警告让降级可见。
+        try:
+            self._vault.db.secure_checkpoint()
+            return True
+        except Exception:
+            logger.warning('恢复后 WAL 安全截断失败', exc_info=True)
+            return False
+
+    def _assemble_restore_result(self, checkpoint_ok: bool) -> tuple[bool, str]:
+        """锁外清理旧 snapshot_key 加密的快照与恢复点，拼装降级警告。"""
+        failed_purges = self._vault.purge_snapshot_backups()
+        warnings: list[str] = []
+        if not checkpoint_ok:
+            warnings.append(
+                '恢复完成，但 WAL 安全截断失败，被替换的旧数据（当前主密钥加密）'
+                '可能残留于 WAL；建议重启应用以完成清理。'
+            )
+        if failed_purges:
+            warnings.append(self._format_purge_warning(failed_purges))
+        if warnings:
+            return True, ' '.join(warnings)
+        return True, ''
 
     def _format_purge_warning(self, failed_purges: list[Path]) -> str:
         """格式化 purge 失败警告：区分含明文的恢复点（严重泄漏面）与普通旧快照。
@@ -427,51 +529,6 @@ class BackupRestoreManager:
             f'恢复完成，但 {len(failed_purges)} 个旧快照未能删除'
             '（可能被占用），建议在备份对话框手动清理以收缩泄漏面。'
         )
-
-    def _create_restore_point(self) -> Path | None:
-        """创建恢复前安全快照，返回快照文件路径用于失败时清理，创建失败返回 None。"""
-        directory = self._vault.data_dir / BACKUPS_DIR_NAME
-        # 恢复点是恢复失败回滚的安全网，优先于权限严格性：data_dir 已由 config
-        # 以 strict 创建，backups 子目录继承收紧后的父权限；宁可保留安全网也
-        # 不因 ACL 失败放弃恢复点（短期明文，恢复后即清理）。
-        secure_directory(directory)
-        filename = build_backup_filename(PRE_RESTORE_PREFIX)
-        target_path = directory / filename
-        # 已在 _restore_current 的 vault_write_lock 内，直接调用持锁版本，避免经
-        # create_backup 再次获取 RLock 的嵌套重入。
-        try:
-            success, error = self._create_backup_locked(
-                str(target_path), None, True, None,
-            )
-        except Exception:
-            # _create_backup_locked 的 atomic_write 在 os.replace 成功后若
-            # secure_file 失败会抛异常；此时 target_path 可能已写出含恢复前全部
-            # 明文的文件（atomic_write 仅清理 .tmp，不清理已 replace 到位的目标）。
-            # 立即安全删除避免明文泄漏面扩大，再向上抛出原异常。
-            self._safe_delete_restore_point(target_path)
-            raise
-        if not success:
-            raise BackupError(f'无法创建恢复前安全快照：{error}')
-        # 按文件名降序保留最新 MAX_RESTORE_POINTS 个恢复点，删除过期项；删除失败
-        # 仅告警（恢复点含全量明文，残留由调用方据创建结果决定是否重试清理）。
-        secure_purge(
-            [directory], [PRE_RESTORE_GLOB],
-            keep=MAX_RESTORE_POINTS, collect_failures=False,
-        )
-        return target_path
-
-    @staticmethod
-    def _safe_delete_restore_point(path: Path) -> None:
-        """异常路径清理恢复点：删除失败仅告警，绝不掩盖向上抛出的原异常。
-
-        恢复点含恢复前全部条目明文，删除失败意味着泄漏面未收缩，需可见日志；
-        但调用方（如 _create_restore_point）的原异常更需向上传递，故此处吞掉
-        删除异常仅记录。
-        """
-        try:
-            secure_delete_file(path)
-        except OSError:
-            logger.warning('异常路径清理恢复点失败：%s', path, exc_info=True)
 
     def _restore_data(self, data: dict[str, Any]) -> tuple[str, bytearray]:
         """在 epoch 守卫事务内用当前主密钥重建全部数据并轮换 key_epoch 与 snapshot_key。

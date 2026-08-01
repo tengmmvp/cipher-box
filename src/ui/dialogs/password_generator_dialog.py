@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, TypeVar
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -45,6 +45,8 @@ from ..resources.constants import (
 from ..resources.icons import COPY, GENERATE, set_icon_with_text
 from ..resources.theme_colors import get_strength_color
 
+_T = TypeVar('_T')
+
 
 class PasswordGeneratorDialog(QDialog):
     """独立的密码生成器对话框，可选复制或回填生成的密码。"""
@@ -64,7 +66,7 @@ class PasswordGeneratorDialog(QDialog):
         self._setup_ui()
         self._generate()
 
-    def _cfg(self, key: str, default: Any) -> Any:
+    def _cfg(self, key: str, default: _T) -> _T:
         """读取配置值，config 为 None 时使用默认值。"""
         return self._config.get(key, default) if self._config else default
 

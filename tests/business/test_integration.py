@@ -21,6 +21,7 @@ from src.business.managers.import_export import ImportExportManager
 from src.business.services.security_analyzer import SecurityAnalyzer
 from src.crypto.encryption import EncryptionEngine
 from src.database.db_manager import DatabaseManager
+from src.exceptions import DatabaseError
 from src.models import Category, CustomField, Entry, RawEntry
 from tests.helpers import make_entry_manager, make_test_config, make_vault
 
@@ -740,8 +741,12 @@ def test_change_password_wrong_old():
     shutil.rmtree(tmp_dir)
 
 
-def test_is_initialized_returns_false_when_db_cannot_open():
-    """is_initialized 在 DB 打开失败时应返回 False。"""
+def test_ensure_db_open_raises_when_db_cannot_open():
+    """ensure_db_open 在 DB 打开失败时应抛 DatabaseError（命令-查询分离，ARCH-004）。
+
+    is_initialized 现为纯查询，打开数据库的副作用与失败判定移至 ensure_db_open 命令侧：
+    打开失败时显式抛 DatabaseError 而非静默降级，避免调用方误判为未初始化。
+    """
     tmp_dir = tempfile.mkdtemp()
     config = make_test_config(tmp_dir)
     vault = make_vault(config)
@@ -753,8 +758,8 @@ def test_is_initialized_returns_false_when_db_cannot_open():
     # 让 is_open 返回 False、open() 返回 False，模拟数据库无法打开
     with patch.object(type(vault._db), 'is_open', new_callable=PropertyMock, return_value=False):
         with patch.object(vault._db, 'open', return_value=False):
-            result = vault.is_initialized
-            assert not result
+            with pytest.raises(DatabaseError):
+                vault.ensure_db_open()
 
     vault.close()
     shutil.rmtree(tmp_dir)

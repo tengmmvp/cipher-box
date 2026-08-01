@@ -1,8 +1,9 @@
 """验证 ListRefreshController.cancel_all_workers / wait_workers 与 host 编排。
 
-覆盖：遍历 ``_entry_workers`` 全集（含并发 entry worker）+ ``_status_worker``，
-而非仅 ``_entry_worker`` 单引用（最后一个）；``wait_timeout_ms > 0`` 时取消后短超时
-等待，让持密钥解密的 worker 退出协作循环后再 lock 清零，收缩「已锁定」后明文残留窗口。
+cancel_all_workers / wait_workers 委托 EntryRefreshCoordinator 取消/等待 entry/tag
+worker 全集（含并发 entry worker），并在本控制器处理 status worker——避免漏 cancel
+并发 worker 残留持密钥继续解密、与 lock() 清零竞态。coordinator 自身的全集取消语义
+由其自身测试覆盖，本文件聚焦 ListRefreshController 的委托编排 + status worker 处理。
 
 host ``emergency_cancel_workers`` 为 thin wrapper（auto_backup.cancel +
 list_refresh.cancel_all_workers + 可选 wait_workers），其编排在此一并验证。
@@ -33,30 +34,24 @@ class _FakeWorker:
 
 
 def _make_controller() -> ListRefreshController:
-    """构造跳过 __init__ 的 ListRefreshController 裸实例，手动注入 worker 状态。"""
+    """构造跳过 __init__ 的 ListRefreshController 裸实例，注入 mock coordinator + status worker。"""
     ctrl = ListRefreshController.__new__(ListRefreshController)
+    ctrl._coordinator = MagicMock()
     ctrl._status_worker = None
-    ctrl._entry_workers = set()
     return ctrl
 
 
 class TestCancelAllWorkers:
-    def test_cancels_all_entry_workers_and_status(self):
-        """遍历 _entry_workers 全集 + _status_worker，全部取消。
-
-        漏 cancel 并发 entry worker 会让它们残留持密钥继续解密，与 lock() 清零竞态。
-        """
+    def test_cancels_via_coordinator_and_status(self):
+        """cancel_all_workers 委托 coordinator 取消 entry/tag worker + 取消 status worker。"""
         ctrl = _make_controller()
         status = _FakeWorker('status')
-        entries = [_FakeWorker(f'entry{i}') for i in range(3)]
         ctrl._status_worker = status
-        for w in entries:
-            ctrl._entry_workers.add(w)
 
         ctrl.cancel_all_workers()
 
+        ctrl._coordinator.cancel_all.assert_called_once()
         assert status.cancelled
-        assert all(w.cancelled for w in entries)
 
     def test_no_wait_by_default(self):
         """cancel_all_workers 仅取消不等待（wait 由 wait_workers 单独调）。"""
@@ -70,18 +65,15 @@ class TestCancelAllWorkers:
         assert status.waited_ms is None
 
     def test_wait_when_timeout_positive(self):
-        """wait_workers 对每个 worker 调 wait(超时)。"""
+        """wait_workers 委托 coordinator.wait + 对 status worker 调 wait(超时)。"""
         ctrl = _make_controller()
         status = _FakeWorker('status')
-        entries = [_FakeWorker('e0'), _FakeWorker('e1')]
         ctrl._status_worker = status
-        for w in entries:
-            ctrl._entry_workers.add(w)
 
         ctrl.wait_workers(400)
 
+        ctrl._coordinator.wait.assert_called_once_with(400)
         assert status.waited_ms == 400
-        assert all(w.waited_ms == 400 for w in entries)
 
     def test_skips_none_worker(self):
         """_status_worker=None 时跳过，不报错。"""

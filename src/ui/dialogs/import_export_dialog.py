@@ -11,11 +11,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QComboBox,
-    QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -29,13 +27,14 @@ from PyQt6.QtWidgets import (
 
 from ...utils.file_security import secure_file
 from ..components.widgets import (
+    WorkerBackedDialog,
     create_cancel_button,
     finalize_worker_if_current,
     release_worker,
     set_label_severity,
     setup_dialog_flags,
 )
-from ..components.workers import BackgroundWorker, wait_worker_shutdown
+from ..components.workers import BackgroundWorker
 from ..resources.constants import (
     BTN_DIALOG,
     DIALOG_IMPORT_EXPORT_MIN_SIZE,
@@ -68,10 +67,13 @@ _IMPORT_FORMAT_KEYS = {
 }
 
 
-class ImportExportDialog(QDialog):
+class ImportExportDialog(WorkerBackedDialog):
     """导入与导出统一对话框，按模式切换可见选项与可用格式。"""
 
     import_completed = pyqtSignal()
+
+    # 收窄基类声明（QLabel | None → QLabel）：_setup_ui 构造期赋值，运行时不为 None。
+    _status_label: QLabel
 
     def __init__(
         self,
@@ -83,28 +85,17 @@ class ImportExportDialog(QDialog):
         self._import_export = import_export_manager
         self._entry_mgr = entry_manager
         self._is_export = True
-        self._worker: BackgroundWorker | None = None
         # 记录 worker 启动时的模式，避免 reject 时读取已被切换的按钮状态
         self._worker_is_export: bool = True
         self._selected_path: str | None = None
         self._setup_ui()
 
-    def closeEvent(self, a0: QCloseEvent | None) -> None:
-        # 导入 worker 运行时拒绝关闭，避免 QThread 销毁警告与数据不一致
-        if a0 is not None and self._worker and self._worker.isRunning() and not self._worker_is_export:
-            self._status_label.setText('导入进行中，请等待完成后再关闭')
-            a0.ignore()
-            return
-        super().closeEvent(a0)
+    def _cancel_on_close(self) -> bool:
+        # 导入有写入副作用仅等待完成不取消，导出无副作用可安全取消
+        return self._worker_is_export
 
-    def reject(self) -> None:
-        """关闭对话框前等待后台 worker 完成。
-
-        导入有写入副作用，仅等待完成以确保数据一致性；导出无副作用可取消。
-        """
-        wait_worker_shutdown(self._worker, cancel=self._worker_is_export)
-        release_worker(self)
-        super().reject()
+    def _on_close_blocked(self) -> None:
+        self._status_label.setText('导入进行中，请等待完成后再关闭')
 
     def _setup_ui(self) -> None:
         self.setWindowTitle('导入 / 导出')
@@ -203,6 +194,8 @@ class ImportExportDialog(QDialog):
         self._action_btn.setObjectName('primaryBtn')
         self._action_btn.setFixedSize(*BTN_DIALOG)
         self._action_btn.clicked.connect(self._execute)
+        # 经基类 _set_busy 统一禁用/启用主操作按钮
+        self._primary_action_btn = self._action_btn
         btn_layout.addWidget(self._action_btn)
 
         layout.addLayout(btn_layout)
@@ -255,15 +248,6 @@ class ImportExportDialog(QDialog):
             self._do_export(self._selected_path)
         else:
             self._do_import(self._selected_path)
-
-    def _set_busy(self, busy: bool) -> None:
-        """设置操作进行中状态。"""
-        self._action_btn.setEnabled(not busy)
-        if busy:
-            self._status_label.setText('处理中...')
-            set_label_severity(self._status_label, 'accent')
-        else:
-            self._status_label.setText('')
 
     def _do_export(self, path: str) -> None:
         include_pwd = self._include_pwd_check.isChecked()

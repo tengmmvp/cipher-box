@@ -43,6 +43,7 @@ from ...config import DEFAULT_THEME, MAX_WINDOW_GEOMETRY_BYTES
 from ...models import Category
 from ..components.detail_panel import DetailPanel
 from ..components.entry_list_widget import EntryItemDelegate, EntryListModel
+from ..components.toast import ToastManager
 from ..components.tray_icon import TrayIcon
 from ..components.widgets import disconnect_all
 from ..controllers.auto_backup_controller import AutoBackupController
@@ -60,6 +61,7 @@ from ..controllers.list_refresh_controller import (
 )
 from ..controllers.menu_controller import MenuController, MenuDeps, MenuSlots
 from ..controllers.sidebar_controller import SidebarController
+from ..dialogs.login_window import LoginWindow
 from ..resources.constants import (
     CLIPBOARD_CLEAR_SECONDS_DEFAULT,
     FILTER_MAX_HEIGHT,
@@ -72,6 +74,12 @@ from ..resources.constants import (
     WINDOW_MIN_SIZE,
 )
 from ..resources.icons import (
+    FILTER_ALL,
+    FILTER_DUPLICATE,
+    FILTER_FAVORITE,
+    FILTER_RECENT,
+    FILTER_TRASH,
+    FILTER_WEAK,
     PLUS,
     SEARCH,
     SHIELD,
@@ -234,7 +242,6 @@ class MainWindow(QMainWindow):
     def _show_from_tray(self) -> None:
         """托盘「显示窗口」回调：锁定态激活登录窗，解锁态显示主窗并刷新状态栏。"""
         if not self._vault.is_unlocked or self._locked_ui:
-            from ..dialogs.login_window import LoginWindow
             for widget in QApplication.topLevelWidgets():
                 if isinstance(widget, LoginWindow):
                     widget.showNormal()
@@ -305,6 +312,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self._status_bar)
 
     def _build_sidebar(self) -> None:
+        """构建侧边栏容器并按区段装配（品牌/筛选/分类/排序统计）。"""
         self._sidebar = QWidget()
         self._sidebar.setObjectName('sidebar')
         self._sidebar.setFixedWidth(SIDEBAR_WIDTH)
@@ -312,6 +320,15 @@ class MainWindow(QMainWindow):
         sidebar_layout.setContentsMargins(12, 14, 12, 12)
         sidebar_layout.setSpacing(6)
 
+        self._build_sidebar_brand(sidebar_layout)
+        self._build_sidebar_filters(sidebar_layout)
+        self._build_sidebar_categories(sidebar_layout)
+        self._build_sidebar_sort_stats(sidebar_layout)
+
+        self._splitter.addWidget(self._sidebar)
+
+    def _build_sidebar_brand(self, sidebar_layout: QVBoxLayout) -> None:
+        """品牌区：图标 + 标题/副标题。"""
         brand_row = QHBoxLayout()
         self._brand_icon = QLabel()
         self._brand_icon.setPixmap(icon_pixmap(SHIELD, 'accent', 24))
@@ -329,7 +346,8 @@ class MainWindow(QMainWindow):
         sidebar_layout.addLayout(brand_row)
         sidebar_layout.addSpacing(8)
 
-        # 搜索框
+    def _build_sidebar_filters(self, sidebar_layout: QVBoxLayout) -> None:
+        """筛选区：搜索框 + 标签下拉 + 筛选项列表 + 分割线。"""
         self._search_edit = QLineEdit()
         self._search_edit.setPlaceholderText('搜索标题、账号或标签')
         self._search_edit.setClearButtonEnabled(True)
@@ -340,24 +358,22 @@ class MainWindow(QMainWindow):
         self._tag_combo.setToolTip('按标签筛选条目')
         sidebar_layout.addWidget(self._tag_combo)
 
-        # 筛选标签
         self._filter_label = QLabel('筛选')
         self._filter_label.setObjectName('sidebarSectionLabel')
         sidebar_layout.addWidget(self._filter_label)
 
-        # 筛选项列表
         self._filter_list = QListWidget()
         self._filter_list.setMaximumHeight(FILTER_MAX_HEIGHT)
         self._build_filter_list()
         sidebar_layout.addWidget(self._filter_list)
 
-        # 筛选区域分割线
         self._separator1 = QLabel()
         self._separator1.setFixedHeight(1)
         self._separator1.setObjectName('sidebarSeparator')
         sidebar_layout.addWidget(self._separator1)
 
-        # 分类标签
+    def _build_sidebar_categories(self, sidebar_layout: QVBoxLayout) -> None:
+        """分类区：分类标题（含管理按钮）+ 分类列表 + 分割线。"""
         cat_header = QHBoxLayout()
         self._cat_label = QLabel('分类')
         self._cat_label.setObjectName('sidebarSectionLabel')
@@ -371,19 +387,18 @@ class MainWindow(QMainWindow):
         cat_header.addWidget(self._add_category_btn)
         sidebar_layout.addLayout(cat_header)
 
-        # 分类列表
         self._category_list = QListWidget()
         sidebar_layout.addWidget(self._category_list)
 
-        # 分类区域分割线
         self._separator2 = QLabel()
         self._separator2.setFixedHeight(1)
         self._separator2.setObjectName('sidebarSeparator')
         sidebar_layout.addWidget(self._separator2)
 
+    def _build_sidebar_sort_stats(self, sidebar_layout: QVBoxLayout) -> None:
+        """排序与统计区：弹簧 + 排序下拉（恢复持久索引）+ 统计标签。"""
         sidebar_layout.addStretch()
 
-        # 排序控件
         self._sort_label = QLabel('排序')
         self._sort_label.setObjectName('sidebarSectionLabel')
         sidebar_layout.addWidget(self._sort_label)
@@ -400,25 +415,13 @@ class MainWindow(QMainWindow):
         self._sort_combo.setCurrentIndex(sort_idx)
         sidebar_layout.addWidget(self._sort_combo)
 
-        # 统计
         self._stats_label = QLabel('')
         self._stats_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._stats_label.setObjectName('sidebarStatsLabel')
         sidebar_layout.addWidget(self._stats_label)
 
-        self._splitter.addWidget(self._sidebar)
-
     def _build_filter_list(self) -> None:
         """重建侧边栏筛选项列表，主题切换时需要重建图标。"""
-        from ..resources.icons import (
-            FILTER_ALL,
-            FILTER_DUPLICATE,
-            FILTER_FAVORITE,
-            FILTER_RECENT,
-            FILTER_TRASH,
-            FILTER_WEAK,
-        )
-
         current_row = self._filter_list.currentRow()
         self._filter_list.blockSignals(True)
         self._filter_list.clear()
@@ -619,7 +622,6 @@ class MainWindow(QMainWindow):
             else:
                 self._detail_panel.show_empty()
             # 刷新活跃 Toast 的烘焙配色
-            from ..components.toast import ToastManager
             ToastManager.refresh_for(self)
 
     # ========== 窗口事件 ==========
@@ -643,7 +645,6 @@ class MainWindow(QMainWindow):
         self._clipboard.clear_now()
         self._stop_ui_timers()
         self._entry_actions.cancel_pending_selection()
-        from ..components.toast import ToastManager
         ToastManager.cancel_all_for(self)
         self._shutdown_workers()
 
@@ -756,7 +757,6 @@ class MainWindow(QMainWindow):
         self._entry_actions.prepare_for_lock()
         self._auto_lock.stop_timer()
         # 清除活跃 Toast 回调，防止锁定后撤销操作触发异常。
-        from ..components.toast import ToastManager
         ToastManager.cancel_all_for(self)
         # —— 先立即清空主窗口敏感 UI 与状态（均不阻塞）——
         # list_refresh.prepare_for_lock 收敛搜索清空、安全缓存失效与 username 缓存清理

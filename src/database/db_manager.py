@@ -440,13 +440,16 @@ class DatabaseManager:
         Note:
             事务内调用静默跳过（checkpoint 会干扰进行中的事务）。此时 WAL 清除依赖
             提交时 SQLite 的自动 checkpoint；需显式截断以清除密文残留时应在提交后调用。
+
+            PRAGMA wal_checkpoint(TRUNCATE) 失败时抛 :class:`DatabaseError` 而非静默吞
+            （SEC-010）：让高敏感路径（清空回收站/改密/恢复/解锁）感知旧密文/明文可能
+            在 -wal 残留，可告警或建议重启重试。数据本身已提交完整，调用方按非致命处理。
         """
         if self._conn is not None and not self.in_transaction:
             try:
                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            except sqlite3.Error:
-                logger.warning("WAL 安全截断失败", exc_info=True)
-                return
+            except sqlite3.Error as exc:
+                raise DatabaseError(f'WAL 安全截断失败：{exc}') from exc
             self._secure_database_files()
 
     # ==================== 内部方法 ====================

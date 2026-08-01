@@ -41,6 +41,7 @@ MAX_HISTORY_DISPLAY = 5     # 详情面板最多显示密码历史条数
 MAX_TAG_DISPLAY = 5         # 详情面板最多显示标签数
 MAX_TAG_AUTOCOMPLETE = 20   # 标签自动补全最大数量
 RECENT_ENTRY_LIMIT = 20     # 「近期更新」筛选最多显示条目数
+MAX_SEARCH_RESULTS_DISPLAY = 1000  # 搜索结果渲染上限：超大库下避免一次性渲染过多条目卡死 UI
 ASYNC_SEARCH_THRESHOLD = 50  # 超过该条目数时列表/搜索移入后台线程
 # 阈值由 100 下调至 50（PERF-005）：冷缓存下 50-100 条目的全量摘要解密（每条 4 字段
 # AES-GCM + base64 + 缓存填充）在主线程已达数十毫秒临界卡顿，下调使中小库也走已有

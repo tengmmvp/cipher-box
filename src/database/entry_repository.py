@@ -401,9 +401,11 @@ class EntryRepository:
             self._conn.executemany(_INSERT_ENTRY_SQL, params)
         except sqlite3.IntegrityError as exc:
             raise _classify_entry_integrity_error('批量条目写入', exc) from exc
-        self._auto_commit()
-        # executemany 不提供逐条 lastrowid，按 crypto_id 反查 id。按 _ID_BATCH_SIZE
-        # 分批，避免 >999 条目时 IN(...) 超出 SQLite 主机变量上限。
+        # SEC-011：id 反查须在 _auto_commit() 之前完成——插入与反查在同一隐式事务内
+        # （见 _db_write 装饰器），保证反查瞬时 IO 失败时条目尚未落库（standalone 写由
+        # 装饰器回滚隐式事务；显式事务由外层 transaction() 统一回滚），避免「已提交但
+        # 调用方收到异常」的部分状态。executemany 不提供逐条 lastrowid，按 crypto_id
+        # 反查 id；按 _ID_BATCH_SIZE 分批，避免 >999 条目时 IN(...) 超出 SQLite 主机变量上限。
         crypto_ids = [entry.crypto_id for entry in normalized]
         id_map: dict[str, int] = {}
         for start in range(0, len(crypto_ids), _ID_BATCH_SIZE):
@@ -415,6 +417,7 @@ class EntryRepository:
             ).fetchall()
             for row in rows:
                 id_map[row[1]] = row[0]
+        self._auto_commit()
         return id_map
 
     @_db_write

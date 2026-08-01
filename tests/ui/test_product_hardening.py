@@ -334,6 +334,7 @@ def test_first_time_login_password_fields_have_matching_dimensions(tmp_path):
     try:
         vault = type('FirstTimeVault', (), {
             'is_initialized': False, 'data_dir': tmp_path,
+            'ensure_db_open': lambda self: None,
         })()
         dialog = LoginWindow(vault)  # pyright: ignore[reportArgumentType]
         dialog.show()
@@ -355,6 +356,7 @@ def test_first_time_login_password_fields_have_matching_dimensions(tmp_path):
 def test_visible_branding_uses_single_product_name(tmp_path):
     vault = type('FirstTimeVault', (), {
         'is_initialized': False, 'data_dir': tmp_path,
+        'ensure_db_open': lambda self: None,
     })()
     dialog = LoginWindow(vault)  # pyright: ignore[reportArgumentType]
 
@@ -367,6 +369,7 @@ def test_login_failure_clears_password_input(tmp_path):
     """认证失败后主密码明文须立即从输入框清除，缩短敏感驻留时间。"""
     vault = type('LoginVault', (), {
         'is_initialized': True, 'data_dir': tmp_path,
+        'ensure_db_open': lambda self: None,
     })()
     dialog = LoginWindow(vault)  # pyright: ignore[reportArgumentType]
     dialog._password_edit.setText('user-typed-secret')
@@ -715,11 +718,13 @@ def test_existing_database_missing_table_is_rejected_without_repair():
         connection.close()
 
         reopened = make_vault(_config(root))
-        # schema 损坏（缺表）时 is_initialized 传播 SchemaError 而非静默 False，
-        # 避免 UI 误判为未初始化后在损坏库上初始化覆盖既有数据。
+        # schema 损坏（缺表）时打开数据库传播 SchemaError 而非静默 False（ARCH-004：
+        # is_initialized 为纯查询，schema 校验在 ensure_db_open 命令侧），避免 UI 误判
+        # 为未初始化后在损坏库上初始化覆盖既有数据。
         try:
+            reopened.ensure_db_open()
             _ = reopened.is_initialized
-            raise AssertionError('缺表的库 is_initialized 应抛 SchemaError')
+            raise AssertionError('缺表的库 ensure_db_open 应抛 SchemaError')
         except SchemaError:
             pass
         connection = sqlite3.connect(db_path)
@@ -747,6 +752,7 @@ def test_deleted_default_category_does_not_reappear_after_restart():
         vault.close()
 
         reopened = make_vault(_config(root))
+        reopened.ensure_db_open()  # ARCH-004：is_initialized 为纯查询，先打开数据库
         assert reopened.is_initialized is True
         assert reopened.unlock('MasterPassword!2026')[0]
         assert all(

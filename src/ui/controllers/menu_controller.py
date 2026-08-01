@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut
-from PyQt6.QtWidgets import QLineEdit, QMainWindow, QMessageBox
+from PyQt6.QtWidgets import QLineEdit, QMainWindow, QMenu, QMessageBox
 
 from ..dialogs.about_dialog import AboutDialog
 from ..dialogs.backup_dialog import BackupDialog
@@ -51,6 +51,9 @@ if TYPE_CHECKING:
     from .auto_backup_controller import AutoBackupController
 
 logger = logging.getLogger(__name__)
+
+# 菜单项类型：(标签, 快捷键|None, 图标名, 触发回调)。供 _setup_menubar 规格表使用。
+_MenuItem = tuple[str, str | None, str, Callable[..., object]]
 
 # 快捷键定义：每个条目由按键序列和显示描述组成，供 setup_shortcuts 与 show_shortcuts 共享。
 _SHORTCUT_DISPLAY = [
@@ -142,105 +145,61 @@ class MenuController:
     # ----- 菜单栏 -----
 
     def _setup_menubar(self) -> None:
+        """构建菜单栏（数据驱动：规格表遍历创建 QAction，消除重复堆叠）。
+
+        每项 ``(标签, 快捷键|None, 图标名, 触发回调)``；``None`` 占位表示分隔符。
+        ``update_menu_icons`` 按 ``QAction.data()`` 存储的图标名重建，与规格表的
+        图标名列对齐。
+        """
         parent = self._parent
         menubar = parent.menuBar()
         if menubar is None:
             return
+        slots = self._slots
+        spec: list[tuple[str, list[_MenuItem | None]]] = [
+            ('文件', [
+                ('新增条目', 'Ctrl+N', PLUS, slots.add_entry),
+                None,
+                ('导入 / 导出', None, UPLOAD, self.show_import_export),
+                ('备份与恢复', None, FOLDER, self.show_backup),
+                None,
+                ('锁定保险库', 'Ctrl+L', LOCK_SOLID, slots.lock),
+                ('退出', 'Ctrl+Q', CLOSE, parent.close),
+            ]),
+            ('工具', [
+                ('密码生成器', None, GENERATE, self.show_password_generator),
+                ('安全仪表盘', None, SHIELD, self.show_security_dashboard),
+            ]),
+            ('设置', [
+                ('偏好设置', None, SETTINGS, self.show_settings),
+                ('修改主密码', None, KEY, self.show_change_master),
+            ]),
+            ('帮助', [
+                ('快捷键', None, SHORTCUT, self.show_shortcuts),
+                None,
+                ('关于 CipherBox', None, HELP, self.show_about),
+            ]),
+        ]
+        for menu_title, items in spec:
+            menu = menubar.addMenu(menu_title)
+            if menu is None:
+                return
+            for item in items:
+                if item is None:
+                    menu.addSeparator()
+                    continue
+                self._add_menu_action(menu, item)
 
-        # 文件菜单
-        file_menu = menubar.addMenu('文件')
-        if file_menu is None:
-            return
-
-        add_act = QAction('新增条目', parent)
-        add_act.setShortcut('Ctrl+N')
-        add_act.setIcon(icon(PLUS))
-        add_act.setData(PLUS)
-        add_act.triggered.connect(self._slots.add_entry)
-        file_menu.addAction(add_act)
-
-        file_menu.addSeparator()
-
-        import_act = QAction('导入 / 导出', parent)
-        import_act.setIcon(icon(UPLOAD))
-        import_act.setData(UPLOAD)
-        import_act.triggered.connect(self.show_import_export)
-        file_menu.addAction(import_act)
-
-        backup_act = QAction('备份与恢复', parent)
-        backup_act.setIcon(icon(FOLDER))
-        backup_act.setData(FOLDER)
-        backup_act.triggered.connect(self.show_backup)
-        file_menu.addAction(backup_act)
-
-        file_menu.addSeparator()
-
-        lock_act = QAction('锁定保险库', parent)
-        lock_act.setShortcut('Ctrl+L')
-        lock_act.setIcon(icon(LOCK_SOLID))
-        lock_act.setData(LOCK_SOLID)
-        lock_act.triggered.connect(self._slots.lock)
-        file_menu.addAction(lock_act)
-
-        quit_act = QAction('退出', parent)
-        quit_act.setShortcut('Ctrl+Q')
-        quit_act.setIcon(icon(CLOSE))
-        quit_act.setData(CLOSE)
-        quit_act.triggered.connect(parent.close)
-        file_menu.addAction(quit_act)
-
-        # 工具菜单
-        tools_menu = menubar.addMenu('工具')
-        if tools_menu is None:
-            return
-
-        gen_act = QAction('密码生成器', parent)
-        gen_act.setIcon(icon(GENERATE))
-        gen_act.setData(GENERATE)
-        gen_act.triggered.connect(self.show_password_generator)
-        tools_menu.addAction(gen_act)
-
-        security_act = QAction('安全仪表盘', parent)
-        security_act.setIcon(icon(SHIELD))
-        security_act.setData(SHIELD)
-        security_act.triggered.connect(self.show_security_dashboard)
-        tools_menu.addAction(security_act)
-
-        # 设置菜单
-        settings_menu = menubar.addMenu('设置')
-        if settings_menu is None:
-            return
-
-        prefs_act = QAction('偏好设置', parent)
-        prefs_act.setIcon(icon(SETTINGS))
-        prefs_act.setData(SETTINGS)
-        prefs_act.triggered.connect(self.show_settings)
-        settings_menu.addAction(prefs_act)
-
-        change_pwd_act = QAction('修改主密码', parent)
-        change_pwd_act.setIcon(icon(KEY))
-        change_pwd_act.setData(KEY)
-        change_pwd_act.triggered.connect(self.show_change_master)
-        settings_menu.addAction(change_pwd_act)
-
-        # 帮助菜单
-        help_menu = menubar.addMenu('帮助')
-        if help_menu is None:
-            return
-
-        shortcuts_act = QAction('快捷键', parent)
-        shortcuts_act.setIcon(icon(SHORTCUT))
-        shortcuts_act.setData(SHORTCUT)
-        shortcuts_act.triggered.connect(self.show_shortcuts)
-        help_menu.addAction(shortcuts_act)
-
-        help_menu.addSeparator()
-
-        about_act = QAction('关于 CipherBox', parent)
-        about_act.setIcon(icon(HELP))
-        about_act.setData(HELP)
-        about_act.triggered.connect(self.show_about)
-        help_menu.addAction(about_act)
+    def _add_menu_action(self, menu: QMenu, item: _MenuItem) -> None:
+        """据规格表条目创建并注册一个 QAction（图标名同时存入 data 供主题刷新重建）。"""
+        label, shortcut, icon_name, slot = item
+        action = QAction(label, self._parent)
+        if shortcut:
+            action.setShortcut(shortcut)
+        action.setIcon(icon(icon_name))
+        action.setData(icon_name)
+        action.triggered.connect(slot)
+        menu.addAction(action)
 
     # ----- 快捷键 -----
 
@@ -270,8 +229,6 @@ class MenuController:
         按 ``QAction.data()`` 存储的 icon name 重建，而非 ``action.text()`` 反查——
         后者在菜单文案变更（如国际化）时会让图标丢失。
         """
-        from PyQt6.QtWidgets import QMenu
-
         parent = self._parent
         if parent is None:
             return

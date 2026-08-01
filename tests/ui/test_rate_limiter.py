@@ -8,7 +8,8 @@ import time
 
 import pytest
 
-from src.ui.components.widgets import RATE_LIMITS, RateLimiter
+from src.business.services.rate_limiter import RateLimiter
+from src.config import RATE_LIMITS
 
 
 @pytest.fixture

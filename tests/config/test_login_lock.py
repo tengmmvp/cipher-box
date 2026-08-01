@@ -2,7 +2,7 @@
 
 import time
 
-from src.ui.components.widgets import RateLimiter
+from src.business.services.rate_limiter import RateLimiter
 
 
 class TestLoginLockPersistence:

@@ -51,14 +51,14 @@ class PasswordHistoryWidget(QWidget):
         # 回调：获取密码可见毫秒数
         self._get_pwd_visible_ms: Callable[[], int] | None = None
         # 回调：复制并反馈
-        self._copy_with_feedback: Callable[..., None] | None = None
+        self._copy_with_feedback: Callable[[QPushButton, str], None] | None = None
 
     # ---- 公开接口 ----
 
     def set_callbacks(
         self,
         get_pwd_visible_ms: Callable[[], int],
-        copy_with_feedback: Callable[..., None],
+        copy_with_feedback: Callable[[QPushButton, str], None],
     ) -> None:
         """注入回调函数。
 
@@ -131,7 +131,7 @@ class PasswordHistoryWidget(QWidget):
 
     # ---- 内部方法 ----
 
-    def _build_history(self, history: list[dict], content_layout: QVBoxLayout) -> None:
+    def _build_history(self, history: list[dict[str, str]], content_layout: QVBoxLayout) -> None:
         """构建密码历史折叠区。"""
         group = QGroupBox('密码历史')
         group_layout = QVBoxLayout(group)

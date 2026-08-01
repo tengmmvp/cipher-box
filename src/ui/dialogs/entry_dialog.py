@@ -662,6 +662,73 @@ class EntryDialog(QDialog):
     # 保存
     # ------------------------------------------------------------------
 
+    def _collect_entry(self, entry_type: str) -> Entry:
+        """收集表单控件值并构造 Entry（含专用字段拼接 url 与自定义字段合并）。
+
+        Args:
+            entry_type: 当前条目类型，由调用方经前置校验后传入。
+
+        Returns:
+            填充好的 :class:`Entry`（新建条目无 id，由调用方按编辑场景补 id）。
+        """
+        # 不使用密码的类型（笔记）强制置空，避免保存无意义数据
+        password = self._password_edit.text() if get_schema(entry_type).uses_password else ''
+        username = self._username_edit.text().strip()
+        url = self._url_edit.text().strip()
+
+        # 由专用字段拼接 url 的类型（服务器）：username/password 已在上方统一读取
+        if get_schema(entry_type).composes_url:
+            composed = self._compose_server_url()
+            if composed:
+                url = composed
+
+        # 合并专用字段 + 通用自定义字段
+        all_custom = self._collect_type_specific_fields() + self._cf_editor.collect()
+
+        return Entry(
+            title=self._title_edit.text().strip(),
+            username=username,
+            password=password,
+            url=url,
+            category_id=self._category_combo.currentData(),
+            tags=self._tags_edit.text().strip(),
+            notes=self._notes_edit.toPlainText().strip(),
+            custom_fields=all_custom,
+            is_favorite=self._favorite_check.isChecked(),
+            entry_type=entry_type,
+            totp_secret=self._totp_edit.text().strip(),
+            # 透传 integrity_error 以避免编辑保存时覆盖已损坏的加密数据，
+            # 新建条目场景即 self._entry 为 None 时恒为 False。
+            integrity_error=self._entry.integrity_error if self._entry else False,
+            integrity_message=self._entry.integrity_message if self._entry else '',
+        )
+
+    def _handle_save_error(self, exc: Exception) -> None:
+        """分流保存异常到对应的日志级别与用户文案。
+
+        顺序敏感：领域异常（DatabaseError/DecryptionError/EntryIntegrityError）必须
+        先于 ValueError 判定——DecryptionError 双继承 ValueError，若放后会被字段校验
+        分支误捕为「输入有误」，掩盖领域文案。
+        """
+        if isinstance(exc, (DatabaseError, DecryptionError, EntryIntegrityError)):
+            logger.error(
+                "保存条目失败: %s: %s", type(exc).__name__, exc, exc_info=True,
+            )
+            QMessageBox.critical(self, DLG_TITLE_ERROR, to_user_message(exc))
+        elif isinstance(exc, ValueError):
+            # 业务层字段校验失败（纯 ValueError，非 DecryptionError）
+            logger.warning("条目校验失败: %s", exc)
+            QMessageBox.warning(self, '输入有误', str(exc))
+        else:
+            # 意外异常：与领域错误区分文案，避免经 to_user_message 归并为「用户数据问题」。
+            logger.error(
+                "保存条目时出现意外错误: %s: %s", type(exc).__name__, exc, exc_info=True,
+            )
+            QMessageBox.critical(
+                self, DLG_TITLE_ERROR,
+                '出现意外错误，未能保存条目。详细信息已记录到日志，请重试。',
+            )
+
     def _on_save(self) -> None:
         title = self._title_edit.text().strip()
         if not title:
@@ -680,37 +747,7 @@ class EntryDialog(QDialog):
         if not self._validate_field_lengths(entry_type):
             return
 
-        # 不使用密码的类型（笔记）强制置空，避免保存无意义数据
-        password = self._password_edit.text() if get_schema(entry_type).uses_password else ''
-        username = self._username_edit.text().strip()
-        url = self._url_edit.text().strip()
-
-        # 由专用字段拼接 url 的类型（服务器）：username/password 已在上方统一读取
-        if get_schema(entry_type).composes_url:
-            composed = self._compose_server_url()
-            if composed:
-                url = composed
-
-        # 合并专用字段 + 通用自定义字段
-        all_custom = self._collect_type_specific_fields() + self._cf_editor.collect()
-
-        entry = Entry(
-            title=title,
-            username=username,
-            password=password,
-            url=url,
-            category_id=self._category_combo.currentData(),
-            tags=self._tags_edit.text().strip(),
-            notes=self._notes_edit.toPlainText().strip(),
-            custom_fields=all_custom,
-            is_favorite=self._favorite_check.isChecked(),
-            entry_type=entry_type,
-            totp_secret=self._totp_edit.text().strip(),
-            # 透传 integrity_error 以避免编辑保存时覆盖已损坏的加密数据，
-            # 新建条目场景即 self._entry 为 None 时恒为 False。
-            integrity_error=self._entry.integrity_error if self._entry else False,
-            integrity_message=self._entry.integrity_message if self._entry else '',
-        )
+        entry = self._collect_entry(entry_type)
 
         try:
             if self._entry:
@@ -722,26 +759,8 @@ class EntryDialog(QDialog):
             # 保存成功后立即清除敏感输入框，缩短明文在内存中的驻留时间。
             self._clear_sensitive_inputs()
             self.accept()
-        except (DatabaseError, DecryptionError, EntryIntegrityError) as exc:
-            # 必须在 ValueError 之前：DecryptionError 双继承 ValueError，若放后会被
-            # 字段校验分支误捕为「输入有误」，掩盖领域文案。
-            logger.error(
-                "保存条目失败: %s: %s", type(exc).__name__, exc, exc_info=True,
-            )
-            QMessageBox.critical(self, DLG_TITLE_ERROR, to_user_message(exc))
-        except ValueError as exc:
-            # 业务层字段校验失败（纯 ValueError，非 DecryptionError）
-            logger.warning("条目校验失败: %s", exc)
-            QMessageBox.warning(self, '输入有误', str(exc))
         except Exception as exc:
-            # 意外异常：与领域错误区分文案，避免经 to_user_message 归并为「用户数据问题」。
-            logger.error(
-                "保存条目时出现意外错误: %s: %s", type(exc).__name__, exc, exc_info=True,
-            )
-            QMessageBox.critical(
-                self, DLG_TITLE_ERROR,
-                '出现意外错误，未能保存条目。详细信息已记录到日志，请重试。',
-            )
+            self._handle_save_error(exc)
 
     def _clear_sensitive_inputs(self) -> None:
         """清除所有敏感输入框中的明文。

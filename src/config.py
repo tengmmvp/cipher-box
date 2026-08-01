@@ -10,7 +10,7 @@ import sys
 import threading
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal, overload
 
 from .models import is_real_int
 from .utils.file_security import (
@@ -136,6 +136,23 @@ _BOOL_KEYS = {
 # 速率限制阶梯：(失败次数, 锁定秒数)。最高阶梯 10 分钟提高在线暴破成本；
 # 状态文件损坏/删除降级使用 RATE_LIMITS[-1]，故最高阶梯亦为降级锁定时长。
 RATE_LIMITS: list[tuple[int, int]] = [(3, 10), (5, 30), (8, 60), (10, 120), (15, 600)]
+
+# 已知配置键的字面量类型分组(供 get/get_safe/set 的 @overload 按键派生返回/入参类型,
+# 收窄热点调用的静态类型)。键到类型的映射须与 DEFAULT_CONFIG 保持一致:新增或改型
+# 配置键须同步更新此处与对应 @overload。
+_StrConfigKey = Literal[
+    'theme', 'backup_directory', 'last_auto_backup_at', 'sort_field', 'sort_order',
+]
+_IntConfigKey = Literal[
+    'auto_lock_minutes', 'clipboard_clear_seconds', 'password_visible_seconds',
+    'default_password_length', 'auto_backup_interval_hours', 'auto_backup_retention',
+    'old_password_warning_days',
+]
+_BoolConfigKey = Literal[
+    'default_uppercase', 'default_lowercase', 'default_digits', 'default_symbols',
+    'default_exclude_ambiguous', 'auto_backup_enabled', 'show_tray_icon',
+    'minimize_to_tray', 'close_to_tray',
+]
 
 
 class ConfigManager:
@@ -312,11 +329,39 @@ class ConfigManager:
             self._integrity_warning = False
             self._integrity_reason = None
 
+    @overload
+    def get(self, key: _StrConfigKey, default: Any = None) -> str: ...
+    @overload
+    def get(self, key: _IntConfigKey, default: Any = None) -> int: ...
+    @overload
+    def get(self, key: _BoolConfigKey, default: Any = None) -> bool: ...
+    @overload
+    def get(self, key: Literal['window_geometry'], default: Any = None) -> str | None: ...
+    @overload
+    def get(self, key: Literal['splitter_sizes'], default: Any = None) -> list[int] | None: ...
+    @overload
+    def get(self, key: Literal['security_sentinels'], default: Any = None) -> list[str]: ...
+    @overload
+    def get(self, key: str, default: Any = None) -> Any: ...
     def get(self, key: str, default: Any = None) -> Any:
         """获取配置项。"""
         with self._lock:
             return self._config.get(key, default)
 
+    @overload
+    def get_safe(self, key: _StrConfigKey, default: Any = None) -> str: ...
+    @overload
+    def get_safe(self, key: _IntConfigKey, default: Any = None) -> int: ...
+    @overload
+    def get_safe(self, key: _BoolConfigKey, default: Any = None) -> bool: ...
+    @overload
+    def get_safe(self, key: Literal['window_geometry'], default: Any = None) -> str | None: ...
+    @overload
+    def get_safe(self, key: Literal['splitter_sizes'], default: Any = None) -> list[int] | None: ...
+    @overload
+    def get_safe(self, key: Literal['security_sentinels'], default: Any = None) -> list[str]: ...
+    @overload
+    def get_safe(self, key: str, default: Any = None) -> Any: ...
     def get_safe(self, key: str, default: Any = None) -> Any:
         """获取配置值，对安全关键键（``_SECURITY_MINIMUMS``）强制运行时下限，防篡改降低安全策略。
 
@@ -337,6 +382,20 @@ class ConfigManager:
                 return minimum
         return value
 
+    @overload
+    def set(self, key: _StrConfigKey, value: str) -> None: ...
+    @overload
+    def set(self, key: _IntConfigKey, value: int) -> None: ...
+    @overload
+    def set(self, key: _BoolConfigKey, value: bool) -> None: ...
+    @overload
+    def set(self, key: Literal['window_geometry'], value: str | None) -> None: ...
+    @overload
+    def set(self, key: Literal['splitter_sizes'], value: list[int] | None) -> None: ...
+    @overload
+    def set(self, key: Literal['security_sentinels'], value: list[str]) -> None: ...
+    @overload
+    def set(self, key: str, value: Any) -> None: ...
     def set(self, key: str, value: Any) -> None:
         """设置配置项。"""
         with self._lock:

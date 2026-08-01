@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any
 from PyQt6.QtCore import QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPaintEvent, QPen
 from PyQt6.QtWidgets import (
-    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -28,12 +27,13 @@ from PyQt6.QtWidgets import (
 from ...business.services.security_analyzer import SecurityAnalyzer
 from ...utils.format import format_datetime
 from ..components.widgets import (
+    WorkerBackedDialog,
     clear_layout,
     finalize_worker_if_current,
     release_worker,
     setup_dialog_flags,
 )
-from ..components.workers import BackgroundWorker, wait_worker_shutdown
+from ..components.workers import BackgroundWorker
 from ..resources.constants import (
     BTN_DIALOG,
     BTN_FIX,
@@ -158,7 +158,7 @@ class _StatCard(QFrame):
         layout.addStretch()
 
 
-class SecurityDashboard(QDialog):
+class SecurityDashboard(WorkerBackedDialog):
     """安全仪表盘主对话框，展示风险概况并提供修复入口。
 
     后台线程加载报告避免阻塞 UI；关闭前等待 worker 结束，防止对已销毁
@@ -175,26 +175,21 @@ class SecurityDashboard(QDialog):
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
-        self._analyzer = security_analyzer
-        self._entry_manager = entry_manager
+        self._security = security_analyzer
+        self._entry_mgr = entry_manager
         self._config = config
         self._weak_entries: list[Entry] = []
         self._duplicate_groups: list[list[Entry]] = []
         self._old_entries: list[Entry] = []
-        self._worker: BackgroundWorker | None = None  # 预声明，确保 reject 可安全判空
         self._status_hint: QLabel | None = None
         self._setup_ui()
         self._load_data()
 
-    def reject(self) -> None:
-        """关闭前等待后台 worker 完成，并清空已解密的明文条目引用。"""
-        wait_worker_shutdown(self._worker)
-        release_worker(self)
+    def _after_release(self) -> None:
         # 清空明文条目，缩短敏感数据在对话框关闭后的驻留时间
         self._weak_entries = []
         self._duplicate_groups = []
         self._old_entries = []
-        super().reject()
 
     def _setup_ui(self) -> None:
         self.setWindowTitle('安全仪表盘')
@@ -254,9 +249,20 @@ class SecurityDashboard(QDialog):
 
     def _create_weak_tab(self) -> QWidget:
         widget = QWidget()
-        self._weak_layout = QVBoxLayout(widget)
+        scroll = QScrollArea(widget)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        self._weak_container = QWidget()
+        self._weak_layout = QVBoxLayout(self._weak_container)
         self._weak_layout.setSpacing(6)
         self._weak_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        scroll.setWidget(self._weak_container)
+
+        outer = QVBoxLayout(widget)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
         return widget
 
     def _create_duplicate_tab(self) -> QWidget:
@@ -279,9 +285,20 @@ class SecurityDashboard(QDialog):
 
     def _create_old_tab(self) -> QWidget:
         widget = QWidget()
-        self._old_layout = QVBoxLayout(widget)
+        scroll = QScrollArea(widget)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+
+        self._old_container = QWidget()
+        self._old_layout = QVBoxLayout(self._old_container)
         self._old_layout.setSpacing(6)
         self._old_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        scroll.setWidget(self._old_container)
+
+        outer = QVBoxLayout(widget)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
         return widget
 
     def _load_data(self) -> None:
@@ -295,7 +312,7 @@ class SecurityDashboard(QDialog):
         self._weak_layout.addWidget(self._status_hint)
 
         worker = BackgroundWorker(
-            lambda: self._analyzer.get_or_compute_report(days, cancel_check=worker.cancel_check),
+            lambda: self._security.get_or_compute_report(days, cancel_check=worker.cancel_check),
             parent=self,
         )
         self._worker = worker

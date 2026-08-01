@@ -318,6 +318,8 @@ class VaultLifecycleOrchestrator:
         """使用新密钥重新加密所有条目（含已删除），受事务保护。
 
         调用方须已持有 vault 写锁（change_master_password 经 vault_write_lock 持有）。
+        编排分两步（MAINT-008）：事务内重加密+元数据 → 事务后激活密钥+清理；异常兜底与
+        清零纪律分别抽独立方法，本方法仅保留阶段编排与贯穿全程的 finally。
         """
         if self._vault.key is None:
             raise VaultLockedError('保险库未解锁，无法执行重加密')
@@ -334,63 +336,18 @@ class VaultLifecycleOrchestrator:
 
         try:
             t0 = time.monotonic()
-            # 通过 transaction() 持有 db_lock 并包裹真实事务：数据读取在事务内完成，
-            # 防 TOCTOU 竞态；db_lock 持有期间阻止其他线程在此连接上插队写入导致跨
-            # 线程部分回滚。异常时由 transaction() 自动回滚所有数据库变更。
-            with self._db.transaction():
-                self._rotator.re_encrypt_categories(old_key, new_key)
-                self._rotator.re_encrypt_entries(
-                    old_key, new_key, cancel_event=self._vault.cancel_event,
-                )
-                self._rotator.re_encrypt_history(
-                    old_key, new_key, cancel_event=self._vault.cancel_event,
-                )
-                self._meta_store.update(
-                    self._db, new_key, new_salt, new_verify_token, new_epoch,
-                    snapshot_key=new_snapshot_key, params=new_params,
-                )
-
-            # 事务已提交。密钥赋值放在 commit 之后，避免后台线程在 commit 前读到新密钥、
-            # 解密尚未提交的旧数据，造成解密窗口问题。若提交失败 transaction() 已回滚，
-            # 下方 except 会清除密钥保证一致性。
-            #
-            # ARCH-021 顺序不变式：commit（释放 db_lock）与 activate_keys（更新内存
-            # _key/key_epoch）之间存在微秒窗口——DB 已是新密文+新 epoch，内存密钥仍旧。
-            # 并发读路径（get_entry_summaries/get_all_tags/get_entries_for_export，仅持
-            # db_lock 不取 vault_write_lock）会读到新密文配旧密钥致 GCM 失败。当前此窗口
-            # 被「改密运行于模态 exec() 对话框、阻塞并发 UI 编辑」闸住，不可触发；引入
-            # 任何后台写者前，须为读路径加 epoch_guarded_read（对称写路径
-            # epoch_guarded_transaction）或让其取共享 vault_write_lock。
-            self._vault.activate_keys(new_key, new_snapshot_key, new_epoch)
-            EncryptionEngine.clear_cache()  # 旧密钥 cipher 已失效，确保后续用新密钥
-            logger.info("重加密完成 (%.1fms)", (time.monotonic() - t0) * 1000)
-            # 清理旧 snapshot_key 加密的全部快照与恢复点，收缩泄漏面。
-            failed_purges = self._vault.purge_snapshot_backups()
-            if failed_purges:
-                logger.warning(
-                    "改密后未能删除 %d 个旧快照/恢复点（可能被占用或目录只读），"
-                    "建议手动清理以收缩历史明文泄漏面：%s",
-                    len(failed_purges),
-                    ', '.join(str(p) for p in failed_purges),
-                )
-            # WAL 截断在事务提交之后执行；数据已落盘，截断失败非致命，单独捕获避免
-            # 其异常冒泡导致 UI 显示模糊错误，而事务其实已成功。
-            try:
-                self._db.secure_checkpoint()
-            except Exception:
-                logger.warning("改密后 WAL 安全截断失败（非致命）", exc_info=True)
-
-            return failed_purges
-
+            # 步骤 1：事务内重加密分类/条目/历史并写入新元数据。
+            self._re_encrypt_vault_data(
+                old_key, new_key, new_salt, new_verify_token, new_epoch,
+                new_snapshot_key, new_params,
+            )
+            # 步骤 2：事务提交后激活新密钥、清理旧密钥缓存与快照、截断 WAL。
+            return self._activate_and_finalize_re_encryption(
+                new_key, new_snapshot_key, new_epoch, t0,
+            )
         except Exception:
-            # transaction() 上下文已回滚所有数据库变更。
-            # 即使 lock() 异常也必须确保密钥被清除，防止内存状态不一致。
-            try:
-                self.lock()
-            except Exception:
-                logger.error("改密后锁定失败，强制清除状态", exc_info=True)
-                self._vault.clear_vault_state()
-            logger.error("重加密失败: 回滚所有变更", exc_info=True)
+            # transaction() 上下文已回滚所有数据库变更；锁定清零密钥防状态不一致。
+            self._handle_re_encrypt_failure()
             raise
         finally:
             # 清理取消事件，避免残留影响后续改密
@@ -401,3 +358,83 @@ class VaultLifecycleOrchestrator:
             # 旧主密钥副本（bytes，不可原地清零）在新密钥生效后立即释放引用，缩短旧
             # 密钥在内存/swap 的驻留。CPython 下 bytes 不可变，del 后仍依赖 GC 回收。
             del old_key
+
+    def _re_encrypt_vault_data(
+        self,
+        old_key: bytes | bytearray,
+        new_key: bytes | bytearray,
+        new_salt: bytes,
+        new_verify_token: str,
+        new_epoch: str,
+        new_snapshot_key: bytearray,
+        new_params: KdfParams,
+    ) -> None:
+        """事务内重加密分类/条目/历史并写入新元数据（salt/verify/epoch/snapshot_key/mac）。
+
+        通过 :meth:`_db.transaction` 持有 db_lock 并包裹真实事务：数据读取在事务内完成，
+        防 TOCTOU 竞态；db_lock 持有期间阻止其他线程在此连接上插队写入导致跨线程部分
+        回滚。异常时由 ``transaction()`` 自动回滚全部数据库变更。``cancel_event`` 透传
+        给条目/历史重加密循环以响应取消请求。
+        """
+        with self._db.transaction():
+            self._rotator.re_encrypt_categories(old_key, new_key)
+            self._rotator.re_encrypt_entries(
+                old_key, new_key, cancel_event=self._vault.cancel_event,
+            )
+            self._rotator.re_encrypt_history(
+                old_key, new_key, cancel_event=self._vault.cancel_event,
+            )
+            self._meta_store.update(
+                self._db, new_key, new_salt, new_verify_token, new_epoch,
+                snapshot_key=new_snapshot_key, params=new_params,
+            )
+
+    def _activate_and_finalize_re_encryption(
+        self,
+        new_key: bytes | bytearray,
+        new_snapshot_key: bytearray,
+        new_epoch: str,
+        t0: float,
+    ) -> list[Path]:
+        """事务提交后激活新密钥、清理旧密钥缓存与快照、截断 WAL，返回 purge 失败列表。
+
+        密钥赋值放在 commit 之后，避免后台线程在 commit 前读到新密钥、解密尚未提交的
+        旧数据。若提交失败 ``transaction()`` 已回滚，调用方 except 兜底清密钥。
+
+        ARCH-005 顺序不变式：commit（释放 db_lock）与 activate_keys（更新内存密钥）间
+        存在微秒窗口——DB 已是新密文+新 epoch，内存密钥仍旧。该窗口现已可经
+        :meth:`VaultManager.epoch_guarded_read` 防护（持 db_lock 比对库内与内存 epoch，
+        不一致即中止），不再仅依赖「改密运行于模态对话框、阻塞并发 UI 编辑」闸住。
+        """
+        self._vault.activate_keys(new_key, new_snapshot_key, new_epoch)
+        EncryptionEngine.clear_cache()  # 旧密钥 cipher 已失效，确保后续用新密钥
+        logger.info("重加密完成 (%.1fms)", (time.monotonic() - t0) * 1000)
+        # 清理旧 snapshot_key 加密的全部快照与恢复点，收缩泄漏面。
+        failed_purges = self._vault.purge_snapshot_backups()
+        if failed_purges:
+            logger.warning(
+                "改密后未能删除 %d 个旧快照/恢复点（可能被占用或目录只读），"
+                "建议手动清理以收缩历史明文泄漏面：%s",
+                len(failed_purges),
+                ', '.join(str(p) for p in failed_purges),
+            )
+        # WAL 截断在事务提交之后执行；数据已落盘，截断失败非致命，单独捕获避免
+        # 其异常冒泡导致 UI 显示模糊错误，而事务其实已成功。
+        try:
+            self._db.secure_checkpoint()
+        except Exception:
+            logger.warning("改密后 WAL 安全截断失败（非致命）", exc_info=True)
+        return failed_purges
+
+    def _handle_re_encrypt_failure(self) -> None:
+        """重加密失败兜底：事务已回滚，锁定保险库清零密钥防内存状态不一致。
+
+        即使 :meth:`lock` 异常也须确保密钥被清除（降级 ``clear_vault_state``）。
+        记录 ``exc_info`` 保留可审计性——重加密失败后状态复位失效最难诊断。
+        """
+        try:
+            self.lock()
+        except Exception:
+            logger.error("改密后锁定失败，强制清除状态", exc_info=True)
+            self._vault.clear_vault_state()
+        logger.error("重加密失败: 回滚所有变更", exc_info=True)

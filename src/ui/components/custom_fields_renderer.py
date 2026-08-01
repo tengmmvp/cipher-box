@@ -37,6 +37,12 @@ _TEMPLATE_FIELD_LABELS = {
     for spec in all_special_fields_by_storage().values()
 }
 
+# 字段类型 → 前缀图标标签，供 render 行内显示字段类型徽记。
+_FIELD_TYPE_ICONS: dict[str, str] = {
+    'password': '[PWD]', 'url': '[URL]', 'email': '[MAIL]',
+}
+_FIELD_TYPE_ICON_DEFAULT = '[TXT]'
+
 
 class CustomFieldsRenderer:
     """自定义字段渲染器。
@@ -95,7 +101,7 @@ class CustomFieldsRenderer:
         for cf in custom_fields:
             if not cf.value:
                 continue
-            icon = {'password': '[PWD]', 'url': '[URL]', 'email': '[MAIL]'}.get(cf.field_type, '[TXT]')
+            icon = _FIELD_TYPE_ICONS.get(cf.field_type, _FIELD_TYPE_ICON_DEFAULT)
             label = _TEMPLATE_FIELD_LABELS.get(cf.name, cf.name)
             if cf.field_type == 'password':
                 row = self._make_secret_field_row(f'{icon} {label}', cf.value, timers, parent_widget)

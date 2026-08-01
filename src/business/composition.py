@@ -66,10 +66,10 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
     ImportExportManager → BackupRestoreManager 的依赖链，并注册锁定/变更回调
     使缓存失效事件驱动化。调用方（app.py 解锁成功后）取得 ctx 传给 MainWindow。
 
-    连线集中于此使依赖关系显式且单一：锁定时失效 entry 缓存，条目变更时失效安全
-    分析缓存。``register_on_lock`` 注册的回调也会在备份恢复（``update_key_epoch``）
-    后触发——恢复整体替换数据，按 crypto_id 索引的明文缓存须失效以防命中旧明文；
-    当前注册的均为纯缓存清除、幂等，复用安全。
+    连线集中于此使依赖关系显式且单一：锁定与备份恢复（密钥轮换）时失效 entry 缓存，
+    条目变更时失效安全分析缓存。两类事件经独立回调通道触发（ARCH-003）：锁定走
+    ``register_on_lock``，恢复后密钥轮换走 ``register_on_epoch_rotated``；两个缓存
+    清除回调均注册到两个通道（详见下方注释）。
     """
     cache = EntryCacheManager(vault)
     change_bus = EntryChangeBus(cache)
@@ -77,8 +77,14 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
     security = SecurityAnalyzer(vault, cache)
     import_export = ImportExportManager(entry_mgr)
     backup = BackupRestoreManager(vault, entry_mgr)
+    # 锁定与密钥版本轮换（备份恢复）是两类语义不同的事件（ARCH-003 拆为独立通道），
+    # 但都要求失效全部明文/派生缓存：锁定清明文摘要/分类名/TOTP/标签缓存收缩内存泄漏面；
+    # 恢复整体替换数据，按 crypto_id 索引的明文缓存须失效防命中旧明文，安全分析缓存亦
+    # 失效。故两个回调均注册到两个通道以保持行为等价。
     vault.register_on_lock(entry_mgr.invalidate_caches)
     vault.register_on_lock(security.invalidate_cache)
+    vault.register_on_epoch_rotated(entry_mgr.invalidate_caches)
+    vault.register_on_epoch_rotated(security.invalidate_cache)
     entry_mgr.register_on_change(security.invalidate_cache)
     return BusinessContext(
         config=config,

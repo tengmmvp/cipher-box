@@ -66,9 +66,10 @@ class CategoryRepository:
                 logger.warning("分类 %s 元数据完整性校验失败", category.id)
                 return replace(category, integrity_error=True)
             except VaultLockedError:
-                # 锁定竞态：域密钥在取行后被 prepare_for_lock 清零，锁定态验签无意义，
-                # 静默跳过避免读路径崩溃（entry 路径 re-raise 由调用方处理）。
-                pass
+                # 锁定竞态：域密钥在取行后被 prepare_for_lock 清零，锁定态验签无意义。
+                # 与 entry_repository._row_to_entry 一致向上传播（SEC-013），让调用方
+                # 统一处理锁定竞态，避免分类读路径静默返回未验签数据与条目路径行为不一致。
+                raise
         return category
 
     # ==================== 分类 ====================

@@ -5,9 +5,10 @@
 dataclass view-handle（``ListRefreshView``），创建 3 个防抖/状态定时器、连接 8 个
 控件信号、初始化填充列表。
 
-持有 6 个 worker/generation（entry_worker/entry_workers/tag_worker/status_worker +
-entry/tag 两个 generation）、3 定时器（search/entry_change/status）、过滤器/分类/
-标签/搜索/缓存状态。host 生命周期（锁定/关闭/隐藏到托盘/紧急取消）经 ``shutdown`` /
+职责收敛为「事件->刷新策略」编排 + 渲染：异步刷新的 worker 池与 generation 守卫
+（entry/tag worker、过期结果丢弃、滚动恢复）下沉至 ``EntryRefreshCoordinator``；
+状态栏渲染经 ``StatusBarRenderer``、空态解析经 ``EmptyStateResolver`` 下沉。
+host 生命周期（锁定/关闭/隐藏到托盘/紧急取消）经 ``shutdown`` /
 ``cancel_all_workers`` / ``stop_timers`` / ``prepare_for_lock`` 委托本控制器。
 """
 
@@ -16,7 +17,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from PyQt6.QtCore import QModelIndex, Qt, QTimer
 from PyQt6.QtWidgets import QListWidgetItem, QMainWindow
@@ -25,6 +26,7 @@ from ..components.empty_state_widget import EmptyStateWidget
 from ..components.workers import BackgroundWorker, wait_worker_shutdown
 from ..resources.constants import (
     ASYNC_SEARCH_THRESHOLD,
+    MAX_SEARCH_RESULTS_DISPLAY,
     MS_ENTRY_CHANGE_DEBOUNCE,
     MS_SEARCH_DEBOUNCE,
     MS_STATUS_BAR_DEBOUNCE,
@@ -34,6 +36,11 @@ from ..resources.icons import (
     icon,
 )
 from ._locked_guard import require_unlocked
+from .entry_refresh_coordinator import (
+    CoordinatorDeps,
+    EntryRefreshCoordinator,
+    ScrollRestore,
+)
 from .list_refresh_helpers import (
     EmptyStateContext,
     EmptyStateResolver,
@@ -62,18 +69,6 @@ if TYPE_CHECKING:
     from ..controllers.sidebar_controller import SidebarController
 
 logger = logging.getLogger(__name__)
-
-# 搜索结果渲染上限：超大库下避免一次性渲染过多条目卡死 UI
-_MAX_SEARCH_RESULTS_DISPLAY = 1000
-
-
-@dataclass
-class _ScrollRestore:
-    """列表刷新后的滚动/选中恢复参数（仅过滤器未变时恢复）。"""
-
-    should_restore_position: bool
-    saved_scroll: int
-    saved_row: int
 
 
 @dataclass(frozen=True)
@@ -144,22 +139,31 @@ class ListRefreshController:
         self._cached_tag_names: list[str] = []
         self._cached_total_entries = -1
         self._last_refresh_filter: str | None = None
-        # worker / generation
+        # status worker（状态栏安全摘要专用，独立于 entry/tag 刷新）
         self._status_worker: BackgroundWorker | None = None
-        self._entry_worker: BackgroundWorker | None = None
-        self._entry_workers: set[BackgroundWorker] = set()
-        self._entry_refresh_generation = 0
-        self._tag_worker: BackgroundWorker | None = None
-        self._tag_refresh_generation = 0
+        # entry/tag 异步刷新协调器（setup 创建，管 worker 池与 generation 守卫）
+        self._coordinator: EntryRefreshCoordinator
         # 定时器（setup 创建，parent=host 保证 Qt 线程亲和性与析构自动断开）
         self._status_timer: QTimer | None = None
         self._entry_change_timer: QTimer | None = None
         self._search_timer: QTimer | None = None
 
     def setup(self, parent: QMainWindow, view: ListRefreshView) -> None:
-        """创建 3 定时器、连接 8 个控件信号并初始化填充列表。须在控件创建后调用。"""
+        """创建协调器、3 定时器、连接 8 个控件信号并初始化填充列表。须在控件创建后调用。"""
         self._parent = parent
         self._view = view
+
+        # 异步刷新协调器：worker 池与 generation 守卫下沉，结果应用/新鲜度判定经回调注入
+        self._coordinator = EntryRefreshCoordinator(
+            parent,
+            CoordinatorDeps(
+                is_locked=lambda: self._locked,
+                is_entry_stale=self._is_entry_request_stale,
+                apply_entries=self._apply_entry_results,
+                apply_tags=self._apply_tag_filter,
+                show_loading=view.count_label.setText,
+            ),
+        )
 
         # 状态栏安全摘要防抖定时器
         self._status_timer = QTimer(parent)
@@ -245,39 +249,31 @@ class ListRefreshController:
 
         统一 status/entry/tag 三类 worker 的关闭：取消（协作取消标志）并等待其退出，
         超时则记 error（见 ``wait_worker_shutdown``）。锁定、退出、隐藏到托盘前调用。
+        entry/tag worker 经 coordinator 关闭，status worker 在本控制器关闭。
         """
         wait_worker_shutdown(self._status_worker)
         self._status_worker = None
-        for worker in tuple(self._entry_workers):
-            wait_worker_shutdown(worker)
-        self._entry_workers.clear()
-        self._entry_worker = None
-        self._tag_worker = None
+        self._coordinator.shutdown()
 
     def cancel_all_workers(self) -> None:
         """紧急取消后台 worker（不等待），供 host emergency_cancel_workers / prepare_for_lock。
 
-        遍历 ``_entry_workers`` 全集快照（含并发 entry worker）+ status_worker，而非仅
-        ``_entry_worker`` 单引用（最后一个），避免漏 cancel 并发 worker 残留持密钥继续
-        解密、与 lock() 清零竞态。
+        coordinator 遍历 entry/tag worker 全集快照（含并发 entry worker），status worker
+        在本控制器取消——避免漏 cancel 并发 worker 残留持密钥继续解密、与 lock() 清零竞态。
         """
-        workers = (self._status_worker, *tuple(self._entry_workers))
-        for worker in workers:
-            if worker is None:
-                continue
+        self._coordinator.cancel_all()
+        if self._status_worker is not None:
             try:
-                worker.cancel()
+                self._status_worker.cancel()
             except RuntimeError:
                 pass
 
     def wait_workers(self, timeout_ms: int) -> None:
         """取消后等待 worker 退出（host emergency_cancel_workers 的 wait 分支）。"""
-        workers = (self._status_worker, *tuple(self._entry_workers))
-        for worker in workers:
-            if worker is None:
-                continue
+        self._coordinator.wait(timeout_ms)
+        if self._status_worker is not None:
             try:
-                worker.wait(timeout_ms)
+                self._status_worker.wait(timeout_ms)
             except RuntimeError:
                 pass
 
@@ -354,42 +350,9 @@ class ListRefreshController:
             else self._entry_mgr.get_entry_count(include_deleted=True)
         )
         if count >= ASYNC_SEARCH_THRESHOLD and not self._sidebar_ctrl.tags_cache_valid:
-            self._start_async_tag_refresh()
+            self._coordinator.start_async_tag_refresh(self._sidebar_ctrl.get_all_tags)
             return
         self._apply_tag_filter(self._sidebar_ctrl.get_all_tags())
-
-    def _start_async_tag_refresh(self) -> None:
-        """后台获取全部标签，完成后回主线程重建下拉。
-
-        标签 worker 加入 _entry_workers，复用 shutdown / cancel_all_workers 的取消；
-        _tag_refresh_generation 防陈旧（快速连续刷新时只应用最新一批）。
-        """
-        if self._tag_worker is not None:
-            self._tag_worker.cancel()
-        self._tag_refresh_generation += 1
-        generation = self._tag_refresh_generation
-
-        worker = BackgroundWorker(self._sidebar_ctrl.get_all_tags, parent=self._parent)
-        self._tag_worker = worker
-        self._entry_workers.add(worker)
-
-        def _release() -> None:
-            self._entry_workers.discard(worker)
-            if self._tag_worker is worker:
-                self._tag_worker = None
-
-        def _done(result: Any) -> None:
-            # 锁定或已被更新的刷新取代时丢弃结果，避免对已锁定 vault 或过期下拉应用。
-            if self._locked or generation != self._tag_refresh_generation:
-                _release()
-                return
-            _release()
-            self._apply_tag_filter(result)
-
-        worker.finished.connect(_done)
-        worker.error.connect(lambda _message: _release())
-        worker.cancelled.connect(_release)
-        worker.start()
 
     def _apply_tag_filter(self, all_tags: list[tuple[str, int]]) -> None:
         """用给定标签列表重建标签下拉，保留当前选中（若仍存在）。"""
@@ -460,7 +423,7 @@ class ListRefreshController:
         should_restore_position = (saved_filter == current_filter)
         self._last_refresh_filter = current_filter
         scrollbar = view.entry_list.verticalScrollBar()
-        scroll_restore = _ScrollRestore(
+        scroll_restore = ScrollRestore(
             should_restore_position=should_restore_position,
             saved_scroll=(
                 scrollbar.value() if should_restore_position and scrollbar is not None else 0
@@ -482,77 +445,61 @@ class ListRefreshController:
                  else self._entry_mgr.get_entry_count(include_deleted=True))
             >= ASYNC_SEARCH_THRESHOLD
         ):
-            self._start_async_entry_refresh(
+            self._coordinator.start_async_entry_refresh(
                 current_filter,
                 self._current_category_id,
                 self._current_search,
+                self._build_entry_fetch(current_filter),
                 scroll_restore,
             )
             return
 
-        if self._entry_worker is not None:
-            self._entry_worker.cancel()
-            self._entry_worker = None
+        self._coordinator.cancel_entry_worker()
         entries, title = self._fetch_for_filter(self._current_filter)
         self._apply_entry_results(entries, title, scroll_restore)
 
-    def _start_async_entry_refresh(
-        self,
-        filter_key: str,
-        category_id: int | None,
-        search: str,
-        scroll_restore: _ScrollRestore,
-    ) -> None:
-        if self._entry_worker is not None:
-            self._entry_worker.cancel()
-        self._entry_refresh_generation += 1
-        generation = self._entry_refresh_generation
+    def _build_entry_fetch(
+        self, filter_key: str,
+    ) -> Callable[[Callable[[], bool]], tuple[list, str]]:
+        """构造异步 fetcher 工厂：冻结当前 filter/category/search，注入 cancel_check。
 
-        def _fetch() -> tuple[list, str]:
-            # worker 是下方赋值的自由变量，闭包延迟绑定（_fetch 在 worker.run 时执行，
-            # worker 已赋值）。cancel_check 直接用 BackgroundWorker 提供的绑定方法。
+        闭包捕获赋值时的 ``_current_*`` 快照（非运行时读取），与原内联 ``_fetch`` 的
+        ``use_current_state=False`` 语义一致——worker 在后台线程执行时读快照而非主线程
+        可能已变更的当前状态。
+        """
+        category_id = self._current_category_id
+        search = self._current_search
+
+        def fetch(cancel_check: Callable[[], bool]) -> tuple[list, str]:
             return self._fetch_for_filter(
                 filter_key,
                 category_id=category_id,
                 search=search,
-                cancel_check=worker.cancel_check,
+                cancel_check=cancel_check,
                 use_current_state=False,
             )
 
-        worker = BackgroundWorker(_fetch, parent=self._parent)
-        self._entry_worker = worker
-        self._entry_workers.add(worker)
-        self._view.count_label.setText('加载中...')
+        return fetch
 
-        def _release() -> None:
-            self._entry_workers.discard(worker)
-            if self._entry_worker is worker:
-                self._entry_worker = None
+    def _is_entry_request_stale(
+        self, filter_key: str, category_id: int | None, search: str,
+    ) -> bool:
+        """worker 捕获的请求指纹是否已被当前 UI 状态取代（供 coordinator 过期判定）。
 
-        def _done(result: Any) -> None:
-            if (
-                self._locked
-                or generation != self._entry_refresh_generation
-                or self._current_filter != filter_key
-                or self._current_category_id != category_id
-                or self._current_search != search
-            ):
-                _release()
-                return
-            entries, title = result
-            _release()
-            self._apply_entry_results(entries, title, scroll_restore)
-
-        worker.finished.connect(_done)
-        worker.error.connect(lambda _message: _release())
-        worker.cancelled.connect(_release)
-        worker.start()
+        同步刷新路径不推进 generation（省去无谓计数），靠此处的 filter/category/search
+        指纹比对兜底——worker 协作取消后仍可能延迟回调，此时指纹必与当前状态不符。
+        """
+        return (
+            self._current_filter != filter_key
+            or self._current_category_id != category_id
+            or self._current_search != search
+        )
 
     def _apply_entry_results(
         self,
         entries: list,
         title: str,
-        scroll_restore: _ScrollRestore,
+        scroll_restore: ScrollRestore,
     ) -> None:
         view = self._view
         # 分类筛选下显示分类名作为标题，而非 fetcher 默认的「全部条目」
@@ -568,9 +515,9 @@ class ListRefreshController:
 
         # 渲染上限：超大库下避免一次性渲染过多条目卡死 UI。
         original_count = len(entries)
-        truncated = original_count > _MAX_SEARCH_RESULTS_DISPLAY
+        truncated = original_count > MAX_SEARCH_RESULTS_DISPLAY
         if truncated:
-            entries = entries[:_MAX_SEARCH_RESULTS_DISPLAY]
+            entries = entries[:MAX_SEARCH_RESULTS_DISPLAY]
 
         # Model/View：一次替换全部数据，QListView 按需经 delegate 绘制。
         view.entry_model.set_entries(entries)

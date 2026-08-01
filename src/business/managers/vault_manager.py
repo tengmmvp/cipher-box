@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import gc
 import logging
-import sqlite3
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -23,11 +22,10 @@ from ...database.db_manager import DatabaseManager
 from ...database.types import VaultDataStore
 from ...exceptions import (
     DatabaseError,
-    SchemaError,
-    VaultIntegrityError,
     VaultKeyEpochMismatchError,
     VaultLockedError,
 )
+from ...utils.file_security import validate_file_path
 from ...utils.memory import secure_zero_buffer
 from ...utils.purge_files import secure_purge
 from ..services.backup_paths import BACKUPS_DIR_NAME, PRE_RESTORE_GLOB, SNAPSHOT_GLOB
@@ -61,8 +59,11 @@ class VaultManager:
         self._ever_unlocked = False  # 曾解锁过（解锁后不随 lock 重置，供 enforce_key_epoch 区分「从未激活」与「已锁定」）
         self._key_mgr = KeyManager()
         self._lock = threading.RLock()  # 串行化改密/重加密/备份/恢复等接触全量明文的长操作
-        self._db_initialized = False  # 缓存标志，避免 is_initialized 重复打开数据库
+        self._db_initialized = False  # 缓存标志，避免 ensure_db_open 重复打开数据库
         self._on_lock_callbacks: list[Callable[[], None]] = []
+        # 密钥版本轮换（备份恢复后）回调列表，与锁定回调分离（ARCH-003）：两类事件
+        # 语义不同，拆为独立通道使注册方明确订阅意图。
+        self._on_epoch_rotated_callbacks: list[Callable[[], None]] = []
         self._cancel_event = threading.Event()  # close()/lock() 时设置，通知长操作提前终止
         # 生命周期编排器，经 attach_lifecycle 由组合根注入（创建 orchestrator 后立即
         # 调用）。initialize/unlock/lock/change_master_password/close 委托给它。
@@ -94,29 +95,46 @@ class VaultManager:
     def _key_epoch(self, value: str) -> None:
         self._key_mgr.update_epoch(value)
 
-    # ---- 锁定回调 ----
+    # ---- 锁定 / 密钥轮换回调（ARCH-003 拆分为两个独立通道）----
     def register_on_lock(self, callback: Callable[[], None]) -> None:
-        """注册锁定与密钥版本轮换时自动调用的回调，用于清除缓存等。
+        """注册锁定时自动调用的回调，用于清除缓存等。
 
-        回调在两类事件触发：(1) ``VaultLifecycleOrchestrator.lock`` 锁定时；
-        (2) :meth:`update_key_epoch` 备份恢复后密钥版本轮换时（保险库仍解锁，但数据
-        整体替换需失效按 crypto_id 索引的明文缓存，防命中旧明文）。注册方须确保回调
-        在两种语义下均安全——当前注册的均为纯缓存清除、幂等，故复用同一列表（ARCH-2）。
+        仅在 :meth:`VaultLifecycleOrchestrator.lock` 锁定时触发（经
+        :meth:`invoke_lock_callbacks`）。需在备份恢复后密钥版本轮换时也失效缓存的
+        注册方应一并注册到 :meth:`register_on_epoch_rotated`。
         """
         self._on_lock_callbacks.append(callback)
 
     def invoke_lock_callbacks(self) -> None:
         """触发全部锁定回调（清缓存等）。
 
-        调用点为 lock 清零密钥后与 update_key_epoch 轮换密钥版本后。回调异常不中断
-        后续回调，仅记 WARNING——单个回调失败不应阻止其余缓存清理，但安全相关失效
-        （如锁定时明文缓存未清）应在生产日志可见（QL-3）。
+        调用点为 lock 清零密钥后。回调异常不中断后续回调，仅记 WARNING——单个回调
+        失败不应阻止其余缓存清理，但安全相关失效（如锁定时明文缓存未清）应在生产日志
+        可见（QL-3）。
         """
-        for cb in self._on_lock_callbacks:
+        self._invoke_callbacks(self._on_lock_callbacks, "锁定回调")
+
+    def register_on_epoch_rotated(self, callback: Callable[[], None]) -> None:
+        """注册密钥版本轮换（备份恢复后）时自动调用的回调，用于失效缓存等。
+
+        仅在 :meth:`update_key_epoch` 备份恢复后密钥版本轮换时触发（保险库仍解锁，
+        但数据整体替换需失效按 crypto_id 索引的明文缓存，防命中旧明文）。与锁定语义
+        分离，使注册方明确订阅意图。
+        """
+        self._on_epoch_rotated_callbacks.append(callback)
+
+    def invoke_epoch_rotated_callbacks(self) -> None:
+        """触发全部密钥版本轮换回调（失效恢复后过期的明文/派生缓存）。"""
+        self._invoke_callbacks(self._on_epoch_rotated_callbacks, "密钥轮换回调")
+
+    @staticmethod
+    def _invoke_callbacks(callbacks: list[Callable[[], None]], label: str) -> None:
+        """逐个触发回调：单个回调异常不中断后续，记 WARNING 保留可审计性（QL-3）。"""
+        for cb in callbacks:
             try:
                 cb()
             except Exception:
-                logger.warning("锁定回调执行失败", exc_info=True)
+                logger.warning("%s执行失败", label, exc_info=True)
 
     # ---- 数据库与配置 ----
     @property
@@ -137,56 +155,43 @@ class VaultManager:
         """备份相关目录列表：默认目录 + 用户自定义 backup_directory（若配置）。
 
         作为 purge/清理路径的目录单一真相源，避免漏扫自定义目录导致含明文的
-        恢复点/快照残留。
+        恢复点/快照残留。用户配置的 ``backup_directory`` 经
+        ``validate_file_path(check_ancestors=True)`` 复核（与 :meth:`maybe_auto_backup`
+        写入侧对齐），收缩符号链接重定向威胁；非法路径跳过并告警，避免 purge 误删
+        重定向位置文件（SEC-004）。
         """
         directories = [self.data_dir / BACKUPS_DIR_NAME]
         custom = self._config.get('backup_directory', '')
         if custom:
-            directories.append(Path(custom))
+            try:
+                validated = validate_file_path(custom, check_ancestors=True)
+                directories.append(Path(str(validated)))
+            except ValueError:
+                logger.warning("自定义备份目录路径无效，已跳过清理：%s", custom)
         return directories
 
     @property
     def is_initialized(self) -> bool:
-        """保险库是否已初始化，即是否设置了主密码。
+        """纯查询：保险库是否已设置主密码（检查 master_salt）。无打开/关闭副作用。
 
-        仅「数据库不存在」返回 False；schema 损坏（``SchemaError``）或元数据完整性
-        失败（``VaultIntegrityError``）向上传播，不吞为 False，避免 UI 误判为未初始化
-        后在损坏库上重新初始化导致数据覆盖。
+        命令-查询分离（ARCH-004）：本 property 仅查询，不打开/关闭数据库。db 文件不
+        存在时返回 False（无需打开）；存在时调用方须先 :meth:`ensure_db_open` 再查询，
+        schema 损坏（``SchemaError``）或完整性失败（``VaultIntegrityError``）由
+        :meth:`ensure_db_open` 的 schema 校验向上传播——不静默为 False，避免 UI 误判
+        为未初始化后在损坏库上重新初始化导致数据覆盖。
         """
         if not self._config.db_path.exists():
             return False
-        try:
-            self.ensure_db_open()
-            salt_b64 = self._db.get_meta('master_salt')
-            return salt_b64 is not None
-        except (SchemaError, VaultIntegrityError):
-            # schema 损坏 / 完整性校验失败必须向上传播：吞为 False 会让 UI 误判为
-            # 未初始化，引导用户在损坏库上初始化从而覆盖既有数据。
-            logger.error("检查保险库状态发现数据库损坏", exc_info=True)
-            self.close_db_safely()
-            raise
-        except (DatabaseError, sqlite3.Error, OSError):
-            # 仅对「数据库领域错误 / 运行时错误 / 磁盘 I/O 错误」降级为未初始化。
-            # 编程错误（AttributeError/TypeError 等）不在此列，必须上抛暴露 bug。
-            logger.error("检查保险库状态失败", exc_info=True)
-            self.close_db_safely()
-            return False
-
-    def close_db_safely(self) -> None:
-        """关闭探测期间打开的数据库连接，避免文件锁阻碍临时目录清理。
-
-        探测方法打开连接后若失败，连接未关会导致 Windows 下 tempfile 清理抛
-        WinError 32。失败路径主动关闭，回滚到未打开状态。
-        """
-        if self._db.is_open:
-            try:
-                self._db.close()
-            except Exception:
-                logger.debug("关闭数据库连接失败", exc_info=True)
-        self._db_initialized = False
+        salt_b64 = self._db.get_meta('master_salt')
+        return salt_b64 is not None
 
     def ensure_db_open(self) -> None:
-        """确保数据库已打开且表已初始化。幂等方法，已打开则跳过。"""
+        """确保数据库已打开且表已初始化（命令-查询分离中的「命令」侧，ARCH-004）。
+
+        幂等方法，已打开则跳过。schema 损坏或完整性失败时抛 ``SchemaError``，由调用方
+        决策（如登录流程据此提示用户而非覆盖损坏库）。``is_initialized`` 等纯查询须由
+        调用方先经此方法打开数据库后再访问。
+        """
         if self._db_initialized:
             return
         if not self._db.is_open and not self._db.open():
@@ -215,13 +220,13 @@ class VaultManager:
         return self._key_epoch
 
     def update_key_epoch(self, new_epoch: str) -> None:
-        """更新 key_epoch 并触发缓存失效回调，用于备份恢复后同步状态。
+        """更新 key_epoch 并触发密钥版本轮换回调，用于备份恢复后同步状态。
 
         恢复整体替换数据，需失效按 crypto_id 索引的明文缓存（恢复保留 crypto_id，
-        不清则命中旧明文）。复用 on_lock 回调列表，其当前仅注册缓存清除。
+        不清则命中旧明文）。经独立的 epoch 轮换通道触发（ARCH-003），与锁定回调分离。
         """
         self._key_epoch = new_epoch
-        self.invoke_lock_callbacks()
+        self.invoke_epoch_rotated_callbacks()
 
     # ---- 写守卫 ----
     def enforce_key_epoch(self) -> None:
@@ -274,6 +279,27 @@ class VaultManager:
                 raise VaultKeyEpochMismatchError(
                     f'{operation}期间检测到密钥变更，已中止并回滚'
                 )
+            yield
+
+    @contextmanager
+    def epoch_guarded_read(self) -> Iterator[None]:
+        """读路径 epoch 守卫：持 db_lock 期间校验内存 key_epoch 与库内 epoch 一致。
+
+        对称写路径 :meth:`epoch_guarded_transaction`，供读路径（``get_entry_summaries``
+        等仅持 db_lock 不取 vault_write_lock 的操作）防护改密 commit 与 activate_keys
+        间的微秒窗口：DB 已提交新密文+新 epoch，内存密钥仍旧，并发读会用旧密钥解密
+        新密文致 GCM 认证失败。持 db_lock 后比对库内 ``key_epoch`` 与内存 ``key_epoch``，
+        不一致则抛 :class:`VaultKeyEpochMismatchError` 中止读取（ARCH-005）。
+
+        持 db_lock 期间写路径无法 commit（需同一锁），故校验通过后读路径全程密钥与
+        密文版本一致。未解锁（key_epoch 为 None）时跳过校验，供初始化前的元数据读取。
+        """
+        with self._db.db_lock:
+            session_epoch = self._key_epoch
+            if session_epoch is not None:
+                db_epoch = self._db.get_meta('key_epoch')
+                if db_epoch and db_epoch != session_epoch:
+                    raise VaultKeyEpochMismatchError('读取期间检测到密钥变更，已中止')
             yield
 
     # ---- 原子状态操作（供 VaultLifecycleOrchestrator）----

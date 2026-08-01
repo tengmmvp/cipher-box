@@ -200,6 +200,12 @@ class SchemaManager:
             ('娱乐', '[GAME]', '#9C27B0', 6),
             ('开发', '[DEV]', '#00BCD4', 7),
         ]
+        # SEC-007：此处把公开默认分类名以明文写入 name_enc 列，是有意为之——schema_manager
+        # 属 Data 层不持密钥，init_tables 在 DatabaseManager 装配密钥前/无密钥时调用，
+        # 无法在此加密。该明文窗口由 business 层 vault_lifecycle.initialize 在
+        # activate_keys 之后立即调 encrypt_plaintext_category_names 补加密（已加密的
+        # cb2: 前缀跳过，幂等），使全部 *_enc 列在解锁前转为密文。默认分类名为公开值，
+        # 窗口期内无敏感泄漏；不在此引入密钥依赖以保持 schema_manager 无密钥职责。
         for name, icon, color, order in default_categories:
             cursor.execute(
                 "INSERT OR IGNORE INTO categories (name_enc, icon_char, color, sort_order, created_at) VALUES (?, ?, ?, ?, ?)",

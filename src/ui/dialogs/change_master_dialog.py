@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -25,17 +24,17 @@ from PyQt6.QtWidgets import (
 from ...business.managers.vault_lifecycle import AUTH_FAILED_MESSAGE
 from ...business.managers.vault_manager import VaultManager
 from ...business.services.password_service import PasswordService
+from ...business.services.rate_limiter import RateLimiter
 from ..components.widgets import (
-    RateLimiter,
+    WorkerBackedDialog,
     create_cancel_button,
     create_password_toggle_btn,
     finalize_worker_if_current,
-    release_worker,
     set_label_severity,
     setup_dialog_flags,
     update_strength_label,
 )
-from ..components.workers import BackgroundWorker, wait_worker_shutdown
+from ..components.workers import BackgroundWorker
 from ..resources.constants import (
     BTN_DIALOG,
     DIALOG_CHANGE_MASTER_MIN_SIZE,
@@ -48,7 +47,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class ChangeMasterDialog(QDialog):
+class ChangeMasterDialog(WorkerBackedDialog):
     """主密码修改对话框，含旧密码校验与新密码强度校验。"""
 
     def __init__(
@@ -65,7 +64,6 @@ class ChangeMasterDialog(QDialog):
         # 传入 config：使 RateLimiter 把哨兵登记到签名 config，关闭「同时删除
         # 状态文件+哨兵即归零计数」的绕过。config=None 时退回仅文件配对检测。
         self._rate_limiter = RateLimiter(state_path, config)
-        self._worker: BackgroundWorker | None = None
         self._setup_ui()
 
     def _clear_password_inputs(self) -> None:
@@ -74,17 +72,15 @@ class ChangeMasterDialog(QDialog):
         self._new_pwd.clear()
         self._confirm_pwd.clear()
 
-    def reject(self) -> None:
-        """关闭对话框前取消并等待后台 worker 完成，并清除密码输入。"""
-        if self._worker and self._worker.isRunning():
-            # 桥接取消：设 vault 取消事件以中断重加密循环（worker.cancel 仅设
-            # worker 自身标志，重加密不检查它）。重加密检测后抛异常回滚。
+    def _before_reject(self) -> None:
+        # 桥接取消：设 vault 取消事件以中断重加密循环（worker.cancel 仅设
+        # worker 自身标志，重加密不检查它）。重加密检测后抛异常回滚。
+        if self._worker is not None and self._worker.isRunning():
             self._vault.request_cancel()
-        wait_worker_shutdown(self._worker)
-        release_worker(self)
+
+    def _after_release(self) -> None:
         # 取消时同样清除全部密码输入，与成功/失败路径一致，缩短明文驻留
         self._clear_password_inputs()
-        super().reject()
 
     def _setup_ui(self) -> None:
         self.setWindowTitle('修改主密码')

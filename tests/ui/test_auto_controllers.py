@@ -82,16 +82,35 @@ class TestAutoLockController:
         ctrl.reset_timer()
         timer.start.assert_called_once_with(5 * 60 * 1000)
 
-    def test_reset_timer_stops_when_disabled(self, qapp):
-        """auto_lock_minutes=0（用户禁用）时停止，不启动。"""
+    def test_reset_timer_stops_when_disabled_with_session_lock(self, qapp):
+        """auto_lock_minutes=0(用户禁用)且会话锁屏联动可用时停止,依赖系统锁屏兜底。"""
         ctrl = AutoLockController(MagicMock(), MagicMock(), lambda: None)
         timer = MagicMock()
         ctrl._lock_timer = timer
         ctrl._vault.is_unlocked = True
         ctrl._config.get_safe.return_value = 0
+        # 会话锁屏联动可用:0 为合法禁用,放行
+        ctrl._wts_registered = True
         ctrl.reset_timer()
         timer.stop.assert_called_once()
         timer.start.assert_not_called()
+
+    def test_reset_timer_clamps_zero_in_degraded_path(self, qapp):
+        """退化路径(无会话锁屏联动)下 auto_lock_minutes=0 不允许禁用,降级为默认值启动。
+
+        SEC-005:非 Windows / WTS 注册失败 / 测试环境下无系统锁屏兜底,0 即彻底无自动
+        锁定,须强制一个不可关闭的空闲锁定上限。
+        """
+        from src.config import DEFAULT_CONFIG
+        ctrl = AutoLockController(MagicMock(), MagicMock(), lambda: None)
+        timer = MagicMock()
+        ctrl._lock_timer = timer
+        ctrl._vault.is_unlocked = True
+        ctrl._config.get_safe.return_value = 0
+        # 退化路径:_wts_registered 保持默认 False
+        ctrl.reset_timer()
+        timer.start.assert_called_once_with(DEFAULT_CONFIG['auto_lock_minutes'] * 60 * 1000)
+        timer.stop.assert_not_called()
 
     def test_setup_session_notification_short_circuits_on_disable_env(self, qapp, monkeypatch):
         """CIPHERBOX_DISABLE_WTS 设置时跳过 WTS 注册（不安装过滤器），降级为仅超时锁定。"""

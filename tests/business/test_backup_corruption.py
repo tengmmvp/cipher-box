@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from src.business.managers.backup_restore import BackupRestoreManager
+from src.business.managers.restore_point_manager import RestorePointManager
 from src.business.services.backup_header_codec import (
     BACKUP_MAGIC,
     BACKUP_SALT_SIZE,
@@ -231,7 +232,7 @@ class TestBackupCorruption:
             cleaned.append(str(path_arg))
 
         monkeypatch.setattr(
-            BackupRestoreManager, '_safe_delete_restore_point', staticmethod(_spy),
+            RestorePointManager, '_safe_delete_restore_point', staticmethod(_spy),
         )
 
         def _raise(*_args, **_kwargs):

@@ -20,13 +20,10 @@ from .base import (
     _validate_items,
 )
 
-# 限制 csv 解析器单字段最大长度。Python csv 默认 field_size_limit=128KB，但该默认
-# 值是隐式的且与本项目的逐项大小策略脱节。显式设为 MAX_ENTRY_PAYLOAD_SIZE 后，单字段
-# 超过 2MB 会在 csv 解析阶段即抛 csv.Error，先于 ``list(reader)`` 把整行物化进内存——
-# 否则攻击者可构造「单行无换行的巨大字段」文件（受 25MB 文件上限约束），在逐项校验
-# 运行前就撑出一整段连续内存。csv.field_size_limit 是进程级全局设置，本应用导入
-# 串行执行，设此防御性上限对其他 csv 路径无负面影响。
-csv.field_size_limit(MAX_ENTRY_PAYLOAD_SIZE)
+# CSV 列数硬上限（SEC-001）：先 ``list(reader)`` 物化行前校验 header 列数，防止单行
+# ×数百万列构造的文件触发 OOM。密码管理器 CSV 列数有限（CipherBox ~11 列、KeePass ~6
+# 列），256 远超实际需要且为单行字段数封顶。
+MAX_CSV_COLUMNS = 256
 
 # CSV 导入列名别名映射：每个字段对应一组可能的列名，匹配时不区分大小写。
 # 由 _parse_csv_like 经 _build_col_map 用于 CsvImporter。
@@ -155,8 +152,27 @@ class _CsvLikeImporter:
         self._source_label = source_label
 
     def parse(self, filepath: str) -> ParsedImport:
+        # 限制 csv 解析器单字段最大长度（MAINT-011）。Python csv 默认
+        # field_size_limit=128KB 是隐式的且与本项目的逐项大小策略脱节；显式设为
+        # MAX_ENTRY_PAYLOAD_SIZE 后，单字段超过 2MB 在 csv 解析阶段即抛 csv.Error，
+        # 先于 ``list(reader)`` 物化整行进内存。csv.field_size_limit 是进程级全局设置，
+        # 本应用导入串行执行，首次使用前显式设置对其他 csv 路径无负面影响。
+        csv.field_size_limit(MAX_ENTRY_PAYLOAD_SIZE)
         with open(filepath, encoding='utf-8-sig', newline='') as f:
             reader = csv.DictReader(f)
+            # 先校验 header 列数（SEC-001），防止单行×数百万列在 ``list(reader)``
+            # 物化时每行生成超长 dict 触发 OOM。空文件（无 header）按空导入处理。
+            if reader.fieldnames is None:
+                return ParsedImport(
+                    entries=[],
+                    entries_data=[],
+                    overwrite_merger=_make_csv_merger(False),
+                    source_label=self._source_label,
+                )
+            if len(reader.fieldnames) > MAX_CSV_COLUMNS:
+                raise ImportSizeError(
+                    f'CSV 列数过多（最多 {MAX_CSV_COLUMNS} 列）'
+                )
             rows = list(reader)
 
         _validate_items(rows)
