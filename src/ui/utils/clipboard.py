@@ -22,8 +22,9 @@ logger = logging.getLogger(__name__)
 # Windows 剪贴板历史排除（SEC-001）：注册 ExcludeClipboardContentFromMonitorProcessing
 # 格式并随密码一同写入，使 Win+V 历史与云剪贴板不捕获密码。Qt 不暴露该 Win32 能力，
 # 故经 ctypes 调用 user32/kernel32。仅 Windows 加载，其余平台提供无操作占位。
-_IS_WINDOWS = sys.platform == 'win32'
-if _IS_WINDOWS:
+# 用 ``sys.platform == 'win32'`` 字面量比较而非中间变量：mypy 据此按平台缩窄，识别
+# typeshed 中 Windows 专属的 ctypes.WinDLL，避免非 Windows CI 报 attr-defined。
+if sys.platform == 'win32':
     import ctypes
     from ctypes import wintypes
 
