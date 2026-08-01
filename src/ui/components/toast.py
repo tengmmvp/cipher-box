@@ -107,7 +107,6 @@ class ToastWidget(QFrame):
 
     # ------------------------------------------------------------------ UI
     def _setup_ui(self, message: str, toast_type: str, action_text: str) -> None:
-        """构建内部布局。"""
         self.setFixedWidth(TOAST_WIDTH)
         self.setMinimumHeight(20)
 
@@ -174,7 +173,6 @@ class ToastWidget(QFrame):
 
     # ------------------------------------------------------------- 样式
     def _apply_style(self, toast_type: str) -> None:
-        """根据类型应用样式。"""
         type_key = (
             toast_type
             if toast_type in (self.SUCCESS, self.ERROR, self.INFO, self.WARNING)
@@ -259,7 +257,6 @@ class ToastWidget(QFrame):
         self._stable_height = self.sizeHint().height() or self.height()
 
     def _start_fade_out(self) -> None:
-        """开始淡出动画。"""
         self._auto_close_timer.stop()
 
         # 启动新动画前停止旧动画，防止淡入/淡出动画重叠导致闪烁
@@ -282,7 +279,6 @@ class ToastWidget(QFrame):
 
     # ---------------------------------------------------------- 交互
     def _on_action_clicked(self) -> None:
-        """操作按钮点击。"""
         if self._action_callback:
             self._action_callback()
         self._start_fade_out()

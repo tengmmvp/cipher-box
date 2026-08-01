@@ -440,10 +440,9 @@ def test_import_rolls_back_when_any_entry_fails():
             ]
         }), encoding='utf-8')
 
-        # 导入经批量 add_entries 写入（executemany）。模拟写入失败：RuntimeError 不在
-        # 导入的容错捕获（ValueError/EntryIntegrityError/DatabaseError）内，异常冒泡
-        # 使整个导入事务回滚，不留部分写入的数据。
-        with patch.object(manager, 'add_entries', side_effect=RuntimeError('simulated import failure')):
+        # 导入经 write_new_entries 批量写入（executemany）。模拟写入失败：RuntimeError
+        # 不在导入容错捕获内，异常冒泡使 epoch 守卫事务回滚，不留部分写入的数据。
+        with patch.object(manager, 'write_new_entries', side_effect=RuntimeError('simulated import failure')):
             try:
                 importer.import_file(str(path), 'json')
             except RuntimeError:

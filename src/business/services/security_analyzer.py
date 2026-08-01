@@ -184,11 +184,18 @@ class SecurityAnalyzer:
         cache = cast('SecurityReport', dict(cache))
         if days != self._analysis_cache_days:
             cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-            cache['old_entries'] = [
+            new_old_entries = [
                 s for s, dt in cache.get('_summaries_with_dates', [])
                 if dt is not None and dt < cutoff
             ]
-            cache['old'] = len(cache['old_entries'])
+            cache['old_entries'] = new_old_entries
+            cache['old'] = len(new_old_entries)
+            # 同步回写实例缓存（QL-001）：_analysis_cache_days 与 old/old_entries 必须一致，
+            # 否则 get_cached_counts 快路径（days == _analysis_cache_days）会读实例中旧 days
+            # 的 old 计数（多报过期）。此前仅改副本致实例与 days 脱钩。
+            if self._analysis_cache is not None:
+                self._analysis_cache['old_entries'] = list(new_old_entries)
+                self._analysis_cache['old'] = len(new_old_entries)
             # 更新 days 使后续相同 days 命中跳过重复 O(n) 过滤。
             self._analysis_cache_days = days
         # 出口复制：Entry 经 replace 创建独立实例，防调用方修改污染缓存。

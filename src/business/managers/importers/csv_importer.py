@@ -110,7 +110,7 @@ def _parse_csv_like(
                     raise ImportSizeError(
                         f'导入条目字段 {internal_field} 过长（最多 {max_len} 字符）'
                     )
-        # totp_secret / url scheme 校验经模块级统一函数，与 JSON/Bitwarden 路径共享单一来源
+        # totp_secret / url scheme 校验经模块级统一函数，与 JSON/Bitwarden 路径共享单一事实源
         kwargs['totp_secret'] = _sanitize_totp_secret(kwargs.get('totp_secret', ''))
         kwargs['url'] = _sanitize_url_scheme(kwargs.get('url', ''))
         entries.append(Entry(**kwargs))

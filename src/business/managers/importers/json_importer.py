@@ -64,7 +64,7 @@ class JsonImporter:
                     item.pop('password', None)
                     item.pop('totp_secret', None)
 
-        # url scheme / totp_secret 经模块级清洗，与 CSV/Bitwarden 路径共享单一来源
+        # url scheme / totp_secret 经模块级清洗，与 CSV/Bitwarden 路径共享单一事实源
         # （定位见 _sanitize_url_scheme / _sanitize_totp_secret）。
         for item in items:
             if isinstance(item.get('url'), str):

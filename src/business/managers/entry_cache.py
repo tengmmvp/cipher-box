@@ -340,15 +340,25 @@ class EntryCacheManager:
         # 安全性不降：tags_enc 完整性由 _decrypt_tags 的 GCM 认证保护（篡改即解密失败
         # 回退空串）；命中摘要缓存时 tags 已由列表 worker 以 LENIENT 验签。故标签聚合
         # 正确性不依赖元数据 HMAC。
-        # 循环外取密钥快照（PF-010）：_decrypt_tags 未命中缓存时经 self._key 每次复制
-        # 密钥，循环外取一次传入，收缩批量解密的密钥复制开销。
-        vault_key = self._key
-        for raw in self._vault.db.get_entries(
-            EntryQuery(include_deleted=False, verify=VerifyMode.SKIP)
-        ):
-            tags_str = self._decrypt_tags(raw, vault_key)
-            for tag in (t.strip() for t in tags_str.split(',') if t.strip()):
-                tag_count[tag] = tag_count.get(tag, 0) + 1
+        try:
+            # 读路径 epoch 守卫（SEC-TAGS-001，对称 resolve_totp_secret 的 ARCH-005）：
+            # 改密 commit 与本聚合读的微秒窗口内裸读会用旧密钥解密新密文致 GCM 认证
+            # 失败、tags 回退空串丢失。持 db_lock 期间校验内存与库内 epoch 一致。
+            with self._vault.epoch_guarded_read():
+                # 密钥快照须在校验通过后、锁内取（PF-010 循环外取一次）：
+                # 锁外取会在「取快照→进锁」间遭遇改密 activate，此时 epoch 已同为新、
+                # 校验通过，但快照仍是旧密钥，解密新密文致 GCM 失败。
+                vault_key = self._key
+                for raw in self._vault.db.get_entries(
+                    EntryQuery(include_deleted=False, verify=VerifyMode.SKIP)
+                ):
+                    tags_str = self._decrypt_tags(raw, vault_key)
+                    for tag in (t.strip() for t in tags_str.split(',') if t.strip()):
+                        tag_count[tag] = tag_count.get(tag, 0) + 1
+        except VaultKeyEpochMismatchError:
+            # epoch 不一致：返回已聚合部分，不回填缓存（observed_epoch != 当前
+            # _cache_epoch，下方回填守卫跳过），下次调用重新解密。
+            pass
         result = sorted(tag_count.items(), key=lambda x: -x[1])
         with self._cache_lock:
             # 双重检查：期间可能已被并发填充，或 epoch 已变化（改密/锁定清空了缓存）。

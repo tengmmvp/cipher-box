@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 _DOMAIN_INFO_ENTRY_METADATA = b'cipherbox:entry-metadata-key'
 _DOMAIN_INFO_VAULT_META = b'cipherbox:vault-meta-key'
 
-# vault_meta 完整性签名覆盖的键集（源自 vault_meta_keys 单一源），此处 re-export
+# vault_meta 完整性签名覆盖的键集（源自 vault_meta_keys 单一事实源），此处 re-export
 # 供既有调用方引用（vault_meta_store / backup_restore 经本模块 import）。
 
 # 签名绑定的加密字段及固定顺序（顺序变更会破坏已有 metadata_mac）。等于

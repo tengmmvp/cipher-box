@@ -4,7 +4,7 @@
 entry_dialog / custom_fields_renderer / import_export 等消费。新增条目类型只需
 扩展注册表，无需散弹式修改多处 ``if entry_type ==`` 分支。
 
-label/icon 从 ``models.ENTRY_TYPES`` 派生（单一源），专用字段 storage_name 复用
+label/icon 从 ``models.ENTRY_TYPES`` 派生（单一事实源），专用字段 storage_name 复用
 ``models.SPECIAL_FIELD_*`` 常量，确保导入路径与 UI schema 写出一致的 storage_name。
 """
 
@@ -103,7 +103,7 @@ _SERVER_FIELDS = (
 
 
 def _build_schemas() -> dict[str, EntryTypeSchema]:
-    """构建类型 schema 注册表，label/icon 从 models.ENTRY_TYPES 派生（单一源）。"""
+    """构建类型 schema 注册表，label/icon 从 models.ENTRY_TYPES 派生（单一事实源）。"""
     special_by_type: dict[str, tuple[SpecialFieldSpec, ...]] = {
         ENTRY_TYPE_LOGIN: (),
         ENTRY_TYPE_CARD: _CARD_FIELDS,

@@ -22,7 +22,13 @@ if TYPE_CHECKING:
     from .entry_manager import EntryManager
     from .vault_manager import VaultManager
 
-from ...config import DEFAULT_CONFIG
+from ...config import (
+    CFG_AUTO_BACKUP_ENABLED,
+    CFG_AUTO_BACKUP_RETENTION,
+    CFG_BACKUP_DIRECTORY,
+    CFG_LAST_AUTO_BACKUP_AT,
+    DEFAULT_CONFIG,
+)
 from ...crypto.encryption import EncryptionEngine
 from ...crypto.master_key import DEFAULT_KDF_PARAMS, KEY_SIZE, KdfParams, MasterKeyManager
 from ...database.types import EntryQuery
@@ -249,6 +255,8 @@ class BackupRestoreManager:
             backup_key = derive_backup_key(password, prepared.salt)
         else:
             snapshot_key = prepared.snapshot_key
+            # prepare 已保证 SNAPSHOT 路径 snapshot_key 非 None；显式检查替代 assert
+            # （python -O 跳过），满足类型 narrow 与意外状态防御（对称 PASSWORD 分支，PF-obs）。
             if snapshot_key is None:
                 raise BackupError('快照密钥不可用')
             backup_key = snapshot_key
@@ -560,7 +568,13 @@ class BackupRestoreManager:
         try:
             with self._vault.epoch_guarded_transaction(operation='恢复'):
                 db.clear_vault_data()
-                category_map = restore_categories(self._entry_mgr, backup)
+                category_map = restore_categories(
+                    # ARCH-002：注入批量写回调，解耦 backup_rebuilder 与 EntryManager。
+                    lambda cats: self._entry_mgr.categories.add_categories_batch(
+                        cats, notify=False,
+                    ),
+                    backup,
+                )
                 entry_map, crypto_id_map = restore_entries(db, backup, key, category_map)
                 restore_history(db, backup, key, entry_map, crypto_id_map)
                 # 轮换 key_epoch 防止旧会话写入恢复后的数据
@@ -603,7 +617,7 @@ class BackupRestoreManager:
         Returns:
             由是否成功与错误信息组成的二元组，成功时错误信息为空字符串。
         """
-        if not force and not config.get('auto_backup_enabled', False):
+        if not force and not config.get(CFG_AUTO_BACKUP_ENABLED, False):
             return True, ''
 
         # 间隔判定下沉 auto_backup_policy.is_auto_backup_due（纯函数，可独立测试）；
@@ -611,7 +625,7 @@ class BackupRestoreManager:
         if not is_auto_backup_due(config, force=force):
             return True, ''
 
-        backup_dir = config.get('backup_directory', '')
+        backup_dir = config.get(CFG_BACKUP_DIRECTORY, '')
         if backup_dir:
             try:
                 # backup_directory 是用户自定义的高敏感路径——自动快照含全量明文，
@@ -638,7 +652,7 @@ class BackupRestoreManager:
         if not success:
             return False, error
 
-        config.set('last_auto_backup_at', utc_now_iso())
+        config.set(CFG_LAST_AUTO_BACKUP_AT, utc_now_iso())
         try:
             config.save()
         except OSError:
@@ -646,8 +660,13 @@ class BackupRestoreManager:
             # 冗余备份，非致命；风格与 settings_dialog 的 config.save() 一致。
             logger.warning('无法写入配置文件，请检查磁盘空间和文件权限。', exc_info=True)
 
-        retention = config.get('auto_backup_retention', DEFAULT_CONFIG['auto_backup_retention'])
+        retention = config.get(CFG_AUTO_BACKUP_RETENTION, DEFAULT_CONFIG[CFG_AUTO_BACKUP_RETENTION])
         # 过期快照清理下沉 auto_backup_policy.purge_expired_auto_backups（纯策略函数）。
-        purge_expired_auto_backups(directory, retention)
+        # PF-001-R：清理异常就地捕获降级 warning，不漂移致「备份已成功却被误报失败」
+        # （purge 内部 secure_purge 已对单文件删除告警，此处兜底 glob 等非预期 OSError）。
+        try:
+            purge_expired_auto_backups(directory, retention)
+        except OSError:
+            logger.warning('过期自动备份清理失败，已跳过', exc_info=True)
 
         return True, ''

@@ -187,7 +187,6 @@ class BitwardenImporter:
             if isinstance(folder, dict) and folder.get('id')
         }
 
-        # 解析 Bitwarden 条目
         entries: list[Entry] = []
         entries_data: list[dict[str, str]] = []
         for item in items:

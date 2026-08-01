@@ -55,17 +55,33 @@ _INTEGRITY_FIELD_LABELS: dict[str, str] = {
     'tags': '标签', 'category': '分类',
 }
 
+# 「近期更新」视图默认拉取的条目数，供 get_recent_summaries 默认 limit。
+DEFAULT_RECENT_SUMMARIES_LIMIT = 20
+
 
 class BatchUpdateItem(NamedTuple):
     """批量覆盖更新项（导入覆盖路径）：合并后条目、待覆盖条目密文 raw。
 
-    old_password 为 None 表示未预解密，由 :meth:`update_entries_batch_with_history` 在
-    prepared 阶段逐条解密（PF-005：不在 _apply_overwrites 批量预解密致全部旧密码同刻
+    old_password 为 None 表示未预解密，由 :meth:`prepare_overwrite_updates` 在
+    prepared 阶段逐条解密（PF-005：不在 _prepare_overwrite_batch 批量预解密致全部旧密码同刻
     驻留）；解密后经 _prepare_password_update 比对即 del，收敛明文驻留面。
     """
     entry: Entry
     raw: RawEntry
     old_password: str | None
+
+
+class PreparedUpdate(NamedTuple):
+    """覆盖项加密预处理结果（MAINT-004）：写阶段所需的最小密文载荷。
+
+    由 :meth:`EntryManager.prepare_overwrite_updates` 在锁外加密构建，供
+    :meth:`EntryManager.write_overwrite_updates` 在事务内逐条写入。raw 保留以取
+    ``raw.password`` 记录密码历史（旧密文，非明文）。
+    """
+    enc_entry: RawEntry
+    raw: RawEntry
+    password_changed: bool
+    password_changed_at: str
 
 
 class EntryManager:
@@ -119,13 +135,18 @@ class EntryManager:
         return self._vault.key_epoch
 
     @contextmanager
-    def epoch_guarded_transaction(self, operation: str = '') -> Iterator[None]:
+    def epoch_guarded_transaction(
+        self, operation: str = '', pre_epoch: str | None = None,
+    ) -> Iterator[None]:
         """epoch 守卫事务，委托 vault。
 
         供 ImportExportManager 等跨管理器操作做带 epoch 守卫的事务包裹，避免直接
         穿透 ``_vault``。语义与 ``VaultManager.epoch_guarded_transaction`` 一致。
+        pre_epoch 透传供导入路径锁外加密后传入（MAINT-004）。
         """
-        with self._vault.epoch_guarded_transaction(operation=operation):
+        with self._vault.epoch_guarded_transaction(
+            operation=operation, pre_epoch=pre_epoch,
+        ):
             yield
 
     @property
@@ -492,17 +513,16 @@ class EntryManager:
             self._change_bus.notify(clear_summaries=False)
         return result
 
-    def add_entries(self, entries: list[Entry], *, notify: bool = True) -> None:
-        """批量添加条目（导入路径），加密后用 executemany 一次性写入。
+    def encrypt_new_entries(self, entries: list[Entry]) -> tuple[list[RawEntry], bool]:
+        """锁外加密构建新条目密文（MAINT-004），返回 ``(enc_entries, preserve_metadata)``。
 
-        单次 add_entries_batch 将 N 次 INSERT 合并为 1 次 executemany，缩短导入事务
-        持 db_lock 的时间（期间 UI 侧栏/列表读请求被阻塞）。``entries`` 须已由
-        ``Entry.from_dict`` 校验（与单条 add_entry(skip_validation=True) 对齐）。
+        CPU 密集的加密循环移出 db_lock：调用方先取 ``pre_epoch`` 快照，调本方法加密，
+        再于 ``epoch_guarded_transaction(pre_epoch=...)`` 内调 :meth:`write_new_entries`
+        裸写入。加密仅依赖 vault key（不触 db_lock），故可锁外；
+        pre_epoch 守卫保证「加密后→写入前」若改密则复查失败回滚，旧密钥密文不落库。
+        ``entries`` 须已由 ``Entry.from_dict`` 校验（与单条 add_entry(skip_validation=True)
+        对齐）。
         """
-        if not entries:
-            if notify:
-                self._change_bus.notify(clear_summaries=False)
-            return
         now = utc_now_iso()
         enc_entries: list[RawEntry] = []
         for entry in entries:
@@ -517,10 +537,40 @@ class EntryManager:
                 updated_at=entry.updated_at or now,
             ))
         preserve = any(e.created_at or e.updated_at for e in entries)
+        return enc_entries, preserve
+
+    def write_new_entries(
+        self, enc_entries: list[RawEntry], *, preserve: bool, notify: bool = True,
+    ) -> None:
+        """事务内裸写入已加密条目（MAINT-004），executemany 一次性 INSERT。
+
+        写入须受 epoch 守卫保护：导入路径在 ``epoch_guarded_transaction`` 内调用
+        （写入前 epoch 已复查）；便捷封装 :meth:`add_entries` 则经 ``@_db_write`` 的
+        ``enforce_key_epoch`` 写守卫保护。不含加密，仅 db 写，把 db_lock 持有收敛到
+        executemany 时长。
+        """
+        if not enc_entries:
+            if notify:
+                self._change_bus.notify(clear_summaries=False)
+            return
         self._vault.db.add_entries_batch(enc_entries, preserve_metadata=preserve)
         if notify:
             # 与 add_entry 一致：新条目不改变既有摘要，clear_summaries=False 保留缓存。
             self._change_bus.notify(clear_summaries=False)
+
+    def add_entries(self, entries: list[Entry], *, notify: bool = True) -> None:
+        """批量添加条目：加密 + 写入一体（便捷封装）。
+
+        单次 ``add_entries_batch`` 将 N 次 INSERT 合并为 1 次 executemany。导入路径为
+        缩短 db_lock 持有改用 :meth:`encrypt_new_entries` + :meth:`write_new_entries`
+        分离调用（MAINT-004）；本方法保留供需一体调用的场景（含空列表 notify 语义）。
+        """
+        if not entries:
+            if notify:
+                self._change_bus.notify(clear_summaries=False)
+            return
+        enc_entries, preserve = self.encrypt_new_entries(entries)
+        self.write_new_entries(enc_entries, preserve=preserve, notify=notify)
 
     def update_entry(
         self,
@@ -599,32 +649,26 @@ class EntryManager:
         if notify:
             self._notify_entry_updated(raw, entry, password_changed)
 
-    def update_entries_batch_with_history(
+    def prepare_overwrite_updates(
         self,
         items: list[BatchUpdateItem],
         *,
         preserve_password_changed_at: bool = True,
-    ) -> tuple[int, list[tuple[int, Exception]]]:
-        """批量更新条目（导入覆盖路径），返回 ``(成功条数, 失败项)``。
+    ) -> tuple[list[PreparedUpdate], list[tuple[int, Exception]]]:
+        """锁外验证+加密覆盖项（MAINT-004），返回 ``(prepared, failures)``。
 
-        失败项 ``[(items 索引, 异常)]`` 仅收集验证/解密阶段的 EntryError /
-        EntryIntegrityError / DecryptionError；写阶段的 DatabaseError /
-        VaultKeyEpochMismatchError 向上传播中止整个导入（单条写失败非用户输入问题，
-        应回滚而非静默跳过）。
+        验证/解密/加密预处理移出 db_lock：调用方先取 ``pre_epoch`` 快照，调本方法
+        预处理，再于 ``epoch_guarded_transaction(pre_epoch=...)`` 内调
+        :meth:`write_overwrite_updates`。
 
-        收敛 per-item 开销：验证与加密在 SAVEPOINT 外预处理（单次 utc_now_iso、
-        单次 epoch 快照），写入逐条经独立 SAVEPOINT 隔离保持 per-entry 错误隔离——
-        单条验证失败仅跳过该条，不波及其他。导入整体已由外层 ``_run_import_transaction``
-        包裹单事务，本方法的 SAVEPOINT 在该外层事务内嵌套（不会触发额外 fsync）。
+        failures 仅收集验证/解密阶段的 EntryError / EntryIntegrityError /
+        DecryptionError（数据问题，逐条跳过）；写阶段错误由 :meth:`write_overwrite_updates`
+        向上传播中止。pop_totp 在此阶段（加密前）失效缓存。
         """
-        if not items:
-            return 0, []
         failures: list[tuple[int, Exception]] = []
-        # 预处理：验证 + 加密 + 收集写入计划。SAVEPOINT 外完成，单条失败仅跳过该条
-        # （收集到 failures），写阶段错误向上传播中止。
+        # 预处理：验证 + 解密旧密码 + 加密，单条失败仅收集到 failures，写阶段错误向上传播。
         now = utc_now_iso()
-        # (items 索引, enc_entry, raw, 密码是否变更, password_changed_at)
-        prepared: list[tuple[int, RawEntry, RawEntry, bool, str]] = []
+        prepared: list[PreparedUpdate] = []
         for idx, item in enumerate(items):
             entry, raw, old_password = item.entry, item.raw, item.old_password
             try:
@@ -656,29 +700,61 @@ class EntryManager:
                     password_override=new_pwd_enc, entry_id=entry.id,
                 )
                 enc_entry = replace(enc_entry, password_changed_at=password_changed_at)
-                prepared.append((idx, enc_entry, raw, password_changed, password_changed_at))
+                prepared.append(PreparedUpdate(
+                    enc_entry, raw, password_changed, password_changed_at,
+                ))
             except (EntryError, EntryIntegrityError, DecryptionError) as exc:
                 failures.append((idx, exc))
+        return prepared, failures
 
-        # 写入：逐条 SAVEPOINT 隔离，保持 per-entry 错误隔离。epoch 复查用循环外
-        # 单次快照——与单条 update_entry 一致地防御 read 到 commit 期间改密；不匹配
-        # 或写失败照原语义向上传播中止导入（不由 failures 收集）。
-        pre_epoch = self.key_epoch
+    def write_overwrite_updates(
+        self, prepared: list[PreparedUpdate], pre_epoch: str | None,
+    ) -> int:
+        """锁内逐条 SAVEPOINT 写入已加密覆盖项（MAINT-004），复查 ``pre_epoch``。
+
+        须在 ``epoch_guarded_transaction(pre_epoch=...)`` 内调用。``pre_epoch`` 由调用方
+        在锁外加密前快照并传入，与本方法逐条复查共用同一快照——纵深防御「写入期间改密」，
+        不匹配或写失败照原语义向上传播中止导入（不由 failures 收集）。
+        """
         count = 0
-        for _idx, enc_entry, raw, password_changed, password_changed_at in prepared:
+        for item in prepared:
             with self.db.transaction():
                 if self.key_epoch != pre_epoch:
                     raise VaultKeyEpochMismatchError(
                         '更新期间检测到密钥变更（改密/锁定），已中止以防写入旧密钥密文'
                     )
-                if raw.password and password_changed and enc_entry.id is not None:
+                if item.raw.password and item.password_changed and item.enc_entry.id is not None:
                     # 用与条目一致的 password_changed_at 作为历史 changed_at，
                     # 避免两次独立 utc_now_iso() 产生的微秒级时序倒置。
                     self.db.add_password_history(
-                        enc_entry.id, raw.password, changed_at=password_changed_at,
+                        item.enc_entry.id, item.raw.password,
+                        changed_at=item.password_changed_at,
                     )
-                self.db.update_entry(enc_entry, preserve_updated_at=True)
+                self.db.update_entry(item.enc_entry, preserve_updated_at=True)
             count += 1
+        return count
+
+    def update_entries_batch_with_history(
+        self,
+        items: list[BatchUpdateItem],
+        *,
+        preserve_password_changed_at: bool = True,
+    ) -> tuple[int, list[tuple[int, Exception]]]:
+        """批量更新条目（导入覆盖路径），返回 ``(成功条数, 失败项)``。便捷封装。
+
+        拆分为 :meth:`prepare_overwrite_updates`（锁外加密）+ :meth:`write_overwrite_updates`
+        （锁内写入）。导入路径为缩短 db_lock 持有改用分离调用并自行快照 pre_epoch
+        （MAINT-004）；本方法保留供需一体调用的场景，``pre_epoch`` 在 prepare 后、write 前
+        快照（与原逐条复查时机一致）。导入整体已由外层 :meth:`_import_entries` 包裹
+        单事务，本方法的 SAVEPOINT 在该外层事务内嵌套（不会触发额外 fsync）。
+        """
+        if not items:
+            return 0, []
+        prepared, failures = self.prepare_overwrite_updates(
+            items, preserve_password_changed_at=preserve_password_changed_at,
+        )
+        pre_epoch = self.key_epoch
+        count = self.write_overwrite_updates(prepared, pre_epoch)
         return count, failures
 
     def _prepare_password_update(
@@ -912,7 +988,7 @@ class EntryManager:
             summaries = summaries[:limit]
         return summaries
 
-    def get_recent_summaries(self, limit: int = 20) -> list[Entry]:
+    def get_recent_summaries(self, limit: int = DEFAULT_RECENT_SUMMARIES_LIMIT) -> list[Entry]:
         """获取最近更新的条目摘要，供「近期更新」视图。
 
         相较 ``get_entry_summaries``（按 is_favorite DESC, updated_at DESC 排序），

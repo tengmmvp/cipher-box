@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
-from ...config import DEFAULT_CONFIG
+from ...config import CFG_AUTO_BACKUP_INTERVAL_HOURS, CFG_LAST_AUTO_BACKUP_AT, DEFAULT_CONFIG
 from ...utils.purge_files import secure_purge
 from .backup_paths import SNAPSHOT_GLOB
 
@@ -42,7 +42,7 @@ def is_auto_backup_due(
     """
     if force:
         return True
-    last_text = config.get('last_auto_backup_at', '')
+    last_text = config.get(CFG_LAST_AUTO_BACKUP_AT, '')
     if not last_text:
         return True
     current = now or datetime.now(timezone.utc)
@@ -53,7 +53,7 @@ def is_auto_backup_due(
         logger.warning('last_auto_backup_at 解析失败，跳过间隔检查：%s', last_text)
         return True
     interval = config.get(
-        'auto_backup_interval_hours', DEFAULT_CONFIG['auto_backup_interval_hours'],
+        CFG_AUTO_BACKUP_INTERVAL_HOURS, DEFAULT_CONFIG[CFG_AUTO_BACKUP_INTERVAL_HOURS],
     )
     return elapsed >= timedelta(hours=interval)
 

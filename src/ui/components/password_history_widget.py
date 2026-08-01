@@ -45,8 +45,7 @@ class PasswordHistoryWidget(QWidget):
         # 避免 deleteLater 异步销毁前明文驻留 Qt 对象（锁定时内存转储可读）。
         self._pwd_labels: list[QLabel] = []
         self._entry_mgr: EntryManager | None = None
-        # 本组件自管的密码显示超时定时器：clear() 时停止，所有权清晰，
-        # 不再依赖外层 DetailPanel 的调用顺序兜底。
+        # 本组件自管的密码显示超时定时器，clear() 时统一停止，所有权清晰。
         self._own_timers: list[QTimer] = []
         # 回调：获取密码可见毫秒数
         self._get_pwd_visible_ms: Callable[[], int] | None = None

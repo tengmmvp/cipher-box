@@ -89,14 +89,14 @@ class RateLimiter:
     def _ensure_sentinel(self) -> None:
         """首次成功持久化状态时创建哨兵，标记限流系统已初始化。
 
-        创建失败仅告警不中断——哨兵缺失最坏退化为「无法检测删除」，与改造前
-        行为一致，不会比原实现更弱。同时把哨兵登记到签名 config（幂等），使
+        创建失败仅告警不中断——哨兵为增强项，缺失仅退化为「无法检测删除」，
+        不削弱限流本身。同时把哨兵登记到签名 config（幂等），使
         「状态文件 + 哨兵被同时删除」亦可经签名 config 检测。
         """
         sentinel = self._sentinel_path
         # 先登记到签名 config（幂等）：即便哨兵文件已存在（既有安装升级路径），
         # 也补登登记，避免升级后「同时删除」检测失效。登记失败不阻断——退化为
-        # 仅哨兵文件配对检测，与改造前行为一致。
+        # 仅哨兵文件配对检测，不削弱限流本身。
         self._register_sentinel_in_config()
         if sentinel is None or sentinel.exists():
             return
@@ -126,7 +126,7 @@ class RateLimiter:
     def _sentinel_established_via_config(self) -> bool:
         """经签名 config 判定哨兵是否曾建立（用于「状态+哨兵均缺失」分支）。
 
-        - 无 config：返回 False（退回「首次使用」，与改造前行为一致，不削弱）。
+        - 无 config：返回 False（退回「首次使用」，不削弱保护）。
         - config 完整性失败：保守返回 True——签名 config 被篡改本身已可疑，按
           「恶意删除」降级锁定，而非采信可能被篡改的登记内容。
         - config 完整性通过：查 ``security_sentinels`` 登记记录。

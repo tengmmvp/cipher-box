@@ -29,15 +29,15 @@ from .crypto_utils import STRING_ENCRYPTED_FIELDS
 
 logger = logging.getLogger(__name__)
 
-# 备份语境别名（指向 models 单一源），非独立的第二份上限。
+# 备份语境别名（指向 models 单一事实源），非独立的第二份上限。
 MAX_BACKUP_ENTRIES = MAX_ENTRIES_LIMIT
 MAX_ENTRY_JSON_SIZE = MAX_ENTRY_PAYLOAD_SIZE
 MAX_HISTORY_PER_ENTRY = MAX_PASSWORD_HISTORY * 2  # 每条目历史上限，2 倍余量
 MAX_BACKUP_CATEGORIES = 10_000  # 备份分类数量上限（远超实际，防恶意超大批量恢复致 UI 冻结）
 
-# 备份校验的字符串型加密字段→明文长度上限映射，派生自 models 单一源（SEC-006）：
-# 替代原先统一的 1MB MAX_TEXT_FIELD_SIZE，使恢复校验与加密侧 ENTRY_FIELD_LIMITS 对齐，
-# 避免 1MB 密码/备注绕过 validate_plain_entry 落库后致编辑拒绝或 UI 冻结。
+# 备份校验的字符串型加密字段→明文长度上限映射，派生自 models 单一事实源（SEC-006）：
+# 使恢复校验与加密侧 ENTRY_FIELD_LIMITS 对齐，避免大字段绕过 validate_plain_entry
+# 落库后致编辑拒绝或 UI 冻结。
 _BACKUP_FIELD_LIMITS: dict[str, int] = {
     'title': MAX_FIELD_TITLE,
     'username': MAX_FIELD_USERNAME,

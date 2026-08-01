@@ -5,6 +5,7 @@
 key_epoch/snapshot_key 轮换编排；本模块仅做载荷→加密行的逐表重建。
 """
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from ...models import Category, RawEntry
@@ -14,15 +15,18 @@ from .crypto_utils import build_encrypted_entry_fields, encrypt_field
 
 if TYPE_CHECKING:
     from ...database.types import VaultDataStore
-    from ..managers.entry_manager import EntryManager
 
 
 def restore_categories(
-    entry_manager: 'EntryManager', backup: PortableBackup,
+    add_categories_batch: Callable[[list[Category]], list[int]],
+    backup: PortableBackup,
 ) -> dict[int, int]:
-    """重建分类，返回旧 ID 到新 ID 的映射（PF-003：批量两阶段加密，消除 O(N²) 查重）。"""
-    # 收集非空名分类及其旧 id（同步保序），经 add_categories_batch 在单事务内批量两阶段
-    # 加密写入——恢复前已 clear_vault_data 清空分类表，无需逐条查重。
+    """重建分类，返回旧 ID 到新 ID 的映射（PF-003：批量两阶段加密，消除 O(N²) 查重）。
+
+    ARCH-002：经 ``add_categories_batch`` 回调注入写能力，本纯变换模块不再依赖
+    EntryManager 类型——恢复前已 clear_vault_data 清空分类表，回调内批量写入无需查重。
+    """
+    # 收集非空名分类及其旧 id（同步保序），经回调在单事务内批量两阶段加密写入。
     categories: list[Category] = []
     item_ids: list[int] = []
     for item in backup['categories']:
@@ -34,7 +38,7 @@ def restore_categories(
         categories.append(category)
         # item['id'] 由 validator 校验为 int（非 None），直接索引。
         item_ids.append(item['id'])
-    new_ids = entry_manager.categories.add_categories_batch(categories, notify=False)
+    new_ids = add_categories_batch(categories)
     # categories 与 item_ids 同步收集、长度一致，strict=True 守护不变量。
     return dict(zip(item_ids, new_ids, strict=True))
 

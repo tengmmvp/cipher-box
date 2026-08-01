@@ -5,7 +5,7 @@
 - ``Portable*`` TypedDict 描述备份载荷（与 :mod:`.backup_validator` 的
   ``REQUIRED_*_KEYS`` 经启动期断言一致，漏改校验键集时模块加载即失败）；
 - :class:`PreparedBackup` 为「锁内 prepare → 锁外 finalize」拆分的中间产物；
-- 开销常量为 payload 字节估算的单一来源。
+- 开销常量为 payload 字节估算的单一事实源。
 """
 
 from typing import Any, NamedTuple, TypedDict

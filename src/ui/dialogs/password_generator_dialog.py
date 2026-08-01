@@ -27,6 +27,14 @@ from PyQt6.QtWidgets import (
 )
 
 from ...business.services.password_service import PasswordService
+from ...config import (
+    CFG_DEFAULT_DIGITS,
+    CFG_DEFAULT_EXCLUDE_AMBIGUOUS,
+    CFG_DEFAULT_LOWERCASE,
+    CFG_DEFAULT_PASSWORD_LENGTH,
+    CFG_DEFAULT_SYMBOLS,
+    CFG_DEFAULT_UPPERCASE,
+)
 from ..components.widgets import setup_dialog_flags
 
 if TYPE_CHECKING:
@@ -109,7 +117,7 @@ class PasswordGeneratorDialog(QDialog):
         settings_layout.addWidget(QLabel('密码长度：'), 0, 0)
         self._length_slider = QSlider(Qt.Orientation.Horizontal)
         self._length_slider.setRange(4, 64)
-        default_length = self._cfg('default_password_length', PWD_GENERATE_LENGTH_DEFAULT)
+        default_length = self._cfg(CFG_DEFAULT_PASSWORD_LENGTH, PWD_GENERATE_LENGTH_DEFAULT)
         self._length_slider.setValue(default_length)
         self._length_slider.valueChanged.connect(self._on_length_changed)
         settings_layout.addWidget(self._length_slider, 0, 1)
@@ -120,23 +128,23 @@ class PasswordGeneratorDialog(QDialog):
 
         # 字符类型
         self._upper_check = QCheckBox('大写字母 (A-Z)')
-        self._upper_check.setChecked(self._cfg('default_uppercase', True))
+        self._upper_check.setChecked(self._cfg(CFG_DEFAULT_UPPERCASE, True))
         settings_layout.addWidget(self._upper_check, 1, 0, 1, 3)
 
         self._lower_check = QCheckBox('小写字母 (a-z)')
-        self._lower_check.setChecked(self._cfg('default_lowercase', True))
+        self._lower_check.setChecked(self._cfg(CFG_DEFAULT_LOWERCASE, True))
         settings_layout.addWidget(self._lower_check, 2, 0, 1, 3)
 
         self._digits_check = QCheckBox('数字 (0-9)')
-        self._digits_check.setChecked(self._cfg('default_digits', True))
+        self._digits_check.setChecked(self._cfg(CFG_DEFAULT_DIGITS, True))
         settings_layout.addWidget(self._digits_check, 3, 0, 1, 3)
 
         self._symbols_check = QCheckBox('特殊字符 (!@#$%...)')
-        self._symbols_check.setChecked(self._cfg('default_symbols', True))
+        self._symbols_check.setChecked(self._cfg(CFG_DEFAULT_SYMBOLS, True))
         settings_layout.addWidget(self._symbols_check, 4, 0, 1, 3)
 
         self._exclude_ambiguous = QCheckBox('排除模糊字符 (I, l, 1, O, 0)')
-        self._exclude_ambiguous.setChecked(self._cfg('default_exclude_ambiguous', False))
+        self._exclude_ambiguous.setChecked(self._cfg(CFG_DEFAULT_EXCLUDE_AMBIGUOUS, False))
         settings_layout.addWidget(self._exclude_ambiguous, 5, 0, 1, 3)
 
         layout.addWidget(settings_group)
@@ -172,7 +180,7 @@ class PasswordGeneratorDialog(QDialog):
         lowercase = self._lower_check.isChecked()
         digits = self._digits_check.isChecked()
         symbols = self._symbols_check.isChecked()
-        # 至少需要一种字符集，校验文案经共享 helper 单一源
+        # 至少需要一种字符集，校验文案经共享 helper 单一事实源
         ok, error = PasswordService.validate_charset_selection(
             uppercase, lowercase, digits, symbols,
         )

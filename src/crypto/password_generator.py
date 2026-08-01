@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 # 模块级安全随机数生成器，避免每次调用重复创建
 _RNG = secrets.SystemRandom()
 
-# 模糊字符集
 AMBIGUOUS_CHARS = 'Il1O0o'
 
 # ---- 生成/强度/主密码策略的魔法数字集中为命名常量 ----
@@ -157,14 +156,7 @@ class PasswordGenerator:
 
     @staticmethod
     def check_strength(password: str) -> StrengthResult:
-        """检测密码强度。
-
-        Args:
-            password: 待检测的密码
-
-        Returns:
-            StrengthResult 检测结果
-        """
+        """检测密码强度。"""
         if not password:
             return StrengthResult(
                 score=0, label='非常弱',

@@ -182,7 +182,7 @@ class SchemaManager:
             );
 
         """)
-        # 索引由 _INDEX_DEFINITIONS 统一定义，与 schema 校验共用单一来源。
+        # 索引由 _INDEX_DEFINITIONS 统一定义，与 schema 校验共用单一事实源。
         for index_name, table, columns, is_unique in _INDEX_DEFINITIONS:
             cursor.execute(
                 f"CREATE {'UNIQUE ' if is_unique else ''}INDEX IF NOT EXISTS "  # nosec B608 - 硬编码常量

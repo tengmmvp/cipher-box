@@ -24,23 +24,18 @@ class SidebarController:
     # ========== 分类数据读取 ==========
 
     def get_categories(self) -> list[Category]:
-        """获取所有分类。"""
         return self._entry_mgr.categories.get_categories()
 
     def get_category_entry_counts(self) -> dict[int, int]:
-        """获取每个分类的条目数量。"""
         return self._entry_mgr.categories.get_category_entry_counts()
 
     def get_category_entry_count(self, category_id: int) -> int:
-        """获取指定分类的条目数量。"""
         return self._entry_mgr.categories.get_category_entry_count(category_id)
 
     def get_category(self, category_id: int) -> Category | None:
-        """获取指定分类对象。"""
         return self._entry_mgr.categories.get_category(category_id)
 
     def get_all_tags(self) -> list[tuple[str, int]]:
-        """获取所有标签及其条目数量。"""
         return self._entry_mgr.get_all_tags()
 
     @property

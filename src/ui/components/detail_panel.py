@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ...config import CFG_PASSWORD_VISIBLE_SECONDS
 from ...models import ENTRY_TYPE_LOGIN, Entry, Sensitive
 from ...utils.format import format_datetime
 from ...utils.memory import mark_secret_discarded
@@ -342,7 +343,6 @@ class DetailPanel(QWidget):
             self._history_widget.build_stub(entry.id, self._entry_mgr, self._content_layout)
 
     def _render_notes(self, entry: Entry) -> None:
-        """渲染备注区。"""
         if not entry.notes:
             return
         notes_group = QGroupBox('备注')
@@ -354,7 +354,6 @@ class DetailPanel(QWidget):
         self._content_layout.addWidget(notes_group)
 
     def _render_custom_fields(self, entry: Entry) -> None:
-        """渲染自定义字段区。"""
         if not entry.custom_fields:
             return
         cf_timers = self._fields_renderer.render(entry, self._content_layout, self)
@@ -385,7 +384,6 @@ class DetailPanel(QWidget):
         return header_info
 
     def _build_strength_bar(self, entry: Entry) -> None:
-        """构建密码强度进度条。"""
         score = entry.password_strength
         strength_color = get_strength_color(score)
 
@@ -582,17 +580,15 @@ class DetailPanel(QWidget):
         """获取密码显示自动隐藏的毫秒数。"""
         seconds: int = PWD_VISIBLE_SECONDS_DEFAULT
         if self._config:
-            seconds = int(self._config.get_safe('password_visible_seconds', PWD_VISIBLE_SECONDS_DEFAULT))
+            seconds = int(self._config.get_safe(CFG_PASSWORD_VISIBLE_SECONDS, PWD_VISIBLE_SECONDS_DEFAULT))
         return seconds * 1000
 
     def _auto_hide_password(self) -> None:
-        """自动隐藏密码。"""
         if self._pwd_label_ref and self._show_btn_ref:
             self._pwd_label_ref.setText(PWD_MASK)
             set_icon(self._show_btn_ref, EYE)
 
     def _copy(self, text: str) -> None:
-        """复制文本。"""
         self._clipboard.copy_text(text)
 
     def _evict_current_totp(self) -> None:
@@ -664,7 +660,6 @@ class DetailPanel(QWidget):
             self._totp_widget.resume_if_active()
 
     def show_empty(self) -> None:
-        """显示空状态。"""
         self._evict_current_totp()
         self._clear_content()
         self._current_entry = None

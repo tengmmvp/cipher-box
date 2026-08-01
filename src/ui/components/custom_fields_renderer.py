@@ -31,7 +31,7 @@ from .secret_field import SecretFieldEnv, make_secret_field_row
 if TYPE_CHECKING:
     from ...models import Entry
 
-# 模板字段名 → 显示标签，从 entry_type_schema 单一源派生（消除平行第三源）。
+# 模板字段名 → 显示标签，从 entry_type_schema 单一事实源派生，避免平行定义。
 _TEMPLATE_FIELD_LABELS = {
     spec.storage_name: spec.label
     for spec in all_special_fields_by_storage().values()

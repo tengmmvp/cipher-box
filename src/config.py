@@ -10,7 +10,7 @@ import sys
 import threading
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, get_args, overload
+from typing import Any, Final, Literal, get_args, overload
 
 from .models import is_real_int
 from .utils.file_security import (
@@ -57,47 +57,75 @@ OLD_PASSWORD_WARNING_DAYS_DEFAULT = 90
 MAX_WINDOW_GEOMETRY_BYTES = 256
 # 主题默认值（light/dark）：DEFAULT_CONFIG 与 UI 兜底共用的单一事实源。
 DEFAULT_THEME = 'light'
+
+# 配置键名常量（MAINT-005 单一事实源）：DEFAULT_CONFIG / _INT_SPECS / _BOOL_KEYS /
+# Literal 类型别名及所有调用方均引用这些常量，键名重命名只需改此处。命名约定 CFG_<UPPER_SNAKE>。
+CFG_THEME: Final[str] = 'theme'
+CFG_AUTO_LOCK_MINUTES: Final[str] = 'auto_lock_minutes'
+CFG_CLIPBOARD_CLEAR_SECONDS: Final[str] = 'clipboard_clear_seconds'
+CFG_PASSWORD_VISIBLE_SECONDS: Final[str] = 'password_visible_seconds'
+CFG_DEFAULT_PASSWORD_LENGTH: Final[str] = 'default_password_length'
+CFG_DEFAULT_UPPERCASE: Final[str] = 'default_uppercase'
+CFG_DEFAULT_LOWERCASE: Final[str] = 'default_lowercase'
+CFG_DEFAULT_DIGITS: Final[str] = 'default_digits'
+CFG_DEFAULT_SYMBOLS: Final[str] = 'default_symbols'
+CFG_DEFAULT_EXCLUDE_AMBIGUOUS: Final[str] = 'default_exclude_ambiguous'
+CFG_BACKUP_DIRECTORY: Final[str] = 'backup_directory'
+CFG_AUTO_BACKUP_ENABLED: Final[str] = 'auto_backup_enabled'
+CFG_AUTO_BACKUP_INTERVAL_HOURS: Final[str] = 'auto_backup_interval_hours'
+CFG_AUTO_BACKUP_RETENTION: Final[str] = 'auto_backup_retention'
+CFG_LAST_AUTO_BACKUP_AT: Final[str] = 'last_auto_backup_at'
+CFG_SHOW_TRAY_ICON: Final[str] = 'show_tray_icon'
+CFG_MINIMIZE_TO_TRAY: Final[str] = 'minimize_to_tray'
+CFG_CLOSE_TO_TRAY: Final[str] = 'close_to_tray'
+CFG_OLD_PASSWORD_WARNING_DAYS: Final[str] = 'old_password_warning_days'
+CFG_SORT_FIELD: Final[str] = 'sort_field'
+CFG_SORT_ORDER: Final[str] = 'sort_order'
+CFG_WINDOW_GEOMETRY: Final[str] = 'window_geometry'
+CFG_SPLITTER_SIZES: Final[str] = 'splitter_sizes'
+CFG_SECURITY_SENTINELS: Final[str] = 'security_sentinels'
+
 DEFAULT_CONFIG: dict[str, Any] = {
-    'theme': DEFAULT_THEME,
-    'auto_lock_minutes': 5,
-    'clipboard_clear_seconds': 30,
-    'password_visible_seconds': 10,
-    'default_password_length': 16,
-    'default_uppercase': True,
-    'default_lowercase': True,
-    'default_digits': True,
-    'default_symbols': True,
-    'default_exclude_ambiguous': False,
-    'backup_directory': '',
-    'auto_backup_enabled': False,
-    'auto_backup_interval_hours': 24,
-    'auto_backup_retention': 10,
-    'last_auto_backup_at': '',
-    'show_tray_icon': True,
-    'minimize_to_tray': True,
-    'close_to_tray': False,
-    'old_password_warning_days': OLD_PASSWORD_WARNING_DAYS_DEFAULT,
-    'sort_field': 'updated_at',       # title, updated_at, created_at, password_strength
-    'sort_order': 'desc',             # asc, desc
-    'window_geometry': None,
-    'splitter_sizes': None,
+    CFG_THEME: DEFAULT_THEME,
+    CFG_AUTO_LOCK_MINUTES: 5,
+    CFG_CLIPBOARD_CLEAR_SECONDS: 30,
+    CFG_PASSWORD_VISIBLE_SECONDS: 10,
+    CFG_DEFAULT_PASSWORD_LENGTH: 16,
+    CFG_DEFAULT_UPPERCASE: True,
+    CFG_DEFAULT_LOWERCASE: True,
+    CFG_DEFAULT_DIGITS: True,
+    CFG_DEFAULT_SYMBOLS: True,
+    CFG_DEFAULT_EXCLUDE_AMBIGUOUS: False,
+    CFG_BACKUP_DIRECTORY: '',
+    CFG_AUTO_BACKUP_ENABLED: False,
+    CFG_AUTO_BACKUP_INTERVAL_HOURS: 24,
+    CFG_AUTO_BACKUP_RETENTION: 10,
+    CFG_LAST_AUTO_BACKUP_AT: '',
+    CFG_SHOW_TRAY_ICON: True,
+    CFG_MINIMIZE_TO_TRAY: True,
+    CFG_CLOSE_TO_TRAY: False,
+    CFG_OLD_PASSWORD_WARNING_DAYS: OLD_PASSWORD_WARNING_DAYS_DEFAULT,
+    CFG_SORT_FIELD: 'updated_at',       # title, updated_at, created_at, password_strength
+    CFG_SORT_ORDER: 'desc',             # asc, desc
+    CFG_WINDOW_GEOMETRY: None,
+    CFG_SPLITTER_SIZES: None,
     # 安全哨兵登记名（RateLimiter 首次持久化状态时登记）。HMAC 签名覆盖，用于检测
     # 「状态文件 + 哨兵被同时删除」的速率限制绕过——文件可删，但删后签名 config 仍记录
     # 哨兵曾建立 → 加载时判定恶意删除并降级最高阶梯锁定。非用户面向。
-    'security_sentinels': [],
+    CFG_SECURITY_SENTINELS: [],
 }
 
 # 整型配置字段规范：(文件可接受下限, 上限, 运行时安全下限 or None)。单一事实源，
 # _INT_RANGES（校验文件值）与 _SECURITY_MINIMUMS（运行时下限钳制）均由此派生。
 # 文件下限允许 0（如 auto_lock_minutes=0 表禁用），运行时安全下限防配置被篡改降低安全策略。
 _INT_SPECS: dict[str, tuple[int, int, int | None]] = {
-    'auto_lock_minutes': (0, 60, 1),
-    'clipboard_clear_seconds': (0, 300, 10),
-    'password_visible_seconds': (3, 60, 3),
-    'default_password_length': (4, 64, None),
-    'auto_backup_interval_hours': (1, 168, None),
-    'auto_backup_retention': (2, 50, None),
-    'old_password_warning_days': (30, 365, None),
+    CFG_AUTO_LOCK_MINUTES: (0, 60, 1),
+    CFG_CLIPBOARD_CLEAR_SECONDS: (0, 300, 10),
+    CFG_PASSWORD_VISIBLE_SECONDS: (3, 60, 3),
+    CFG_DEFAULT_PASSWORD_LENGTH: (4, 64, None),
+    CFG_AUTO_BACKUP_INTERVAL_HOURS: (1, 168, None),
+    CFG_AUTO_BACKUP_RETENTION: (2, 50, None),
+    CFG_OLD_PASSWORD_WARNING_DAYS: (30, 365, None),
 }
 # 只读映射（MappingProxyType 防误写，ARCH-024）：均派生自 _INT_SPECS。
 _INT_RANGES = MappingProxyType(
@@ -116,7 +144,7 @@ def get_ui_int_range(key: str) -> tuple[int, int]:
     """
     config_min, config_max = _INT_RANGES[key]
     security_min = _SECURITY_MINIMUMS.get(key)
-    if security_min is not None and key != 'auto_lock_minutes':
+    if security_min is not None and key != CFG_AUTO_LOCK_MINUTES:
         return max(config_min, security_min), config_max
     return config_min, config_max
 
@@ -125,12 +153,12 @@ def get_ui_int_range(key: str) -> tuple[int, int]:
 # （可能被篡改诱导明文备份落入攻击者可读目录）+ security_sentinels
 # （由 RateLimiter 据完整性失败保守降级，不采信被篡改登记）。
 _INTEGRITY_SENSITIVE_KEYS: set[str] = (
-    set(_SECURITY_MINIMUMS) | {'backup_directory', 'security_sentinels'}
+    set(_SECURITY_MINIMUMS) | {CFG_BACKUP_DIRECTORY, CFG_SECURITY_SENTINELS}
 )
 _BOOL_KEYS = {
-    'default_uppercase', 'default_lowercase', 'default_digits',
-    'default_symbols', 'default_exclude_ambiguous', 'auto_backup_enabled',
-    'show_tray_icon', 'minimize_to_tray', 'close_to_tray',
+    CFG_DEFAULT_UPPERCASE, CFG_DEFAULT_LOWERCASE, CFG_DEFAULT_DIGITS,
+    CFG_DEFAULT_SYMBOLS, CFG_DEFAULT_EXCLUDE_AMBIGUOUS, CFG_AUTO_BACKUP_ENABLED,
+    CFG_SHOW_TRAY_ICON, CFG_MINIMIZE_TO_TRAY, CFG_CLOSE_TO_TRAY,
 }
 
 # 速率限制阶梯：(失败次数, 锁定秒数)。最高阶梯 10 分钟提高在线暴破成本；
@@ -140,6 +168,8 @@ RATE_LIMITS: list[tuple[int, int]] = [(3, 10), (5, 30), (8, 60), (10, 120), (15,
 # 已知配置键的字面量类型分组(供 get/get_safe/set 的 @overload 按键派生返回/入参类型,
 # 收窄热点调用的静态类型)。键到类型的映射须与 DEFAULT_CONFIG 保持一致:新增或改型
 # 配置键须同步更新此处与对应 @overload。
+# 注：Literal 须用字面量（mypy/Pyright 不支持从 Final 变量派生），与上方 CFG_ 常量各自
+# 维护；启动期断言校验两者一致，重命名时改 CFG_ 常量 + 此处字面量，断言捕获遗漏。
 _StrConfigKey = Literal[
     'theme', 'backup_directory', 'last_auto_backup_at', 'sort_field', 'sort_order',
 ]
@@ -196,7 +226,7 @@ class ConfigManager:
         cfg._integrity_key_path = Path(data_dir) / 'config.key'
         cfg._integrity_key = cfg._load_or_create_integrity_key()
         cfg._config = copy.deepcopy(DEFAULT_CONFIG)
-        cfg._config['show_tray_icon'] = False
+        cfg._config[CFG_SHOW_TRAY_ICON] = False
         cfg._integrity_warning = False
         cfg._integrity_reason = None
         cfg._lock = threading.RLock()
@@ -393,7 +423,7 @@ class ConfigManager:
         if isinstance(value, int) and key in _SECURITY_MINIMUMS:
             minimum = _SECURITY_MINIMUMS[key]
             # auto_lock_minutes=0 是合法禁用，但仅在完整性通过时豁免：完整性失败时 0 视为可疑，修正到安全下限防篡改禁用锁定。
-            if key == 'auto_lock_minutes' and value == 0 and not self._integrity_warning:
+            if key == CFG_AUTO_LOCK_MINUTES and value == 0 and not self._integrity_warning:
                 return value
             if value < minimum:
                 logger.warning("配置 %s=%d 低于安全下限 %d，已修正", key, value, minimum)
@@ -431,11 +461,11 @@ class ConfigManager:
         幂等：已登记时直接返回，不重复 save。
         """
         with self._lock:
-            current = list(self._config.get('security_sentinels', []))
+            current = list(self._config.get(CFG_SECURITY_SENTINELS, []))
             if name in current:
                 return
             current.append(name)
-            self._config['security_sentinels'] = current
+            self._config[CFG_SECURITY_SENTINELS] = current
             self.save()
 
     def is_security_sentinel_established(self, name: str) -> bool:
@@ -444,7 +474,7 @@ class ConfigManager:
         调用方应先查 :meth:`check_integrity`——完整性失败时返回值不可信，应保守视为已建立降级锁定。
         """
         with self._lock:
-            return name in self._config.get('security_sentinels', [])
+            return name in self._config.get(CFG_SECURITY_SENTINELS, [])
 
     @staticmethod
     def _is_valid(key: str, value: Any) -> bool:
@@ -453,15 +483,15 @@ class ConfigManager:
             return is_real_int(value) and minimum <= value <= maximum
         if key in _BOOL_KEYS:
             return type(value) is bool
-        if key == 'theme':
+        if key == CFG_THEME:
             return value in {'light', 'dark'}
-        if key == 'sort_field':
+        if key == CFG_SORT_FIELD:
             return value in {'title', 'updated_at', 'created_at', 'password_strength'}
-        if key == 'sort_order':
+        if key == CFG_SORT_ORDER:
             return value in {'asc', 'desc'}
-        if key in {'backup_directory', 'last_auto_backup_at'}:
+        if key in {CFG_BACKUP_DIRECTORY, CFG_LAST_AUTO_BACKUP_AT}:
             return isinstance(value, str) and len(value) <= 4096 and '\x00' not in value
-        if key == 'window_geometry':
+        if key == CFG_WINDOW_GEOMETRY:
             if value is None:
                 return True
             if not isinstance(value, str) or len(value) > MAX_WINDOW_GEOMETRY_BYTES * 2:
@@ -471,13 +501,13 @@ class ConfigManager:
                 return True
             except ValueError:
                 return False
-        if key == 'splitter_sizes':
+        if key == CFG_SPLITTER_SIZES:
             return value is None or (
                 isinstance(value, list)
                 and len(value) == 3
                 and all(is_real_int(item) and 1 <= item <= 10000 for item in value)
             )
-        if key == 'security_sentinels':
+        if key == CFG_SECURITY_SENTINELS:
             # 登记名为限长、无 NUL 的纯字符串列表（RateLimiter 状态文件 stem）。
             return (
                 isinstance(value, list)

@@ -1,7 +1,7 @@
 """分类管理对话框，用于新增与编辑条目分类。
 
-提供名称、单字符图标与颜色三项编辑能力，预设一组图标与调色板，
-并允许通过颜色选择器自定义颜色。保存结果交由 EntryManager 写入。
+提供名称、图标占位符（icon_char）与颜色三项编辑能力，预设一组占位符候选
+与调色板，并允许通过颜色选择器自定义颜色。保存结果交由 EntryManager 写入。
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# 图标候选列表，单字符标识用于分类视觉区分，均取自 QtAwesome 语义化图标常量
+# 分类图标占位符候选（icon_char 值），存数据库并在 UI 直接显示；非 QtAwesome 字形常量
 ICON_CANDIDATES = [
     '[CLIP]', '[DIR]', '[LIST]', '[ORG]', '[SOC]', '[CHAT]', '[MAIL]', '[WEB]',
     '[BANK]', '[COIN]', '[CART]', '[BAG]', '[WORK]', '[GOAL]', '[GAME]', '[DICE]',

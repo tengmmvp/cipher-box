@@ -53,7 +53,7 @@ _PRAGMAS = (
 )
 
 
-# 签名/验证函数的类型协议（替代弱类型 Callable）
+# 签名/验证函数的类型协议
 @runtime_checkable
 class EntrySigner(Protocol):
     def __call__(self, entry: RawEntry) -> str: ...
@@ -104,7 +104,6 @@ class DatabaseManager:
         self._schema_mgr = SchemaManager(self)
 
     # ==================== 子 Repository 公共访问接口 ====================
-    # 暴露连接/锁等供 Repository 使用，替代 _mgr._conn 等私有属性访问。
 
     @property
     def connection(self) -> sqlite3.Connection:
@@ -338,7 +337,7 @@ class DatabaseManager:
                     actual_mode,
                 )
             # 全量扫描（get_entries + 逐行 HMAC 验签）在数千条目下受益于更大 cache。
-            # synchronous=FULL 是耐久性取舍不降级。PRAGMA 字面量集中于 _PRAGMAS 单一源。
+            # synchronous=FULL 是耐久性取舍不降级。PRAGMA 字面量集中于 _PRAGMAS 单一事实源。
             for pragma in _PRAGMAS:
                 self._conn.execute(pragma)
             self._secure_database_files()
@@ -495,9 +494,6 @@ class DatabaseManager:
 
     def update_category(self, category: Category) -> None:
         return self._category_repo.update_category(category)
-
-    def update_category_reencrypted(self, category: Category) -> None:
-        return self._category_repo.update_category_reencrypted(category)
 
     def update_categories_batch(self, categories: list[Category]) -> None:
         return self._category_repo.update_categories_batch(categories)

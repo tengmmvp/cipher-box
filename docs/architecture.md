@@ -33,8 +33,8 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
   - `EntryCacheManager`：摘要/分类名/标签/TOTP secret 多级缓存（LRU + epoch 失效）。
   - `EntryChangeBus`：统一「变更→缓存失效→回调」管线，支持 crypto_id 单条精细失效。
   - `ImportExportManager`：CSV/JSON/浏览器导入导出，格式解析拆分至 `managers/importers/`
-    策略类（JSON/CSV/KeePass/Bitwarden 各一）；导入写入经 `_run_import_transaction`
-    的 epoch 守卫事务保证原子性。
+    策略类（JSON/CSV/KeePass/Bitwarden 各一）；导入写入由 `_import_entries` 把加密移出
+    db_lock（MAINT-004），再于 epoch 守卫事务内裸写入保证原子性。
   - `BackupRestoreManager`：可移植二进制加密备份格式；经 `restore_points` property
     暴露 `RestorePointManager`（恢复点统计/清理）。
 - **`services/`（无状态业务服务：加解密、校验、分析等，密钥经 vault 引用现取）**
@@ -111,8 +111,8 @@ HMAC-SHA256 签名（`metadata_mac` 列）：
   `verify_category`），载荷含分类名密文的 SHA-256 摘要 + 元数据（icon/color/
   sort_order/created_at），与条目加密字段对称，使分类名篡改同样可被 HMAC 检测
   （GCM 认证为第一层兜底）。改密时 `re_encrypt_categories` 用
-  `sign_category_with_domain_key`（新域密钥）预签名后经 `update_category_reencrypted`
-  （不签名写）落库，与条目 `sign_with_domain_key` 对称。
+  `sign_category_with_domain_key`（新域密钥）预签名后经 `update_categories_batch`
+  批量落库，与条目 `sign_with_domain_key` 对称。
 
 ## 5. 事务与并发
 

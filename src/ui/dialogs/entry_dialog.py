@@ -42,6 +42,15 @@ from ...business.services.card_validation import (
     validate_card_number,
 )
 from ...business.services.password_service import PasswordService
+from ...config import (
+    CFG_DEFAULT_DIGITS,
+    CFG_DEFAULT_EXCLUDE_AMBIGUOUS,
+    CFG_DEFAULT_LOWERCASE,
+    CFG_DEFAULT_PASSWORD_LENGTH,
+    CFG_DEFAULT_SYMBOLS,
+    CFG_DEFAULT_UPPERCASE,
+    CFG_PASSWORD_VISIBLE_SECONDS,
+)
 from ...exceptions import (
     DatabaseError,
     DecryptionError,
@@ -383,7 +392,7 @@ class EntryDialog(QDialog):
         return True
 
     def _compose_server_url(self) -> str:
-        """按 protocol://host[:port] 拼接服务器地址，作为单一拼接来源。
+        """按 protocol://host[:port] 拼接服务器地址，作为该地址的唯一拼接入口。
 
         host 为空返回空串。供 ``_on_save`` 写入与 ``_validate_field_lengths``
         共用，防止两处拼接漂移。
@@ -601,19 +610,19 @@ class EntryDialog(QDialog):
         return self._config.get(key, default) if self._config else default
 
     def _generate_password(self) -> None:
-        length = self._cfg('default_password_length', PWD_GENERATE_LENGTH_DEFAULT)
+        length = self._cfg(CFG_DEFAULT_PASSWORD_LENGTH, PWD_GENERATE_LENGTH_DEFAULT)
         password = PasswordService.generate(
             length=length,
-            uppercase=self._cfg('default_uppercase', True),
-            lowercase=self._cfg('default_lowercase', True),
-            digits=self._cfg('default_digits', True),
-            symbols=self._cfg('default_symbols', True),
-            exclude_ambiguous=self._cfg('default_exclude_ambiguous', False),
+            uppercase=self._cfg(CFG_DEFAULT_UPPERCASE, True),
+            lowercase=self._cfg(CFG_DEFAULT_LOWERCASE, True),
+            digits=self._cfg(CFG_DEFAULT_DIGITS, True),
+            symbols=self._cfg(CFG_DEFAULT_SYMBOLS, True),
+            exclude_ambiguous=self._cfg(CFG_DEFAULT_EXCLUDE_AMBIGUOUS, False),
         )
         self._password_edit.setText(password)
         # visible_seconds 用 _cfg 而非 get_safe：「显示多久」无安全下限语义，
         # get_safe 钳制仅用于防篡改类键（auto_lock 等）。
-        visible_seconds = self._cfg('password_visible_seconds', PWD_VISIBLE_SECONDS_DEFAULT)
+        visible_seconds = self._cfg(CFG_PASSWORD_VISIBLE_SECONDS, PWD_VISIBLE_SECONDS_DEFAULT)
         self._toggle_pwd_btn.show_password(seconds=visible_seconds)
 
     def _on_password_changed(self, text: str) -> None:

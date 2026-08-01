@@ -36,19 +36,12 @@ class EntryChangeBus:
     ) -> None:
         """通知条目变更：先失效缓存，再在锁外调用注册回调。
 
-        password_changed 为 False，如仅修改标题或 URL 时，不涉及密码的分析维度，
-        即弱密码、重复、过期结果不变，订阅方可据此跳过昂贵的缓存重算。
-        增删条目等结构性变更保持默认 True，因其改变 total 与重复分组。
+        password_changed 为 False（如仅修改标题或 URL）时，不涉及密码的分析维度
+        （弱密码/重复/过期结果不变），订阅方可据此跳过昂贵的缓存重算。增删条目等
+        结构性变更保持默认 True，因其改变 total 与重复分组。
 
-        缓存失效粒度（避免单条编辑触发全量重解密）：
-        - crypto_id 提供（单条更新）：仅 pop 该条目的搜索摘要缓存，而非全清。
-        - crypto_id 为 None 且 clear_summaries=True（增删/批量）：清空全部摘要缓存。
-        - crypto_id 为 None 且 clear_summaries=False（分类 CRUD）：保留摘要缓存，
-          因分类变更不改变条目的 title/username/url/tags 摘要内容。
-        - tags_changed：仅当 tags 字段或条目增删改变标签分布时失效 _tags_cache。
-        - category_changed：仅分类增删改改变分类名时失效 _category_name_cache。
-
-        回调在锁外执行，避免回调重入缓存方法时与持锁线程竞争。
+        缓存失效粒度详见 :meth:`EntryCacheManager.apply_change`；回调在锁外执行，
+        避免回调重入缓存方法时与持锁线程竞争。
         """
         self._cache.apply_change(
             crypto_id=crypto_id, tags_changed=tags_changed,

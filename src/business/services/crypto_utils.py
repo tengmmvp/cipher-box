@@ -62,7 +62,7 @@ SENSITIVE_ENCRYPTED_FIELDS: tuple[str, ...] = (
     'totp_secret', 'custom_fields',
 )
 
-# 字符串型加密字段（custom_fields 为 list，单独校验），供明文校验复用的单一来源。
+# 字符串型加密字段（custom_fields 为 list，单独校验），供明文校验复用的单一事实源。
 STRING_ENCRYPTED_FIELDS: tuple[str, ...] = tuple(
     f for f in SENSITIVE_ENCRYPTED_FIELDS if f != 'custom_fields'
 )
@@ -71,16 +71,22 @@ STRING_ENCRYPTED_FIELDS: tuple[str, ...] = tuple(
 def require_vault_key(vault_manager: VaultManager) -> bytes:
     """获取保险库加密密钥，未解锁时抛出 VaultLockedError。
 
-    优先查 ``is_unlocked`` 而非仅查 ``key is None``：unlock 在 vault_meta_mac 校验
-    通过前 key 已装入但 is_unlocked 仍为 False，查 is_unlocked 收紧此窄窗。第二个
-    None 检查仅为类型 narrow（解锁态下不达）。
+    vault.key 自身已 fail-fast 守卫（MAINT-009）；本函数保留 is_unlocked 前置检查
+    收紧 unlock 窗口（unlock 在 vault_meta_mac 校验通过前 key 已装入但 is_unlocked
+    仍为 False，前置检查在此窄窗即抛，无需依赖 key 守卫的二次判定）。
+
+    Args:
+        vault_manager: 保险库管理器，提供解锁状态与加密密钥。
+
+    Returns:
+        当前有效的 32 字节 AES-256 主密钥。
+
+    Raises:
+        VaultLockedError: 保险库未解锁或正处 unlock 窄窗时抛出。
     """
     if not vault_manager.is_unlocked:
         raise VaultLockedError("保险库未解锁")
-    key = vault_manager.key
-    if key is None:
-        raise VaultLockedError("保险库未解锁")
-    return key
+    return vault_manager.key
 
 
 def entry_aad(crypto_id: str, field_name: str) -> str:
@@ -92,13 +98,20 @@ def entry_aad(crypto_id: str, field_name: str) -> str:
 def category_crypto_id(category_id: int) -> str:
     """构造分类名加密的 crypto_id。
 
-    分类名 AAD 的单一真相源，与 entry_aad 组合：``entry_aad(category_crypto_id(id), 'category_name')``。
+    分类名 AAD 的单一事实源，与 entry_aad 组合：``entry_aad(category_crypto_id(id), 'category_name')``。
     """
     return f'category-{category_id}'
 
 
 def encrypt_field(plaintext: str, key: bytes | bytearray, crypto_id: str, field_name: str) -> str:
-    """加密单个条目字段。统一入口保证 AAD 构造一致；空串亦经 AES-GCM 加密确保 AAD 始终参与认证。"""
+    """加密单个条目字段。统一入口保证 AAD 构造一致；空串亦经 AES-GCM 加密确保 AAD 始终参与认证。
+
+    Args:
+        plaintext: 待加密的明文字段值。
+        key: AES-256 密钥。
+        crypto_id: 条目加密标识，与 field_name 共同构成 AAD，绑定密文到具体条目与字段。
+        field_name: 字段名称，参与 AAD 防字段间密文置换。
+    """
     return EncryptionEngine.encrypt(
         plaintext, key, entry_aad(crypto_id, field_name)
     )

@@ -21,7 +21,7 @@ from src.business.managers.import_export import ImportExportManager
 from src.business.services.security_analyzer import SecurityAnalyzer
 from src.crypto.encryption import EncryptionEngine
 from src.database.db_manager import DatabaseManager
-from src.exceptions import DatabaseError
+from src.exceptions import DatabaseError, VaultLockedError
 from src.models import Category, CustomField, Entry, RawEntry
 from tests.helpers import make_entry_manager, make_test_config, make_vault
 
@@ -251,7 +251,9 @@ def test_initialize_and_unlock(vault_lifecycle_env):
     # 2. 锁定
     vault.lock()
     assert not vault.is_unlocked
-    assert vault.key is None
+    # MAINT-009：vault.key 锁定态 fail-fast（与 snapshot_key 对称），访问即抛 VaultLockedError
+    with pytest.raises(VaultLockedError):
+        _ = vault.key
 
     # 3. 解锁
     assert vault.unlock(master_pwd)[0]

@@ -50,6 +50,14 @@ class CategoryRepository:
     def _sign_category(self, category: Category) -> str:
         return self._mgr.sign_category(category)
 
+    def _assert_encrypted(self, value: str, field_name: str) -> None:
+        """防御性断言：加密列的值应为受支持格式的密文，或空字符串（ARCH-003）。
+
+        与 :meth:`entry_repository._assert_encrypted` 对称，防绕过 CategoryManager
+        直接调 db 层写入时明文分类名静默落库。仅校验密文形态，真正认证由 GCM 标签完成。
+        """
+        self._mgr.assert_encrypted(value, field_name)
+
     def _verify_category_if_signed(self, category: Category) -> Category:
         """LENIENT 验签分类完整性：有签名（metadata_mac 非空）才验，失败记日志并标记。
 
@@ -126,6 +134,7 @@ class CategoryRepository:
         created_at = category.created_at or utc_now_iso()
         category = replace(category, created_at=created_at)
         category = replace(category, metadata_mac=self._sign_category(category))
+        self._assert_encrypted(category.name, 'name_enc')  # ARCH-003：拦截明文落库
         cursor = self._conn.execute(
             "INSERT INTO categories (name_enc, icon_char, color, sort_order, created_at, metadata_mac) "
             "VALUES (?, ?, ?, ?, ?, ?)",
@@ -144,8 +153,8 @@ class CategoryRepository:
         )
 
     def _update_category_row(self, category: Category) -> None:
-        """写入分类行（不含查重/created_at 回填/签名），供 update_category 与
-        update_category_reencrypted 复用同一 UPDATE SQL。"""
+        """写入分类行（不含查重/created_at 回填/签名），供 update_category 复用同一 UPDATE SQL。"""
+        self._assert_encrypted(category.name, 'name_enc')  # ARCH-003：拦截明文落库
         self._conn.execute(
             "UPDATE categories SET name_enc=?, icon_char=?, color=?, sort_order=?, metadata_mac=? WHERE id=?",
             self._category_update_tuple(category),
@@ -175,27 +184,18 @@ class CategoryRepository:
         self._update_category_row(category)
 
     @_db_write
-    def update_category_reencrypted(self, category: Category) -> None:
-        """改密重加密专用：写入已预签名的分类，不重算 metadata_mac。
-
-        与 update_category 的区别：跳过签名（调用方已用新域密钥经
-        :meth:`MetadataSigner.sign_category_with_domain_key` 预签名）与明文查重
-        （密文名每次 nonce 不同，查重无意义），直接 UPDATE。``category`` 来自
-        ``get_categories``，``created_at`` 已是 DB 值，SQL 不写该列。与条目
-        ``update_entries_batch`` 对称：reencrypt 路径自行预签名，写入路径不重复签名。
-        """
-        self._update_category_row(category)
-
-    @_db_write
     def update_categories_batch(self, categories: list[Category]) -> None:
         """改密重加密专用批量写入：executemany 一次性更新已预签名的分类。
 
-        语义同 :meth:`update_category_reencrypted`（不重算签名、不查重），仅合并逐条
-        UPDATE 为单次 executemany。``_auto_commit`` 在活动事务内不真正提交，批量只
-        触发一次权限刷新。
+        不重算签名（调用方已用新域密钥经 :meth:`MetadataSigner.sign_category_with_domain_key`
+        预签名）、不查重（密文名每次 nonce 不同，查重无意义），直接 UPDATE。``category``
+        来自 ``get_categories``，``created_at`` 已是 DB 值，SQL 不写该列。``_auto_commit``
+        在活动事务内不真正提交，批量只触发一次权限刷新。
         """
         if not categories:
             return
+        for c in categories:
+            self._assert_encrypted(c.name, 'name_enc')  # ARCH-003：拦截明文落库
         self._conn.executemany(
             "UPDATE categories SET name_enc=?, icon_char=?, color=?, sort_order=?, metadata_mac=? WHERE id=?",
             [self._category_update_tuple(c) for c in categories],

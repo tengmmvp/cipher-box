@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
 from ...business.services.backup_header_codec import inspect_backup
 from ...business.services.backup_paths import BACKUP_EXT
 from ...business.services.password_service import PasswordService
+from ...config import CFG_BACKUP_DIRECTORY
 from ...exceptions import BackupError
 from ..components.widgets import (
     WorkerBackedDialog,
@@ -187,7 +188,7 @@ class BackupDialog(WorkerBackedDialog):
         is_backup = self._btn_group.checkedId() == 0
         backup_filter = f'CipherBox 备份 (*{BACKUP_EXT})'
         if is_backup:
-            initial_dir = self._config.get('backup_directory', '') if self._config else ''
+            initial_dir = self._config.get(CFG_BACKUP_DIRECTORY, '') if self._config else ''
             default_name = f'cipherbox_backup{BACKUP_EXT}'
             initial_path = str(Path(initial_dir) / default_name) if initial_dir else default_name
             path, _ = QFileDialog.getSaveFileName(

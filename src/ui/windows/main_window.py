@@ -39,7 +39,19 @@ from PyQt6.QtWidgets import (
 )
 
 from ...business.composition import BusinessContext
-from ...config import DEFAULT_THEME, MAX_WINDOW_GEOMETRY_BYTES
+from ...config import (
+    CFG_CLIPBOARD_CLEAR_SECONDS,
+    CFG_CLOSE_TO_TRAY,
+    CFG_MINIMIZE_TO_TRAY,
+    CFG_SHOW_TRAY_ICON,
+    CFG_SORT_FIELD,
+    CFG_SORT_ORDER,
+    CFG_SPLITTER_SIZES,
+    CFG_THEME,
+    CFG_WINDOW_GEOMETRY,
+    DEFAULT_THEME,
+    MAX_WINDOW_GEOMETRY_BYTES,
+)
 from ...models import Category
 from ..components.detail_panel import DetailPanel
 from ..components.entry_list_widget import EntryItemDelegate, EntryListModel
@@ -147,7 +159,7 @@ class MainWindow(QMainWindow):
         self._auto_backup = AutoBackupController(self._vault, self._backup, self._config)
         self._auto_lock = AutoLockController(self._vault, self._config, self.lock_requested.emit)
         self._clipboard = ClipboardManager(
-            self._config.get_safe('clipboard_clear_seconds', CLIPBOARD_CLEAR_SECONDS_DEFAULT)
+            self._config.get_safe(CFG_CLIPBOARD_CLEAR_SECONDS, CLIPBOARD_CLEAR_SECONDS_DEFAULT)
         )
 
     def _create_menu_controller(self) -> None:
@@ -260,7 +272,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(*WINDOW_MIN_SIZE)
         self.resize(*WINDOW_DEFAULT_SIZE)
 
-        theme = self._config.get('theme', DEFAULT_THEME)
+        theme = self._config.get(CFG_THEME, DEFAULT_THEME)
         # 显式激活主题，使运行时 c() 解析的颜色与样式表一致（ARCH-009）
         set_theme(theme)
         self.setStyleSheet(get_style(theme))
@@ -286,7 +298,7 @@ class MainWindow(QMainWindow):
         self._splitter.addWidget(self._detail_panel)
 
         # 设置分割比例
-        saved_sizes = self._config.get('splitter_sizes')
+        saved_sizes = self._config.get(CFG_SPLITTER_SIZES)
         if saved_sizes and len(saved_sizes) == 3:
             self._splitter.setSizes(saved_sizes)
         else:
@@ -295,7 +307,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self._splitter)
 
         # 恢复窗口位置
-        saved_geo = self._config.get('window_geometry')
+        saved_geo = self._config.get(CFG_WINDOW_GEOMETRY)
         if saved_geo:
             try:
                 geo_bytes = bytes.fromhex(saved_geo)
@@ -406,8 +418,8 @@ class MainWindow(QMainWindow):
         self._sort_combo = QComboBox()
         for label, _, _ in SORT_OPTIONS:
             self._sort_combo.addItem(label)
-        sort_field = self._config.get('sort_field', 'updated_at')
-        sort_order = self._config.get('sort_order', 'desc')
+        sort_field = self._config.get(CFG_SORT_FIELD, 'updated_at')
+        sort_order = self._config.get(CFG_SORT_ORDER, 'desc')
         sort_idx = next(
             (i for i, (_, f, o) in enumerate(SORT_OPTIONS) if f == sort_field and o == sort_order),
             0,
@@ -495,7 +507,7 @@ class MainWindow(QMainWindow):
         self._splitter.addWidget(list_container)
 
     def _setup_tray(self) -> None:
-        if not self._config.get('show_tray_icon', True):
+        if not self._config.get(CFG_SHOW_TRAY_ICON, True):
             return
         # 清理旧托盘实例，避免孤儿 QSystemTrayIcon 残留占用任务栏槽位
         # （deleteLater 由 Qt 事件循环安全回收）。
@@ -548,10 +560,10 @@ class MainWindow(QMainWindow):
 
     def _apply_runtime_settings(self) -> None:
         """立即应用无需重启的安全和托盘设置。"""
-        self._clipboard.clear_seconds = self._config.get_safe('clipboard_clear_seconds', CLIPBOARD_CLEAR_SECONDS_DEFAULT)
+        self._clipboard.clear_seconds = self._config.get_safe(CFG_CLIPBOARD_CLEAR_SECONDS, CLIPBOARD_CLEAR_SECONDS_DEFAULT)
         self._auto_lock.reset_timer()
         self._auto_backup.trigger_check()
-        should_show = self._config.get('show_tray_icon', True)
+        should_show = self._config.get(CFG_SHOW_TRAY_ICON, True)
         if should_show and self._tray is None:
             self._setup_tray()
         elif not should_show and self._tray is not None:
@@ -594,7 +606,7 @@ class MainWindow(QMainWindow):
 
     def _apply_theme(self) -> None:
         """应用当前主题，用于设置切换后刷新。"""
-        theme = self._config.get('theme', DEFAULT_THEME)
+        theme = self._config.get(CFG_THEME, DEFAULT_THEME)
         if theme != self._current_theme:
             self._current_theme = theme
             # 显式激活主题，使运行时 c() 解析的颜色与样式表一致（ARCH-009）
@@ -653,17 +665,17 @@ class MainWindow(QMainWindow):
             return
         try:
             geo = self.saveGeometry()
-            self._config.set('window_geometry', geo.data().hex())
+            self._config.set(CFG_WINDOW_GEOMETRY, geo.data().hex())
             sizes = self._splitter.sizes()
-            self._config.set('splitter_sizes', list(sizes))
+            self._config.set(CFG_SPLITTER_SIZES, list(sizes))
             field, order = self._list_refresh.get_sort_config()
-            self._config.set('sort_field', field)
-            self._config.set('sort_order', order)
+            self._config.set(CFG_SORT_FIELD, field)
+            self._config.set(CFG_SORT_ORDER, order)
             self._config.save()
         except (OSError, ValueError, TypeError):
             logger.debug("保存窗口状态失败", exc_info=True)
 
-        if self._config.get('close_to_tray', False) and self._tray:
+        if self._config.get(CFG_CLOSE_TO_TRAY, False) and self._tray:
             # 隐藏到托盘（非退出、非锁定）：安全清理后隐藏。保持 vault 解锁、列表模型
             # 与定时器；_lock_timer 仍运行，托盘态空闲超时自动锁定。恢复后详情面板
             # 已清空，由用户重新选择条目。
@@ -691,7 +703,7 @@ class MainWindow(QMainWindow):
             return
         if a0.type() == a0.Type.WindowStateChange:
             if self.windowState() & Qt.WindowState.WindowMinimized:
-                if self._config.get('minimize_to_tray', True) and self._tray:
+                if self._config.get(CFG_MINIMIZE_TO_TRAY, True) and self._tray:
                     # 最小化同样视为「离开交互」，执行与 close_to_tray 一致的安全清理，
                     # 避免最小化比关闭更不安全。hide 延迟到下一事件循环避免 changeEvent
                     # 内直接 hide 的 Qt 重入问题。

@@ -25,7 +25,7 @@ def test_schemas_cover_all_entry_types():
 
 
 def test_schema_label_icon_derived_from_models():
-    """label/icon 从 models.ENTRY_TYPES 派生（单一源），不重复声明。"""
+    """label/icon 从 models.ENTRY_TYPES 派生（单一事实源），不重复声明。"""
     for type_id, meta in ENTRY_TYPES.items():
         schema = ENTRY_TYPE_SCHEMAS[type_id]
         assert schema.label == meta['label']

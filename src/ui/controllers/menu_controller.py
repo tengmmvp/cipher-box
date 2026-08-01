@@ -204,7 +204,6 @@ class MenuController:
     # ----- 快捷键 -----
 
     def _setup_shortcuts(self) -> None:
-        """注册全局快捷键。"""
         parent = self._parent
         search_edit = self._search_edit
         shortcuts = [
@@ -247,10 +246,13 @@ class MenuController:
         dialog = PasswordGeneratorDialog(self._clipboard, self._parent, config=self._config)
         dialog.password_selected.connect(self._slots.on_password_selected)
         dialog.exec()
+        dialog.deleteLater()
 
     def show_settings(self) -> None:
         dialog = SettingsDialog(self._config, self._parent)
-        if dialog.exec() == SettingsDialog.DialogCode.Accepted:
+        accepted = dialog.exec() == SettingsDialog.DialogCode.Accepted
+        dialog.deleteLater()
+        if accepted:
             self._slots.apply_theme()
             self._slots.apply_runtime_settings()
 
@@ -260,18 +262,22 @@ class MenuController:
         )
         dialog.import_completed.connect(self._slots.refresh_all_data)
         dialog.exec()
+        dialog.deleteLater()
 
     def show_backup(self) -> None:
         dialog = BackupDialog(self._backup, self._parent, config=self._config)
         dialog.exec()
         # 仅在对话框实际执行了备份/恢复操作时才全量刷新
-        if dialog.data_changed:
+        data_changed = dialog.data_changed
+        dialog.deleteLater()
+        if data_changed:
             self._slots.refresh_all_data()
             self._detail_panel.show_empty()
 
     def show_change_master(self) -> None:
         dialog = ChangeMasterDialog(self._vault, self._config, self._parent)
         result = dialog.exec()
+        dialog.deleteLater()
         if result == ChangeMasterDialog.DialogCode.Accepted:
             self._slots.refresh_all_data()
             self._detail_panel.show_empty()
@@ -292,6 +298,7 @@ class MenuController:
     def show_about(self) -> None:
         dialog = AboutDialog(self._parent)
         dialog.exec()
+        dialog.deleteLater()
 
     def show_security_dashboard(self) -> None:
         dialog = SecurityDashboard(
@@ -301,6 +308,7 @@ class MenuController:
         # 实际刷新由 EntryDialog.saved 信号驱动，此处不依赖 Accepted 状态刷新。
         dialog.fix_requested.connect(self._slots.edit_entry)
         dialog.exec()
+        dialog.deleteLater()
 
     def show_shortcuts(self) -> None:
         rows = ''.join(
@@ -313,3 +321,4 @@ class MenuController:
         msg.setTextFormat(Qt.TextFormat.RichText)
         msg.setText(text)
         msg.exec()
+        msg.deleteLater()

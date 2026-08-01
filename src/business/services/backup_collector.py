@@ -119,6 +119,7 @@ def collect_portable_entries(
         estimated_size += (
             len(raw.title.encode('utf-8'))
             + len((raw.username or '').encode('utf-8'))
+            + len((raw.password or '').encode('utf-8'))
             + len((raw.url or '').encode('utf-8'))
             + len((raw.tags or '').encode('utf-8'))
             + len((raw.notes or '').encode('utf-8'))

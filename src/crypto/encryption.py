@@ -74,6 +74,7 @@ class EncryptionEngine:
 
     @staticmethod
     def _aad_bytes(associated_data: str | bytes) -> bytes:
+        """将 AAD 归一为 bytes：str 经 UTF-8 编码，bytes 原样返回。"""
         return associated_data.encode('utf-8') if isinstance(associated_data, str) else associated_data
 
     @classmethod

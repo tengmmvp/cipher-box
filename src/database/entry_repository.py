@@ -191,8 +191,6 @@ class EntryRepository:
     """
 
     def __init__(self, conn_provider: ConnectionProvider):
-        # conn_provider（通常 DatabaseManager 实例）提供连接、锁与编排方法。
-        # 以 Protocol 类型标注便于静态校验与测试替身。
         self._mgr = conn_provider
 
     # ======== 连接与锁代理 ========
@@ -227,7 +225,6 @@ class EntryRepository:
     # ======== 防御性断言 ========
 
     def _assert_encrypted(self, value: str, field_name: str) -> None:
-        """防御性断言：加密列的值应为受支持格式的密文，或空字符串。"""
         self._mgr.assert_encrypted(value, field_name)
 
     def _assert_entry_encrypted_fields(self, entry: RawEntry) -> None:
@@ -240,7 +237,7 @@ class EntryRepository:
             if column.endswith('_enc'):
                 # custom_fields_enc 对应密文属性 custom_fields_db_value，其余 *_enc
                 # 去后缀即 RawEntry 同名 str 属性。经 getattr 取值保持加密字段集从
-                # _ENTRY_COLUMNS 单一来源派生。
+                # _ENTRY_COLUMNS 单一事实源派生。
                 attr = (
                     'custom_fields_db_value'
                     if column == 'custom_fields_enc'
@@ -282,7 +279,7 @@ class EntryRepository:
         if self._conn is None:
             raise DatabaseError("数据库未连接")
         sql = _SELECT_ENTRY_WITH_CATEGORY_SQL + " WHERE 1=1"
-        params: list = []
+        params: list[Any] = []
 
         if query.deleted_only:
             sql += " AND e.is_deleted = 1"
@@ -354,7 +351,6 @@ class EntryRepository:
     @_db_write
     def add_entry(self, entry: RawEntry, preserve_metadata: bool = False) -> int:
         """添加条目，返回 ID。"""
-        # 防御性断言，防止明文静默写入加密列
         self._assert_entry_encrypted_fields(entry)
         entry = self._normalize_for_insert(
             entry, now=utc_now_iso(), preserve_metadata=preserve_metadata,
@@ -433,7 +429,6 @@ class EntryRepository:
         Note: 不写 is_deleted/deleted_at，删除状态仅由 soft_delete_entry /
         restore_entry 管理。
         """
-        # 防御性断言，防止明文静默写入加密列
         self._assert_entry_encrypted_fields(entry)
         updated_at = (
             entry.updated_at
@@ -444,11 +439,16 @@ class EntryRepository:
         entry = replace(entry, updated_at=updated_at)
         entry = replace(entry, metadata_mac=self._sign_entry(entry))
         # SET 参数经 _entry_update_params 取值，末尾追加 WHERE id 绑定。列序由
-        # _ENTRY_COLUMN_GETTERS 守护，与 INSERT 路径对称。
-        self._conn.execute(
-            _UPDATE_ENTRY_SQL,
-            (*self._entry_update_params(entry), entry.id),
-        )
+        # _ENTRY_COLUMN_GETTERS 守护，与 INSERT 路径对称。IntegrityError 归一化与
+        # add_entry 对称（MAINT-003）：UPDATE 含 category_id 外键，引用不存在的分类时
+        # 触发 FK 违规，经 _classify_entry_integrity_error 分流翻译为 DatabaseError。
+        try:
+            self._conn.execute(
+                _UPDATE_ENTRY_SQL,
+                (*self._entry_update_params(entry), entry.id),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise _classify_entry_integrity_error('条目更新', exc) from exc
         self._auto_commit()
 
     @_db_write
@@ -457,7 +457,7 @@ class EntryRepository:
 
         Args:
             rows: ``ReEncryptedEntry`` NamedTuple 列表（re_encryption 产出）。
-                采样断言按 NamedTuple 属性访问加密列，故不支持普通 tuple；
+                逐行断言按 NamedTuple 属性访问加密列，故不支持普通 tuple；
                 NamedTuple 自动适配 executemany 的位置参数绑定。
         """
         if not rows:

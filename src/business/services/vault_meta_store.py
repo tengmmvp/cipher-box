@@ -81,7 +81,7 @@ class VaultMetaStore:
         db.set_meta('ciphertext_format', EncryptionEngine.FORMAT_ID)
         db.set_meta('snapshot_key_enc', self.encrypt_snapshot_key(snapshot_key, key))
         db.set_meta('key_epoch', key_epoch)
-        # 完整性签名键集从 VAULT_META_SIGNED_KEYS 单一源派生：写完字段后回读刚写入
+        # 完整性签名键集从 VAULT_META_SIGNED_KEYS 单一事实源派生：写完字段后回读刚写入
         # 的值再签，与恢复路径对称，消除手工键集漂移（ARCH-3）。回读须在调用方事务内，
         # 同事务 set_meta 后立即 get_meta_batch 可见刚写值。
         meta_for_mac = db.get_meta_batch(list(VAULT_META_SIGNED_KEYS))

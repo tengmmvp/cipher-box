@@ -112,7 +112,7 @@ class TestTOTPErrorHandling:
         result = TOTPGenerator._parse_config(uri, 'SHA1', 30, 6)  # type: ignore[arg-type]
         assert result[1] == 'JBSWY3DP'  # value 经单次解码还原
 
-    # --- period 上界单一源：_extract_period 须与 _parse_config 复用 _MAX_TOTP_PERIOD（#10）---
+    # --- period 上界单一事实源：_extract_period 须与 _parse_config 复用 _MAX_TOTP_PERIOD（#10）---
 
     def test_extract_period_oversized_returns_default(self):
         """超长 period（如 999999）让 TOTP 退化为静态码、UI 倒计时异常，须回退默认。"""

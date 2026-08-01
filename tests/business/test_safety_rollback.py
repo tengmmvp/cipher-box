@@ -408,22 +408,22 @@ class TestImportEpochGuard:
         self._vault.close()
 
     def test_import_aborted_when_epoch_changes_mid_transaction(self):
-        """导入事务内 key_epoch 被并发改密轮换时，导入被守卫中止。
+        """导入写入前 key_epoch 被并发改密轮换时，导入被守卫中止。
 
-        安全属性：_run_import_transaction 在事务开始前快照 key_epoch，
-        事务内二次校验；若导入期间主密码被改导致 epoch 轮换，二次校验
-        检测到 epoch 不匹配，必须抛出 VaultKeyEpochMismatchError 并
-        回滚事务，避免数据用旧密钥加密但 epoch 已更新到新会话的损坏状态。
-        本测试通过 monkeypatch 模拟 epoch 在事务内变化，验证守卫触发。
+        安全属性（MAINT-004）：``_import_entries`` 把加密移出 db_lock，在加密前快照
+        ``pre_epoch``，写入时 ``epoch_guarded_transaction(pre_epoch=...)`` 复查；若
+        「加密后→写入前」主密码被改导致 epoch 轮换，复查检测到不匹配，必须抛
+        VaultKeyEpochMismatchError 并回滚事务，避免旧密钥密文落到新 epoch 库。
+        本测试通过 monkeypatch 模拟 epoch 在快照与复查间变化，验证守卫触发。
         """
         real_epoch = self._vault.key_epoch
         assert real_epoch is not None
 
         entry_count_before = len(self._entry_mgr.get_entries())
 
-        # 模拟并发改密：_run_import_transaction 第二次读取 key_epoch 时返回
-        # 不同的值。pre_epoch 为事务前的第一次读取，保持真实值；
-        # 进入 with transaction() 后第二次读取返回伪造的新 epoch。
+        # 模拟并发改密：_import_entries 加密前读 pre_epoch（首次，真实值），
+        # epoch_guarded_transaction 写入时复查读 key_epoch（第二次，伪造值）——
+        # 两次不一致触发守卫。
         original_key_epoch_property = type(self._vault).key_epoch
 
         call_count = {'n': 0}
@@ -431,8 +431,8 @@ class TestImportEpochGuard:
         class _ShiftingEpoch:
             """描述符：首次访问返回真实 epoch，之后返回伪造值。
 
-            _run_import_transaction 先在事务外读 pre_epoch，再在事务内读
-            current_epoch。本描述符让两次读取得到不同值，模拟并发轮换。
+            _import_entries 加密前读 pre_epoch，epoch_guarded_transaction 写入时
+            复查读 key_epoch。本描述符让两次读取得到不同值，模拟并发轮换。
             """
 
             def __get__(self, obj, objtype=None):
@@ -460,7 +460,7 @@ class TestImportEpochGuard:
         """对照测试：epoch 未变化时导入正常完成。
 
         作为上一个测试的对照，确认 epoch 守卫不会误伤正常导入路径，
-        _run_import_transaction 的二次校验在 epoch 一致时放行。
+        _import_entries 的二次校验在 epoch 一致时放行。
         """
         entry_count_before = len(self._entry_mgr.get_entries())
 

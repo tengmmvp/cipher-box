@@ -47,8 +47,6 @@ class ReEncryptionDB(Protocol):
 
     def get_categories(self, *, verify: bool = True) -> list[Category]: ...
 
-    def update_category_reencrypted(self, category: Category) -> None: ...
-
     def update_categories_batch(self, categories: list[Category]) -> None: ...
 
 
@@ -171,7 +169,10 @@ class ReEncryptionService:
             # 域密钥（bytearray）全程持有（含分批与回滚窗口），结束后立即原地清零。
             secure_zero_buffer(precomputed_domain_key)
 
-    def re_encrypt_categories(self, old_key: bytes | bytearray, new_key: bytes | bytearray) -> None:
+    def re_encrypt_categories(
+        self, old_key: bytes | bytearray, new_key: bytes | bytearray, *,
+        cancel_event: Event | None = None,
+    ) -> None:
         """使用分类 ID 绑定的 AAD 重加密全部分类名称。
 
         读取分类 verify=False 跳过验签：改密产生新域密钥后旧 metadata_mac 在新域密钥
@@ -181,12 +182,18 @@ class ReEncryptionService:
         在事务提交后才 set_domain_key(new)，防后台线程用新域密钥验签未提交数据）。
         分类重签经 ``sign_category_with_domain_key`` 注入预计算新域密钥、不签名写，
         与条目重签对称——不临时切换 signer 全局 _domain_key，无「借全局状态」的隐含契约。
+
+        Args:
+            cancel_event: 可选的 threading.Event，设置时提前终止（ARCH-004，与条目/历史
+                重加密循环一致）。分类通常很少，取消窗口小，但保持三者一致以便统一响应取消。
         """
         precomputed_domain_key = self._signer.compute_domain_key(new_key)
         try:
             # 一次性 executemany 写入（分类通常 <20，收益在一致性而非吞吐）。
             updated: list[Category] = []
             for category in self._db.get_categories(verify=False):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise VaultError('重加密已被取消，事务回滚以保持数据一致')
                 if category.id is None:
                     continue
                 crypto_id = category_crypto_id(category.id)

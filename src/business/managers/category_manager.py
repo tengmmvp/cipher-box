@@ -74,45 +74,50 @@ class CategoryManager:
         """获取全部分类的条目数映射 {category_id: count}。"""
         return self._vault.db.get_category_entry_counts()
 
+    def _insert_category_two_phase(self, category: Category) -> int:
+        """两阶段加密写入单分类（MAINT-002）：占位 id 加密 INSERT → 真实 id 重加密 UPDATE。
+
+        add_category 与 add_categories_batch 共用此核心，消除两阶段加密样板重复。两阶段
+        必要：分类名密文含 ``category_crypto_id`` 绑定（验签/解密定位），须先 INSERT 获
+        真实 id 再用真实 id 重加密 name 更新——单阶段无法在 INSERT 前知道真实 id。不含
+        查重（add_category 在调用前查重）与通知（调用方统一 notify）。调用方须保证非空名。
+        """
+        plaintext_name = category.name.strip()
+        pending_id = f'category-pending-{uuid.uuid4().hex}'
+        stored = Category(
+            name=encrypt_field(plaintext_name, self._key, pending_id, 'category_name'),
+            icon_char=category.icon_char,
+            color=category.color,
+            sort_order=category.sort_order,
+            created_at=category.created_at,
+        )
+        result = self._vault.db.add_category(stored)
+        stored = replace(stored, id=result)
+        stored = replace(
+            stored,
+            name=encrypt_field(
+                plaintext_name, self._key, category_crypto_id(result), 'category_name',
+            ),
+        )
+        self._vault.db.update_category(stored)
+        return result
+
     def add_category(self, category: Category, *, notify: bool = True) -> int:
-        """新增分类（两阶段加密事务）。
+        """新增分类（查重 + 两阶段加密写入）。
 
-        先用 pending_id 占位加密写入获得真实 id，再在事务内用真实
-        category_crypto_id 重加密并更新。事务必须整体迁移不能拆，否则残留
-        pending_id 加密的分类名密文。
-
-        查重在事务内进行，避免并发两次同名分类都通过查重后各自写入的 TOCTOU
-        竞态（分类名以密文落库，UNIQUE 约束对密文无效）。
+        查重在事务内进行（防 TOCTOU：并发两次同名分类都通过查重后各自写入），再经
+        :meth:`_insert_category_two_phase` 占位→真实 id 两阶段加密写入。
         """
         plaintext_name = category.name.strip()
         if not plaintext_name:
             raise EntryError('分类名称不能为空')
-        pending_id = f'category-pending-{uuid.uuid4().hex}'
         with self._vault.db.transaction():
             existing_names = {
                 existing.name.casefold() for existing in self.get_categories()
             }
             if plaintext_name.casefold() in existing_names:
                 raise EntryError('分类名称已存在')
-            stored = Category(
-                name=encrypt_field(plaintext_name, self._key, pending_id, 'category_name'),
-                icon_char=category.icon_char,
-                color=category.color,
-                sort_order=category.sort_order,
-                created_at=category.created_at,
-            )
-            result = self._vault.db.add_category(stored)
-            stored = replace(stored, id=result)
-            stored = replace(
-                stored,
-                name=encrypt_field(
-                    plaintext_name,
-                    self._key,
-                    category_crypto_id(result),
-                    'category_name',
-                ),
-            )
-            self._vault.db.update_category(stored)
+            result = self._insert_category_two_phase(category)
         category = replace(category, id=result, name=plaintext_name)
         # 分类变更不改条目摘要内容（title/url/tags 不变），保留搜索摘要缓存；
         # 仅失效分类名缓存并通知回调刷新侧边栏分类列表。
@@ -128,10 +133,9 @@ class CategoryManager:
     ) -> list[int]:
         """批量新增分类（恢复路径），返回按输入顺序的新 id 列表（PF-003）。
 
-        恢复前已 ``clear_vault_data`` 清空分类表，故无需逐条查重——消除原
-        ``restore_categories`` 循环 ``add_category`` 的 O(N²)（每次 ``add_category``
-        经 ``get_categories`` 全表解密查重）。两阶段加密事务（占位→真实 id→重加密）
-        逐条在单事务内完成，无逐次 commit/fsync。空名项记 0（调用方应过滤）。
+        恢复前已 ``clear_vault_data`` 清空分类表，故无需逐条查重——逐条 ``add_category``
+        经 ``get_categories`` 全表解密查重为 O(N²)。经 :meth:`_insert_category_two_phase`
+        在单事务内批量两阶段加密写入，无逐次 commit/fsync。空名项记 0（调用方应过滤）。
         """
         new_ids: list[int] = []
         if not categories:
@@ -143,29 +147,10 @@ class CategoryManager:
             return new_ids
         with self._vault.db.transaction():
             for category in categories:
-                plaintext_name = category.name.strip()
-                if not plaintext_name:
+                if not category.name.strip():
                     new_ids.append(0)
                     continue
-                pending_id = f'category-pending-{uuid.uuid4().hex}'
-                stored = Category(
-                    name=encrypt_field(plaintext_name, self._key, pending_id, 'category_name'),
-                    icon_char=category.icon_char,
-                    color=category.color,
-                    sort_order=category.sort_order,
-                    created_at=category.created_at,
-                )
-                result = self._vault.db.add_category(stored)
-                stored = replace(stored, id=result)
-                stored = replace(
-                    stored,
-                    name=encrypt_field(
-                        plaintext_name, self._key,
-                        category_crypto_id(result), 'category_name',
-                    ),
-                )
-                self._vault.db.update_category(stored)
-                new_ids.append(result)
+                new_ids.append(self._insert_category_two_phase(category))
         if notify:
             self._change_bus.notify(
                 password_changed=False, tags_changed=False,

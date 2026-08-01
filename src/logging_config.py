@@ -37,13 +37,16 @@ class SensitiveDataFilter(logging.Filter):
         # 过度打码（一行多赋值整行打码）优于漏打码。关键词前置否定环视 (?<![A-Za-z]) 避免
         # mid-word 误匹配（donkey=…），中文关键词（密码/密钥/令牌）不受影响。SEC-009 补充
         # username/信用卡字段(card_number/card_holder/card_cvv)/cvv 等账号与卡密关键词。
+        # SEC-LOG-001：关键词后可选引号 ([\'"]?) 捕获并在替换串回填，覆盖 dict/dataclass
+        # repr 的 'password': ... 形态——repr 中 key 带引号，原 \s*[:=] 因引号挡在 key 与
+        # 冒号间而漏匹配；捕获引号使 \1\2 回填，避免 'password=[REDACTED] 引号不平衡。
         (
             re.compile(
                 r'(?i)(?<![A-Za-z])(password|pwd|passwd|secret|token|api[_-]?key|key'
                 r'|username|user[_-]?name|card[_-]?(?:number|holder|cvv|cvc)|cvv|cvc'
-                r'|密码|密钥|令牌)\s*[:=]\s*.+'
+                r'|密码|密钥|令牌)([\'"]?)\s*[:=]\s*.+'
             ),
-            r'\1=[REDACTED]',
+            r'\1\2=[REDACTED]',
         ),
     )
 

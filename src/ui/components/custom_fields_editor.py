@@ -24,7 +24,7 @@ class CustomFieldsEditor:
     每行的类型下拉框切换时自动调整值输入框的回显模式。
     """
 
-    # 字段类型单一事实来源：下拉框 addItem 顺序、index/type 双向映射、
+    # 字段类型单一事实源：下拉框 addItem 顺序、index/type 双向映射、
     # 中文标签均从此列表派生，避免多处定义发散导致索引错位。
     _TYPE_ORDER = ['text', 'password', 'url', 'email']
     _TYPE_LABELS = {'text': '文本', 'password': '密码', 'url': '网址', 'email': '邮箱'}

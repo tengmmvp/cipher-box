@@ -332,7 +332,7 @@ class WorkerBackedDialog(QDialog):
     重复的样板：reject 时按 ``_cancel_on_close`` 决定取消或仅等待 worker 完成，
     不可取消操作（恢复/导入，有写入副作用）运行期间拒绝关闭；统一 worker.error
     信号处理（释放当前 worker + 复位 busy + 记录日志 + 状态提示 + 错误对话框）。
-    普通类（非 mixin），子类经覆写钩子定制行为。
+    子类经覆写钩子定制行为。
 
     子类约定：
     - 在 ``_setup_ui`` 中赋值 ``_primary_action_btn`` 与 ``_status_label`` 即可获得

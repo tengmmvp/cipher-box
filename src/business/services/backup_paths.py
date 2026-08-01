@@ -14,7 +14,7 @@ PRE_RESTORE_GLOB = f'{PRE_RESTORE_PREFIX}*{BACKUP_EXT}'
 SNAPSHOT_PREFIX = 'cipherbox_snapshot_'
 SNAPSHOT_GLOB = f'{SNAPSHOT_PREFIX}*{BACKUP_EXT}'
 
-# 备份文件名时间戳格式，单一来源供 build_backup_filename 与 glob/排序假设对齐。
+# 备份文件名时间戳格式，单一事实源，供 build_backup_filename 与 glob/排序假设对齐。
 _BACKUP_NAME_TS_FORMAT = '%Y%m%d_%H%M%S_%f'
 
 

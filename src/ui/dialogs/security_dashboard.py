@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ...business.services.security_analyzer import SecurityAnalyzer
+from ...config import CFG_OLD_PASSWORD_WARNING_DAYS
 from ...utils.format import format_datetime
 from ..components.widgets import (
     WorkerBackedDialog,
@@ -310,7 +311,7 @@ class SecurityDashboard(WorkerBackedDialog):
 
     def _load_data(self) -> None:
         """在后台线程加载安全分析数据，避免冻结 UI。"""
-        days = self._config.get('old_password_warning_days')
+        days = self._config.get(CFG_OLD_PASSWORD_WARNING_DAYS)
 
         self._health_widget.set_score(0)
         self._status_hint = QLabel('正在分析安全数据...')
@@ -446,7 +447,7 @@ class SecurityDashboard(WorkerBackedDialog):
             self._old_layout.addWidget(self._create_empty_hint('没有过期密码。'))
             return
 
-        days = self._config.get('old_password_warning_days')
+        days = self._config.get(CFG_OLD_PASSWORD_WARNING_DAYS)
         for entry in self._old_entries:
             if entry.id is None:
                 continue

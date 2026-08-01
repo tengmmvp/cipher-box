@@ -81,10 +81,16 @@ class RestorePointManager:
             raise BackupError(f'无法创建恢复前安全快照：{error}')
         # 按文件名降序保留最新 MAX_RESTORE_POINTS 个恢复点，删除过期项；删除失败
         # 仅告警（恢复点含全量明文，残留由调用方据创建结果决定是否重试清理）。
-        secure_purge(
-            [directory], [PRE_RESTORE_GLOB],
-            keep=MAX_RESTORE_POINTS, collect_failures=False,
-        )
+        # PF-001-R：retention 清理异常就地捕获降级 warning，不漂移致「恢复已成功却被
+        # 误报失败」（secure_purge 的 collect_failures=False 已对单文件删除告警，
+        # 此处仅兜底 glob 等非预期 OSError）。
+        try:
+            secure_purge(
+                [directory], [PRE_RESTORE_GLOB],
+                keep=MAX_RESTORE_POINTS, collect_failures=False,
+            )
+        except OSError:
+            logger.warning('恢复点 retention 清理失败，已跳过', exc_info=True)
         return target_path
 
     @staticmethod
@@ -117,4 +123,11 @@ class RestorePointManager:
         directories = self._vault.backup_directories
         total = count_files(directories, [PRE_RESTORE_GLOB])
         failed = secure_purge(directories, [PRE_RESTORE_GLOB])
+        if failed:
+            # 恢复点含恢复前全部明文，删除失败意味着泄漏面未收缩，需可见日志（QL-002）。
+            # secure_purge 默认 collect_failures=True 收集失败项，此处补 warning 上报。
+            logger.warning(
+                '清理 %d 个恢复点失败（含明文，需手动检查）：%s',
+                len(failed), ', '.join(str(p) for p in failed),
+            )
         return total - len(failed)

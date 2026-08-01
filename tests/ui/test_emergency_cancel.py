@@ -65,7 +65,7 @@ class TestCancelAllWorkers:
         assert status.waited_ms is None
 
     def test_wait_when_timeout_positive(self):
-        """wait_workers 委托 coordinator.wait + 对 status worker 调 wait(超时)。"""
+        """wait_workers 委托 coordinator.wait + 对 status worker 调 wait（超时）。"""
         ctrl = _make_controller()
         status = _FakeWorker('status')
         ctrl._status_worker = status

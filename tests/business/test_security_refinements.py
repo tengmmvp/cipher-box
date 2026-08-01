@@ -9,6 +9,7 @@
 
 from src.business.services import key_manager as key_manager_module
 from src.business.services.key_manager import KeyManager
+from src.business.services.security_analyzer import DEFAULT_ANALYSIS_DAYS
 from src.database.types import EntryQuery, VerifyMode
 from src.exceptions import VaultIntegrityError
 from src.models import Entry, RawEntry
@@ -117,7 +118,7 @@ class TestGetCachedCounts:
     """
 
     @staticmethod
-    def _analyzer(cache, *, days: int = 90, ttl: int = 120, age: float = 0.0):
+    def _analyzer(cache, *, days: int = DEFAULT_ANALYSIS_DAYS, ttl: int = 120, age: float = 0.0):
         import threading
         import time
         from types import SimpleNamespace

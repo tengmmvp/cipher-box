@@ -10,6 +10,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from ...business.services.crypto_utils import matches_search, matches_tag
+from ...config import CFG_OLD_PASSWORD_WARNING_DAYS
 from ..resources.constants import RECENT_ENTRY_LIMIT, SORT_OPTIONS
 
 if TYPE_CHECKING:
@@ -89,7 +90,6 @@ class EntryListController:
         search: str,
         cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[list[Entry], str]:
-        """获取收藏条目。"""
         return (
             self._entry_mgr.get_entry_summaries(
                 favorite_only=True, search=search, cancel_check=cancel_check,
@@ -141,7 +141,6 @@ class EntryListController:
         search: str,
         cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[list[Entry], str]:
-        """获取回收站条目。"""
         return (
             self._entry_mgr.get_entry_summaries(
                 deleted_only=True, search=search, cancel_check=cancel_check,
@@ -150,7 +149,6 @@ class EntryListController:
         )
 
     def get_fetcher(self, filter_key: str) -> Callable[..., tuple[list[Entry], str]]:
-        """获取过滤器对应的数据获取方法。"""
         fetchers: dict[str, Callable[..., tuple[list[Entry], str]]] = {
             'all': self.fetch_all,
             'favorite': self.fetch_favorite,
@@ -170,7 +168,6 @@ class EntryListController:
 
     @staticmethod
     def filter_by_tag(entries: list[Entry], tag: str) -> list[Entry]:
-        """按标签过滤条目。"""
         return [e for e in entries if matches_tag(e, tag)]
 
     # ========== 安全摘要 ==========
@@ -181,5 +178,5 @@ class EntryListController:
         当缓存未就绪时返回 None，调用方应处理此情况。
         """
         return self._security.get_cached_report(
-            self._config.get('old_password_warning_days')
+            self._config.get(CFG_OLD_PASSWORD_WARNING_DAYS)
         )

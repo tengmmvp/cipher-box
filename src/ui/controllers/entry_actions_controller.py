@@ -390,6 +390,7 @@ class EntryActionsController:
         dialog = EntryDialog(self._entry_mgr, categories, tag_names, parent=parent, config=self._config)
         dialog.saved.connect(self._deps.refresh_after_entry_change)
         dialog.exec()
+        dialog.deleteLater()
 
     @require_unlocked
     def edit_entry(self, entry_id: int) -> None:
@@ -411,9 +412,9 @@ class EntryActionsController:
         dialog = EntryDialog(self._entry_mgr, categories, tag_names, entry=entry, parent=parent, config=self._config)
         dialog.saved.connect(self._deps.refresh_after_entry_change)
         dialog.exec()
+        dialog.deleteLater()
 
     def edit_selected_entry(self) -> None:
-        """快捷键：编辑当前选中条目。"""
         idx = self._view.entry_list.currentIndex()
         if idx.isValid():
             entry = idx.data(Qt.ItemDataRole.UserRole)
@@ -454,7 +455,6 @@ class EntryActionsController:
                        action_text='撤销', action_callback=undo)
 
     def delete_selected_entry(self) -> None:
-        """快捷键：删除当前选中条目。"""
         idx = self._view.entry_list.currentIndex()
         if idx.isValid():
             entry = idx.data(Qt.ItemDataRole.UserRole)
@@ -476,6 +476,7 @@ class EntryActionsController:
         dialog = CategoryDialog(self._entry_mgr, parent=parent)
         dialog.saved.connect(self._deps.refresh_categories)
         dialog.exec()
+        dialog.deleteLater()
 
     def _edit_category(self, category_id: int) -> None:
         category = self._entry_mgr.categories.get_category(category_id)
@@ -485,6 +486,7 @@ class EntryActionsController:
         dialog = CategoryDialog(self._entry_mgr, category=category, parent=parent)
         dialog.saved.connect(self._deps.refresh_categories)
         dialog.exec()
+        dialog.deleteLater()
 
     def _delete_category(self, category_id: int) -> None:
         msg, _has_entries, cat_name = self._sidebar_ctrl.build_delete_message(category_id)

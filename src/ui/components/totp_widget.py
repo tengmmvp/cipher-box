@@ -74,7 +74,6 @@ class TOTPWidget(QWidget):
         self._build(entry_id, secret)
 
     def stop(self) -> None:
-        """停止定时器。"""
         self._timer.stop()
 
     def clear(self) -> None:
@@ -113,7 +112,7 @@ class TOTPWidget(QWidget):
         self._entry_id = entry_id
         self._period = state['period']
 
-        # 使用 start 注入的 content_layout（显式依赖，不再反射访问父组件私有属性）
+        # 使用 start 注入的 content_layout（显式依赖，避免反射父组件私有属性）
         content_layout = self._content_layout
         if content_layout is None:
             return

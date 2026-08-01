@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 from . import __version__
 from .business.composition import build_business_context, build_vault
-from .config import DEFAULT_THEME, ConfigManager
+from .config import CFG_THEME, DEFAULT_THEME, ConfigManager
 from .logging_config import configure_logging
 from .ui.dialogs.login_window import LoginWindow
 from .ui.resources.constants import ABOUT_TO_QUIT_WAIT_TIMEOUT_MS
@@ -22,6 +22,9 @@ from .ui.resources.styles import get_style
 from .ui.windows.main_window import MainWindow
 
 logger = logging.getLogger(__name__)
+
+# 单实例锁等待超时（ms）：QLockFile.tryLock 在另一实例持锁时等待此毫秒后放弃。
+_SINGLE_INSTANCE_TIMEOUT_MS = 500
 
 
 class CipherBoxApplication(QApplication):
@@ -143,7 +146,7 @@ class CipherBoxApp:
     def run(self) -> int:
         """启动应用。"""
         # 应用全局样式；显式激活主题，使运行时 c() 解析的颜色与样式表一致（ARCH-009）
-        theme = self._config.get('theme', DEFAULT_THEME)
+        theme = self._config.get(CFG_THEME, DEFAULT_THEME)
         from .ui.resources.theme_colors import set_theme
         set_theme(theme)
         self._app.setStyleSheet(get_style(theme))  # type: ignore[attr-defined]
@@ -153,7 +156,7 @@ class CipherBoxApp:
         self._app.setOrganizationName('CipherBox')
         self._app.setApplicationVersion(__version__)
 
-        if not self._instance_lock.tryLock(500):
+        if not self._instance_lock.tryLock(_SINGLE_INSTANCE_TIMEOUT_MS):
             QMessageBox.warning(None, 'CipherBox', 'CipherBox 已在运行，请勿重复启动。')
             return 1
 

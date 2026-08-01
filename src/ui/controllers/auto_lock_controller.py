@@ -17,7 +17,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QAbstractNativeEventFilter, QByteArray, QObject, QTimer
 from PyQt6.QtWidgets import QApplication
 
-from ...config import DEFAULT_CONFIG
+from ...config import CFG_AUTO_LOCK_MINUTES, DEFAULT_CONFIG
 
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QWidget
@@ -90,14 +90,14 @@ class AutoLockController:
         """
         if self._lock_timer is None:
             return
-        # 默认值引用 DEFAULT_CONFIG 单一源,与 constants.py 派生 clipboard 默认值的路径一致,
+        # 默认值引用 DEFAULT_CONFIG 单一事实源,与 constants.py 派生 clipboard 默认值的路径一致,
         # 避免「改了默认却此处仍是字面量 5」的漂移。
         minutes = self._config.get_safe(
-            'auto_lock_minutes', DEFAULT_CONFIG['auto_lock_minutes']
+            CFG_AUTO_LOCK_MINUTES, DEFAULT_CONFIG[CFG_AUTO_LOCK_MINUTES]
         )
         # 无会话锁屏兜底时禁用「关闭空闲锁定」会彻底失去自动锁定，降级默认值（SEC-005）。
         if minutes <= 0 and not self._wts_registered:
-            minutes = DEFAULT_CONFIG['auto_lock_minutes']
+            minutes = DEFAULT_CONFIG[CFG_AUTO_LOCK_MINUTES]
             logger.warning(
                 "auto_lock_minutes=0 在无会话锁屏联动环境下不安全,已降级为默认值 %d 分钟",
                 minutes,

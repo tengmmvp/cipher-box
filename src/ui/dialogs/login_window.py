@@ -291,6 +291,9 @@ class LoginWindow(WorkerBackedDialog):
         # worker.error 携带 str(e)，透传给 _on_auth_error 优先展示真实系统错误，无信息时回退 error_default
         self._worker.error.connect(lambda msg: self._on_auth_error(msg, error_default))
         self._worker.start()
+        # SEC-LOGIN-001：password 已作为闭包传入 worker，KDF 派生期间（后台线程耗时）
+        # 立即清空输入框，缩短明文在控件的驻留窗口（无需等到结果返回）。
+        self._clear_password_inputs()
 
     def _on_auth_done(self, result: tuple[bool, str]) -> None:
         """后台认证完成回调，result 为来自 VaultManager 的元组。"""

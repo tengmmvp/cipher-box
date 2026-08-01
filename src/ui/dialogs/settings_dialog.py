@@ -26,7 +26,29 @@ from PyQt6.QtWidgets import (
 )
 
 from ...business.services.password_service import PasswordService
-from ...config import DEFAULT_CONFIG, ConfigManager, get_ui_int_range
+from ...config import (
+    CFG_AUTO_BACKUP_ENABLED,
+    CFG_AUTO_BACKUP_INTERVAL_HOURS,
+    CFG_AUTO_BACKUP_RETENTION,
+    CFG_AUTO_LOCK_MINUTES,
+    CFG_BACKUP_DIRECTORY,
+    CFG_CLIPBOARD_CLEAR_SECONDS,
+    CFG_CLOSE_TO_TRAY,
+    CFG_DEFAULT_DIGITS,
+    CFG_DEFAULT_EXCLUDE_AMBIGUOUS,
+    CFG_DEFAULT_LOWERCASE,
+    CFG_DEFAULT_PASSWORD_LENGTH,
+    CFG_DEFAULT_SYMBOLS,
+    CFG_DEFAULT_UPPERCASE,
+    CFG_MINIMIZE_TO_TRAY,
+    CFG_OLD_PASSWORD_WARNING_DAYS,
+    CFG_PASSWORD_VISIBLE_SECONDS,
+    CFG_SHOW_TRAY_ICON,
+    CFG_THEME,
+    DEFAULT_CONFIG,
+    ConfigManager,
+    get_ui_int_range,
+)
 from ..components.widgets import create_cancel_button, setup_dialog_flags
 from ..resources.constants import BTN_DIALOG, DIALOG_SETTINGS_MIN_SIZE, THEME_DARK, THEME_LIGHT
 
@@ -107,7 +129,7 @@ class SettingsDialog(QDialog):
         lock_group = QGroupBox('自动锁定')
         lock_layout = QFormLayout(lock_group)
         self._auto_lock_spin = QSpinBox()
-        self._auto_lock_spin.setRange(*get_ui_int_range('auto_lock_minutes'))
+        self._auto_lock_spin.setRange(*get_ui_int_range(CFG_AUTO_LOCK_MINUTES))
         self._auto_lock_spin.setSpecialValueText('不自动锁定')
         self._auto_lock_spin.setSuffix(' 分钟')
         lock_layout.addRow('空闲自动锁定：', self._auto_lock_spin)
@@ -118,7 +140,7 @@ class SettingsDialog(QDialog):
         self._clipboard_spin = QSpinBox()
         # 下限取运行时安全下限 10：get_safe('clipboard_clear_seconds') 会将低于 10 的值钳制到 10，
         # 故 UI 不提供 0 /「不自动清空」选项，避免界面值与运行时实际值脱节。
-        self._clipboard_spin.setRange(*get_ui_int_range('clipboard_clear_seconds'))
+        self._clipboard_spin.setRange(*get_ui_int_range(CFG_CLIPBOARD_CLEAR_SECONDS))
         self._clipboard_spin.setSuffix(' 秒')
         clip_layout.addRow('复制后自动清空：', self._clipboard_spin)
         layout.addWidget(clip_group)
@@ -126,7 +148,7 @@ class SettingsDialog(QDialog):
         pwd_group = QGroupBox('密码显示')
         pwd_layout = QFormLayout(pwd_group)
         self._pwd_visible_spin = QSpinBox()
-        self._pwd_visible_spin.setRange(*get_ui_int_range('password_visible_seconds'))
+        self._pwd_visible_spin.setRange(*get_ui_int_range(CFG_PASSWORD_VISIBLE_SECONDS))
         self._pwd_visible_spin.setSuffix(' 秒')
         pwd_layout.addRow('密码显示自动隐藏：', self._pwd_visible_spin)
         layout.addWidget(pwd_group)
@@ -142,7 +164,7 @@ class SettingsDialog(QDialog):
         form = QFormLayout(group)
 
         self._default_length_spin = QSpinBox()
-        self._default_length_spin.setRange(*get_ui_int_range('default_password_length'))
+        self._default_length_spin.setRange(*get_ui_int_range(CFG_DEFAULT_PASSWORD_LENGTH))
         form.addRow('默认长度：', self._default_length_spin)
 
         self._default_upper_check = QCheckBox('包含大写字母')
@@ -163,7 +185,7 @@ class SettingsDialog(QDialog):
         warn_group = QGroupBox('安全提醒')
         warn_layout = QFormLayout(warn_group)
         self._old_pwd_spin = QSpinBox()
-        self._old_pwd_spin.setRange(*get_ui_int_range('old_password_warning_days'))
+        self._old_pwd_spin.setRange(*get_ui_int_range(CFG_OLD_PASSWORD_WARNING_DAYS))
         self._old_pwd_spin.setSuffix(' 天')
         warn_layout.addRow('密码超过此天数未修改时提醒：', self._old_pwd_spin)
         layout.addWidget(warn_group)
@@ -194,11 +216,11 @@ class SettingsDialog(QDialog):
         )
         auto_form.addRow('', self._auto_backup_check)
         self._backup_interval_spin = QSpinBox()
-        self._backup_interval_spin.setRange(*get_ui_int_range('auto_backup_interval_hours'))
+        self._backup_interval_spin.setRange(*get_ui_int_range(CFG_AUTO_BACKUP_INTERVAL_HOURS))
         self._backup_interval_spin.setSuffix(' 小时')
         auto_form.addRow('创建间隔：', self._backup_interval_spin)
         self._backup_retention_spin = QSpinBox()
-        self._backup_retention_spin.setRange(*get_ui_int_range('auto_backup_retention'))
+        self._backup_retention_spin.setRange(*get_ui_int_range(CFG_AUTO_BACKUP_RETENTION))
         self._backup_retention_spin.setSuffix(' 份')
         auto_form.addRow('保留数量：', self._backup_retention_spin)
         self._auto_backup_check.toggled.connect(self._update_backup_options)
@@ -221,23 +243,23 @@ class SettingsDialog(QDialog):
     # 配置项映射表：四元组（配置键、控件属性、访问类型 combo/check/spin、默认值）。
     # 默认值统一引用 DEFAULT_CONFIG 单一事实源，改某项默认值只需改 config.DEFAULT_CONFIG 一处。
     _SETTINGS_MAP = [
-        ('theme', '_theme_combo', 'combo', DEFAULT_CONFIG['theme']),
-        ('show_tray_icon', '_show_tray_check', 'check', DEFAULT_CONFIG['show_tray_icon']),
-        ('minimize_to_tray', '_minimize_tray_check', 'check', DEFAULT_CONFIG['minimize_to_tray']),
-        ('close_to_tray', '_close_tray_check', 'check', DEFAULT_CONFIG['close_to_tray']),
-        ('auto_lock_minutes', '_auto_lock_spin', 'spin', DEFAULT_CONFIG['auto_lock_minutes']),
-        ('clipboard_clear_seconds', '_clipboard_spin', 'spin', DEFAULT_CONFIG['clipboard_clear_seconds']),
-        ('password_visible_seconds', '_pwd_visible_spin', 'spin', DEFAULT_CONFIG['password_visible_seconds']),
-        ('default_password_length', '_default_length_spin', 'spin', DEFAULT_CONFIG['default_password_length']),
-        ('default_uppercase', '_default_upper_check', 'check', DEFAULT_CONFIG['default_uppercase']),
-        ('default_lowercase', '_default_lower_check', 'check', DEFAULT_CONFIG['default_lowercase']),
-        ('default_digits', '_default_digits_check', 'check', DEFAULT_CONFIG['default_digits']),
-        ('default_symbols', '_default_symbols_check', 'check', DEFAULT_CONFIG['default_symbols']),
-        ('default_exclude_ambiguous', '_default_exclude_check', 'check', DEFAULT_CONFIG['default_exclude_ambiguous']),
-        ('old_password_warning_days', '_old_pwd_spin', 'spin', DEFAULT_CONFIG['old_password_warning_days']),
-        ('auto_backup_enabled', '_auto_backup_check', 'check', DEFAULT_CONFIG['auto_backup_enabled']),
-        ('auto_backup_interval_hours', '_backup_interval_spin', 'spin', DEFAULT_CONFIG['auto_backup_interval_hours']),
-        ('auto_backup_retention', '_backup_retention_spin', 'spin', DEFAULT_CONFIG['auto_backup_retention']),
+        (CFG_THEME, '_theme_combo', 'combo', DEFAULT_CONFIG[CFG_THEME]),
+        (CFG_SHOW_TRAY_ICON, '_show_tray_check', 'check', DEFAULT_CONFIG[CFG_SHOW_TRAY_ICON]),
+        (CFG_MINIMIZE_TO_TRAY, '_minimize_tray_check', 'check', DEFAULT_CONFIG[CFG_MINIMIZE_TO_TRAY]),
+        (CFG_CLOSE_TO_TRAY, '_close_tray_check', 'check', DEFAULT_CONFIG[CFG_CLOSE_TO_TRAY]),
+        (CFG_AUTO_LOCK_MINUTES, '_auto_lock_spin', 'spin', DEFAULT_CONFIG[CFG_AUTO_LOCK_MINUTES]),
+        (CFG_CLIPBOARD_CLEAR_SECONDS, '_clipboard_spin', 'spin', DEFAULT_CONFIG[CFG_CLIPBOARD_CLEAR_SECONDS]),
+        (CFG_PASSWORD_VISIBLE_SECONDS, '_pwd_visible_spin', 'spin', DEFAULT_CONFIG[CFG_PASSWORD_VISIBLE_SECONDS]),
+        (CFG_DEFAULT_PASSWORD_LENGTH, '_default_length_spin', 'spin', DEFAULT_CONFIG[CFG_DEFAULT_PASSWORD_LENGTH]),
+        (CFG_DEFAULT_UPPERCASE, '_default_upper_check', 'check', DEFAULT_CONFIG[CFG_DEFAULT_UPPERCASE]),
+        (CFG_DEFAULT_LOWERCASE, '_default_lower_check', 'check', DEFAULT_CONFIG[CFG_DEFAULT_LOWERCASE]),
+        (CFG_DEFAULT_DIGITS, '_default_digits_check', 'check', DEFAULT_CONFIG[CFG_DEFAULT_DIGITS]),
+        (CFG_DEFAULT_SYMBOLS, '_default_symbols_check', 'check', DEFAULT_CONFIG[CFG_DEFAULT_SYMBOLS]),
+        (CFG_DEFAULT_EXCLUDE_AMBIGUOUS, '_default_exclude_check', 'check', DEFAULT_CONFIG[CFG_DEFAULT_EXCLUDE_AMBIGUOUS]),
+        (CFG_OLD_PASSWORD_WARNING_DAYS, '_old_pwd_spin', 'spin', DEFAULT_CONFIG[CFG_OLD_PASSWORD_WARNING_DAYS]),
+        (CFG_AUTO_BACKUP_ENABLED, '_auto_backup_check', 'check', DEFAULT_CONFIG[CFG_AUTO_BACKUP_ENABLED]),
+        (CFG_AUTO_BACKUP_INTERVAL_HOURS, '_backup_interval_spin', 'spin', DEFAULT_CONFIG[CFG_AUTO_BACKUP_INTERVAL_HOURS]),
+        (CFG_AUTO_BACKUP_RETENTION, '_backup_retention_spin', 'spin', DEFAULT_CONFIG[CFG_AUTO_BACKUP_RETENTION]),
     ]
 
     def _set_widget_value(
@@ -267,7 +289,7 @@ class SettingsDialog(QDialog):
     def _load_settings(self) -> None:
         for key, attr, atype, default in self._SETTINGS_MAP:
             self._set_widget_value(getattr(self, attr), atype, self._config.get(key, default))
-        self._backup_path_edit.setText(self._config.get('backup_directory', ''))
+        self._backup_path_edit.setText(self._config.get(CFG_BACKUP_DIRECTORY, ''))
         self._update_tray_options(self._show_tray_check.isChecked())
         self._update_backup_options(self._auto_backup_check.isChecked())
 
@@ -280,7 +302,7 @@ class SettingsDialog(QDialog):
         self._backup_retention_spin.setEnabled(enabled)
 
     def _save_settings(self) -> None:
-        # 至少需要一种字符集，校验文案经共享 helper 单一源
+        # 至少需要一种字符集，校验文案经共享 helper 单一事实源
         ok, error = PasswordService.validate_charset_selection(
             self._default_upper_check.isChecked(),
             self._default_lower_check.isChecked(),
@@ -295,10 +317,10 @@ class SettingsDialog(QDialog):
         snapshot: dict[str, object] = {
             key: self._config.get(key) for key, *_ in self._SETTINGS_MAP
         }
-        snapshot['backup_directory'] = self._config.get('backup_directory')
+        snapshot[CFG_BACKUP_DIRECTORY] = self._config.get(CFG_BACKUP_DIRECTORY)
         for key, attr, atype, _default in self._SETTINGS_MAP:
             self._config.set(key, self._get_widget_value(getattr(self, attr), atype))
-        self._config.set('backup_directory', self._backup_path_edit.text().strip())
+        self._config.set(CFG_BACKUP_DIRECTORY, self._backup_path_edit.text().strip())
         try:
             self._config.save()
         except OSError:

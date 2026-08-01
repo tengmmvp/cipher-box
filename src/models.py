@@ -177,7 +177,7 @@ class Category:
     metadata_mac: str = ''  # 元数据完整性 HMAC 签名（与 Entry.metadata_mac 对称）
     # 运行时完整性标志（不入库、不序列化，to_dict 不含）：LENIENT 验签失败时置 True，
     # 供 UI 提示。与 RawEntry.integrity_error 对称，使分类元数据篡改（icon/color/
-    # sort_order 等非加密字段）对用户可见——原先仅记日志，用户无法察觉分类层 HMAC
+    # sort_order 等非加密字段）对用户可见——仅记日志时用户无法察觉分类层 HMAC
     # 失败（分类名密文仍由 GCM 认证兜底，但元数据篡改可静默通过）。
     integrity_error: bool = False
 
@@ -369,7 +369,7 @@ class Entry:
         self.assert_decrypted()
         custom_fields = self.custom_fields
         # assert_decrypted 已保证已解密；isinstance 兼作类型收窄（供静态分析）
-        # 与运行时防御（不受 python -O 影响，替代原 assert）。
+        # 与运行时防御（不受 python -O 影响，assert 在 -O 下会被剥离）。
         if not isinstance(custom_fields, list):
             raise TypeError('custom_fields 必须为已解密的列表')
         d = {
@@ -464,8 +464,8 @@ class RawEntry:
 
     ``is_decrypted`` 恒为 False；``custom_fields_db_value`` 返回 ``custom_fields``
     （密文），供签名、重加密、备份等需要密文的场景。与 Entry 共享字段名以便显式
-    转换，但 ``custom_fields`` 类型不同（str vs list），编译期可分辨，消除原先
-    同名字段双语义（DB-raw 密文 str / 解密 list 共存于 Entry）导致的误用风险——
+    转换，但 ``custom_fields`` 类型不同（str vs list），编译期可分辨，避免
+    同名字段双语义（密文 str 与解密 list 混入同一类）导致的误用风险——
     对 RawEntry 误调用 list 方法、或对明文 Entry 误当密文，都会被类型检查捕获。
     """
 

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, cast
 from PyQt6.QtCore import QModelIndex, Qt, QTimer
 from PyQt6.QtWidgets import QListWidgetItem, QMainWindow
 
+from ...config import CFG_OLD_PASSWORD_WARNING_DAYS, CFG_SORT_FIELD, CFG_SORT_ORDER
 from ..components.empty_state_widget import EmptyStateWidget
 from ..components.workers import BackgroundWorker, wait_worker_shutdown
 from ..resources.constants import (
@@ -296,12 +297,11 @@ class ListRefreshController:
     def on_sort_changed(self) -> None:
         """排序选项变更。仅更新内存配置，持久化由 closeEvent 统一完成。"""
         field, order = self.get_sort_config()
-        self._config.set('sort_field', field)
-        self._config.set('sort_order', order)
+        self._config.set(CFG_SORT_FIELD, field)
+        self._config.set(CFG_SORT_ORDER, order)
         self.refresh_entries()
 
     def _sort_entries(self, entries: list[Entry]) -> list[Entry]:
-        """对条目列表排序。"""
         return self._entry_list_ctrl.sort_entries(entries, self._view.sort_combo.currentIndex())
 
     # ========== 数据操作 ==========
@@ -496,7 +496,7 @@ class ListRefreshController:
 
     def _apply_entry_results(
         self,
-        entries: list,
+        entries: list[Entry],
         title: str,
         scroll_restore: ScrollRestore,
     ) -> None:
@@ -585,11 +585,11 @@ class ListRefreshController:
     def _is_security_analyzing(self) -> bool:
         """security 分析是否仍在进行（缓存未就绪），供 weak/duplicate 空态共享。"""
         return self._security.get_cached_counts(
-            self._config.get('old_password_warning_days')
+            self._config.get(CFG_OLD_PASSWORD_WARNING_DAYS)
         ) is None
 
     def update_status_bar(self) -> None:
-        days = self._config.get('old_password_warning_days')
+        days = self._config.get(CFG_OLD_PASSWORD_WARNING_DAYS)
         # 快速路径：缓存命中时仅取计数——get_cached_counts 跳过 get_cached_report 经
         # _refilter_cache 的 Entry 深拷贝，状态栏只需四个计数。
         counts = self._security.get_cached_counts(days)
@@ -737,7 +737,6 @@ class ListRefreshController:
             self.refresh_entries()
 
     def clear_search(self) -> None:
-        """快捷键：清空搜索。"""
         search_edit = self._view.search_edit
         if search_edit.text():
             search_edit.clear()

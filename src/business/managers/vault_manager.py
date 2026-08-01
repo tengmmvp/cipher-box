@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ...config import ConfigManager
+from ...config import CFG_BACKUP_DIRECTORY, ConfigManager
 from ...crypto.encryption import EncryptionEngine
 from ...crypto.master_key import KdfParams
 from ...database.db_manager import DatabaseManager
@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 
 class VaultManager:
     """保险库安全边界核心：密钥、数据库、写守卫与原子状态操作。
+
+    写守卫是本类的核心安全不变量：所有数据库写入经 :meth:`enforce_key_epoch`
+    拒绝锁定态或主密钥已轮换（改密/恢复）的旧会话写入，杜绝旧密钥密文落到新 epoch
+    库造成解密失败的损坏窗口。
 
     完整生命周期流程由 :class:`VaultLifecycleOrchestrator` 编排，本类仅提供其
     所需的原子操作（激活密钥、清零状态、加载 snapshot_key 等）。
@@ -154,14 +158,14 @@ class VaultManager:
     def backup_directories(self) -> list[Path]:
         """备份相关目录列表：默认目录 + 用户自定义 backup_directory（若配置）。
 
-        作为 purge/清理路径的目录单一真相源，避免漏扫自定义目录导致含明文的
+        作为 purge/清理路径的目录单一事实源，避免漏扫自定义目录导致含明文的
         恢复点/快照残留。用户配置的 ``backup_directory`` 经
         ``validate_file_path(check_ancestors=True)`` 复核（与 :meth:`maybe_auto_backup`
         写入侧对齐），收缩符号链接重定向威胁；非法路径跳过并告警，避免 purge 误删
         重定向位置文件（SEC-004）。
         """
         directories = [self.data_dir / BACKUPS_DIR_NAME]
-        custom = self._config.get('backup_directory', '')
+        custom = self._config.get(CFG_BACKUP_DIRECTORY, '')
         if custom:
             try:
                 validated = validate_file_path(custom, check_ancestors=True)
@@ -205,7 +209,14 @@ class VaultManager:
         return self._is_unlocked and self._key is not None
 
     @property
-    def key(self) -> bytes | None:
+    def key(self) -> bytes:
+        """当前主密钥；未解锁抛 VaultLockedError（与 snapshot_key 对称，MAINT-009）。
+
+        加解密统一经 ``require_vault_key`` 守卫；本 property 补 fail-fast 使直接读取
+        （如改密路径）也对称地抛而非返回 None 静默传播。
+        """
+        if not self.is_unlocked or self._key is None:
+            raise VaultLockedError('保险库未解锁')
         return self._key
 
     @property
@@ -266,16 +277,23 @@ class VaultManager:
             yield
 
     @contextmanager
-    def epoch_guarded_transaction(self, *, operation: str = '操作') -> Iterator[None]:
+    def epoch_guarded_transaction(
+        self, *, operation: str = '操作', pre_epoch: str | None = None,
+    ) -> Iterator[None]:
         """事务 + epoch 守卫：进入时快照 key_epoch，事务内复查防并发改密。
 
         收敛各长写路径「pre_epoch 快照 → 开事务 → 事务内复查 key_epoch → 业务写入」
         重复样板。db_lock 已串行化改密，epoch 复查是冗余纵深防御——check 置于 yield 前，
         yield 块内的写入由此获得「事务期间密钥未变」的保证。
+
+        pre_epoch：调用方在「锁外加密」前自行快照的 key_epoch（MAINT-004）。默认 None
+        则进入本上下文时快照。导入路径把加密移出 db_lock 后，须在加密前快照 pre_epoch
+        并传入——若「加密后→开事务前」发生改密（epoch 已变），此处复查 snapshot（旧）
+        与当前 key_epoch（新）不等而中止，避免旧密钥密文落到新 epoch 库。
         """
-        pre_epoch = self.key_epoch
+        snapshot = self.key_epoch if pre_epoch is None else pre_epoch
         with self.db.transaction():
-            if self.key_epoch != pre_epoch:
+            if self.key_epoch != snapshot:
                 raise VaultKeyEpochMismatchError(
                     f'{operation}期间检测到密钥变更，已中止并回滚'
                 )

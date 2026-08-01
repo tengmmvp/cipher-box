@@ -242,7 +242,7 @@ class TestStaleWorkerResultDiscarded:
         _FakeAsyncWorker.instances = []
         ctrl = _make_controller()
         view = _setup(ctrl)
-        # 超过 ASYNC_SEARCH_THRESHOLD(=50) 触发异步刷新（filter 'all' 无论搜索均异步）
+        # 超过 ASYNC_SEARCH_THRESHOLD（=50）触发异步刷新（filter 'all' 无论搜索均异步）
         ctrl._entry_mgr.get_entry_count.return_value = 100
         # _apply_entry_results 的滚动恢复比较需 int 返回值（saved_row / rowCount）
         view.entry_list.currentIndex.return_value.row.return_value = -1

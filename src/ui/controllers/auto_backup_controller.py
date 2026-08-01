@@ -7,15 +7,18 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from PyQt6.QtCore import QObject, QTimer
 
 from ...business.managers.backup_restore import BackupRestoreManager
+from ...config import CFG_AUTO_BACKUP_ENABLED
 from ..components.workers import BackgroundWorker, wait_worker_shutdown
 from ..resources.constants import MS_AUTO_BACKUP_CHECK, MS_INITIAL_BACKUP_DELAY
 
 if TYPE_CHECKING:
+    from PyQt6.QtWidgets import QWidget
+
     from ...business.managers.vault_manager import VaultManager
     from ...config import ConfigManager
 
@@ -71,7 +74,7 @@ class AutoBackupController:
         if not self._vault.is_unlocked:
             return
         # 未启用自动备份时直接返回，避免每 10 分钟空转一个 worker 线程。
-        if not force and not self._config.get_safe('auto_backup_enabled', False):
+        if not force and not self._config.get_safe(CFG_AUTO_BACKUP_ENABLED, False):
             return
         self._run_async(force)
 
@@ -102,6 +105,18 @@ class AutoBackupController:
             # 旧 worker 的延迟错误信号触发误导性日志。worker 为自由变量，延迟绑定。
             if self._worker is worker:
                 logger.warning("自动快照失败: %s", msg)
+                # QL-004：自动备份失败给用户可见反馈（后台静默任务，失败时用户无感知）。
+                # 含全量明文的快照连续失败是泄漏面/可恢复性问题，用户应知晓。
+                from ..components.toast import Toast
+                from ..resources.constants import MS_TOAST_DEFAULT
+                # self._parent 标注为 QObject（setup 宽接口），实际注入 MainWindow(QWidget)；
+                # Toast.show 需 QWidget，经 cast 桥接 + None 守卫。
+                if self._parent is not None:
+                    Toast.show(
+                        cast('QWidget', self._parent),
+                        '自动快照失败，详见日志', Toast.WARNING,
+                        duration=MS_TOAST_DEFAULT,
+                    )
 
         worker = BackgroundWorker(_task, parent=self._parent)
         worker.error.connect(_on_backup_error)

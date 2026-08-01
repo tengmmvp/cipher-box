@@ -30,7 +30,7 @@ def test_entry_and_raw_entry_share_field_names():
 
 
 def test_encrypted_field_set_single_source():
-    """re_encryption._ENCRYPTED_ENTRY_FIELDS 须引用 crypto_utils 单一来源。"""
+    """re_encryption._ENCRYPTED_ENTRY_FIELDS 须引用 crypto_utils 单一事实源。"""
     assert tuple(_ENCRYPTED_ENTRY_FIELDS) == SENSITIVE_ENCRYPTED_FIELDS
 
 

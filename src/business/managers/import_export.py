@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, NamedTuple, TypeVar
 
 from ...exceptions import (
-    DatabaseError,
     DecryptionError,
     EntryError,
     EntryIntegrityError,
@@ -27,7 +26,7 @@ from ...exceptions import (
 from ...models import MAX_CATEGORY_NAME, Category, Entry, RawEntry
 from ...utils.file_security import atomic_write, validate_file_path
 from ...utils.format import utc_now_iso
-from .entry_manager import BatchUpdateItem
+from .entry_manager import BatchUpdateItem, PreparedUpdate
 from .importers import (
     BitwardenImporter,
     CsvImporter,
@@ -120,7 +119,7 @@ class ImportCallbacks:
 class OverwritePlan(NamedTuple):
     """覆盖计划项：源序号、合并后条目、待覆盖条目密文 raw。
 
-    old_password 不在计划中收集（SEC-014）：延迟到 :meth:`_apply_overwrites` 写入前
+    old_password 不在计划中收集（SEC-014）：延迟到 :meth:`_prepare_overwrite_batch` 写入前
     逐条解密提取，避免分类阶段全量收集旧密码明文随导入规模线性驻留。
     """
     source_idx: int
@@ -134,8 +133,8 @@ def _validate_import_input(method: Callable[..., T]) -> Callable[..., T]:
     通过 inspect 绑定方法签名，从任意调用方式稳健提取 filepath 参数，校验并
     替换为 resolved 路径（避免校验后原始路径被替换为符号链接的 TOCTOU 窗口）。
 
-    文件读取与解析在事务外完成；事务与 epoch 守卫由 ``_run_import_transaction``
-    在写入阶段开启，使大文件 I/O 与解析不持有 db_lock，避免阻塞 TOTP 定时器等。
+    文件读取与解析在事务外完成；事务与 epoch 守卫由 :meth:`_import_entries` 在
+    写入阶段开启，使大文件 I/O 与解析不持有 db_lock，避免阻塞 TOTP 定时器等。
     """
     method_sig = inspect.signature(method)
     # 装饰器应用即校验被装饰方法含 filepath 参数，让重命名/漏参在导入时立即暴露，
@@ -185,7 +184,9 @@ class ImportExportManager:
         resolved = str(validate_file_path(filepath))
         size = Path(resolved).stat().st_size
         if size > MAX_IMPORT_FILE_SIZE:
-            raise ImportSizeError('导入文件过大，最大允许 25 MB')
+            raise ImportSizeError(
+                f'导入文件过大，最大允许 {MAX_IMPORT_FILE_SIZE // (1024 * 1024)} MB'
+            )
         return resolved
 
     @staticmethod
@@ -201,7 +202,6 @@ class ImportExportManager:
         entries_data: list[dict[str, Any]],
         duplicate_action: str,
         source_label: str,
-        existing_entries: list[Entry] | None = None,
     ) -> tuple[set[int], dict[int, Entry]]:
         """按重复策略生成导入计划，返回 ``(跳过索引集, 覆盖映射)``。
 
@@ -215,8 +215,7 @@ class ImportExportManager:
         if duplicate_action == 'import_all':
             return set(), {}
 
-        if existing_entries is None:
-            existing_entries = self._entry_mgr.get_entry_summaries()
+        existing_entries = self._entry_mgr.get_entry_summaries()
         existing_by_key = {
             (entry.title.casefold(), entry.username.casefold()): entry
             for entry in existing_entries
@@ -261,26 +260,73 @@ class ImportExportManager:
             result[idx] = raw
         return result
 
+    def _ensure_categories(
+        self,
+        entries: list[Entry],
+        duplicate_indices: set[int],
+        ctx: ImportContext,
+        cancel_check: Callable[[], bool] | None,
+    ) -> None:
+        """预扫描条目分类名，批量创建缺失分类并回填 ctx.categories（ARCH-001）。
+
+        逐条 ``add_category`` 每次触发 ``get_categories`` 全表解密查重，N 个新分类致
+        O(N×M)；此处导入前一次性收集所有缺失分类名，经 ``add_categories_batch`` 单事务
+        批量两阶段加密创建。``ctx.categories`` 已含现有分类 casefold 映射，据此判别真正
+        缺失者；批创建不查重（与恢复路径同款），因预扫描已对现有分类与自身去重。
+
+        与逐条实现一致：duplicate 条目跳过（不为被跳过条目创建空分类）；分类名超长
+        抛 ``ImportFormatError`` 中止导入；cancel 后停止收集。
+
+        Note:
+            MAINT-004 后分类创建在 epoch 守卫写入事务**外**（加密亦移出 db_lock），经
+            ``add_categories_batch`` 独立提交，后续条目写入失败时**不随回滚**——可能留下
+            空分类（无害，用户可删；重导时按 casefold 名复用，不重复创建）。强求回滚须把
+            分类创建移回写入事务，致分类解析与加密重新落入 db_lock，与 MAINT-004 相悖。
+        """
+        pending: dict[str, str] = {}  # casefold_key -> 原始拼写（去重，保留首次）
+        for i, entry in enumerate(entries):
+            if cancel_check and cancel_check():
+                break
+            if i in duplicate_indices:
+                continue
+            name = (entry.category_name or '').strip()
+            if not name:
+                continue
+            if len(name) > MAX_CATEGORY_NAME:
+                raise ImportFormatError(f'分类名称过长（最多 {MAX_CATEGORY_NAME} 字符）')
+            key = name.casefold()
+            if key not in ctx.categories and key not in pending:
+                pending[key] = name
+        if not pending:
+            return
+        new_cats = [
+            Category(name=orig, icon_char='[IMPORT]', color='#0f766e')
+            for orig in pending.values()
+        ]
+        new_ids = self._entry_mgr.categories.add_categories_batch(new_cats, notify=False)
+        for cat, new_id in zip(new_cats, new_ids, strict=True):
+            if new_id:
+                ctx.categories[cat.name.casefold()] = replace(cat, id=new_id)
+
     def _resolve_category(
         self,
         name: str,
         categories: dict[str, Category],
         default_category_id: int | None,
     ) -> int | None:
-        """匹配来源分类；不存在时创建，尽量保留导入结构。"""
+        """按名匹配分类；缺失时回退默认（创建由 :meth:`_ensure_categories` 预完成）。
+
+        ARCH-001：分类批量预创建后，本方法仅查内存映射，不再逐条 ``add_category``。
+        正常不应到达「缺失」分支；防御性回退默认分类，避免 KeyError 中断导入。
+        """
         clean_name = (name or '').strip()
         if not clean_name:
             return default_category_id
-        if len(clean_name) > MAX_CATEGORY_NAME:
-            raise ImportFormatError(f'分类名称过长（最多 {MAX_CATEGORY_NAME} 字符）')
         key = clean_name.casefold()
-        if key in categories:
-            return categories[key].id
-        category = Category(name=clean_name, icon_char='[IMPORT]', color='#0f766e')
-        new_id = self._entry_mgr.categories.add_category(category, notify=False)
-        category = replace(category, id=new_id)
-        categories[key] = category
-        return category.id
+        category = categories.get(key)
+        if category is not None and category.id is not None:
+            return category.id
+        return default_category_id
 
     # ======== 导出 ========
 
@@ -387,11 +433,13 @@ class ImportExportManager:
         ctx: ImportContext,
         callbacks: ImportCallbacks,
     ) -> int:
-        """统一的导入写入编排：去重、分类、批量新增、批量覆盖、进度回调。
+        """统一的导入写入编排：去重、分类、加密、写入、进度回调。
 
-        事务边界由 ``_run_import_transaction`` 的 epoch 守卫包裹；本方法仅编排
-        写入阶段，按「入库清洗 → 去重计划 → 分类(含覆盖合并) → 批量新增 →
-        批量覆盖 → 统一通知」顺序流转，各阶段职责拆至下方私有方法。
+        MAINT-004 事务边界：CPU 密集的加密移出 db_lock——「清洗 → 去重 → 分类 →
+        加密」在 epoch 守卫事务外完成（各 db 读/写用各自短事务），仅「裸写入」在
+        ``epoch_guarded_transaction(pre_epoch=...)`` 内。``pre_epoch`` 在加密前快照，
+        供写入事务复查：若「加密后→开事务前」发生改密（epoch 已变），复查不等则中止
+        回滚，旧密钥密文不落库。
 
         Args:
             entries: 已解析好的 Entry 对象列表，与 entries_data 一一对应。
@@ -402,6 +450,7 @@ class ImportExportManager:
         if not entries:
             return 0
 
+        # ---- 锁外：清洗 → 去重 → 分类 → 加密 ----
         # 入库边界统一清洗公式注入前缀（SEC-008）：对受影响文本字段转义危险前缀，
         # 使后续剪贴板/JSON 导出等外流路径无需各自防护。密码/TOTP 不外流至表格，不清洗。
         entries = [_sanitize_entry_formula_fields(e) for e in entries]
@@ -411,24 +460,38 @@ class ImportExportManager:
         )
         overwrite_raws = self._prepare_overwrite_map(overwrite_map) if overwrite_map else {}
 
+        # ARCH-001：预扫描批量创建缺失分类，替代 _dedupe_and_classify 内逐条
+        # _resolve_category→add_category 的 O(N×M) 全表解密查重。
+        self._ensure_categories(entries, duplicate_indices, ctx, callbacks.cancel_check)
+
         new_entries, overwrite_plans, classify_skipped = self._dedupe_and_classify(
             entries, duplicate_indices, overwrite_raws, ctx, callbacks,
         )
 
-        new_count, new_skipped = self._batch_insert_new(new_entries, ctx.source_label)
-        overwrite_count, overwrite_skipped = self._apply_overwrites(
-            overwrite_plans, ctx.source_label
+        # 锁外加密（MAINT-004）：加密前快照 pre_epoch，供写入事务复查防「加密后改密」。
+        pre_epoch = self._entry_mgr.key_epoch
+        enc_new, preserve, new_skipped = self._encrypt_new_batch(new_entries, ctx.source_label)
+        overwrite_prepared, overwrite_skipped = self._prepare_overwrite_batch(
+            overwrite_plans, ctx.source_label,
         )
 
-        skipped = classify_skipped + new_skipped + overwrite_skipped
-        count = new_count + overwrite_count
+        # ---- 锁内：epoch 守卫事务内裸写入 ----
+        # epoch 守卫是冗余防御层：真正的串行化由 db.transaction() 持有的数据库锁保证
+        # （改密 _re_encrypt_all 同样经该锁串行），不会与导入并发写库。pre_epoch 复查是
+        # 纵深防御——加密已移出 db_lock（MAINT-004），复查确保「加密后→写入前」未发生改密。
+        with self._entry_mgr.epoch_guarded_transaction(operation='导入', pre_epoch=pre_epoch):
+            self._entry_mgr.write_new_entries(enc_new, preserve=preserve, notify=False)
+            overwrite_count = self._entry_mgr.write_overwrite_updates(
+                overwrite_prepared, pre_epoch,
+            )
 
-        # 批量导入统一通知一次（add/update 已传 notify=False 避免逐条回调）
+        # 批量导入统一通知一次（写入已传 notify=False 避免逐条回调）
         self._entry_mgr.notify_batch_change()
 
+        skipped = classify_skipped + new_skipped + overwrite_skipped
+        count = len(enc_new) + overwrite_count
         if skipped:
             logger.info("%s: 跳过 %d 条无效条目", ctx.source_label, skipped)
-
         return count
 
     def _dedupe_and_classify(
@@ -445,14 +508,14 @@ class ImportExportManager:
         ``overwrite_raws`` 命中则走 :meth:`_merge_overwrite_entry` 覆盖合并，
         否则收入 ``new_entries``。
 
-        分类解析（``_resolve_category``）在 try 之外调用：其抛出
-        :class:`ImportFormatError`（分类名过长等）向上传播中止整个导入事务，
-        而非逐条跳过——保留原语义。覆盖路径的解密/合并错误则在 try 内被捕获，
-        逐条跳过。
+        分类解析经 ``_resolve_category`` 查内存映射（缺失回退默认分类，不抛异常）；
+        分类名超长等格式错误由 :meth:`_ensure_categories` 在分类预扫描阶段抛
+        :class:`ImportFormatError` 向上传播中止整个导入事务，而非逐条跳过。覆盖路径
+        的解密/合并错误则在 try 内被捕获，逐条跳过。
         """
         total = len(entries)
         new_entries: list[Entry] = []
-        # OverwritePlan(source_idx, entry, raw)：old_password 延迟到 _apply_overwrites
+        # OverwritePlan(source_idx, entry, raw)：old_password 延迟到 _prepare_overwrite_batch
         # 写入前逐条解密（SEC-014），不在分类阶段收集，避免旧密码明文随导入规模线性驻留。
         overwrite_plans: list[OverwritePlan] = []
         skipped = 0
@@ -482,7 +545,7 @@ class ImportExportManager:
                     raw = overwrite_raws[i]
                     # 逐条解密覆盖目标并合并：用毕即清（password/totp_secret 置零 + 删引用），
                     # 任一时刻仅 1 条覆盖目标完整明文驻留，与单条路径纪律一致。
-                    # old_password 不在此提取（SEC-014），延迟到 _apply_overwrites 写入时刻。
+                    # old_password 不在此提取（SEC-014），延迟到 _prepare_overwrite_batch 写入时刻。
                     entry = self._merge_overwrite_entry(
                         entry, raw, callbacks.overwrite_merger
                     )
@@ -514,7 +577,7 @@ class ImportExportManager:
     ) -> Entry:
         """覆盖单条：解密 existing、合并、保留 password_changed_at、用毕即清。
 
-        返回合并后的 entry（不含 old_password——延迟到 :meth:`_apply_overwrites` 写入
+        返回合并后的 entry（不含 old_password——延迟到 :meth:`_prepare_overwrite_batch` 写入
         时刻逐条解密提取，SEC-014）。解密/合并异常向上传播，由
         :meth:`_dedupe_and_classify` 捕获（GCM 认证失败的 :class:`DecryptionError` 不在
         该捕获范围，向上中止导入）。
@@ -542,59 +605,55 @@ class ImportExportManager:
             del existing
         return entry
 
-    def _batch_insert_new(
+    def _encrypt_new_batch(
         self,
         new_entries: list[Entry],
         source_label: str,
-    ) -> tuple[int, int]:
-        """批量写入新条目，返回 ``(成功数, 跳过数)``。
+    ) -> tuple[list[RawEntry], bool, int]:
+        """锁外加密新条目（MAINT-004），返回 ``(enc_entries, preserve, skipped)``。
 
-        用 executemany 替代逐条 INSERT，缩短导入事务持 db_lock 的时间。
-        ``add_entries`` 原子写入（全成功或全回滚），失败时整批计为跳过。
+        加密在 db_lock 外完成（CPU 密集不阻塞 db 读），写入由调用方在 epoch 守卫事务内
+        经 :meth:`EntryManager.write_new_entries` 执行。数据问题（字段非法/损坏）跳过整批。
         """
         if not new_entries:
-            return 0, 0
+            return [], False, 0
         try:
-            self._entry_mgr.add_entries(new_entries, notify=False)
-            return len(new_entries), 0
-        except (EntryError, EntryIntegrityError, DatabaseError) as exc:
+            enc_entries, preserve = self._entry_mgr.encrypt_new_entries(new_entries)
+            return enc_entries, preserve, 0
+        except (EntryError, EntryIntegrityError) as exc:
             logger.warning(
-                "%s: 批量写入 %d 个新条目失败: %s",
+                "%s: 批量加密 %d 个新条目失败: %s",
                 source_label, len(new_entries), exc,
             )
-            return 0, len(new_entries)
+            return [], False, len(new_entries)
 
-    def _apply_overwrites(
+    def _prepare_overwrite_batch(
         self,
         overwrite_plans: list[OverwritePlan],
         source_label: str,
-    ) -> tuple[int, int]:
-        """批量执行覆盖更新，返回 ``(成功数, 跳过数)``。
+    ) -> tuple[list[PreparedUpdate], int]:
+        """锁外 prepare 覆盖项（MAINT-004），返回 ``(prepared, skipped)``。
 
-        收敛逐条 ``update_entry`` 的 per-item SAVEPOINT/epoch 复查开销。
-        ``preloaded_raw`` 复用预读跳过重复 ``get_entry``。
+        验证/解密/加密在 db_lock 外完成，写入由调用方在 epoch 守卫事务内经
+        :meth:`EntryManager.write_overwrite_updates` 执行。per-item 错误隔离：验证/解密
+        错误跳过单条（收集到 failures），写/epoch 错误由 write_overwrite_updates 向上中止。
 
-        old_password 延迟提取（SEC-014/PF-005）：分类与批量收集阶段均不预解密旧密码，
-        留 None 由 :meth:`update_entries_batch_with_history` 的 prepared 阶段逐条解密、
-        比对即 del，避免全部旧密码同刻驻留。
-
-        per-item 错误隔离：验证/解密错误跳过单条，写/epoch 错误向上中止。
-        ``batch_failures`` 索引对齐 ``overwrite_plans``（同序），取原 source idx 记日志，
+        old_password 延迟提取（SEC-014/PF-005）：留 None 由 prepare_overwrite_updates
+        的 prepared 阶段逐条解密、比对即 del，避免全部旧密码同刻驻留。
+        ``failures`` 索引对齐 ``overwrite_plans``（同序），取原 source idx 记日志，
         不打印标题（可能含敏感信息）。
         """
         if not overwrite_plans:
-            return 0, 0
+            return [], 0
         # old_password 留 None（PF-005）：不在批量收集阶段预解密全部旧密码（同刻驻留），
-        # 由 update_entries_batch_with_history 的 prepared 阶段逐条解密、_prepare_password_update
+        # 由 prepare_overwrite_updates 的 prepared 阶段逐条解密、_prepare_password_update
         # 比对即 del 清零。
         batch_items: list[BatchUpdateItem] = [
             BatchUpdateItem(plan.entry, plan.raw, None)
             for plan in overwrite_plans
         ]
-        success, batch_failures = (
-            self._entry_mgr.update_entries_batch_with_history(
-                batch_items, preserve_password_changed_at=True,
-            )
+        prepared, batch_failures = self._entry_mgr.prepare_overwrite_updates(
+            batch_items, preserve_password_changed_at=True,
         )
         skipped = 0
         # batch_failures 索引对齐 batch_items（与 overwrite_plans 同序）；
@@ -622,25 +681,7 @@ class ImportExportManager:
                     plan.entry.crypto_id or '(未生成)',
                     failure_exc,
                 )
-        return success, skipped
-
-    def _run_import_transaction(self, importer: Callable[[], int]) -> int:
-        """在事务内执行导入写入，含 epoch 守卫。
-
-        文件读取与解析须在调用本方法之前完成（事务外）。本方法在事务开始前
-        快照 key_epoch，事务开始后验证未变化，防止导入期间并发改密导致数据
-        用旧密钥加密但 epoch 已更新。
-
-        Args:
-            importer: 在事务内调用的写入回调，通常为 ``_import_entries`` 的
-                部分应用。返回导入条目数。
-        """
-        # epoch 守卫是冗余的防御层：真正的串行化由 db.transaction() 持有的数据库锁
-        # 保证（改密 _re_encrypt_all 同样经该锁串行），不会与导入并发写库。此处二次
-        # 校验 epoch 是纵深防御，避免未来若移除事务锁时静默引入竞态——切勿据此
-        # 误以为去掉事务锁后仅靠此守卫仍安全。
-        with self._entry_mgr.epoch_guarded_transaction(operation='导入'):
-            return importer()
+        return prepared, skipped
 
     def _categories_by_folded_name(self) -> dict[str, Category]:
         """构造分类名 casefold 映射，供导入按名匹配分类（大小写不敏感）。"""
@@ -658,11 +699,11 @@ class ImportExportManager:
         progress_callback: Callable[[int, int], None] | None,
         cancel_check: Callable[[], bool] | None,
     ) -> int:
-        """统一执行格式策略：解析文件后在 epoch 守卫事务内写入。
+        """统一执行格式策略：解析文件后委托 ``_import_entries`` 写入。
 
-        import_file 入口共享此骨架，仅传入的 importer 不同，消除事务/分类/
-        写入编排的重复。文件解析在事务外完成（importer.parse），大文件 I/O 与
-        解析不持 db_lock。
+        import_file 入口共享此骨架，仅传入的 importer 不同，消除分类/写入编排的重复。
+        文件解析在事务外完成（importer.parse），大文件 I/O 与解析不持 db_lock；epoch
+        守卫与加密/写入边界由 ``_import_entries`` 内部管理（MAINT-004）。
 
         parse 外层统一归一解析异常（SEC-009）：JSON 损坏（json.JSONDecodeError）、
         深嵌套（RecursionError）、CSV 格式错误（csv.Error）一律转
@@ -686,9 +727,7 @@ class ImportExportManager:
             cancel_check=cancel_check,
             overwrite_merger=parsed.overwrite_merger,
         )
-        return self._run_import_transaction(
-            lambda: self._import_entries(parsed.entries, parsed.entries_data, ctx, callbacks)
-        )
+        return self._import_entries(parsed.entries, parsed.entries_data, ctx, callbacks)
 
     # ======== 导入入口 ========
 

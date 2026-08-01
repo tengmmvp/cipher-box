@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -15,6 +16,8 @@ from typing import Any
 from PyQt6.QtWidgets import QMainWindow
 
 from ..components.workers import BackgroundWorker, wait_worker_shutdown
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -127,8 +130,21 @@ class EntryRefreshCoordinator:
             _release()
             deps.apply_entries(entries, title, scroll_restore)
 
+        def _on_error(_message: str) -> None:
+            _release()
+            logger.warning("条目后台加载失败: %s", _message)
+            # 仅当本 worker 仍为活动刷新时才提示失败：已被取代的过期错误不覆盖当前
+            # 刷新的 loading 态（与 _done 的 generation 守卫对称，QL-004）。
+            if (
+                deps.is_locked()
+                or generation != self._entry_refresh_generation
+                or deps.is_entry_stale(filter_key, category_id, search)
+            ):
+                return
+            deps.show_loading('加载失败，请重试')
+
         worker.finished.connect(_done)
-        worker.error.connect(lambda _message: _release())
+        worker.error.connect(_on_error)
         worker.cancelled.connect(_release)
         worker.start()
 
@@ -163,8 +179,13 @@ class EntryRefreshCoordinator:
             _release()
             deps.apply_tags(result)
 
+        def _on_error(_message: str) -> None:
+            _release()
+            # 标签下拉失败用户感知低（显示为无标签），记 warning 保留可诊断性（QL-004）。
+            logger.warning("标签后台加载失败: %s", _message)
+
         worker.finished.connect(_done)
-        worker.error.connect(lambda _message: _release())
+        worker.error.connect(_on_error)
         worker.cancelled.connect(_release)
         worker.start()
 

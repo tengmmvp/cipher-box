@@ -49,11 +49,11 @@ from .vault_manager import VaultManager
 logger = logging.getLogger(__name__)
 
 # 改密时旧主密码验证失败的错误消息。供 change_master_dialog 判定是否计入速率
-# 限制——以常量而非硬编码字面量比较，使文案变更不需同步改 dialog（单一真相源）。
+# 限制——以常量而非硬编码字面量比较，使文案变更不需同步改 dialog（单一事实源）。
 AUTH_FAILED_MESSAGE = '当前主密码错误'
 
 
-# unlock 单次批量读取的 vault_meta 键（单一源见 vault_meta_keys）。
+# unlock 单次批量读取的 vault_meta 键（单一事实源见 vault_meta_keys）。
 _VAULT_META_KEYS = list(VAULT_META_ALL_KEYS)
 
 
@@ -326,7 +326,7 @@ class VaultLifecycleOrchestrator:
         编排分两步（MAINT-008）：事务内重加密+元数据 → 事务后激活密钥+清理；异常兜底与
         清零纪律分别抽独立方法，本方法仅保留阶段编排与贯穿全程的 finally。
         """
-        if self._vault.key is None:
+        if not self._vault.is_unlocked:
             raise VaultLockedError('保险库未解锁，无法执行重加密')
 
         # 重置取消事件，避免上一次 reject/close 的残留导致本次改密被误取消
@@ -382,7 +382,9 @@ class VaultLifecycleOrchestrator:
         给条目/历史重加密循环以响应取消请求。
         """
         with self._db.transaction():
-            self._rotator.re_encrypt_categories(old_key, new_key)
+            self._rotator.re_encrypt_categories(
+                old_key, new_key, cancel_event=self._vault.cancel_event,
+            )
             self._rotator.re_encrypt_entries(
                 old_key, new_key, cancel_event=self._vault.cancel_event,
             )

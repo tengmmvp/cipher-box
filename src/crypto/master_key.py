@@ -178,10 +178,6 @@ class MasterKeyManager:
     ) -> tuple[bytes, str, bytearray]:
         """创建新的主密码凭据。
 
-        Args:
-            password: 主密码
-            params: Argon2id 参数
-
         Returns:
             由盐值、加密后的验证令牌、派生密钥构成的元组
         """
@@ -267,14 +263,6 @@ class MasterKeyManager:
         new_params: KdfParams = DEFAULT_KDF_PARAMS,
     ) -> tuple[bytes, str, bytearray] | None:
         """修改主密码。
-
-        Args:
-            old_password: 旧密码
-            new_password: 新密码
-            old_salt: 旧盐值
-            old_verify_token: 旧验证令牌
-            old_params: 旧 Argon2id 参数
-            new_params: 新 Argon2id 参数
 
         Returns:
             成功返回新盐值、新验证令牌、新派生密钥三元组；失败返回 None。新密钥

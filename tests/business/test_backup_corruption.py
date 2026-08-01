@@ -264,7 +264,7 @@ class TestBackupSizeLimits:
 
 
 class TestAADCentralization:
-    """验证 AAD 集中化，确认 crypto_utils.entry_aad 是唯一来源。"""
+    """验证 AAD 集中化，确认 crypto_utils.entry_aad 是单一事实源。"""
 
     def test_entry_aad_format(self):
         from src.business.services.crypto_utils import entry_aad

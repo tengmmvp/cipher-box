@@ -52,10 +52,9 @@ def _resolve_font_family() -> str:
 class EntryListModel(QAbstractItemModel):
     """条目列表数据模型，按需向 delegate 提供 Entry 摘要。
 
-    替代 QListWidget + 逐项 QListWidgetItem：``set_entries`` 一次替换全部数据，
-    QListView 仅对可见行调用 ``data()``/``paint``，避免为每条目创建常驻 item 对象，
-    降低大库下的内存占用与刷新开销。加密字段无法 SQL 过滤需内存匹配，但 item
-    对象开销与逐项 setData 消除。
+    ``set_entries`` 一次替换全部数据，QListView 仅对可见行调用 ``data()``/``paint``，
+    避免为每条目创建常驻 item 对象，降低大库下的内存占用与刷新开销。加密字段无法
+    SQL 过滤需内存匹配，但 item 对象开销与逐项 setData 消除。
     """
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -111,7 +110,7 @@ class EntryItemDelegate(QStyledItemDelegate):
     _DELETE_TEXT_RIGHT_EXTRA = 28  # 删除徽章额外保留宽度
     # paint 内行内垂直坐标偏移（相对 rect.top()）。
     # _TITLE_Y_OFFSET / _TITLE_HEIGHT / _SUBTITLE_Y_OFFSET 直接引用模块级不变量
-    # 常量（模块加载时由 raise RuntimeError 校验几何关系），避免类属性复制的双份真相源。
+    # 常量（模块加载时由 raise RuntimeError 校验几何关系），避免类属性复制的双份事实源。
     _SUBTITLE_HEIGHT = 19
     _MARKER_DOT_Y_OFFSET = 10 # 强度圆点 Y 偏移
     _MARKER_DOT_WIDTH = 12    # 强度圆点绘制区域宽度
