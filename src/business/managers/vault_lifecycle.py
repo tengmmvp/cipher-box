@@ -198,7 +198,7 @@ class VaultLifecycleOrchestrator:
         except CipherBoxError:
             # key 可能已写入 KeyManager（load_snapshot_key 在 set_master_key 后调用，
             # snapshot_key 损坏时 key 已就位）。secure_zero_buffer 清零该 bytearray，
-            # 随后的 lock() 统一清零全部密钥材料。key 已预声明，verify 未执行时为 None。
+            # 随后的 lock() 统一清零全部密钥材料。
             if key is not None:
                 secure_zero_buffer(key)
             self.lock()
@@ -225,7 +225,7 @@ class VaultLifecycleOrchestrator:
         finally:
             # 复位取消事件，避免残留影响后续改密
             self._vault.cancel_event.clear()
-        # gc.collect() 已在 clear_vault_state 内执行。随后通知依赖方清除缓存。
+        # gc.collect() 已在 clear_vault_state 内执行。
         self._vault.invoke_lock_callbacks()
 
     def close(self) -> None:

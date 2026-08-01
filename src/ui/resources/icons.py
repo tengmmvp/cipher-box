@@ -156,7 +156,7 @@ def _make_icon(name: str, color_key: str | None = None) -> QIcon:
     """内部：创建或复用缓存的 QIcon 实例。
 
     颜色创建时烘焙进 QIcon，故缓存键含 theme：主题切换时键变化自动 miss 重建，
-    旧主题条目由 LRU 淘汰。高频路径复用 QIcon 省 qta.icon 字体渲染开销。
+    旧主题条目由 LRU 淘汰（复用开销收益见模块级 _icon_cache 注释）。
     """
     if name not in _ICON_MAP:
         raise ValueError(f'未注册图标常量: {name}')

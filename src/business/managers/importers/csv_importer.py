@@ -152,11 +152,10 @@ class _CsvLikeImporter:
         self._source_label = source_label
 
     def parse(self, filepath: str) -> ParsedImport:
-        # 限制 csv 解析器单字段最大长度（MAINT-011）。Python csv 默认
-        # field_size_limit=128KB 是隐式的且与本项目的逐项大小策略脱节；显式设为
-        # MAX_ENTRY_PAYLOAD_SIZE 后，单字段超过 2MB 在 csv 解析阶段即抛 csv.Error，
+        # 限制 csv 解析器单字段最大长度（MAINT-011）：默认 128KB 与本项目逐项大小策略
+        # 脱节，显式设为 MAX_ENTRY_PAYLOAD_SIZE 后单字段超 2MB 在解析阶段即抛 csv.Error，
         # 先于 ``list(reader)`` 物化整行进内存。csv.field_size_limit 是进程级全局设置，
-        # 本应用导入串行执行，首次使用前显式设置对其他 csv 路径无负面影响。
+        # 本应用导入串行执行，无负面影响。
         csv.field_size_limit(MAX_ENTRY_PAYLOAD_SIZE)
         with open(filepath, encoding='utf-8-sig', newline='') as f:
             reader = csv.DictReader(f)

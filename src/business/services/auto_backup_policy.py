@@ -21,8 +21,7 @@ class AutoBackupConfig(Protocol):
     ConfigManager 满足此协议（duck typing），使本策略模块不硬依赖 ConfigManager 具体类型。
     """
 
-    def get(self, key: str, default: Any = None) -> Any:
-        """读取配置项。"""
+    def get(self, key: str, default: Any = None) -> Any: ...
 
 
 def is_auto_backup_due(

@@ -147,8 +147,7 @@ class EntryManager:
 
         password_override: 若提供，视为已加密的密文直接赋值，不再重复加密。
         """
-        # password_override 已是密文，即 update_entry 场景，直接赋值；
-        # 否则加密明文密码，即 add_entry 场景。
+        # update_entry 传密文走 override 分支；add_entry 传 None 走加密分支。
         encrypted_pwd = (
             password_override
             if password_override is not None
@@ -839,7 +838,7 @@ class EntryManager:
     def get_entry(self, entry_id: int) -> Entry | None:
         """获取并解密单个条目。
 
-        读路径经 :meth:`epoch_guarded_read` 守卫（ARCH-001）：with 块内仅读 raw、解密移
+        读路径经 :meth:`epoch_guarded_read` 守卫（ARCH-005）：with 块内仅读 raw、解密移
         锁外（与摘要路径 PF-001 一致）；epoch 不一致时返回 None，调用方据此跳过。
         """
         try:

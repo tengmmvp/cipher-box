@@ -64,9 +64,8 @@ class JsonImporter:
                     item.pop('password', None)
                     item.pop('totp_secret', None)
 
-        # url scheme / totp_secret 校验：与 CSV/Bitwarden 路径共享模块级清洗函数，
-        # 使全部导入路径产出的字段一致不含危险 scheme 与无效 totp（见 _sanitize_url_scheme
-        # / _sanitize_totp_secret 的定位说明：渲染层为安全边界，此处为数据卫生一致性）。
+        # url scheme / totp_secret 经模块级清洗，与 CSV/Bitwarden 路径共享单一来源
+        # （定位见 _sanitize_url_scheme / _sanitize_totp_secret）。
         for item in items:
             if isinstance(item.get('url'), str):
                 item['url'] = _sanitize_url_scheme(item['url'])

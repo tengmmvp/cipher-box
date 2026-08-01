@@ -54,12 +54,9 @@ def collect_portable_data(
 ) -> dict[str, Any] | None:
     """收集备份数据：解密所有字段为明文，构建可移植字典。
 
-    条目与历史各自增量估算 payload 大小超限即抛异常；``cancel_check`` 触发经
-    :class:`_BackupCancelled` 中止并整体返回 None。A4 后在 ``finalize_backup`` 锁外
-    调用：``raw_entries``/``history_rows``/``categories`` 由 prepare_backup_locked 锁内
-    预读传入，全量解密移出锁以缩短 ``lock()`` 阻塞。三者任一为 None 时回退自读 DB。
-
-    返回嵌套项值类型混合，故标注 ``dict[str, Any]``（结构由 validate_restore_data 校验）。
+    A4：本函数在 ``finalize_backup`` 锁外调用，``raw_entries``/``history_rows``/``categories``
+    由 prepare_backup_locked 锁内预读传入，全量解密移出锁以缩短 ``lock()`` 阻塞；三者任一
+    为 None 时回退自读 DB。返回嵌套项值类型混合，故标注 ``dict[str, Any]``（结构由 validate_restore_data 校验）。
     """
     if categories is None:
         categories = [
@@ -99,10 +96,8 @@ def collect_portable_entries(
 ) -> tuple[list[dict[str, Any]], int, int]:
     """采集并解密全部条目为可移植字典，增量估算 payload 大小。
 
-    返回 ``(entries, entry_count, estimated_size)``。``cancel_check`` 触发抛
-    :class:`_BackupCancelled`；完整性失败抛 :class:`BackupError`；估算超限抛
-    :class:`PayloadTooLargeError`。A4：``raw_entries`` 锁内预读时直接解密传入，
-    使解密循环可锁外运行、``cancel_check`` 及时中止。
+    返回 ``(entries, entry_count, estimated_size)``（元素含义同参数名）。条目完整性失败
+    抛 :class:`BackupError`；``raw_entries`` 锁内预读后传入，使解密循环可锁外运行（A4）。
     """
     if raw_entries is None:
         raw_entries = db.get_entries(EntryQuery(include_deleted=True))
@@ -146,9 +141,8 @@ def collect_portable_history(
 ) -> list[dict[str, Any]]:
     """采集并解密密码历史，返回历史记录列表。
 
-    ``estimated_size`` 作为入参参与内部 payload 上限校验，不再返回——历史上返回的
-    累计值无调用方使用（QL-012）。``entry_count`` 用于历史条数上限校验。
-    A4：``history_rows`` 锁内预读时直接解密传入，使解密循环可锁外运行。
+    ``estimated_size`` 入参参与 payload 上限校验，累计值不再返回（无调用方使用，QL-012）；
+    ``entry_count`` 用于历史上限校验。``history_rows`` 锁内预读后传入，解密循环可锁外运行（A4）。
     """
     if history_rows is None:
         history_rows = db.get_all_password_history()

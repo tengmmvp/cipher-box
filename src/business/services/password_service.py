@@ -2,7 +2,7 @@
 
 切断 UI → Crypto 的跨层依赖，确保依赖方向为 UI → Business → Crypto。所有方法为
 纯静态方法，不持状态。EntryManager 同层导入 PasswordGenerator/TOTPGenerator 属
-Business → Crypto 同层依赖可接受；本服务存在仅为切断 UI → Crypto 跨层依赖。
+Business → Crypto 同层依赖可接受，本服务仅供 UI 层调用。
 """
 
 from ...crypto.password_generator import PasswordGenerator, StrengthResult

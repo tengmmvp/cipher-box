@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# 导入方法返回类型 TypeVar：用 TypeVar 透传返回类型，保留装饰器的通用透传契约。
+# 装饰器 _validate_import_input 的返回类型透传 TypeVar。
 T = TypeVar('T')
 
 MAX_IMPORT_FILE_SIZE = 25 * 1024 * 1024

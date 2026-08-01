@@ -340,8 +340,8 @@ class SecurityAnalyzer:
     ) -> SecurityReport:
         """一次性完成所有安全分析（弱/重复/过期），避免重复解密。结果由 _cached_analysis 缓存。
 
-        始终执行全部三项并解密所有密码算 HMAC 指纹，是有意为之。days 变化仅重过滤
-        过期条目，避免重新解密全部密码（重复检测是瓶颈）。
+        有意始终执行全部三项并解密所有密码算 HMAC 指纹；days 变化仅重过滤
+        过期条目，避免重新解密（重复检测的 HMAC 是瓶颈）。
 
         警告：执行 O(n) 解密，调用方**必须**在 BackgroundWorker 中执行，不得在 UI 线程。
 

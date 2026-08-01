@@ -221,7 +221,6 @@ class CategoryRepository:
 
     @_db_operation
     def get_category_entry_count(self, category_id: int) -> int:
-        """获取分类下的条目数量。"""
         row = self._conn.execute(
             "SELECT COUNT(*) FROM entries WHERE category_id=? AND is_deleted=0",
             (category_id,),

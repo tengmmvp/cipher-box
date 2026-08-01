@@ -317,7 +317,6 @@ class EntryRepository:
 
     @_db_operation
     def get_entry(self, entry_id: int) -> RawEntry | None:
-        """获取单个条目。"""
         row = self._conn.execute(
             f"{_SELECT_ENTRY_WITH_CATEGORY_SQL} WHERE e.id = ?",  # nosec B608
             (entry_id,),
@@ -541,7 +540,6 @@ class EntryRepository:
 
     @_db_operation
     def get_entry_count(self, include_deleted: bool = False) -> int:
-        """获取条目数量。"""
         query = "SELECT COUNT(*) FROM entries"
         if not include_deleted:
             query += " WHERE is_deleted = 0"
@@ -639,7 +637,6 @@ class EntryRepository:
 
     @_db_operation
     def get_password_history(self, entry_id: int) -> list[PasswordHistory]:
-        """获取条目的密码历史。"""
         rows = self._conn.execute(
             f"{_SELECT_PASSWORD_HISTORY_SQL} "
             "WHERE h.entry_id = ? ORDER BY h.changed_at DESC, h.id DESC",
@@ -672,7 +669,6 @@ class EntryRepository:
 
     @_db_operation
     def get_password_history_count(self, entry_id: int) -> int:
-        """获取条目的密码历史记录数。"""
         row = self._conn.execute(
             "SELECT COUNT(*) FROM password_history WHERE entry_id = ?",
             (entry_id,),

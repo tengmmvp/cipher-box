@@ -58,9 +58,8 @@ class EntryCacheManager:
 
     def __init__(self, vault: 'VaultManager'):
         self._vault = vault
-        # 搜索摘要缓存保存 title/username/url/tags 明文及其小写形式（后 4 项），
-        # 小写形式供 matches_search 跳过每条目 4 字段实时 .lower()。OrderedDict +
-        # LRU 上限，防止大库下明文摘要无界增长。
+        # 搜索摘要 LRU 缓存（字段结构见 SearchMetadata）：容量对齐 MAX_ENTRIES_LIMIT，
+        # 防止大库明文摘要无界增长。
         self._search_metadata_cache: OrderedDict[str, SearchMetadata] = OrderedDict()
         self._search_metadata_failed: dict[str, set[str]] = {}
         self._category_name_cache: dict[int, str] = {}
@@ -263,7 +262,7 @@ class EntryCacheManager:
             use_cache: 是否读写会话内 totp_secret 缓存。TotpService.generate_cached
                 传 True 复用缓存；TotpService.generate 传 False 仅解密不落缓存。
 
-        读路径经 ``epoch_guarded_read`` 守卫（ARCH-001）：TOTP 定时器是真实并发读者，
+        读路径经 ``epoch_guarded_read`` 守卫（ARCH-005）：TOTP 定时器是真实并发读者，
         改密 commit 与密钥激活的微秒窗口内裸读会用旧密钥解密新密文致 GCM 认证失败。
         单条解密锁内开销可忽略；epoch 不一致时返回 None，下次定时器周期重新解析。
         """

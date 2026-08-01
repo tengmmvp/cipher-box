@@ -244,8 +244,7 @@ def clear_layout(layout: QLayout, disconnect_signals: bool = True) -> None:
         widget = item.widget()
         if widget:
             if disconnect_signals:
-                # 断开常见可变控件信号，减少 deleteLater 到实际删除间信号触发不一致状态。
-                # getattr 动态探测：无该信号的控件返回 None 跳过。
+                # 断开原因与 getattr 探测策略见模块级 _CLEAR_LAYOUT_SIGNALS 注释与本函数 docstring
                 for sig_name in _CLEAR_LAYOUT_SIGNALS:
                     sig = getattr(widget, sig_name, None)
                     if sig is not None:

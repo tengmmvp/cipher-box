@@ -24,7 +24,7 @@ ARGON2_TIME_COST = 3
 ARGON2_MEMORY_COST = 64 * 1024  # 64 MB（KiB）
 ARGON2_PARALLELISM = 4
 SALT_SIZE = 32
-# 盐最小长度。空盐/过短盐会静默降低派生强度，拒绝过短输入避免降级。
+# 拒绝空盐/过短盐，避免派生强度静默降级。
 MIN_SALT_SIZE = 16
 KEY_SIZE = 32  # AES-256
 

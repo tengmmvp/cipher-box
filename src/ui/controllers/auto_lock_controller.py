@@ -95,9 +95,7 @@ class AutoLockController:
         minutes = self._config.get_safe(
             'auto_lock_minutes', DEFAULT_CONFIG['auto_lock_minutes']
         )
-        # 退化路径(无会话锁屏联动)下不允许 0:否则用户设"禁用"即彻底无自动锁定,
-        # 远程/RDP 会话(WTS 注册失败)与非 Windows 平台静默失去全部锁定兜底。
-        # 仅会话锁屏可用时 0 才作为合法禁用放行(依赖系统锁屏即时锁定)。
+        # 无会话锁屏兜底时禁用「关闭空闲锁定」会彻底失去自动锁定，降级默认值（SEC-005）。
         if minutes <= 0 and not self._wts_registered:
             minutes = DEFAULT_CONFIG['auto_lock_minutes']
             logger.warning(

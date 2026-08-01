@@ -115,17 +115,14 @@ class DatabaseManager:
 
     @property
     def db_lock(self) -> threading.RLock:
-        """线程安全锁，供 Repository 使用。"""
         return self._lock
 
     @property
     def entry_verifier(self) -> EntryVerifier | None:
-        """条目元数据校验函数。"""
         return self._entry_verifier
 
     @property
     def category_verifier(self) -> CategoryVerifier | None:
-        """分类元数据校验函数。"""
         return self._category_verifier
 
     @property
@@ -137,23 +134,18 @@ class DatabaseManager:
         self._schema_validated = value
 
     def guard_write(self) -> None:
-        """写入前校验。"""
         self._guard_write()
 
     def auto_commit(self) -> None:
-        """非事务模式下自动提交。"""
         self._auto_commit()
 
     def sign_entry(self, entry: RawEntry) -> str:
-        """条目元数据签名。"""
         return self._sign_entry(entry)
 
     def sign_category(self, category: Category) -> str:
-        """分类元数据签名。"""
         return self._sign_category(category)
 
     def assert_encrypted(self, value: str, field_name: str) -> None:
-        """断言加密字段的值格式正确。"""
         self._assert_encrypted(value, field_name)
 
     def set_write_guard(self, guard: Callable[[], None]) -> None:
@@ -165,7 +157,6 @@ class DatabaseManager:
         signer: EntrySigner,
         verifier: EntryVerifier,
     ) -> None:
-        """设置条目元数据签名与校验函数。"""
         self._entry_signer = signer
         self._entry_verifier = verifier
 
@@ -174,7 +165,6 @@ class DatabaseManager:
         signer: CategorySigner,
         verifier: CategoryVerifier,
     ) -> None:
-        """设置分类元数据签名与校验函数。"""
         self._category_signer = signer
         self._category_verifier = verifier
 
@@ -391,7 +381,6 @@ class DatabaseManager:
 
     @_db_operation
     def get_meta(self, key: str) -> str | None:
-        """获取元数据。"""
         row = self.connection.execute(
             "SELECT value FROM vault_meta WHERE key = ?", (key,)
         ).fetchone()
@@ -421,7 +410,6 @@ class DatabaseManager:
 
     @_db_write
     def set_meta(self, key: str, value: str) -> None:
-        """设置元数据。"""
         self.connection.execute(
             "INSERT OR REPLACE INTO vault_meta (key, value) VALUES (?, ?)",
             (key, value),

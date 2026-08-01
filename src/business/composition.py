@@ -66,10 +66,8 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
     ImportExportManager → BackupRestoreManager 的依赖链，并注册锁定/变更回调
     使缓存失效事件驱动化。调用方（app.py 解锁成功后）取得 ctx 传给 MainWindow。
 
-    连线集中于此使依赖关系显式且单一：锁定与备份恢复（密钥轮换）时失效 entry 缓存，
-    条目变更时失效安全分析缓存。两类事件经独立回调通道触发（ARCH-003）：锁定走
-    ``register_on_lock``，恢复后密钥轮换走 ``register_on_epoch_rotated``；两个缓存
-    清除回调均注册到两个通道（详见下方注释）。
+    锁定与备份恢复（密钥轮换）失效 entry 缓存，条目变更失效安全分析缓存；两类
+    事件经独立回调通道触发（ARCH-003），详见下方注册处注释。
     """
     cache = EntryCacheManager(vault)
     change_bus = EntryChangeBus(cache)

@@ -141,7 +141,6 @@ class PasswordHistoryWidget(QWidget):
             row = QHBoxLayout()
             row.setSpacing(8)
 
-            # 时间
             time_label = QLabel(record.get('changed_at', ''))
             time_label.setFixedWidth(140)
             time_label.setStyleSheet(f'color: {c("text_muted")}; font-size: 12px;')
@@ -161,7 +160,6 @@ class PasswordHistoryWidget(QWidget):
             hist_idx = len(self._history_passwords)
             self._history_passwords.append(pwd_text)
 
-            # 显示/隐藏按钮
             show_btn = QPushButton()
             set_icon(show_btn, EYE)
             show_btn.setObjectName('iconBtn')
@@ -197,7 +195,6 @@ class PasswordHistoryWidget(QWidget):
             show_btn.clicked.connect(toggle_pwd)
             row.addWidget(show_btn)
 
-            # 复制按钮
             copy_btn = QPushButton()
             set_icon(copy_btn, COPY)
             copy_btn.setObjectName('iconBtn')

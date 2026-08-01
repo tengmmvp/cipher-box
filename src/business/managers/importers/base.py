@@ -31,12 +31,10 @@ _URL_SCHEME_ALLOWLIST = frozenset({
 def _sanitize_url_scheme(url: str) -> str:
     """校验 url scheme，非白名单 scheme（javascript:/data:/file: 等）清空。
 
-    定位：url 的真正安全边界在 detail_panel._build_url_label——它只把 http/https
-    渲染为可点击链接（setOpenExternalLinks 仅对白名单 scheme 启用），其余 scheme 纯
-    文本转义、不会执行。故此清洗非安全必需，而是「导入数据卫生」的一致性纵深防御：
-    使全部导入路径（CSV/KeePass/JSON/Bitwarden）产出的 url 统一不含危险 scheme，防
-    未来若新增「打开/复制 url」功能时某路径的数据漏网。空 scheme（裸域名）允许通过，
-    UI 点击时按默认 http 处理。
+    非安全必需——url 的真正安全边界在 detail_panel._build_url_label（仅 http/https
+    渲染为可点击链接，其余纯文本转义）。此处为「导入数据卫生」的一致性纵深防御：
+    使各导入路径产出的 url 统一不含危险 scheme，防未来新增「打开/复制 url」功能时
+    某路径数据漏网。空 scheme（裸域名）允许通过，UI 点击时按默认 http 处理。
     """
     if not url:
         return url

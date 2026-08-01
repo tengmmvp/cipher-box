@@ -29,7 +29,6 @@ _cache_lock = threading.RLock()
 # 容量 2：改密瞬间旧+新两个密钥并存，恰好容纳双密钥窗口避免反复 evict 重建；
 # 超过 2 会扩大历史密钥 AESGCM 副本（持 C 层密钥拷贝）驻留，增大崩溃 dump 攻击面。
 _MAX_CACHE_SIZE = 2
-# 模块级缓存：经 SHA-256 摘要索引，键不持有也不泄漏明文密钥材料。
 _cipher_cache: OrderedDict[bytes, AESGCM] = OrderedDict()
 
 
