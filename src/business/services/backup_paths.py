@@ -7,15 +7,15 @@
 import uuid
 from datetime import datetime, timezone
 
-BACKUPS_DIR_NAME = 'backups'
-BACKUP_EXT = '.cbox'
-PRE_RESTORE_PREFIX = 'pre_restore_'
-PRE_RESTORE_GLOB = f'{PRE_RESTORE_PREFIX}*{BACKUP_EXT}'
-SNAPSHOT_PREFIX = 'cipherbox_snapshot_'
-SNAPSHOT_GLOB = f'{SNAPSHOT_PREFIX}*{BACKUP_EXT}'
+BACKUPS_DIR_NAME = "backups"
+BACKUP_EXT = ".cbox"
+PRE_RESTORE_PREFIX = "pre_restore_"
+PRE_RESTORE_GLOB = f"{PRE_RESTORE_PREFIX}*{BACKUP_EXT}"
+SNAPSHOT_PREFIX = "cipherbox_snapshot_"
+SNAPSHOT_GLOB = f"{SNAPSHOT_PREFIX}*{BACKUP_EXT}"
 
 # 备份文件名时间戳格式，单一事实源，供 build_backup_filename 与 glob/排序假设对齐。
-_BACKUP_NAME_TS_FORMAT = '%Y%m%d_%H%M%S_%f'
+_BACKUP_NAME_TS_FORMAT = "%Y%m%d_%H%M%S_%f"
 
 
 def build_backup_filename(prefix: str) -> str:
@@ -25,4 +25,4 @@ def build_backup_filename(prefix: str) -> str:
     """
     stamp = datetime.now(timezone.utc).strftime(_BACKUP_NAME_TS_FORMAT)
     suffix = uuid.uuid4().hex[:8]
-    return f'{prefix}{stamp}_{suffix}{BACKUP_EXT}'
+    return f"{prefix}{stamp}_{suffix}{BACKUP_EXT}"

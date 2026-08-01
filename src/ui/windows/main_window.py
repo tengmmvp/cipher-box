@@ -105,6 +105,7 @@ from ..utils.clipboard import ClipboardManager
 
 logger = logging.getLogger(__name__)
 
+
 class MainWindow(QMainWindow):
     """CipherBox 主窗口。"""
 
@@ -153,7 +154,9 @@ class MainWindow(QMainWindow):
         不适合放入 frozen dataclass。
         """
         self._entry_list_ctrl = EntryListController(
-            self._entry_mgr, self._security, self._config,
+            self._entry_mgr,
+            self._security,
+            self._config,
         )
         self._sidebar_ctrl = SidebarController(self._entry_mgr, self._config)
         self._auto_backup = AutoBackupController(self._vault, self._backup, self._config)
@@ -170,10 +173,15 @@ class MainWindow(QMainWindow):
         """
         self._menu = MenuController(
             MenuDeps(
-                config=self._config, vault=self._vault, entry_mgr=self._entry_mgr,
-                security=self._security, import_export=self._import_export,
-                backup=self._backup, clipboard=self._clipboard,
-                detail_panel=self._detail_panel, auto_backup=self._auto_backup,
+                config=self._config,
+                vault=self._vault,
+                entry_mgr=self._entry_mgr,
+                security=self._security,
+                import_export=self._import_export,
+                backup=self._backup,
+                clipboard=self._clipboard,
+                detail_panel=self._detail_panel,
+                auto_backup=self._auto_backup,
             ),
             MenuSlots(
                 add_entry=self._entry_actions.add_entry,
@@ -196,8 +204,11 @@ class MainWindow(QMainWindow):
         延迟绑定 entry_actions.add_entry（运行时已就绪）。
         """
         self._list_refresh = ListRefreshController(
-            self._config, self._entry_mgr, self._security,
-            self._entry_list_ctrl, self._sidebar_ctrl,
+            self._config,
+            self._entry_mgr,
+            self._security,
+            self._entry_list_ctrl,
+            self._sidebar_ctrl,
             ListRefreshDeps(on_add_entry=lambda: self._entry_actions.add_entry()),
         )
 
@@ -227,7 +238,10 @@ class MainWindow(QMainWindow):
         供新增/编辑对话框预填分类与标签。
         """
         self._entry_actions = EntryActionsController(
-            self._config, self._entry_mgr, self._clipboard, self._detail_panel,
+            self._config,
+            self._entry_mgr,
+            self._clipboard,
+            self._detail_panel,
             self._sidebar_ctrl,
             EntryActionsDeps(
                 refresh_after_entry_change=self._list_refresh.refresh_after_entry_change,
@@ -268,7 +282,7 @@ class MainWindow(QMainWindow):
         self._list_refresh.start_status_timer()
 
     def _setup_ui(self) -> None:
-        self.setWindowTitle('CipherBox')
+        self.setWindowTitle("CipherBox")
         self.setMinimumSize(*WINDOW_MIN_SIZE)
         self.resize(*WINDOW_DEFAULT_SIZE)
 
@@ -294,7 +308,9 @@ class MainWindow(QMainWindow):
         self._build_entry_list()
 
         # === 右侧：详情面板 ===
-        self._detail_panel = DetailPanel(self._clipboard, entry_manager=self._entry_mgr, config=self._config)
+        self._detail_panel = DetailPanel(
+            self._clipboard, entry_manager=self._entry_mgr, config=self._config
+        )
         self._splitter.addWidget(self._detail_panel)
 
         # 设置分割比例
@@ -320,13 +336,13 @@ class MainWindow(QMainWindow):
         # 状态栏
         self._status_bar = QStatusBar()
         self._warning_label = QLabel()
-        self._warning_label.setObjectName('warningText')
+        self._warning_label.setObjectName("warningText")
         self.setStatusBar(self._status_bar)
 
     def _build_sidebar(self) -> None:
         """构建侧边栏容器并按区段装配（品牌/筛选/分类/排序统计）。"""
         self._sidebar = QWidget()
-        self._sidebar.setObjectName('sidebar')
+        self._sidebar.setObjectName("sidebar")
         self._sidebar.setFixedWidth(SIDEBAR_WIDTH)
         sidebar_layout = QVBoxLayout(self._sidebar)
         sidebar_layout.setContentsMargins(12, 14, 12, 12)
@@ -343,15 +359,15 @@ class MainWindow(QMainWindow):
         """品牌区：图标 + 标题/副标题。"""
         brand_row = QHBoxLayout()
         self._brand_icon = QLabel()
-        self._brand_icon.setPixmap(icon_pixmap(SHIELD, 'accent', 24))
+        self._brand_icon.setPixmap(icon_pixmap(SHIELD, "accent", 24))
         self._brand_icon.setFixedSize(*SIDEBAR_ICON_SIZE)
         brand_row.addWidget(self._brand_icon)
         brand_text = QVBoxLayout()
         brand_text.setSpacing(0)
-        self._brand_title = QLabel('CipherBox')
-        self._brand_title.setObjectName('sidebarBrandTitle')
-        self._brand_subtitle = QLabel('本地加密保险库')
-        self._brand_subtitle.setObjectName('sidebarBrandSubtitle')
+        self._brand_title = QLabel("CipherBox")
+        self._brand_title.setObjectName("sidebarBrandTitle")
+        self._brand_subtitle = QLabel("本地加密保险库")
+        self._brand_subtitle.setObjectName("sidebarBrandSubtitle")
         brand_text.addWidget(self._brand_title)
         brand_text.addWidget(self._brand_subtitle)
         brand_row.addLayout(brand_text, 1)
@@ -361,17 +377,17 @@ class MainWindow(QMainWindow):
     def _build_sidebar_filters(self, sidebar_layout: QVBoxLayout) -> None:
         """筛选区：搜索框 + 标签下拉 + 筛选项列表 + 分割线。"""
         self._search_edit = QLineEdit()
-        self._search_edit.setPlaceholderText('搜索标题、账号或标签')
+        self._search_edit.setPlaceholderText("搜索标题、账号或标签")
         self._search_edit.setClearButtonEnabled(True)
         self._search_edit.addAction(icon(SEARCH), QLineEdit.ActionPosition.LeadingPosition)
         sidebar_layout.addWidget(self._search_edit)
 
         self._tag_combo = QComboBox()
-        self._tag_combo.setToolTip('按标签筛选条目')
+        self._tag_combo.setToolTip("按标签筛选条目")
         sidebar_layout.addWidget(self._tag_combo)
 
-        self._filter_label = QLabel('筛选')
-        self._filter_label.setObjectName('sidebarSectionLabel')
+        self._filter_label = QLabel("筛选")
+        self._filter_label.setObjectName("sidebarSectionLabel")
         sidebar_layout.addWidget(self._filter_label)
 
         self._filter_list = QListWidget()
@@ -381,21 +397,21 @@ class MainWindow(QMainWindow):
 
         self._separator1 = QLabel()
         self._separator1.setFixedHeight(1)
-        self._separator1.setObjectName('sidebarSeparator')
+        self._separator1.setObjectName("sidebarSeparator")
         sidebar_layout.addWidget(self._separator1)
 
     def _build_sidebar_categories(self, sidebar_layout: QVBoxLayout) -> None:
         """分类区：分类标题（含管理按钮）+ 分类列表 + 分割线。"""
         cat_header = QHBoxLayout()
-        self._cat_label = QLabel('分类')
-        self._cat_label.setObjectName('sidebarSectionLabel')
+        self._cat_label = QLabel("分类")
+        self._cat_label.setObjectName("sidebarSectionLabel")
         cat_header.addWidget(self._cat_label)
         cat_header.addStretch()
-        self._add_category_btn = QPushButton('+')
-        self._add_category_btn.setObjectName('iconBtn')
+        self._add_category_btn = QPushButton("+")
+        self._add_category_btn.setObjectName("iconBtn")
         self._add_category_btn.setFixedSize(*SIDEBAR_ICON_SIZE_SMALL)
-        self._add_category_btn.setToolTip('管理分类')
-        self._add_category_btn.setStyleSheet('font-size: 14px;')
+        self._add_category_btn.setToolTip("管理分类")
+        self._add_category_btn.setStyleSheet("font-size: 14px;")
         cat_header.addWidget(self._add_category_btn)
         sidebar_layout.addLayout(cat_header)
 
@@ -404,22 +420,22 @@ class MainWindow(QMainWindow):
 
         self._separator2 = QLabel()
         self._separator2.setFixedHeight(1)
-        self._separator2.setObjectName('sidebarSeparator')
+        self._separator2.setObjectName("sidebarSeparator")
         sidebar_layout.addWidget(self._separator2)
 
     def _build_sidebar_sort_stats(self, sidebar_layout: QVBoxLayout) -> None:
         """排序与统计区：弹簧 + 排序下拉（恢复持久索引）+ 统计标签。"""
         sidebar_layout.addStretch()
 
-        self._sort_label = QLabel('排序')
-        self._sort_label.setObjectName('sidebarSectionLabel')
+        self._sort_label = QLabel("排序")
+        self._sort_label.setObjectName("sidebarSectionLabel")
         sidebar_layout.addWidget(self._sort_label)
 
         self._sort_combo = QComboBox()
         for label, _, _ in SORT_OPTIONS:
             self._sort_combo.addItem(label)
-        sort_field = self._config.get(CFG_SORT_FIELD, 'updated_at')
-        sort_order = self._config.get(CFG_SORT_ORDER, 'desc')
+        sort_field = self._config.get(CFG_SORT_FIELD, "updated_at")
+        sort_order = self._config.get(CFG_SORT_ORDER, "desc")
         sort_idx = next(
             (i for i, (_, f, o) in enumerate(SORT_OPTIONS) if f == sort_field and o == sort_order),
             0,
@@ -427,9 +443,9 @@ class MainWindow(QMainWindow):
         self._sort_combo.setCurrentIndex(sort_idx)
         sidebar_layout.addWidget(self._sort_combo)
 
-        self._stats_label = QLabel('')
+        self._stats_label = QLabel("")
         self._stats_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._stats_label.setObjectName('sidebarStatsLabel')
+        self._stats_label.setObjectName("sidebarStatsLabel")
         sidebar_layout.addWidget(self._stats_label)
 
     def _build_filter_list(self) -> None:
@@ -438,12 +454,12 @@ class MainWindow(QMainWindow):
         self._filter_list.blockSignals(True)
         self._filter_list.clear()
         filters = [
-            ('全部', 'all', FILTER_ALL),
-            ('收藏', 'favorite', FILTER_FAVORITE),
-            ('弱密码', 'weak', FILTER_WEAK),
-            ('重复密码', 'duplicate', FILTER_DUPLICATE),
-            ('近期更新', 'recent', FILTER_RECENT),
-            ('回收站', 'trash', FILTER_TRASH),
+            ("全部", "all", FILTER_ALL),
+            ("收藏", "favorite", FILTER_FAVORITE),
+            ("弱密码", "weak", FILTER_WEAK),
+            ("重复密码", "duplicate", FILTER_DUPLICATE),
+            ("近期更新", "recent", FILTER_RECENT),
+            ("回收站", "trash", FILTER_TRASH),
         ]
         for text, key, icon_name in filters:
             item = QListWidgetItem(text)
@@ -458,7 +474,7 @@ class MainWindow(QMainWindow):
 
     def _build_entry_list(self) -> None:
         list_container = QWidget()
-        list_container.setObjectName('listPane')
+        list_container.setObjectName("listPane")
         list_layout = QVBoxLayout(list_container)
         list_layout.setContentsMargins(0, 0, 0, 0)
         list_layout.setSpacing(0)
@@ -467,14 +483,14 @@ class MainWindow(QMainWindow):
         list_header = QHBoxLayout()
         list_header.setContentsMargins(12, 8, 12, 4)
 
-        self._list_title = QLabel('全部条目')
-        self._list_title.setObjectName('sidebarListTitle')
+        self._list_title = QLabel("全部条目")
+        self._list_title.setObjectName("sidebarListTitle")
         list_header.addWidget(self._list_title)
 
         list_header.addStretch()
 
-        self._count_label = QLabel('0 项')
-        self._count_label.setObjectName('sidebarCountLabel')
+        self._count_label = QLabel("0 项")
+        self._count_label.setObjectName("sidebarCountLabel")
         list_header.addWidget(self._count_label)
 
         list_layout.addLayout(list_header)
@@ -484,7 +500,7 @@ class MainWindow(QMainWindow):
 
         # Model/View：set_entries 一次替换数据，delegate 按需绘制，消除逐项 item 创建。
         self._entry_list = QListView()
-        self._entry_list.setObjectName('entryList')
+        self._entry_list.setObjectName("entryList")
         self._entry_model = EntryListModel(self._entry_list)
         self._entry_list.setModel(self._entry_model)
         self._entry_delegate = EntryItemDelegate(self._entry_list)
@@ -499,8 +515,8 @@ class MainWindow(QMainWindow):
         add_bar = QHBoxLayout()
         add_bar.setContentsMargins(8, 4, 8, 8)
         self._add_entry_btn = QPushButton()
-        self._add_entry_btn.setObjectName('primaryBtn')
-        set_icon_with_text(self._add_entry_btn, '新增条目', PLUS, 'text_on_accent')
+        self._add_entry_btn.setObjectName("primaryBtn")
+        set_icon_with_text(self._add_entry_btn, "新增条目", PLUS, "text_on_accent")
         add_bar.addWidget(self._add_entry_btn)
         list_layout.addLayout(add_bar)
 
@@ -546,8 +562,10 @@ class MainWindow(QMainWindow):
         if event is not None and event.type() == QEvent.Type.KeyPress:
             key_event = cast(QKeyEvent, event)
             if key_event.key() not in (
-                Qt.Key.Key_Shift, Qt.Key.Key_Control,
-                Qt.Key.Key_Alt, Qt.Key.Key_Meta,
+                Qt.Key.Key_Shift,
+                Qt.Key.Key_Control,
+                Qt.Key.Key_Alt,
+                Qt.Key.Key_Meta,
             ):
                 self._auto_lock.reset_timer()
         elif event is not None and event.type() in (
@@ -560,7 +578,9 @@ class MainWindow(QMainWindow):
 
     def _apply_runtime_settings(self) -> None:
         """立即应用无需重启的安全和托盘设置。"""
-        self._clipboard.clear_seconds = self._config.get_safe(CFG_CLIPBOARD_CLEAR_SECONDS, CLIPBOARD_CLEAR_SECONDS_DEFAULT)
+        self._clipboard.clear_seconds = self._config.get_safe(
+            CFG_CLIPBOARD_CLEAR_SECONDS, CLIPBOARD_CLEAR_SECONDS_DEFAULT
+        )
         self._auto_lock.reset_timer()
         self._auto_backup.trigger_check()
         should_show = self._config.get(CFG_SHOW_TRAY_ICON, True)
@@ -618,7 +638,7 @@ class MainWindow(QMainWindow):
             # 颜色烘焙到 QIcon，需重建筛选/分类列表与菜单图标
             self._build_filter_list()
             self._menu.update_menu_icons()
-            self._brand_icon.setPixmap(icon_pixmap(SHIELD, 'accent', 24))
+            self._brand_icon.setPixmap(icon_pixmap(SHIELD, "accent", 24))
             if self._tray:
                 self._tray.set_locked(False)
             # 数据未变，强制重绘列表控件即可
@@ -737,7 +757,7 @@ class MainWindow(QMainWindow):
         公共 API 而非直接 getattr 私有属性——重命名时 getattr 返回 None 会无声错过清理，
         崩溃兜底恰是最不应静默失效的安全路径。
         """
-        clipboard = getattr(self, '_clipboard', None)
+        clipboard = getattr(self, "_clipboard", None)
         if clipboard is not None:
             try:
                 clipboard.clear_now()
@@ -786,7 +806,7 @@ class MainWindow(QMainWindow):
                 if widget is self or not isinstance(widget, QDialog):
                     continue
                 widget.reject()
-        self._count_label.setText('0 项')
+        self._count_label.setText("0 项")
         self._status_bar.clearMessage()
         # 托盘锁定状态由 lock_requested 信号驱动，此处不显式调用避免重复触发
 

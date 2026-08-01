@@ -20,7 +20,7 @@ from .vault_meta_keys import KDF_MEMORY_COST_KEY, KDF_PARALLELISM_KEY, KDF_TIME_
 SNAPSHOT_KEY_LEN = 32
 
 # snapshot_key 加密的 AAD 域标签，与主密钥绑定防跨域重用。
-_SNAPSHOT_KEY_AAD = 'vault:snapshot-key'
+_SNAPSHOT_KEY_AAD = "vault:snapshot-key"
 
 
 class VaultMetaStore:
@@ -32,7 +32,8 @@ class VaultMetaStore:
 
     @staticmethod
     def encrypt_snapshot_key(
-        snapshot_key: bytes | bytearray, key: bytes | bytearray,
+        snapshot_key: bytes | bytearray,
+        key: bytes | bytearray,
     ) -> str:
         """加密 snapshot_key 以便写入 ``snapshot_key_enc``。
 
@@ -41,7 +42,9 @@ class VaultMetaStore:
         未写入的不一致窗口。
         """
         return EncryptionEngine.encrypt(
-            base64.b64encode(snapshot_key).decode('ascii'), key, _SNAPSHOT_KEY_AAD,
+            base64.b64encode(snapshot_key).decode("ascii"),
+            key,
+            _SNAPSHOT_KEY_AAD,
         )
 
     @staticmethod
@@ -53,7 +56,7 @@ class VaultMetaStore:
         encoded = EncryptionEngine.decrypt(encrypted, key, _SNAPSHOT_KEY_AAD)
         snapshot_key = base64.b64decode(encoded)
         if len(snapshot_key) != SNAPSHOT_KEY_LEN:
-            raise VaultIntegrityError('自动快照密钥损坏')
+            raise VaultIntegrityError("自动快照密钥损坏")
         return snapshot_key
 
     def write(
@@ -72,21 +75,22 @@ class VaultMetaStore:
         ``params`` 为实际派生所用的 Argon2id 参数，写入数据库而非硬编码，为未来
         调整参数保留正确性。
         """
-        db.set_meta('master_salt', base64.b64encode(salt).decode('ascii'))
-        db.set_meta('master_verify', verify_token)
-        db.set_meta('master_kdf', KDF_NAME)
+        db.set_meta("master_salt", base64.b64encode(salt).decode("ascii"))
+        db.set_meta("master_verify", verify_token)
+        db.set_meta("master_kdf", KDF_NAME)
         db.set_meta(KDF_TIME_COST_KEY, str(params.time_cost))
         db.set_meta(KDF_MEMORY_COST_KEY, str(params.memory_cost))
         db.set_meta(KDF_PARALLELISM_KEY, str(params.parallelism))
-        db.set_meta('ciphertext_format', EncryptionEngine.FORMAT_ID)
-        db.set_meta('snapshot_key_enc', self.encrypt_snapshot_key(snapshot_key, key))
-        db.set_meta('key_epoch', key_epoch)
+        db.set_meta("ciphertext_format", EncryptionEngine.FORMAT_ID)
+        db.set_meta("snapshot_key_enc", self.encrypt_snapshot_key(snapshot_key, key))
+        db.set_meta("key_epoch", key_epoch)
         # 完整性签名键集从 VAULT_META_SIGNED_KEYS 单一事实源派生：写完字段后回读刚写入
         # 的值再签，与恢复路径对称，消除手工键集漂移（ARCH-3）。回读须在调用方事务内，
         # 同事务 set_meta 后立即 get_meta_batch 可见刚写值。
         meta_for_mac = db.get_meta_batch(list(VAULT_META_SIGNED_KEYS))
         db.set_meta(
-            'vault_meta_mac', MetadataSigner.compute_vault_meta_mac(meta_for_mac, key),
+            "vault_meta_mac",
+            MetadataSigner.compute_vault_meta_mac(meta_for_mac, key),
         )
 
     def update(
@@ -102,10 +106,13 @@ class VaultMetaStore:
     ) -> None:
         """改密时更新 vault_meta：snapshot_key 由调用方轮换为新值，不再复用旧值。"""
         if snapshot_key is None:
-            raise VaultIntegrityError('snapshot_key 未加载，无法更新保险库元数据')
+            raise VaultIntegrityError("snapshot_key 未加载，无法更新保险库元数据")
         self.write(
             db,
-            salt=new_salt, verify_token=new_verify_token,
-            snapshot_key=snapshot_key, key=new_key, key_epoch=new_epoch,
+            salt=new_salt,
+            verify_token=new_verify_token,
+            snapshot_key=snapshot_key,
+            key=new_key,
+            key_epoch=new_epoch,
             params=params,
         )

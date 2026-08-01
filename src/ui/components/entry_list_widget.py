@@ -15,7 +15,7 @@ from ...models import ENTRY_TYPE_LOGIN, ENTRY_TYPES, Entry
 from ..resources.constants import FONT_FAMILY_FALLBACKS, FONT_FAMILY_PRIMARY
 from ..resources.theme_colors import c, get_strength_color
 
-FAVORITE_MARKER = '★ '
+FAVORITE_MARKER = "★ "
 
 # paint 行内垂直布局不变量（单位：像素）。
 # 标题区域必须完整落在副标题区域之前，避免两段文本垂直重叠。
@@ -25,9 +25,7 @@ _TITLE_HEIGHT = 22
 # 改标题区几何时副标题自动跟随，杜绝两段文本重叠的回归。
 _SUBTITLE_Y_OFFSET = _TITLE_Y_OFFSET + _TITLE_HEIGHT + 1
 if _TITLE_Y_OFFSET + _TITLE_HEIGHT > _SUBTITLE_Y_OFFSET:
-    raise RuntimeError(
-        '标题区域与副标题区域重叠：paint 垂直布局不变量被破坏'
-    )
+    raise RuntimeError("标题区域与副标题区域重叠：paint 垂直布局不变量被破坏")
 
 
 def _resolve_font_family() -> str:
@@ -39,6 +37,7 @@ def _resolve_font_family() -> str:
     PyQt6 ≥ 6.5 不再支持 QFontDatabase() 构造，需使用静态方法 families()。
     """
     from PyQt6.QtGui import QFontDatabase
+
     # PyQt6 ≥ 6.5: families() 为静态方法；Pyright 类型桩仍标注为实例方法，需忽略。
     available = QFontDatabase.families()  # pyright: ignore[reportCallIssue]
     if FONT_FAMILY_PRIMARY in available:
@@ -46,7 +45,7 @@ def _resolve_font_family() -> str:
     for fallback in FONT_FAMILY_FALLBACKS:
         if fallback in available:
             return fallback
-    return available[0] if available else 'sans-serif'
+    return available[0] if available else "sans-serif"
 
 
 class EntryListModel(QAbstractItemModel):
@@ -112,12 +111,12 @@ class EntryItemDelegate(QStyledItemDelegate):
     # _TITLE_Y_OFFSET / _TITLE_HEIGHT / _SUBTITLE_Y_OFFSET 直接引用模块级不变量
     # 常量（模块加载时由 raise RuntimeError 校验几何关系），避免类属性复制的双份事实源。
     _SUBTITLE_HEIGHT = 19
-    _MARKER_DOT_Y_OFFSET = 10 # 强度圆点 Y 偏移
-    _MARKER_DOT_WIDTH = 12    # 强度圆点绘制区域宽度
-    _MARKER_DOT_HEIGHT = 16   # 强度圆点绘制区域高度
+    _MARKER_DOT_Y_OFFSET = 10  # 强度圆点 Y 偏移
+    _MARKER_DOT_WIDTH = 12  # 强度圆点绘制区域宽度
+    _MARKER_DOT_HEIGHT = 16  # 强度圆点绘制区域高度
     _MARKER_BANG_Y_OFFSET = 30  # 完整性警示符 Y 偏移
     _DELETE_BADGE_Y_OFFSET = 20  # 已删除徽章 Y 偏移
-    _DELETE_BADGE_X_BACK = 9   # 已删除徽章距右侧标记的回退量
+    _DELETE_BADGE_X_BACK = 9  # 已删除徽章距右侧标记的回退量
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -174,36 +173,48 @@ class EntryItemDelegate(QStyledItemDelegate):
         painter.save()
         try:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            rect = QRectF(option.rect.adjusted(self.CARD_PADDING_H, self.CARD_PADDING_V,
-                                               -self.CARD_PADDING_H, -self.CARD_PADDING_V))
+            rect = QRectF(
+                option.rect.adjusted(
+                    self.CARD_PADDING_H,
+                    self.CARD_PADDING_V,
+                    -self.CARD_PADDING_H,
+                    -self.CARD_PADDING_V,
+                )
+            )
             selected = bool(option.state & QStyle.StateFlag.State_Selected)
-            background = get_color('accent_light') if selected else get_color('bg_card')
-            painter.setPen(QPen(QColor(get_color('border_light')), 1))
+            background = get_color("accent_light") if selected else get_color("bg_card")
+            painter.setPen(QPen(QColor(get_color("border_light")), 1))
             painter.setBrush(QColor(background))
             painter.drawRoundedRect(rect, self.CARD_RADIUS, self.CARD_RADIUS)
             if selected:
                 painter.fillRect(
                     QRectF(rect.left(), rect.top(), self.ACCENT_BAR_WIDTH, rect.height()),
-                    QColor(get_color('accent')),
+                    QColor(get_color("accent")),
                 )
 
-            icon_rect = QRectF(rect.left() + self.ICON_OFFSET_X, rect.top() + self.ICON_OFFSET_Y,
-                               self.ICON_SIZE, self.ICON_SIZE)
-            painter.setPen(QColor(get_color('text_primary')))
-            painter.setFont(get_font(FONT_FAMILY_PRIMARY, 15))
-            type_info = ENTRY_TYPES.get(
-                entry.entry_type, ENTRY_TYPES[ENTRY_TYPE_LOGIN]
+            icon_rect = QRectF(
+                rect.left() + self.ICON_OFFSET_X,
+                rect.top() + self.ICON_OFFSET_Y,
+                self.ICON_SIZE,
+                self.ICON_SIZE,
             )
-            painter.drawText(icon_rect, Qt.AlignmentFlag.AlignCenter, type_info['icon'])
+            painter.setPen(QColor(get_color("text_primary")))
+            painter.setFont(get_font(FONT_FAMILY_PRIMARY, 15))
+            type_info = ENTRY_TYPES.get(entry.entry_type, ENTRY_TYPES[ENTRY_TYPE_LOGIN])
+            painter.drawText(icon_rect, Qt.AlignmentFlag.AlignCenter, type_info["icon"])
 
             text_left = rect.left() + self.TEXT_LEFT_OFFSET
-            right_reserved = self.DELETE_BADGE_WIDTH + self._DELETE_TEXT_RIGHT_EXTRA if entry.is_deleted else self._TEXT_RIGHT_MARGIN
+            right_reserved = (
+                self.DELETE_BADGE_WIDTH + self._DELETE_TEXT_RIGHT_EXTRA
+                if entry.is_deleted
+                else self._TEXT_RIGHT_MARGIN
+            )
             text_width = max(40, rect.right() - text_left - right_reserved)
-            title = entry.title or '(无标题)'
+            title = entry.title or "(无标题)"
             if entry.is_favorite:
-                title = f'{FAVORITE_MARKER}{title}'
+                title = f"{FAVORITE_MARKER}{title}"
             painter.setFont(get_font(FONT_FAMILY_PRIMARY, 10, QFont.Weight.DemiBold))
-            painter.setPen(QColor(get_color('text_primary')))
+            painter.setPen(QColor(get_color("text_primary")))
             title_text = painter.fontMetrics().elidedText(
                 title, Qt.TextElideMode.ElideRight, int(text_width)
             )
@@ -216,20 +227,22 @@ class EntryItemDelegate(QStyledItemDelegate):
             subtitle_parts = []
             if entry.username:
                 subtitle_parts.append(entry.username)
-            if entry.category_name and entry.category_name != '未分类':
+            if entry.category_name and entry.category_name != "未分类":
                 subtitle_parts.append(entry.category_name)
             if entry.url:
                 # 提取 netloc 并剥离 userinfo（user:pass@），避免凭据泄露到列表副标题
-                netloc = entry.url.split('://', 1)[-1].split('/', 1)[0].split('@')[-1]
+                netloc = entry.url.split("://", 1)[-1].split("/", 1)[0].split("@")[-1]
                 subtitle_parts.append(netloc)
-            subtitle = ' · '.join(subtitle_parts) if subtitle_parts else '无额外信息'
+            subtitle = " · ".join(subtitle_parts) if subtitle_parts else "无额外信息"
             painter.setFont(get_font(FONT_FAMILY_PRIMARY, 8))
-            painter.setPen(QColor(get_color('text_secondary')))
+            painter.setPen(QColor(get_color("text_secondary")))
             subtitle_text = painter.fontMetrics().elidedText(
                 subtitle, Qt.TextElideMode.ElideRight, int(text_width)
             )
             painter.drawText(
-                QRectF(text_left, rect.top() + _SUBTITLE_Y_OFFSET, text_width, self._SUBTITLE_HEIGHT),
+                QRectF(
+                    text_left, rect.top() + _SUBTITLE_Y_OFFSET, text_width, self._SUBTITLE_HEIGHT
+                ),
                 Qt.AlignmentFlag.AlignVCenter,
                 subtitle_text,
             )
@@ -239,30 +252,44 @@ class EntryItemDelegate(QStyledItemDelegate):
                 painter.setPen(QColor(get_strength_color(entry.password_strength)))
                 painter.setFont(get_font(FONT_FAMILY_PRIMARY, 8))
                 painter.drawText(
-                    QRectF(marker_x, rect.top() + self._MARKER_DOT_Y_OFFSET,
-                           self._MARKER_DOT_WIDTH, self._MARKER_DOT_HEIGHT),
+                    QRectF(
+                        marker_x,
+                        rect.top() + self._MARKER_DOT_Y_OFFSET,
+                        self._MARKER_DOT_WIDTH,
+                        self._MARKER_DOT_HEIGHT,
+                    ),
                     Qt.AlignmentFlag.AlignCenter,
-                    '●',
+                    "●",
                 )
             if entry.integrity_error:
-                painter.setPen(QColor(get_color('danger')))
+                painter.setPen(QColor(get_color("danger")))
                 painter.setFont(get_font(FONT_FAMILY_PRIMARY, 10, QFont.Weight.Bold))
                 painter.drawText(
-                    QRectF(marker_x, rect.top() + self._MARKER_BANG_Y_OFFSET,
-                           self._MARKER_DOT_WIDTH, self._MARKER_DOT_HEIGHT),
+                    QRectF(
+                        marker_x,
+                        rect.top() + self._MARKER_BANG_Y_OFFSET,
+                        self._MARKER_DOT_WIDTH,
+                        self._MARKER_DOT_HEIGHT,
+                    ),
                     Qt.AlignmentFlag.AlignCenter,
-                    '!',
+                    "!",
                 )
 
             if entry.is_deleted:
-                badge = QRectF(rect.right() - self.MARKER_RIGHT_MARGIN - self.DELETE_BADGE_WIDTH + self._DELETE_BADGE_X_BACK,
-                               rect.top() + self._DELETE_BADGE_Y_OFFSET,
-                               self.DELETE_BADGE_WIDTH, self.DELETE_BADGE_HEIGHT)
+                badge = QRectF(
+                    rect.right()
+                    - self.MARKER_RIGHT_MARGIN
+                    - self.DELETE_BADGE_WIDTH
+                    + self._DELETE_BADGE_X_BACK,
+                    rect.top() + self._DELETE_BADGE_Y_OFFSET,
+                    self.DELETE_BADGE_WIDTH,
+                    self.DELETE_BADGE_HEIGHT,
+                )
                 painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(get_color('danger_light')))
+                painter.setBrush(QColor(get_color("danger_light")))
                 painter.drawRoundedRect(badge, 4, 4)
-                painter.setPen(QColor(get_color('danger')))
+                painter.setPen(QColor(get_color("danger")))
                 painter.setFont(get_font(FONT_FAMILY_PRIMARY, 7))
-                painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, '已删除')
+                painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, "已删除")
         finally:
             painter.restore()

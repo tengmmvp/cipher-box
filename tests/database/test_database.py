@@ -14,14 +14,15 @@ from src.models import Category, CustomField, Entry, RawEntry
 
 
 def _make_entry(**kwargs) -> RawEntry:
-    kwargs.setdefault('username', 'x')
-    kwargs.setdefault('password', 'x')
-    kwargs.setdefault('notes', '')
-    kwargs.setdefault('custom_fields', '')
+    kwargs.setdefault("username", "x")
+    kwargs.setdefault("password", "x")
+    kwargs.setdefault("notes", "")
+    kwargs.setdefault("custom_fields", "")
     return RawEntry(**kwargs)
 
 
 # Fixture: 创建临时数据库，关闭加密断言
+
 
 @pytest.fixture
 def db(tmp_path):
@@ -30,7 +31,7 @@ def db(tmp_path):
     test_mode=True 关闭密文前缀断言，适配测试直接构造的非密文数据。
     tmp_path 由 pytest 提供并自动清理，无需手动删除数据库文件。
     """
-    db_path = tmp_path / 'test_vault.db'
+    db_path = tmp_path / "test_vault.db"
     database = DatabaseManager(db_path, test_mode=True)
     database.open()
     database.init_tables()
@@ -40,60 +41,61 @@ def db(tmp_path):
 
 # TestDatabaseManager
 
+
 def test_init_tables(db):
     categories = db.get_categories()
     assert len(categories) > 0
     names = [c.name for c in categories]
-    assert '未分类' in names
+    assert "未分类" in names
 
 
 def test_meta_operations(db):
-    db.set_meta('test_key', 'test_value')
-    value = db.get_meta('test_key')
-    assert value == 'test_value'
+    db.set_meta("test_key", "test_value")
+    value = db.get_meta("test_key")
+    assert value == "test_value"
 
-    value_none = db.get_meta('nonexistent')
+    value_none = db.get_meta("nonexistent")
     assert value_none is None
 
 
 def test_add_get_category(db):
-    cat = Category(name='测试分类', icon_char='🧪', color='#FF0000')
+    cat = Category(name="测试分类", icon_char="🧪", color="#FF0000")
     cat_id = db.add_category(cat)
     assert cat_id > 0
 
     retrieved = db.get_category(cat_id)
     assert retrieved is not None
-    assert retrieved.name == '测试分类'
-    assert retrieved.icon_char == '🧪'
+    assert retrieved.name == "测试分类"
+    assert retrieved.icon_char == "🧪"
 
 
 def test_add_category_rejects_duplicate_name(db):
     """add_category 名称重复时抛 ValueError（避开默认分类名）。"""
-    db.add_category(Category(name='测试分类A'))
-    with pytest.raises(ValueError, match='已存在'):
-        db.add_category(Category(name='测试分类A'))
+    db.add_category(Category(name="测试分类A"))
+    with pytest.raises(ValueError, match="已存在"):
+        db.add_category(Category(name="测试分类A"))
 
 
 def test_update_category_rejects_duplicate_name(db):
     """update_category 改名为其他分类名称时抛 ValueError（避开默认分类名）。"""
-    cat1_id = db.add_category(Category(name='测试分类A'))
-    db.add_category(Category(name='测试分类B'))
+    cat1_id = db.add_category(Category(name="测试分类A"))
+    db.add_category(Category(name="测试分类B"))
     cat1 = db.get_category(cat1_id)
     assert cat1 is not None
-    cat1 = dataclasses.replace(cat1, name='测试分类B')
-    with pytest.raises(ValueError, match='已被其他分类占用'):
+    cat1 = dataclasses.replace(cat1, name="测试分类B")
+    with pytest.raises(ValueError, match="已被其他分类占用"):
         db.update_category(cat1)
 
 
 def test_add_get_entry(db):
     entry = _make_entry(
-        title='测试条目',
-        username='enc_user',
-        password='enc_pwd',
-        url='https://example.com',
-        tags='test,demo',
-        notes='enc_notes',
-        custom_fields='enc_fields',
+        title="测试条目",
+        username="enc_user",
+        password="enc_pwd",
+        url="https://example.com",
+        tags="test,demo",
+        notes="enc_notes",
+        custom_fields="enc_fields",
         is_favorite=True,
         password_strength=3,
     )
@@ -102,13 +104,13 @@ def test_add_get_entry(db):
 
     retrieved = db.get_entry(entry_id)
     assert retrieved is not None
-    assert retrieved.title == '测试条目'
-    assert retrieved.url == 'https://example.com'
+    assert retrieved.title == "测试条目"
+    assert retrieved.url == "https://example.com"
     assert retrieved.is_favorite
 
 
 def test_soft_delete_restore(db):
-    entry = _make_entry(title='待删除')
+    entry = _make_entry(title="待删除")
     entry_id = db.add_entry(entry)
 
     # 软删除。
@@ -131,7 +133,7 @@ def test_soft_delete_restore(db):
 
 
 def test_permanent_delete(db):
-    entry = _make_entry(title='永久删除')
+    entry = _make_entry(title="永久删除")
     entry_id = db.add_entry(entry)
 
     db.permanent_delete_entry(entry_id)
@@ -141,9 +143,9 @@ def test_permanent_delete(db):
 
 def test_search(db):
     """get_entries 仅返回全部条目（关键字搜索由 EntryManager 负责）。"""
-    db.add_entry(_make_entry(title='GitHub 账号'))
-    db.add_entry(_make_entry(title='Gitee 账号'))
-    db.add_entry(_make_entry(title='Google 邮箱'))
+    db.add_entry(_make_entry(title="GitHub 账号"))
+    db.add_entry(_make_entry(title="Gitee 账号"))
+    db.add_entry(_make_entry(title="Google 邮箱"))
 
     results = db.get_entries(EntryQuery())
     assert len(results) == 3
@@ -154,27 +156,27 @@ def test_search(db):
 
 def test_entry_count(db):
     initial = db.get_entry_count()
-    db.add_entry(_make_entry(title='新条目'))
+    db.add_entry(_make_entry(title="新条目"))
     assert db.get_entry_count() == initial + 1
 
 
 def test_nested_transaction_savepoint(db):
     """嵌套事务使用带引号的 savepoint 标识符。"""
     with db.transaction():
-        db.set_meta('test_key', 'outer')
+        db.set_meta("test_key", "outer")
         with db.transaction():
-            db.set_meta('test_key', 'inner')
+            db.set_meta("test_key", "inner")
         # 内层事务通过释放 savepoint 提交。
-        assert db.get_meta('test_key') == 'inner'
+        assert db.get_meta("test_key") == "inner"
 
     # 外层提交后，值仍为内层写入的值。
-    assert db.get_meta('test_key') == 'inner'
+    assert db.get_meta("test_key") == "inner"
 
 
 def test_get_entries_with_limit(db):
     """get_entries limit 参数应限制返回数量。"""
     for i in range(10):
-        db.add_entry(_make_entry(title=f'条目{i}'))
+        db.add_entry(_make_entry(title=f"条目{i}"))
 
     # 不传 limit 时返回全部。
     all_entries = db.get_entries(EntryQuery())
@@ -198,10 +200,10 @@ def test_get_entries_filter_branches(db):
 
     各分支经 EntryQuery 字段触发，覆盖 SQL 过滤/排序子句的不同组合。
     """
-    cat_id = db.add_category(Category(name='测试过滤分类'))
-    db.add_entry(_make_entry(title='A', category_id=cat_id))
-    db.add_entry(_make_entry(title='Fav', category_id=cat_id, is_favorite=True))
-    del_id = db.add_entry(_make_entry(title='Del'))
+    cat_id = db.add_category(Category(name="测试过滤分类"))
+    db.add_entry(_make_entry(title="A", category_id=cat_id))
+    db.add_entry(_make_entry(title="Fav", category_id=cat_id, is_favorite=True))
+    del_id = db.add_entry(_make_entry(title="Del"))
     db.soft_delete_entry(del_id)
 
     # deleted_only：仅回收站
@@ -223,38 +225,43 @@ def test_get_entries_filter_branches(db):
 
 # TestModels
 
+
 def test_entry_to_dict():
     entry = Entry(
-        title='Test', username='user', password='pass',
-        url='https://example.com', category_name='Test',
-        tags='a,b', notes='note',
-        custom_fields=[CustomField(name='key', value='val')],
+        title="Test",
+        username="user",
+        password="pass",
+        url="https://example.com",
+        category_name="Test",
+        tags="a,b",
+        notes="note",
+        custom_fields=[CustomField(name="key", value="val")],
     )
     d = entry.to_dict(include_password=True)
-    assert d['title'] == 'Test'
-    assert d['password'] == 'pass'
+    assert d["title"] == "Test"
+    assert d["password"] == "pass"
 
     d_no_pwd = entry.to_dict(include_password=False)
-    assert 'password' not in d_no_pwd
+    assert "password" not in d_no_pwd
 
 
 def test_entry_from_dict():
     d = {
-        'title': 'Test',
-        'username': 'user',
-        'password': 'pass',
-        'url': 'https://example.com',
-        'category': 'Test',
-        'custom_fields': [{'name': 'key', 'value': 'val', 'field_type': 'text'}],
+        "title": "Test",
+        "username": "user",
+        "password": "pass",
+        "url": "https://example.com",
+        "category": "Test",
+        "custom_fields": [{"name": "key", "value": "val", "field_type": "text"}],
     }
     entry = Entry.from_dict(d)
-    assert entry.title == 'Test'
+    assert entry.title == "Test"
     assert len(entry.custom_fields) == 1
 
 
 def test_entry_tag_list():
-    entry = Entry(tags='a, b, c')
-    assert entry.get_tag_list() == ['a', 'b', 'c']
+    entry = Entry(tags="a, b, c")
+    assert entry.get_tag_list() == ["a", "b", "c"]
 
-    entry2 = Entry(tags='')
+    entry2 = Entry(tags="")
     assert entry2.get_tag_list() == []

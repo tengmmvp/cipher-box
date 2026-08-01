@@ -193,8 +193,11 @@ class EntryActionsController:
             # 短路（PF-002）：详情面板已显示同一条目（id + updated_at 未变）时跳过重复
             # get_entry 全量解密（含 password/totp），避免重复选中同一条目的解密开销。
             current = self._detail_panel.current_entry
-            if (current is not None and current.id == summary.id
-                    and current.updated_at == summary.updated_at):
+            if (
+                current is not None
+                and current.id == summary.id
+                and current.updated_at == summary.updated_at
+            ):
                 return
             entry = self._entry_mgr.get_entry(summary.id)
             if entry:
@@ -216,6 +219,7 @@ class EntryActionsController:
         else:
             self._show_active_entry_menu(summary, pos)
 
+    @require_unlocked
     def _show_deleted_entry_menu(self, entry: Entry, pos: QPoint) -> None:
         """回收站条目右键菜单。"""
         # 列表条目必来自 DB，id 非 None；守卫后 entry_id 收窄为 int 供下游调用。
@@ -224,11 +228,11 @@ class EntryActionsController:
         entry_id = entry.id
         parent = self._parent
         menu = QMenu(parent)
-        restore_act = QAction('恢复', parent)
+        restore_act = QAction("恢复", parent)
         restore_act.setIcon(icon(REFRESH))
         menu.addAction(restore_act)
-        delete_act = QAction('永久删除', parent)
-        delete_act.setIcon(icon(CLOSE, 'danger'))
+        delete_act = QAction("永久删除", parent)
+        delete_act.setIcon(icon(CLOSE, "danger"))
         menu.addAction(delete_act)
 
         chosen = menu.exec(self._view.entry_list.mapToGlobal(pos))
@@ -236,11 +240,12 @@ class EntryActionsController:
         if chosen == restore_act:
             self._entry_mgr.restore_entry(entry_id)
             self._deps.refresh_after_entry_change()
-            Toast.show(parent, f'已恢复「{entry.title}」', Toast.SUCCESS)
+            Toast.show(parent, f"已恢复「{entry.title}」", Toast.SUCCESS)
         elif chosen == delete_act:
             reply = QMessageBox.warning(
-                parent, '永久删除',
-                f'确定要永久删除「{entry.title}」吗？\n此操作不可撤销！',
+                parent,
+                "永久删除",
+                f"确定要永久删除「{entry.title}」吗？\n此操作不可撤销！",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply == QMessageBox.StandardButton.Yes:
@@ -261,7 +266,8 @@ class EntryActionsController:
             handler()
 
     def _build_active_entry_menu(
-        self, summary: Entry,
+        self,
+        summary: Entry,
     ) -> tuple[QMenu, dict[QAction, Callable[[], None]]]:
         """构造活跃条目右键菜单及其「动作→处理函数」映射。
 
@@ -274,33 +280,33 @@ class EntryActionsController:
             return QMenu(parent), {}
         menu = QMenu(parent)
 
-        copy_user_act = QAction('复制账号', parent)
+        copy_user_act = QAction("复制账号", parent)
         copy_user_act.setIcon(icon(COPY))
         menu.addAction(copy_user_act)
-        copy_pwd_act = QAction('复制密码', parent)
+        copy_pwd_act = QAction("复制密码", parent)
         copy_pwd_act.setIcon(icon(COPY))
         menu.addAction(copy_pwd_act)
 
         # TOTP 验证码：仅当条目配置了 TOTP 密钥时显示
         copy_totp_act: QAction | None = None
         if summary.has_totp:
-            copy_totp_act = QAction('复制验证码', parent)
+            copy_totp_act = QAction("复制验证码", parent)
             copy_totp_act.setIcon(icon(COPY))
             menu.addAction(copy_totp_act)
 
         menu.addSeparator()
-        edit_act = QAction('编辑', parent)
+        edit_act = QAction("编辑", parent)
         edit_act.setIcon(icon(EDIT))
         menu.addAction(edit_act)
         if summary.is_favorite:
-            fav_act = QAction('取消收藏', parent)
+            fav_act = QAction("取消收藏", parent)
             fav_act.setIcon(icon(STAR_OUTLINE))
         else:
-            fav_act = QAction('收藏', parent)
+            fav_act = QAction("收藏", parent)
             fav_act.setIcon(icon(STAR))
         menu.addAction(fav_act)
         menu.addSeparator()
-        del_act = QAction('删除', parent)
+        del_act = QAction("删除", parent)
         del_act.setIcon(icon(DELETE))
         menu.addAction(del_act)
 
@@ -321,7 +327,7 @@ class EntryActionsController:
         entry = self._entry_mgr.get_entry(entry_id)
         if entry and entry.username:
             self._clipboard.copy_text(entry.username)
-            Toast.show(self._parent, '已复制账号', Toast.SUCCESS, duration=MS_TOAST_SHORT)
+            Toast.show(self._parent, "已复制账号", Toast.SUCCESS, duration=MS_TOAST_SHORT)
 
     @require_unlocked
     def _copy_password(self, entry_id: int) -> None:
@@ -330,14 +336,15 @@ class EntryActionsController:
         # password 跳过重复 get_entry 全量解密；非当前条目回退延迟解密。
         current = self._detail_panel.current_entry
         entry = (
-            current if current is not None and current.id == entry_id
+            current
+            if current is not None and current.id == entry_id
             else self._entry_mgr.get_entry(entry_id)
         )
         if entry and entry.password:
             self._clipboard.copy_text(entry.password)
             if current is not None and current.id == entry_id:
                 self._detail_panel.copy_feedback.emit()
-            Toast.show(self._parent, '已复制密码', Toast.SUCCESS, duration=MS_TOAST_SHORT)
+            Toast.show(self._parent, "已复制密码", Toast.SUCCESS, duration=MS_TOAST_SHORT)
 
     @require_unlocked
     def _copy_totp(self, entry_id: int) -> None:
@@ -345,9 +352,11 @@ class EntryActionsController:
         code = self._entry_mgr.totp.generate(entry_id)
         if code:
             self._clipboard.copy_text(code)
-            Toast.show(self._parent, '验证码已复制', Toast.SUCCESS, duration=MS_TOAST_SHORT)
+            Toast.show(self._parent, "验证码已复制", Toast.SUCCESS, duration=MS_TOAST_SHORT)
         else:
-            Toast.show(self._parent, '验证码生成失败，请检查密钥', Toast.ERROR, duration=MS_TOAST_DEFAULT)
+            Toast.show(
+                self._parent, "验证码生成失败，请检查密钥", Toast.ERROR, duration=MS_TOAST_DEFAULT
+            )
 
     def on_category_context_menu(self, pos: QPoint) -> None:
         """分类右键菜单。"""
@@ -360,11 +369,11 @@ class EntryActionsController:
 
         parent = self._parent
         menu = QMenu(parent)
-        edit_act = menu.addAction('编辑分类')
+        edit_act = menu.addAction("编辑分类")
         if edit_act is None:
             return
         edit_act.setIcon(icon(EDIT))
-        delete_act = menu.addAction('删除分类')
+        delete_act = menu.addAction("删除分类")
         if delete_act is None:
             return
         delete_act.setIcon(icon(DELETE))
@@ -384,10 +393,13 @@ class EntryActionsController:
             categories = self._entry_mgr.categories.get_categories()
         return categories, tag_names
 
+    @require_unlocked
     def add_entry(self) -> None:
         categories, tag_names = self._resolve_dialog_options()
         parent = self._parent
-        dialog = EntryDialog(self._entry_mgr, categories, tag_names, parent=parent, config=self._config)
+        dialog = EntryDialog(
+            self._entry_mgr, categories, tag_names, parent=parent, config=self._config
+        )
         dialog.saved.connect(self._deps.refresh_after_entry_change)
         dialog.exec()
         dialog.deleteLater()
@@ -402,14 +414,16 @@ class EntryActionsController:
         if entry.integrity_error:
             QMessageBox.critical(
                 self._parent,
-                '数据完整性异常',
-                f'该条目的以下字段无法解密：{entry.integrity_message}。\n\n'
-                '为避免覆盖原始密文，当前禁止编辑。请先创建备份并检查数据文件。',
+                "数据完整性异常",
+                f"该条目的以下字段无法解密：{entry.integrity_message}。\n\n"
+                "为避免覆盖原始密文，当前禁止编辑。请先创建备份并检查数据文件。",
             )
             return
         categories, tag_names = self._resolve_dialog_options()
         parent = self._parent
-        dialog = EntryDialog(self._entry_mgr, categories, tag_names, entry=entry, parent=parent, config=self._config)
+        dialog = EntryDialog(
+            self._entry_mgr, categories, tag_names, entry=entry, parent=parent, config=self._config
+        )
         dialog.saved.connect(self._deps.refresh_after_entry_change)
         dialog.exec()
         dialog.deleteLater()
@@ -428,8 +442,9 @@ class EntryActionsController:
             return
         parent = self._parent
         reply = QMessageBox.question(
-            parent, '确认删除',
-            f'确定要删除「{entry.title}」吗？\n条目将移入回收站。',
+            parent,
+            "确认删除",
+            f"确定要删除「{entry.title}」吗？\n条目将移入回收站。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
@@ -444,15 +459,21 @@ class EntryActionsController:
                 # 校验条目仍在回收站：撤销 Toast 存活期间条目可能已被永久删除
                 current = self._entry_mgr.get_entry(entry_id)
                 if current is None or not current.is_deleted:
-                    Toast.show(parent, '该条目已被永久删除，无法撤销', Toast.ERROR)
+                    Toast.show(parent, "该条目已被永久删除，无法撤销", Toast.ERROR)
                     return
                 self._entry_mgr.restore_entry(entry_id)
                 self._deps.refresh_after_entry_change()
-                Toast.show(parent, f'已恢复「{entry_title}」', Toast.SUCCESS)
+                Toast.show(parent, f"已恢复「{entry_title}」", Toast.SUCCESS)
 
             self._deps.refresh_after_entry_change()
-            Toast.show(parent, '已移入回收站', Toast.INFO, duration=MS_TOAST_LONG,
-                       action_text='撤销', action_callback=undo)
+            Toast.show(
+                parent,
+                "已移入回收站",
+                Toast.INFO,
+                duration=MS_TOAST_LONG,
+                action_text="撤销",
+                action_callback=undo,
+            )
 
     def delete_selected_entry(self) -> None:
         idx = self._view.entry_list.currentIndex()
@@ -467,10 +488,11 @@ class EntryActionsController:
         self._deps.refresh_entries_only()
 
     def on_copy_feedback(self) -> None:
-        self._view.status_bar.showMessage('已复制到剪贴板', MS_TOAST_DEFAULT)
+        self._view.status_bar.showMessage("已复制到剪贴板", MS_TOAST_DEFAULT)
 
     # ========== 分类管理 ==========
 
+    @require_unlocked
     def add_category(self) -> None:
         parent = self._parent
         dialog = CategoryDialog(self._entry_mgr, parent=parent)
@@ -478,6 +500,7 @@ class EntryActionsController:
         dialog.exec()
         dialog.deleteLater()
 
+    @require_unlocked
     def _edit_category(self, category_id: int) -> None:
         category = self._entry_mgr.categories.get_category(category_id)
         if not category:
@@ -488,23 +511,26 @@ class EntryActionsController:
         dialog.exec()
         dialog.deleteLater()
 
+    @require_unlocked
     def _delete_category(self, category_id: int) -> None:
         msg, _has_entries, cat_name = self._sidebar_ctrl.build_delete_message(category_id)
         if not msg:
             return
         parent = self._parent
         reply = QMessageBox.question(
-            parent, '删除分类', msg,
+            parent,
+            "删除分类",
+            msg,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
             self._sidebar_ctrl.delete_category(category_id)
             self._deps.refresh_after_entry_change()
-            Toast.show(parent, f'已删除分类「{cat_name}」', Toast.SUCCESS)
+            Toast.show(parent, f"已删除分类「{cat_name}」", Toast.SUCCESS)
 
     # ========== 密码生成器回调 ==========
 
     def on_password_selected(self, password: str) -> None:
         """密码生成器独立打开时，选中密码后复制到剪贴板。"""
         self._clipboard.copy_text(password)
-        Toast.show(self._parent, '密码已复制到剪贴板', Toast.SUCCESS)
+        Toast.show(self._parent, "密码已复制到剪贴板", Toast.SUCCESS)

@@ -19,9 +19,9 @@ class TestVaultWriteLock:
 
     def test_lock_released_on_exception(self, vault):
         """yield 处抛异常时锁正确释放（异常安全，BackupRestoreManager 的契约前提）。"""
-        with pytest.raises(ValueError, match='boom'):
+        with pytest.raises(ValueError, match="boom"):
             with vault.vault_write_lock():
-                raise ValueError('boom')
+                raise ValueError("boom")
         with vault.vault_write_lock():
             pass
 

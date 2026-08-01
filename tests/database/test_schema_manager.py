@@ -41,7 +41,7 @@ def _tamper(db_path, *, drop: str, add_sql: str) -> None:
 class TestColumnTamperDetection:
     def test_init_tables_accepts_valid_unchanged_schema(self, tmp_path):
         """正对照：未篡改的合法库重开时 init_tables 不抛（非误报）。"""
-        db_path = tmp_path / 'valid.db'
+        db_path = tmp_path / "valid.db"
         _create_valid_db(db_path)
 
         db = DatabaseManager(db_path, test_mode=True)
@@ -55,17 +55,17 @@ class TestColumnTamperDetection:
         PRAGMA table_info 的 dflt_value 从 '0' 变 '1'，与 _TABLE_COLUMNS 预期四元组
         不符。覆盖「篡改默认值」维度。
         """
-        db_path = tmp_path / 'dflt.db'
+        db_path = tmp_path / "dflt.db"
         _create_valid_db(db_path)
         _tamper(
             db_path,
-            drop='password_strength',
+            drop="password_strength",
             add_sql="ALTER TABLE entries ADD COLUMN password_strength INTEGER DEFAULT 1",
         )
 
         db = DatabaseManager(db_path, test_mode=True)
         db.open()
-        with pytest.raises(SchemaError, match='结构损坏'):
+        with pytest.raises(SchemaError, match="结构损坏"):
             db.init_tables()
         db.close()
 
@@ -74,17 +74,17 @@ class TestColumnTamperDetection:
 
         覆盖「篡改类型」维度。
         """
-        db_path = tmp_path / 'type.db'
+        db_path = tmp_path / "type.db"
         _create_valid_db(db_path)
         _tamper(
             db_path,
-            drop='password_strength',
+            drop="password_strength",
             add_sql="ALTER TABLE entries ADD COLUMN password_strength TEXT DEFAULT 0",
         )
 
         db = DatabaseManager(db_path, test_mode=True)
         db.open()
-        with pytest.raises(SchemaError, match='结构损坏'):
+        with pytest.raises(SchemaError, match="结构损坏"):
             db.init_tables()
         db.close()
 
@@ -94,17 +94,17 @@ class TestColumnTamperDetection:
         metadata_mac 原为 ``TEXT NOT NULL DEFAULT ''``（notnull=1）；DROP 后以
         ``TEXT DEFAULT ''``（notnull=0）重建，四元组第二位不符。覆盖「篡改 notnull」维度。
         """
-        db_path = tmp_path / 'notnull.db'
+        db_path = tmp_path / "notnull.db"
         _create_valid_db(db_path)
         _tamper(
             db_path,
-            drop='metadata_mac',
+            drop="metadata_mac",
             add_sql="ALTER TABLE entries ADD COLUMN metadata_mac TEXT DEFAULT ''",
         )
 
         db = DatabaseManager(db_path, test_mode=True)
         db.open()
-        with pytest.raises(SchemaError, match='结构损坏'):
+        with pytest.raises(SchemaError, match="结构损坏"):
             db.init_tables()
         db.close()
 
@@ -114,7 +114,7 @@ class TestColumnTamperDetection:
         覆盖多表校验：非仅 entries 表，categories / password_history / vault_meta
         的列篡改均被 _validate_current_schema 的逐表循环捕获。
         """
-        db_path = tmp_path / 'cat.db'
+        db_path = tmp_path / "cat.db"
         _create_valid_db(db_path)
         conn = sqlite3.connect(str(db_path))
         try:
@@ -126,6 +126,6 @@ class TestColumnTamperDetection:
 
         db = DatabaseManager(db_path, test_mode=True)
         db.open()
-        with pytest.raises(SchemaError, match='结构损坏'):
+        with pytest.raises(SchemaError, match="结构损坏"):
             db.init_tables()
         db.close()

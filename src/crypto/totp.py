@@ -13,7 +13,7 @@ from ..utils.memory import secure_zero_buffer
 logger = logging.getLogger(__name__)
 
 # Base32 标准化时一次性剥离的常见分隔符（空格、连字符、点、下划线）。
-_BASE32_STRIP_TABLE = str.maketrans('', '', ' -._')
+_BASE32_STRIP_TABLE = str.maketrans("", "", " -._")
 
 # period 上限：超长 period（如 999999）会让 TOTP 几乎不变、退化为静态码，用户难
 # 察觉异常。1–300 秒覆盖所有合法场景（RFC 默认 30s，少数 60s），拒绝极端值防退化。
@@ -24,17 +24,18 @@ class TOTPGenerator:
     """基于时间的一次性密码 TOTP 生成器。"""
 
     DEFAULT_PERIOD = 30  # 时间步长，单位为秒
-    DEFAULT_DIGITS = 6   # 验证码位数
+    DEFAULT_DIGITS = 6  # 验证码位数
 
     ALGO_MAP = {
-        'SHA1': 'sha1',
-        'SHA256': 'sha256',
-        'SHA512': 'sha512',
+        "SHA1": "sha1",
+        "SHA256": "sha256",
+        "SHA512": "sha512",
     }
 
-    # 密钥前缀 -> 算法。SHA1 是默认故不设前缀识别：若密钥以 ``SHA1:`` 开头会原样保留，
-    # 后续 base32 解码时 ':' 非法会报错。从 ALGO_MAP 派生，新增算法自动跟随。
-    _PREFIX_MAP = {f'{a}:': a for a in ALGO_MAP if a != 'SHA1'}
+    # 密钥前缀 -> 算法，从 ALGO_MAP 派生（新增算法自动跟随）。含 SHA1：与 SHA256/SHA512
+    # 对称识别并剥离前缀，避免 ``SHA1:SECRET`` 因 ':' 残留致 base32 解码报错（SHA1 为
+    # 默认算法，剥离后按默认处理，行为与无前缀一致）。
+    _PREFIX_MAP = {f"{a}:": a for a in ALGO_MAP}
 
     @staticmethod
     def _parse_secret(secret: str) -> tuple[str, str]:
@@ -51,8 +52,8 @@ class TOTPGenerator:
         secret = secret.strip()
         for prefix, algo in TOTPGenerator._PREFIX_MAP.items():
             if secret.upper().startswith(prefix):
-                return algo, secret[len(prefix):].strip()
-        return 'SHA1', secret
+                return algo, secret[len(prefix) :].strip()
+        return "SHA1", secret
 
     @staticmethod
     def _parse_config(
@@ -67,32 +68,32 @@ class TOTPGenerator:
         调用方传入的默认值。冲突时 secret 前缀胜出。
         """
         value = secret.strip()
-        if value.lower().startswith('otpauth://'):
+        if value.lower().startswith("otpauth://"):
             parsed = urlparse(value)
-            if parsed.netloc.lower() != 'totp':
-                raise ValueError('仅支持 TOTP URI')
+            if parsed.netloc.lower() != "totp":
+                raise ValueError("仅支持 TOTP URI")
             query = parse_qs(parsed.query)
             # parse_qs 已做百分号解码，勿再 unquote（双重解码会把 secret 中 %XX 当
             # 转义再次解码，损坏密钥）。
-            value = query.get('secret', [''])[0].strip()
+            value = query.get("secret", [""])[0].strip()
             if not value:
-                raise ValueError('otpauth URI 中缺少 secret 参数')
-            algorithm = query.get('algorithm', [algorithm])[0].upper()
+                raise ValueError("otpauth URI 中缺少 secret 参数")
+            algorithm = query.get("algorithm", [algorithm])[0].upper()
             try:
-                period = int(query.get('period', [period])[0])
+                period = int(query.get("period", [period])[0])
             except (ValueError, TypeError) as exc:
-                raise ValueError('TOTP period 必须为整数') from exc
+                raise ValueError("TOTP period 必须为整数") from exc
             try:
-                digits = int(query.get('digits', [digits])[0])
+                digits = int(query.get("digits", [digits])[0])
             except (ValueError, TypeError) as exc:
-                raise ValueError('TOTP digits 必须为整数') from exc
+                raise ValueError("TOTP digits 必须为整数") from exc
         parsed_algo, value = TOTPGenerator._parse_secret(value)
-        if parsed_algo != 'SHA1':
+        if parsed_algo != "SHA1":
             algorithm = parsed_algo
         if algorithm not in TOTPGenerator.ALGO_MAP:
-            raise ValueError('不支持的算法')
+            raise ValueError("不支持的算法")
         if not (1 <= period <= _MAX_TOTP_PERIOD) or digits not in (6, 7, 8):
-            raise ValueError('TOTP 参数无效')
+            raise ValueError("TOTP 参数无效")
         return algorithm, value, period, digits
 
     @staticmethod
@@ -111,14 +112,14 @@ class TOTPGenerator:
         """
         # 防御 period<=0 除零：绕过 _parse_config 直接调用时（如未来重构）的守卫。
         if period <= 0:
-            raise ValueError('TOTP period 必须为正数')
+            raise ValueError("TOTP period 必须为正数")
         counter = int(time.time() if now is None else now) // period
-        msg = struct.pack('>Q', counter)
+        msg = struct.pack(">Q", counter)
         hmac_hash = hmac.new(key, msg, algo_name).digest()
         offset = hmac_hash[-1] & 0x0F
-        code = struct.unpack('>I', hmac_hash[offset:offset + 4])[0]
+        code = struct.unpack(">I", hmac_hash[offset : offset + 4])[0]
         code &= 0x7FFFFFFF
-        code %= 10 ** digits
+        code %= 10**digits
         return str(code).zfill(digits)
 
     @staticmethod
@@ -139,19 +140,19 @@ class TOTPGenerator:
             由验证码和错误对象组成的元组。成功时错误对象为 None，失败时验证码为空字符串。
         """
         if not secret:
-            return '', ValueError('TOTP 密钥不能为空')
+            return "", ValueError("TOTP 密钥不能为空")
 
         try:
             algorithm, raw_secret, period, digits = TOTPGenerator._parse_config(
                 secret, algorithm, period, digits
             )
         except (TypeError, ValueError) as exc:
-            return '', ValueError(f'TOTP 密钥格式无效: {exc}')
+            return "", ValueError(f"TOTP 密钥格式无效: {exc}")
 
         algo_name = TOTPGenerator.ALGO_MAP.get(algorithm)
         if algo_name is None:
             # _parse_config 已校验 algorithm，此分支为纵深防御，防止绕过校验时 KeyError 冒泡。
-            return '', ValueError('不支持的 TOTP 算法')
+            return "", ValueError("不支持的 TOTP 算法")
 
         try:
             # 解码为 bytearray 以便用毕原地清零（bytes 不可变只能清零副本）。
@@ -160,7 +161,7 @@ class TOTPGenerator:
                 base64.b32decode(TOTPGenerator._normalize_base32(raw_secret), casefold=True)
             )
         except (binascii.Error, ValueError) as exc:
-            return '', ValueError(f'TOTP Base32 解码失败: {exc}')
+            return "", ValueError(f"TOTP Base32 解码失败: {exc}")
 
         try:
             return TOTPGenerator._compute_totp(key, algo_name, period, digits, now=now), None
@@ -170,7 +171,12 @@ class TOTPGenerator:
             secure_zero_buffer(key)
 
     @staticmethod
-    def generate(secret: str, algorithm: str = 'SHA1', period: int = DEFAULT_PERIOD, digits: int = DEFAULT_DIGITS) -> str:
+    def generate(
+        secret: str,
+        algorithm: str = "SHA1",
+        period: int = DEFAULT_PERIOD,
+        digits: int = DEFAULT_DIGITS,
+    ) -> str:
         """生成当前 TOTP 验证码。
 
         Args:
@@ -189,11 +195,16 @@ class TOTPGenerator:
         code, error = TOTPGenerator._generate_impl(secret, algorithm, period, digits)
         if error is not None:
             logger.warning("TOTP 生成失败: %s", error)
-            return ''
+            return ""
         return code
 
     @staticmethod
-    def generate_or_raise(secret: str, algorithm: str = 'SHA1', period: int = DEFAULT_PERIOD, digits: int = DEFAULT_DIGITS) -> str:
+    def generate_or_raise(
+        secret: str,
+        algorithm: str = "SHA1",
+        period: int = DEFAULT_PERIOD,
+        digits: int = DEFAULT_DIGITS,
+    ) -> str:
         """生成当前 TOTP 验证码，失败时抛出异常而非静默返回空串。
 
         参数和返回值与 generate() 相同，适用于密钥验证等需向用户展示具体错误的场景。
@@ -207,7 +218,7 @@ class TOTPGenerator:
         return code
 
     @staticmethod
-    def get_remaining_seconds(period: int = DEFAULT_PERIOD, secret: str = '') -> int:
+    def get_remaining_seconds(period: int = DEFAULT_PERIOD, secret: str = "") -> int:
         """获取当前时间步长剩余秒数。"""
         if secret:
             period = TOTPGenerator._extract_period(secret, period)
@@ -230,10 +241,10 @@ class TOTPGenerator:
         :data:`_MAX_TOTP_PERIOD`）。
         """
         value = secret.strip()
-        if value.lower().startswith('otpauth://'):
+        if value.lower().startswith("otpauth://"):
             try:
                 query = parse_qs(urlparse(value).query)
-                period = int(query.get('period', [str(default)])[0])
+                period = int(query.get("period", [str(default)])[0])
             except (ValueError, TypeError):
                 return default
             return period if 0 < period <= _MAX_TOTP_PERIOD else default
@@ -246,11 +257,11 @@ class TOTPGenerator:
         # 自动补齐 Base32 填充，兼容其他认证器导出的非标准填充密钥
         padding = (8 - len(cleaned) % 8) % 8
         if padding:
-            cleaned += '=' * padding
+            cleaned += "=" * padding
         return cleaned
 
     @staticmethod
-    def validate_secret(secret: str, algorithm: str = 'SHA1') -> bool:
+    def validate_secret(secret: str, algorithm: str = "SHA1") -> bool:
         """验证 Base32 密钥格式是否有效。
 
         支持带算法前缀的密钥格式，例如 'SHA256:BASE32SECRET'。

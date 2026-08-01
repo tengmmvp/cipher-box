@@ -15,14 +15,16 @@ def format_datetime(iso_str: str) -> str:
     与 ``security_analyzer`` 时间认知一致。
     """
     if not iso_str:
-        return ''
-    # Python 3.10 的 fromisoformat 不接受 'Z' 后缀（3.11+ 才支持），先归一化为 +00:00 再解析。
-    normalized = iso_str[:-1] + '+00:00' if iso_str.endswith('Z') else iso_str
+        return ""
     try:
+        # Python 3.10 的 fromisoformat 不接受 'Z' 后缀（3.11+ 才支持），先归一化为 +00:00 再解析。
+        normalized = iso_str[:-1] + "+00:00" if iso_str.endswith("Z") else iso_str
         dt = datetime.fromisoformat(normalized)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         dt = dt.astimezone()
-        return dt.strftime('%Y-%m-%d %H:%M:%S')
-    except (ValueError, TypeError):
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError, AttributeError):
+        # AttributeError：非 str 输入（如外部构造的 int 时间戳）的 endswith 调用失败，
+        # 入口已防 None/空，此处兜底其余类型并原样返回。
         return iso_str

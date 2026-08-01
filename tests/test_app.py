@@ -25,7 +25,7 @@ def test_emergency_cleanup_noop_when_vault_locked(monkeypatch):
     with tempfile.TemporaryDirectory() as root:
         config = make_test_config(root)
         vault = make_vault(config)
-        assert vault.initialize('MasterPassword!2026')[0]
+        assert vault.initialize("MasterPassword!2026")[0]
         vault.lock()
         lock_calls: list[int] = []
         original_lock = vault.lock
@@ -34,7 +34,7 @@ def test_emergency_cleanup_noop_when_vault_locked(monkeypatch):
             lock_calls.append(1)
             return original_lock()
 
-        monkeypatch.setattr(vault, 'lock', _spy_lock)
+        monkeypatch.setattr(vault, "lock", _spy_lock)
         app = CipherBoxApp.__new__(CipherBoxApp)
         app._vault = vault
         app._main_window = None
@@ -50,7 +50,7 @@ def test_emergency_cleanup_locks_unlocked_vault():
     with tempfile.TemporaryDirectory() as root:
         config = make_test_config(root)
         vault = make_vault(config)
-        assert vault.initialize('MasterPassword!2026')[0]
+        assert vault.initialize("MasterPassword!2026")[0]
         assert vault.is_unlocked
         app = CipherBoxApp.__new__(CipherBoxApp)
         app._vault = vault
@@ -67,7 +67,7 @@ def test_emergency_cleanup_idempotent_across_repeated_calls():
     with tempfile.TemporaryDirectory() as root:
         config = make_test_config(root)
         vault = make_vault(config)
-        assert vault.initialize('MasterPassword!2026')[0]
+        assert vault.initialize("MasterPassword!2026")[0]
         app = CipherBoxApp.__new__(CipherBoxApp)
         app._vault = vault
         app._main_window = None
@@ -84,14 +84,14 @@ def test_emergency_cleanup_swallows_main_window_errors():
     with tempfile.TemporaryDirectory() as root:
         config = make_test_config(root)
         vault = make_vault(config)
-        assert vault.initialize('MasterPassword!2026')[0]
+        assert vault.initialize("MasterPassword!2026")[0]
 
         class _BoomWindow:
             def prepare_for_lock(self):
-                raise RuntimeError('prepare_for_lock 模拟失败')
+                raise RuntimeError("prepare_for_lock 模拟失败")
 
             def emergency_clear_clipboard(self):
-                raise RuntimeError('clear_clipboard 模拟失败')
+                raise RuntimeError("clear_clipboard 模拟失败")
 
         app = CipherBoxApp.__new__(CipherBoxApp)
         app._vault = vault
@@ -131,7 +131,7 @@ def test_main_window_construction_failure_rolls_back(monkeypatch):
 
         def __init__(self, vault, config):
             self.login_success = MagicMock()
-            captured['login'] = self
+            captured["login"] = self
 
         def exec(self):
             return _FakeLogin.DialogCode.Accepted
@@ -139,22 +139,23 @@ def test_main_window_construction_failure_rolls_back(monkeypatch):
         def deleteLater(self):
             pass
 
-    monkeypatch.setattr('src.app.LoginWindow', _FakeLogin)
-    monkeypatch.setattr('src.app.build_business_context', lambda c, v: MagicMock())
+    monkeypatch.setattr("src.app.LoginWindow", _FakeLogin)
+    monkeypatch.setattr("src.app.build_business_context", lambda c, v: MagicMock())
 
     def _boom(_ctx):
-        raise RuntimeError('construct fail')
+        raise RuntimeError("construct fail")
 
-    monkeypatch.setattr('src.app.MainWindow', _boom)
+    monkeypatch.setattr("src.app.MainWindow", _boom)
 
     critical_calls: list = []
     monkeypatch.setattr(
-        'src.app.QMessageBox.critical', lambda *a, **k: critical_calls.append(a),
+        "src.app.QMessageBox.critical",
+        lambda *a, **k: critical_calls.append(a),
     )
 
     app._show_login()
     # on_login 经 login_success.connect 注册；手动触发模拟登录成功后进入主窗口构造
-    on_login = captured['login'].login_success.connect.call_args[0][0]
+    on_login = captured["login"].login_success.connect.call_args[0][0]
     on_login()
 
     # 回滚：_main_window 归 None，未留半构造引用（信号槽半连接的不一致窗口）

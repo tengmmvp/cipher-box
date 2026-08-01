@@ -73,7 +73,7 @@ class RateLimiter:
         """
         if self._state_path is None:
             return None
-        return self._state_path.with_name(self._state_path.name + '.sentinel')
+        return self._state_path.with_name(self._state_path.name + ".sentinel")
 
     @property
     def _sentinel_name(self) -> str | None:
@@ -102,11 +102,12 @@ class RateLimiter:
             return
         try:
             sentinel.parent.mkdir(parents=True, exist_ok=True)
-            sentinel.write_bytes(b'1')
+            sentinel.write_bytes(b"1")
             secure_file(sentinel)
         except OSError:
             logging.getLogger(__name__).warning(
-                "限流哨兵文件创建失败，删除检测将降级", exc_info=True,
+                "限流哨兵文件创建失败，删除检测将降级",
+                exc_info=True,
             )
 
     def _register_sentinel_in_config(self) -> None:
@@ -120,7 +121,8 @@ class RateLimiter:
         except Exception:
             # config 写盘失败/校验失败等：不阻断限流，退化为仅哨兵文件配对检测。
             logging.getLogger(__name__).warning(
-                "限流哨兵签名登记失败，同时删除检测将降级", exc_info=True,
+                "限流哨兵签名登记失败，同时删除检测将降级",
+                exc_info=True,
             )
 
     def _sentinel_established_via_config(self) -> bool:
@@ -143,7 +145,8 @@ class RateLimiter:
             # config 读取异常不阻断限流：退回「首次使用」最保守（不锁定），
             # 避免配置读取故障误锁用户；同时删除检测在此退化为仅哨兵文件配对。
             logging.getLogger(__name__).warning(
-                "限流哨兵签名见证读取失败，按首次使用处理", exc_info=True,
+                "限流哨兵签名见证读取失败，按首次使用处理",
+                exc_info=True,
             )
             return False
 
@@ -184,13 +187,13 @@ class RateLimiter:
                 self._apply_max_lockdown()
             return
         try:
-            data = json.loads(self._state_path.read_text(encoding='utf-8'))
-            fail_count = data.get('fail_count', 0)
-            remaining_seconds = data.get('remaining_seconds', 0)
+            data = json.loads(self._state_path.read_text(encoding="utf-8"))
+            fail_count = data.get("fail_count", 0)
+            remaining_seconds = data.get("remaining_seconds", 0)
             if type(fail_count) is not int or fail_count < 0:
-                raise ValueError('失败次数无效')
+                raise ValueError("失败次数无效")
             if not isinstance(remaining_seconds, (int, float)) or remaining_seconds < 0:
-                raise ValueError('剩余锁定时间无效')
+                raise ValueError("剩余锁定时间无效")
             self._fail_count = fail_count
             # 经 remaining_seconds 在当前 monotonic 重算到期点，抵抗系统时钟回拨
             # （格式理据见 _save_state）。旧版以 time.time() 绝对时间戳持久化的状态
@@ -210,13 +213,14 @@ class RateLimiter:
         # 无法跨会话还原绝对到期点；存剩余秒数后加载时基于当前 monotonic 重算，
         # 既保留跨会话退避阶梯（fail_count 一并持久化），又抵抗系统时钟回拨绕过。
         remaining_seconds = (
-            max(0.0, self._lock_until - time.monotonic())
-            if self._lock_until else 0.0
+            max(0.0, self._lock_until - time.monotonic()) if self._lock_until else 0.0
         )
-        payload = json.dumps({
-            'fail_count': self._fail_count,
-            'remaining_seconds': remaining_seconds,
-        })
+        payload = json.dumps(
+            {
+                "fail_count": self._fail_count,
+                "remaining_seconds": remaining_seconds,
+            }
+        )
 
         def _write_state(f: Any) -> bool:
             f.write(payload)
@@ -227,7 +231,7 @@ class RateLimiter:
             # secure_file 收紧」间的世界可读窗口（与 SEC-2 一致）。写盘失败（只读盘/
             # 磁盘满/权限）不中断登录流程：RateLimiter 是内存限流，持久化仅为跨会话
             # 保留；失败时内存状态仍生效，仅记日志。
-            atomic_write(self._state_path, _write_state, mode='w', encoding='utf-8')
+            atomic_write(self._state_path, _write_state, mode="w", encoding="utf-8")
             # 状态已成功落盘：确保哨兵存在，使后续「状态文件被删除」可被检测。
             self._ensure_sentinel()
         except OSError:
@@ -246,7 +250,7 @@ class RateLimiter:
         now = time.monotonic()
         if self._lock_until and now < self._lock_until:
             remaining = int(self._lock_until - now) + 1
-            return f'尝试次数过多，请等待 {remaining} 秒后重试'
+            return f"尝试次数过多，请等待 {remaining} 秒后重试"
         if self._lock_until and now >= self._lock_until:
             # 锁定到期：允许重试，但保留 fail_count，使下一轮失败仍能爬升到更高
             # 退避档位。若到期即清零，攻击者每轮重置回最低档（3 次→10s→清零→…），

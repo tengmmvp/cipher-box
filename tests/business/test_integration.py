@@ -43,18 +43,18 @@ def test_add_and_retrieve_entry(entry_mgr_env):
     """添加条目→解密获取→验证所有字段。"""
     entry_mgr, _vault, _tmp_dir = entry_mgr_env
     entry = Entry(
-        title='测试网站',
-        username='alice@example.com',
-        password='Str0ng!P@ssw0rd',
-        url='https://example.com',
-        tags='测试,集成测试',
-        notes='这是一条测试笔记',
+        title="测试网站",
+        username="alice@example.com",
+        password="Str0ng!P@ssw0rd",
+        url="https://example.com",
+        tags="测试,集成测试",
+        notes="这是一条测试笔记",
         custom_fields=[
-            CustomField(name='安全问题', value='小学名字', field_type='text'),
-            CustomField(name='API Key', value='sk-12345', field_type='password'),
+            CustomField(name="安全问题", value="小学名字", field_type="text"),
+            CustomField(name="API Key", value="sk-12345", field_type="password"),
         ],
-        entry_type='login',
-        totp_secret='JBSWY3DPEHPK3PXP',
+        entry_type="login",
+        totp_secret="JBSWY3DPEHPK3PXP",
     )
     entry_id = entry_mgr.add_entry(entry)
     assert entry_id > 0
@@ -64,23 +64,23 @@ def test_add_and_retrieve_entry(entry_mgr_env):
     assert len(entries) == 1
 
     decrypted = entries[0]
-    assert decrypted.title == '测试网站'
-    assert decrypted.username == 'alice@example.com'
-    assert decrypted.password == 'Str0ng!P@ssw0rd'
-    assert decrypted.url == 'https://example.com'
-    assert decrypted.tags == '测试,集成测试'
-    assert decrypted.notes == '这是一条测试笔记'
-    assert decrypted.entry_type == 'login'
-    assert decrypted.totp_secret == 'JBSWY3DPEHPK3PXP'
+    assert decrypted.title == "测试网站"
+    assert decrypted.username == "alice@example.com"
+    assert decrypted.password == "Str0ng!P@ssw0rd"
+    assert decrypted.url == "https://example.com"
+    assert decrypted.tags == "测试,集成测试"
+    assert decrypted.notes == "这是一条测试笔记"
+    assert decrypted.entry_type == "login"
+    assert decrypted.totp_secret == "JBSWY3DPEHPK3PXP"
 
     # 验证自定义字段
     fields = decrypted.custom_fields
     assert isinstance(fields, list)
     assert len(fields) == 2
-    assert fields[0].name == '安全问题'
-    assert fields[0].value == '小学名字'
-    assert fields[1].name == 'API Key'
-    assert fields[1].value == 'sk-12345'
+    assert fields[0].name == "安全问题"
+    assert fields[0].value == "小学名字"
+    assert fields[1].name == "API Key"
+    assert fields[1].value == "sk-12345"
 
 
 def test_update_preserves_password_history(entry_mgr_env):
@@ -88,14 +88,14 @@ def test_update_preserves_password_history(entry_mgr_env):
     entry_mgr, _vault, _tmp_dir = entry_mgr_env
     # 1. 添加条目
     entry = Entry(
-        title='历史记录测试',
-        username='user1',
-        password='OldPassword123!',
+        title="历史记录测试",
+        username="user1",
+        password="OldPassword123!",
     )
     entry_id = entry_mgr.add_entry(entry)
 
     # 2. 修改密码
-    entry = dataclasses.replace(entry, id=entry_id, password='NewPassword456!')
+    entry = dataclasses.replace(entry, id=entry_id, password="NewPassword456!")
     entry_mgr.update_entry(entry)
 
     # 3. 查询密码历史，验证旧密码存在
@@ -105,12 +105,12 @@ def test_update_preserves_password_history(entry_mgr_env):
     # 解密历史记录中的旧密码
     decrypted_history = entry_mgr.password_history.decrypt(history)
     assert len(decrypted_history) == 1
-    assert decrypted_history[0]['password'] == 'OldPassword123!'
+    assert decrypted_history[0]["password"] == "OldPassword123!"
 
     # 验证当前密码是新密码
     current = entry_mgr.get_entry(entry_id)
     assert current is not None
-    assert current.password == 'NewPassword456!'
+    assert current.password == "NewPassword456!"
 
 
 def test_search_by_username(entry_mgr_env):
@@ -118,30 +118,30 @@ def test_search_by_username(entry_mgr_env):
     entry_mgr, _vault, _tmp_dir = entry_mgr_env
     # 1. 添加两个 username 不同的条目
     entry_a = Entry(
-        title='站点 A',
-        username='alice@wonderland.com',
-        password='P@ssw0rdA!',
+        title="站点 A",
+        username="alice@wonderland.com",
+        password="P@ssw0rdA!",
     )
     entry_b = Entry(
-        title='站点 B',
-        username='bob@builder.com',
-        password='P@ssw0rdB!',
+        title="站点 B",
+        username="bob@builder.com",
+        password="P@ssw0rdB!",
     )
     entry_mgr.add_entry(entry_a)
     entry_mgr.add_entry(entry_b)
 
     # 2. 用 username 搜索
-    results = entry_mgr.get_entry_summaries(search='alice')
+    results = entry_mgr.get_entry_summaries(search="alice")
     assert len(results) == 1
-    assert results[0].username == 'alice@wonderland.com'
+    assert results[0].username == "alice@wonderland.com"
 
     # 搜索另一个
-    results_b = entry_mgr.get_entry_summaries(search='bob')
+    results_b = entry_mgr.get_entry_summaries(search="bob")
     assert len(results_b) == 1
-    assert results_b[0].username == 'bob@builder.com'
+    assert results_b[0].username == "bob@builder.com"
 
     # 搜索不存在的
-    results_none = entry_mgr.get_entry_summaries(search='charlie')
+    results_none = entry_mgr.get_entry_summaries(search="charlie")
     assert len(results_none) == 0
 
 
@@ -150,9 +150,9 @@ def test_toggle_favorite(entry_mgr_env):
     entry_mgr, _vault, _tmp_dir = entry_mgr_env
     # 1. 添加条目
     entry = Entry(
-        title='收藏测试',
-        username='user_fav',
-        password='Password123!',
+        title="收藏测试",
+        username="user_fav",
+        password="Password123!",
     )
     entry_id = entry_mgr.add_entry(entry)
 
@@ -179,7 +179,7 @@ def test_toggle_favorite(entry_mgr_env):
 def test_toggle_favorite_returns_new_state(entry_mgr_env):
     """toggle_favorite 应返回新的收藏状态。"""
     entry_mgr, _vault, _tmp_dir = entry_mgr_env
-    entry = Entry(title='收藏返回值测试', username='fav_user', password='Password123!')
+    entry = Entry(title="收藏返回值测试", username="fav_user", password="Password123!")
     entry_id = entry_mgr.add_entry(entry)
 
     # 初始状态应为非收藏
@@ -203,9 +203,9 @@ def test_get_all_tags(entry_mgr_env):
     entry_mgr, _vault, _tmp_dir = entry_mgr_env
     # 1. 添加多个带标签的条目
     entries_data = [
-        Entry(title='E1', username='u1', password='P1!', tags='社交,邮箱'),
-        Entry(title='E2', username='u2', password='P2!', tags='社交,工作'),
-        Entry(title='E3', username='u3', password='P3!', tags='社交,邮箱,金融'),
+        Entry(title="E1", username="u1", password="P1!", tags="社交,邮箱"),
+        Entry(title="E2", username="u2", password="P2!", tags="社交,工作"),
+        Entry(title="E3", username="u3", password="P3!", tags="社交,邮箱,金融"),
     ]
     for e in entries_data:
         entry_mgr.add_entry(e)
@@ -215,10 +215,10 @@ def test_get_all_tags(entry_mgr_env):
 
     # 3. 验证标签和频率正确
     tag_dict = dict(tags)
-    assert tag_dict['社交'] == 3
-    assert tag_dict['邮箱'] == 2
-    assert tag_dict['工作'] == 1
-    assert tag_dict['金融'] == 1
+    assert tag_dict["社交"] == 3
+    assert tag_dict["邮箱"] == 2
+    assert tag_dict["工作"] == 1
+    assert tag_dict["金融"] == 1
 
 
 @pytest.fixture()
@@ -241,11 +241,13 @@ def test_initialize_and_unlock(vault_lifecycle_env):
     assert vault.is_unlocked
 
     entry_mgr = make_entry_manager(vault)
-    entry_id = entry_mgr.add_entry(Entry(
-        title='持久化测试',
-        username='persistent_user',
-        password='PersistentP@ss!',
-    ))
+    entry_id = entry_mgr.add_entry(
+        Entry(
+            title="持久化测试",
+            username="persistent_user",
+            password="PersistentP@ss!",
+        )
+    )
     assert entry_id > 0
 
     # 2. 锁定
@@ -264,9 +266,9 @@ def test_initialize_and_unlock(vault_lifecycle_env):
     entry_mgr2 = make_entry_manager(vault)
     entries = entry_mgr2.get_entries()
     assert len(entries) == 1
-    assert entries[0].title == '持久化测试'
-    assert entries[0].username == 'persistent_user'
-    assert entries[0].password == 'PersistentP@ss!'
+    assert entries[0].title == "持久化测试"
+    assert entries[0].username == "persistent_user"
+    assert entries[0].password == "PersistentP@ss!"
 
     # 用错误密码解锁应失败
     vault.lock()
@@ -286,13 +288,15 @@ def test_change_password_re_encrypts(vault_lifecycle_env):
     vault.initialize(old_pwd)
     entry_mgr = make_entry_manager(vault)
 
-    totp_secret = 'JBSWY3DPEHPK3PXP'
-    entry_id = entry_mgr.add_entry(Entry(
-        title='改密测试',
-        username='rekey_user',
-        password='MySecretP@ss!',
-        totp_secret=totp_secret,
-    ))
+    totp_secret = "JBSWY3DPEHPK3PXP"
+    entry_id = entry_mgr.add_entry(
+        Entry(
+            title="改密测试",
+            username="rekey_user",
+            password="MySecretP@ss!",
+            totp_secret=totp_secret,
+        )
+    )
 
     # 2. change_master_password
     assert vault.change_master_password(old_pwd, new_pwd)[0]
@@ -301,8 +305,8 @@ def test_change_password_re_encrypts(vault_lifecycle_env):
     entry_mgr2 = make_entry_manager(vault)
     entries = entry_mgr2.get_entries()
     assert len(entries) == 1
-    assert entries[0].username == 'rekey_user'
-    assert entries[0].password == 'MySecretP@ss!'
+    assert entries[0].username == "rekey_user"
+    assert entries[0].password == "MySecretP@ss!"
 
     # 4. 验证 totp_secret 也正确重加密
     assert entries[0].totp_secret == totp_secret
@@ -313,8 +317,8 @@ def test_change_password_re_encrypts(vault_lifecycle_env):
     entry_mgr3 = make_entry_manager(vault)
     entry = entry_mgr3.get_entry(entry_id)
     assert entry is not None
-    assert entry.username == 'rekey_user'
-    assert entry.password == 'MySecretP@ss!'
+    assert entry.username == "rekey_user"
+    assert entry.password == "MySecretP@ss!"
     assert entry.totp_secret == totp_secret
 
     # 6. 用旧密码解锁应失败
@@ -342,31 +346,33 @@ def test_backup_and_restore_preserves_all_fields(backup_restore_env):
     """备份→恢复→验证 entry_type/totp/password_history 完整。"""
     entry_mgr, backup_mgr, _vault, tmp_dir = backup_restore_env
     # 1. 初始化并添加条目，包含 entry_type 与 totp_secret
-    entry_id = entry_mgr.add_entry(Entry(
-        title='备份测试',
-        username='backup_user',
-        password='OriginalP@ss!',
-        entry_type='server',
-        totp_secret='JBSWY3DPEHPK3PXP',
-        tags='重要,服务器',
-        notes='服务器凭据',
-    ))
+    entry_id = entry_mgr.add_entry(
+        Entry(
+            title="备份测试",
+            username="backup_user",
+            password="OriginalP@ss!",
+            entry_type="server",
+            totp_secret="JBSWY3DPEHPK3PXP",
+            tags="重要,服务器",
+            notes="服务器凭据",
+        )
+    )
 
     # 2. 修改密码以产生历史记录
     entry = Entry(
         id=entry_id,
-        title='备份测试',
-        username='backup_user',
-        password='UpdatedP@ss!',
-        entry_type='server',
-        totp_secret='JBSWY3DPEHPK3PXP',
-        tags='重要,服务器',
-        notes='服务器凭据',
+        title="备份测试",
+        username="backup_user",
+        password="UpdatedP@ss!",
+        entry_type="server",
+        totp_secret="JBSWY3DPEHPK3PXP",
+        tags="重要,服务器",
+        notes="服务器凭据",
     )
     entry_mgr.update_entry(entry)
 
     # 必须指定密码或使用快照密钥
-    backup_path = str(Path(tmp_dir) / 'test_backup.cbox')
+    backup_path = str(Path(tmp_dir) / "test_backup.cbox")
     assert backup_mgr.create_backup(backup_path, use_snapshot_key=True)
     assert os.path.exists(backup_path)
 
@@ -382,33 +388,33 @@ def test_backup_and_restore_preserves_all_fields(backup_restore_env):
     assert len(entries) == 1
 
     restored = entries[0]
-    assert restored.title == '备份测试'
-    assert restored.username == 'backup_user'
-    assert restored.password == 'UpdatedP@ss!'
-    assert restored.entry_type == 'server'
-    assert restored.totp_secret == 'JBSWY3DPEHPK3PXP'
-    assert restored.tags == '重要,服务器'
-    assert restored.notes == '服务器凭据'
+    assert restored.title == "备份测试"
+    assert restored.username == "backup_user"
+    assert restored.password == "UpdatedP@ss!"
+    assert restored.entry_type == "server"
+    assert restored.totp_secret == "JBSWY3DPEHPK3PXP"
+    assert restored.tags == "重要,服务器"
+    assert restored.notes == "服务器凭据"
 
     # 验证密码历史恢复
     assert restored.id is not None
     history = entry_mgr.password_history.get(restored.id)
     decrypted_history = entry_mgr.password_history.decrypt(history)
     assert len(decrypted_history) == 1
-    assert decrypted_history[0]['password'] == 'OriginalP@ss!'
+    assert decrypted_history[0]["password"] == "OriginalP@ss!"
 
 
 def test_rejects_unknown_format(backup_restore_env):
     """仅接受 CipherBox 当前固定格式。"""
     _entry_mgr, backup_mgr, _vault, tmp_dir = backup_restore_env
-    backup_path = str(Path(tmp_dir) / 'unknown_backup.cbox')
-    with open(backup_path, 'wb') as f:
-        f.write(b'CBOX-UNKNOWN')
+    backup_path = str(Path(tmp_dir) / "unknown_backup.cbox")
+    with open(backup_path, "wb") as f:
+        f.write(b"CBOX-UNKNOWN")
 
     success, error = backup_mgr.restore_backup(backup_path)
     assert not success
     # BackupError 归一为固定友好文案；诊断记入日志，用户层文案含「格式」/「损坏」。
-    assert '格式' in error or '损坏' in error
+    assert "格式" in error or "损坏" in error
 
 
 def test_snapshot_key_rotates_on_master_password_change(backup_restore_env):
@@ -418,30 +424,22 @@ def test_snapshot_key_rotates_on_master_password_change(backup_restore_env):
     历史明文泄漏面；改密后用新 snapshot_key 创建的快照仍可正常恢复。
     """
     entry_mgr, backup_mgr, vault, tmp_dir = backup_restore_env
-    entry_mgr.add_entry(Entry(
-        title='快照条目', password='SnapshotSecret!2026'
-    ))
-    old_backup_path = str(Path(tmp_dir) / 'old_snapshot.cbox')
-    success, error = backup_mgr.create_backup(
-        old_backup_path, use_snapshot_key=True
-    )
+    entry_mgr.add_entry(Entry(title="快照条目", password="SnapshotSecret!2026"))
+    old_backup_path = str(Path(tmp_dir) / "old_snapshot.cbox")
+    success, error = backup_mgr.create_backup(old_backup_path, use_snapshot_key=True)
     assert success, error
 
-    assert vault.change_master_password(
-        'test_password_123', 'NewMasterPassword!2026'
-    )[0]
+    assert vault.change_master_password("test_password_123", "NewMasterPassword!2026")[0]
 
     # 旧 snapshot_key 加密的快照无法用新 snapshot_key 恢复
     success, error = backup_mgr.restore_backup(old_backup_path)
     assert not success
-    assert '已损坏' in error or '密码错误' in error
+    assert "已损坏" in error or "密码错误" in error
 
     # 改密后用新 snapshot_key 创建的快照可正常恢复
-    entry_mgr.add_entry(Entry(title='新条目', password='NewSecret!2026'))
-    new_backup_path = str(Path(tmp_dir) / 'new_snapshot.cbox')
-    success, error = backup_mgr.create_backup(
-        new_backup_path, use_snapshot_key=True
-    )
+    entry_mgr.add_entry(Entry(title="新条目", password="NewSecret!2026"))
+    new_backup_path = str(Path(tmp_dir) / "new_snapshot.cbox")
+    success, error = backup_mgr.create_backup(new_backup_path, use_snapshot_key=True)
     assert success, error
     success, error = backup_mgr.restore_backup(new_backup_path)
     assert success, error
@@ -456,14 +454,14 @@ def test_unlock_after_master_change_verifies_vault_meta_mac(entry_mgr_env):
     也用新域密钥重签（解锁后 get_entries 能正确解密与验签）。
     """
     entry_mgr, vault, _tmp_dir = entry_mgr_env
-    entry_mgr.add_entry(Entry(title='改密前条目', username='u', password='p'))
-    assert vault.change_master_password('test_password_123', 'NewMasterPassword!2026')[0]
+    entry_mgr.add_entry(Entry(title="改密前条目", username="u", password="p"))
+    assert vault.change_master_password("test_password_123", "NewMasterPassword!2026")[0]
     vault.close()
-    success, error = vault.unlock('NewMasterPassword!2026')
-    assert success, f'改密后解锁失败（vault_meta_mac 可能未用新域密钥重算）: {error}'
+    success, error = vault.unlock("NewMasterPassword!2026")
+    assert success, f"改密后解锁失败（vault_meta_mac 可能未用新域密钥重算）: {error}"
     # 改密后条目用新密钥重加密 + 重签 metadata_mac，解锁后可正确解密
     entries = entry_mgr.get_entries()
-    assert any(e.title == '改密前条目' for e in entries)
+    assert any(e.title == "改密前条目" for e in entries)
 
 
 @pytest.fixture()
@@ -483,47 +481,53 @@ def security_analyzer_env():
 def test_full_analysis(security_analyzer_env):
     """full_analysis 一次性返回所有指标。"""
     entry_mgr, analyzer, _vault, _tmp_dir = security_analyzer_env
-    shared_pwd = 'DuplicateP@ss!'
+    shared_pwd = "DuplicateP@ss!"
     # 弱密码
-    entry_mgr.add_entry(Entry(
-        title='弱条目',
-        username='weak',
-        password='123456',
-    ))
+    entry_mgr.add_entry(
+        Entry(
+            title="弱条目",
+            username="weak",
+            password="123456",
+        )
+    )
     # 两个重复密码
-    entry_mgr.add_entry(Entry(
-        title='重复 A',
-        username='dup_a',
-        password=shared_pwd,
-    ))
-    entry_mgr.add_entry(Entry(
-        title='重复 B',
-        username='dup_b',
-        password=shared_pwd,
-    ))
+    entry_mgr.add_entry(
+        Entry(
+            title="重复 A",
+            username="dup_a",
+            password=shared_pwd,
+        )
+    )
+    entry_mgr.add_entry(
+        Entry(
+            title="重复 B",
+            username="dup_b",
+            password=shared_pwd,
+        )
+    )
 
     result = analyzer.full_analysis()
 
     # 验证返回结构完整
-    assert 'total' in result
-    assert 'weak_count' in result
-    assert 'weak_entries' in result
-    assert 'duplicate_groups' in result
-    assert 'duplicate_count' in result
-    assert 'old_entries' in result
-    assert 'old' in result
+    assert "total" in result
+    assert "weak_count" in result
+    assert "weak_entries" in result
+    assert "duplicate_groups" in result
+    assert "duplicate_count" in result
+    assert "old_entries" in result
+    assert "old" in result
 
-    assert result['total'] == 3
-    assert result['weak_count'] >= 1
+    assert result["total"] == 3
+    assert result["weak_count"] >= 1
     # 2 个重复密码中计为 1 个多余项
-    assert result['duplicate_count'] == 1
+    assert result["duplicate_count"] == 1
 
 
 @pytest.fixture()
 def db_env():
     """创建 DatabaseManager。"""
     tmp_dir = tempfile.mkdtemp()
-    db_path = Path(tmp_dir) / 'test_vault.db'
+    db_path = Path(tmp_dir) / "test_vault.db"
     db = DatabaseManager(db_path, test_mode=True)
     db.open()
     db.init_tables()
@@ -540,15 +544,17 @@ def test_transaction_commit(db_env):
     db.begin_transaction()
     try:
         # custom_fields 必须为字符串，不能为 list
-        e1 = RawEntry(title='事务条目1', username='tx_user1', password='tx_pwd1',
-                    notes='', custom_fields='')
-        e2 = RawEntry(title='事务条目2', username='tx_user2', password='tx_pwd2',
-                    notes='', custom_fields='')
+        e1 = RawEntry(
+            title="事务条目1", username="tx_user1", password="tx_pwd1", notes="", custom_fields=""
+        )
+        e2 = RawEntry(
+            title="事务条目2", username="tx_user2", password="tx_pwd2", notes="", custom_fields=""
+        )
         db.add_entry(e1)
         db.add_entry(e2)
 
         # 添加分类
-        cat = Category(name='事务分类', icon_char='🔧', color='#FF0000')
+        cat = Category(name="事务分类", icon_char="🔧", color="#FF0000")
         db.add_category(cat)
 
         db.commit_transaction()
@@ -560,7 +566,7 @@ def test_transaction_commit(db_env):
     assert db.get_entry_count() == initial_count + 2
     categories = db.get_categories()
     cat_names = [c.name for c in categories]
-    assert '事务分类' in cat_names
+    assert "事务分类" in cat_names
 
 
 def test_transaction_rollback(db_env):
@@ -570,12 +576,13 @@ def test_transaction_rollback(db_env):
 
     db.begin_transaction()
     try:
-        e = RawEntry(title='回滚条目', username='rb_user', password='rb_pwd',
-                  notes='', custom_fields='')
+        e = RawEntry(
+            title="回滚条目", username="rb_user", password="rb_pwd", notes="", custom_fields=""
+        )
         db.add_entry(e)
 
         # 添加分类
-        cat = Category(name='回滚分类', icon_char='🔙', color='#000000')
+        cat = Category(name="回滚分类", icon_char="🔙", color="#000000")
         db.add_category(cat)
 
         # 回滚
@@ -588,7 +595,7 @@ def test_transaction_rollback(db_env):
     assert db.get_entry_count() == initial_count
     categories = db.get_categories()
     cat_names = [c.name for c in categories]
-    assert '回滚分类' not in cat_names
+    assert "回滚分类" not in cat_names
 
 
 @pytest.fixture()
@@ -610,22 +617,20 @@ def test_json_roundtrip(import_export_env):
     entry_mgr, import_export, _vault, tmpdir = import_export_env
     # 1. 添加条目
     entry = Entry(
-        title='导入导出测试',
-        username='export_user@example.com',
-        password='ExportP@ss123!',
-        url='https://export.example.com',
-        tags='导入,导出',
-        notes='测试笔记',
+        title="导入导出测试",
+        username="export_user@example.com",
+        password="ExportP@ss123!",
+        url="https://export.example.com",
+        tags="导入,导出",
+        notes="测试笔记",
     )
     entry_id = entry_mgr.add_entry(entry)
     assert entry_id > 0
 
     # 2. 导出 JSON
     entries = entry_mgr.get_entries()
-    json_path = str(Path(tmpdir) / 'export.json')
-    import_export.export_to_json(
-        json_path, entries, include_password=True
-    )
+    json_path = str(Path(tmpdir) / "export.json")
+    import_export.export_to_json(json_path, entries, include_password=True)
     assert os.path.exists(json_path)
 
     # 3. 删除条目
@@ -633,18 +638,18 @@ def test_json_roundtrip(import_export_env):
     assert len(entry_mgr.get_entries()) == 0
 
     # 4. 导入 JSON
-    count = import_export.import_file(json_path, 'json')
+    count = import_export.import_file(json_path, "json")
     assert count == 1
 
     # 5. 验证数据完整
     restored = entry_mgr.get_entries()
     assert len(restored) == 1
-    assert restored[0].title == '导入导出测试'
-    assert restored[0].username == 'export_user@example.com'
-    assert restored[0].password == 'ExportP@ss123!'
-    assert restored[0].url == 'https://export.example.com'
-    assert restored[0].tags == '导入,导出'
-    assert restored[0].notes == '测试笔记'
+    assert restored[0].title == "导入导出测试"
+    assert restored[0].username == "export_user@example.com"
+    assert restored[0].password == "ExportP@ss123!"
+    assert restored[0].url == "https://export.example.com"
+    assert restored[0].tags == "导入,导出"
+    assert restored[0].notes == "测试笔记"
 
 
 def test_csv_roundtrip(import_export_env):
@@ -652,22 +657,20 @@ def test_csv_roundtrip(import_export_env):
     entry_mgr, import_export, _vault, tmpdir = import_export_env
     # 1. 添加条目
     entry = Entry(
-        title='CSV测试条目',
-        username='csv_user@example.com',
-        password='CsvP@ss456!',
-        url='https://csv.example.com',
-        tags='csv,测试',
-        notes='CSV笔记',
+        title="CSV测试条目",
+        username="csv_user@example.com",
+        password="CsvP@ss456!",
+        url="https://csv.example.com",
+        tags="csv,测试",
+        notes="CSV笔记",
     )
     entry_id = entry_mgr.add_entry(entry)
     assert entry_id > 0
 
     # 2. 导出 CSV
     entries = entry_mgr.get_entries()
-    csv_path = str(Path(tmpdir) / 'export.csv')
-    import_export.export_to_csv(
-        csv_path, entries, include_password=True
-    )
+    csv_path = str(Path(tmpdir) / "export.csv")
+    import_export.export_to_csv(csv_path, entries, include_password=True)
     assert os.path.exists(csv_path)
 
     # 3. 删除条目
@@ -675,15 +678,15 @@ def test_csv_roundtrip(import_export_env):
     assert len(entry_mgr.get_entries()) == 0
 
     # 4. 导入 CSV
-    count = import_export.import_file(csv_path, 'csv')
+    count = import_export.import_file(csv_path, "csv")
     assert count == 1
 
     # 5. 验证 title、username、url 等基本字段
     restored = entry_mgr.get_entries()
     assert len(restored) == 1
-    assert restored[0].title == 'CSV测试条目'
-    assert restored[0].username == 'csv_user@example.com'
-    assert restored[0].url == 'https://csv.example.com'
+    assert restored[0].title == "CSV测试条目"
+    assert restored[0].username == "csv_user@example.com"
+    assert restored[0].url == "https://csv.example.com"
 
 
 def test_decrypt_with_wrong_key():
@@ -691,9 +694,9 @@ def test_decrypt_with_wrong_key():
     key1 = os.urandom(32)
     key2 = os.urandom(32)
 
-    aad = 'test:integration'
+    aad = "test:integration"
     ciphertext = EncryptionEngine.encrypt("hello", key1, aad)
-    assert ciphertext != ''
+    assert ciphertext != ""
 
     # AES-GCM 会因 tag 校验失败而抛出 ValueError
     with pytest.raises(ValueError):
@@ -713,7 +716,7 @@ def test_backup_with_locked_vault():
     assert not vault.is_unlocked
 
     # 锁定状态下创建备份应返回失败及错误信息
-    backup_path = str(Path(tmp_dir) / 'locked_backup.cbox')
+    backup_path = str(Path(tmp_dir) / "locked_backup.cbox")
     result = backup_mgr.create_backup(backup_path)
     assert not result[0]
     assert len(result[1]) > 0
@@ -730,9 +733,7 @@ def test_change_password_wrong_old():
     vault.initialize("OriginalMaster!2026")
 
     # 用错误的旧密码改密应返回 False
-    result = vault.change_master_password(
-        "WrongOldMaster!2026", "NewMasterPassword!2026"
-    )
+    result = vault.change_master_password("WrongOldMaster!2026", "NewMasterPassword!2026")
     assert not result[0]
 
     # 验证原密码仍然可用
@@ -754,12 +755,12 @@ def test_ensure_db_open_raises_when_db_cannot_open():
     vault = make_vault(config)
 
     # 确保 db_path 存在使文件检查通过
-    db_file = Path(tmp_dir) / 'vault.db'
+    db_file = Path(tmp_dir) / "vault.db"
     db_file.touch()
 
     # 让 is_open 返回 False、open() 返回 False，模拟数据库无法打开
-    with patch.object(type(vault._db), 'is_open', new_callable=PropertyMock, return_value=False):
-        with patch.object(vault._db, 'open', return_value=False):
+    with patch.object(type(vault._db), "is_open", new_callable=PropertyMock, return_value=False):
+        with patch.object(vault._db, "open", return_value=False):
             with pytest.raises(DatabaseError):
                 vault.ensure_db_open()
 

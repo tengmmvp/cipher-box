@@ -100,7 +100,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_T = TypeVar('_T')
+_T = TypeVar("_T")
 
 
 # 条目类型 schema（专用字段 / 可见字段顺序）的单一事实源在 business 层
@@ -151,7 +151,7 @@ class EntryDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _setup_ui(self) -> None:
-        self.setWindowTitle('编辑条目' if self._entry else '新增条目')
+        self.setWindowTitle("编辑条目" if self._entry else "新增条目")
         self.setMinimumSize(*DIALOG_ENTRY_MIN_SIZE)
         setup_dialog_flags(self)
 
@@ -187,8 +187,8 @@ class EntryDialog(QDialog):
     def _build_type_selector(self, layout: QVBoxLayout) -> None:
         """构建类型选择行。"""
         type_row = QHBoxLayout()
-        type_label = QLabel('类型：')
-        type_label.setObjectName('fieldLabel')
+        type_label = QLabel("类型：")
+        type_label.setObjectName("fieldLabel")
         type_row.addWidget(type_label)
 
         self._type_combo = QComboBox()
@@ -205,81 +205,82 @@ class EntryDialog(QDialog):
 
         # --- 通用字段 ---
         self._title_edit = QLineEdit()
-        self._title_edit.setPlaceholderText('例如：GitHub 账号')
+        self._title_edit.setPlaceholderText("例如：GitHub 账号")
         self._title_edit.setMaxLength(MAX_FIELD_TITLE)
-        self._add_field_row(form, 'title', '标题 *：', self._title_edit)
+        self._add_field_row(form, "title", "标题 *：", self._title_edit)
 
         self._username_edit = QLineEdit()
-        self._username_edit.setPlaceholderText('用户名或邮箱')
+        self._username_edit.setPlaceholderText("用户名或邮箱")
         self._username_edit.setMaxLength(MAX_FIELD_USERNAME)
-        self._add_field_row(form, 'username', '账号：', self._username_edit)
+        self._add_field_row(form, "username", "账号：", self._username_edit)
 
         # 密码行
         pwd_layout = QHBoxLayout()
         self._password_edit = QLineEdit()
         self._password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self._password_edit.setPlaceholderText('密码')
+        self._password_edit.setPlaceholderText("密码")
         self._password_edit.setMaxLength(MAX_FIELD_PASSWORD)
         pwd_layout.addWidget(self._password_edit)
 
         self._toggle_pwd_btn = create_password_toggle_btn(
-            self._password_edit, auto_hide_seconds=PWD_TOGGLE_AUTO_HIDE_SECONDS,
+            self._password_edit,
+            auto_hide_seconds=PWD_TOGGLE_AUTO_HIDE_SECONDS,
         )
         pwd_layout.addWidget(self._toggle_pwd_btn)
 
-        gen_btn = create_icon_button(GENERATE, '生成密码')
+        gen_btn = create_icon_button(GENERATE, "生成密码")
         gen_btn.clicked.connect(self._generate_password)
         pwd_layout.addWidget(gen_btn)
 
         pwd_container = QWidget()
         pwd_container.setLayout(pwd_layout)
-        self._add_field_row(form, 'password', '密码：', pwd_container)
+        self._add_field_row(form, "password", "密码：", pwd_container)
 
         # 密码强度
-        self._strength_label = QLabel('')
-        self._strength_label.setObjectName('formMutedSmall')
-        self._add_field_row(form, '_strength', '', self._strength_label)
+        self._strength_label = QLabel("")
+        self._strength_label.setObjectName("formMutedSmall")
+        self._add_field_row(form, "_strength", "", self._strength_label)
         self._password_edit.textChanged.connect(self._on_password_changed)
 
         self._url_edit = QLineEdit()
-        self._url_edit.setPlaceholderText('https://')
+        self._url_edit.setPlaceholderText("https://")
         self._url_edit.setMaxLength(MAX_FIELD_URL)
-        self._add_field_row(form, 'url', '网址：', self._url_edit)
+        self._add_field_row(form, "url", "网址：", self._url_edit)
 
         # 类型专用字段，按 entry_type 显示或隐藏
         self._build_type_fields(form)
 
         # --- 公共尾部字段 ---
         self._category_combo = QComboBox()
-        self._category_combo.addItem('未分类', None)
+        self._category_combo.addItem("未分类", None)
         for cat in self._categories:
             self._category_combo.addItem(f"{cat.icon_char} {cat.name}", cat.id)
-        self._add_field_row(form, 'category', '分类：', self._category_combo)
+        self._add_field_row(form, "category", "分类：", self._category_combo)
 
         self._tags_edit = QLineEdit()
-        self._tags_edit.setPlaceholderText('用逗号分隔多个标签')
+        self._tags_edit.setPlaceholderText("用逗号分隔多个标签")
         self._tags_edit.setMaxLength(MAX_FIELD_TAGS)
         if self._all_tags:
             # 复用 MAX_TAG_DISPLAY：占位提示展示数量与详情面板标签上限同语义
-            hint = ', '.join(self._all_tags[:MAX_TAG_DISPLAY])
-            self._tags_edit.setPlaceholderText(f'常用：{hint}' if hint else '用逗号分隔多个标签')
-        self._add_field_row(form, 'tags', '标签：', self._tags_edit)
+            hint = ", ".join(self._all_tags[:MAX_TAG_DISPLAY])
+            self._tags_edit.setPlaceholderText(f"常用：{hint}" if hint else "用逗号分隔多个标签")
+        self._add_field_row(form, "tags", "标签：", self._tags_edit)
 
-        self._favorite_check = QCheckBox('添加到收藏')
-        self._add_field_row(form, 'favorite', '', self._favorite_check)
+        self._favorite_check = QCheckBox("添加到收藏")
+        self._add_field_row(form, "favorite", "", self._favorite_check)
 
         return form
 
     def _build_totp_group(self) -> QGroupBox:
         """构建两步验证 (TOTP) 区域。"""
-        self._totp_group = QGroupBox('两步验证 (TOTP)')
+        self._totp_group = QGroupBox("两步验证 (TOTP)")
         totp_layout = QHBoxLayout(self._totp_group)
         self._totp_edit = QLineEdit()
         self._totp_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self._totp_edit.setPlaceholderText('输入 Base32 密钥或 otpauth:// URI（可选）')
+        self._totp_edit.setPlaceholderText("输入 Base32 密钥或 otpauth:// URI（可选）")
         self._totp_edit.setMaxLength(MAX_FIELD_TOTP_SECRET)
         totp_layout.addWidget(self._totp_edit, 1)
-        self._totp_test_btn = QPushButton('验证')
+        self._totp_test_btn = QPushButton("验证")
         self._totp_test_btn.setFixedSize(*BTN_SMALL_ACTION)
         self._totp_test_btn.clicked.connect(self._test_totp)
         totp_layout.addWidget(self._totp_test_btn)
@@ -287,25 +288,25 @@ class EntryDialog(QDialog):
 
     def _build_notes_group(self) -> QGroupBox:
         """构建备注区域。"""
-        notes_group = QGroupBox('备注')
+        notes_group = QGroupBox("备注")
         notes_layout = QVBoxLayout(notes_group)
         self._notes_edit = QTextEdit()
         self._notes_edit.setMaximumHeight(self._NOTES_HEIGHT_DEFAULT)
-        self._notes_edit.setPlaceholderText('添加备注信息...')
+        self._notes_edit.setPlaceholderText("添加备注信息...")
         notes_layout.addWidget(self._notes_edit)
         return notes_group
 
     def _build_custom_fields_group(self) -> QGroupBox:
         """构建自定义字段区域。"""
-        cf_group = QGroupBox('自定义字段')
+        cf_group = QGroupBox("自定义字段")
         cf_layout = QVBoxLayout(cf_group)
         self._custom_fields_container = QVBoxLayout()
         cf_layout.addLayout(self._custom_fields_container)
         self._cf_editor = CustomFieldsEditor(self._custom_fields_container)
 
-        add_cf_btn = QPushButton('+ 添加字段')
-        add_cf_btn.setObjectName('iconBtn')
-        add_cf_btn.setStyleSheet(f'text-align: left; color: {c("accent")};')
+        add_cf_btn = QPushButton("+ 添加字段")
+        add_cf_btn.setObjectName("iconBtn")
+        add_cf_btn.setStyleSheet(f"text-align: left; color: {c('accent')};")
         add_cf_btn.clicked.connect(self._cf_editor.add_row)
         cf_layout.addWidget(add_cf_btn)
         return cf_group
@@ -317,8 +318,8 @@ class EntryDialog(QDialog):
 
         btn_layout.addWidget(create_cancel_button(self))
 
-        save_btn = QPushButton('保存')
-        save_btn.setObjectName('primaryBtn')
+        save_btn = QPushButton("保存")
+        save_btn.setObjectName("primaryBtn")
         save_btn.setFixedSize(*BTN_DIALOG)
         save_btn.clicked.connect(self._on_save)
         btn_layout.addWidget(save_btn)
@@ -334,22 +335,22 @@ class EntryDialog(QDialog):
         for schema in ENTRY_TYPE_SCHEMAS.values():
             for spec in schema.special_fields:
                 widget = self._create_special_widget(spec)
-                self._add_field_row(form, spec.field_key, f'{spec.label}：', widget, visible=False)
+                self._add_field_row(form, spec.field_key, f"{spec.label}：", widget, visible=False)
                 if isinstance(widget, QComboBox):
                     self._special_combos[spec.field_key] = widget
                 else:
                     self._special_edits[spec.field_key] = widget
         # 卡号/有效期格式化与端口校验：类型特有行为，schema 之外的特殊连接
-        self._special_edits['card_number'].textChanged.connect(self._format_card_number)
-        self._special_edits['card_expiry'].textChanged.connect(self._format_card_expiry)
-        self._special_edits['server_port'].setValidator(
+        self._special_edits["card_number"].textChanged.connect(self._format_card_number)
+        self._special_edits["card_expiry"].textChanged.connect(self._format_card_expiry)
+        self._special_edits["server_port"].setValidator(
             QIntValidator(SERVER_PORT_MIN, SERVER_PORT_MAX, self)
         )
 
     @staticmethod
     def _create_special_widget(spec: SpecialFieldSpec) -> QLineEdit | QComboBox:
         """按 schema 创建单个专用字段控件。"""
-        if spec.kind == 'combo':
+        if spec.kind == "combo":
             combo = QComboBox()
             combo.addItems(spec.combo_items)
             return combo
@@ -361,7 +362,9 @@ class EntryDialog(QDialog):
             edit.setMaxLength(spec.max_length)
         return edit
 
-    def _add_field_row(self, form: QFormLayout, key: str, label_text: str, widget: QWidget, visible: bool = True) -> None:
+    def _add_field_row(
+        self, form: QFormLayout, key: str, label_text: str, widget: QWidget, visible: bool = True
+    ) -> None:
         """添加一行表单字段，并按 key 记录到 _field_rows 以便后续控制显隐。"""
         label = QLabel(label_text)
         if not visible:
@@ -376,18 +379,20 @@ class EntryDialog(QDialog):
 
     def _validate_card_fields(self) -> bool:
         """校验信用卡字段，失败时弹出警告并返回 False。"""
-        card_number = self._special_edits['card_number'].text().strip()
-        card_expiry = self._special_edits['card_expiry'].text().strip()
-        card_cvv = self._special_edits['card_cvv'].text().strip()
+        card_number = self._special_edits["card_number"].text().strip()
+        card_expiry = self._special_edits["card_expiry"].text().strip()
+        card_cvv = self._special_edits["card_cvv"].text().strip()
 
         if card_number and not validate_card_number(card_number):
-            QMessageBox.warning(self, '校验失败', '卡号格式不正确，请检查后重试。')
+            QMessageBox.warning(self, "校验失败", "卡号格式不正确，请检查后重试。")
             return False
         if card_expiry and not validate_card_expiry(card_expiry):
-            QMessageBox.warning(self, '校验失败', '有效期格式不正确，应为 MM/YY，且月份在 01-12 之间。')
+            QMessageBox.warning(
+                self, "校验失败", "有效期格式不正确，应为 MM/YY，且月份在 01-12 之间。"
+            )
             return False
         if card_cvv and not validate_card_cvv(card_cvv):
-            QMessageBox.warning(self, '校验失败', 'CVV 应为 3-4 位数字。')
+            QMessageBox.warning(self, "校验失败", "CVV 应为 3-4 位数字。")
             return False
         return True
 
@@ -397,12 +402,12 @@ class EntryDialog(QDialog):
         host 为空返回空串。供 ``_on_save`` 写入与 ``_validate_field_lengths``
         共用，防止两处拼接漂移。
         """
-        host = self._special_edits['server_host'].text().strip()
+        host = self._special_edits["server_host"].text().strip()
         if not host:
-            return ''
-        port = self._special_edits['server_port'].text().strip()
-        protocol = self._special_combos['server_protocol'].currentText().lower()
-        return f'{protocol}://{host}' + (f':{port}' if port else '')
+            return ""
+        port = self._special_edits["server_port"].text().strip()
+        protocol = self._special_combos["server_protocol"].currentText().lower()
+        return f"{protocol}://{host}" + (f":{port}" if port else "")
 
     def _validate_field_lengths(self, entry_type: str) -> bool:
         """校验无法在控件层硬限制的字段长度，失败时弹出警告并返回 False。
@@ -414,8 +419,9 @@ class EntryDialog(QDialog):
         notes = self._notes_edit.toPlainText().strip()
         if len(notes) > MAX_FIELD_NOTES:
             QMessageBox.warning(
-                self, '输入有误',
-                f'备注过长（最多 {MAX_FIELD_NOTES} 字符）。',
+                self,
+                "输入有误",
+                f"备注过长（最多 {MAX_FIELD_NOTES} 字符）。",
             )
             return False
 
@@ -423,14 +429,17 @@ class EntryDialog(QDialog):
             composed_url = self._compose_server_url()
             if composed_url and len(composed_url) > MAX_FIELD_URL:
                 QMessageBox.warning(
-                    self, '输入有误',
-                    f'网址过长（最多 {MAX_FIELD_URL} 字符）。',
+                    self,
+                    "输入有误",
+                    f"网址过长（最多 {MAX_FIELD_URL} 字符）。",
                 )
                 return False
         return True
 
     @staticmethod
-    def _safe_set_formatted(widget: QLineEdit, original: str, formatted: str, cursor_at_end: bool = False) -> None:
+    def _safe_set_formatted(
+        widget: QLineEdit, original: str, formatted: str, cursor_at_end: bool = False
+    ) -> None:
         """写入格式化文本并尽量保留光标位置。
 
         调用方需先 blockSignals（textChanged 回调直接 setText 会再次引发回调）；
@@ -449,20 +458,20 @@ class EntryDialog(QDialog):
 
     def _format_card_number(self, text: str) -> None:
         """卡号输入时按每 4 位插入空格分组显示。"""
-        w = self._special_edits['card_number']
+        w = self._special_edits["card_number"]
         w.blockSignals(True)
-        digits = text.replace(' ', '')
-        formatted = ' '.join(digits[i:i+4] for i in range(0, len(digits), 4))
+        digits = text.replace(" ", "")
+        formatted = " ".join(digits[i : i + 4] for i in range(0, len(digits), 4))
         self._safe_set_formatted(w, text, formatted)
         w.blockSignals(False)
 
     def _format_card_expiry(self, text: str) -> None:
         """有效期输入时自动补入分隔符，整理为 MM/YY 形态。"""
-        w = self._special_edits['card_expiry']
+        w = self._special_edits["card_expiry"]
         w.blockSignals(True)
-        digits = text.replace('/', '')
+        digits = text.replace("/", "")
         if len(digits) > 2:
-            formatted = digits[:2] + '/' + digits[2:4]
+            formatted = digits[:2] + "/" + digits[2:4]
         else:
             formatted = digits
         self._safe_set_formatted(w, text, formatted, cursor_at_end=True)
@@ -501,15 +510,18 @@ class EntryDialog(QDialog):
                 break
         # 新建模式下，标题、密码、备注等通用字段已有内容时也应确认
         if not has_data and self._entry is None:
-            if (self._title_edit.text().strip()
-                    or self._password_edit.text().strip()
-                    or self._notes_edit.toPlainText().strip()):
+            if (
+                self._title_edit.text().strip()
+                or self._password_edit.text().strip()
+                or self._notes_edit.toPlainText().strip()
+            ):
                 has_data = True
 
         if has_data:
             reply = QMessageBox.question(
-                self, '切换类型',
-                '切换条目类型后，当前类型的专用字段数据将不被保存。\n是否继续？',
+                self,
+                "切换类型",
+                "切换条目类型后，当前类型的专用字段数据将不被保存。\n是否继续？",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply == QMessageBox.StandardButton.No:
@@ -528,10 +540,10 @@ class EntryDialog(QDialog):
 
         for key, (label, widget) in self._field_rows.items():
             # _strength 行跟随 password
-            if key == '_strength':
-                show = 'password' in visible_keys
+            if key == "_strength":
+                show = "password" in visible_keys
             # category / tags / favorite / 自定义字段区域始终可见，不在 _field_rows 中
-            elif key in ('category', 'tags', 'favorite'):
+            elif key in ("category", "tags", "favorite"):
                 show = True
             else:
                 show = key in visible_keys
@@ -626,7 +638,7 @@ class EntryDialog(QDialog):
         self._toggle_pwd_btn.show_password(seconds=visible_seconds)
 
     def _on_password_changed(self, text: str) -> None:
-        update_strength_label(self._strength_label, text, font_size='11px')
+        update_strength_label(self._strength_label, text, font_size="11px")
 
     # ------------------------------------------------------------------
     # TOTP
@@ -640,11 +652,11 @@ class EntryDialog(QDialog):
         if PasswordService.validate_totp_secret(secret):
             try:
                 PasswordService.generate_totp_or_raise(secret)
-                QMessageBox.information(self, '验证成功', '密钥有效，已成功生成验证码。')
+                QMessageBox.information(self, "验证成功", "密钥有效，已成功生成验证码。")
             except ValueError as exc:
-                QMessageBox.warning(self, '验证失败', f'密钥验证出错：{exc}')
+                QMessageBox.warning(self, "验证失败", f"密钥验证出错：{exc}")
         else:
-            QMessageBox.warning(self, '验证失败', '无效的 TOTP 密钥或 URI，请检查后重试。')
+            QMessageBox.warning(self, "验证失败", "无效的 TOTP 密钥或 URI，请检查后重试。")
 
     # ------------------------------------------------------------------
     # 专用字段收集
@@ -661,9 +673,9 @@ class EntryDialog(QDialog):
             else:
                 value = self._special_edits[spec.field_key].text()
                 # 卡号去除分组空格后存储
-                if spec.field_key == 'card_number':
-                    value = value.replace(' ', '')
-            field_type = 'password' if spec.sensitive else 'text'
+                if spec.field_key == "card_number":
+                    value = value.replace(" ", "")
+            field_type = "password" if spec.sensitive else "text"
             fields.append(CustomField(name=spec.storage_name, value=value, field_type=field_type))
         return fields
 
@@ -680,13 +692,17 @@ class EntryDialog(QDialog):
         Returns:
             填充好的 :class:`Entry`（新建条目无 id，由调用方按编辑场景补 id）。
         """
+        schema = get_schema(entry_type)
+        visible = schema.visible_fields
         # 不使用密码的类型（笔记）强制置空，避免保存无意义数据
-        password = self._password_edit.text() if get_schema(entry_type).uses_password else ''
-        username = self._username_edit.text().strip()
-        url = self._url_edit.text().strip()
+        password = self._password_edit.text() if schema.uses_password else ""
+        # 仅采集当前类型可见的通用字段，避免类型切换后隐藏控件的残留值被持久化
+        # （如 login→card 切换后，旧 username/url 不应隐式带入不可见的新类型字段）。
+        username = self._username_edit.text().strip() if "username" in visible else ""
+        url = self._url_edit.text().strip() if "url" in visible else ""
 
         # 由专用字段拼接 url 的类型（服务器）：username/password 已在上方统一读取
-        if get_schema(entry_type).composes_url:
+        if schema.composes_url:
             composed = self._compose_server_url()
             if composed:
                 url = composed
@@ -709,7 +725,7 @@ class EntryDialog(QDialog):
             # 透传 integrity_error 以避免编辑保存时覆盖已损坏的加密数据，
             # 新建条目场景即 self._entry 为 None 时恒为 False。
             integrity_error=self._entry.integrity_error if self._entry else False,
-            integrity_message=self._entry.integrity_message if self._entry else '',
+            integrity_message=self._entry.integrity_message if self._entry else "",
         )
 
     def _handle_save_error(self, exc: Exception) -> None:
@@ -721,27 +737,34 @@ class EntryDialog(QDialog):
         """
         if isinstance(exc, (DatabaseError, DecryptionError, EntryIntegrityError)):
             logger.error(
-                "保存条目失败: %s: %s", type(exc).__name__, exc, exc_info=True,
+                "保存条目失败: %s: %s",
+                type(exc).__name__,
+                exc,
+                exc_info=True,
             )
             QMessageBox.critical(self, DLG_TITLE_ERROR, to_user_message(exc))
         elif isinstance(exc, ValueError):
             # 业务层字段校验失败（纯 ValueError，非 DecryptionError）
             logger.warning("条目校验失败: %s", exc)
-            QMessageBox.warning(self, '输入有误', str(exc))
+            QMessageBox.warning(self, "输入有误", str(exc))
         else:
             # 意外异常：与领域错误区分文案，避免经 to_user_message 归并为「用户数据问题」。
             logger.error(
-                "保存条目时出现意外错误: %s: %s", type(exc).__name__, exc, exc_info=True,
+                "保存条目时出现意外错误: %s: %s",
+                type(exc).__name__,
+                exc,
+                exc_info=True,
             )
             QMessageBox.critical(
-                self, DLG_TITLE_ERROR,
-                '出现意外错误，未能保存条目。详细信息已记录到日志，请重试。',
+                self,
+                DLG_TITLE_ERROR,
+                "出现意外错误，未能保存条目。详细信息已记录到日志，请重试。",
             )
 
     def _on_save(self) -> None:
         title = self._title_edit.text().strip()
         if not title:
-            QMessageBox.warning(self, DLG_TITLE_INFO, '请输入标题')
+            QMessageBox.warning(self, DLG_TITLE_INFO, "请输入标题")
             return
 
         entry_type = self._type_combo.currentData() or ENTRY_TYPE_LOGIN

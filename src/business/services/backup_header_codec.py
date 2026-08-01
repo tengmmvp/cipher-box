@@ -10,16 +10,16 @@ from ...exceptions import BackupError, PayloadTooLargeError
 from ...utils.file_security import validate_file_path
 from ...utils.memory import secure_zero_buffer
 
-BACKUP_MAGIC = b'CipherBoxBackup\x00'
-BACKUP_FORMAT = 'CipherBoxBackup'
+BACKUP_MAGIC = b"CipherBoxBackup\x00"
+BACKUP_FORMAT = "CipherBoxBackup"
 # 备份数据格式版本号（写入 JSON 顶层 version，恢复时由 backup_validator 校验）。
 # 与 BACKUP_FORMAT 同属备份格式标识单一事实源，升级格式时同步 bump。
 BACKUP_VERSION = 1
-BACKUP_AAD = b'CipherBox:backup'
+BACKUP_AAD = b"CipherBox:backup"
 BACKUP_SALT_SIZE = 32
 
 # 固定头：flags、Argon2 time/memory/parallelism，随后为 32 字节 salt。
-BACKUP_HEADER_STRUCT = struct.Struct('<BIII')
+BACKUP_HEADER_STRUCT = struct.Struct("<BIII")
 BACKUP_HEADER_SIZE = len(BACKUP_MAGIC) + BACKUP_HEADER_STRUCT.size + BACKUP_SALT_SIZE
 MAX_BACKUP_FILE_SIZE = 64 * 1024 * 1024
 MAX_BACKUP_PAYLOAD_SIZE = 32 * 1024 * 1024
@@ -32,8 +32,8 @@ class BackupFlag(enum.IntEnum):
     IntEnum 的 ~ 返回标准 int 按位取反可正确检测非法组合。
     """
 
-    PASSWORD = 1     # 使用独立备份密码加密
-    SNAPSHOT = 2     # 使用快照密钥加密
+    PASSWORD = 1  # 使用独立备份密码加密
+    SNAPSHOT = 2  # 使用快照密钥加密
 
 
 def derive_backup_key(password: str, salt: bytes) -> bytearray:
@@ -45,14 +45,16 @@ def write_backup_header(file: IO[bytes], flags: BackupFlag, salt: bytes, params:
     """写入备份头，持久化实际 KDF 参数。"""
     MasterKeyManager.validate_params(params)
     if len(salt) != BACKUP_SALT_SIZE:
-        raise BackupError('备份盐长度无效')
+        raise BackupError("备份盐长度无效")
     file.write(BACKUP_MAGIC)
-    file.write(BACKUP_HEADER_STRUCT.pack(
-        int(flags),
-        params.time_cost,
-        params.memory_cost,
-        params.parallelism,
-    ))
+    file.write(
+        BACKUP_HEADER_STRUCT.pack(
+            int(flags),
+            params.time_cost,
+            params.memory_cost,
+            params.parallelism,
+        )
+    )
     file.write(salt)
 
 
@@ -60,23 +62,21 @@ def read_backup_header(file: IO[bytes]) -> tuple[BackupFlag, bytes, KdfParams]:
     """读取备份头，解析标志位与持久化的 KDF 参数。"""
     file.seek(0)
     if file.read(len(BACKUP_MAGIC)) != BACKUP_MAGIC:
-        raise BackupError('无效的备份文件格式')
+        raise BackupError("无效的备份文件格式")
     raw = file.read(BACKUP_HEADER_STRUCT.size)
     salt = file.read(BACKUP_SALT_SIZE)
     if len(raw) != BACKUP_HEADER_STRUCT.size or len(salt) != BACKUP_SALT_SIZE:
-        raise BackupError('备份文件头已损坏')
-    flag_value, time_cost, memory_cost, parallelism = (
-        BACKUP_HEADER_STRUCT.unpack(raw)
-    )
+        raise BackupError("备份文件头已损坏")
+    flag_value, time_cost, memory_cost, parallelism = BACKUP_HEADER_STRUCT.unpack(raw)
     if flag_value not in (BackupFlag.PASSWORD, BackupFlag.SNAPSHOT):
-        raise BackupError('备份文件格式无效或已损坏')
+        raise BackupError("备份文件格式无效或已损坏")
     params = KdfParams(time_cost, memory_cost, parallelism)
     try:
         MasterKeyManager.validate_params(params)
     except ValueError as exc:
         # KDF 参数非法归一为 BackupError，使 ``except BackupError`` 覆盖全部格式错误，
         # 避免裸 ValueError 兜底连带吞掉 PayloadTooLargeError 等领域异常。
-        raise BackupError('备份文件 KDF 参数无效，可能已损坏') from exc
+        raise BackupError("备份文件 KDF 参数无效，可能已损坏") from exc
     return BackupFlag(flag_value), salt, params
 
 
@@ -91,7 +91,10 @@ def header_aad(flags: BackupFlag, salt: bytes, params: KdfParams) -> bytes:
         BACKUP_AAD
         + BACKUP_MAGIC
         + BACKUP_HEADER_STRUCT.pack(
-            int(flags), params.time_cost, params.memory_cost, params.parallelism,
+            int(flags),
+            params.time_cost,
+            params.memory_cost,
+            params.parallelism,
         )
         + salt
     )
@@ -109,7 +112,7 @@ def enforce_kdf_floor(params: KdfParams) -> None:
         or params.memory_cost < floor.memory_cost
         or params.parallelism < floor.parallelism
     ):
-        raise BackupError('备份文件 KDF 参数异常，可能已被篡改')
+        raise BackupError("备份文件 KDF 参数异常，可能已被篡改")
 
 
 # 恢复不可信备份时的 KDF 紧上界倍数。validate_params 宽上界不足以防内存耗尽 DoS，
@@ -130,7 +133,7 @@ def enforce_kdf_ceiling(params: KdfParams) -> None:
         or params.memory_cost > DEFAULT_KDF_PARAMS.memory_cost * m
         or params.parallelism > DEFAULT_KDF_PARAMS.parallelism * m
     ):
-        raise BackupError('备份文件 KDF 参数异常（超出恢复允许上界），可能已被篡改')
+        raise BackupError("备份文件 KDF 参数异常（超出恢复允许上界），可能已被篡改")
 
 
 def zero_backup_key_if_owned(flags: BackupFlag, key: bytearray | bytes | None) -> None:
@@ -146,41 +149,41 @@ def inspect_backup(filepath: str) -> dict[str, Any]:
     """读取备份头，不解密内容。返回值类型混合（str/bool/dict），故标注 dict[str, Any]。"""
     filepath = str(validate_file_path(filepath))
     if Path(filepath).stat().st_size > MAX_BACKUP_FILE_SIZE:
-        raise PayloadTooLargeError('备份文件过大')
-    with open(filepath, 'rb') as file:
+        raise PayloadTooLargeError("备份文件过大")
+    with open(filepath, "rb") as file:
         flags, _salt, params = read_backup_header(file)
         return {
-            'format': BACKUP_FORMAT,
-            'password_required': flags == BackupFlag.PASSWORD,
-            'snapshot_required': flags == BackupFlag.SNAPSHOT,
-            'kdf': {
-                'name': 'argon2id',
-                'time_cost': params.time_cost,
-                'memory_cost': params.memory_cost,
-                'parallelism': params.parallelism,
+            "format": BACKUP_FORMAT,
+            "password_required": flags == BackupFlag.PASSWORD,
+            "snapshot_required": flags == BackupFlag.SNAPSHOT,
+            "kdf": {
+                "name": "argon2id",
+                "time_cost": params.time_cost,
+                "memory_cost": params.memory_cost,
+                "parallelism": params.parallelism,
             },
         }
 
 
 # 显式声明模块公开 API，限定 `from ... import *` 的导出范围。
 __all__ = [
-    'BACKUP_AAD',
-    'BACKUP_FORMAT',
-    'BACKUP_VERSION',
-    'BACKUP_HEADER_SIZE',
-    'BACKUP_HEADER_STRUCT',
-    'BACKUP_MAGIC',
-    'BACKUP_SALT_SIZE',
-    'BackupFlag',
-    'MAX_BACKUP_FILE_SIZE',
-    'MAX_BACKUP_PAYLOAD_SIZE',
-    'MAX_RESTORE_KDF_MULTIPLIER',
-    'derive_backup_key',
-    'enforce_kdf_ceiling',
-    'enforce_kdf_floor',
-    'header_aad',
-    'inspect_backup',
-    'read_backup_header',
-    'write_backup_header',
-    'zero_backup_key_if_owned',
+    "BACKUP_AAD",
+    "BACKUP_FORMAT",
+    "BACKUP_VERSION",
+    "BACKUP_HEADER_SIZE",
+    "BACKUP_HEADER_STRUCT",
+    "BACKUP_MAGIC",
+    "BACKUP_SALT_SIZE",
+    "BackupFlag",
+    "MAX_BACKUP_FILE_SIZE",
+    "MAX_BACKUP_PAYLOAD_SIZE",
+    "MAX_RESTORE_KDF_MULTIPLIER",
+    "derive_backup_key",
+    "enforce_kdf_ceiling",
+    "enforce_kdf_floor",
+    "header_aad",
+    "inspect_backup",
+    "read_backup_header",
+    "write_backup_header",
+    "zero_backup_key_if_owned",
 ]

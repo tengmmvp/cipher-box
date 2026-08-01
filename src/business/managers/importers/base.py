@@ -23,9 +23,18 @@ logger = logging.getLogger(__name__)
 
 # url scheme 白名单：导入路径仅保留常见安全 scheme，避免 javascript:/data:/file: 等
 # 被详情面板渲染为可点击链接导致钓鱼或协议注入。空 scheme（裸域名）允许通过。
-_URL_SCHEME_ALLOWLIST = frozenset({
-    'http', 'https', 'ftp', 'ftps', 'ssh', 'sftp', 'telnet', 'mailto',
-})
+_URL_SCHEME_ALLOWLIST = frozenset(
+    {
+        "http",
+        "https",
+        "ftp",
+        "ftps",
+        "ssh",
+        "sftp",
+        "telnet",
+        "mailto",
+    }
+)
 
 
 def _sanitize_url_scheme(url: str) -> str:
@@ -41,7 +50,7 @@ def _sanitize_url_scheme(url: str) -> str:
     scheme = urlparse(url).scheme.lower()
     if scheme and scheme not in _URL_SCHEME_ALLOWLIST:
         logger.warning("导入条目 url 含非白名单 scheme：%s，已清空该字段", scheme)
-        return ''
+        return ""
     return url
 
 
@@ -54,7 +63,7 @@ def _sanitize_totp_secret(secret: str) -> str:
     """
     if secret and not TOTPGenerator.validate_secret(secret):
         logger.warning("导入条目 totp_secret 非有效 base32，已清空该字段")
-        return ''
+        return ""
     return secret
 
 
@@ -64,19 +73,21 @@ def _validate_items(items: list[dict[str, Any]]) -> None:
     使用字段长度估算防止恶意构造的巨大字段在后续处理中引发内存问题。
     """
     if len(items) > MAX_ENTRIES_LIMIT:
-        raise ImportSizeError(f'导入条目过多，最大允许 {MAX_ENTRIES_LIMIT} 条')
+        raise ImportSizeError(f"导入条目过多，最大允许 {MAX_ENTRIES_LIMIT} 条")
     for item in items:
         # 跳过非对象项（被污染导出中可能是数字/字符串）：各策略类的 parse 循环
         # 同样跳过非 dict item，此处不对其求大小，避免 item.values() 对非 dict
         # 抛 AttributeError 中断整个导入（单个畸形项导致的拒绝服务）。
         if not isinstance(item, dict):
             continue
-        if sum(
-            len(v.encode('utf-8')) if isinstance(v, str)
-            else len(str(v).encode('utf-8'))
-            for v in item.values()
-        ) > MAX_ENTRY_PAYLOAD_SIZE:
-            raise ImportSizeError('导入条目字段过大')
+        if (
+            sum(
+                len(v.encode("utf-8")) if isinstance(v, str) else len(str(v).encode("utf-8"))
+                for v in item.values()
+            )
+            > MAX_ENTRY_PAYLOAD_SIZE
+        ):
+            raise ImportSizeError("导入条目字段过大")
 
 
 def _retain_password_custom_fields(
@@ -98,17 +109,16 @@ def _retain_password_custom_fields(
     if not isinstance(entry.custom_fields, list):
         return entry
     existing_pwd = [
-        f for f in (existing.custom_fields if isinstance(existing.custom_fields, list) else [])
-        if f.field_type == 'password'
+        f
+        for f in (existing.custom_fields if isinstance(existing.custom_fields, list) else [])
+        if f.field_type == "password"
     ]
     if replace_all:
         # CSV / 非导出：源无法表达密码型字段，完全替换
-        merged = [
-            f for f in entry.custom_fields if f.field_type != 'password'
-        ] + existing_pwd
+        merged = [f for f in entry.custom_fields if f.field_type != "password"] + existing_pwd
     else:
         # Bitwarden JSON：按名称增量补充已有但导入中不存在的
-        import_pwd_names = {f.name for f in entry.custom_fields if f.field_type == 'password'}
+        import_pwd_names = {f.name for f in entry.custom_fields if f.field_type == "password"}
         missing = [f for f in existing_pwd if f.name not in import_pwd_names]
         merged = entry.custom_fields + missing
     return replace(entry, custom_fields=merged)
@@ -160,6 +170,7 @@ class ParsedImport:
     将格式特定的全部差异打包为单一返回值，使 ImportExportManager 的导入编排
     无需感知具体格式，仅按 ParsedImport 的字段统一驱动事务/去重/分类/写入。
     """
+
     entries: list[Entry]
     entries_data: list[dict[str, str]]
     overwrite_merger: Callable[[Entry, Entry], Entry]

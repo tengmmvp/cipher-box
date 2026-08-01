@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # Python 依赖（uv 锁文件）：cryptography / argon2-cffi 等安全敏感依赖的漏洞与新版
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  # GitHub Actions 版本（checkout / setup-uv 等）
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

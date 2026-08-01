@@ -33,15 +33,16 @@ if TYPE_CHECKING:
 
 # 模板字段名 → 显示标签，从 entry_type_schema 单一事实源派生，避免平行定义。
 _TEMPLATE_FIELD_LABELS = {
-    spec.storage_name: spec.label
-    for spec in all_special_fields_by_storage().values()
+    spec.storage_name: spec.label for spec in all_special_fields_by_storage().values()
 }
 
 # 字段类型 → 前缀图标标签，供 render 行内显示字段类型徽记。
 _FIELD_TYPE_ICONS: dict[str, str] = {
-    'password': '[PWD]', 'url': '[URL]', 'email': '[MAIL]',
+    "password": "[PWD]",
+    "url": "[URL]",
+    "email": "[MAIL]",
 }
-_FIELD_TYPE_ICON_DEFAULT = '[TXT]'
+_FIELD_TYPE_ICON_DEFAULT = "[TXT]"
 
 
 class CustomFieldsRenderer:
@@ -91,7 +92,7 @@ class CustomFieldsRenderer:
             需要外部管理的 QTimer 列表，即字段自动掩码定时器。
         """
         timers: list[QTimer] = []
-        cf_group = QGroupBox('自定义字段')
+        cf_group = QGroupBox("自定义字段")
         cf_layout = QFormLayout(cf_group)
         cf_layout.setSpacing(6)
         custom_fields = entry.custom_fields
@@ -103,10 +104,12 @@ class CustomFieldsRenderer:
                 continue
             icon = _FIELD_TYPE_ICONS.get(cf.field_type, _FIELD_TYPE_ICON_DEFAULT)
             label = _TEMPLATE_FIELD_LABELS.get(cf.name, cf.name)
-            if cf.field_type == 'password':
-                row = self._make_secret_field_row(f'{icon} {label}', cf.value, timers, parent_widget)
+            if cf.field_type == "password":
+                row = self._make_secret_field_row(
+                    f"{icon} {label}", cf.value, timers, parent_widget
+                )
             else:
-                row = self._make_plain_field_row(f'{icon} {label}', cf.value)
+                row = self._make_plain_field_row(f"{icon} {label}", cf.value)
             cf_layout.addRow(*row)
         layout.addWidget(cf_group)
         return timers
@@ -125,11 +128,15 @@ class CustomFieldsRenderer:
     # ---- 内部方法 ----
 
     def _make_plain_field_row(
-        self, label: str, value: str, *, copyable: bool = True,
+        self,
+        label: str,
+        value: str,
+        *,
+        copyable: bool = True,
     ) -> tuple[QLabel, QWidget]:
         """创建普通字段行，明文显示并可选附带复制按钮。"""
-        name_label = QLabel(f'{label}：')
-        name_label.setObjectName('fieldLabel')
+        name_label = QLabel(f"{label}：")
+        name_label.setObjectName("fieldLabel")
 
         row_widget = QWidget()
         row_layout = QHBoxLayout(row_widget)
@@ -137,7 +144,7 @@ class CustomFieldsRenderer:
 
         val_label = QLabel(value)
         val_label.setWordWrap(True)
-        val_label.setObjectName('fieldValue')
+        val_label.setObjectName("fieldValue")
         row_layout.addWidget(val_label, 1)
 
         if copyable and value:
@@ -148,12 +155,14 @@ class CustomFieldsRenderer:
 
             copy_btn = QPushButton()
             set_icon(copy_btn, COPY)
-            copy_btn.setObjectName('iconBtn')
+            copy_btn.setObjectName("iconBtn")
             copy_btn.setFixedSize(*BTN_COPY)
-            copy_btn.setToolTip('复制')
+            copy_btn.setToolTip("复制")
 
-            def _copy_value(_checked: bool = False, rid: int = row_id, btn: QPushButton = copy_btn) -> None:
-                v = self._plain_values.get(rid, '')
+            def _copy_value(
+                _checked: bool = False, rid: int = row_id, btn: QPushButton = copy_btn
+            ) -> None:
+                v = self._plain_values.get(rid, "")
                 self._copy_callback(btn, v)
 
             copy_btn.clicked.connect(_copy_value)
@@ -162,7 +171,11 @@ class CustomFieldsRenderer:
         return name_label, row_widget
 
     def _make_secret_field_row(
-        self, label: str, value: str, timers: list[QTimer], parent_widget: QWidget,
+        self,
+        label: str,
+        value: str,
+        timers: list[QTimer],
+        parent_widget: QWidget,
     ) -> tuple[QLabel, QWidget]:
         """创建敏感字段行，默认掩码，附带显示/隐藏与复制按钮。
 
@@ -179,10 +192,12 @@ class CustomFieldsRenderer:
                 on_copy=self._copy_callback,
                 on_copy_feedback=self._copy_feedback_callback,
             ),
-            label, value, store_key=row_id,
-            name_label_style=f'font-weight: bold; color: {c("text_secondary")};',
+            label,
+            value,
+            store_key=row_id,
+            name_label_style=f"font-weight: bold; color: {c('text_secondary')};",
             val_label_style=(
-                f'font-family: {FONT_FAMILY_MONOSPACE}; font-size: 13px;'
-                f' color: {c("text_primary")};'
+                f"font-family: {FONT_FAMILY_MONOSPACE}; font-size: 13px;"
+                f" color: {c('text_primary')};"
             ),
         )

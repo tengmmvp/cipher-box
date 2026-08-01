@@ -88,32 +88,42 @@ class _HealthScoreWidget(QWidget):
             radius = side / 2 - self._RING_PADDING_PX
             pen_width = self._RING_PEN_WIDTH
 
-            bg_pen = QPen(QColor(c('progress_bg')), pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+            bg_pen = QPen(
+                QColor(c("progress_bg")), pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap
+            )
             painter.setPen(bg_pen)
             draw_rect = QRectF(
-                center_x - radius, center_y - radius,
-                radius * 2, radius * 2,
+                center_x - radius,
+                center_y - radius,
+                radius * 2,
+                radius * 2,
             )
             painter.drawArc(draw_rect, 0, self._FULL_CIRCLE_DEG * self._ANGLE_TICKS_PER_DEGREE)
 
             score_color = self._health_score_color(self._score)
-            fg_pen = QPen(QColor(score_color), pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+            fg_pen = QPen(
+                QColor(score_color), pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap
+            )
             painter.setPen(fg_pen)
-            span_angle = int(self._score / 100 * self._FULL_CIRCLE_DEG * self._ANGLE_TICKS_PER_DEGREE)
+            span_angle = int(
+                self._score / 100 * self._FULL_CIRCLE_DEG * self._ANGLE_TICKS_PER_DEGREE
+            )
             start_angle = self._START_ANGLE_DEG * self._ANGLE_TICKS_PER_DEGREE
             painter.drawArc(draw_rect, start_angle, -span_angle)
 
-            painter.setPen(QColor(c('text_primary')))
+            painter.setPen(QColor(c("text_primary")))
             painter.setFont(self._score_font)
             painter.drawText(draw_rect, Qt.AlignmentFlag.AlignCenter, str(self._score))
 
             painter.setFont(self._label_font)
-            painter.setPen(QColor(c('text_secondary')))
+            painter.setPen(QColor(c("text_secondary")))
             label_rect = QRectF(
-                center_x - radius, center_y + 8,
-                radius * 2, 20,
+                center_x - radius,
+                center_y + 8,
+                radius * 2,
+                20,
             )
-            painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, '安全评分')
+            painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, "安全评分")
 
             painter.restore()
         finally:
@@ -122,17 +132,19 @@ class _HealthScoreWidget(QWidget):
     @staticmethod
     def _health_score_color(score: int) -> str:
         if score >= 80:
-            return c('success')
+            return c("success")
         elif score >= 60:
-            return c('warning')
+            return c("warning")
         elif score >= 40:
-            return c('warning_orange')
+            return c("warning_orange")
         else:
-            return c('danger')
+            return c("danger")
 
 
 class _StatCard(QFrame):
-    def __init__(self, title: str, count: int, color: str, button_text: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, title: str, count: int, color: str, button_text: str, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self._setup_ui(title, count, color, button_text)
 
@@ -141,24 +153,22 @@ class _StatCard(QFrame):
 
     def _setup_ui(self, title: str, count: int, color: str, button_text: str) -> None:
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setObjectName('statCard')
+        self.setObjectName("statCard")
 
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
 
         title_label = QLabel(title)
-        title_label.setObjectName('statCardTitle')
+        title_label.setObjectName("statCardTitle")
         layout.addWidget(title_label)
 
         count_label = QLabel(str(count))
-        count_label.setStyleSheet(
-            f"font-size: 32px; font-weight: bold; color: {color};"
-        )
+        count_label.setStyleSheet(f"font-size: 32px; font-weight: bold; color: {color};")
         self._count_label = count_label  # 保存引用供 update_count 刷新
         layout.addWidget(count_label)
 
         action_btn = QPushButton(button_text)
-        action_btn.setObjectName('statActionBtn')
+        action_btn.setObjectName("statActionBtn")
         action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.action_button = action_btn
         layout.addWidget(action_btn)
@@ -200,7 +210,7 @@ class SecurityDashboard(WorkerBackedDialog):
         self._old_entries = []
 
     def _setup_ui(self) -> None:
-        self.setWindowTitle('安全仪表盘')
+        self.setWindowTitle("安全仪表盘")
         self.setMinimumSize(*DIALOG_SECURITY_DASHBOARD_MIN_SIZE)
         setup_dialog_flags(self)
 
@@ -220,15 +230,15 @@ class SecurityDashboard(WorkerBackedDialog):
         cards_layout = QHBoxLayout()
         cards_layout.setSpacing(12)
 
-        self._weak_card = _StatCard('弱密码', 0, c('danger'), '立即修复', self)
+        self._weak_card = _StatCard("弱密码", 0, c("danger"), "立即修复", self)
         self._weak_card.action_button.clicked.connect(self._on_fix_weak)
         cards_layout.addWidget(self._weak_card)
 
-        self._dup_card = _StatCard('重复密码组', 0, c('warning_orange'), '查看详情', self)
+        self._dup_card = _StatCard("重复密码组", 0, c("warning_orange"), "查看详情", self)
         self._dup_card.action_button.clicked.connect(lambda: self._tabs.setCurrentIndex(1))
         cards_layout.addWidget(self._dup_card)
 
-        self._old_card = _StatCard('过期密码', 0, c('warning'), '查看详情', self)
+        self._old_card = _StatCard("过期密码", 0, c("warning"), "查看详情", self)
         self._old_card.action_button.clicked.connect(lambda: self._tabs.setCurrentIndex(2))
         cards_layout.addWidget(self._old_card)
 
@@ -237,19 +247,19 @@ class SecurityDashboard(WorkerBackedDialog):
 
         separator = QFrame()
         separator.setFixedHeight(1)
-        separator.setObjectName('detailDivider')
+        separator.setObjectName("detailDivider")
         main_layout.addWidget(separator)
 
         # ===== 详细列表区域 =====
         self._tabs = QTabWidget()
-        self._tabs.addTab(self._create_weak_tab(), '弱密码')
-        self._tabs.addTab(self._create_duplicate_tab(), '重复密码')
-        self._tabs.addTab(self._create_old_tab(), '过期密码')
+        self._tabs.addTab(self._create_weak_tab(), "弱密码")
+        self._tabs.addTab(self._create_duplicate_tab(), "重复密码")
+        self._tabs.addTab(self._create_old_tab(), "过期密码")
         main_layout.addWidget(self._tabs, stretch=1)
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
-        close_btn = QPushButton('关闭')
+        close_btn = QPushButton("关闭")
         close_btn.setFixedSize(*BTN_DIALOG)
         close_btn.clicked.connect(self.accept)
         btn_layout.addWidget(close_btn)
@@ -314,9 +324,9 @@ class SecurityDashboard(WorkerBackedDialog):
         days = self._config.get(CFG_OLD_PASSWORD_WARNING_DAYS)
 
         self._health_widget.set_score(0)
-        self._status_hint = QLabel('正在分析安全数据...')
+        self._status_hint = QLabel("正在分析安全数据...")
         self._status_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._status_hint.setObjectName('secStatusHint')
+        self._status_hint.setObjectName("secStatusHint")
         self._weak_layout.addWidget(self._status_hint)
 
         worker = BackgroundWorker(
@@ -342,21 +352,21 @@ class SecurityDashboard(WorkerBackedDialog):
         def _project(e: Entry) -> Entry:
             # 清空敏感字段，仅保留展示所需，避免驻留完整明文 Entry
             return dataclasses.replace(
-                e, password='', totp_secret='', notes='', url='', custom_fields=[]
+                e, password="", totp_secret="", notes="", url="", custom_fields=[]
             )
 
         try:
-            self._weak_entries = [_project(e) for e in analysis['weak_entries']]
+            self._weak_entries = [_project(e) for e in analysis["weak_entries"]]
             self._duplicate_groups = [
-                [_project(e) for e in g] for g in analysis['duplicate_groups']
+                [_project(e) for e in g] for g in analysis["duplicate_groups"]
             ]
-            self._old_entries = [_project(e) for e in analysis['old_entries']]
+            self._old_entries = [_project(e) for e in analysis["old_entries"]]
         except Exception as exc:
             logger.error("加载安全报告失败: %s", type(exc).__name__, exc_info=True)
             # 异常出口同样回收 _status_hint，避免提示残留
             self._clear_layout(self._weak_layout)
             self._status_hint = None
-            QMessageBox.critical(self, DLG_TITLE_ERROR, '加载安全数据失败，请重试')
+            QMessageBox.critical(self, DLG_TITLE_ERROR, "加载安全数据失败，请重试")
             return
         finally:
             # 成功与异常出口合并到 finally，避免漏调 release_worker 造成引用泄漏；
@@ -366,7 +376,7 @@ class SecurityDashboard(WorkerBackedDialog):
         weak_count = len(self._weak_entries)
         dup_count = len(self._duplicate_groups)
         old_count = len(self._old_entries)
-        total = analysis.get('total', 0)
+        total = analysis.get("total", 0)
 
         score = SecurityAnalyzer.compute_health_score(weak_count, dup_count, old_count, total)
 
@@ -388,22 +398,22 @@ class SecurityDashboard(WorkerBackedDialog):
         self._clear_layout(self._weak_layout)
         self._status_hint = None
         logger.error("加载安全数据失败: %s", error_msg)
-        QMessageBox.critical(self, DLG_TITLE_ERROR, '加载安全数据失败，请重试')
+        QMessageBox.critical(self, DLG_TITLE_ERROR, "加载安全数据失败，请重试")
 
     def _populate_weak_tab(self) -> None:
         self._clear_layout(self._weak_layout)
 
         if not self._weak_entries:
-            self._weak_layout.addWidget(self._create_empty_hint('没有发现弱密码，做得好！'))
+            self._weak_layout.addWidget(self._create_empty_hint("没有发现弱密码，做得好！"))
             return
 
         for entry in self._weak_entries:
             if entry.id is None:
                 continue
             row = self._create_entry_row(
-                title=entry.title or '未命名',
-                subtitle=f'用户名: {entry.username}' if entry.username else '',
-                badge_text=f'强度 {entry.password_strength}',
+                title=entry.title or "未命名",
+                subtitle=f"用户名: {entry.username}" if entry.username else "",
+                badge_text=f"强度 {entry.password_strength}",
                 badge_color=get_strength_color(entry.password_strength),
                 entry_id=entry.id,
             )
@@ -413,27 +423,27 @@ class SecurityDashboard(WorkerBackedDialog):
         self._clear_layout(self._dup_layout)
 
         if not self._duplicate_groups:
-            self._dup_layout.addWidget(self._create_empty_hint('没有发现重复密码。'))
+            self._dup_layout.addWidget(self._create_empty_hint("没有发现重复密码。"))
             return
 
         for group in self._duplicate_groups:
             group_widget = QFrame()
-            group_widget.setObjectName('dupGroup')
+            group_widget.setObjectName("dupGroup")
             group_layout = QVBoxLayout(group_widget)
             group_layout.setSpacing(4)
 
-            group_label = QLabel(f'同一密码被 {len(group)} 个条目使用')
-            group_label.setObjectName('dupGroupLabel')
+            group_label = QLabel(f"同一密码被 {len(group)} 个条目使用")
+            group_label.setObjectName("dupGroupLabel")
             group_layout.addWidget(group_label)
 
             for entry in group:
                 if entry.id is None:
                     continue
                 entry_row = self._create_entry_row(
-                    title=entry.title or '未命名',
-                    subtitle=f'用户名: {entry.username}' if entry.username else '',
-                    badge_text='重复使用',
-                    badge_color=c('warning_orange'),
+                    title=entry.title or "未命名",
+                    subtitle=f"用户名: {entry.username}" if entry.username else "",
+                    badge_text="重复使用",
+                    badge_color=c("warning_orange"),
                     entry_id=entry.id,
                 )
                 group_layout.addWidget(entry_row)
@@ -444,20 +454,20 @@ class SecurityDashboard(WorkerBackedDialog):
         self._clear_layout(self._old_layout)
 
         if not self._old_entries:
-            self._old_layout.addWidget(self._create_empty_hint('没有过期密码。'))
+            self._old_layout.addWidget(self._create_empty_hint("没有过期密码。"))
             return
 
         days = self._config.get(CFG_OLD_PASSWORD_WARNING_DAYS)
         for entry in self._old_entries:
             if entry.id is None:
                 continue
-            updated = entry.password_changed_at or entry.updated_at or entry.created_at or '未知'
+            updated = entry.password_changed_at or entry.updated_at or entry.created_at or "未知"
             formatted = format_datetime(updated)[:10]  # 统一处理 naive/aware，取日期部分
             row = self._create_entry_row(
-                title=entry.title or '未命名',
-                subtitle=f'上次更新: {formatted}',
-                badge_text=f'> {days}天',
-                badge_color=c('warning'),
+                title=entry.title or "未命名",
+                subtitle=f"上次更新: {formatted}",
+                badge_text=f"> {days}天",
+                badge_color=c("warning"),
                 entry_id=entry.id,
             )
             self._old_layout.addWidget(row)
@@ -472,7 +482,7 @@ class SecurityDashboard(WorkerBackedDialog):
     ) -> QWidget:
         """创建一条包含标题、副标题、徽章与修复按钮的条目行。"""
         row_widget = QWidget()
-        row_widget.setObjectName('secEntryRow')
+        row_widget.setObjectName("secEntryRow")
         # 启用 hover 属性，使 QSS 的 QWidget#secEntryRow:hover 生效
         row_widget.setAttribute(Qt.WidgetAttribute.WA_Hover)
         row_layout = QHBoxLayout(row_widget)
@@ -482,12 +492,12 @@ class SecurityDashboard(WorkerBackedDialog):
         info_layout.setSpacing(2)
 
         title_label = QLabel(title)
-        title_label.setObjectName('secRowTitle')
+        title_label.setObjectName("secRowTitle")
         info_layout.addWidget(title_label)
 
         if subtitle:
             sub_label = QLabel(subtitle)
-            sub_label.setObjectName('secRowSub')
+            sub_label.setObjectName("secRowSub")
             info_layout.addWidget(sub_label)
 
         row_layout.addLayout(info_layout, stretch=1)
@@ -506,10 +516,10 @@ class SecurityDashboard(WorkerBackedDialog):
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         row_layout.addWidget(badge)
 
-        fix_btn = QPushButton('修复')
+        fix_btn = QPushButton("修复")
         fix_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         fix_btn.setFixedSize(*BTN_FIX)
-        fix_btn.setObjectName('secFixBtn')
+        fix_btn.setObjectName("secFixBtn")
         fix_btn.clicked.connect(lambda checked, eid=entry_id: self._request_fix(eid))
         row_layout.addWidget(fix_btn)
 
@@ -518,7 +528,7 @@ class SecurityDashboard(WorkerBackedDialog):
     def _create_empty_hint(self, text: str) -> QLabel:
         label = QLabel(text)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setObjectName('secEmptyHint')
+        label.setObjectName("secEmptyHint")
         return label
 
     @staticmethod

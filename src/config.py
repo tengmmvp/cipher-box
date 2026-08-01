@@ -21,7 +21,7 @@ from .utils.file_security import (
     unprotect_with_dpapi,
 )
 
-_CONFIG_SIG_PREFIX = '#__sig__:'
+_CONFIG_SIG_PREFIX = "#__sig__:"
 _CONFIG_KEY_SIZE = 32
 
 logger = logging.getLogger(__name__)
@@ -29,23 +29,24 @@ logger = logging.getLogger(__name__)
 
 def get_data_dir() -> Path:
     """获取应用数据目录。"""
-    if sys.platform == 'win32':
+    if sys.platform == "win32":
         # APPDATA 缺失时逐级回退 LOCALAPPDATA → USERPROFILE\AppData\Roaming，
         # 避免回退裸 ~ 把 vault.db 写到主目录根，破坏 %APPDATA%\CipherBox 路径约定。
         base = (
-            os.environ.get('APPDATA')
-            or os.environ.get('LOCALAPPDATA')
+            os.environ.get("APPDATA")
+            or os.environ.get("LOCALAPPDATA")
             or os.path.join(
-                os.environ.get('USERPROFILE', os.path.expanduser('~')),
-                'AppData', 'Roaming',
+                os.environ.get("USERPROFILE", os.path.expanduser("~")),
+                "AppData",
+                "Roaming",
             )
         )
     else:
         base = os.environ.get(
-            'XDG_DATA_HOME',
-            os.path.join(os.path.expanduser('~'), '.local', 'share'),
+            "XDG_DATA_HOME",
+            os.path.join(os.path.expanduser("~"), ".local", "share"),
         )
-    data_dir = Path(base) / 'CipherBox'
+    data_dir = Path(base) / "CipherBox"
     return secure_directory(data_dir)
 
 
@@ -56,34 +57,34 @@ OLD_PASSWORD_WARNING_DAYS_DEFAULT = 90
 # config._is_valid 与 MainWindow 窗口恢复共用此单一事实源，避免上限不一致致合法 geometry 被丢弃。
 MAX_WINDOW_GEOMETRY_BYTES = 256
 # 主题默认值（light/dark）：DEFAULT_CONFIG 与 UI 兜底共用的单一事实源。
-DEFAULT_THEME = 'light'
+DEFAULT_THEME = "light"
 
 # 配置键名常量（MAINT-005 单一事实源）：DEFAULT_CONFIG / _INT_SPECS / _BOOL_KEYS /
 # Literal 类型别名及所有调用方均引用这些常量，键名重命名只需改此处。命名约定 CFG_<UPPER_SNAKE>。
-CFG_THEME: Final[str] = 'theme'
-CFG_AUTO_LOCK_MINUTES: Final[str] = 'auto_lock_minutes'
-CFG_CLIPBOARD_CLEAR_SECONDS: Final[str] = 'clipboard_clear_seconds'
-CFG_PASSWORD_VISIBLE_SECONDS: Final[str] = 'password_visible_seconds'
-CFG_DEFAULT_PASSWORD_LENGTH: Final[str] = 'default_password_length'
-CFG_DEFAULT_UPPERCASE: Final[str] = 'default_uppercase'
-CFG_DEFAULT_LOWERCASE: Final[str] = 'default_lowercase'
-CFG_DEFAULT_DIGITS: Final[str] = 'default_digits'
-CFG_DEFAULT_SYMBOLS: Final[str] = 'default_symbols'
-CFG_DEFAULT_EXCLUDE_AMBIGUOUS: Final[str] = 'default_exclude_ambiguous'
-CFG_BACKUP_DIRECTORY: Final[str] = 'backup_directory'
-CFG_AUTO_BACKUP_ENABLED: Final[str] = 'auto_backup_enabled'
-CFG_AUTO_BACKUP_INTERVAL_HOURS: Final[str] = 'auto_backup_interval_hours'
-CFG_AUTO_BACKUP_RETENTION: Final[str] = 'auto_backup_retention'
-CFG_LAST_AUTO_BACKUP_AT: Final[str] = 'last_auto_backup_at'
-CFG_SHOW_TRAY_ICON: Final[str] = 'show_tray_icon'
-CFG_MINIMIZE_TO_TRAY: Final[str] = 'minimize_to_tray'
-CFG_CLOSE_TO_TRAY: Final[str] = 'close_to_tray'
-CFG_OLD_PASSWORD_WARNING_DAYS: Final[str] = 'old_password_warning_days'
-CFG_SORT_FIELD: Final[str] = 'sort_field'
-CFG_SORT_ORDER: Final[str] = 'sort_order'
-CFG_WINDOW_GEOMETRY: Final[str] = 'window_geometry'
-CFG_SPLITTER_SIZES: Final[str] = 'splitter_sizes'
-CFG_SECURITY_SENTINELS: Final[str] = 'security_sentinels'
+CFG_THEME: Final[str] = "theme"
+CFG_AUTO_LOCK_MINUTES: Final[str] = "auto_lock_minutes"
+CFG_CLIPBOARD_CLEAR_SECONDS: Final[str] = "clipboard_clear_seconds"
+CFG_PASSWORD_VISIBLE_SECONDS: Final[str] = "password_visible_seconds"
+CFG_DEFAULT_PASSWORD_LENGTH: Final[str] = "default_password_length"
+CFG_DEFAULT_UPPERCASE: Final[str] = "default_uppercase"
+CFG_DEFAULT_LOWERCASE: Final[str] = "default_lowercase"
+CFG_DEFAULT_DIGITS: Final[str] = "default_digits"
+CFG_DEFAULT_SYMBOLS: Final[str] = "default_symbols"
+CFG_DEFAULT_EXCLUDE_AMBIGUOUS: Final[str] = "default_exclude_ambiguous"
+CFG_BACKUP_DIRECTORY: Final[str] = "backup_directory"
+CFG_AUTO_BACKUP_ENABLED: Final[str] = "auto_backup_enabled"
+CFG_AUTO_BACKUP_INTERVAL_HOURS: Final[str] = "auto_backup_interval_hours"
+CFG_AUTO_BACKUP_RETENTION: Final[str] = "auto_backup_retention"
+CFG_LAST_AUTO_BACKUP_AT: Final[str] = "last_auto_backup_at"
+CFG_SHOW_TRAY_ICON: Final[str] = "show_tray_icon"
+CFG_MINIMIZE_TO_TRAY: Final[str] = "minimize_to_tray"
+CFG_CLOSE_TO_TRAY: Final[str] = "close_to_tray"
+CFG_OLD_PASSWORD_WARNING_DAYS: Final[str] = "old_password_warning_days"
+CFG_SORT_FIELD: Final[str] = "sort_field"
+CFG_SORT_ORDER: Final[str] = "sort_order"
+CFG_WINDOW_GEOMETRY: Final[str] = "window_geometry"
+CFG_SPLITTER_SIZES: Final[str] = "splitter_sizes"
+CFG_SECURITY_SENTINELS: Final[str] = "security_sentinels"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     CFG_THEME: DEFAULT_THEME,
@@ -96,17 +97,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
     CFG_DEFAULT_DIGITS: True,
     CFG_DEFAULT_SYMBOLS: True,
     CFG_DEFAULT_EXCLUDE_AMBIGUOUS: False,
-    CFG_BACKUP_DIRECTORY: '',
+    CFG_BACKUP_DIRECTORY: "",
     CFG_AUTO_BACKUP_ENABLED: False,
     CFG_AUTO_BACKUP_INTERVAL_HOURS: 24,
     CFG_AUTO_BACKUP_RETENTION: 10,
-    CFG_LAST_AUTO_BACKUP_AT: '',
+    CFG_LAST_AUTO_BACKUP_AT: "",
     CFG_SHOW_TRAY_ICON: True,
     CFG_MINIMIZE_TO_TRAY: True,
     CFG_CLOSE_TO_TRAY: False,
     CFG_OLD_PASSWORD_WARNING_DAYS: OLD_PASSWORD_WARNING_DAYS_DEFAULT,
-    CFG_SORT_FIELD: 'updated_at',       # title, updated_at, created_at, password_strength
-    CFG_SORT_ORDER: 'desc',             # asc, desc
+    CFG_SORT_FIELD: "updated_at",  # title, updated_at, created_at, password_strength
+    CFG_SORT_ORDER: "desc",  # asc, desc
     CFG_WINDOW_GEOMETRY: None,
     CFG_SPLITTER_SIZES: None,
     # 安全哨兵登记名（RateLimiter 首次持久化状态时登记）。HMAC 签名覆盖，用于检测
@@ -128,9 +129,7 @@ _INT_SPECS: dict[str, tuple[int, int, int | None]] = {
     CFG_OLD_PASSWORD_WARNING_DAYS: (30, 365, None),
 }
 # 只读映射（MappingProxyType 防误写，ARCH-024）：均派生自 _INT_SPECS。
-_INT_RANGES = MappingProxyType(
-    {k: (lo, hi) for k, (lo, hi, _) in _INT_SPECS.items()}
-)
+_INT_RANGES = MappingProxyType({k: (lo, hi) for k, (lo, hi, _) in _INT_SPECS.items()})
 _SECURITY_MINIMUMS = MappingProxyType(
     {k: sm for k, (_, _, sm) in _INT_SPECS.items() if sm is not None}
 )
@@ -152,13 +151,20 @@ def get_ui_int_range(key: str) -> tuple[int, int]:
 # 完整性校验失败时必须回退默认的键集合：安全下限整型键 + backup_directory
 # （可能被篡改诱导明文备份落入攻击者可读目录）+ security_sentinels
 # （由 RateLimiter 据完整性失败保守降级，不采信被篡改登记）。
-_INTEGRITY_SENSITIVE_KEYS: set[str] = (
-    set(_SECURITY_MINIMUMS) | {CFG_BACKUP_DIRECTORY, CFG_SECURITY_SENTINELS}
-)
+_INTEGRITY_SENSITIVE_KEYS: set[str] = set(_SECURITY_MINIMUMS) | {
+    CFG_BACKUP_DIRECTORY,
+    CFG_SECURITY_SENTINELS,
+}
 _BOOL_KEYS = {
-    CFG_DEFAULT_UPPERCASE, CFG_DEFAULT_LOWERCASE, CFG_DEFAULT_DIGITS,
-    CFG_DEFAULT_SYMBOLS, CFG_DEFAULT_EXCLUDE_AMBIGUOUS, CFG_AUTO_BACKUP_ENABLED,
-    CFG_SHOW_TRAY_ICON, CFG_MINIMIZE_TO_TRAY, CFG_CLOSE_TO_TRAY,
+    CFG_DEFAULT_UPPERCASE,
+    CFG_DEFAULT_LOWERCASE,
+    CFG_DEFAULT_DIGITS,
+    CFG_DEFAULT_SYMBOLS,
+    CFG_DEFAULT_EXCLUDE_AMBIGUOUS,
+    CFG_AUTO_BACKUP_ENABLED,
+    CFG_SHOW_TRAY_ICON,
+    CFG_MINIMIZE_TO_TRAY,
+    CFG_CLOSE_TO_TRAY,
 }
 
 # 速率限制阶梯：(失败次数, 锁定秒数)。最高阶梯 10 分钟提高在线暴破成本；
@@ -171,34 +177,42 @@ RATE_LIMITS: list[tuple[int, int]] = [(3, 10), (5, 30), (8, 60), (10, 120), (15,
 # 注：Literal 须用字面量（mypy/Pyright 不支持从 Final 变量派生），与上方 CFG_ 常量各自
 # 维护；启动期断言校验两者一致，重命名时改 CFG_ 常量 + 此处字面量，断言捕获遗漏。
 _StrConfigKey = Literal[
-    'theme', 'backup_directory', 'last_auto_backup_at', 'sort_field', 'sort_order',
+    "theme",
+    "backup_directory",
+    "last_auto_backup_at",
+    "sort_field",
+    "sort_order",
 ]
 _IntConfigKey = Literal[
-    'auto_lock_minutes', 'clipboard_clear_seconds', 'password_visible_seconds',
-    'default_password_length', 'auto_backup_interval_hours', 'auto_backup_retention',
-    'old_password_warning_days',
+    "auto_lock_minutes",
+    "clipboard_clear_seconds",
+    "password_visible_seconds",
+    "default_password_length",
+    "auto_backup_interval_hours",
+    "auto_backup_retention",
+    "old_password_warning_days",
 ]
 _BoolConfigKey = Literal[
-    'default_uppercase', 'default_lowercase', 'default_digits', 'default_symbols',
-    'default_exclude_ambiguous', 'auto_backup_enabled', 'show_tray_icon',
-    'minimize_to_tray', 'close_to_tray',
+    "default_uppercase",
+    "default_lowercase",
+    "default_digits",
+    "default_symbols",
+    "default_exclude_ambiguous",
+    "auto_backup_enabled",
+    "show_tray_icon",
+    "minimize_to_tray",
+    "close_to_tray",
 ]
 
 # 启动期断言（QL-007）：overload 的 Literal 键集须与 DEFAULT_CONFIG 中对应类型键一致，
 # 新增配置键漏更新 Literal 在模块加载即报错。window_geometry/splitter_sizes/
 # security_sentinels 为特殊类型（由独立 overload 覆盖），不纳入此校验。
-if set(get_args(_StrConfigKey)) != {
-    k for k, v in DEFAULT_CONFIG.items() if isinstance(v, str)
-}:
-    raise RuntimeError('_StrConfigKey 与 DEFAULT_CONFIG 的 str 键不一致')
-if set(get_args(_IntConfigKey)) != {
-    k for k, v in DEFAULT_CONFIG.items() if is_real_int(v)
-}:
-    raise RuntimeError('_IntConfigKey 与 DEFAULT_CONFIG 的 int 键不一致')
-if set(get_args(_BoolConfigKey)) != {
-    k for k, v in DEFAULT_CONFIG.items() if type(v) is bool
-}:
-    raise RuntimeError('_BoolConfigKey 与 DEFAULT_CONFIG 的 bool 键不一致')
+if set(get_args(_StrConfigKey)) != {k for k, v in DEFAULT_CONFIG.items() if isinstance(v, str)}:
+    raise RuntimeError("_StrConfigKey 与 DEFAULT_CONFIG 的 str 键不一致")
+if set(get_args(_IntConfigKey)) != {k for k, v in DEFAULT_CONFIG.items() if is_real_int(v)}:
+    raise RuntimeError("_IntConfigKey 与 DEFAULT_CONFIG 的 int 键不一致")
+if set(get_args(_BoolConfigKey)) != {k for k, v in DEFAULT_CONFIG.items() if type(v) is bool}:
+    raise RuntimeError("_BoolConfigKey 与 DEFAULT_CONFIG 的 bool 键不一致")
 
 
 class ConfigManager:
@@ -206,8 +220,8 @@ class ConfigManager:
 
     def __init__(self) -> None:
         self._data_dir = get_data_dir()
-        self._config_path = self._data_dir / 'config.json'
-        self._integrity_key_path = self._data_dir / 'config.key'
+        self._config_path = self._data_dir / "config.json"
+        self._integrity_key_path = self._data_dir / "config.key"
         self._integrity_key = self._load_or_create_integrity_key()
         # deepcopy 而非 dict()：security_sentinels 等嵌套 list 浅拷贝会在多实例间共享，
         # 任一原地突变串扰其他实例默认值。
@@ -218,12 +232,12 @@ class ConfigManager:
         self.load()
 
     @classmethod
-    def for_testing(cls, data_dir: str | Path) -> 'ConfigManager':
+    def for_testing(cls, data_dir: str | Path) -> "ConfigManager":
         """创建测试用 ConfigManager，使用指定数据目录且不加载真实配置。"""
         cfg = cls.__new__(cls)
         cfg._data_dir = Path(data_dir)
-        cfg._config_path = Path(data_dir) / 'config.json'
-        cfg._integrity_key_path = Path(data_dir) / 'config.key'
+        cfg._config_path = Path(data_dir) / "config.json"
+        cfg._integrity_key_path = Path(data_dir) / "config.key"
         cfg._integrity_key = cfg._load_or_create_integrity_key()
         cfg._config = copy.deepcopy(DEFAULT_CONFIG)
         cfg._config[CFG_SHOW_TRAY_ICON] = False
@@ -247,7 +261,7 @@ class ConfigManager:
                 blob = self._integrity_key_path.read_bytes()
             except (FileNotFoundError, OSError):
                 # exists() 与 read_bytes() 间 TOCTOU 或瞬时 IO 错误：与损坏分支一致 fall-through，绝不阻断启动。
-                logger.warning('读取配置签名密钥失败，将生成新密钥', exc_info=True)
+                logger.warning("读取配置签名密钥失败，将生成新密钥", exc_info=True)
                 blob = None
             if blob is not None:
                 key = unprotect_with_dpapi(blob)
@@ -257,19 +271,20 @@ class ConfigManager:
                 if key is not None and len(key) == _CONFIG_KEY_SIZE:
                     secure_file(self._integrity_key_path, strict=True)
                     return key
-                logger.warning('配置签名密钥损坏，将生成新密钥')
+                logger.warning("配置签名密钥损坏，将生成新密钥")
 
         key = os.urandom(_CONFIG_KEY_SIZE)
         # 优先 DPAPI 封装；失败回退明文（不阻断启动）
         stored = protect_with_dpapi(key)
         if stored is None:
             stored = key
+
         # 经 atomic_write 落地即 0600，消除「写明文密钥 → 关闭 → secure_file 收紧」间的世界可读窗口（SEC-2）。
         def _write_key(f: Any) -> bool:
             f.write(stored)
             return True
 
-        atomic_write(self._integrity_key_path, _write_key, mode='wb')
+        atomic_write(self._integrity_key_path, _write_key, mode="wb")
         return key
 
     @property
@@ -278,7 +293,7 @@ class ConfigManager:
 
     @property
     def db_path(self) -> Path:
-        return self._data_dir / 'vault.db'
+        return self._data_dir / "vault.db"
 
     @property
     def config_path(self) -> Path:
@@ -292,39 +307,38 @@ class ConfigManager:
             self._config = copy.deepcopy(DEFAULT_CONFIG)
             if self._config_path.exists():
                 try:
-                    raw_text = self._config_path.read_text(encoding='utf-8')
+                    raw_text = self._config_path.read_text(encoding="utf-8")
                     # 分离末尾签名行：按 splitlines 取末行判断，比 rsplit('\n',1) 鲁棒——
                     # 后者按最后一个换行盲切，JSON 体内若有签名前缀开头的行会误切。
                     json_text = raw_text
-                    stored_sig = ''
+                    stored_sig = ""
                     text = raw_text.rstrip()
                     lines = text.splitlines()
                     if len(lines) >= 2 and lines[-1].startswith(_CONFIG_SIG_PREFIX):
-                        stored_sig = lines[-1][len(_CONFIG_SIG_PREFIX):]
+                        stored_sig = lines[-1][len(_CONFIG_SIG_PREFIX) :]
                         json_text = text[: -(len(lines[-1]) + 1)]
                     # 验证完整性签名
                     expected_sig = hmac.new(
                         self._integrity_key,
-                        json_text.encode('utf-8'),
+                        json_text.encode("utf-8"),
                         hashlib.sha256,
                     ).hexdigest()
                     if stored_sig:
                         if not hmac.compare_digest(stored_sig, expected_sig):
                             logger.warning(
-                                '配置文件完整性校验失败，可能已被篡改。'
-                                '将使用默认配置覆盖异常值。'
+                                "配置文件完整性校验失败，可能已被篡改。将使用默认配置覆盖异常值。"
                             )
                             self._integrity_warning = True
-                            self._integrity_reason = 'mismatch'
+                            self._integrity_reason = "mismatch"
                     else:
                         # 无签名行：攻击者删签名即可绕过 HMAC。容错加载（避免损坏致无法启动），
                         # 但 check_integrity 反映风险供调用方提示。缺失签名比签名不符更可疑
                         # （主动删除篡改痕迹），独立 reason 区分供分级提示。
                         self._integrity_warning = True
-                        self._integrity_reason = 'missing'
+                        self._integrity_reason = "missing"
                     saved = json.loads(json_text)
                     if not isinstance(saved, dict):
-                        raise ValueError('配置文件根节点必须是对象')
+                        raise ValueError("配置文件根节点必须是对象")
                     for key, value in saved.items():
                         if key in DEFAULT_CONFIG:
                             if self._is_valid(key, value):
@@ -333,16 +347,19 @@ class ConfigManager:
                                 # auto_lock_minutes 改 0 禁用自动锁定）。与 get_safe 叠加双层防御。
                                 if self._integrity_warning and key in _INTEGRITY_SENSITIVE_KEYS:
                                     logger.warning(
-                                        '配置完整性失败，敏感键 %s 回退默认值', key,
+                                        "配置完整性失败，敏感键 %s 回退默认值",
+                                        key,
                                     )
                                     continue
                                 self._config[key] = value
                             else:
-                                logger.warning('配置项 %s 值无效，已使用默认值', key)
+                                logger.warning("配置项 %s 值无效，已使用默认值", key)
                         else:
-                            logger.debug('忽略未知配置项：%s', key)
-                except (json.JSONDecodeError, OSError, ValueError):
-                    logger.warning('配置文件无效，已使用默认配置', exc_info=True)
+                            logger.debug("忽略未知配置项：%s", key)
+                except (json.JSONDecodeError, OSError, ValueError, TypeError):
+                    # TypeError：_is_valid 对集合成员测试（theme/sort_*）遇到不可哈希的
+                    # 数组/对象值会抛 TypeError，须一并兜底，否则损坏配置会穿透崩溃启动。
+                    logger.warning("配置文件无效，已使用默认配置", exc_info=True)
 
     def check_integrity(self) -> bool:
         """检查配置文件完整性是否通过。返回 False 表示可能被篡改。"""
@@ -362,16 +379,17 @@ class ConfigManager:
             content = json.dumps(self._config, indent=2, ensure_ascii=False)
             sig = hmac.new(
                 self._integrity_key,
-                content.encode('utf-8'),
+                content.encode("utf-8"),
                 hashlib.sha256,
             ).hexdigest()
+
             # 经 atomic_write 落地即 0600，消除「写含安全配置明文 → 关闭 → secure_file 收紧」间的世界可读窗口（SEC-2）。
             def _write_config(f: Any) -> bool:
                 f.write(content)
-                f.write(f'\n{_CONFIG_SIG_PREFIX}{sig}')
+                f.write(f"\n{_CONFIG_SIG_PREFIX}{sig}")
                 return True
 
-            atomic_write(self._config_path, _write_config, mode='w', encoding='utf-8')
+            atomic_write(self._config_path, _write_config, mode="w", encoding="utf-8")
             # 清除会话内完整性告警：避免此前篡改/缺失状态在 save 后粘滞，致 get_safe
             # 的 auto_lock 豁免被误钳或内存与磁盘不一致。
             self._integrity_warning = False
@@ -384,11 +402,11 @@ class ConfigManager:
     @overload
     def get(self, key: _BoolConfigKey, default: Any = None) -> bool: ...
     @overload
-    def get(self, key: Literal['window_geometry'], default: Any = None) -> str | None: ...
+    def get(self, key: Literal["window_geometry"], default: Any = None) -> str | None: ...
     @overload
-    def get(self, key: Literal['splitter_sizes'], default: Any = None) -> list[int] | None: ...
+    def get(self, key: Literal["splitter_sizes"], default: Any = None) -> list[int] | None: ...
     @overload
-    def get(self, key: Literal['security_sentinels'], default: Any = None) -> list[str]: ...
+    def get(self, key: Literal["security_sentinels"], default: Any = None) -> list[str]: ...
     @overload
     def get(self, key: str, default: Any = None) -> Any: ...
     def get(self, key: str, default: Any = None) -> Any:
@@ -403,11 +421,11 @@ class ConfigManager:
     @overload
     def get_safe(self, key: _BoolConfigKey, default: Any = None) -> bool: ...
     @overload
-    def get_safe(self, key: Literal['window_geometry'], default: Any = None) -> str | None: ...
+    def get_safe(self, key: Literal["window_geometry"], default: Any = None) -> str | None: ...
     @overload
-    def get_safe(self, key: Literal['splitter_sizes'], default: Any = None) -> list[int] | None: ...
+    def get_safe(self, key: Literal["splitter_sizes"], default: Any = None) -> list[int] | None: ...
     @overload
-    def get_safe(self, key: Literal['security_sentinels'], default: Any = None) -> list[str]: ...
+    def get_safe(self, key: Literal["security_sentinels"], default: Any = None) -> list[str]: ...
     @overload
     def get_safe(self, key: str, default: Any = None) -> Any: ...
     def get_safe(self, key: str, default: Any = None) -> Any:
@@ -437,20 +455,20 @@ class ConfigManager:
     @overload
     def set(self, key: _BoolConfigKey, value: bool) -> None: ...
     @overload
-    def set(self, key: Literal['window_geometry'], value: str | None) -> None: ...
+    def set(self, key: Literal["window_geometry"], value: str | None) -> None: ...
     @overload
-    def set(self, key: Literal['splitter_sizes'], value: list[int] | None) -> None: ...
+    def set(self, key: Literal["splitter_sizes"], value: list[int] | None) -> None: ...
     @overload
-    def set(self, key: Literal['security_sentinels'], value: list[str]) -> None: ...
+    def set(self, key: Literal["security_sentinels"], value: list[str]) -> None: ...
     @overload
     def set(self, key: str, value: Any) -> None: ...
     def set(self, key: str, value: Any) -> None:
         """设置配置项。"""
         with self._lock:
             if key not in DEFAULT_CONFIG:
-                raise KeyError(f'未知配置项：{key}')
+                raise KeyError(f"未知配置项：{key}")
             if not self._is_valid(key, value):
-                raise ValueError(f'配置项值无效：{key}')
+                raise ValueError(f"配置项值无效：{key}")
             self._config[key] = value
 
     def register_security_sentinel(self, name: str) -> None:
@@ -484,13 +502,18 @@ class ConfigManager:
         if key in _BOOL_KEYS:
             return type(value) is bool
         if key == CFG_THEME:
-            return value in {'light', 'dark'}
+            return isinstance(value, str) and value in {"light", "dark"}
         if key == CFG_SORT_FIELD:
-            return value in {'title', 'updated_at', 'created_at', 'password_strength'}
+            return isinstance(value, str) and value in {
+                "title",
+                "updated_at",
+                "created_at",
+                "password_strength",
+            }
         if key == CFG_SORT_ORDER:
-            return value in {'asc', 'desc'}
+            return isinstance(value, str) and value in {"asc", "desc"}
         if key in {CFG_BACKUP_DIRECTORY, CFG_LAST_AUTO_BACKUP_AT}:
-            return isinstance(value, str) and len(value) <= 4096 and '\x00' not in value
+            return isinstance(value, str) and len(value) <= 4096 and "\x00" not in value
         if key == CFG_WINDOW_GEOMETRY:
             if value is None:
                 return True
@@ -513,10 +536,7 @@ class ConfigManager:
                 isinstance(value, list)
                 and len(value) <= 64
                 and all(
-                    isinstance(item, str)
-                    and item
-                    and len(item) <= 128
-                    and '\x00' not in item
+                    isinstance(item, str) and item and len(item) <= 128 and "\x00" not in item
                     for item in value
                 )
             )

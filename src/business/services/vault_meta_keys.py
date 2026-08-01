@@ -11,22 +11,26 @@ unlock 批量读取与完整性签名覆盖的键集均由此派生，消除两�
 
 # KDF 参数键名（QL-002）：供 vault_meta_store 写入与 vault_lifecycle 读取引用，
 # 消除键名多处硬编码的漂移风险。与 KdfParams 字段顺序一致（time/memory/parallelism）。
-KDF_TIME_COST_KEY = 'master_kdf_time_cost'
-KDF_MEMORY_COST_KEY = 'master_kdf_memory_cost'
-KDF_PARALLELISM_KEY = 'master_kdf_parallelism'
+KDF_TIME_COST_KEY = "master_kdf_time_cost"
+KDF_MEMORY_COST_KEY = "master_kdf_memory_cost"
+KDF_PARALLELISM_KEY = "master_kdf_parallelism"
 KDF_PARAM_KEYS: tuple[str, ...] = (KDF_TIME_COST_KEY, KDF_MEMORY_COST_KEY, KDF_PARALLELISM_KEY)
 
 # unlock 单次批量读取的全部 vault_meta 键（顺序固定供单次查询）。新增键须在此登记，
 # 使 unlock 与签名同步覆盖。
 VAULT_META_ALL_KEYS: tuple[str, ...] = (
-    'master_salt', 'master_verify',
+    "master_salt",
+    "master_verify",
     *KDF_PARAM_KEYS,
-    'master_kdf', 'ciphertext_format', 'key_epoch',
-    'snapshot_key_enc', 'vault_meta_mac',
+    "master_kdf",
+    "ciphertext_format",
+    "key_epoch",
+    "snapshot_key_enc",
+    "vault_meta_mac",
 )
 
 # 完整性签名不覆盖的键：master_kdf 为算法名（信息性），vault_meta_mac 不能签自身。
-_META_UNSIGNED_KEYS = frozenset({'master_kdf', 'vault_meta_mac'})
+_META_UNSIGNED_KEYS = frozenset({"master_kdf", "vault_meta_mac"})
 
 # 完整性签名覆盖的安全相关键。含 snapshot_key_enc：虽加密保护但 GCM 用常量 AAD 不
 # 防重放，有 DB 写权限者可用旧密文替换；纳入签名后回滚/重放使 mac 失配被 unlock 拒绝。

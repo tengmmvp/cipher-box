@@ -40,13 +40,13 @@ class _BackupCancelled(Exception):
 def check_payload_limit(estimated_size: int) -> None:
     """估算的 payload 字节数超限时抛 PayloadTooLargeError，供采集路径复用。"""
     if estimated_size > MAX_BACKUP_PAYLOAD_SIZE:
-        raise PayloadTooLargeError('备份数据过大')
+        raise PayloadTooLargeError("备份数据过大")
 
 
 def collect_portable_data(
     key: bytes,
-    db: 'VaultDataStore',
-    entry_mgr: 'EntryManager',
+    db: "VaultDataStore",
+    entry_mgr: "EntryManager",
     cancel_check: Callable[[], bool] | None = None,
     raw_entries: list[RawEntry] | None = None,
     history_rows: list[PasswordHistory] | None = None,
@@ -59,37 +59,42 @@ def collect_portable_data(
     为 None 时回退自读 DB。返回嵌套项值类型混合，故标注 ``dict[str, Any]``（结构由 validate_restore_data 校验）。
     """
     if categories is None:
-        categories = [
-            category.to_dict()
-            for category in entry_mgr.categories.get_categories()
-        ]
+        categories = [category.to_dict() for category in entry_mgr.categories.get_categories()]
     # 基于字段原始字节长度的粗略估算，避免逐条 json.dumps 双重序列化开销
     estimated_size = sum(
-        len(c.get('name', '').encode('utf-8')) + CATEGORY_OVERHEAD_BYTES
-        for c in categories
+        len(c.get("name", "").encode("utf-8")) + CATEGORY_OVERHEAD_BYTES for c in categories
     )
     try:
         entries, entry_count, estimated_size = collect_portable_entries(
-            key, db, cancel_check, estimated_size, raw_entries,
+            key,
+            db,
+            cancel_check,
+            estimated_size,
+            raw_entries,
         )
         history = collect_portable_history(
-            key, db, cancel_check, entry_count, estimated_size, history_rows,
+            key,
+            db,
+            cancel_check,
+            entry_count,
+            estimated_size,
+            history_rows,
         )
     except _BackupCancelled:
         return None
     return {
-        'format': BACKUP_FORMAT,
-        'version': BACKUP_VERSION,
-        'created_at': utc_now_iso(),
-        'categories': categories,
-        'entries': entries,
-        'password_history': history,
+        "format": BACKUP_FORMAT,
+        "version": BACKUP_VERSION,
+        "created_at": utc_now_iso(),
+        "categories": categories,
+        "entries": entries,
+        "password_history": history,
     }
 
 
 def collect_portable_entries(
     key: bytes,
-    db: 'VaultDataStore',
+    db: "VaultDataStore",
     cancel_check: Callable[[], bool] | None,
     estimated_size: int,
     raw_entries: list[RawEntry] | None = None,
@@ -102,7 +107,7 @@ def collect_portable_entries(
     if raw_entries is None:
         raw_entries = db.get_entries(EntryQuery(include_deleted=True))
     if len(raw_entries) > MAX_BACKUP_ENTRIES:
-        raise PayloadTooLargeError('备份条目数量超出限制')
+        raise PayloadTooLargeError("备份条目数量超出限制")
     entries: list[dict[str, Any]] = []
     for raw in raw_entries:
         if cancel_check and cancel_check():
@@ -111,20 +116,18 @@ def collect_portable_entries(
             portable_item = decrypt_entry_to_portable_dict(raw, key, include_secrets=True)
         except (DecryptionError, json.JSONDecodeError) as exc:
             # 解密失败（完整性/解密/JSON 损坏）转 BackupError 中止，备份不容忍残缺条目。
-            raise BackupError(
-                f'条目 {raw.id} 完整性校验或解密失败，备份已中止'
-            ) from exc
+            raise BackupError(f"条目 {raw.id} 完整性校验或解密失败，备份已中止") from exc
         # 以密文长度（≥ 明文）作上界估算，覆盖全部入 payload 字段，避免大字段
         # 粗估漏判至序列化才产生内存峰值。
         estimated_size += (
-            len(raw.title.encode('utf-8'))
-            + len((raw.username or '').encode('utf-8'))
-            + len((raw.password or '').encode('utf-8'))
-            + len((raw.url or '').encode('utf-8'))
-            + len((raw.tags or '').encode('utf-8'))
-            + len((raw.notes or '').encode('utf-8'))
-            + len(raw.custom_fields_db_value.encode('utf-8'))
-            + len((raw.totp_secret or '').encode('utf-8'))
+            len(raw.title.encode("utf-8"))
+            + len((raw.username or "").encode("utf-8"))
+            + len((raw.password or "").encode("utf-8"))
+            + len((raw.url or "").encode("utf-8"))
+            + len((raw.tags or "").encode("utf-8"))
+            + len((raw.notes or "").encode("utf-8"))
+            + len(raw.custom_fields_db_value.encode("utf-8"))
+            + len((raw.totp_secret or "").encode("utf-8"))
             + ENTRY_OVERHEAD_BYTES
         )
         check_payload_limit(estimated_size)
@@ -134,7 +137,7 @@ def collect_portable_entries(
 
 def collect_portable_history(
     key: bytes,
-    db: 'VaultDataStore',
+    db: "VaultDataStore",
     cancel_check: Callable[[], bool] | None,
     entry_count: int,
     estimated_size: int,
@@ -148,28 +151,33 @@ def collect_portable_history(
     if history_rows is None:
         history_rows = db.get_all_password_history()
     if len(history_rows) > entry_count * MAX_HISTORY_PER_ENTRY:
-        raise PayloadTooLargeError('密码历史数量超出限制')
+        raise PayloadTooLargeError("密码历史数量超出限制")
     history: list[dict[str, Any]] = []
     for history_row in history_rows:
         if cancel_check and cancel_check():
             raise _BackupCancelled
         try:
             pwd = decrypt_field(
-                history_row.old_password_enc, key,
-                history_row.entry_crypto_id, 'password', strict=True,
+                history_row.old_password_enc,
+                key,
+                history_row.entry_crypto_id,
+                "password",
+                strict=True,
             )
         except DecryptionError:
             raise BackupError(
-                f'条目 {history_row.entry_id} 的密码历史解密失败，备份已中止'
+                f"条目 {history_row.entry_id} 的密码历史解密失败，备份已中止"
             ) from None
-        history.append({
-            'entry_id': history_row.entry_id,
-            'password': pwd,
-            'changed_at': history_row.changed_at,
-        })
+        history.append(
+            {
+                "entry_id": history_row.entry_id,
+                "password": pwd,
+                "changed_at": history_row.changed_at,
+            }
+        )
         estimated_size += (
-            len(history_row.changed_at.encode('utf-8'))
-            + len((history_row.old_password_enc or '').encode('utf-8'))
+            len(history_row.changed_at.encode("utf-8"))
+            + len((history_row.old_password_enc or "").encode("utf-8"))
             + HISTORY_OVERHEAD_BYTES
         )
         check_payload_limit(estimated_size)

@@ -25,7 +25,7 @@ class TestKeyManagerZeroing:
 
     def test_update_key_zeroes_old_internal_copy(self, monkeypatch):
         km = KeyManager()
-        km.activate(bytearray(b'x' * 32), bytearray(b'y' * 32), epoch=1)
+        km.activate(bytearray(b"x" * 32), bytearray(b"y" * 32), epoch=1)
 
         zeroed: list[bytearray] = []
         original = key_manager_module.secure_zero_buffer
@@ -34,16 +34,16 @@ class TestKeyManagerZeroing:
             zeroed.append(bytearray(data))  # 清零前快照
             original(data)
 
-        monkeypatch.setattr(key_manager_module, 'secure_zero_buffer', spy)
-        km.update_key(bytearray(b'z' * 32))
+        monkeypatch.setattr(key_manager_module, "secure_zero_buffer", spy)
+        km.update_key(bytearray(b"z" * 32))
 
         # 仅旧主密钥内部副本被清零（snapshot 未变，不应被清零）
         assert len(zeroed) == 1
-        assert bytes(zeroed[0]) == b'x' * 32
+        assert bytes(zeroed[0]) == b"x" * 32
 
     def test_update_snapshot_key_zeroes_old_internal_copy(self, monkeypatch):
         km = KeyManager()
-        km.activate(bytearray(b'k' * 32), bytearray(b's' * 32), epoch=1)
+        km.activate(bytearray(b"k" * 32), bytearray(b"s" * 32), epoch=1)
 
         zeroed: list[bytearray] = []
         original = key_manager_module.secure_zero_buffer
@@ -52,24 +52,24 @@ class TestKeyManagerZeroing:
             zeroed.append(bytearray(data))
             original(data)
 
-        monkeypatch.setattr(key_manager_module, 'secure_zero_buffer', spy)
-        km.update_snapshot_key(bytearray(b'n' * 32))
+        monkeypatch.setattr(key_manager_module, "secure_zero_buffer", spy)
+        km.update_snapshot_key(bytearray(b"n" * 32))
 
         assert len(zeroed) == 1
-        assert bytes(zeroed[0]) == b's' * 32
+        assert bytes(zeroed[0]) == b"s" * 32
 
     def test_update_does_not_zero_caller_object(self):
         """总复制：update 清零 KeyManager 内部副本，调用方传入对象不受影响。"""
         km = KeyManager()
-        key = bytearray(b'k' * 32)
-        km.activate(key, bytearray(b's' * 32), epoch=1)
-        km.update_key(bytearray(b'new' * 10 + b'nn'))
-        assert bytes(key) == b'k' * 32
+        key = bytearray(b"k" * 32)
+        km.activate(key, bytearray(b"s" * 32), epoch=1)
+        km.update_key(bytearray(b"new" * 10 + b"nn"))
+        assert bytes(key) == b"k" * 32
 
     def test_activate_zeroes_previous_internal_keys(self, monkeypatch):
         """再次 activate（如恢复后重新激活）也清零上一组密钥的内部副本。"""
         km = KeyManager()
-        km.activate(bytearray(b'a' * 32), bytearray(b'b' * 32), epoch=1)
+        km.activate(bytearray(b"a" * 32), bytearray(b"b" * 32), epoch=1)
 
         zeroed: list[bytearray] = []
         original = key_manager_module.secure_zero_buffer
@@ -78,25 +78,30 @@ class TestKeyManagerZeroing:
             zeroed.append(bytearray(data))
             original(data)
 
-        monkeypatch.setattr(key_manager_module, 'secure_zero_buffer', spy)
-        km.activate(bytearray(b'c' * 32), bytearray(b'd' * 32), epoch=2)
+        monkeypatch.setattr(key_manager_module, "secure_zero_buffer", spy)
+        km.activate(bytearray(b"c" * 32), bytearray(b"d" * 32), epoch=2)
 
         # 旧主密钥 + 旧 snapshot 内部副本均被清零
         assert len(zeroed) == 2
         contents = {bytes(buf) for buf in zeroed}
-        assert b'a' * 32 in contents
-        assert b'b' * 32 in contents
+        assert b"a" * 32 in contents
+        assert b"b" * 32 in contents
 
 
 def test_get_entries_verify_modes(vault, entry_mgr):
     """verify=SKIP 跳过完整性验签（integrity_error 保持 False），
     LENIENT 调用 verifier 并在失败时标记 integrity_error。"""
-    entry_mgr.add_entry(Entry(
-        title='验证条目', username='u', password='p', entry_type='login',
-    ))
+    entry_mgr.add_entry(
+        Entry(
+            title="验证条目",
+            username="u",
+            password="p",
+            entry_type="login",
+        )
+    )
 
     def bad_verifier(_entry: RawEntry):
-        raise VaultIntegrityError('签名不匹配')
+        raise VaultIntegrityError("签名不匹配")
 
     original_verifier = vault.db._entry_verifier
     vault.db._entry_verifier = bad_verifier
@@ -139,13 +144,13 @@ class TestGetCachedCounts:
         assert self._analyzer(None).get_cached_counts() is None
 
     def test_returns_none_when_expired(self):
-        analyzer = self._analyzer({'total': 1}, ttl=0, age=1.0)
+        analyzer = self._analyzer({"total": 1}, ttl=0, age=1.0)
         assert analyzer.get_cached_counts() is None
 
     def test_returns_counts_matching_cache_days(self):
         from src.business.services.security_analyzer import SecurityCounts
 
-        cache = {'total': 10, 'weak_count': 3, 'duplicate_count': 2, 'old': 1}
+        cache = {"total": 10, "weak_count": 3, "duplicate_count": 2, "old": 1}
         counts = self._analyzer(cache, days=90).get_cached_counts(90)
         assert counts == SecurityCounts(10, 3, 2, 1)
 
@@ -155,12 +160,19 @@ class TestGetCachedCounts:
 
         now = datetime.now(timezone.utc)
         cache = {
-            'total': 5, 'weak_count': 0, 'duplicate_count': 0, 'old': 0,
-            '_summaries_with_dates': [
-                (Entry(title='old', username='u', password='p', entry_type='login'),
-                 now - timedelta(days=200)),
-                (Entry(title='recent', username='u', password='p', entry_type='login'),
-                 now - timedelta(days=10)),
+            "total": 5,
+            "weak_count": 0,
+            "duplicate_count": 0,
+            "old": 0,
+            "_summaries_with_dates": [
+                (
+                    Entry(title="old", username="u", password="p", entry_type="login"),
+                    now - timedelta(days=200),
+                ),
+                (
+                    Entry(title="recent", username="u", password="p", entry_type="login"),
+                    now - timedelta(days=10),
+                ),
             ],
         }
         analyzer = self._analyzer(cache, days=90)

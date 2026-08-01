@@ -39,6 +39,7 @@ class SearchMetadata(NamedTuple):
     前 4 项为明文原形（列表展示），后 4 项为小写形式（供 matches_search 跳过每条目
     4 字段实时 .lower()）。两者一同解密一次并缓存，消费方按字段名访问取代位置切片。
     """
+
     title: str
     username: str
     url: str
@@ -56,7 +57,7 @@ class EntryCacheManager:
     统一 ``_cache_lock`` 保护。
     """
 
-    def __init__(self, vault: 'VaultManager'):
+    def __init__(self, vault: "VaultManager"):
         self._vault = vault
         # 搜索摘要 LRU 缓存（字段结构见 SearchMetadata）：容量对齐 MAX_ENTRIES_LIMIT，
         # 防止大库明文摘要无界增长。
@@ -133,7 +134,8 @@ class EntryCacheManager:
                 self._category_name_cache.clear()
 
     def cached_search_metadata(
-        self, raw_entry: RawEntry,
+        self,
+        raw_entry: RawEntry,
     ) -> tuple[str, str, str, str]:
         """解密并缓存列表/搜索所需的 title、username、url、tags（单条路径）。
 
@@ -150,7 +152,8 @@ class EntryCacheManager:
         return (meta.title, meta.username, meta.url, meta.tags)
 
     def _cached_search_metadata_no_check(
-        self, raw_entry: RawEntry,
+        self,
+        raw_entry: RawEntry,
     ) -> SearchMetadata:
         """cached_search_metadata 的无 epoch 校验版本，供批量循环复用。
 
@@ -171,25 +174,34 @@ class EntryCacheManager:
         values: list[str] = []
         failed: set[str] = set()
         for field_name, encrypted in (
-            ('title', raw_entry.title),
-            ('username', raw_entry.username),
-            ('url', raw_entry.url),
-            ('tags', raw_entry.tags),
+            ("title", raw_entry.title),
+            ("username", raw_entry.username),
+            ("url", raw_entry.url),
+            ("tags", raw_entry.tags),
         ):
             try:
                 value = _decrypt_field_impl(
-                    encrypted, self._key, cid, field_name, strict=True,
+                    encrypted,
+                    self._key,
+                    cid,
+                    field_name,
+                    strict=True,
                 )
             except DecryptionError:
-                value = ''
+                value = ""
                 failed.add(field_name)
             values.append(value)
         # 小写形式与原形一同缓存：一次 .lower()（远廉价于 AES-GCM 解密）换取
         # matches_search 每次搜索跳过 4 字段实时 .lower() 的 N 倍开销。
         result = SearchMetadata(
-            values[0], values[1], values[2], values[3],
-            values[0].lower(), values[1].lower(),
-            values[2].lower(), values[3].lower(),
+            values[0],
+            values[1],
+            values[2],
+            values[3],
+            values[0].lower(),
+            values[1].lower(),
+            values[2].lower(),
+            values[3].lower(),
         )
         with self._cache_lock:
             if self._cache_epoch == entry_epoch:
@@ -202,7 +214,8 @@ class EntryCacheManager:
         return result
 
     def search_metadata_for_analysis(
-        self, raw_entry: RawEntry,
+        self,
+        raw_entry: RawEntry,
     ) -> tuple[str, str, str, str]:
         """供批量分析路径复用的摘要解密（公开入口，无逐条 epoch 校验）。
 
@@ -217,7 +230,8 @@ class EntryCacheManager:
         return (meta.title, meta.username, meta.url, meta.tags)
 
     def search_lower_no_check(
-        self, raw_entry: RawEntry,
+        self,
+        raw_entry: RawEntry,
     ) -> tuple[str, str, str, str]:
         """返回摘要字段的小写形式 (title, username, url, tags)，供搜索匹配复用。
 
@@ -236,7 +250,7 @@ class EntryCacheManager:
     def decrypt_category_name(self, category_id: int | None, value: str) -> str:
         """解密分类名并缓存（首次解密后缓存）。"""
         if category_id is None or not value:
-            return ''
+            return ""
         with self._cache_lock:
             cached = self._category_name_cache.get(category_id)
         if cached is not None:
@@ -245,7 +259,7 @@ class EntryCacheManager:
             value,
             self._key,
             category_crypto_id(category_id),
-            'category_name',
+            "category_name",
             strict=True,
         )
         with self._cache_lock:
@@ -253,7 +267,10 @@ class EntryCacheManager:
         return name
 
     def resolve_totp_secret(
-        self, entry_id: int, *, use_cache: bool = False,
+        self,
+        entry_id: int,
+        *,
+        use_cache: bool = False,
     ) -> str | None:
         """解析条目的 totp_secret 明文，单一解密路径供 TOTP 方法复用。
 
@@ -277,7 +294,10 @@ class EntryCacheManager:
                 if raw is None or not raw.totp_secret:
                     return None
                 secret = _decrypt_field_impl(
-                    raw.totp_secret, self._key, raw.crypto_id, 'totp_secret',
+                    raw.totp_secret,
+                    self._key,
+                    raw.crypto_id,
+                    "totp_secret",
                 )
         except VaultKeyEpochMismatchError:
             return None
@@ -318,11 +338,14 @@ class EntryCacheManager:
             return cached.tags
         try:
             return _decrypt_field_impl(
-                raw_entry.tags, key if key is not None else self._key,
-                raw_entry.crypto_id, 'tags', strict=True,
+                raw_entry.tags,
+                key if key is not None else self._key,
+                raw_entry.crypto_id,
+                "tags",
+                strict=True,
             )
         except DecryptionError:
-            return ''
+            return ""
 
     def get_all_tags(self) -> list[tuple[str, int]]:
         """获取所有标签及其使用频率，结果在会话内缓存。
@@ -353,7 +376,7 @@ class EntryCacheManager:
                     EntryQuery(include_deleted=False, verify=VerifyMode.SKIP)
                 ):
                     tags_str = self._decrypt_tags(raw, vault_key)
-                    for tag in (t.strip() for t in tags_str.split(',') if t.strip()):
+                    for tag in (t.strip() for t in tags_str.split(",") if t.strip()):
                         tag_count[tag] = tag_count.get(tag, 0) + 1
         except VaultKeyEpochMismatchError:
             # epoch 不一致：返回已聚合部分，不回填缓存（observed_epoch != 当前
@@ -380,7 +403,4 @@ class EntryCacheManager:
         省去无谓的后台线程创建；缓存失效时才需异步全量解密。
         """
         with self._cache_lock:
-            return (
-                self._tags_cache is not None
-                and self._cache_epoch == self._vault.key_epoch
-            )
+            return self._tags_cache is not None and self._cache_epoch == self._vault.key_epoch

@@ -15,28 +15,34 @@ import src.crypto.totp as totp_module
 from src.crypto.totp import TOTPGenerator
 
 # RFC 6238 Appendix B 测试种子（ASCII 字节的 base32 编码）
-_SHA1_SEED = base64.b32encode(b'12345678901234567890').decode()
-_SHA256_SEED = base64.b32encode(b'12345678901234567890123456789012').decode()
+_SHA1_SEED = base64.b32encode(b"12345678901234567890").decode()
+_SHA256_SEED = base64.b32encode(b"12345678901234567890123456789012").decode()
 _SHA512_SEED = base64.b32encode(
-    b'1234567890123456789012345678901234567890123456789012345678901234'
+    b"1234567890123456789012345678901234567890123456789012345678901234"
 ).decode()
 
 
 @pytest.fixture
 def patched_time(monkeypatch):
     """返回一个设置 time.time() 的闭包，控制 TOTP 计数器。"""
+
     def _set(t: int) -> None:
-        monkeypatch.setattr(totp_module.time, 'time', lambda: t)
+        monkeypatch.setattr(totp_module.time, "time", lambda: t)
+
     return _set
 
 
 # ======== RFC 6238 已知答案向量 ========
 
-@pytest.mark.parametrize('algorithm,prefix,seed,expected_t59', [
-    ('SHA1', '', _SHA1_SEED, '94287082'),
-    ('SHA256', 'SHA256:', _SHA256_SEED, '46119246'),
-    ('SHA512', 'SHA512:', _SHA512_SEED, '90693936'),
-])
+
+@pytest.mark.parametrize(
+    "algorithm,prefix,seed,expected_t59",
+    [
+        ("SHA1", "", _SHA1_SEED, "94287082"),
+        ("SHA256", "SHA256:", _SHA256_SEED, "46119246"),
+        ("SHA512", "SHA512:", _SHA512_SEED, "90693936"),
+    ],
+)
 def test_rfc6238_t59_vector(patched_time, algorithm, prefix, seed, expected_t59):
     """T=59（counter=1）的 RFC 6238 三种算法已知答案，digits=8。
 
@@ -54,10 +60,11 @@ def test_rfc6238_sha1_t1111111109_vector(patched_time):
     """第二个 RFC 6238 向量：T=1111111109 时 SHA1 = 07081804（digits=8）。"""
     patched_time(1111111109)
     code = TOTPGenerator.generate(_SHA1_SEED, period=30, digits=8)
-    assert code == '07081804'
+    assert code == "07081804"
 
 
 # ======== 计数器边界 ========
+
 
 def test_counter_boundary_t30_and_t29_differ(patched_time):
     """T=30→counter 1、T=29→counter 0，相邻时间步的验证码必须不同。
@@ -82,6 +89,7 @@ def test_counter_boundary_t30_and_t59_share_counter(patched_time):
 
 # ======== generate_or_raise ========
 
+
 def test_generate_or_raise_returns_code_for_valid_secret(patched_time):
     """合法 secret 经 generate_or_raise 返回 6 位验证码。"""
     patched_time(1234567890)
@@ -96,18 +104,18 @@ def test_generate_or_raise_raises_for_invalid_secret():
     与 ``generate`` 的静默返回 '' 区分：用户交互场景（如保存前校验）需显式错误传播。
     """
     with pytest.raises(ValueError):
-        TOTPGenerator.generate_or_raise('!!!不是合法base32!!!')
+        TOTPGenerator.generate_or_raise("!!!不是合法base32!!!")
 
 
 def test_generate_or_raise_raises_for_empty_secret():
     """空 secret 抛 ValueError。"""
     with pytest.raises(ValueError):
-        TOTPGenerator.generate_or_raise('')
+        TOTPGenerator.generate_or_raise("")
 
 
 def test_generate_silently_returns_empty_for_invalid_secret(patched_time):
     """对比：``generate`` 对非法 secret 静默返回 ''（不抛）。"""
-    assert TOTPGenerator.generate('!!!invalid!!!') == ''
+    assert TOTPGenerator.generate("!!!invalid!!!") == ""
 
 
 def test_generate_sha256_prefix_overrides_algorithm_param(patched_time):
@@ -117,5 +125,5 @@ def test_generate_sha256_prefix_overrides_algorithm_param(patched_time):
     带 SHA256 前缀的 secret 仍按 SHA256 计算。
     """
     patched_time(59)
-    code = TOTPGenerator.generate('SHA256:' + _SHA256_SEED, algorithm='SHA1', digits=8)
-    assert code == '46119246'
+    code = TOTPGenerator.generate("SHA256:" + _SHA256_SEED, algorithm="SHA1", digits=8)
+    assert code == "46119246"

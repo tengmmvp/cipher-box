@@ -11,9 +11,9 @@ from src.models import ENTRY_TYPE_LOGIN, ENTRY_TYPES, Entry
 
 def _base_dict(**overrides):
     d = dict(
-        title='Test',
-        username='user',
-        password='pass',
+        title="Test",
+        username="user",
+        password="pass",
     )
     d.update(overrides)
     return d
@@ -35,17 +35,17 @@ def test_default_entry_type_is_login():
 
 def test_invalid_entry_type_raises():
     """非法 entry_type 应抛出 ValueError。"""
-    with pytest.raises(ValueError, match='无效的条目类型'):
-        Entry.from_dict(_base_dict(entry_type='invalid_type'))
+    with pytest.raises(ValueError, match="无效的条目类型"):
+        Entry.from_dict(_base_dict(entry_type="invalid_type"))
 
 
 def test_empty_entry_type_raises():
     """空字符串 entry_type 应抛出 ValueError。"""
     with pytest.raises(ValueError):
-        Entry.from_dict(_base_dict(entry_type=''))
+        Entry.from_dict(_base_dict(entry_type=""))
 
 
 def test_numeric_entry_type_raises():
     """数字 entry_type 应抛出 ValueError，字符串 '123' 不是合法类型。"""
     with pytest.raises(ValueError):
-        Entry.from_dict(_base_dict(entry_type='123'))
+        Entry.from_dict(_base_dict(entry_type="123"))

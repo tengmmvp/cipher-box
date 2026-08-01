@@ -61,7 +61,7 @@ class ChangeMasterDialog(WorkerBackedDialog):
         self._vault = vault_manager
         self._config = config
         # 直接索引 data_dir：缺失时即时暴露，而非 getattr 静默退化为仅内存限流。
-        state_path = self._vault.data_dir / 'change_master_rate_limit.json'
+        state_path = self._vault.data_dir / "change_master_rate_limit.json"
         # 传入 config：使 RateLimiter 把哨兵登记到签名 config，关闭「同时删除
         # 状态文件+哨兵即归零计数」的绕过。config=None 时退回仅文件配对检测。
         self._rate_limiter = RateLimiter(state_path, config)
@@ -84,7 +84,7 @@ class ChangeMasterDialog(WorkerBackedDialog):
         self._clear_password_inputs()
 
     def _setup_ui(self) -> None:
-        self.setWindowTitle('修改主密码')
+        self.setWindowTitle("修改主密码")
         self.setMinimumSize(*DIALOG_CHANGE_MASTER_MIN_SIZE)
         setup_dialog_flags(self)
 
@@ -93,67 +93,70 @@ class ChangeMasterDialog(WorkerBackedDialog):
         layout.setContentsMargins(36, 30, 36, 30)
 
         # 标题
-        title = QLabel('修改主密码')
-        title.setStyleSheet('font-size: 16px; font-weight: bold;')
+        title = QLabel("修改主密码")
+        title.setStyleSheet("font-size: 16px; font-weight: bold;")
         layout.addWidget(title)
 
-        info = QLabel('修改主密码后，所有数据将使用新密码重新加密。\n请确保牢记新密码。')
-        info.setObjectName('formMuted')
+        info = QLabel("修改主密码后，所有数据将使用新密码重新加密。\n请确保牢记新密码。")
+        info.setObjectName("formMuted")
         info.setWordWrap(True)
         layout.addWidget(info)
 
         # 旧密码
-        layout.addWidget(QLabel('当前主密码：'))
+        layout.addWidget(QLabel("当前主密码："))
         old_pwd_layout = QHBoxLayout()
         self._old_pwd = QLineEdit()
         self._old_pwd.setEchoMode(QLineEdit.EchoMode.Password)
-        self._old_pwd.setPlaceholderText('请输入当前主密码')
+        self._old_pwd.setPlaceholderText("请输入当前主密码")
         old_pwd_layout.addWidget(self._old_pwd)
         self._old_toggle = create_password_toggle_btn(
-            self._old_pwd, auto_hide_seconds=PWD_TOGGLE_AUTO_HIDE_SECONDS,
+            self._old_pwd,
+            auto_hide_seconds=PWD_TOGGLE_AUTO_HIDE_SECONDS,
         )
         old_pwd_layout.addWidget(self._old_toggle)
         layout.addLayout(old_pwd_layout)
 
         # 新密码
-        layout.addWidget(QLabel('新主密码：'))
+        layout.addWidget(QLabel("新主密码："))
         new_pwd_layout = QHBoxLayout()
         self._new_pwd = QLineEdit()
         self._new_pwd.setEchoMode(QLineEdit.EchoMode.Password)
-        self._new_pwd.setPlaceholderText('请输入新主密码（至少 15 位）')
+        self._new_pwd.setPlaceholderText("请输入新主密码（至少 15 位）")
         self._new_pwd.textChanged.connect(self._on_pwd_changed)
         new_pwd_layout.addWidget(self._new_pwd)
         self._new_toggle = create_password_toggle_btn(
-            self._new_pwd, auto_hide_seconds=PWD_TOGGLE_AUTO_HIDE_SECONDS,
+            self._new_pwd,
+            auto_hide_seconds=PWD_TOGGLE_AUTO_HIDE_SECONDS,
         )
         new_pwd_layout.addWidget(self._new_toggle)
         layout.addLayout(new_pwd_layout)
 
         # 确认新密码
-        layout.addWidget(QLabel('确认新密码：'))
+        layout.addWidget(QLabel("确认新密码："))
         confirm_pwd_layout = QHBoxLayout()
         self._confirm_pwd = QLineEdit()
         self._confirm_pwd.setEchoMode(QLineEdit.EchoMode.Password)
-        self._confirm_pwd.setPlaceholderText('请再次输入新主密码')
+        self._confirm_pwd.setPlaceholderText("请再次输入新主密码")
         self._confirm_pwd.returnPressed.connect(self._on_change)
         confirm_pwd_layout.addWidget(self._confirm_pwd)
         self._confirm_toggle = create_password_toggle_btn(
-            self._confirm_pwd, auto_hide_seconds=PWD_TOGGLE_AUTO_HIDE_SECONDS,
+            self._confirm_pwd,
+            auto_hide_seconds=PWD_TOGGLE_AUTO_HIDE_SECONDS,
         )
         confirm_pwd_layout.addWidget(self._confirm_toggle)
         layout.addLayout(confirm_pwd_layout)
 
         # 强度
-        self._strength_label = QLabel('')
+        self._strength_label = QLabel("")
         self._strength_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._strength_label.setStyleSheet('font-size: 12px;')
+        self._strength_label.setStyleSheet("font-size: 12px;")
         layout.addWidget(self._strength_label)
 
         # 提示
-        self._msg_label = QLabel('')
+        self._msg_label = QLabel("")
         self._msg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._msg_label.setObjectName('formMessage')
-        set_label_severity(self._msg_label, 'error')
+        self._msg_label.setObjectName("formMessage")
+        set_label_severity(self._msg_label, "error")
         layout.addWidget(self._msg_label)
 
         # 按钮
@@ -162,8 +165,8 @@ class ChangeMasterDialog(WorkerBackedDialog):
 
         btn_layout.addWidget(create_cancel_button(self))
 
-        self._change_btn = QPushButton('修改')
-        self._change_btn.setObjectName('primaryBtn')
+        self._change_btn = QPushButton("修改")
+        self._change_btn.setObjectName("primaryBtn")
         self._change_btn.setFixedSize(*BTN_DIALOG)
         self._change_btn.clicked.connect(self._on_change)
         btn_layout.addWidget(self._change_btn)
@@ -188,10 +191,10 @@ class ChangeMasterDialog(WorkerBackedDialog):
         confirm = self._confirm_pwd.text()
 
         if not old:
-            self._msg_label.setText('请输入当前主密码')
+            self._msg_label.setText("请输入当前主密码")
             return
         if not new:
-            self._msg_label.setText('请输入新主密码')
+            self._msg_label.setText("请输入新主密码")
             return
         valid, error = PasswordService.validate_master_password(new)
         if not valid:
@@ -200,16 +203,17 @@ class ChangeMasterDialog(WorkerBackedDialog):
         # 常量时间比较，避免短路 == 的时序侧信道泄露公共前缀长度。
         # encode('utf-8') 必须：主密码可含非 ASCII 字符，而 compare_digest 对 str
         # 仅接受 ASCII。与 vault_manager._change_master_password_locked 保持一致。
-        if not hmac.compare_digest(new.encode('utf-8'), confirm.encode('utf-8')):
-            self._msg_label.setText('两次输入的新密码不一致')
+        if not hmac.compare_digest(new.encode("utf-8"), confirm.encode("utf-8")):
+            self._msg_label.setText("两次输入的新密码不一致")
             return
-        if hmac.compare_digest(old.encode('utf-8'), new.encode('utf-8')):
-            self._msg_label.setText('新密码不能与旧密码相同')
+        if hmac.compare_digest(old.encode("utf-8"), new.encode("utf-8")):
+            self._msg_label.setText("新密码不能与旧密码相同")
             return
 
         reply = QMessageBox.warning(
-            self, '确认修改',
-            '修改主密码将重新加密所有数据。\n此过程可能需要几秒钟。\n\n确定要继续吗？',
+            self,
+            "确认修改",
+            "修改主密码将重新加密所有数据。\n此过程可能需要几秒钟。\n\n确定要继续吗？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -217,8 +221,8 @@ class ChangeMasterDialog(WorkerBackedDialog):
 
         # 全量重新加密耗时较高，置于后台线程执行避免冻结 UI
         self._change_btn.setEnabled(False)
-        set_label_severity(self._msg_label, 'accent')
-        self._msg_label.setText('正在重新加密所有数据...')
+        set_label_severity(self._msg_label, "accent")
+        self._msg_label.setText("正在重新加密所有数据...")
 
         self._worker = BackgroundWorker(
             lambda: self._vault.change_master_password(old, new),
@@ -232,16 +236,16 @@ class ChangeMasterDialog(WorkerBackedDialog):
         if not finalize_worker_if_current(self):
             return
         self._change_btn.setEnabled(True)
-        set_label_severity(self._msg_label, 'error')
+        set_label_severity(self._msg_label, "error")
         success, error_msg = result
         # 无论成功与否都清除全部密码输入，缩短明文在控件中的驻留时间
         self._clear_password_inputs()
         if success:
             self._rate_limiter.record_success()
-            message = '主密码已修改成功！'
+            message = "主密码已修改成功！"
             # 改密成功但 purge 失败时，error_msg 携带 warning，附加提示用户手动清理
             if error_msg:
-                message += f'\n\n{error_msg}'
+                message += f"\n\n{error_msg}"
             QMessageBox.information(self, DLG_TITLE_SUCCESS, message)
             self.accept()
         else:
@@ -253,7 +257,7 @@ class ChangeMasterDialog(WorkerBackedDialog):
                 lock_seconds = 0
             if lock_seconds > 0:
                 self._msg_label.setText(
-                    f'{display_msg}。尝试次数过多，请等待 {lock_seconds} 秒后重试'
+                    f"{display_msg}。尝试次数过多，请等待 {lock_seconds} 秒后重试"
                 )
             else:
                 self._msg_label.setText(display_msg)
@@ -262,8 +266,8 @@ class ChangeMasterDialog(WorkerBackedDialog):
         if not finalize_worker_if_current(self):
             return
         self._change_btn.setEnabled(True)
-        set_label_severity(self._msg_label, 'error')
-        self._msg_label.setText('')
+        set_label_severity(self._msg_label, "error")
+        self._msg_label.setText("")
         self._clear_password_inputs()
         # error 信号已脱离异常上下文，exc_info 无堆栈；记录消息文本即可
         logger.error("主密码修改失败: %s", error_msg)

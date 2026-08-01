@@ -9,8 +9,9 @@ CipherBox 尚未发布正式版本（`__version__ = "0.1.0.dev0"` 为开发阶�
 经多轮五维度审查（架构/代码质量/性能/可维护性/安全）沉淀的基线变更。
 
 ### 重构
-- **主窗口拆分**：MainWindow 实现拆为四个职责文件（`main_window` / `_menu` /
-  `_entries` / `_filters`）+ 一个共享 mixin base，控制单文件规模。
+- **主窗口拆分**：MainWindow 收窄为中心编排器，菜单/条目 CRUD/筛选刷新等职责
+  拆至 `controllers/` 普通类（`menu_controller` / `entry_actions_controller` /
+  `list_refresh_controller` 等），经冻结 dataclass 回调协作，控制单文件规模。
 - **生命周期拆分**：VaultManager 的 initialize/unlock/lock/change_master_password/close
   拆至 `VaultLifecycleOrchestrator`，VaultManager 收窄为密钥/db/写守卫核心。
 - **SRP 拆分**：EntryManager 拆出 CategoryManager / TotpService /

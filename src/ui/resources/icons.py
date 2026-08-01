@@ -27,66 +27,66 @@ _ICON_CACHE_MAX = 200
 # ============================================================
 # 预设尺寸
 # ============================================================
-SIZE_BTN = 16       # 标准按钮图标
-SIZE_EMPTY = 48     # 空状态大图标
-SIZE_TOAST = 18     # Toast 通知图标
+SIZE_BTN = 16  # 标准按钮图标
+SIZE_EMPTY = 48  # 空状态大图标
+SIZE_TOAST = 18  # Toast 通知图标
 
 # ============================================================
 # 图标名常量
 # ============================================================
 
 # --- 密码显示/隐藏 ---
-EYE = 'eye'
-LOCK = 'lock'
+EYE = "eye"
+LOCK = "lock"
 
 # --- 操作 ---
-COPY = 'copy'
-CHECK = 'check'
-EDIT = 'edit'
-DELETE = 'delete'
-PLUS = 'plus'
-CLOSE = 'close'
-REFRESH = 'refresh'
-GENERATE = 'generate'
+COPY = "copy"
+CHECK = "check"
+EDIT = "edit"
+DELETE = "delete"
+PLUS = "plus"
+CLOSE = "close"
+REFRESH = "refresh"
+GENERATE = "generate"
 
 # --- 收藏 ---
-STAR = 'star'
-STAR_OUTLINE = 'star_outline'
+STAR = "star"
+STAR_OUTLINE = "star_outline"
 
 # --- 状态 ---
-SUCCESS = 'success'
-ERROR = 'error'
-WARNING = 'warning'
-INFO = 'info'
+SUCCESS = "success"
+ERROR = "error"
+WARNING = "warning"
+INFO = "info"
 
 # --- 导航/分类 ---
-SEARCH = 'search'
-FOLDER = 'folder'
-KEY = 'key'
-SHIELD = 'shield'
-LOCK_SOLID = 'lock_solid'
-SETTINGS = 'settings'
+SEARCH = "search"
+FOLDER = "folder"
+KEY = "key"
+SHIELD = "shield"
+LOCK_SOLID = "lock_solid"
+SETTINGS = "settings"
 
 # --- 侧边栏筛选项 ---
-FILTER_ALL = 'filter_all'
-FILTER_FAVORITE = 'filter_favorite'
-FILTER_WEAK = 'filter_weak'
-FILTER_DUPLICATE = 'filter_duplicate'
-FILTER_RECENT = 'filter_recent'
-FILTER_TRASH = 'filter_trash'
+FILTER_ALL = "filter_all"
+FILTER_FAVORITE = "filter_favorite"
+FILTER_WEAK = "filter_weak"
+FILTER_DUPLICATE = "filter_duplicate"
+FILTER_RECENT = "filter_recent"
+FILTER_TRASH = "filter_trash"
 
 # --- 空状态 ---
-EMPTY_SEARCH = 'empty_search'
-EMPTY_TRASH = 'empty_trash'
-EMPTY_SUCCESS = 'empty_success'
-EMPTY_FOLDER = 'empty_folder'
-EMPTY_VAULT = 'empty_vault'
-EMPTY_GENERIC = 'empty_generic'
+EMPTY_SEARCH = "empty_search"
+EMPTY_TRASH = "empty_trash"
+EMPTY_SUCCESS = "empty_success"
+EMPTY_FOLDER = "empty_folder"
+EMPTY_VAULT = "empty_vault"
+EMPTY_GENERIC = "empty_generic"
 
 # --- 其他 ---
-UPLOAD = 'upload'
-HELP = 'help'
-SHORTCUT = 'shortcut'
+UPLOAD = "upload"
+HELP = "help"
+SHORTCUT = "shortcut"
 
 # ============================================================
 # 图标映射表：常量映射到 qtawesome 字形名与默认颜色键组成的二元组
@@ -94,57 +94,50 @@ SHORTCUT = 'shortcut'
 
 _ICON_MAP: dict[str, tuple[str, str]] = {
     # 密码显示/隐藏
-    EYE:         ('fa6s.eye',              'text_secondary'),
-    LOCK:        ('fa6s.lock',             'text_secondary'),
-
+    EYE: ("fa6s.eye", "text_secondary"),
+    LOCK: ("fa6s.lock", "text_secondary"),
     # 操作
-    COPY:        ('fa6s.copy',             'text_secondary'),
-    CHECK:       ('fa6s.check',            'success'),
-    EDIT:        ('fa6s.pen-to-square',    'text_secondary'),
-    DELETE:      ('fa6s.trash-can',        'text_secondary'),
-    PLUS:        ('fa6s.plus',             'accent'),
-    CLOSE:       ('fa6s.xmark',            'text_muted'),
-    REFRESH:     ('fa6s.rotate-left',      'text_secondary'),
-    GENERATE:    ('fa6s.dice',             'accent'),
-
+    COPY: ("fa6s.copy", "text_secondary"),
+    CHECK: ("fa6s.check", "success"),
+    EDIT: ("fa6s.pen-to-square", "text_secondary"),
+    DELETE: ("fa6s.trash-can", "text_secondary"),
+    PLUS: ("fa6s.plus", "accent"),
+    CLOSE: ("fa6s.xmark", "text_muted"),
+    REFRESH: ("fa6s.rotate-left", "text_secondary"),
+    GENERATE: ("fa6s.dice", "accent"),
     # 收藏
-    STAR:        ('fa6s.star',             'warning'),
-    STAR_OUTLINE:('mdi6.star-outline',     'text_muted'),
-
+    STAR: ("fa6s.star", "warning"),
+    STAR_OUTLINE: ("mdi6.star-outline", "text_muted"),
     # 状态
-    SUCCESS:     ('fa6s.circle-check',     'success'),
-    ERROR:       ('fa6s.circle-xmark',     'danger'),
-    WARNING:     ('fa6s.triangle-exclamation', 'warning_orange'),
-    INFO:        ('fa6s.circle-info',      'accent'),
-
+    SUCCESS: ("fa6s.circle-check", "success"),
+    ERROR: ("fa6s.circle-xmark", "danger"),
+    WARNING: ("fa6s.triangle-exclamation", "warning_orange"),
+    INFO: ("fa6s.circle-info", "accent"),
     # 导航
-    SEARCH:      ('fa6s.magnifying-glass', 'text_muted'),
-    FOLDER:      ('fa6s.folder',           'text_secondary'),
-    KEY:         ('fa6s.key',              'accent'),
-    SHIELD:      ('fa6s.shield-halved',    'accent'),
-    LOCK_SOLID:  ('fa6s.lock',             'accent'),
-    SETTINGS:    ('fa6s.gear',             'text_secondary'),
-
+    SEARCH: ("fa6s.magnifying-glass", "text_muted"),
+    FOLDER: ("fa6s.folder", "text_secondary"),
+    KEY: ("fa6s.key", "accent"),
+    SHIELD: ("fa6s.shield-halved", "accent"),
+    LOCK_SOLID: ("fa6s.lock", "accent"),
+    SETTINGS: ("fa6s.gear", "text_secondary"),
     # 侧边栏筛选项
-    FILTER_ALL:      ('fa6s.clipboard-list',         'text_secondary'),
-    FILTER_FAVORITE: ('fa6s.star',                   'warning'),
-    FILTER_WEAK:     ('fa6s.triangle-exclamation',   'warning_orange'),
-    FILTER_DUPLICATE:('fa6s.repeat',                 'text_secondary'),
-    FILTER_RECENT:   ('fa6s.clock-rotate-left',      'text_secondary'),
-    FILTER_TRASH:    ('fa6s.trash-can',               'text_secondary'),
-
+    FILTER_ALL: ("fa6s.clipboard-list", "text_secondary"),
+    FILTER_FAVORITE: ("fa6s.star", "warning"),
+    FILTER_WEAK: ("fa6s.triangle-exclamation", "warning_orange"),
+    FILTER_DUPLICATE: ("fa6s.repeat", "text_secondary"),
+    FILTER_RECENT: ("fa6s.clock-rotate-left", "text_secondary"),
+    FILTER_TRASH: ("fa6s.trash-can", "text_secondary"),
     # 空状态
-    EMPTY_SEARCH:  ('fa6s.magnifying-glass', 'text_muted'),
-    EMPTY_TRASH:   ('fa6s.trash-can',        'text_muted'),
-    EMPTY_SUCCESS: ('fa6s.circle-check',     'success'),
-    EMPTY_FOLDER:  ('fa6s.folder-open',      'text_muted'),
-    EMPTY_VAULT:   ('fa6s.shield-halved',    'accent'),
-    EMPTY_GENERIC: ('fa6s.clipboard',        'text_muted'),
-
+    EMPTY_SEARCH: ("fa6s.magnifying-glass", "text_muted"),
+    EMPTY_TRASH: ("fa6s.trash-can", "text_muted"),
+    EMPTY_SUCCESS: ("fa6s.circle-check", "success"),
+    EMPTY_FOLDER: ("fa6s.folder-open", "text_muted"),
+    EMPTY_VAULT: ("fa6s.shield-halved", "accent"),
+    EMPTY_GENERIC: ("fa6s.clipboard", "text_muted"),
     # 其他
-    UPLOAD:       ('fa6s.upload',               'accent'),
-    HELP:         ('fa6s.circle-question',      'text_secondary'),
-    SHORTCUT:     ('fa6s.keyboard',             'text_secondary'),
+    UPLOAD: ("fa6s.upload", "accent"),
+    HELP: ("fa6s.circle-question", "text_secondary"),
+    SHORTCUT: ("fa6s.keyboard", "text_secondary"),
 }
 
 # ============================================================
@@ -159,7 +152,7 @@ def _make_icon(name: str, color_key: str | None = None) -> QIcon:
     旧主题条目由 LRU 淘汰（复用开销收益见模块级 _icon_cache 注释）。
     """
     if name not in _ICON_MAP:
-        raise ValueError(f'未注册图标常量: {name}')
+        raise ValueError(f"未注册图标常量: {name}")
     glyph, default_color_key = _ICON_MAP[name]
     ck = color_key or default_color_key
     key = (name, ck, theme_colors._current_theme)
@@ -192,16 +185,20 @@ def icon_pixmap(name: str, color_key: str | None = None, size: int = SIZE_BTN) -
     return qicon.pixmap(QSize(size, size))
 
 
-def set_icon(widget: QPushButton, name: str, color_key: str | None = None, size: int = SIZE_BTN) -> None:
+def set_icon(
+    widget: QPushButton, name: str, color_key: str | None = None, size: int = SIZE_BTN
+) -> None:
     """给 QPushButton 设置图标并自动清除文字。"""
     qicon = _make_icon(name, color_key)
     widget.setIcon(qicon)
     widget.setIconSize(QSize(size, size))
-    widget.setText('')
-    widget.setAccessibleName(name.replace('_', ' '))
+    widget.setText("")
+    widget.setAccessibleName(name.replace("_", " "))
 
 
-def set_icon_with_text(widget: QPushButton, text: str, name: str, color_key: str | None = None, size: int = SIZE_BTN) -> None:
+def set_icon_with_text(
+    widget: QPushButton, text: str, name: str, color_key: str | None = None, size: int = SIZE_BTN
+) -> None:
     """给 QPushButton 同时设置图标和文字。"""
     qicon = _make_icon(name, color_key)
     widget.setIcon(qicon)
@@ -213,7 +210,7 @@ def set_icon_with_text(widget: QPushButton, text: str, name: str, color_key: str
 def draw_logo_pixmap(
     size: int = 64,
     bg_color: str | None = None,
-    text: str = 'C',
+    text: str = "C",
     text_color: str | None = None,
     font_size: int | None = None,
 ) -> QPixmap:
@@ -229,9 +226,9 @@ def draw_logo_pixmap(
     from .constants import FONT_FAMILY_PRIMARY
 
     if bg_color is None:
-        bg_color = c('brand')
+        bg_color = c("brand")
     if text_color is None:
-        text_color = c('text_on_accent')
+        text_color = c("text_on_accent")
     if font_size is None:
         font_size = max(12, size // 2 - 4) if len(text) <= 1 else max(8, size // 3)
 

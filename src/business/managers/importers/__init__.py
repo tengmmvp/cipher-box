@@ -12,10 +12,10 @@ from .csv_importer import CsvImporter, KeePassCsvImporter
 from .json_importer import JsonImporter
 
 __all__ = [
-    'BitwardenImporter',
-    'CsvImporter',
-    'FormatImporter',
-    'JsonImporter',
-    'KeePassCsvImporter',
-    'ParsedImport',
+    "BitwardenImporter",
+    "CsvImporter",
+    "FormatImporter",
+    "JsonImporter",
+    "KeePassCsvImporter",
+    "ParsedImport",
 ]

@@ -16,14 +16,14 @@ from tests.helpers import make_test_config, make_vault
 def _make_ctx(tmp_dir: str):
     config = make_test_config(tmp_dir)
     vault = make_vault(config)
-    vault.initialize('TestComposition!2026')
+    vault.initialize("TestComposition!2026")
     return build_business_context(config, vault), vault
 
 
 def test_lock_callback_invalidates_entry_cache(tmp_path):
     """锁定触发 entry 缓存清空（守护 register_on_lock → invalidate_caches 连线）。"""
     ctx, vault = _make_ctx(str(tmp_path))
-    ctx.entry_mgr.add_entry(Entry(title='t', username='u', password='pw123456'))
+    ctx.entry_mgr.add_entry(Entry(title="t", username="u", password="pw123456"))
     ctx.entry_mgr.get_entry_summaries()  # 填充搜索摘要缓存
     assert ctx.entry_mgr._cache._search_metadata_cache  # 已填充
     vault.lock()
@@ -38,5 +38,5 @@ def test_change_callback_invalidates_security_cache(tmp_path):
     ctx.security._cached_analysis()  # 填充安全分析缓存
     assert ctx.security._analysis_cache is not None
     # add_entry → change_bus.notify → security.invalidate_cache（经注册回调）
-    ctx.entry_mgr.add_entry(Entry(title='t2', username='u2', password='pw789012'))
+    ctx.entry_mgr.add_entry(Entry(title="t2", username="u2", password="pw789012"))
     assert ctx.security._analysis_cache is None

@@ -100,8 +100,8 @@ class BackupRestoreManager:
 
     def __init__(
         self,
-        vault_manager: 'VaultManager',
-        entry_manager: 'EntryManager',
+        vault_manager: "VaultManager",
+        entry_manager: "EntryManager",
     ) -> None:
         self._vault = vault_manager
         # 复用调用方持有的 EntryManager 单例，共享分类名缓存，避免重复解密与双份明文驻留。
@@ -135,11 +135,13 @@ class BackupRestoreManager:
         ``cancel_check`` 在全量解密循环中周期调用，返回真值时中止备份。
 
         A4（备份锁外解密）：``vault_write_lock`` 仅持有快速 prepare 阶段（DB 读 +
-        snapshot_key 副本采集 + 数量校验），全量解密与 PASSWORD 密钥派生（Argon2id）
-        推迟到锁外 :meth:`_finalize_backup`。主线程 ``lock()`` 经 ``_shutdown_workers``
-        → ``cancel_check`` 中止备份后才取锁清零密钥（worker 全程 join 后方清零），
-        故 finalize 锁外解密期间主密钥不会被并发清零；snapshot_key 取 bytes 副本
-        （property 返回拷贝），锁外使用不受 KeyManager 内部 bytearray 清零影响。
+        snapshot_key/master_key 副本采集 + 数量校验），全量解密与 PASSWORD 密钥派生
+        （Argon2id）推迟到锁外 :meth:`_finalize_backup`。主线程 ``lock()`` 经
+        ``_shutdown_workers`` → ``cancel_check`` 中止备份后才取锁清零密钥（worker 全程
+        join 后方清零），故 finalize 锁外解密期间主密钥不会被并发清零；snapshot_key 与
+        master_key 均取 bytes 副本（property 返回拷贝），锁外使用不受 KeyManager 内部
+        bytearray 清零影响。master_key 与 raw_entries 在同一持锁阶段采集，锁外改密
+        （轮换主密钥 + 重加密 DB）不会令 finalize 用新密钥解密旧密文而失败。
 
         ``_create_backup_locked`` 保留为持锁全流程入口，供 :meth:`_create_restore_point`
         在已持锁上下文复用（恢复点快照体积小，无需 A4 优化）。
@@ -151,7 +153,8 @@ class BackupRestoreManager:
             # 直接调用 create_backup 设置极弱备份密码。强度校验在锁前完成。
             if backup_password:
                 valid, error = PasswordService.validate_master_password(
-                    backup_password, label='备份密码',
+                    backup_password,
+                    label="备份密码",
                 )
                 if not valid:
                     return False, error
@@ -160,12 +163,14 @@ class BackupRestoreManager:
             # 经 cancel_check 及时中止备份而非等待全量解密。
             with self._vault.vault_write_lock():
                 prepared = self._prepare_backup_locked(
-                    filepath, backup_password, use_snapshot_key,
+                    filepath,
+                    backup_password,
+                    use_snapshot_key,
                 )
             return self._finalize_backup(prepared, cancel_check)
         except Exception as exc:
             logger.error("备份失败: %s", exc, exc_info=True)
-            return False, to_user_message(exc, default='操作失败，请检查文件和磁盘。')
+            return False, to_user_message(exc, default="操作失败，请检查文件和磁盘。")
 
     def _create_backup_locked(
         self,
@@ -205,11 +210,10 @@ class BackupRestoreManager:
         # 数量上限在锁内预判（快速失败，避免锁外 finalize 才抛错白白多持锁时间）；
         # _collect_portable_entries 收到预读 raw 时仍保留同名校验作防御性冗余。
         if len(raw_entries) > MAX_BACKUP_ENTRIES:
-            raise PayloadTooLargeError('备份条目数量超出限制')
+            raise PayloadTooLargeError("备份条目数量超出限制")
         history_rows = self._vault.db.get_all_password_history()
         categories = [
-            category.to_dict()
-            for category in self._entry_mgr.categories.get_categories()
+            category.to_dict() for category in self._entry_mgr.categories.get_categories()
         ]
         snapshot_key: bytes | None
         if backup_password:
@@ -219,7 +223,7 @@ class BackupRestoreManager:
             flags = BackupFlag.SNAPSHOT
             snapshot_key = self._vault.snapshot_key
         else:
-            raise BackupError('必须指定备份密码或使用快照密钥')
+            raise BackupError("必须指定备份密码或使用快照密钥")
         return PreparedBackup(
             filepath=filepath,
             salt=salt,
@@ -229,6 +233,9 @@ class BackupRestoreManager:
             raw_entries=raw_entries,
             history_rows=history_rows,
             categories=categories,
+            # 锁内快照主密钥：与 raw_entries 同源采集，锁外 finalize 用它解密，
+            # 不受锁外改密（轮换主密钥 + 重加密 DB）竞态影响。
+            master_key=self._key,
         )
 
     def _finalize_backup(
@@ -251,18 +258,18 @@ class BackupRestoreManager:
             # prepare 已保证 PASSWORD 路径 backup_password 非 None；此处显式检查替代
             # assert（python -O 下 assert 跳过），满足类型 narrow 与意外状态防御。
             if password is None:
-                raise BackupError('备份密码不可用')
+                raise BackupError("备份密码不可用")
             backup_key = derive_backup_key(password, prepared.salt)
         else:
             snapshot_key = prepared.snapshot_key
             # prepare 已保证 SNAPSHOT 路径 snapshot_key 非 None；显式检查替代 assert
             # （python -O 跳过），满足类型 narrow 与意外状态防御（对称 PASSWORD 分支，PF-obs）。
             if snapshot_key is None:
-                raise BackupError('快照密钥不可用')
+                raise BackupError("快照密钥不可用")
             backup_key = snapshot_key
         try:
             data = collect_portable_data(
-                self._key,
+                prepared.master_key,
                 self._vault.db,
                 self._entry_mgr,
                 cancel_check=cancel_check,
@@ -271,19 +278,24 @@ class BackupRestoreManager:
                 categories=prepared.categories,
             )
             if data is None:
-                return False, '备份已取消'
-            payload = json.dumps(data, ensure_ascii=False).encode('utf-8')
+                return False, "备份已取消"
+            payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
             del data
             if len(payload) > MAX_BACKUP_PAYLOAD_SIZE:
-                raise PayloadTooLargeError('备份数据过大')
+                raise PayloadTooLargeError("备份数据过大")
             encrypted = EncryptionEngine.encrypt_bytes(
-                payload, backup_key,
+                payload,
+                backup_key,
                 header_aad(prepared.flags, prepared.salt, DEFAULT_KDF_PARAMS),
             )
             del payload
+
             def _write_backup_file(file: IO[bytes]) -> bool:
                 write_backup_header(
-                    file, prepared.flags, prepared.salt, DEFAULT_KDF_PARAMS,
+                    file,
+                    prepared.flags,
+                    prepared.salt,
+                    DEFAULT_KDF_PARAMS,
                 )
                 file.write(encrypted)
                 return True
@@ -292,7 +304,7 @@ class BackupRestoreManager:
         finally:
             zero_backup_key_if_owned(prepared.flags, backup_key)
         logger.info("备份创建完成 (%.1fms)", (time.monotonic() - t0) * 1000)
-        return True, ''
+        return True, ""
 
     def restore_backup(
         self,
@@ -304,8 +316,8 @@ class BackupRestoreManager:
             t0 = time.monotonic()
             filepath = str(validate_file_path(filepath))
             if Path(filepath).stat().st_size > MAX_BACKUP_FILE_SIZE:
-                return False, '备份文件过大'
-            with open(filepath, 'rb') as file:
+                return False, "备份文件过大"
+            with open(filepath, "rb") as file:
                 result = self._restore_current(file, backup_password)
                 if result[0]:
                     logger.info("备份恢复完成 (%.1fms)", (time.monotonic() - t0) * 1000)
@@ -314,7 +326,7 @@ class BackupRestoreManager:
             # 所有异常（validate_file_path 的 ValueError、BackupError、OSError 等）统一
             # 经 to_user_message 翻译为用户友好消息，避免内部消息直接暴露。
             logger.error("恢复失败: %s", exc, exc_info=True)
-            return False, to_user_message(exc, default='操作失败，请检查文件和磁盘。')
+            return False, to_user_message(exc, default="操作失败，请检查文件和磁盘。")
 
     def _restore_current(self, file: IO[bytes], backup_password: str | None) -> tuple[bool, str]:
         """恢复备份当前实现：4 阶段编排（头部+密钥 → 解密校验 → 重建+恢复点 → 收尾）。
@@ -327,7 +339,10 @@ class BackupRestoreManager:
         # 阶段 1：头部解析 + KDF 边界 + PASSWORD 密钥派生（锁外，缩短持锁与 UI 冻结）
         flags, salt, kdf_params = self._read_and_validate_header(file)
         key_or_abort = self._derive_password_backup_key(
-            flags, salt, kdf_params, backup_password,
+            flags,
+            salt,
+            kdf_params,
+            backup_password,
         )
         if isinstance(key_or_abort, tuple):
             return key_or_abort  # (False, '请输入创建备份时设置的备份密码')
@@ -346,10 +361,14 @@ class BackupRestoreManager:
                     backup_key = self._vault.snapshot_key
                 # 显式检查替代 assert（python -O 下 assert 跳过），满足类型 narrow 需求。
                 if backup_key is None:
-                    raise RuntimeError('备份密钥未初始化')
+                    raise RuntimeError("备份密钥未初始化")
                 # 阶段 2：TOCTOU 复核 + 解密 + 结构校验（锁内）
                 payload = self._decrypt_and_validate_payload_locked(
-                    file, flags, salt, kdf_params, backup_key,
+                    file,
+                    flags,
+                    salt,
+                    kdf_params,
+                    backup_key,
                 )
                 if isinstance(payload, tuple):
                     return payload  # 解密/结构失败的 (False, msg)
@@ -357,7 +376,8 @@ class BackupRestoreManager:
                 new_epoch, new_snapshot_key = self._rebuild_with_restore_point_locked(payload)
                 # 阶段 4a：同步内存状态 + WAL 截断（锁内）
                 checkpoint_ok = self._finalize_restored_state_locked(
-                    new_epoch, new_snapshot_key,
+                    new_epoch,
+                    new_snapshot_key,
                 )
             # 阶段 4b：清理旧 snapshot_key 加密的快照与恢复点 + 拼装降级警告（锁外）。
             # 仅 unlink 文件，不读取 snapshot_key property，故无需持锁，减少锁持有时间。
@@ -368,7 +388,8 @@ class BackupRestoreManager:
             zero_backup_key_if_owned(flags, backup_key)
 
     def _read_and_validate_header(
-        self, file: IO[bytes],
+        self,
+        file: IO[bytes],
     ) -> tuple[BackupFlag, bytes, KdfParams]:
         """读取备份头并强制 KDF 参数在合法区间（防降级/飙升）。"""
         flags, salt, kdf_params = read_backup_header(file)
@@ -394,11 +415,12 @@ class BackupRestoreManager:
         if flags != BackupFlag.PASSWORD:
             return None
         if not backup_password:
-            return False, '请输入创建备份时设置的备份密码'
+            return False, "请输入创建备份时设置的备份密码"
         return MasterKeyManager.derive_backup_key(backup_password, salt, kdf_params)
 
     def _ensure_snapshot_key_locked(
-        self, flags: BackupFlag,
+        self,
+        flags: BackupFlag,
     ) -> tuple[bool, str] | None:
         """锁内校验 SNAPSHOT 恢复的前置条件（已解锁），PASSWORD 直接放行。
 
@@ -407,7 +429,7 @@ class BackupRestoreManager:
         if flags == BackupFlag.PASSWORD:
             return None
         if not self._vault.is_unlocked:
-            return False, '恢复快照备份需要先解锁保险库'
+            return False, "恢复快照备份需要先解锁保险库"
         return None
 
     def _decrypt_and_validate_payload_locked(
@@ -427,31 +449,34 @@ class BackupRestoreManager:
         try:
             file.seek(0)
             if read_backup_header(file) != (flags, salt, kdf_params):
-                return False, '备份文件在读取期间已变更，请重试'
+                return False, "备份文件在读取期间已变更，请重试"
             # 内存特征：峰值约 3 倍载荷大小。encrypted 不超过 64MB，plaintext 不超过 32MB，
             # 外加 JSON 解析树，桌面应用可接受。GCM 认证加密要求完整密文可用，无法流式解密。
             encrypted = file.read(MAX_BACKUP_FILE_SIZE + 1)
             if len(encrypted) > MAX_BACKUP_FILE_SIZE:
-                return False, '备份文件过大'
+                return False, "备份文件过大"
             plaintext = EncryptionEngine.decrypt_bytes(
-                encrypted, backup_key, header_aad(flags, salt, kdf_params),
+                encrypted,
+                backup_key,
+                header_aad(flags, salt, kdf_params),
             )
             if len(plaintext) > MAX_BACKUP_PAYLOAD_SIZE:
-                return False, '备份解密数据过大'
-            data = json.loads(plaintext.decode('utf-8'))
+                return False, "备份解密数据过大"
+            data = json.loads(plaintext.decode("utf-8"))
         except (OSError, DecryptionError, json.JSONDecodeError):
             # 缩窄为预期的「读文件 / GCM 解密 / JSON 解析」失败，统一提示密码错误或损坏；
             # 编程错误（KeyError/TypeError 等）不在此列，冒泡由上层 restore_backup 的 except
             # 经 to_user_message 兜底，避免把真实 bug 静默归为「备份损坏」而掩盖根因。
             logger.debug("备份读取或解密失败", exc_info=True)
-            return False, '备份密码错误或文件已损坏'
-        if not isinstance(data, dict) or not isinstance(data.get('entries'), list):
-            return False, '备份数据结构无效'
+            return False, "备份密码错误或文件已损坏"
+        if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
+            return False, "备份数据结构无效"
         validate_restore_data(data)
         return _DecryptedPayload(plaintext=plaintext, data=data)
 
     def _rebuild_with_restore_point_locked(
-        self, payload: _DecryptedPayload,
+        self,
+        payload: _DecryptedPayload,
     ) -> tuple[str, bytearray]:
         """锁内创建恢复点并在 epoch 守卫事务内重建全部数据。
 
@@ -479,7 +504,9 @@ class BackupRestoreManager:
         return new_epoch, new_snapshot_key
 
     def _finalize_restored_state_locked(
-        self, new_epoch: str, new_snapshot_key: bytearray,
+        self,
+        new_epoch: str,
+        new_snapshot_key: bytearray,
     ) -> bool:
         """锁内同步内存状态（key_epoch + snapshot_key）并截断 WAL，返回 checkpoint 是否成功。
 
@@ -501,7 +528,7 @@ class BackupRestoreManager:
             self._vault.db.secure_checkpoint()
             return True
         except Exception:
-            logger.warning('恢复后 WAL 安全截断失败', exc_info=True)
+            logger.warning("恢复后 WAL 安全截断失败", exc_info=True)
             return False
 
     def _assemble_restore_result(self, checkpoint_ok: bool) -> tuple[bool, str]:
@@ -510,14 +537,14 @@ class BackupRestoreManager:
         warnings: list[str] = []
         if not checkpoint_ok:
             warnings.append(
-                '恢复完成，但 WAL 安全截断失败，被替换的旧数据（当前主密钥加密）'
-                '可能残留于 WAL；建议重启应用以完成清理。'
+                "恢复完成，但 WAL 安全截断失败，被替换的旧数据（当前主密钥加密）"
+                "可能残留于 WAL；建议重启应用以完成清理。"
             )
         if failed_purges:
             warnings.append(self._format_purge_warning(failed_purges))
         if warnings:
-            return True, ' '.join(warnings)
-        return True, ''
+            return True, " ".join(warnings)
+        return True, ""
 
     def _format_purge_warning(self, failed_purges: list[Path]) -> str:
         """格式化 purge 失败警告：区分含明文的恢复点（严重泄漏面）与普通旧快照。
@@ -525,18 +552,16 @@ class BackupRestoreManager:
         恢复点（``pre_restore_*``，含恢复前全部条目明文）未能删除是更严重的明文
         泄漏面，需显著警告并指引重启清理；普通旧快照笼统提示手动清理即可。
         """
-        restore_point_failed = any(
-            p.name.startswith('pre_restore_') for p in failed_purges
-        )
+        restore_point_failed = any(p.name.startswith("pre_restore_") for p in failed_purges)
         if restore_point_failed:
             return (
-                f'恢复完成，但 {len(failed_purges)} 个含恢复前明文的快照'
-                '未能删除（可能被占用）。为避免明文泄漏，请关闭可能占用'
-                '该文件的程序后重启应用以自动清理。'
+                f"恢复完成，但 {len(failed_purges)} 个含恢复前明文的快照"
+                "未能删除（可能被占用）。为避免明文泄漏，请关闭可能占用"
+                "该文件的程序后重启应用以自动清理。"
             )
         return (
-            f'恢复完成，但 {len(failed_purges)} 个旧快照未能删除'
-            '（可能被占用），建议在备份对话框手动清理以收缩泄漏面。'
+            f"恢复完成，但 {len(failed_purges)} 个旧快照未能删除"
+            "（可能被占用），建议在备份对话框手动清理以收缩泄漏面。"
         )
 
     def _restore_data(self, data: dict[str, Any]) -> tuple[str, bytearray]:
@@ -563,15 +588,16 @@ class BackupRestoreManager:
         # bytearray 持有以便原地清零：成功路径 return 交调用方，apply_snapshot_key
         # 总复制到 KeyManager 后由调用方清零自己的引用；失败路径在 finally 清零。
         new_snapshot_key = bytearray(os.urandom(KEY_SIZE))
-        new_epoch = ''
+        new_epoch = ""
         success = False
         try:
-            with self._vault.epoch_guarded_transaction(operation='恢复'):
+            with self._vault.epoch_guarded_transaction(operation="恢复"):
                 db.clear_vault_data()
                 category_map = restore_categories(
                     # ARCH-002：注入批量写回调，解耦 backup_rebuilder 与 EntryManager。
                     lambda cats: self._entry_mgr.categories.add_categories_batch(
-                        cats, notify=False,
+                        cats,
+                        notify=False,
                     ),
                     backup,
                 )
@@ -579,13 +605,13 @@ class BackupRestoreManager:
                 restore_history(db, backup, key, entry_map, crypto_id_map)
                 # 轮换 key_epoch 防止旧会话写入恢复后的数据
                 new_epoch = uuid.uuid4().hex
-                db.set_meta('key_epoch', new_epoch)
-                db.set_meta('snapshot_key_enc', self._vault.encrypt_snapshot_key(new_snapshot_key))
+                db.set_meta("key_epoch", new_epoch)
+                db.set_meta("snapshot_key_enc", self._vault.encrypt_snapshot_key(new_snapshot_key))
                 # key_epoch 轮换后重算 vault_meta_mac（签名含 key_epoch），保持 unlock
                 # 校验一致；恢复不改凭据字段（salt/verify/KDF），故读回当前值重算即可。
                 meta_snapshot = db.get_meta_batch(list(VAULT_META_SIGNED_KEYS))
                 db.set_meta(
-                    'vault_meta_mac',
+                    "vault_meta_mac",
                     MetadataSigner.compute_vault_meta_mac(meta_snapshot, key),
                 )
             # WAL 截断由 :meth:`_finalize_restored_state_locked` 在事务提交后执行
@@ -602,7 +628,7 @@ class BackupRestoreManager:
 
     def maybe_auto_backup(
         self,
-        config: 'ConfigManager',
+        config: "ConfigManager",
         force: bool = False,
         cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[bool, str]:
@@ -618,14 +644,14 @@ class BackupRestoreManager:
             由是否成功与错误信息组成的二元组，成功时错误信息为空字符串。
         """
         if not force and not config.get(CFG_AUTO_BACKUP_ENABLED, False):
-            return True, ''
+            return True, ""
 
         # 间隔判定下沉 auto_backup_policy.is_auto_backup_due（纯函数，可独立测试）；
         # 未到间隔时静默返回成功（与禁用跳过一致：非错误，只是无需备份）。
         if not is_auto_backup_due(config, force=force):
-            return True, ''
+            return True, ""
 
-        backup_dir = config.get(CFG_BACKUP_DIRECTORY, '')
+        backup_dir = config.get(CFG_BACKUP_DIRECTORY, "")
         if backup_dir:
             try:
                 # backup_directory 是用户自定义的高敏感路径——自动快照含全量明文，
@@ -635,7 +661,7 @@ class BackupRestoreManager:
                 # （系统规范链接放行），收缩该重定向威胁。
                 backup_dir = str(validate_file_path(backup_dir, check_ancestors=True))
             except ValueError:
-                return False, f'备份目录路径无效: {backup_dir}'
+                return False, f"备份目录路径无效: {backup_dir}"
 
         directory = Path(backup_dir) if backup_dir else config.data_dir / BACKUPS_DIR_NAME
         # 创建并收紧权限（strict）：自动快照含全量明文，ACL 失败时宁可中止备份
@@ -643,10 +669,11 @@ class BackupRestoreManager:
         try:
             secure_directory(directory, strict=True)
         except OSError as exc:
-            return False, f'无法收紧备份目录权限：{exc}'
+            return False, f"无法收紧备份目录权限：{exc}"
         filename = build_backup_filename(SNAPSHOT_PREFIX)
         success, error = self.create_backup(
-            str(directory / filename), use_snapshot_key=True,
+            str(directory / filename),
+            use_snapshot_key=True,
             cancel_check=cancel_check,
         )
         if not success:
@@ -658,7 +685,7 @@ class BackupRestoreManager:
         except OSError:
             # save 失败：备份已成功创建，未持久化的时间戳仅会让下次间隔检查失效而
             # 冗余备份，非致命；风格与 settings_dialog 的 config.save() 一致。
-            logger.warning('无法写入配置文件，请检查磁盘空间和文件权限。', exc_info=True)
+            logger.warning("无法写入配置文件，请检查磁盘空间和文件权限。", exc_info=True)
 
         retention = config.get(CFG_AUTO_BACKUP_RETENTION, DEFAULT_CONFIG[CFG_AUTO_BACKUP_RETENTION])
         # 过期快照清理下沉 auto_backup_policy.purge_expired_auto_backups（纯策略函数）。
@@ -667,6 +694,6 @@ class BackupRestoreManager:
         try:
             purge_expired_auto_backups(directory, retention)
         except OSError:
-            logger.warning('过期自动备份清理失败，已跳过', exc_info=True)
+            logger.warning("过期自动备份清理失败，已跳过", exc_info=True)
 
-        return True, ''
+        return True, ""

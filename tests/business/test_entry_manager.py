@@ -24,15 +24,15 @@ class TestAddEntry:
     def test_encrypts_and_reads_back_all_fields(self, entry_mgr, make_entry):
         """明文条目加密入库后，get_entry 读回的解密条目与原值一致。"""
         entry = make_entry(
-            title='GitHub',
-            username='alice@example.com',
-            password='S3cret-Pass-2024!',
-            url='https://github.com',
-            notes='我的备注',
-            tags='work,dev',
-            entry_type='login',
-            custom_fields=[CustomField(name='recover', value='code-123')],
-            totp_secret='JBSWY3DPEHPK3PXP',
+            title="GitHub",
+            username="alice@example.com",
+            password="S3cret-Pass-2024!",
+            url="https://github.com",
+            notes="我的备注",
+            tags="work,dev",
+            entry_type="login",
+            custom_fields=[CustomField(name="recover", value="code-123")],
+            totp_secret="JBSWY3DPEHPK3PXP",
         )
         entry_id = entry_mgr.add_entry(entry)
         assert isinstance(entry_id, int)
@@ -40,36 +40,40 @@ class TestAddEntry:
         read = entry_mgr.get_entry(entry_id)
         assert read is not None
         assert read.id == entry_id
-        assert read.title == 'GitHub'
-        assert read.username == 'alice@example.com'
-        assert read.password == 'S3cret-Pass-2024!'
-        assert read.url == 'https://github.com'
-        assert read.notes == '我的备注'
-        assert read.tags == 'work,dev'
-        assert read.entry_type == 'login'
-        assert read.totp_secret == 'JBSWY3DPEHPK3PXP'
+        assert read.title == "GitHub"
+        assert read.username == "alice@example.com"
+        assert read.password == "S3cret-Pass-2024!"
+        assert read.url == "https://github.com"
+        assert read.notes == "我的备注"
+        assert read.tags == "work,dev"
+        assert read.entry_type == "login"
+        assert read.totp_secret == "JBSWY3DPEHPK3PXP"
         # 自定义字段经 JSON 序列化→加密→解密→反序列化往返一致
         assert len(read.custom_fields) == 1
-        assert read.custom_fields[0].name == 'recover'
-        assert read.custom_fields[0].value == 'code-123'
+        assert read.custom_fields[0].name == "recover"
+        assert read.custom_fields[0].value == "code-123"
 
     def test_stores_encrypted_not_plaintext(self, entry_mgr, make_entry):
         """验证敏感字段以密文（cb2: 前缀）入库，而非明文落库。"""
-        entry_id = entry_mgr.add_entry(make_entry(
-            title='SecretTitle', password='PlainPass123!', notes='top-secret',
-        ))
+        entry_id = entry_mgr.add_entry(
+            make_entry(
+                title="SecretTitle",
+                password="PlainPass123!",
+                notes="top-secret",
+            )
+        )
         raw = entry_mgr.db.get_entry(entry_id)
         assert raw.title.startswith(CIPHERTEXT_PREFIX)
         assert raw.password.startswith(CIPHERTEXT_PREFIX)
         assert raw.notes.startswith(CIPHERTEXT_PREFIX)
         # 密文不等于明文，确认真实加密而非直写
-        assert raw.title != 'SecretTitle'
-        assert raw.password != 'PlainPass123!'
-        assert raw.notes != 'top-secret'
+        assert raw.title != "SecretTitle"
+        assert raw.password != "PlainPass123!"
+        assert raw.notes != "top-secret"
 
     def test_password_strength_auto_computed(self, entry_mgr, make_entry):
         """add_entry 依密码自动计算 password_strength，读回值与生成器评分一致。"""
-        pwd = 'S3cret-Pass-2024!'
+        pwd = "S3cret-Pass-2024!"
         entry = make_entry(password=pwd)
         # 入库前 password_strength 为默认 0
         assert entry.password_strength == 0
@@ -84,8 +88,8 @@ class TestAddEntry:
 
     def test_strength_reflects_password_quality(self, entry_mgr, make_entry):
         """强密码的强度评分高于弱密码，确认 strength 随密码质量变化。"""
-        weak_id = entry_mgr.add_entry(make_entry(password='1'))
-        strong_id = entry_mgr.add_entry(make_entry(password='S3cret-Pass-2024!'))
+        weak_id = entry_mgr.add_entry(make_entry(password="1"))
+        strong_id = entry_mgr.add_entry(make_entry(password="S3cret-Pass-2024!"))
         weak = entry_mgr.get_entry(weak_id)
         strong = entry_mgr.get_entry(strong_id)
         assert strong.password_strength > weak.password_strength
@@ -96,61 +100,65 @@ class TestUpdateEntry:
 
     def test_updates_non_password_fields_read_back(self, entry_mgr, make_entry):
         """更新非密码字段读回一致，密码保持不变。"""
-        entry_id = entry_mgr.add_entry(make_entry(
-            title='Old', username='u', password='Pass123!@#',
-        ))
+        entry_id = entry_mgr.add_entry(
+            make_entry(
+                title="Old",
+                username="u",
+                password="Pass123!@#",
+            )
+        )
         entry = entry_mgr.get_entry(entry_id)
         entry = dataclasses.replace(
             entry,
-            title='New Title',
-            username='new_user',
-            url='https://example.com',
-            notes='updated notes',
-            tags='tag1,tag2',
+            title="New Title",
+            username="new_user",
+            url="https://example.com",
+            notes="updated notes",
+            tags="tag1,tag2",
         )
         entry_mgr.update_entry(entry)
 
         read = entry_mgr.get_entry(entry_id)
-        assert read.title == 'New Title'
-        assert read.username == 'new_user'
-        assert read.url == 'https://example.com'
-        assert read.notes == 'updated notes'
-        assert read.tags == 'tag1,tag2'
-        assert read.password == 'Pass123!@#'
+        assert read.title == "New Title"
+        assert read.username == "new_user"
+        assert read.url == "https://example.com"
+        assert read.notes == "updated notes"
+        assert read.tags == "tag1,tag2"
+        assert read.password == "Pass123!@#"
 
     def test_password_change_archives_history(self, entry_mgr, make_entry):
         """密码变更时归档旧密码到历史，计数 +1，读回为新密码。"""
-        entry_id = entry_mgr.add_entry(make_entry(password='OldPass123!@#'))
+        entry_id = entry_mgr.add_entry(make_entry(password="OldPass123!@#"))
         assert entry_mgr.password_history.get_count(entry_id) == 0
 
         entry = entry_mgr.get_entry(entry_id)
-        entry = dataclasses.replace(entry, password='NewStrongPass456!@#')
+        entry = dataclasses.replace(entry, password="NewStrongPass456!@#")
         entry_mgr.update_entry(entry)
 
         assert entry_mgr.password_history.get_count(entry_id) == 1
-        assert entry_mgr.get_entry(entry_id).password == 'NewStrongPass456!@#'
+        assert entry_mgr.get_entry(entry_id).password == "NewStrongPass456!@#"
 
     def test_password_unchanged_does_not_archive(self, entry_mgr, make_entry):
         """密码不变（仅改其他字段）时不归档历史。"""
-        entry_id = entry_mgr.add_entry(make_entry(password='StablePass123!@#'))
+        entry_id = entry_mgr.add_entry(make_entry(password="StablePass123!@#"))
         entry = entry_mgr.get_entry(entry_id)
         # get_entry 解密回的 password 即原明文，不改它 → update 检测为未变更
-        entry = dataclasses.replace(entry, title='Renamed Only')
+        entry = dataclasses.replace(entry, title="Renamed Only")
         entry_mgr.update_entry(entry)
 
         assert entry_mgr.password_history.get_count(entry_id) == 0
-        assert entry_mgr.get_entry(entry_id).title == 'Renamed Only'
+        assert entry_mgr.get_entry(entry_id).title == "Renamed Only"
 
     def test_multiple_password_changes_archive_each(self, entry_mgr, make_entry):
         """多次密码变更逐次归档，历史计数等于变更次数。"""
-        entry_id = entry_mgr.add_entry(make_entry(password='Pass1-aaa!'))
-        for new_pwd in ('Pass2-bbb!', 'Pass3-ccc!', 'Pass4-ddd!'):
+        entry_id = entry_mgr.add_entry(make_entry(password="Pass1-aaa!"))
+        for new_pwd in ("Pass2-bbb!", "Pass3-ccc!", "Pass4-ddd!"):
             entry = entry_mgr.get_entry(entry_id)
             entry = dataclasses.replace(entry, password=new_pwd)
             entry_mgr.update_entry(entry)
 
         assert entry_mgr.password_history.get_count(entry_id) == 3
-        assert entry_mgr.get_entry(entry_id).password == 'Pass4-ddd!'
+        assert entry_mgr.get_entry(entry_id).password == "Pass4-ddd!"
 
 
 class TestToggleFavorite:
@@ -168,10 +176,12 @@ class TestToggleFavorite:
         assert entry_mgr.get_entry(entry_id).is_favorite is False
 
     def test_toggle_favorite_does_not_touch_password_or_history(
-        self, entry_mgr, make_entry,
+        self,
+        entry_mgr,
+        make_entry,
     ):
         """切换收藏不改密码、不产生密码历史。"""
-        pwd = 'Pass123!@#'
+        pwd = "Pass123!@#"
         entry_id = entry_mgr.add_entry(make_entry(password=pwd))
         entry_mgr.toggle_favorite(entry_id)
         entry_mgr.toggle_favorite(entry_id)
@@ -190,10 +200,12 @@ class TestDeleteRestorePermanent:
     """delete_entry（软删除）/ restore_entry / permanent_delete_entry 语义。"""
 
     def test_soft_delete_hides_from_default_shows_in_trash(
-        self, entry_mgr, make_entry,
+        self,
+        entry_mgr,
+        make_entry,
     ):
         """软删除后默认视图不含、回收站含。"""
-        entry_id = entry_mgr.add_entry(make_entry(title='A'))
+        entry_id = entry_mgr.add_entry(make_entry(title="A"))
         assert entry_mgr.delete_entry(entry_id) is True
 
         active = [e.id for e in entry_mgr.get_entries()]
@@ -203,7 +215,7 @@ class TestDeleteRestorePermanent:
 
     def test_restore_returns_entry_to_active(self, entry_mgr, make_entry):
         """恢复后条目回到默认视图、移出回收站。"""
-        entry_id = entry_mgr.add_entry(make_entry(title='A'))
+        entry_id = entry_mgr.add_entry(make_entry(title="A"))
         entry_mgr.delete_entry(entry_id)
         assert entry_mgr.restore_entry(entry_id) is True
 
@@ -214,22 +226,26 @@ class TestDeleteRestorePermanent:
 
     def test_restore_preserves_decrypted_fields(self, entry_mgr, make_entry):
         """软删除→恢复往返后，加密字段解密读回仍与原值一致。"""
-        entry_id = entry_mgr.add_entry(make_entry(
-            title='KeepMe', username='bob', password='Pass123!@#',
-            notes='secret-notes',
-        ))
+        entry_id = entry_mgr.add_entry(
+            make_entry(
+                title="KeepMe",
+                username="bob",
+                password="Pass123!@#",
+                notes="secret-notes",
+            )
+        )
         entry_mgr.delete_entry(entry_id)
         assert entry_mgr.restore_entry(entry_id) is True
 
         read = entry_mgr.get_entry(entry_id)
-        assert read.title == 'KeepMe'
-        assert read.username == 'bob'
-        assert read.password == 'Pass123!@#'
-        assert read.notes == 'secret-notes'
+        assert read.title == "KeepMe"
+        assert read.username == "bob"
+        assert read.password == "Pass123!@#"
+        assert read.notes == "secret-notes"
 
     def test_permanent_delete_makes_entry_unreadable(self, entry_mgr, make_entry):
         """永久删除后条目不可读，且不出现在任何视图。"""
-        entry_id = entry_mgr.add_entry(make_entry(title='Gone'))
+        entry_id = entry_mgr.add_entry(make_entry(title="Gone"))
         entry_mgr.delete_entry(entry_id)
         entry_mgr.permanent_delete_entry(entry_id)
 

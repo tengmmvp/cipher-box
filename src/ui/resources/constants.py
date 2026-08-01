@@ -11,30 +11,30 @@ from ...config import (
 # 其余为本模块独有 UI 常量。
 
 # ---------- 按钮尺寸 ----------
-BTN_DIALOG = (90, 34)       # 对话框主操作按钮
+BTN_DIALOG = (90, 34)  # 对话框主操作按钮
 BTN_DIALOG_WIDE = (100, 34)  # 宽对话框按钮，适配中文文本
-BTN_PRIMARY = (120, 38)     # 主要操作按钮，如登录、使用密码等
-BTN_GENERATE = (140, 38)    # 密码生成器主按钮
-BTN_SECONDARY = (80, 38)    # 次要按钮，如关闭等
-BTN_ACTION = (140, 36)      # 空状态操作按钮
-BTN_COMPACT = (80, 40)      # 紧凑功能按钮，如密码生成器复制
-BTN_SMALL_ACTION = (60, 28) # 小型操作按钮，如 TOTP 验证等
-BTN_FIX = (56, 28)          # 安全仪表盘修复按钮
-BTN_ICON = (32, 32)         # 图标按钮，如眼睛、锁等
-BTN_COPY = (28, 28)         # 复制按钮
-BTN_TOTP_COPY = (72, 30)    # TOTP 复制按钮
+BTN_PRIMARY = (120, 38)  # 主要操作按钮，如登录、使用密码等
+BTN_GENERATE = (140, 38)  # 密码生成器主按钮
+BTN_SECONDARY = (80, 38)  # 次要按钮，如关闭等
+BTN_ACTION = (140, 36)  # 空状态操作按钮
+BTN_COMPACT = (80, 40)  # 紧凑功能按钮，如密码生成器复制
+BTN_SMALL_ACTION = (60, 28)  # 小型操作按钮，如 TOTP 验证等
+BTN_FIX = (56, 28)  # 安全仪表盘修复按钮
+BTN_ICON = (32, 32)  # 图标按钮，如眼睛、锁等
+BTN_COPY = (28, 28)  # 复制按钮
+BTN_TOTP_COPY = (72, 30)  # TOTP 复制按钮
 BTN_CLOSE_TOAST = (20, 20)  # Toast 关闭按钮
 
 # ---------- 动画与反馈时长，单位毫秒 ----------
-MS_FEEDBACK = 1500          # 复制按钮反馈持续时间
-MS_TOAST_SHORT = 2000       # 短 Toast 显示
-MS_TOAST_DEFAULT = 3000     # 默认 Toast 显示
-MS_TOAST_LONG = 5000        # 长 Toast 显示，用于需用户注意的消息
+MS_FEEDBACK = 1500  # 复制按钮反馈持续时间
+MS_TOAST_SHORT = 2000  # 短 Toast 显示
+MS_TOAST_DEFAULT = 3000  # 默认 Toast 显示
+MS_TOAST_LONG = 5000  # 长 Toast 显示，用于需用户注意的消息
 PWD_VISIBLE_SECONDS_DEFAULT: int = int(DEFAULT_CONFIG[CFG_PASSWORD_VISIBLE_SECONDS])
 CLIPBOARD_CLEAR_SECONDS_DEFAULT: int = int(DEFAULT_CONFIG[CFG_CLIPBOARD_CLEAR_SECONDS])
-WORKER_WAIT_TIMEOUT_MS = 3000     # 后台 Worker 等待超时
+WORKER_WAIT_TIMEOUT_MS = 3000  # 后台 Worker 等待超时
 ABOUT_TO_QUIT_WAIT_TIMEOUT_MS = 400  # aboutToQuit 短超时等待 worker 退出（不阻塞退出）
-MS_SEARCH_DEBOUNCE = 300    # 搜索输入防抖间隔
+MS_SEARCH_DEBOUNCE = 300  # 搜索输入防抖间隔
 MS_AUTO_BACKUP_CHECK = 10 * 60 * 1000  # 自动备份检查间隔
 MS_STATUS_BAR_DEBOUNCE = 100  # 状态栏安全分析防抖间隔
 MS_ENTRY_SELECT_DEBOUNCE = 80  # 条目选择防抖间隔
@@ -42,10 +42,10 @@ MS_ENTRY_CHANGE_DEBOUNCE = 100  # 条目变更防抖间隔
 MS_INITIAL_BACKUP_DELAY = 1500  # 启动后首次备份检查延迟
 
 # ---------- 显示限制 ----------
-MAX_HISTORY_DISPLAY = 5     # 详情面板最多显示密码历史条数
-MAX_TAG_DISPLAY = 5         # 详情面板最多显示标签数
-MAX_TAG_AUTOCOMPLETE = 20   # 标签自动补全最大数量
-RECENT_ENTRY_LIMIT = 20     # 「近期更新」筛选最多显示条目数
+MAX_HISTORY_DISPLAY = 5  # 详情面板最多显示密码历史条数
+MAX_TAG_DISPLAY = 5  # 详情面板最多显示标签数
+MAX_TAG_AUTOCOMPLETE = 20  # 标签自动补全最大数量
+RECENT_ENTRY_LIMIT = 20  # 「近期更新」筛选最多显示条目数
 MAX_SEARCH_RESULTS_DISPLAY = 1000  # 搜索结果渲染上限：超大库下避免一次性渲染过多条目卡死 UI
 ASYNC_SEARCH_THRESHOLD = 50  # 超过该条目数时列表/搜索移入后台线程
 # 阈值由 100 下调至 50（PERF-005）：冷缓存下 50-100 条目的全量摘要解密（每条 4 字段
@@ -56,7 +56,7 @@ ASYNC_SEARCH_THRESHOLD = 50  # 超过该条目数时列表/搜索移入后台线
 WINDOW_MIN_SIZE = (980, 640)
 WINDOW_DEFAULT_SIZE = (1180, 760)
 SIDEBAR_WIDTH = 220
-SIDEBAR_ICON_SIZE = (28, 28)        # 侧边栏品牌图标尺寸
+SIDEBAR_ICON_SIZE = (28, 28)  # 侧边栏品牌图标尺寸
 SIDEBAR_ICON_SIZE_SMALL = (22, 22)  # 侧边栏小号图标按钮尺寸（如「管理分类」+ 按钮）
 FILTER_MAX_HEIGHT = 240
 SPLITTER_SIZES = [200, 380, 420]
@@ -80,42 +80,44 @@ TOAST_MARGIN_RIGHT = 20
 TOAST_HOVER_RESTART_MS = 1000
 
 # ---------- 登录窗口 ----------
-LOGIN_WIDTH = 500                   # 登录窗口固定宽度
+LOGIN_WIDTH = 500  # 登录窗口固定宽度
 LOGIN_HEIGHT_FIRST = 520
 LOGIN_HEIGHT_LOGIN = 450
-LOGIN_TITLE_FONT_SIZE_PX = 24       # 登录窗口标题字号（QSS 内联，单位 px）
+LOGIN_TITLE_FONT_SIZE_PX = 24  # 登录窗口标题字号（QSS 内联，单位 px）
 
 
 # ---------- 字体 ----------
 # 字体栈：Windows 优先 Microsoft YaHei，macOS 回退 PingFang SC，
 # Linux 回退 Noto Sans CJK SC，最终回退系统无衬线字体。
-FONT_FAMILY_PRIMARY = 'Microsoft YaHei UI'
-FONT_FAMILY_DISPLAY = 'Microsoft YaHei'
+FONT_FAMILY_PRIMARY = "Microsoft YaHei UI"
+FONT_FAMILY_DISPLAY = "Microsoft YaHei"
 # QFont 不支持 CSS 字体栈，此处列出回退顺序供 QFont 构造使用。
-FONT_FAMILY_FALLBACKS = ['PingFang SC', 'Noto Sans CJK SC', 'SimHei', 'sans-serif']
+FONT_FAMILY_FALLBACKS = ["PingFang SC", "Noto Sans CJK SC", "SimHei", "sans-serif"]
 
 # CSS/QSS 字体栈，供 QSS 样式表 font-family 属性使用
 FONT_FAMILY_CSS = '"Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Segoe UI", sans-serif'
 
 # ---------- 密码相关默认值 ----------
-PWD_TOGGLE_AUTO_HIDE_SECONDS = 30    # 密码切换按钮自动隐藏秒数
-PWD_GENERATE_LENGTH_DEFAULT: int = int(DEFAULT_CONFIG[CFG_DEFAULT_PASSWORD_LENGTH])  # 默认生成密码长度（单一事实源）
-PWD_MASK = '••••••••'  # 密码字段掩码（显隐切换/比较的单一事实源，跨 detail_panel / password_history_widget / secret_field 复用）
+PWD_TOGGLE_AUTO_HIDE_SECONDS = 30  # 密码切换按钮自动隐藏秒数
+PWD_GENERATE_LENGTH_DEFAULT: int = int(
+    DEFAULT_CONFIG[CFG_DEFAULT_PASSWORD_LENGTH]
+)  # 默认生成密码长度（单一事实源）
+PWD_MASK = "••••••••"  # 密码字段掩码（显隐切换/比较的单一事实源，跨 detail_panel / password_history_widget / secret_field 复用）
 
 # ---------- 等宽字体，用于 QSS 样式表 ----------
-FONT_FAMILY_MONOSPACE = 'Consolas, Courier New, monospace'
+FONT_FAMILY_MONOSPACE = "Consolas, Courier New, monospace"
 
 # ---------- 排序选项 ----------
 # 每项由显示名称、字段、排序方向组成，供 main_window 和 ListRefreshController 共享
 SORT_OPTIONS = [
-    ('更新时间 ↓', 'updated_at', 'desc'),
-    ('更新时间 ↑', 'updated_at', 'asc'),
-    ('标题 A→Z', 'title', 'asc'),
-    ('标题 Z→A', 'title', 'desc'),
-    ('强度 高→低', 'password_strength', 'desc'),
-    ('强度 低→高', 'password_strength', 'asc'),
-    ('创建时间 ↓', 'created_at', 'desc'),
-    ('创建时间 ↑', 'created_at', 'asc'),
+    ("更新时间 ↓", "updated_at", "desc"),
+    ("更新时间 ↑", "updated_at", "asc"),
+    ("标题 A→Z", "title", "asc"),
+    ("标题 Z→A", "title", "desc"),
+    ("强度 高→低", "password_strength", "desc"),
+    ("强度 低→高", "password_strength", "asc"),
+    ("创建时间 ↓", "created_at", "desc"),
+    ("创建时间 ↑", "created_at", "asc"),
 ]
 
 # ---------- 条目字段校验 ----------
@@ -126,5 +128,5 @@ SERVER_PORT_MAX = 65535
 # ---------- 主题标识 ----------
 # 主题字符串单例（与 config.DEFAULT_THEME 同值）：'light'/'dark' 字面量归 config
 # 所有，此处仅为 UI 层提供单一事实源，避免多处内联漂移。
-THEME_LIGHT = 'light'
-THEME_DARK = 'dark'
+THEME_LIGHT = "light"
+THEME_DARK = "dark"

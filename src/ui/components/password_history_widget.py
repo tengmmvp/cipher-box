@@ -87,7 +87,7 @@ class PasswordHistoryWidget(QWidget):
         count = entry_manager.password_history.get_count(entry_id)
         if not count:
             return
-        btn = QPushButton(f'密码历史（{count} 条记录）— 点击展开')
+        btn = QPushButton(f"密码历史（{count} 条记录）— 点击展开")
         btn.setFlat(True)
         btn.setStyleSheet(f"""
             QPushButton {{
@@ -102,9 +102,7 @@ class PasswordHistoryWidget(QWidget):
             mgr = self._entry_mgr
             if not mgr:
                 return
-            decrypted = mgr.password_history.decrypt(
-                mgr.password_history.get(eid)
-            )
+            decrypted = mgr.password_history.decrypt(mgr.password_history.get(eid))
             if decrypted:
                 content_layout.removeWidget(button)
                 button.deleteLater()
@@ -132,7 +130,7 @@ class PasswordHistoryWidget(QWidget):
 
     def _build_history(self, history: list[dict[str, str]], content_layout: QVBoxLayout) -> None:
         """构建密码历史折叠区。"""
-        group = QGroupBox('密码历史')
+        group = QGroupBox("密码历史")
         group_layout = QVBoxLayout(group)
         group_layout.setSpacing(6)
 
@@ -140,16 +138,16 @@ class PasswordHistoryWidget(QWidget):
             row = QHBoxLayout()
             row.setSpacing(8)
 
-            time_label = QLabel(record.get('changed_at', ''))
+            time_label = QLabel(record.get("changed_at", ""))
             time_label.setFixedWidth(140)
-            time_label.setStyleSheet(f'color: {c("text_muted")}; font-size: 12px;')
+            time_label.setStyleSheet(f"color: {c('text_muted')}; font-size: 12px;")
             row.addWidget(time_label)
 
             # 密码，初始隐藏
-            pwd_text = record.get('password', '')
+            pwd_text = record.get("password", "")
             pwd_label = QLabel(PWD_MASK)
             pwd_label.setStyleSheet(
-                f'font-family: {FONT_FAMILY_MONOSPACE}; font-size: 12px; color: {c("text_primary")};'
+                f"font-family: {FONT_FAMILY_MONOSPACE}; font-size: 12px; color: {c('text_primary')};"
             )
             row.addWidget(pwd_label, 1)
             self._pwd_labels.append(pwd_label)
@@ -161,9 +159,9 @@ class PasswordHistoryWidget(QWidget):
 
             show_btn = QPushButton()
             set_icon(show_btn, EYE)
-            show_btn.setObjectName('iconBtn')
+            show_btn.setObjectName("iconBtn")
             show_btn.setFixedSize(*BTN_COPY)
-            show_btn.setToolTip('显示/隐藏')
+            show_btn.setToolTip("显示/隐藏")
 
             # 历史密码显示超时定时器，持久且可取消
             hist_timer = QTimer(self)
@@ -178,8 +176,14 @@ class PasswordHistoryWidget(QWidget):
 
             hist_timer.timeout.connect(_on_hist_timeout)
 
-            def toggle_pwd(_checked: bool = False, lbl: QLabel = pwd_label, btn: QPushButton = show_btn, idx: int = hist_idx, timer: QTimer = hist_timer) -> None:
-                pwd = self._history_passwords[idx] if idx < len(self._history_passwords) else ''
+            def toggle_pwd(
+                _checked: bool = False,
+                lbl: QLabel = pwd_label,
+                btn: QPushButton = show_btn,
+                idx: int = hist_idx,
+                timer: QTimer = hist_timer,
+            ) -> None:
+                pwd = self._history_passwords[idx] if idx < len(self._history_passwords) else ""
                 if lbl.text() == PWD_MASK:
                     lbl.setText(pwd)
                     set_icon(btn, LOCK)
@@ -196,12 +200,14 @@ class PasswordHistoryWidget(QWidget):
 
             copy_btn = QPushButton()
             set_icon(copy_btn, COPY)
-            copy_btn.setObjectName('iconBtn')
+            copy_btn.setObjectName("iconBtn")
             copy_btn.setFixedSize(*BTN_COPY)
-            copy_btn.setToolTip('复制密码')
+            copy_btn.setToolTip("复制密码")
 
-            def do_copy(_checked: bool = False, idx: int = hist_idx, btn: QPushButton = copy_btn) -> None:
-                pwd = self._history_passwords[idx] if idx < len(self._history_passwords) else ''
+            def do_copy(
+                _checked: bool = False, idx: int = hist_idx, btn: QPushButton = copy_btn
+            ) -> None:
+                pwd = self._history_passwords[idx] if idx < len(self._history_passwords) else ""
                 if self._copy_with_feedback is None:
                     return
                 self._copy_with_feedback(btn, pwd)
@@ -216,4 +222,4 @@ class PasswordHistoryWidget(QWidget):
         # record dict 的 password 明文已提取到 _history_passwords，不再需要 dict 中的
         # 明文副本——显式 pop 收缩驻留面，不依赖 _expand 返回后的 GC 回收。
         for record in history:
-            record.pop('password', None)
+            record.pop("password", None)

@@ -44,10 +44,13 @@ class _SessionLockFilter(QAbstractNativeEventFilter):
         super().__init__()
         self._on_lock = on_lock
 
-    def nativeEventFilter(self, eventType: QByteArray | bytes, message: sip.voidptr) -> tuple[bool, int]:  # type: ignore[override]  # pyright: ignore[reportIncompatibleMethodOverride]
+    def nativeEventFilter(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self, eventType: QByteArray | bytes, message: sip.voidptr
+    ) -> tuple[bool, int]:
         try:
-            if bytes(eventType) == b'windows_generic_MSG':  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
+            if bytes(eventType) == b"windows_generic_MSG":  # type: ignore[arg-type]  # pyright: ignore[reportArgumentType]
                 from ctypes import wintypes
+
                 msg = wintypes.MSG.from_address(int(message))  # pyright: ignore[reportArgumentType]
                 if msg.message == _WM_WTSSESSION_CHANGE and msg.wParam == _WTS_SESSION_LOCK:
                     self._on_lock()
@@ -128,16 +131,18 @@ class AutoLockController:
         # 真实消息循环，WTSRegisterSessionNotification 会触发 C 层 access violation（无法
         # try/except 捕获）。用环境变量替代 'pytest' in sys.modules 探测，避免生产代码
         # 分支于测试框架存在性（MAINT-1）。
-        if sys.platform != 'win32' or os.environ.get('CIPHERBOX_DISABLE_WTS'):
+        if sys.platform != "win32" or os.environ.get("CIPHERBOX_DISABLE_WTS"):
             return
         try:
             import ctypes
             from ctypes import wintypes
+
             # 显式声明 argtypes/restype：HWND 是指针类型，64 位下默认 c_int 推断会使
             # HWND 传参截断，触发 access violation（C 层崩溃，try/except 无法捕获）。
             wts = ctypes.windll.wtsapi32
             wts.WTSRegisterSessionNotification.argtypes = [
-                wintypes.HWND, wintypes.DWORD,
+                wintypes.HWND,
+                wintypes.DWORD,
             ]
             wts.WTSRegisterSessionNotification.restype = wintypes.BOOL
             hwnd = int(window.winId())

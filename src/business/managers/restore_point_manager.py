@@ -60,7 +60,7 @@ class RestorePointManager:
         """
         creator = self._backup_creator
         if creator is None:
-            raise RuntimeError('恢复点备份管线未绑定（bind_backup_creator 未调用）')
+            raise RuntimeError("恢复点备份管线未绑定（bind_backup_creator 未调用）")
         directory = self._vault.data_dir / BACKUPS_DIR_NAME
         # 恢复点是恢复失败回滚的安全网，优先于权限严格性：data_dir 已由 config
         # 以 strict 创建，backups 子目录继承收紧后的父权限；宁可保留安全网也
@@ -78,7 +78,7 @@ class RestorePointManager:
             self._safe_delete_restore_point(target_path)
             raise
         if not success:
-            raise BackupError(f'无法创建恢复前安全快照：{error}')
+            raise BackupError(f"无法创建恢复前安全快照：{error}")
         # 按文件名降序保留最新 MAX_RESTORE_POINTS 个恢复点，删除过期项；删除失败
         # 仅告警（恢复点含全量明文，残留由调用方据创建结果决定是否重试清理）。
         # PF-001-R：retention 清理异常就地捕获降级 warning，不漂移致「恢复已成功却被
@@ -86,11 +86,13 @@ class RestorePointManager:
         # 此处仅兜底 glob 等非预期 OSError）。
         try:
             secure_purge(
-                [directory], [PRE_RESTORE_GLOB],
-                keep=MAX_RESTORE_POINTS, collect_failures=False,
+                [directory],
+                [PRE_RESTORE_GLOB],
+                keep=MAX_RESTORE_POINTS,
+                collect_failures=False,
             )
         except OSError:
-            logger.warning('恢复点 retention 清理失败，已跳过', exc_info=True)
+            logger.warning("恢复点 retention 清理失败，已跳过", exc_info=True)
         return target_path
 
     @staticmethod
@@ -103,7 +105,7 @@ class RestorePointManager:
         try:
             secure_delete_file(path)
         except OSError:
-            logger.warning('异常路径清理恢复点失败：%s', path, exc_info=True)
+            logger.warning("异常路径清理恢复点失败：%s", path, exc_info=True)
 
     def count(self) -> int:
         """统计恢复前安全快照数量（覆盖默认与自定义备份目录），供 UI 决策。"""
@@ -127,7 +129,8 @@ class RestorePointManager:
             # 恢复点含恢复前全部明文，删除失败意味着泄漏面未收缩，需可见日志（QL-002）。
             # secure_purge 默认 collect_failures=True 收集失败项，此处补 warning 上报。
             logger.warning(
-                '清理 %d 个恢复点失败（含明文，需手动检查）：%s',
-                len(failed), ', '.join(str(p) for p in failed),
+                "清理 %d 个恢复点失败（含明文，需手动检查）：%s",
+                len(failed),
+                ", ".join(str(p) for p in failed),
             )
         return total - len(failed)

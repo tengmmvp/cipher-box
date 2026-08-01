@@ -36,10 +36,10 @@ def _make_raw_entry(
     entry_id: int,
     key: bytes,
     *,
-    username: str = '',
-    password: str = '',
-    notes: str = '',
-    totp_secret: str = '',
+    username: str = "",
+    password: str = "",
+    notes: str = "",
+    totp_secret: str = "",
     custom_fields: list | None = None,
 ) -> RawEntry:
     """创建一个模拟数据库原始状态的 RawEntry，敏感字段已用 key 加密。"""
@@ -49,24 +49,28 @@ def _make_raw_entry(
     return RawEntry(
         id=entry_id,
         crypto_id=crypto_id,
-        title=encrypt_field(f'条目{entry_id}', key, crypto_id, 'title'),
-        username=encrypt_field(username, key, crypto_id, 'username') if username else '',
-        password=encrypt_field(password, key, crypto_id, 'password') if password else '',
-        url=encrypt_field(f'https://example.com/{entry_id}', key, crypto_id, 'url'),
+        title=encrypt_field(f"条目{entry_id}", key, crypto_id, "title"),
+        username=encrypt_field(username, key, crypto_id, "username") if username else "",
+        password=encrypt_field(password, key, crypto_id, "password") if password else "",
+        url=encrypt_field(f"https://example.com/{entry_id}", key, crypto_id, "url"),
         category_id=None,
-        tags='',
-        notes=encrypt_field(notes, key, crypto_id, 'notes') if notes else '',
-        custom_fields=encrypt_field(custom_json, key, crypto_id, 'custom_fields') if custom_json != '[]' else '',
+        tags="",
+        notes=encrypt_field(notes, key, crypto_id, "notes") if notes else "",
+        custom_fields=encrypt_field(custom_json, key, crypto_id, "custom_fields")
+        if custom_json != "[]"
+        else "",
         is_favorite=False,
         is_deleted=False,
         password_strength=0,
-        entry_type='login',
-        totp_secret=encrypt_field(totp_secret, key, crypto_id, 'totp_secret') if totp_secret else '',
-        created_at='2025-01-01T00:00:00',
-        updated_at='2025-01-01T00:00:00',
-        deleted_at='',
-        password_changed_at='2025-01-01T00:00:00',
-        metadata_mac='',
+        entry_type="login",
+        totp_secret=encrypt_field(totp_secret, key, crypto_id, "totp_secret")
+        if totp_secret
+        else "",
+        created_at="2025-01-01T00:00:00",
+        updated_at="2025-01-01T00:00:00",
+        deleted_at="",
+        password_changed_at="2025-01-01T00:00:00",
+        metadata_mac="",
     )
 
 
@@ -95,14 +99,16 @@ class MockDB:
         """按 id 升序分页返回条目。"""
         after = query.after_id or 0
         filtered = [e for e in self._entries if cast(int, e.id) > after]
-        return filtered[:query.limit] if query.limit is not None else filtered
+        return filtered[: query.limit] if query.limit is not None else filtered
 
     def update_entries_batch(self, rows: list[ReEncryptedEntry]) -> None:
         """记录批量更新行。"""
         self.updated_entry_batches.append(rows)
 
     def get_all_password_history_batch(
-        self, after_id: int = 0, limit: int = 200,
+        self,
+        after_id: int = 0,
+        limit: int = 200,
     ) -> list[PasswordHistory]:
         """按 id 升序分页返回密码历史。"""
         filtered = [h for h in self._history if (h.id or 0) > after_id]
@@ -131,12 +137,13 @@ def test_re_encrypt_entries_round_trip():
     new_key = _random_key()
 
     entry = _make_raw_entry(
-        1, old_key,
-        username='alice@example.com',
-        password='S3cure!Pass',
-        notes='这是备注',
-        totp_secret='JBSWY3DPEHPK3PXP',
-        custom_fields=[{'name': 'API Key', 'value': 'sk-12345', 'field_type': 'text'}],
+        1,
+        old_key,
+        username="alice@example.com",
+        password="S3cure!Pass",
+        notes="这是备注",
+        totp_secret="JBSWY3DPEHPK3PXP",
+        custom_fields=[{"name": "API Key", "value": "sk-12345", "field_type": "text"}],
     )
 
     db = MockDB()
@@ -153,16 +160,18 @@ def test_re_encrypt_entries_round_trip():
     assert isinstance(row, ReEncryptedEntry)
 
     crypto_id = row.crypto_id
-    assert decrypt_field(row.username_enc, new_key, crypto_id, 'username') == 'alice@example.com'
-    assert decrypt_field(row.password_enc, new_key, crypto_id, 'password') == 'S3cure!Pass'
-    assert decrypt_field(row.notes_enc, new_key, crypto_id, 'notes') == '这是备注'
-    assert decrypt_field(row.totp_secret_enc, new_key, crypto_id, 'totp_secret') == 'JBSWY3DPEHPK3PXP'
+    assert decrypt_field(row.username_enc, new_key, crypto_id, "username") == "alice@example.com"
+    assert decrypt_field(row.password_enc, new_key, crypto_id, "password") == "S3cure!Pass"
+    assert decrypt_field(row.notes_enc, new_key, crypto_id, "notes") == "这是备注"
+    assert (
+        decrypt_field(row.totp_secret_enc, new_key, crypto_id, "totp_secret") == "JBSWY3DPEHPK3PXP"
+    )
 
-    custom_json = decrypt_field(row.custom_fields_enc, new_key, crypto_id, 'custom_fields')
+    custom_json = decrypt_field(row.custom_fields_enc, new_key, crypto_id, "custom_fields")
     custom_fields = json.loads(custom_json)
     assert len(custom_fields) == 1
-    assert custom_fields[0]['name'] == 'API Key'
-    assert custom_fields[0]['value'] == 'sk-12345'
+    assert custom_fields[0]["name"] == "API Key"
+    assert custom_fields[0]["value"] == "sk-12345"
 
     assert len(row.metadata_mac) == 64  # HMAC-SHA256 hex digest
 
@@ -178,10 +187,11 @@ def test_re_encrypt_entries_batching():
     db = MockDB()
     for i in range(1, num_entries + 1):
         entry = _make_raw_entry(
-            i, old_key,
-            username=f'user{i}',
-            password=f'pass{i}',
-            notes=f'note{i}',
+            i,
+            old_key,
+            username=f"user{i}",
+            password=f"pass{i}",
+            notes=f"note{i}",
         )
         db.add_entry(entry)
 
@@ -196,12 +206,12 @@ def test_re_encrypt_entries_batching():
 
     all_rows = db.updated_entry_batches[0] + db.updated_entry_batches[1]
     for row in all_rows:
-        plain_user = decrypt_field(row.username_enc, new_key, row.crypto_id, 'username')
-        assert plain_user.startswith('user')
-        plain_pass = decrypt_field(row.password_enc, new_key, row.crypto_id, 'password')
-        assert plain_pass.startswith('pass')
-        plain_notes = decrypt_field(row.notes_enc, new_key, row.crypto_id, 'notes')
-        assert plain_notes.startswith('note')
+        plain_user = decrypt_field(row.username_enc, new_key, row.crypto_id, "username")
+        assert plain_user.startswith("user")
+        plain_pass = decrypt_field(row.password_enc, new_key, row.crypto_id, "password")
+        assert plain_pass.startswith("pass")
+        plain_notes = decrypt_field(row.notes_enc, new_key, row.crypto_id, "notes")
+        assert plain_notes.startswith("note")
 
     EncryptionEngine.clear_cache()
 
@@ -213,16 +223,18 @@ def test_re_encrypt_history_round_trip():
     crypto_id = uuid.uuid4().hex
 
     # 创建密码历史，old_password_enc 用旧密钥加密
-    encrypted_password = encrypt_field('old_password_123', old_key, crypto_id, 'password')
+    encrypted_password = encrypt_field("old_password_123", old_key, crypto_id, "password")
 
     db = MockDB()
-    db.add_history(PasswordHistory(
-        id=1,
-        entry_id=100,
-        old_password_enc=encrypted_password,
-        changed_at='2025-06-01T00:00:00',
-        entry_crypto_id=crypto_id,
-    ))
+    db.add_history(
+        PasswordHistory(
+            id=1,
+            entry_id=100,
+            old_password_enc=encrypted_password,
+            changed_at="2025-06-01T00:00:00",
+            entry_crypto_id=crypto_id,
+        )
+    )
 
     signer = MetadataSigner()
     service = ReEncryptionService(db, signer)
@@ -236,8 +248,8 @@ def test_re_encrypt_history_round_trip():
     assert isinstance(row, ReEncryptedHistory)
     assert row.id == 1
 
-    plain = decrypt_field(row.ciphertext, new_key, crypto_id, 'password')
-    assert plain == 'old_password_123'
+    plain = decrypt_field(row.ciphertext, new_key, crypto_id, "password")
+    assert plain == "old_password_123"
 
     EncryptionEngine.clear_cache()
 
@@ -256,9 +268,10 @@ def test_re_encrypt_entries_corruption_raises_decryption_error():
 
     # 用错误密钥加密，导致用 old_key 解密时失败
     entry = _make_raw_entry(
-        1, wrong_key,
-        username='corrupted_user',
-        password='corrupted_pass',
+        1,
+        wrong_key,
+        username="corrupted_user",
+        password="corrupted_pass",
     )
 
     db = MockDB()
@@ -286,16 +299,18 @@ def test_re_encrypt_history_corruption_raises_decryption_error():
     wrong_key = _random_key()
     crypto_id = uuid.uuid4().hex
 
-    encrypted_password = encrypt_field('some_password', wrong_key, crypto_id, 'password')
+    encrypted_password = encrypt_field("some_password", wrong_key, crypto_id, "password")
 
     db = MockDB()
-    db.add_history(PasswordHistory(
-        id=1,
-        entry_id=100,
-        old_password_enc=encrypted_password,
-        changed_at='2025-06-01T00:00:00',
-        entry_crypto_id=crypto_id,
-    ))
+    db.add_history(
+        PasswordHistory(
+            id=1,
+            entry_id=100,
+            old_password_enc=encrypted_password,
+            changed_at="2025-06-01T00:00:00",
+            entry_crypto_id=crypto_id,
+        )
+    )
 
     signer = MetadataSigner()
     service = ReEncryptionService(db, signer)
@@ -315,7 +330,7 @@ def test_re_encrypt_categories_round_trip():
 
     cat_id = 1
     crypto_id = category_crypto_id(cat_id)
-    encrypted_name = encrypt_field('工作分类', old_key, crypto_id, 'category_name')
+    encrypted_name = encrypt_field("工作分类", old_key, crypto_id, "category_name")
 
     db = MockDB()
     db.add_category(Category(id=cat_id, name=encrypted_name))
@@ -329,8 +344,8 @@ def test_re_encrypt_categories_round_trip():
     assert updated.id == cat_id
 
     # 用新密钥解密验证（AAD 仍为 category_crypto_id(cat_id)）
-    plain = decrypt_field(updated.name, new_key, crypto_id, 'category_name')
-    assert plain == '工作分类'
+    plain = decrypt_field(updated.name, new_key, crypto_id, "category_name")
+    assert plain == "工作分类"
 
     EncryptionEngine.clear_cache()
 
@@ -347,7 +362,7 @@ def test_re_encrypt_categories_corruption_raises_decryption_error():
 
     cat_id = 1
     crypto_id = category_crypto_id(cat_id)
-    encrypted_name = encrypt_field('损坏分类', wrong_key, crypto_id, 'category_name')
+    encrypted_name = encrypt_field("损坏分类", wrong_key, crypto_id, "category_name")
 
     db = MockDB()
     db.add_category(Category(id=cat_id, name=encrypted_name))

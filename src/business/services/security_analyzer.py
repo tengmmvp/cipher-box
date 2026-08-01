@@ -101,8 +101,8 @@ class SecurityAnalyzer:
 
     def __init__(
         self,
-        vault_manager: 'VaultManager',
-        entry_cache: 'EntryCacheManager',
+        vault_manager: "VaultManager",
+        entry_cache: "EntryCacheManager",
         cache_ttl_seconds: int = SECURITY_ANALYSIS_CACHE_TTL_SECONDS,
     ):
         self._vault = vault_manager
@@ -123,11 +123,17 @@ class SecurityAnalyzer:
         weak_ratio = min(weak_count / total, 1.0)
         dup_ratio = min(dup_count / total, 1.0)
         old_ratio = min(old_count / total, 1.0)
-        return max(0, int(100 - (
-            weak_ratio * 100 * HEALTH_PENALTY_WEAK
-            + dup_ratio * 100 * HEALTH_PENALTY_DUPLICATE
-            + old_ratio * 100 * HEALTH_PENALTY_OLD
-        )))
+        return max(
+            0,
+            int(
+                100
+                - (
+                    weak_ratio * 100 * HEALTH_PENALTY_WEAK
+                    + dup_ratio * 100 * HEALTH_PENALTY_DUPLICATE
+                    + old_ratio * 100 * HEALTH_PENALTY_OLD
+                )
+            ),
+        )
 
     @property
     def _key(self) -> bytes:
@@ -145,7 +151,7 @@ class SecurityAnalyzer:
         # 循环外已 invalidate_if_epoch_changed，此处经无校验入口避免每条重复加锁。
         title, username, url, tags = self._cache.search_metadata_for_analysis(raw)
         if self._cache.get_failed_fields(raw.crypto_id):
-            raise EntryIntegrityError(f'条目 {raw.crypto_id} 摘要字段解密失败')
+            raise EntryIntegrityError(f"条目 {raw.crypto_id} 摘要字段解密失败")
         summary = build_entry_summary(raw, username)
         summary = dataclasses.replace(summary, title=title, url=url, tags=tags)
         if raw.category_id is not None and raw.category_name:
@@ -153,12 +159,11 @@ class SecurityAnalyzer:
             # 跳过分支据此 skip 而非终止整次分析。
             try:
                 category_name = self._cache.decrypt_category_name(
-                    raw.category_id, raw.category_name,
+                    raw.category_id,
+                    raw.category_name,
                 )
             except DecryptionError:
-                raise EntryIntegrityError(
-                    f'条目 {raw.crypto_id} 分类名解密失败'
-                ) from None
+                raise EntryIntegrityError(f"条目 {raw.crypto_id} 分类名解密失败") from None
             summary = dataclasses.replace(summary, category_name=category_name)
         return summary
 
@@ -170,7 +175,7 @@ class SecurityAnalyzer:
         经 ``self._key`` 触发密钥复制，缩小驻留面。
         """
         return hmac.digest(
-            key if key is not None else self._key, password.encode('utf-8'), 'sha256'
+            key if key is not None else self._key, password.encode("utf-8"), "sha256"
         )
 
     def _refilter_cache(self, cache: SecurityReport, days: int) -> SecurityReport:
@@ -181,40 +186,43 @@ class SecurityAnalyzer:
         调用方修改不污染缓存（summary 无可变容器，浅层 replace 足够）。
         """
         # dict(TypedDict) 退化为 dict[str, object]，cast 标注此复制边界。
-        cache = cast('SecurityReport', dict(cache))
+        cache = cast("SecurityReport", dict(cache))
         if days != self._analysis_cache_days:
             cutoff = datetime.now(timezone.utc) - timedelta(days=days)
             new_old_entries = [
-                s for s, dt in cache.get('_summaries_with_dates', [])
+                s
+                for s, dt in cache.get("_summaries_with_dates", [])
                 if dt is not None and dt < cutoff
             ]
-            cache['old_entries'] = new_old_entries
-            cache['old'] = len(new_old_entries)
+            cache["old_entries"] = new_old_entries
+            cache["old"] = len(new_old_entries)
             # 同步回写实例缓存（QL-001）：_analysis_cache_days 与 old/old_entries 必须一致，
             # 否则 get_cached_counts 快路径（days == _analysis_cache_days）会读实例中旧 days
             # 的 old 计数（多报过期）。此前仅改副本致实例与 days 脱钩。
             if self._analysis_cache is not None:
-                self._analysis_cache['old_entries'] = list(new_old_entries)
-                self._analysis_cache['old'] = len(new_old_entries)
+                self._analysis_cache["old_entries"] = list(new_old_entries)
+                self._analysis_cache["old"] = len(new_old_entries)
             # 更新 days 使后续相同 days 命中跳过重复 O(n) 过滤。
             self._analysis_cache_days = days
         # 出口复制：Entry 经 replace 创建独立实例，防调用方修改污染缓存。
-        if 'weak_entries' in cache:
-            cache['weak_entries'] = [dataclasses.replace(e) for e in cache['weak_entries']]
-        if 'old_entries' in cache:
-            cache['old_entries'] = [dataclasses.replace(e) for e in cache['old_entries']]
-        if 'duplicate_groups' in cache:
-            cache['duplicate_groups'] = [
-                [dataclasses.replace(e) for e in group]
-                for group in cache['duplicate_groups']
+        if "weak_entries" in cache:
+            cache["weak_entries"] = [dataclasses.replace(e) for e in cache["weak_entries"]]
+        if "old_entries" in cache:
+            cache["old_entries"] = [dataclasses.replace(e) for e in cache["old_entries"]]
+        if "duplicate_groups" in cache:
+            cache["duplicate_groups"] = [
+                [dataclasses.replace(e) for e in group] for group in cache["duplicate_groups"]
             ]
         # _summaries_with_dates 同样出口复制（元素为元组，浅拷贝列表即可）。
-        if '_summaries_with_dates' in cache:
-            cache['_summaries_with_dates'] = list(cache['_summaries_with_dates'])
+        if "_summaries_with_dates" in cache:
+            cache["_summaries_with_dates"] = list(cache["_summaries_with_dates"])
         return cache
 
     def _cached_analysis(
-        self, days: int = DEFAULT_ANALYSIS_DAYS, *, cancel_check: Callable[[], bool] | None = None,
+        self,
+        days: int = DEFAULT_ANALYSIS_DAYS,
+        *,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> SecurityReport:
         """带缓存的安全分析，基础分析不依赖 days。
 
@@ -226,9 +234,11 @@ class SecurityAnalyzer:
         with self._cache_lock:
             current_epoch = self._vault.key_epoch
             cached = self._analysis_cache
-            if (cached is not None
-                    and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds
-                    and cached.get('_key_epoch') == current_epoch):
+            if (
+                cached is not None
+                and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds
+                and cached.get("_key_epoch") == current_epoch
+            ):
                 return self._refilter_cache(cached, days)
         try:
             result = self.full_analysis(days, cancel_check=cancel_check)
@@ -237,19 +247,26 @@ class SecurityAnalyzer:
             # 返回空报告且不缓存，避免后台线程崩溃；下次解锁后重新计算填充。
             logger.debug("安全分析期间保险库被锁定，返回空报告")
             return {
-                'total': 0, 'weak_count': 0, 'weak_entries': [],
-                'duplicate_groups': [], 'duplicate_count': 0,
-                'old_entries': [], 'old': 0, '_summaries_with_dates': [],
+                "total": 0,
+                "weak_count": 0,
+                "weak_entries": [],
+                "duplicate_groups": [],
+                "duplicate_count": 0,
+                "old_entries": [],
+                "old": 0,
+                "_summaries_with_dates": [],
             }
         with self._cache_lock:
             # 双重检查锁：full_analysis 在锁外执行，期间可能已被并发线程填充；
             # 持锁后重新校验，若仍有效直接复用以避免覆盖冗余写入。
             cached = self._analysis_cache
-            if (cached is not None
-                    and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds
-                    and cached.get('_key_epoch') == current_epoch):
+            if (
+                cached is not None
+                and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds
+                and cached.get("_key_epoch") == current_epoch
+            ):
                 return self._refilter_cache(cached, days)
-            result['_key_epoch'] = current_epoch
+            result["_key_epoch"] = current_epoch
             self._analysis_cache = result
             self._analysis_cache_time = time.monotonic()
             self._analysis_cache_days = days
@@ -264,9 +281,11 @@ class SecurityAnalyzer:
         """
         with self._cache_lock:
             cached = self._analysis_cache
-            if (cached is not None
-                    and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds
-                    and cached.get('_key_epoch') == self._vault.key_epoch):
+            if (
+                cached is not None
+                and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds
+                and cached.get("_key_epoch") == self._vault.key_epoch
+            ):
                 return self._refilter_cache(cached, days)
         return None
 
@@ -281,27 +300,33 @@ class SecurityAnalyzer:
         """
         with self._cache_lock:
             cached = self._analysis_cache
-            if (cached is None
-                    or (time.monotonic() - self._analysis_cache_time) >= self._cache_ttl_seconds
-                    or cached.get('_key_epoch') != self._vault.key_epoch):
+            if (
+                cached is None
+                or (time.monotonic() - self._analysis_cache_time) >= self._cache_ttl_seconds
+                or cached.get("_key_epoch") != self._vault.key_epoch
+            ):
                 return None
             if days == self._analysis_cache_days:
-                old = cached.get('old', 0)
+                old = cached.get("old", 0)
             else:
                 cutoff = datetime.now(timezone.utc) - timedelta(days=days)
                 old = sum(
-                    1 for _s, dt in cached.get('_summaries_with_dates', [])
+                    1
+                    for _s, dt in cached.get("_summaries_with_dates", [])
                     if dt is not None and dt < cutoff
                 )
             return SecurityCounts(
-                cached.get('total', 0),
-                cached.get('weak_count', 0),
-                cached.get('duplicate_count', 0),
+                cached.get("total", 0),
+                cached.get("weak_count", 0),
+                cached.get("duplicate_count", 0),
                 old,
             )
 
     def get_or_compute_report(
-        self, days: int = DEFAULT_ANALYSIS_DAYS, *, cancel_check: Callable[[], bool] | None = None,
+        self,
+        days: int = DEFAULT_ANALYSIS_DAYS,
+        *,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> SecurityReport:
         """返回缓存报告，若无效则重新计算并缓存。"""
         return self._cached_analysis(days, cancel_check=cancel_check)
@@ -328,9 +353,7 @@ class SecurityAnalyzer:
         回退顺序 password_changed_at → updated_at → created_at。naive 视为 UTC，
         避免与 aware cutoff 比较抛 TypeError。解析失败返回 None（不计入过期）。
         """
-        changed_at_str = (
-            raw.password_changed_at or raw.updated_at or raw.created_at
-        )
+        changed_at_str = raw.password_changed_at or raw.updated_at or raw.created_at
         if not changed_at_str:
             return None
         try:
@@ -339,11 +362,14 @@ class SecurityAnalyzer:
                 return changed_utc.replace(tzinfo=timezone.utc)
             return changed_utc.astimezone(timezone.utc)
         except (ValueError, TypeError):
-            logger.debug('条目 %s 日期解析失败: %s', raw.id, changed_at_str)
+            logger.debug("条目 %s 日期解析失败: %s", raw.id, changed_at_str)
             return None
 
     def full_analysis(
-        self, days: int = DEFAULT_ANALYSIS_DAYS, *, cancel_check: Callable[[], bool] | None = None,
+        self,
+        days: int = DEFAULT_ANALYSIS_DAYS,
+        *,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> SecurityReport:
         """一次性完成所有安全分析（弱/重复/过期），避免重复解密。结果由 _cached_analysis 缓存。
 
@@ -383,7 +409,7 @@ class SecurityAnalyzer:
                     self._vault.is_cancel_requested()
                     or (cancel_check is not None and cancel_check())
                 ):
-                    raise VaultLockedError('安全分析因锁定/取消请求而中止')
+                    raise VaultLockedError("安全分析因锁定/取消请求而中止")
                 result = self._classify_entry(raw, vault_key)
                 if result.counted_in_skipped:
                     skipped_count += 1
@@ -395,10 +421,7 @@ class SecurityAnalyzer:
                 if result.fingerprint is not None:
                     password_map.setdefault(result.fingerprint, []).append(result.summary)
 
-            old_entries = [
-                s for s, dt in _summaries_with_dates
-                if dt is not None and dt < cutoff
-            ]
+            old_entries = [s for s, dt in _summaries_with_dates if dt is not None and dt < cutoff]
             duplicate_groups = [g for g in password_map.values() if len(g) > 1]
             duplicate_count = sum(len(g) - 1 for g in duplicate_groups)
             del vault_key
@@ -407,14 +430,14 @@ class SecurityAnalyzer:
             logger.warning("安全分析共跳过 %d 条损坏条目", skipped_count)
 
         return {
-            'total': total,
-            'weak_count': len(weak_entries),
-            'weak_entries': weak_entries,
-            'duplicate_groups': duplicate_groups,
-            'duplicate_count': duplicate_count,
-            'old_entries': old_entries,
-            'old': len(old_entries),
-            '_summaries_with_dates': _summaries_with_dates,  # 缓存分层：供不同 days 重过滤
+            "total": total,
+            "weak_count": len(weak_entries),
+            "weak_entries": weak_entries,
+            "duplicate_groups": duplicate_groups,
+            "duplicate_count": duplicate_count,
+            "old_entries": old_entries,
+            "old": len(old_entries),
+            "_summaries_with_dates": _summaries_with_dates,  # 缓存分层：供不同 days 重过滤
         }
 
     def _classify_entry(self, raw: RawEntry, vault_key: bytes) -> _ClassifyResult:
@@ -437,7 +460,11 @@ class SecurityAnalyzer:
             return _ClassifyResult(summary, changed_utc, is_weak, None, False)
         try:
             password = decrypt_field(
-                raw.password, vault_key, raw.crypto_id, 'password', strict=True,
+                raw.password,
+                vault_key,
+                raw.crypto_id,
+                "password",
+                strict=True,
             )
         except DecryptionError:
             logger.debug("安全分析跳过损坏条目 id=%s，原因：密码解密失败", raw.id)

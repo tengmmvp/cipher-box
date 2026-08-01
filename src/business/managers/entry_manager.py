@@ -1,6 +1,6 @@
 """条目管理器，负责密码条目的加密 CRUD 操作。
 
-直接依赖 crypto_utils 的加解密原语（Business → Crypto 同层依赖）；分类/TOTP/
+直接依赖 crypto_utils 的加解密原语（crypto_utils 同属 Business 层服务，非跨层依赖）；分类/TOTP/
 密码历史/校验/变更通知等职责拆至子服务与独立模块，本类聚焦条目 CRUD、视图
 解密与搜索匹配，经 property 暴露分类/TOTP/历史子服务。
 """
@@ -51,8 +51,11 @@ logger = logging.getLogger(__name__)
 
 # 完整性失败字段→中文标签映射，构造 integrity_message 用。模块级常量避免重建。
 _INTEGRITY_FIELD_LABELS: dict[str, str] = {
-    'title': '标题', 'username': '账号', 'url': 'URL',
-    'tags': '标签', 'category': '分类',
+    "title": "标题",
+    "username": "账号",
+    "url": "URL",
+    "tags": "标签",
+    "category": "分类",
 }
 
 # 「近期更新」视图默认拉取的条目数，供 get_recent_summaries 默认 limit。
@@ -66,6 +69,7 @@ class BatchUpdateItem(NamedTuple):
     prepared 阶段逐条解密（PF-005：不在 _prepare_overwrite_batch 批量预解密致全部旧密码同刻
     驻留）；解密后经 _prepare_password_update 比对即 del，收敛明文驻留面。
     """
+
     entry: Entry
     raw: RawEntry
     old_password: str | None
@@ -78,6 +82,7 @@ class PreparedUpdate(NamedTuple):
     :meth:`EntryManager.write_overwrite_updates` 在事务内逐条写入。raw 保留以取
     ``raw.password`` 记录密码历史（旧密文，非明文）。
     """
+
     enc_entry: RawEntry
     raw: RawEntry
     password_changed: bool
@@ -89,7 +94,7 @@ class EntryManager:
 
     def __init__(
         self,
-        vault_manager: 'VaultManager',
+        vault_manager: "VaultManager",
         cache: EntryCacheManager,
         change_bus: EntryChangeBus,
     ):
@@ -136,7 +141,9 @@ class EntryManager:
 
     @contextmanager
     def epoch_guarded_transaction(
-        self, operation: str = '', pre_epoch: str | None = None,
+        self,
+        operation: str = "",
+        pre_epoch: str | None = None,
     ) -> Iterator[None]:
         """epoch 守卫事务，委托 vault。
 
@@ -145,7 +152,8 @@ class EntryManager:
         pre_epoch 透传供导入路径锁外加密后传入（MAINT-004）。
         """
         with self._vault.epoch_guarded_transaction(
-            operation=operation, pre_epoch=pre_epoch,
+            operation=operation,
+            pre_epoch=pre_epoch,
         ):
             yield
 
@@ -172,24 +180,24 @@ class EntryManager:
         encrypted_pwd = (
             password_override
             if password_override is not None
-            else self._encrypt_field(entry.password, crypto_id, 'password')
+            else self._encrypt_field(entry.password, crypto_id, "password")
         )
         custom_fields_cipher = self._encrypt_custom_fields(entry.custom_fields, crypto_id)
         return RawEntry(
             id=entry_id,
             crypto_id=crypto_id,
-            title=self._encrypt_field(entry.title, crypto_id, 'title'),
-            username=self._encrypt_field(entry.username, crypto_id, 'username'),
+            title=self._encrypt_field(entry.title, crypto_id, "title"),
+            username=self._encrypt_field(entry.username, crypto_id, "username"),
             password=encrypted_pwd,
-            url=self._encrypt_field(entry.url, crypto_id, 'url'),
+            url=self._encrypt_field(entry.url, crypto_id, "url"),
             category_id=entry.category_id,
-            tags=self._encrypt_field(entry.tags, crypto_id, 'tags'),
-            notes=self._encrypt_field(entry.notes, crypto_id, 'notes'),
+            tags=self._encrypt_field(entry.tags, crypto_id, "tags"),
+            notes=self._encrypt_field(entry.notes, crypto_id, "notes"),
             custom_fields=custom_fields_cipher,
             is_favorite=entry.is_favorite,
             password_strength=entry.password_strength,
             entry_type=entry.entry_type,
-            totp_secret=self._encrypt_field(entry.totp_secret, crypto_id, 'totp_secret'),
+            totp_secret=self._encrypt_field(entry.totp_secret, crypto_id, "totp_secret"),
             created_at=created_at or now,
             updated_at=updated_at or now,
             password_changed_at=entry.password_changed_at or now,
@@ -208,7 +216,11 @@ class EntryManager:
     ) -> str:
         """解密单个字段，委托给 crypto_utils.decrypt_field。"""
         return _decrypt_field_impl(
-            encrypted, self._key, crypto_id, field_name, strict=strict,
+            encrypted,
+            self._key,
+            crypto_id,
+            field_name,
+            strict=strict,
         )
 
     def invalidate_caches(self) -> None:
@@ -231,13 +243,13 @@ class EntryManager:
     ) -> str:
         """加密自定义字段列表。"""
         if not fields:
-            return ''
+            return ""
         if not isinstance(fields, list) or not all(
             isinstance(field, CustomField) for field in fields
         ):
-            raise ValueError('自定义字段必须是 CustomField 列表')
+            raise ValueError("自定义字段必须是 CustomField 列表")
         data = json.dumps([f.to_dict() for f in fields], ensure_ascii=False)
-        return self._encrypt_field(data, crypto_id, 'custom_fields')
+        return self._encrypt_field(data, crypto_id, "custom_fields")
 
     def _decrypt_custom_fields(self, encrypted: str, crypto_id: str) -> list[CustomField]:
         """解密自定义字段列表。
@@ -249,18 +261,14 @@ class EntryManager:
         """
         if not encrypted:
             return []
-        data = self._decrypt_field(
-            encrypted, crypto_id, 'custom_fields', strict=True
-        )
+        data = self._decrypt_field(encrypted, crypto_id, "custom_fields", strict=True)
         try:
             items = json.loads(data)
         except ValueError as exc:
             # JSONDecodeError 是 ValueError 子类；归一为领域异常避免裸 ValueError 逃逸
-            raise EntryIntegrityError('自定义字段内容损坏（非有效 JSON）') from exc
-        if not isinstance(items, list) or not all(
-            isinstance(item, dict) for item in items
-        ):
-            raise EntryIntegrityError('自定义字段结构无效')
+            raise EntryIntegrityError("自定义字段内容损坏（非有效 JSON）") from exc
+        if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+            raise EntryIntegrityError("自定义字段结构无效")
         return [CustomField.from_dict(item) for item in items]
 
     def decrypt_entry(self, raw_entry: RawEntry) -> Entry:
@@ -272,7 +280,9 @@ class EntryManager:
         return self._decrypt_for_detail(raw_entry)
 
     def decrypt_entry_for_export(
-        self, raw_entry: RawEntry, include_secrets: bool = False,
+        self,
+        raw_entry: RawEntry,
+        include_secrets: bool = False,
     ) -> Entry:
         """仅解密导出所需字段，默认不让密码与 TOTP 进入内存结果。
 
@@ -282,7 +292,11 @@ class EntryManager:
         return self._decrypt_for_export(raw_entry, include_secrets=include_secrets)
 
     def _decrypt_field_lenient(
-        self, encrypted: str, crypto_id: str, name: str, errors: list[str],
+        self,
+        encrypted: str,
+        crypto_id: str,
+        name: str,
+        errors: list[str],
     ) -> str:
         """详情路径字段级容错解密：失败记入 errors 返回空串。
 
@@ -292,18 +306,20 @@ class EntryManager:
             return self._decrypt_field(encrypted, crypto_id, name, strict=True)
         except DecryptionError:
             errors.append(name)
-            return ''
+            return ""
 
     def _decrypt_field_strict(
-        self, encrypted: str, crypto_id: str, name: str, entry_id: int | None,
+        self,
+        encrypted: str,
+        crypto_id: str,
+        name: str,
+        entry_id: int | None,
     ) -> str:
         """导出路径字段级解密：失败立即抛 DecryptionError，拒绝导出损坏数据。"""
         try:
             return self._decrypt_field(encrypted, crypto_id, name, strict=True)
         except DecryptionError:
-            raise DecryptionError(
-                f'条目 {entry_id} 导出失败，数据可能已损坏'
-            ) from None
+            raise DecryptionError(f"条目 {entry_id} 导出失败，数据可能已损坏") from None
 
     def _decrypt_for_detail(self, raw_entry: RawEntry) -> Entry:
         """解密条目字段（详情/编辑路径）。
@@ -313,36 +329,54 @@ class EntryManager:
         """
         integrity_errors: list[str] = []
         if raw_entry.integrity_error:
-            integrity_errors.append(raw_entry.integrity_message or '元数据')
+            integrity_errors.append(raw_entry.integrity_message or "元数据")
 
         try:
             custom_fields = self._decrypt_custom_fields(
-                raw_entry.custom_fields_db_value, raw_entry.crypto_id,
+                raw_entry.custom_fields_db_value,
+                raw_entry.crypto_id,
             )
         except (DecryptionError, EntryIntegrityError) as exc:
             # 精确捕获两类损坏（不吞其他异常），区分故障层记日志：DecryptionError=
             # 密文层损坏（GCM 认证失败/密钥问题）；EntryIntegrityError=结构层损坏
             # （已解密但内容损坏——非合法 JSON 或结构不符）。
-            layer = '密文' if isinstance(exc, DecryptionError) else '结构'
+            layer = "密文" if isinstance(exc, DecryptionError) else "结构"
             logger.warning(
-                '条目 %s 自定义字段%s层损坏', raw_entry.crypto_id, layer,
+                "条目 %s 自定义字段%s层损坏",
+                raw_entry.crypto_id,
+                layer,
             )
-            integrity_errors.append('自定义字段')
+            integrity_errors.append("自定义字段")
             custom_fields = []
 
         cid = raw_entry.crypto_id
-        password = Sensitive(self._decrypt_field_lenient(
-            raw_entry.password, cid, 'password', integrity_errors,
-        ))
-        totp_secret = Sensitive(self._decrypt_field_lenient(
-            raw_entry.totp_secret, cid, 'totp_secret', integrity_errors,
-        ))
-
-        # 分类名解密失败向上抛：分类名损坏使详情面板无法正确展示分类，
-        # 应由调用方感知而非静默汇总。
-        category_name = self._cache.decrypt_category_name(
-            raw_entry.category_id, raw_entry.category_name,
+        password = Sensitive(
+            self._decrypt_field_lenient(
+                raw_entry.password,
+                cid,
+                "password",
+                integrity_errors,
+            )
         )
+        totp_secret = Sensitive(
+            self._decrypt_field_lenient(
+                raw_entry.totp_secret,
+                cid,
+                "totp_secret",
+                integrity_errors,
+            )
+        )
+
+        # 分类名密文损坏时回退空串并记入完整性错误，与摘要路径 (_decrypt_summary)
+        # 对齐——避免详情面板因分类名解密失败而崩溃（上游 get_entry 未捕获 DecryptionError）。
+        try:
+            category_name = self._cache.decrypt_category_name(
+                raw_entry.category_id,
+                raw_entry.category_name,
+            )
+        except DecryptionError:
+            category_name = ""
+            integrity_errors.append("分类名")
 
         # detail 路径复用列表摘要缓存（title/username/url/tags 已解密），避免详情面板
         # 选中时重复解密这 4 字段；仅 notes/password/totp/custom_fields 需解密。摘要解密
@@ -350,22 +384,32 @@ class EntryManager:
         title, username, url, tags = self._cache.cached_search_metadata(raw_entry)
         failed = self._cache.get_failed_fields(cid)
         integrity_errors.extend(
-            name for name in ('title', 'username', 'url', 'tags') if name in failed
+            name for name in ("title", "username", "url", "tags") if name in failed
         )
         return copy_entry_fields(
             raw_entry,
-            title=title, username=username, password=password,
-            url=url, category_name=category_name, tags=tags,
+            title=title,
+            username=username,
+            password=password,
+            url=url,
+            category_name=category_name,
+            tags=tags,
             notes=self._decrypt_field_lenient(
-                raw_entry.notes, cid, 'notes', integrity_errors,
+                raw_entry.notes,
+                cid,
+                "notes",
+                integrity_errors,
             ),
-            custom_fields=custom_fields, totp_secret=totp_secret,
+            custom_fields=custom_fields,
+            totp_secret=totp_secret,
             integrity_error=bool(integrity_errors),
-            integrity_message='、'.join(dict.fromkeys(integrity_errors)),
+            integrity_message="、".join(dict.fromkeys(integrity_errors)),
         )
 
     def _decrypt_for_export(
-        self, raw_entry: RawEntry, include_secrets: bool = True,
+        self,
+        raw_entry: RawEntry,
+        include_secrets: bool = True,
     ) -> Entry:
         """解密条目字段（导出路径）。
 
@@ -374,71 +418,97 @@ class EntryManager:
         时跳过 password/totp_secret 解密。
         """
         if raw_entry.integrity_error:
-            raise DecryptionError(
-                f'条目 {raw_entry.id} 元数据完整性校验失败，已拒绝导出'
-            )
+            raise DecryptionError(f"条目 {raw_entry.id} 元数据完整性校验失败，已拒绝导出")
 
         try:
             custom_fields = self._decrypt_custom_fields(
-                raw_entry.custom_fields_db_value, raw_entry.crypto_id,
+                raw_entry.custom_fields_db_value,
+                raw_entry.crypto_id,
             )
         except (DecryptionError, EntryIntegrityError) as exc:
-            layer = '密文' if isinstance(exc, DecryptionError) else '结构'
+            layer = "密文" if isinstance(exc, DecryptionError) else "结构"
             logger.warning(
-                '条目 %s 自定义字段%s层损坏', raw_entry.crypto_id, layer,
+                "条目 %s 自定义字段%s层损坏",
+                raw_entry.crypto_id,
+                layer,
             )
-            raise DecryptionError(
-                f'条目 {raw_entry.id} 导出失败，数据可能已损坏'
-            ) from None
+            raise DecryptionError(f"条目 {raw_entry.id} 导出失败，数据可能已损坏") from None
 
         cid = raw_entry.crypto_id
         password = (
             self._decrypt_field_strict(
-                raw_entry.password, cid, 'password', raw_entry.id,
-            ) if include_secrets else ''
+                raw_entry.password,
+                cid,
+                "password",
+                raw_entry.id,
+            )
+            if include_secrets
+            else ""
         )
         totp_secret = (
             self._decrypt_field_strict(
-                raw_entry.totp_secret, cid, 'totp_secret', raw_entry.id,
-            ) if include_secrets else ''
+                raw_entry.totp_secret,
+                cid,
+                "totp_secret",
+                raw_entry.id,
+            )
+            if include_secrets
+            else ""
         )
 
         try:
             category_name = self._cache.decrypt_category_name(
-                raw_entry.category_id, raw_entry.category_name,
+                raw_entry.category_id,
+                raw_entry.category_name,
             )
         except DecryptionError:
-            raise DecryptionError(
-                f'条目 {raw_entry.id} 导出失败，数据可能已损坏'
-            ) from None
+            raise DecryptionError(f"条目 {raw_entry.id} 导出失败，数据可能已损坏") from None
 
         return copy_entry_fields(
             raw_entry,
             title=self._decrypt_field_strict(
-                raw_entry.title, cid, 'title', raw_entry.id,
+                raw_entry.title,
+                cid,
+                "title",
+                raw_entry.id,
             ),
             username=self._decrypt_field_strict(
-                raw_entry.username, cid, 'username', raw_entry.id,
+                raw_entry.username,
+                cid,
+                "username",
+                raw_entry.id,
             ),
             password=password,
             url=self._decrypt_field_strict(
-                raw_entry.url, cid, 'url', raw_entry.id,
+                raw_entry.url,
+                cid,
+                "url",
+                raw_entry.id,
             ),
             category_name=category_name,
             tags=self._decrypt_field_strict(
-                raw_entry.tags, cid, 'tags', raw_entry.id,
+                raw_entry.tags,
+                cid,
+                "tags",
+                raw_entry.id,
             ),
             notes=self._decrypt_field_strict(
-                raw_entry.notes, cid, 'notes', raw_entry.id,
+                raw_entry.notes,
+                cid,
+                "notes",
+                raw_entry.id,
             ),
             custom_fields=custom_fields,
             totp_secret=totp_secret,
             integrity_error=False,
-            integrity_message='',
+            integrity_message="",
         )
 
     def _decrypt_summary(
-        self, raw_entry: RawEntry, *, skip_epoch_check: bool = False,
+        self,
+        raw_entry: RawEntry,
+        *,
+        skip_epoch_check: bool = False,
     ) -> Entry:
         """仅解密列表展示所需字段，不让密码等明文进入列表模型。
 
@@ -460,17 +530,18 @@ class EntryManager:
         category_name = summary.category_name
         try:
             category_name = self._cache.decrypt_category_name(
-                raw_entry.category_id, raw_entry.category_name,
+                raw_entry.category_id,
+                raw_entry.category_name,
             )
         except DecryptionError:
             failed = set(failed)
-            failed.add('category')
+            failed.add("category")
         integrity_error = raw_entry.integrity_error or bool(failed)
         messages = []
         if raw_entry.integrity_error:
-            messages.append(raw_entry.integrity_message or '元数据')
+            messages.append(raw_entry.integrity_message or "元数据")
         messages.extend(_INTEGRITY_FIELD_LABELS[name] for name in failed)
-        integrity_message = '、'.join(dict.fromkeys(messages))
+        integrity_message = "、".join(dict.fromkeys(messages))
         return replace(
             summary,
             title=title,
@@ -482,7 +553,11 @@ class EntryManager:
         )
 
     def add_entry(
-        self, entry: Entry, *, notify: bool = True, skip_validation: bool = False,
+        self,
+        entry: Entry,
+        *,
+        notify: bool = True,
+        skip_validation: bool = False,
     ) -> int:
         """添加新条目，自动加密并检测强度。
 
@@ -499,7 +574,9 @@ class EntryManager:
 
         now = utc_now_iso()
         enc_entry = self._build_encrypted_entry(
-            entry, crypto_id, now,
+            entry,
+            crypto_id,
+            now,
             created_at=entry.created_at or now,
             updated_at=entry.updated_at or now,
         )
@@ -531,16 +608,24 @@ class EntryManager:
                 password_strength=PasswordGenerator.check_strength(entry.password).score,
             )
             crypto_id = entry.crypto_id or uuid.uuid4().hex
-            enc_entries.append(self._build_encrypted_entry(
-                entry, crypto_id, now,
-                created_at=entry.created_at or now,
-                updated_at=entry.updated_at or now,
-            ))
+            enc_entries.append(
+                self._build_encrypted_entry(
+                    entry,
+                    crypto_id,
+                    now,
+                    created_at=entry.created_at or now,
+                    updated_at=entry.updated_at or now,
+                )
+            )
         preserve = any(e.created_at or e.updated_at for e in entries)
         return enc_entries, preserve
 
     def write_new_entries(
-        self, enc_entries: list[RawEntry], *, preserve: bool, notify: bool = True,
+        self,
+        enc_entries: list[RawEntry],
+        *,
+        preserve: bool,
+        notify: bool = True,
     ) -> None:
         """事务内裸写入已加密条目（MAINT-004），executemany 一次性 INSERT。
 
@@ -614,10 +699,15 @@ class EntryManager:
         self._cache.pop_totp(entry.id)
 
         new_pwd_enc, password_changed = self._prepare_password_update(
-            entry, raw, preloaded_old_password,
+            entry,
+            raw,
+            preloaded_old_password,
         )
         password_changed_at = self._resolve_password_changed_at(
-            entry, raw, password_changed, preserve_password_changed_at,
+            entry,
+            raw,
+            password_changed,
+            preserve_password_changed_at,
         )
 
         strength = PasswordGenerator.check_strength(entry.password)
@@ -625,7 +715,9 @@ class EntryManager:
 
         now = utc_now_iso()
         enc_entry = self._build_encrypted_entry(
-            entry, raw.crypto_id, now,
+            entry,
+            raw.crypto_id,
+            now,
             created_at=raw.created_at,
             updated_at=now,
             password_override=new_pwd_enc,
@@ -633,17 +725,19 @@ class EntryManager:
         )
         enc_entry = replace(enc_entry, password_changed_at=password_changed_at)
         with self.db.transaction():
-            # epoch 复查：_enforce_key_epoch 事务内跳过，单条写路径须自行复查，
+            # epoch 复查：enforce_key_epoch 事务内跳过，单条写路径须自行复查，
             # 防止 read（事务外）到 commit（事务内）期间改密导致写入旧密钥密文。
             if self.key_epoch != pre_epoch:
                 raise VaultKeyEpochMismatchError(
-                    '更新期间检测到密钥变更（改密/锁定），已中止以防写入旧密钥密文'
+                    "更新期间检测到密钥变更（改密/锁定），已中止以防写入旧密钥密文"
                 )
             if raw.password and password_changed and entry.id is not None:
                 # 用与条目一致的 password_changed_at 作为历史 changed_at，
                 # 避免两次独立 utc_now_iso() 产生的微秒级时序倒置
                 self.db.add_password_history(
-                    entry.id, raw.password, changed_at=password_changed_at,
+                    entry.id,
+                    raw.password,
+                    changed_at=password_changed_at,
                 )
             self.db.update_entry(enc_entry)
         if notify:
@@ -679,14 +773,19 @@ class EntryManager:
                         f"为避免数据丢失已禁止保存"
                     )
                 if entry.id is None:
-                    raise EntryError('覆盖条目缺少 id')
+                    raise EntryError("覆盖条目缺少 id")
                 # 失效该条目的 TOTP secret 缓存，下次 TotpService 重新解密。
                 self._cache.pop_totp(entry.id)
                 new_pwd_enc, password_changed = self._prepare_password_update(
-                    entry, raw, old_password,
+                    entry,
+                    raw,
+                    old_password,
                 )
                 password_changed_at = self._resolve_password_changed_at(
-                    entry, raw, password_changed, preserve_password_changed_at,
+                    entry,
+                    raw,
+                    password_changed,
+                    preserve_password_changed_at,
                 )
                 entry = replace(
                     entry,
@@ -695,20 +794,31 @@ class EntryManager:
                     ).score,
                 )
                 enc_entry = self._build_encrypted_entry(
-                    entry, raw.crypto_id, now,
-                    created_at=raw.created_at, updated_at=now,
-                    password_override=new_pwd_enc, entry_id=entry.id,
+                    entry,
+                    raw.crypto_id,
+                    now,
+                    created_at=raw.created_at,
+                    updated_at=now,
+                    password_override=new_pwd_enc,
+                    entry_id=entry.id,
                 )
                 enc_entry = replace(enc_entry, password_changed_at=password_changed_at)
-                prepared.append(PreparedUpdate(
-                    enc_entry, raw, password_changed, password_changed_at,
-                ))
+                prepared.append(
+                    PreparedUpdate(
+                        enc_entry,
+                        raw,
+                        password_changed,
+                        password_changed_at,
+                    )
+                )
             except (EntryError, EntryIntegrityError, DecryptionError) as exc:
                 failures.append((idx, exc))
         return prepared, failures
 
     def write_overwrite_updates(
-        self, prepared: list[PreparedUpdate], pre_epoch: str | None,
+        self,
+        prepared: list[PreparedUpdate],
+        pre_epoch: str | None,
     ) -> int:
         """锁内逐条 SAVEPOINT 写入已加密覆盖项（MAINT-004），复查 ``pre_epoch``。
 
@@ -721,13 +831,14 @@ class EntryManager:
             with self.db.transaction():
                 if self.key_epoch != pre_epoch:
                     raise VaultKeyEpochMismatchError(
-                        '更新期间检测到密钥变更（改密/锁定），已中止以防写入旧密钥密文'
+                        "更新期间检测到密钥变更（改密/锁定），已中止以防写入旧密钥密文"
                     )
                 if item.raw.password and item.password_changed and item.enc_entry.id is not None:
                     # 用与条目一致的 password_changed_at 作为历史 changed_at，
                     # 避免两次独立 utc_now_iso() 产生的微秒级时序倒置。
                     self.db.add_password_history(
-                        item.enc_entry.id, item.raw.password,
+                        item.enc_entry.id,
+                        item.raw.password,
                         changed_at=item.password_changed_at,
                     )
                 self.db.update_entry(item.enc_entry, preserve_updated_at=True)
@@ -751,7 +862,8 @@ class EntryManager:
         if not items:
             return 0, []
         prepared, failures = self.prepare_overwrite_updates(
-            items, preserve_password_changed_at=preserve_password_changed_at,
+            items,
+            preserve_password_changed_at=preserve_password_changed_at,
         )
         pre_epoch = self.key_epoch
         count = self.write_overwrite_updates(prepared, pre_epoch)
@@ -779,12 +891,19 @@ class EntryManager:
             # 归档旧密文历史。单条路径因 update_entry 已据 integrity_error 拦截损坏条目，
             # 不会经此分支遇损坏。
             try:
-                old_password = self._decrypt_field(
-                    old_pwd_enc, raw.crypto_id, 'password', strict=True,
-                ) if old_pwd_enc else ''
+                old_password = (
+                    self._decrypt_field(
+                        old_pwd_enc,
+                        raw.crypto_id,
+                        "password",
+                        strict=True,
+                    )
+                    if old_pwd_enc
+                    else ""
+                )
             except DecryptionError:
-                old_password = ''
-        new_pwd_enc = self._encrypt_field(entry.password, raw.crypto_id, 'password')
+                old_password = ""
+        new_pwd_enc = self._encrypt_field(entry.password, raw.crypto_id, "password")
         password_changed = not hmac.compare_digest(old_password, entry.password)
         del old_password  # 尽快释放明文引用
         return new_pwd_enc, password_changed
@@ -810,7 +929,10 @@ class EntryManager:
         return raw.password_changed_at
 
     def _notify_entry_updated(
-        self, raw: RawEntry, entry: Entry, password_changed: bool,
+        self,
+        raw: RawEntry,
+        entry: Entry,
+        password_changed: bool,
     ) -> None:
         """update_entry 后的变更通知：检测 tags 是否变更以决定标签缓存失效粒度。
 
@@ -819,12 +941,13 @@ class EntryManager:
         """
         try:
             old_tags = (
-                self._decrypt_field(raw.tags, raw.crypto_id, 'tags', strict=True)
-                if raw.tags else ''
+                self._decrypt_field(raw.tags, raw.crypto_id, "tags", strict=True)
+                if raw.tags
+                else ""
             )
             tags_decrypt_failed = False
         except DecryptionError:
-            old_tags = ''
+            old_tags = ""
             tags_decrypt_failed = True
         self._change_bus.notify(
             password_changed,
@@ -931,7 +1054,7 @@ class EntryManager:
         deleted_only: bool = False,
         category_id: int | None = None,
         favorite_only: bool = False,
-        search: str = '',
+        search: str = "",
         limit: int | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> list[Entry]:
@@ -977,7 +1100,8 @@ class EntryManager:
                     break
                 summary = self._decrypt_summary(raw, skip_epoch_check=True)
                 if search and not matches_search_lower(
-                    self._cache.search_lower_no_check(raw), search,
+                    self._cache.search_lower_no_check(raw),
+                    search,
                 ):
                     continue
                 summaries.append(summary)
@@ -1010,10 +1134,7 @@ class EntryManager:
                 )
             # 解密移出 db_lock（PF-001），与 get_entry_summaries 一致。
             self._cache.invalidate_if_epoch_changed()
-            return [
-                self._decrypt_summary(entry, skip_epoch_check=True)
-                for entry in raw_entries
-            ]
+            return [self._decrypt_summary(entry, skip_epoch_check=True) for entry in raw_entries]
         except VaultKeyEpochMismatchError:
             return []
 
@@ -1045,9 +1166,7 @@ class EntryManager:
         for raw_entry in raw_entries:
             if cancel_check and cancel_check():
                 break
-            entries.append(
-                self.decrypt_entry_for_export(raw_entry, include_secrets)
-            )
+            entries.append(self.decrypt_entry_for_export(raw_entry, include_secrets))
         return entries
 
     def toggle_favorite(self, entry_id: int) -> bool | None:
@@ -1056,7 +1175,7 @@ class EntryManager:
         在单个事务内完成读-改-写，避免 TOCTOU 竞态。
         update_entry 会自动重签 metadata_mac，保证元数据完整性。
         """
-        with self._vault.epoch_guarded_transaction(operation='切换收藏'):
+        with self._vault.epoch_guarded_transaction(operation="切换收藏"):
             raw = self._vault.db.get_entry(entry_id)
             if raw is None:
                 return None
@@ -1067,7 +1186,9 @@ class EntryManager:
         # 无谓失效触发整库重算。is_favorite 不在摘要/标签/分类名缓存中，三者
         # 均无需失效；列表排序变化由回调触发 SQL 重查，复用摘要缓存避免重解密。
         self._change_bus.notify(
-            password_changed=False, clear_summaries=False, tags_changed=False,
+            password_changed=False,
+            clear_summaries=False,
+            tags_changed=False,
         )
         return result
 

@@ -16,12 +16,12 @@ from src.exceptions import DecryptionError
 
 # TestEncryptionEngine
 
-AAD = 'test:secret'
+AAD = "test:secret"
 
 
 def test_encrypt_decrypt():
     key = os.urandom(32)
-    plaintext = 'Hello, CipherBox!'
+    plaintext = "Hello, CipherBox!"
     encrypted = EncryptionEngine.encrypt(plaintext, key, AAD)
     assert encrypted != plaintext
     decrypted = EncryptionEngine.decrypt(encrypted, key, AAD)
@@ -31,18 +31,18 @@ def test_encrypt_decrypt():
 def test_empty_string():
     key = os.urandom(32)
     # 空明文仍走完整加密路径，确保 AAD 参与认证。
-    encrypted = EncryptionEngine.encrypt('', key, AAD)
-    assert encrypted != ''
+    encrypted = EncryptionEngine.encrypt("", key, AAD)
+    assert encrypted != ""
     assert encrypted.startswith(EncryptionEngine.TEXT_PREFIX)
     decrypted = EncryptionEngine.decrypt(encrypted, key, AAD)
-    assert decrypted == ''
+    assert decrypted == ""
     with pytest.raises(ValueError):
-        EncryptionEngine.decrypt('', key, AAD)
+        EncryptionEngine.decrypt("", key, AAD)
 
 
 def test_unicode():
     key = os.urandom(32)
-    plaintext = '中文密码测试 <SEC> emojis <JOY>'
+    plaintext = "中文密码测试 <SEC> emojis <JOY>"
     encrypted = EncryptionEngine.encrypt(plaintext, key, AAD)
     decrypted = EncryptionEngine.decrypt(encrypted, key, AAD)
     assert decrypted == plaintext
@@ -51,7 +51,7 @@ def test_unicode():
 def test_wrong_key_fails():
     key1 = os.urandom(32)
     key2 = os.urandom(32)
-    encrypted = EncryptionEngine.encrypt('secret', key1, AAD)
+    encrypted = EncryptionEngine.encrypt("secret", key1, AAD)
     with pytest.raises(ValueError):
         EncryptionEngine.decrypt(encrypted, key2, AAD)
 
@@ -59,14 +59,14 @@ def test_wrong_key_fails():
 def test_different_encryptions():
     """相同明文两次加密结果应不同，因为每次使用随机 nonce。"""
     key = os.urandom(32)
-    enc1 = EncryptionEngine.encrypt('same text', key, AAD)
-    enc2 = EncryptionEngine.encrypt('same text', key, AAD)
+    enc1 = EncryptionEngine.encrypt("same text", key, AAD)
+    enc2 = EncryptionEngine.encrypt("same text", key, AAD)
     assert enc1 != enc2
 
 
 def test_encrypt_decrypt_bytes():
     key = os.urandom(32)
-    data = b'binary data test'
+    data = b"binary data test"
     encrypted = EncryptionEngine.encrypt_bytes(data, key, AAD)
     decrypted = EncryptionEngine.decrypt_bytes(encrypted, key, AAD)
     assert decrypted == data
@@ -75,35 +75,34 @@ def test_encrypt_decrypt_bytes():
 def test_rejects_ciphertext_without_current_prefix():
     key = os.urandom(32)
     with pytest.raises(ValueError):
-        EncryptionEngine.decrypt('AAAA', key, AAD)
+        EncryptionEngine.decrypt("AAAA", key, AAD)
     with pytest.raises(ValueError):
-        EncryptionEngine.decrypt_bytes(b'legacy', key, AAD)
+        EncryptionEngine.decrypt_bytes(b"legacy", key, AAD)
 
 
 # TestMasterKeyManager
 
+
 def test_create_and_verify():
-    salt, verify_token, derived_key = MasterKeyManager.create('test_password_123')
+    salt, verify_token, derived_key = MasterKeyManager.create("test_password_123")
     assert salt is not None
     assert verify_token is not None
     assert len(salt) == 32
 
-    key = MasterKeyManager.verify('test_password_123', salt, verify_token)
+    key = MasterKeyManager.verify("test_password_123", salt, verify_token)
     assert key is not None
     assert len(key) == 32
 
 
 def test_wrong_password():
-    salt, verify_token, _ = MasterKeyManager.create('correct_password')
-    key = MasterKeyManager.verify('wrong_password', salt, verify_token)
+    salt, verify_token, _ = MasterKeyManager.create("correct_password")
+    key = MasterKeyManager.verify("wrong_password", salt, verify_token)
     assert key is None
 
 
 def test_change_password():
-    old_salt, old_verify, _ = MasterKeyManager.create('old_password')
-    result = MasterKeyManager.change_password(
-        'old_password', 'new_password', old_salt, old_verify
-    )
+    old_salt, old_verify, _ = MasterKeyManager.create("old_password")
+    result = MasterKeyManager.change_password("old_password", "new_password", old_salt, old_verify)
     assert result is not None
     new_salt, new_verify, new_key = result
     # change_password 返回复用 create 已派生的 new_key，调用方无需
@@ -111,23 +110,24 @@ def test_change_password():
     assert len(new_key) == 32
 
     # 新密码应能验证。
-    key = MasterKeyManager.verify('new_password', new_salt, new_verify)
+    key = MasterKeyManager.verify("new_password", new_salt, new_verify)
     assert key is not None
 
     # 旧密码不应能验证。
-    key = MasterKeyManager.verify('old_password', new_salt, new_verify)
+    key = MasterKeyManager.verify("old_password", new_salt, new_verify)
     assert key is None
 
 
 def test_change_wrong_old_password():
-    old_salt, old_verify, _ = MasterKeyManager.create('real_password')
+    old_salt, old_verify, _ = MasterKeyManager.create("real_password")
     result = MasterKeyManager.change_password(
-        'wrong_password', 'new_password', old_salt, old_verify
+        "wrong_password", "new_password", old_salt, old_verify
     )
     assert result is None
 
 
 # TestPasswordGenerator
+
 
 def test_generate_default():
     pwd = PasswordGenerator.generate()
@@ -155,50 +155,67 @@ def test_generate_no_digits():
 
 
 def test_strength_strong():
-    result = PasswordGenerator.check_strength('MyStr0ng!P@ssw0rd#2024')
+    result = PasswordGenerator.check_strength("MyStr0ng!P@ssw0rd#2024")
     assert result.score >= 3
 
 
 def test_strength_weak():
-    result = PasswordGenerator.check_strength('123456')
+    result = PasswordGenerator.check_strength("123456")
     assert result.score <= 1
     assert result.is_common
 
 
+def test_strength_long_sequential_runway_detected():
+    """长顺序串（≥6 连续 ASCII 步长）判为常见弱密码。
+
+    回归守护：原连续模式用 ``$`` 锚定仅精确匹配 6 字符，15 字符纯顺序串漏检。
+    """
+    result = PasswordGenerator.check_strength("abcdefghijklmno")
+    assert result.is_common
+
+
+def test_strength_long_keyboard_runway_detected():
+    """长键盘走查串（≥6 连续 QWERTY 行字符）判为常见弱密码。"""
+    result = PasswordGenerator.check_strength("qwertyuiopasdf")
+    assert result.is_common
+
+
 def test_strength_empty():
-    result = PasswordGenerator.check_strength('')
+    result = PasswordGenerator.check_strength("")
     assert result.score == 0
 
 
 def test_strength_feedback():
-    result = PasswordGenerator.check_strength('abc')
+    result = PasswordGenerator.check_strength("abc")
     assert len(result.feedback) > 0
 
 
 def test_exclude_ambiguous():
     pwd = PasswordGenerator.generate(length=100, exclude_ambiguous=True)
-    ambiguous = set('Il1O0o')
+    ambiguous = set("Il1O0o")
     assert not any(c in ambiguous for c in pwd)
 
 
 # TestEncryptionEdgeCases
 
+
 def test_encrypt_empty_string_no_aad():
     """空明文仍走完整加密路径，AAD 参与认证。"""
-    result = EncryptionEngine.encrypt("", b'\x00' * 32, "any_aad")
-    assert result != ''
+    result = EncryptionEngine.encrypt("", b"\x00" * 32, "any_aad")
+    assert result != ""
     assert result.startswith(EncryptionEngine.TEXT_PREFIX)
-    decrypted = EncryptionEngine.decrypt(result, b'\x00' * 32, "any_aad")
-    assert decrypted == ''
+    decrypted = EncryptionEngine.decrypt(result, b"\x00" * 32, "any_aad")
+    assert decrypted == ""
 
 
 def test_decrypt_empty_string_raises():
     """空密文是非法输入，应抛出 ValueError。"""
     with pytest.raises(ValueError):
-        EncryptionEngine.decrypt("", b'\x00' * 32, "any_aad")
+        EncryptionEngine.decrypt("", b"\x00" * 32, "any_aad")
 
 
 # TestAESGCMCache
+
 
 @pytest.fixture(autouse=True)
 def _clear_aesgcm_cache():
@@ -236,7 +253,7 @@ def test_cache_cleared_on_lock():
 def test_cache_hit_after_encrypt():
     """加密后再次获取同一 key 的 cipher 应命中缓存。"""
     key = os.urandom(32)
-    EncryptionEngine.encrypt('test data', key, 'aad')
+    EncryptionEngine.encrypt("test data", key, "aad")
     cached = EncryptionEngine._get_cipher(key)
     c = EncryptionEngine._get_cipher(key)
     assert c is cached
@@ -245,9 +262,9 @@ def test_cache_hit_after_encrypt():
 def test_encrypt_decrypt_with_cached_cipher():
     """缓存 cipher 正确完成加解密。"""
     key = os.urandom(32)
-    plaintext = 'cache test 测试'
-    encrypted = EncryptionEngine.encrypt(plaintext, key, 'aad')
-    decrypted = EncryptionEngine.decrypt(encrypted, key, 'aad')
+    plaintext = "cache test 测试"
+    encrypted = EncryptionEngine.encrypt(plaintext, key, "aad")
+    decrypted = EncryptionEngine.decrypt(encrypted, key, "aad")
     assert decrypted == plaintext
 
 
@@ -258,8 +275,9 @@ def test_cache_respects_max_size():
     容量上限须有测试守护，防止后续误调大。
     """
     from src.crypto.encryption import _MAX_CACHE_SIZE, _cipher_cache
+
     # 用 _MAX_CACHE_SIZE + 3 个不同 key 各获取 cipher，触发 LRU 淘汰
-    keys = [bytes([i]) + b'\x00' * 31 for i in range(_MAX_CACHE_SIZE + 3)]
+    keys = [bytes([i]) + b"\x00" * 31 for i in range(_MAX_CACHE_SIZE + 3)]
     for key in keys:
         EncryptionEngine._get_cipher(key)
     assert len(_cipher_cache) == _MAX_CACHE_SIZE
@@ -267,19 +285,19 @@ def test_cache_respects_max_size():
 
 def test_decrypt_bytes_wrong_prefix():
     """decrypt_bytes 拒绝错误前缀。"""
-    with pytest.raises(ValueError, match='不支持的密文字节格式'):
-        EncryptionEngine.decrypt_bytes(b"WRONG" + b'\x00' * 28, b'\x00' * 32, "aad")
+    with pytest.raises(ValueError, match="不支持的密文字节格式"):
+        EncryptionEngine.decrypt_bytes(b"WRONG" + b"\x00" * 28, b"\x00" * 32, "aad")
 
 
 def test_decrypt_bytes_too_short():
     """decrypt_bytes 拒绝过短密文。"""
-    with pytest.raises(ValueError, match='密文长度无效'):
-        EncryptionEngine.decrypt_bytes(b"CB2" + b'\x00' * 10, b'\x00' * 32, "aad")
+    with pytest.raises(ValueError, match="密文长度无效"):
+        EncryptionEngine.decrypt_bytes(b"CB2" + b"\x00" * 10, b"\x00" * 32, "aad")
 
 
 def test_decrypt_generic_no_internal_info():
     """decrypt 失败时不泄露内部异常信息。"""
-    key = b'\x00' * 32
+    key = b"\x00" * 32
     # 使用正确前缀但无效数据。
     with pytest.raises(ValueError) as exc_info:
         EncryptionEngine.decrypt("cb2:AAAA", key, "aad")
@@ -291,18 +309,19 @@ def test_decrypt_generic_no_internal_info():
 
 # TestConstantTimeComparison
 
+
 def test_constant_time_compare_correct_password():
     """验证正确密码的验证流程。"""
-    salt, verify_token, derived_key = MasterKeyManager.create('test_password')
-    result = MasterKeyManager.verify('test_password', salt, verify_token)
+    salt, verify_token, derived_key = MasterKeyManager.create("test_password")
+    result = MasterKeyManager.verify("test_password", salt, verify_token)
     assert result is not None
     assert len(result) == 32  # 返回派生密钥
 
 
 def test_constant_time_compare_wrong_password():
     """验证错误密码返回 None。"""
-    salt, verify_token, derived_key = MasterKeyManager.create('test_password')
-    result = MasterKeyManager.verify('wrong_password', salt, verify_token)
+    salt, verify_token, derived_key = MasterKeyManager.create("test_password")
+    result = MasterKeyManager.verify("wrong_password", salt, verify_token)
     assert result is None
 
 
@@ -318,32 +337,32 @@ def test_decrypt_with_wrong_aad_raises():
     B 字段解密通过。
     """
     key = os.urandom(32)
-    encrypted = EncryptionEngine.encrypt('secret', key, 'aad-1')
+    encrypted = EncryptionEngine.encrypt("secret", key, "aad-1")
     with pytest.raises(DecryptionError):
-        EncryptionEngine.decrypt(encrypted, key, 'aad-2')
+        EncryptionEngine.decrypt(encrypted, key, "aad-2")
 
 
 def test_decrypt_bytes_with_wrong_aad_raises():
     """encrypt_bytes(AAD1) → decrypt_bytes(AAD2) 必抛 DecryptionError（字节路径对称）。"""
     key = os.urandom(32)
-    encrypted = EncryptionEngine.encrypt_bytes(b'data', key, b'aad-1')
+    encrypted = EncryptionEngine.encrypt_bytes(b"data", key, b"aad-1")
     with pytest.raises(DecryptionError):
-        EncryptionEngine.decrypt_bytes(encrypted, key, b'aad-2')
+        EncryptionEngine.decrypt_bytes(encrypted, key, b"aad-2")
 
 
 def test_decrypt_with_correct_aad_succeeds():
     """正对照：相同 AAD 加解密正常（AAD 绑定不破坏合法路径）。"""
     key = os.urandom(32)
-    encrypted = EncryptionEngine.encrypt('secret', key, 'same-aad')
-    assert EncryptionEngine.decrypt(encrypted, key, 'same-aad') == 'secret'
+    encrypted = EncryptionEngine.encrypt("secret", key, "same-aad")
+    assert EncryptionEngine.decrypt(encrypted, key, "same-aad") == "secret"
 
 
 def test_aad_empty_vs_nonempty_differ():
     """空 AAD 与非空 AAD 不可互换：encrypt('') → decrypt('x') 抛 DecryptionError。"""
     key = os.urandom(32)
-    encrypted = EncryptionEngine.encrypt('secret', key, '')
+    encrypted = EncryptionEngine.encrypt("secret", key, "")
     with pytest.raises(DecryptionError):
-        EncryptionEngine.decrypt(encrypted, key, 'non-empty')
+        EncryptionEngine.decrypt(encrypted, key, "non-empty")
 
 
 # ======== PasswordGenerator 每类字符≥1 保证 ========
@@ -358,10 +377,10 @@ def test_generate_includes_every_enabled_charset():
     """
     for _ in range(50):
         pwd = PasswordGenerator.generate(length=8)  # 默认全类启用
-        assert any(c.isupper() for c in pwd), f'缺大写字母: {pwd!r}'
-        assert any(c.islower() for c in pwd), f'缺小写字母: {pwd!r}'
-        assert any(c.isdigit() for c in pwd), f'缺数字: {pwd!r}'
-        assert any(not c.isalnum() for c in pwd), f'缺特殊字符: {pwd!r}'
+        assert any(c.isupper() for c in pwd), f"缺大写字母: {pwd!r}"
+        assert any(c.islower() for c in pwd), f"缺小写字母: {pwd!r}"
+        assert any(c.isdigit() for c in pwd), f"缺数字: {pwd!r}"
+        assert any(not c.isalnum() for c in pwd), f"缺特殊字符: {pwd!r}"
 
 
 def test_generate_min_length_4_satisfies_each_class():
@@ -384,25 +403,33 @@ def test_validate_params_accepts_upper_bounds():
     validate_params 不派生（无 Argon2id 开销），仅范围校验；上界值须通过以兼容
     未来调参与高安全场景。
     """
-    MasterKeyManager.validate_params(KdfParams(time_cost=10, memory_cost=1024 * 1024, parallelism=16))
+    MasterKeyManager.validate_params(
+        KdfParams(time_cost=10, memory_cost=1024 * 1024, parallelism=16)
+    )
 
 
-@pytest.mark.parametrize('params', [
-    KdfParams(time_cost=11, memory_cost=64 * 1024, parallelism=4),  # time 超上限
-    KdfParams(time_cost=3, memory_cost=1024 * 1024 + 1, parallelism=4),  # memory 超 1GB
-    KdfParams(time_cost=3, memory_cost=64 * 1024, parallelism=17),  # parallelism 超上限
-])
+@pytest.mark.parametrize(
+    "params",
+    [
+        KdfParams(time_cost=11, memory_cost=64 * 1024, parallelism=4),  # time 超上限
+        KdfParams(time_cost=3, memory_cost=1024 * 1024 + 1, parallelism=4),  # memory 超 1GB
+        KdfParams(time_cost=3, memory_cost=64 * 1024, parallelism=17),  # parallelism 超上限
+    ],
+)
 def test_validate_params_rejects_above_max(params):
     """超上限的 KDF 参数被拒（防 vault_meta 篡改为异常值后静默接受降级/越界）。"""
     with pytest.raises(ValueError):
         MasterKeyManager.validate_params(params)
 
 
-@pytest.mark.parametrize('params', [
-    KdfParams(time_cost=1, memory_cost=64 * 1024, parallelism=4),  # time 低于下限 2
-    KdfParams(time_cost=3, memory_cost=16 * 1024 - 1, parallelism=4),  # memory 低于 16MB
-    KdfParams(time_cost=3, memory_cost=64 * 1024, parallelism=0),  # parallelism 低于下限 1
-])
+@pytest.mark.parametrize(
+    "params",
+    [
+        KdfParams(time_cost=1, memory_cost=64 * 1024, parallelism=4),  # time 低于下限 2
+        KdfParams(time_cost=3, memory_cost=16 * 1024 - 1, parallelism=4),  # memory 低于 16MB
+        KdfParams(time_cost=3, memory_cost=64 * 1024, parallelism=0),  # parallelism 低于下限 1
+    ],
+)
 def test_validate_params_rejects_below_min(params):
     """低于下限的参数被拒（防止静默降级到无保护强度）。"""
     with pytest.raises(ValueError):

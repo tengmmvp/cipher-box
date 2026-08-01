@@ -14,8 +14,8 @@ from ..exceptions import DatabaseError
 
 logger = logging.getLogger(__name__)
 
-_P = ParamSpec('_P')
-_R = TypeVar('_R')
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
 
 @runtime_checkable
@@ -47,8 +47,8 @@ class _DbWriteHost(_DbOperationHost, Protocol):
     def in_transaction(self) -> bool: ...
 
 
-_H = TypeVar('_H', bound='_DbOperationHost')
-_HW = TypeVar('_HW', bound='_DbWriteHost')
+_H = TypeVar("_H", bound="_DbOperationHost")
+_HW = TypeVar("_HW", bound="_DbWriteHost")
 
 
 def _db_operation(method: Callable[Concatenate[_H, _P], _R]) -> Callable[Concatenate[_H, _P], _R]:
@@ -57,12 +57,14 @@ def _db_operation(method: Callable[Concatenate[_H, _P], _R]) -> Callable[Concate
     要求宿主满足 ``_DbOperationHost``（_conn/_lock）。经 Concatenate + TypeVar bound
     透传 self 类型，Pyright strict 下保留被装饰方法的精确签名。
     """
+
     @functools.wraps(method)
     def wrapper(self: _H, *args: _P.args, **kwargs: _P.kwargs) -> _R:
         if self._conn is None:
             raise DatabaseError("数据库未连接")
         with self._lock:
             return method(self, *args, **kwargs)
+
     return wrapper
 
 
@@ -81,6 +83,7 @@ def _db_write(method: Callable[Concatenate[_HW, _P], _R]) -> Callable[Concatenat
 
     要求宿主满足 ``_DbWriteHost``（_conn/_lock/_guard_write/in_transaction）。
     """
+
     @functools.wraps(method)
     def wrapper(self: _HW, *args: _P.args, **kwargs: _P.kwargs) -> _R:
         if self._conn is None:
@@ -98,4 +101,5 @@ def _db_write(method: Callable[Concatenate[_HW, _P], _R]) -> Callable[Concatenat
                         except sqlite3.Error:
                             logger.warning("写失败后回滚隐式事务失败", exc_info=True)
                 raise
+
     return wrapper

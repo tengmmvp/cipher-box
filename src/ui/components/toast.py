@@ -62,10 +62,10 @@ class ToastWidget(QFrame):
     closed = pyqtSignal(object)  # 通知 ToastManager 移除自身
 
     # 类型常量
-    SUCCESS = 'success'
-    ERROR = 'error'
-    INFO = 'info'
-    WARNING = 'warning'
+    SUCCESS = "success"
+    ERROR = "error"
+    INFO = "info"
+    WARNING = "warning"
 
     # 类型对应的图标
     _ICONS = {
@@ -78,9 +78,9 @@ class ToastWidget(QFrame):
     def __init__(
         self,
         message: str,
-        toast_type: str = 'info',
+        toast_type: str = "info",
         duration: int = 3000,
-        action_text: str = '',
+        action_text: str = "",
         action_callback: Callable[[], None] | None = None,
         parent: QWidget | None = None,
     ):
@@ -152,7 +152,7 @@ class ToastWidget(QFrame):
         close_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         close_btn.clicked.connect(self._start_fade_out)
         set_icon(close_btn, CLOSE)
-        close_btn.setObjectName('iconBtn')
+        close_btn.setObjectName("iconBtn")
         top_row.addWidget(close_btn)
 
         content_layout.addLayout(top_row)
@@ -178,8 +178,8 @@ class ToastWidget(QFrame):
             if toast_type in (self.SUCCESS, self.ERROR, self.INFO, self.WARNING)
             else self.INFO
         )
-        bg_color = c(f'toast_{type_key}_bg')
-        border_color = c(f'toast_{type_key}_border')
+        bg_color = c(f"toast_{type_key}_bg")
+        border_color = c(f"toast_{type_key}_border")
 
         self.setStyleSheet(f"""
             ToastWidget {{
@@ -200,7 +200,9 @@ class ToastWidget(QFrame):
 
     def _msg_label_style(self) -> str:
         """消息文本样式，构造与主题刷新共用。"""
-        return f'font-size: 13px; color: {c("text_primary")}; background: transparent; border: none;'
+        return (
+            f"font-size: 13px; color: {c('text_primary')}; background: transparent; border: none;"
+        )
 
     def _action_btn_style(self) -> str:
         """操作按钮样式，构造与主题刷新共用。"""
@@ -222,12 +224,12 @@ class ToastWidget(QFrame):
     def refresh_theme(self) -> None:
         """主题切换后重新烘焙配色：刷新背景、强调条、消息文本、操作按钮与类型图标。"""
         self._apply_style(self._toast_type)
-        if getattr(self, '_msg_label', None) is not None:
+        if getattr(self, "_msg_label", None) is not None:
             self._msg_label.setStyleSheet(self._msg_label_style())
         if self._action_btn is not None:
             self._action_btn.setStyleSheet(self._action_btn_style())
         # 类型图标颜色烘焙进 QPixmap，主题切换时需重建刷新
-        if getattr(self, '_icon_label', None) is not None:
+        if getattr(self, "_icon_label", None) is not None:
             self._icon_label.setPixmap(icon_pixmap(self._icon_name, size=SIZE_TOAST))
 
     # ------------------------------------------------------------- 动画
@@ -241,7 +243,7 @@ class ToastWidget(QFrame):
             self._fade_out_anim.stop()
 
         # 淡入动画，基于 QGraphicsOpacityEffect
-        anim = QPropertyAnimation(self._opacity_effect, b'opacity')
+        anim = QPropertyAnimation(self._opacity_effect, b"opacity")
         anim.setDuration(250)
         anim.setStartValue(0.0)
         anim.setEndValue(1.0)
@@ -263,7 +265,7 @@ class ToastWidget(QFrame):
         if self._fade_in_anim is not None:
             self._fade_in_anim.stop()
 
-        anim = QPropertyAnimation(self._opacity_effect, b'opacity')
+        anim = QPropertyAnimation(self._opacity_effect, b"opacity")
         anim.setDuration(200)
         anim.setStartValue(self._opacity_effect.opacity())
         anim.setEndValue(0.0)
@@ -297,6 +299,7 @@ class ToastWidget(QFrame):
 
 # ================================================================ ToastManager
 
+
 class ToastManager:
     """管理多个 Toast 的位置堆叠。
 
@@ -314,17 +317,17 @@ class ToastManager:
         self._margin_right = TOAST_MARGIN_RIGHT
 
     @staticmethod
-    def get_manager(parent: QWidget) -> 'ToastManager':
+    def get_manager(parent: QWidget) -> "ToastManager":
         """获取或创建 parent 对应的 ToastManager。"""
         if parent not in ToastManager._instances:
             ToastManager._instances[parent] = ToastManager(parent)
-        return cast('ToastManager', ToastManager._instances[parent])
+        return cast("ToastManager", ToastManager._instances[parent])
 
     def add_toast(self, toast: ToastWidget) -> None:
         """添加一个 Toast 并更新所有位置。"""
         # 阴影效果：QGraphicsDropShadowEffect 无法叠加在 QGraphicsOpacityEffect 上，
         # 因此使用同位的 QFrame 作为阴影层，详见下方 shadow_frame。
-        shadow_color = c('toast_shadow')
+        shadow_color = c("toast_shadow")
 
         toast.closed.connect(self._remove_toast)
         self._toasts.append(toast)
@@ -373,11 +376,11 @@ class ToastManager:
         """重新烘焙所有活跃 Toast 的配色并重定位（阴影颜色随主题变化）。"""
         for toast in list(self._toasts):
             toast.refresh_theme()
-            shadow = getattr(toast, '_shadow_frame', None)
+            shadow = getattr(toast, "_shadow_frame", None)
             if shadow is not None:
                 shadow.setStyleSheet(f"""
                     QFrame {{
-                        background-color: {c('toast_shadow')};
+                        background-color: {c("toast_shadow")};
                         border: none;
                         border-radius: 10px;
                     }}
@@ -389,7 +392,7 @@ class ToastManager:
         if toast in self._toasts:
             self._toasts.remove(toast)
         # 移除阴影
-        if hasattr(toast, '_shadow_frame') and toast._shadow_frame:
+        if hasattr(toast, "_shadow_frame") and toast._shadow_frame:
             toast._shadow_frame.hide()
             toast._shadow_frame.deleteLater()
         toast.deleteLater()
@@ -423,7 +426,7 @@ class ToastManager:
             y -= toast_height
             toast.move(x, y)
             # 同步阴影位置，向右下偏移 2px
-            if hasattr(toast, '_shadow_frame') and toast._shadow_frame:
+            if hasattr(toast, "_shadow_frame") and toast._shadow_frame:
                 toast._shadow_frame.setFixedHeight(toast_height + 4)
                 toast._shadow_frame.move(x - 2, y + 2)
                 toast._shadow_frame.show()
@@ -433,6 +436,7 @@ class ToastManager:
 
 
 # ================================================================ Toast 静态入口
+
 
 class Toast:
     """轻量级 Toast 通知的静态调用入口。
@@ -453,9 +457,9 @@ class Toast:
     def show(
         parent: QWidget,
         message: str,
-        toast_type: str = 'info',
+        toast_type: str = "info",
         duration: int = 3000,
-        action_text: str = '',
+        action_text: str = "",
         action_callback: Callable[[], None] | None = None,
     ) -> ToastWidget:
         """显示 Toast 通知。

@@ -40,7 +40,9 @@ class ReEncryptionDB(Protocol):
     def update_entries_batch(self, rows: list[ReEncryptedEntry]) -> None: ...
 
     def get_all_password_history_batch(
-        self, after_id: int = 0, limit: int = 200,
+        self,
+        after_id: int = 0,
+        limit: int = 200,
     ) -> list[PasswordHistory]: ...
 
     def update_password_history_batch(self, rows: list[ReEncryptedHistory]) -> None: ...
@@ -72,8 +74,13 @@ class ReEncryptionService:
         self._db = db
         self._signer = metadata_signer
 
-    def re_encrypt_entries(self, old_key: bytes | bytearray, new_key: bytes | bytearray, *,
-                           cancel_event: Event | None = None) -> None:
+    def re_encrypt_entries(
+        self,
+        old_key: bytes | bytearray,
+        new_key: bytes | bytearray,
+        *,
+        cancel_event: Event | None = None,
+    ) -> None:
         """分批重新加密所有条目的敏感字段。
 
         逐字段解密→加密减少驻留明文。不变量：raw_entry 来自 get_entries，
@@ -92,10 +99,11 @@ class ReEncryptionService:
             last_id = 0
             while True:
                 if cancel_event is not None and cancel_event.is_set():
-                    raise VaultError('重加密已被取消，事务回滚以保持数据一致')
+                    raise VaultError("重加密已被取消，事务回滚以保持数据一致")
                 batch = self._db.get_entries(
                     EntryQuery(
-                        include_deleted=True, limit=_RE_ENCRYPT_BATCH_SIZE,
+                        include_deleted=True,
+                        limit=_RE_ENCRYPT_BATCH_SIZE,
                         after_id=last_id,
                         # 重加密重写全部密文并新域密钥重签，旧签名无意义（密文完整性
                         # 由 strict 解密的 GCM 标签兜底）；SKIP 避免冗余验签延长持锁。
@@ -107,13 +115,13 @@ class ReEncryptionService:
                 # 主键 id 非 None 守卫：避免 None 作游标致死循环或写空主键。
                 last_raw = batch[-1]
                 if last_raw.id is None:
-                    raise VaultError('重加密分页遇到空主键，违反 RawEntry 主键非空契约')
+                    raise VaultError("重加密分页遇到空主键，违反 RawEntry 主键非空契约")
                 last_id = last_raw.id
                 rows = []
                 for raw_entry in batch:
                     # 主键非空守卫：兼作 Pyright 类型收窄，并非与外层游标守卫纯冗余。
                     if raw_entry.id is None:
-                        raise VaultError('重加密遇到空主键条目，违反 RawEntry 主键非空契约')
+                        raise VaultError("重加密遇到空主键条目，违反 RawEntry 主键非空契约")
                     try:
                         updates: dict[str, Any] = {}
                         for field in _ENCRYPTED_ENTRY_FIELDS:
@@ -121,7 +129,7 @@ class ReEncryptionService:
                             # 与 _row_to_entry 状态机解耦，避免误读解密后的 list。
                             value = (
                                 raw_entry.custom_fields_db_value
-                                if field == 'custom_fields'
+                                if field == "custom_fields"
                                 else getattr(raw_entry, field)
                             )
                             if value:
@@ -129,11 +137,17 @@ class ReEncryptionService:
                                 # 中止改密并回滚。默认 strict=False 会静默把损坏字段解密为
                                 # 空串再用新密钥写入，致不可逆数据丢失。
                                 plain = _decrypt_field_impl(
-                                    value, old_key, raw_entry.crypto_id, field,
+                                    value,
+                                    old_key,
+                                    raw_entry.crypto_id,
+                                    field,
                                     strict=True,
                                 )
                                 updates[field] = _encrypt_field_impl(
-                                    plain, new_key, raw_entry.crypto_id, field,
+                                    plain,
+                                    new_key,
+                                    raw_entry.crypto_id,
+                                    field,
                                 )
                                 del plain
                         re_encrypted = replace(raw_entry, **updates) if updates else raw_entry
@@ -144,25 +158,27 @@ class ReEncryptionService:
                         ) from exc
 
                     mac = self._signer.sign_with_domain_key(re_encrypted, precomputed_domain_key)
-                    rows.append(ReEncryptedEntry(
-                        crypto_id=re_encrypted.crypto_id,
-                        title_enc=re_encrypted.title,
-                        username_enc=re_encrypted.username,
-                        password_enc=re_encrypted.password,
-                        url_enc=re_encrypted.url,
-                        category_id=re_encrypted.category_id,
-                        tags_enc=re_encrypted.tags,
-                        notes_enc=re_encrypted.notes,
-                        custom_fields_enc=re_encrypted.custom_fields_db_value,
-                        is_favorite=int(re_encrypted.is_favorite),
-                        password_strength=re_encrypted.password_strength,
-                        entry_type=re_encrypted.entry_type,
-                        totp_secret_enc=re_encrypted.totp_secret,
-                        updated_at=re_encrypted.updated_at,
-                        password_changed_at=re_encrypted.password_changed_at,
-                        metadata_mac=mac,
-                        id=raw_entry.id,
-                    ))
+                    rows.append(
+                        ReEncryptedEntry(
+                            crypto_id=re_encrypted.crypto_id,
+                            title_enc=re_encrypted.title,
+                            username_enc=re_encrypted.username,
+                            password_enc=re_encrypted.password,
+                            url_enc=re_encrypted.url,
+                            category_id=re_encrypted.category_id,
+                            tags_enc=re_encrypted.tags,
+                            notes_enc=re_encrypted.notes,
+                            custom_fields_enc=re_encrypted.custom_fields_db_value,
+                            is_favorite=int(re_encrypted.is_favorite),
+                            password_strength=re_encrypted.password_strength,
+                            entry_type=re_encrypted.entry_type,
+                            totp_secret_enc=re_encrypted.totp_secret,
+                            updated_at=re_encrypted.updated_at,
+                            password_changed_at=re_encrypted.password_changed_at,
+                            metadata_mac=mac,
+                            id=raw_entry.id,
+                        )
+                    )
                 self._db.update_entries_batch(rows)
                 del batch, rows
         finally:
@@ -170,7 +186,10 @@ class ReEncryptionService:
             secure_zero_buffer(precomputed_domain_key)
 
     def re_encrypt_categories(
-        self, old_key: bytes | bytearray, new_key: bytes | bytearray, *,
+        self,
+        old_key: bytes | bytearray,
+        new_key: bytes | bytearray,
+        *,
         cancel_event: Event | None = None,
     ) -> None:
         """使用分类 ID 绑定的 AAD 重加密全部分类名称。
@@ -193,28 +212,34 @@ class ReEncryptionService:
             updated: list[Category] = []
             for category in self._db.get_categories(verify=False):
                 if cancel_event is not None and cancel_event.is_set():
-                    raise VaultError('重加密已被取消，事务回滚以保持数据一致')
+                    raise VaultError("重加密已被取消，事务回滚以保持数据一致")
                 if category.id is None:
                     continue
                 crypto_id = category_crypto_id(category.id)
                 try:
                     plaintext = _decrypt_field_impl(
-                        category.name, old_key, crypto_id, 'category_name', strict=True,
+                        category.name,
+                        old_key,
+                        crypto_id,
+                        "category_name",
+                        strict=True,
                     )
                 except DecryptionError as exc:
-                    raise DecryptionError(
-                        f'分类 {category.id} 名称解密失败，已中止改密'
-                    ) from exc
+                    raise DecryptionError(f"分类 {category.id} 名称解密失败，已中止改密") from exc
                 category = replace(
                     category,
                     name=_encrypt_field_impl(
-                        plaintext, new_key, crypto_id, 'category_name',
+                        plaintext,
+                        new_key,
+                        crypto_id,
+                        "category_name",
                     ),
                 )
                 category = replace(
                     category,
                     metadata_mac=self._signer.sign_category_with_domain_key(
-                        category, precomputed_domain_key,
+                        category,
+                        precomputed_domain_key,
                     ),
                 )
                 updated.append(category)
@@ -224,8 +249,13 @@ class ReEncryptionService:
             # 新域密钥副本全程持有，结束后立即原地清零。
             secure_zero_buffer(precomputed_domain_key)
 
-    def re_encrypt_history(self, old_key: bytes | bytearray, new_key: bytes | bytearray, *,
-                           cancel_event: Event | None = None) -> None:
+    def re_encrypt_history(
+        self,
+        old_key: bytes | bytearray,
+        new_key: bytes | bytearray,
+        *,
+        cancel_event: Event | None = None,
+    ) -> None:
         """分批重新加密密码历史记录。
 
         游标分页与条目批处理对齐控制内存峰值。每批经 update_password_history_batch
@@ -239,7 +269,7 @@ class ReEncryptionService:
         last_history_id = 0
         while True:
             if cancel_event is not None and cancel_event.is_set():
-                raise VaultError('重加密已被取消，事务回滚以保持数据一致')
+                raise VaultError("重加密已被取消，事务回滚以保持数据一致")
             history_batch = self._db.get_all_password_history_batch(
                 last_history_id, _RE_ENCRYPT_BATCH_SIZE
             )
@@ -248,33 +278,37 @@ class ReEncryptionService:
             # 主键 id 非 None 守卫：避免 None 作游标致死循环。
             last_history = history_batch[-1]
             if last_history.id is None:
-                raise VaultError('重加密分页遇到空主键，违反 PasswordHistory 主键非空契约')
+                raise VaultError("重加密分页遇到空主键，违反 PasswordHistory 主键非空契约")
             last_history_id = last_history.id
             rows: list[ReEncryptedHistory] = []
             for history in history_batch:
                 # 主键非空守卫：兼作 Pyright 类型收窄，并非与外层游标守卫纯冗余。
                 if history.id is None:
-                    raise VaultError('重加密遇到空主键密码历史，违反 PasswordHistory 主键非空契约')
+                    raise VaultError("重加密遇到空主键密码历史，违反 PasswordHistory 主键非空契约")
                 try:
                     plaintext = _decrypt_field_impl(
-                        history.old_password_enc, old_key,
-                        history.entry_crypto_id, 'password',
+                        history.old_password_enc,
+                        old_key,
+                        history.entry_crypto_id,
+                        "password",
                         strict=True,
                     )
                 except DecryptionError as exc:
                     logger.error("重加密中止：密码历史 id=%s 解密失败", history.id)
-                    raise DecryptionError(
-                        "某密码历史记录解密失败，数据可能已损坏。"
-                    ) from exc
+                    raise DecryptionError("某密码历史记录解密失败，数据可能已损坏。") from exc
                 ciphertext = _encrypt_field_impl(
-                    plaintext, new_key,
-                    history.entry_crypto_id, 'password',
+                    plaintext,
+                    new_key,
+                    history.entry_crypto_id,
+                    "password",
                 )
                 del plaintext
-                rows.append(ReEncryptedHistory(
-                    ciphertext=ciphertext,
-                    id=history.id,
-                ))
+                rows.append(
+                    ReEncryptedHistory(
+                        ciphertext=ciphertext,
+                        id=history.id,
+                    )
+                )
             if rows:
                 self._db.update_password_history_batch(rows)
             del history_batch, rows

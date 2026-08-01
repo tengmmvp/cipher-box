@@ -34,7 +34,10 @@ class TotpCacheProtocol(Protocol):
         ...
 
     def resolve_totp_secret(
-        self, entry_id: int, *, use_cache: bool = False,
+        self,
+        entry_id: int,
+        *,
+        use_cache: bool = False,
     ) -> str | None:
         """解析条目 totp_secret 明文；use_cache 为真时读写会话内缓存。"""
         ...
@@ -51,7 +54,7 @@ class TotpCacheProtocol(Protocol):
 class TotpService:
     """条目 TOTP 验证码生成与状态查询。"""
 
-    def __init__(self, vault: 'VaultManager', cache: TotpCacheProtocol):
+    def __init__(self, vault: "VaultManager", cache: TotpCacheProtocol):
         self._vault = vault
         self._cache = cache
 
@@ -86,7 +89,10 @@ class TotpService:
         return TOTPGenerator.generate(secret)
 
     def get_state(
-        self, entry_id: int, *, preloaded_secret: str | None = None,
+        self,
+        entry_id: int,
+        *,
+        preloaded_secret: str | None = None,
     ) -> TotpState | None:
         """获取指定条目的 TOTP 完整状态（验证码、倒计时、周期）。
 
@@ -108,9 +114,9 @@ class TotpService:
                 return None
             secret = resolved
         return {
-            'code': TOTPGenerator.generate(secret),
-            'remaining': TOTPGenerator.get_remaining_seconds(secret=secret),
-            'period': TOTPGenerator.get_period(secret),
+            "code": TOTPGenerator.generate(secret),
+            "remaining": TOTPGenerator.get_remaining_seconds(secret=secret),
+            "period": TOTPGenerator.get_period(secret),
         }
 
     def remaining_seconds(self, period: int) -> int:
@@ -131,7 +137,10 @@ class TotpService:
         self._cache.pop_totp(entry_id)
 
     def _resolve_totp_secret(
-        self, entry_id: int, *, use_cache: bool = False,
+        self,
+        entry_id: int,
+        *,
+        use_cache: bool = False,
     ) -> str | None:
         """解析条目的 totp_secret 明文，单一解密路径供 TOTP 方法复用。委托 cache。"""
         return self._cache.resolve_totp_secret(entry_id, use_cache=use_cache)

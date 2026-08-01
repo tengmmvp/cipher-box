@@ -30,14 +30,17 @@ from src.exceptions import BackupError, PayloadTooLargeError
 
 def _make_header_bytes(
     flags: BackupFlag = BackupFlag.PASSWORD,
-    salt: bytes = b'\x00' * BACKUP_SALT_SIZE,
+    salt: bytes = b"\x00" * BACKUP_SALT_SIZE,
     params: KdfParams = DEFAULT_KDF_PARAMS,
 ) -> bytes:
     """构造与 write_backup_header 等价的二进制头部（便于直接篡改字节）。"""
     return (
         BACKUP_MAGIC
         + BACKUP_HEADER_STRUCT.pack(
-            int(flags), params.time_cost, params.memory_cost, params.parallelism,
+            int(flags),
+            params.time_cost,
+            params.memory_cost,
+            params.parallelism,
         )
         + salt
     )
@@ -48,7 +51,7 @@ class TestBackupHeaderRoundtrip:
 
     def test_roundtrip_password(self):
         """PASSWORD 标志与默认参数写入后应能完整读回。"""
-        salt = b'\x11' * BACKUP_SALT_SIZE
+        salt = b"\x11" * BACKUP_SALT_SIZE
         buf = io.BytesIO()
         write_backup_header(buf, BackupFlag.PASSWORD, salt, DEFAULT_KDF_PARAMS)
         buf.seek(0)
@@ -59,7 +62,7 @@ class TestBackupHeaderRoundtrip:
 
     def test_roundtrip_snapshot(self):
         """SNAPSHOT 标志同样能完整往返。"""
-        salt = b'\x22' * BACKUP_SALT_SIZE
+        salt = b"\x22" * BACKUP_SALT_SIZE
         buf = io.BytesIO()
         write_backup_header(buf, BackupFlag.SNAPSHOT, salt, DEFAULT_KDF_PARAMS)
         flags, read_salt, params = read_backup_header(buf)
@@ -70,9 +73,12 @@ class TestBackupHeaderRoundtrip:
     def test_write_rejects_invalid_salt_length(self):
         """盐长度不等于 BACKUP_SALT_SIZE 应拒绝。"""
         buf = io.BytesIO()
-        with pytest.raises(BackupError, match='盐'):
+        with pytest.raises(BackupError, match="盐"):
             write_backup_header(
-                buf, BackupFlag.PASSWORD, b'\x00' * 10, DEFAULT_KDF_PARAMS,
+                buf,
+                BackupFlag.PASSWORD,
+                b"\x00" * 10,
+                DEFAULT_KDF_PARAMS,
             )
 
     def test_write_rejects_invalid_params(self):
@@ -80,8 +86,9 @@ class TestBackupHeaderRoundtrip:
         buf = io.BytesIO()
         with pytest.raises(ValueError):
             write_backup_header(
-                buf, BackupFlag.PASSWORD,
-                b'\x00' * BACKUP_SALT_SIZE,
+                buf,
+                BackupFlag.PASSWORD,
+                b"\x00" * BACKUP_SALT_SIZE,
                 KdfParams(time_cost=1, memory_cost=16 * 1024, parallelism=1),
             )
 
@@ -91,7 +98,7 @@ class TestHeaderAad:
 
     def test_aad_contains_magic_struct_and_salt(self):
         """AAD 应包含固定前缀 + magic + 结构化参数 + salt。"""
-        salt = b'\xab' * BACKUP_SALT_SIZE
+        salt = b"\xab" * BACKUP_SALT_SIZE
         aad = header_aad(BackupFlag.PASSWORD, salt, DEFAULT_KDF_PARAMS)
         assert aad.startswith(BACKUP_AAD + BACKUP_MAGIC)
         assert aad.endswith(salt)
@@ -106,14 +113,14 @@ class TestHeaderAad:
 
     def test_aad_differs_per_flag(self):
         """不同 flag 应生成不同 AAD（绑定加密方式到 payload）。"""
-        salt = b'\x00' * BACKUP_SALT_SIZE
+        salt = b"\x00" * BACKUP_SALT_SIZE
         aad1 = header_aad(BackupFlag.PASSWORD, salt, DEFAULT_KDF_PARAMS)
         aad2 = header_aad(BackupFlag.SNAPSHOT, salt, DEFAULT_KDF_PARAMS)
         assert aad1 != aad2
 
     def test_aad_differs_per_params(self):
         """KDF 参数变化应反映到 AAD（防头篡改降级）。"""
-        salt = b'\x00' * BACKUP_SALT_SIZE
+        salt = b"\x00" * BACKUP_SALT_SIZE
         weak = KdfParams(time_cost=2, memory_cost=16 * 1024, parallelism=1)
         aad_default = header_aad(BackupFlag.PASSWORD, salt, DEFAULT_KDF_PARAMS)
         aad_weak = header_aad(BackupFlag.PASSWORD, salt, weak)
@@ -124,7 +131,7 @@ class TestEnforceKdfFloor:
     """enforce_kdf_floor 拒绝低于默认值的参数。"""
 
     def test_rejects_low_time(self):
-        with pytest.raises(BackupError, match='KDF'):
+        with pytest.raises(BackupError, match="KDF"):
             enforce_kdf_floor(
                 KdfParams(
                     time_cost=DEFAULT_KDF_PARAMS.time_cost - 1,
@@ -134,7 +141,7 @@ class TestEnforceKdfFloor:
             )
 
     def test_rejects_low_memory(self):
-        with pytest.raises(BackupError, match='KDF'):
+        with pytest.raises(BackupError, match="KDF"):
             enforce_kdf_floor(
                 KdfParams(
                     time_cost=DEFAULT_KDF_PARAMS.time_cost,
@@ -144,7 +151,7 @@ class TestEnforceKdfFloor:
             )
 
     def test_rejects_low_parallelism(self):
-        with pytest.raises(BackupError, match='KDF'):
+        with pytest.raises(BackupError, match="KDF"):
             enforce_kdf_floor(
                 KdfParams(
                     time_cost=DEFAULT_KDF_PARAMS.time_cost,
@@ -178,7 +185,7 @@ class TestEnforceKdfCeiling:
 
     def test_rejects_oversized_time(self):
         m = backup_header_codec.MAX_RESTORE_KDF_MULTIPLIER
-        with pytest.raises(BackupError, match='上界'):
+        with pytest.raises(BackupError, match="上界"):
             backup_header_codec.enforce_kdf_ceiling(
                 KdfParams(
                     DEFAULT_KDF_PARAMS.time_cost * (m + 1),
@@ -189,7 +196,7 @@ class TestEnforceKdfCeiling:
 
     def test_rejects_oversized_memory(self):
         m = backup_header_codec.MAX_RESTORE_KDF_MULTIPLIER
-        with pytest.raises(BackupError, match='上界'):
+        with pytest.raises(BackupError, match="上界"):
             backup_header_codec.enforce_kdf_ceiling(
                 KdfParams(
                     DEFAULT_KDF_PARAMS.time_cost,
@@ -200,7 +207,7 @@ class TestEnforceKdfCeiling:
 
     def test_rejects_oversized_parallelism(self):
         m = backup_header_codec.MAX_RESTORE_KDF_MULTIPLIER
-        with pytest.raises(BackupError, match='上界'):
+        with pytest.raises(BackupError, match="上界"):
             backup_header_codec.enforce_kdf_ceiling(
                 KdfParams(
                     DEFAULT_KDF_PARAMS.time_cost,
@@ -214,38 +221,40 @@ class TestInspectBackup:
     """inspect_backup 读头返回结构化字典。"""
 
     def test_inspect_password_backup(self, tmp_path):
-        salt = b'\x33' * BACKUP_SALT_SIZE
-        path = tmp_path / 'pw.cbox'
-        with open(path, 'wb') as f:
+        salt = b"\x33" * BACKUP_SALT_SIZE
+        path = tmp_path / "pw.cbox"
+        with open(path, "wb") as f:
             write_backup_header(f, BackupFlag.PASSWORD, salt, DEFAULT_KDF_PARAMS)
-            f.write(b'payload-tail')  # 模拟 payload
+            f.write(b"payload-tail")  # 模拟 payload
         info = inspect_backup(str(path))
-        assert info['format'] == BACKUP_FORMAT
-        assert info['password_required'] is True
-        assert info['snapshot_required'] is False
-        assert info['kdf']['name'] == 'argon2id'
-        assert info['kdf']['time_cost'] == DEFAULT_KDF_PARAMS.time_cost
-        assert info['kdf']['memory_cost'] == DEFAULT_KDF_PARAMS.memory_cost
-        assert info['kdf']['parallelism'] == DEFAULT_KDF_PARAMS.parallelism
+        assert info["format"] == BACKUP_FORMAT
+        assert info["password_required"] is True
+        assert info["snapshot_required"] is False
+        assert info["kdf"]["name"] == "argon2id"
+        assert info["kdf"]["time_cost"] == DEFAULT_KDF_PARAMS.time_cost
+        assert info["kdf"]["memory_cost"] == DEFAULT_KDF_PARAMS.memory_cost
+        assert info["kdf"]["parallelism"] == DEFAULT_KDF_PARAMS.parallelism
 
     def test_inspect_snapshot_backup(self, tmp_path):
-        salt = b'\x44' * BACKUP_SALT_SIZE
-        path = tmp_path / 'snap.cbox'
-        with open(path, 'wb') as f:
+        salt = b"\x44" * BACKUP_SALT_SIZE
+        path = tmp_path / "snap.cbox"
+        with open(path, "wb") as f:
             write_backup_header(f, BackupFlag.SNAPSHOT, salt, DEFAULT_KDF_PARAMS)
         info = inspect_backup(str(path))
-        assert info['snapshot_required'] is True
-        assert info['password_required'] is False
+        assert info["snapshot_required"] is True
+        assert info["password_required"] is False
 
     def test_inspect_rejects_oversized_file(self, tmp_path, monkeypatch):
         """超过 MAX_BACKUP_FILE_SIZE 的文件应抛 PayloadTooLargeError。"""
-        salt = b'\x00' * BACKUP_SALT_SIZE
-        path = tmp_path / 'big.cbox'
-        with open(path, 'wb') as f:
+        salt = b"\x00" * BACKUP_SALT_SIZE
+        path = tmp_path / "big.cbox"
+        with open(path, "wb") as f:
             write_backup_header(f, BackupFlag.PASSWORD, salt, DEFAULT_KDF_PARAMS)
         # 通过下调模块阈值使现有小文件判定为过大，避免写一个 64MB+ 真文件
         monkeypatch.setattr(
-            backup_header_codec, 'MAX_BACKUP_FILE_SIZE', 1,
+            backup_header_codec,
+            "MAX_BACKUP_FILE_SIZE",
+            1,
         )
         with pytest.raises(PayloadTooLargeError):
             inspect_backup(str(path))
@@ -255,15 +264,15 @@ class TestDeriveBackupKey:
     """derive_backup_key 返回 32 字节且受默认参数保护。"""
 
     def test_returns_32_bytes(self):
-        salt = b'\x55' * BACKUP_SALT_SIZE
-        key = derive_backup_key('SomePassword!1', salt)
+        salt = b"\x55" * BACKUP_SALT_SIZE
+        key = derive_backup_key("SomePassword!1", salt)
         assert isinstance(key, bytearray)
         assert len(key) == 32
 
     def test_different_passwords_yield_different_keys(self):
-        salt = b'\x00' * BACKUP_SALT_SIZE
-        k1 = derive_backup_key('aaa', salt)
-        k2 = derive_backup_key('bbb', salt)
+        salt = b"\x00" * BACKUP_SALT_SIZE
+        k1 = derive_backup_key("aaa", salt)
+        k2 = derive_backup_key("bbb", salt)
         assert k1 != k2
 
 
@@ -271,13 +280,13 @@ class TestZeroBackupKeyIfOwned:
     """zero_backup_key_if_owned 的清零策略。"""
 
     def test_password_key_zeroed(self):
-        key = bytearray(b'\x01' * 32)
+        key = bytearray(b"\x01" * 32)
         zero_backup_key_if_owned(BackupFlag.PASSWORD, key)
-        assert bytes(key) == b'\x00' * 32
+        assert bytes(key) == b"\x00" * 32
 
     def test_snapshot_key_not_zeroed(self):
         """SNAPSHOT 路径借用 snapshot_key，不应在此清零。"""
-        original = b'\x02' * 32
+        original = b"\x02" * 32
         key = bytearray(original)
         zero_backup_key_if_owned(BackupFlag.SNAPSHOT, key)
         assert bytes(key) == original
@@ -289,7 +298,7 @@ class TestZeroBackupKeyIfOwned:
     def test_password_bytes_key_zeroed(self):
         """bytes 类型 key 在 PASSWORD 路径也应被处理（虽不可变，仍传递给清零函数）。"""
         # bytes 不可变，secure_zero_buffer 对 bytes 是 no-op，但函数不应抛异常
-        zero_backup_key_if_owned(BackupFlag.PASSWORD, b'\x03' * 32)
+        zero_backup_key_if_owned(BackupFlag.PASSWORD, b"\x03" * 32)
 
 
 class TestCorruptedHeader:
@@ -297,19 +306,19 @@ class TestCorruptedHeader:
 
     def test_bad_magic_rejected(self):
         """前缀不是 BACKUP_MAGIC 应抛 BackupError。"""
-        buf = io.BytesIO(b'NOTCipherBox\x00\x00\x00' + b'\x00' * 50)
-        with pytest.raises(BackupError, match='格式'):
+        buf = io.BytesIO(b"NOTCipherBox\x00\x00\x00" + b"\x00" * 50)
+        with pytest.raises(BackupError, match="格式"):
             read_backup_header(buf)
 
     def test_short_header_rejected(self):
         """长度不足以容纳完整头（struct + salt）应抛 BackupError。"""
-        buf = io.BytesIO(BACKUP_MAGIC + b'\x00' * 5)  # 缺失 struct 与 salt
-        with pytest.raises(BackupError, match='损坏'):
+        buf = io.BytesIO(BACKUP_MAGIC + b"\x00" * 5)  # 缺失 struct 与 salt
+        with pytest.raises(BackupError, match="损坏"):
             read_backup_header(buf)
 
     def test_bad_flag_rejected(self):
         """未定义的 flag 值（如 0、3、5）应被拒绝。"""
-        salt = b'\x00' * BACKUP_SALT_SIZE
+        salt = b"\x00" * BACKUP_SALT_SIZE
         # flag=0（非法）+ 默认 KDF 参数
         raw = (
             BACKUP_MAGIC
@@ -322,14 +331,15 @@ class TestCorruptedHeader:
             + salt
         )
         buf = io.BytesIO(raw)
-        with pytest.raises(BackupError, match='格式'):
+        with pytest.raises(BackupError, match="格式"):
             read_backup_header(buf)
 
     def test_invalid_kdf_in_header_rejected(self):
         """头部 KDF 参数超出 validate_params 范围应被拒绝（归一为 BackupError）。"""
-        salt = b'\x00' * BACKUP_SALT_SIZE
+        salt = b"\x00" * BACKUP_SALT_SIZE
         raw = _make_header_bytes(
-            BackupFlag.PASSWORD, salt,
+            BackupFlag.PASSWORD,
+            salt,
             KdfParams(time_cost=1, memory_cost=16 * 1024, parallelism=1),
         )
         buf = io.BytesIO(raw)
@@ -338,7 +348,7 @@ class TestCorruptedHeader:
 
     def test_inspect_bad_magic_rejected(self, tmp_path):
         """inspect_backup 对坏 magic 也应抛 BackupError。"""
-        path = tmp_path / 'bad.cbox'
-        path.write_bytes(b'NOT_MAGIC' + b'\x00' * 60)
+        path = tmp_path / "bad.cbox"
+        path.write_bytes(b"NOT_MAGIC" + b"\x00" * 60)
         with pytest.raises(BackupError):
             inspect_backup(str(path))

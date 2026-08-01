@@ -39,12 +39,12 @@ MIN_ARGON2_PARALLELISM = 1
 MAX_ARGON2_PARALLELISM = 16
 
 # KDF 标识，写入 vault_meta 的 master_kdf 字段，解锁时校验。
-KDF_NAME = 'argon2id'
+KDF_NAME = "argon2id"
 
 # HKDF 域分离 info 标签：主密钥与备份密钥共享同一 Argon2id 主材料，经不同 info
 # 派生（HKDF 保证不同 info → 输出独立）。新增密钥域只需追加常量并复用 _hkdf_expand。
-_DOMAIN_INFO_MASTER = b'cipherbox:vault-master-key'
-_DOMAIN_INFO_BACKUP = b'cipherbox:backup-key'
+_DOMAIN_INFO_MASTER = b"cipherbox:vault-master-key"
+_DOMAIN_INFO_BACKUP = b"cipherbox:backup-key"
 
 
 class KdfParams(NamedTuple):
@@ -74,21 +74,19 @@ class MasterKeyManager:
     def _validate_params(cls, params: KdfParams) -> None:
         """校验 Argon2id 参数是否在安全范围内，防止 meta 篡改导致静默降级。"""
         if not MIN_ARGON2_TIME_COST <= params.time_cost <= MAX_ARGON2_TIME_COST:
-            raise ValueError('Argon2id time_cost 参数无效')
+            raise ValueError("Argon2id time_cost 参数无效")
         if not MIN_ARGON2_MEMORY_COST <= params.memory_cost <= MAX_ARGON2_MEMORY_COST:
-            raise ValueError('Argon2id memory_cost 参数无效')
+            raise ValueError("Argon2id memory_cost 参数无效")
         if not MIN_ARGON2_PARALLELISM <= params.parallelism <= MAX_ARGON2_PARALLELISM:
-            raise ValueError('Argon2id parallelism 参数无效')
+            raise ValueError("Argon2id parallelism 参数无效")
 
     @classmethod
     def _validate_salt(cls, salt: bytes) -> None:
         """校验盐值的类型与最小长度，防止空盐/过短盐导致派生强度静默降级。"""
         if not isinstance(salt, (bytes, bytearray)):
-            raise TypeError(f'盐值类型无效：期望 bytes，实际 {type(salt).__name__}')
+            raise TypeError(f"盐值类型无效：期望 bytes，实际 {type(salt).__name__}")
         if len(salt) < MIN_SALT_SIZE:
-            raise ValueError(
-                f'盐值过短：期望至少 {MIN_SALT_SIZE} 字节，实际 {len(salt)} 字节'
-            )
+            raise ValueError(f"盐值过短：期望至少 {MIN_SALT_SIZE} 字节，实际 {len(salt)} 字节")
 
     @classmethod
     def _derive_master_material(
@@ -103,22 +101,26 @@ class MasterKeyManager:
         长期驻留内存。域分离见 :data:`_DOMAIN_INFO_MASTER`。
         """
         if not isinstance(password, str):
-            raise TypeError(f'密码类型无效：期望 str，实际 {type(password).__name__}')
+            raise TypeError(f"密码类型无效：期望 str，实际 {type(password).__name__}")
         cls._validate_params(params)
         cls._validate_salt(salt)
-        return bytearray(hash_secret_raw(
-            secret=password.encode('utf-8'),
-            salt=bytes(salt),
-            time_cost=params.time_cost,
-            memory_cost=params.memory_cost,
-            parallelism=params.parallelism,
-            hash_len=KEY_SIZE,
-            type=Type.ID,
-        ))
+        return bytearray(
+            hash_secret_raw(
+                secret=password.encode("utf-8"),
+                salt=bytes(salt),
+                time_cost=params.time_cost,
+                memory_cost=params.memory_cost,
+                parallelism=params.parallelism,
+                hash_len=KEY_SIZE,
+                type=Type.ID,
+            )
+        )
 
     @classmethod
     def _hkdf_expand(
-        cls, material: bytes | bytearray, info: bytes,
+        cls,
+        material: bytes | bytearray,
+        info: bytes,
     ) -> bytearray:
         """从主材料经 HKDF-Expand 派生 32 字节域密钥。
 
@@ -127,7 +129,9 @@ class MasterKeyManager:
         """
         return bytearray(
             HKDFExpand(
-                algorithm=hashes.SHA256(), length=KEY_SIZE, info=info,
+                algorithm=hashes.SHA256(),
+                length=KEY_SIZE,
+                info=info,
             ).derive(material)
         )
 
@@ -157,7 +161,10 @@ class MasterKeyManager:
 
     @classmethod
     def derive_backup_key(
-        cls, password: str, salt: bytes, params: KdfParams = DEFAULT_KDF_PARAMS,
+        cls,
+        password: str,
+        salt: bytes,
+        params: KdfParams = DEFAULT_KDF_PARAMS,
     ) -> bytearray:
         """从备份密码派生独立的备份加密密钥（备份域），与主密钥域分离。
 
@@ -270,11 +277,7 @@ class MasterKeyManager:
         """
         # 旧密码仅用于「是/否」验证：重加密用已激活的 vault.key，无需持有旧密钥副本；
         # verify_password 内部派生验证后立即清零，收缩改密窗口的密钥驻留面。
-        if not cls.verify_password(
-            old_password, old_salt, old_verify_token, old_params
-        ):
+        if not cls.verify_password(old_password, old_salt, old_verify_token, old_params):
             return None
-        new_salt, new_verify_token, new_key = cls.create(
-            new_password, new_params
-        )
+        new_salt, new_verify_token, new_key = cls.create(new_password, new_params)
         return new_salt, new_verify_token, new_key

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 class PasswordHistoryService:
     """密码历史的数据库读取与解密展示。"""
 
-    def __init__(self, vault: 'VaultManager'):
+    def __init__(self, vault: "VaultManager"):
         self._vault = vault
 
     @property
@@ -44,17 +44,18 @@ class PasswordHistoryService:
         result = []
         with self._vault.vault_write_lock():
             for h in history:
-                pwd = decrypt_field(
-                    h.old_password_enc, self._key, h.entry_crypto_id, 'password'
-                )
+                pwd = decrypt_field(h.old_password_enc, self._key, h.entry_crypto_id, "password")
                 if pwd:
-                    result.append({
-                        'changed_at': format_datetime(h.changed_at),
-                        'password': pwd,
-                    })
+                    result.append(
+                        {
+                            "changed_at": format_datetime(h.changed_at),
+                            "password": pwd,
+                        }
+                    )
                 else:
                     # 解密失败（损坏记录）静默丢弃会掩盖数据问题，记录告警便于排查
                     logger.warning(
-                        "密码历史解密失败 entry_crypto_id=%s，已跳过", h.entry_crypto_id,
+                        "密码历史解密失败 entry_crypto_id=%s，已跳过",
+                        h.entry_crypto_id,
                     )
         return result

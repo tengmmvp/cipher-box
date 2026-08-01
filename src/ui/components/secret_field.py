@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 from ..resources.constants import BTN_COPY, PWD_MASK
 from ..resources.icons import COPY, EYE, LOCK, set_icon
 
-_StoreKey = TypeVar('_StoreKey')
+_StoreKey = TypeVar("_StoreKey")
 
 
 @dataclass(frozen=True)
@@ -47,8 +47,8 @@ def make_secret_field_row(
     value: str,
     store_key: _StoreKey,
     *,
-    name_label_style: str = '',
-    val_label_style: str = '',
+    name_label_style: str = "",
+    val_label_style: str = "",
 ) -> tuple[QLabel, QWidget]:
     """构建一个敏感字段行：掩码标签 + 显示/隐藏按钮 + 复制按钮。
 
@@ -64,11 +64,11 @@ def make_secret_field_row(
         name_label_style: 名称标签内联样式；为空则用 objectName ``fieldLabel`` 走 QSS。
         val_label_style: 值标签内联样式；为空则用 objectName ``secretValue`` 走 QSS。
     """
-    name_label = QLabel(f'{label_text}：')
+    name_label = QLabel(f"{label_text}：")
     if name_label_style:
         name_label.setStyleSheet(name_label_style)
     else:
-        name_label.setObjectName('fieldLabel')
+        name_label.setObjectName("fieldLabel")
 
     row_widget = QWidget()
     row_layout = QHBoxLayout(row_widget)
@@ -78,14 +78,14 @@ def make_secret_field_row(
     if val_label_style:
         val_label.setStyleSheet(val_label_style)
     else:
-        val_label.setObjectName('secretValue')
+        val_label.setObjectName("secretValue")
     row_layout.addWidget(val_label, 1)
 
     show_btn = QPushButton()
     set_icon(show_btn, EYE)
-    show_btn.setObjectName('iconBtn')
+    show_btn.setObjectName("iconBtn")
     show_btn.setFixedSize(*BTN_COPY)
-    show_btn.setToolTip('显示/隐藏')
+    show_btn.setToolTip("显示/隐藏")
 
     env.store[store_key] = value
     field_timer = QTimer(env.parent_widget)
@@ -98,11 +98,17 @@ def make_secret_field_row(
     field_timer.timeout.connect(_auto_mask)
     env.timers.append(field_timer)
 
-    def _toggle(_checked: bool = False, lbl: QLabel = val_label, btn: QPushButton = show_btn, key: _StoreKey = store_key, timer: QTimer = field_timer) -> None:
+    def _toggle(
+        _checked: bool = False,
+        lbl: QLabel = val_label,
+        btn: QPushButton = show_btn,
+        key: _StoreKey = store_key,
+        timer: QTimer = field_timer,
+    ) -> None:
         # 控件可能已被 deleteLater，异步回调（定时器/点击）触发前守卫，避免 RuntimeError
         if sip.isdeleted(lbl) or sip.isdeleted(btn):
             return
-        pwd = env.store.get(key, '')
+        pwd = env.store.get(key, "")
         if lbl.text() == PWD_MASK:
             lbl.setText(pwd)
             set_icon(btn, LOCK)
@@ -117,12 +123,14 @@ def make_secret_field_row(
 
     copy_btn = QPushButton()
     set_icon(copy_btn, COPY)
-    copy_btn.setObjectName('iconBtn')
+    copy_btn.setObjectName("iconBtn")
     copy_btn.setFixedSize(*BTN_COPY)
-    copy_btn.setToolTip('复制密码')
+    copy_btn.setToolTip("复制密码")
 
-    def _copy_secret(_checked: bool = False, key: _StoreKey = store_key, btn: QPushButton = copy_btn) -> None:
-        env.on_copy(btn, env.store.get(key, ''))
+    def _copy_secret(
+        _checked: bool = False, key: _StoreKey = store_key, btn: QPushButton = copy_btn
+    ) -> None:
+        env.on_copy(btn, env.store.get(key, ""))
 
     copy_btn.clicked.connect(_copy_secret)
     copy_btn.clicked.connect(env.on_copy_feedback)

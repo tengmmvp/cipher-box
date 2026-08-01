@@ -10,8 +10,8 @@ from .import_export import ImportExportManager
 from .vault_manager import VaultManager
 
 __all__ = [
-    'BackupRestoreManager',
-    'EntryManager',
-    'ImportExportManager',
-    'VaultManager',
+    "BackupRestoreManager",
+    "EntryManager",
+    "ImportExportManager",
+    "VaultManager",
 ]

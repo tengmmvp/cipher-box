@@ -21,19 +21,19 @@ class TestSecurityAnalyzerSkipCorrupt:
     def test_corrupt_entry_is_skipped_not_raised(self):
         """解密失败的损坏条目应被跳过，分析返回正常结果。"""
         vault = MagicMock()
-        vault.key = b'\x00' * 32
+        vault.key = b"\x00" * 32
         vault.is_unlocked = True
         vault.is_cancel_requested.return_value = False
 
         bad_entry = RawEntry(
             id=1,
-            crypto_id='bad_crypto_id',
-            title='损坏条目',
-            username='enc_bad_user',
-            password='enc_bad_pass',
-            custom_fields='',
-            notes='enc_bad_notes',
-            totp_secret='',
+            crypto_id="bad_crypto_id",
+            title="损坏条目",
+            username="enc_bad_user",
+            password="enc_bad_pass",
+            custom_fields="",
+            notes="enc_bad_notes",
+            totp_secret="",
             password_strength=0,
         )
 
@@ -42,29 +42,29 @@ class TestSecurityAnalyzerSkipCorrupt:
         analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
 
         # bad_entry 的 title/username 为非密文明文（无 cb2: 前缀），经
-        # EntryCacheManager.cached_search_metadata 解密时抛 ValueError →
-        # _make_summary 检测 failed_fields 抛错 → full_analysis 跳过该条目，
+        # EntryCacheManager.cached_search_metadata 解密失败记入 failed_fields →
+        # _make_summary 检测 failed_fields 抛 EntryIntegrityError → full_analysis 跳过该条目，
         # 返回结果而非抛异常（复用 _make_summary 经 cache 解密的真实路径）。
         result = analyzer.full_analysis(90)
 
         assert isinstance(result, dict)
-        assert result['total'] == 1  # 条目仍计入总数
-        assert result['weak_count'] == 0  # 损坏条目不参与弱密码统计
+        assert result["total"] == 1  # 条目仍计入总数
+        assert result["weak_count"] == 0  # 损坏条目不参与弱密码统计
 
     def test_all_entries_corrupt_returns_empty_results(self):
         """所有条目都损坏时，分析跳过全部条目但仍返回结果。"""
         vault = MagicMock()
-        vault.key = b'\x00' * 32
+        vault.key = b"\x00" * 32
         vault.is_unlocked = True
         vault.is_cancel_requested.return_value = False
 
         corrupt_entry = RawEntry(
             id=1,
-            crypto_id='corrupt_crypto',
-            title='损坏',
-            username='enc',
-            password='enc_pass',
-            custom_fields='',
+            crypto_id="corrupt_crypto",
+            title="损坏",
+            username="enc",
+            password="enc_pass",
+            custom_fields="",
             password_strength=0,
         )
 
@@ -76,12 +76,12 @@ class TestSecurityAnalyzerSkipCorrupt:
         result = analyzer.full_analysis(90)
 
         assert isinstance(result, dict)
-        assert result['total'] == 1
+        assert result["total"] == 1
 
     def test_normal_analysis_returns_dict(self):
         """正常分析应返回包含预期键的 dict。"""
         vault = MagicMock()
-        vault.key = b'\x00' * 32
+        vault.key = b"\x00" * 32
         vault.is_unlocked = True
 
         vault.db.get_entries.return_value = []
@@ -90,13 +90,13 @@ class TestSecurityAnalyzerSkipCorrupt:
         result = analyzer.full_analysis(90)
 
         assert isinstance(result, dict)
-        assert 'total' in result
-        assert 'weak_count' in result
-        assert 'weak_entries' in result
-        assert 'duplicate_groups' in result
-        assert 'old_entries' in result
-        assert result['total'] == 0
-        assert result['weak_count'] == 0
+        assert "total" in result
+        assert "weak_count" in result
+        assert "weak_entries" in result
+        assert "duplicate_groups" in result
+        assert "old_entries" in result
+        assert result["total"] == 0
+        assert result["weak_count"] == 0
 
     def test_naive_password_changed_at_does_not_crash(self):
         """naive 时间戳（无时区偏移）应视为 UTC，不抛 TypeError。
@@ -106,19 +106,19 @@ class TestSecurityAnalyzerSkipCorrupt:
         归入过期条目。
         """
         vault = MagicMock()
-        vault.key = b'\x00' * 32
+        vault.key = b"\x00" * 32
         vault.is_unlocked = True
         vault.is_cancel_requested.return_value = False
 
         entry = RawEntry(
             id=1,
-            crypto_id='naive_crypto',
-            title=encrypt_field('旧条目', vault.key, 'naive_crypto', 'title'),
-            username='',
-            password='',
-            custom_fields='',
+            crypto_id="naive_crypto",
+            title=encrypt_field("旧条目", vault.key, "naive_crypto", "title"),
+            username="",
+            password="",
+            custom_fields="",
             # naive ISO 字符串，无 +00:00 偏移（模拟旧版或外部导入数据）
-            password_changed_at='2020-01-01T00:00:00',
+            password_changed_at="2020-01-01T00:00:00",
         )
         vault.db.get_entries.return_value = [entry]
 
@@ -127,7 +127,7 @@ class TestSecurityAnalyzerSkipCorrupt:
 
         assert isinstance(result, dict)
         # 2020 远早于 now-90d，naive 视为 UTC 后应归入过期
-        assert result['old'] == 1
+        assert result["old"] == 1
 
 
 def test_corrupt_category_name_is_skipped_not_raised():
@@ -138,21 +138,21 @@ def test_corrupt_category_name_is_skipped_not_raised():
     而非冒泡终止整次分析（与摘要字段损坏一致的容错）。
     """
     vault = MagicMock()
-    vault.key = b'\x00' * 32
+    vault.key = b"\x00" * 32
     vault.is_unlocked = True
     vault.is_cancel_requested.return_value = False
 
     entry = RawEntry(
         id=1,
-        crypto_id='cat_corrupt',
-        title=encrypt_field('标题', vault.key, 'cat_corrupt', 'title'),
-        username='',
-        password='',
-        custom_fields='',
+        crypto_id="cat_corrupt",
+        title=encrypt_field("标题", vault.key, "cat_corrupt", "title"),
+        username="",
+        password="",
+        custom_fields="",
         category_id=5,
         # 损坏的分类名密文：合法 cb2: 前缀但含非 base64 字符，decrypt_category_name
         # 解密失败抛 DecryptionError。
-        category_name='cb2:!!!corrupt_category!!!',
+        category_name="cb2:!!!corrupt_category!!!",
     )
     vault.db.get_entries.return_value = [entry]
 
@@ -160,8 +160,8 @@ def test_corrupt_category_name_is_skipped_not_raised():
     result = analyzer.full_analysis(90)
 
     assert isinstance(result, dict)
-    assert result['total'] == 1  # 条目仍计入总数
-    assert result['weak_count'] == 0  # 损坏条目不参与弱密码统计
+    assert result["total"] == 1  # 条目仍计入总数
+    assert result["weak_count"] == 0  # 损坏条目不参与弱密码统计
 
 
 def test_cached_analysis_returns_independent_copy():
@@ -171,7 +171,7 @@ def test_cached_analysis_returns_independent_copy():
     防止调用方修改返回的列表/Entry 污染后续命中的缓存。
     """
     vault = MagicMock()
-    vault.key = b'\x00' * 32
+    vault.key = b"\x00" * 32
     vault.is_unlocked = True
     vault.key_epoch = 1
     vault.db.get_entries.return_value = []
@@ -180,10 +180,10 @@ def test_cached_analysis_returns_independent_copy():
     analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
     result1 = analyzer._cached_analysis(90)
     # 模拟调用方修改返回对象（如 UI 排序/追加）
-    result1['weak_entries'].append('polluted')  # type: ignore[arg-type]  故意污染验证副本独立
+    result1["weak_entries"].append("polluted")  # type: ignore[arg-type]  故意污染验证副本独立
 
     result2 = analyzer._cached_analysis(90)
-    assert 'polluted' not in result2['weak_entries']
+    assert "polluted" not in result2["weak_entries"]
 
 
 def test_full_analysis_aborts_on_cancel_request():
@@ -194,13 +194,17 @@ def test_full_analysis_aborts_on_cancel_request():
     抛出的 VaultLockedError 由 _cached_analysis 捕获返回空报告。
     """
     vault = MagicMock()
-    vault.key = b'\x00' * 32
+    vault.key = b"\x00" * 32
     vault.is_unlocked = True
     vault.is_cancel_requested.return_value = True  # 模拟锁定请求已到来
 
     entry = RawEntry(
-        id=1, crypto_id='c', title='t', username='u',
-        password='', custom_fields='',
+        id=1,
+        crypto_id="c",
+        title="t",
+        username="u",
+        password="",
+        custom_fields="",
     )
     vault.db.get_entries.return_value = [entry]
 
@@ -213,7 +217,7 @@ def test_full_analysis_aborts_on_cancel_request():
 def test_full_analysis_proceeds_when_not_cancelled():
     """无取消请求时 full_analysis 正常完成，不因取消检查而误中止。"""
     vault = MagicMock()
-    vault.key = b'\x00' * 32
+    vault.key = b"\x00" * 32
     vault.is_unlocked = True
     vault.is_cancel_requested.return_value = False
 
@@ -222,4 +226,4 @@ def test_full_analysis_proceeds_when_not_cancelled():
     analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
     result = analyzer.full_analysis(90)
     assert isinstance(result, dict)
-    assert result['total'] == 0
+    assert result["total"] == 0

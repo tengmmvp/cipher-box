@@ -10,12 +10,23 @@ from src.database.db_manager import DatabaseManager
 from src.database.types import EntryQuery
 from src.models import Category, RawEntry
 
+# join 超时 + 死锁检测：join 超时返回不设 errors 会使死锁线程静默「通过」，
+# 显式检查线程是否仍存活以暴露死锁/挂起（与 TestVaultThreadSafety 的做法一致）。
+_THREAD_JOIN_TIMEOUT = 10
+
+
+def _join_all(threads: list[threading.Thread]) -> None:
+    """等待所有线程结束，超时则断言失败以暴露死锁/挂起。"""
+    for t in threads:
+        t.join(timeout=_THREAD_JOIN_TIMEOUT)
+    alive = [t for t in threads if t.is_alive()]
+    assert not alive, f"线程未在超时内结束（可能死锁）：{len(alive)} 个"
+
 
 class TestDatabaseThreadSafety:
-
     def test_concurrent_reads(self, tmp_path):
         """多个线程同时读取不应崩溃。"""
-        db = DatabaseManager(tmp_path / 'test.db', test_mode=True)
+        db = DatabaseManager(tmp_path / "test.db", test_mode=True)
         db.open()
         db.init_tables()
 
@@ -32,15 +43,14 @@ class TestDatabaseThreadSafety:
         threads = [threading.Thread(target=reader) for _ in range(5)]
         for t in threads:
             t.start()
-        for t in threads:
-            t.join()
+        _join_all(threads)
 
         assert not errors
         db.close()
 
     def test_concurrent_writes(self, tmp_path):
         """多个线程同时写入不应崩溃，且数据不丢失。"""
-        db = DatabaseManager(tmp_path / 'test.db', test_mode=True)
+        db = DatabaseManager(tmp_path / "test.db", test_mode=True)
         db.open()
         db.init_tables()
 
@@ -48,12 +58,12 @@ class TestDatabaseThreadSafety:
 
         def writer(i):
             try:
-                category = Category(name=f'cat_{i}')
+                category = Category(name=f"cat_{i}")
                 cat_id = db.add_category(category)
                 entry = RawEntry(
-                    crypto_id=f'crypto_{i}',
-                    title=f'Entry {i}',
-                    custom_fields='',
+                    crypto_id=f"crypto_{i}",
+                    title=f"Entry {i}",
+                    custom_fields="",
                     category_id=cat_id,
                 )
                 db.add_entry(entry)
@@ -63,8 +73,7 @@ class TestDatabaseThreadSafety:
         threads = [threading.Thread(target=writer, args=(i,)) for i in range(5)]
         for t in threads:
             t.start()
-        for t in threads:
-            t.join()
+        _join_all(threads)
 
         assert not errors
         entries = db.get_entries(EntryQuery())
@@ -73,19 +82,21 @@ class TestDatabaseThreadSafety:
 
     def test_concurrent_read_write(self, tmp_path):
         """同时读写不应崩溃。"""
-        db = DatabaseManager(tmp_path / 'test.db', test_mode=True)
+        db = DatabaseManager(tmp_path / "test.db", test_mode=True)
         db.open()
         db.init_tables()
 
-        cat = Category(name='initial_cat')
+        cat = Category(name="initial_cat")
         cat_id = db.add_category(cat)
         for j in range(5):
-            db.add_entry(RawEntry(
-                crypto_id=f'init_crypto_{j}',
-                title=f'Initial Entry {j}',
-                custom_fields='',
-                category_id=cat_id,
-            ))
+            db.add_entry(
+                RawEntry(
+                    crypto_id=f"init_crypto_{j}",
+                    title=f"Initial Entry {j}",
+                    custom_fields="",
+                    category_id=cat_id,
+                )
+            )
 
         errors: list[Exception] = []
 
@@ -101,9 +112,9 @@ class TestDatabaseThreadSafety:
             try:
                 for j in range(10):
                     entry = RawEntry(
-                        crypto_id=f'rw_crypto_{i}_{j}',
-                        title=f'RW Entry {i}-{j}',
-                        custom_fields='',
+                        crypto_id=f"rw_crypto_{i}_{j}",
+                        title=f"RW Entry {i}-{j}",
+                        custom_fields="",
                     )
                     db.add_entry(entry)
             except Exception as e:
@@ -117,15 +128,16 @@ class TestDatabaseThreadSafety:
         ]
         for t in threads:
             t.start()
-        for t in threads:
-            t.join()
+        _join_all(threads)
 
         assert not errors
+        # 5 初始 + 2 个 writer 各 10 条 = 25，校验并发写入无丢失（RLock 串行化保证）
+        entries = db.get_entries(EntryQuery(include_deleted=True))
+        assert len(entries) == 25
         db.close()
 
 
 class TestVaultThreadSafety:
-
     def test_concurrent_vault_reads(self, vault):
         """多线程同时通过 VaultManager.db 读取条目。"""
         errors: list[Exception] = []

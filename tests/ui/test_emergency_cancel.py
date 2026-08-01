@@ -45,7 +45,7 @@ class TestCancelAllWorkers:
     def test_cancels_via_coordinator_and_status(self):
         """cancel_all_workers 委托 coordinator 取消 entry/tag worker + 取消 status worker。"""
         ctrl = _make_controller()
-        status = _FakeWorker('status')
+        status = _FakeWorker("status")
         ctrl._status_worker = status
 
         ctrl.cancel_all_workers()
@@ -56,7 +56,7 @@ class TestCancelAllWorkers:
     def test_no_wait_by_default(self):
         """cancel_all_workers 仅取消不等待（wait 由 wait_workers 单独调）。"""
         ctrl = _make_controller()
-        status = _FakeWorker('status')
+        status = _FakeWorker("status")
         ctrl._status_worker = status
 
         ctrl.cancel_all_workers()
@@ -67,7 +67,7 @@ class TestCancelAllWorkers:
     def test_wait_when_timeout_positive(self):
         """wait_workers 委托 coordinator.wait + 对 status worker 调 wait（超时）。"""
         ctrl = _make_controller()
-        status = _FakeWorker('status')
+        status = _FakeWorker("status")
         ctrl._status_worker = status
 
         ctrl.wait_workers(400)
@@ -88,6 +88,7 @@ class TestHostEmergencyCancelWorkers:
 
     def _make_host(self):
         from src.ui.windows.main_window import MainWindow
+
         mw = MainWindow.__new__(MainWindow)
         mw._auto_backup = MagicMock()
         mw._list_refresh = MagicMock()

@@ -24,8 +24,8 @@ def test_build_backup_filename_uses_prefix_ext_and_suffix():
     name = build_backup_filename(PRE_RESTORE_PREFIX)
     assert name.startswith(PRE_RESTORE_PREFIX)
     assert name.endswith(BACKUP_EXT)
-    body = name[len(PRE_RESTORE_PREFIX):-len(BACKUP_EXT)]
-    assert re.fullmatch(r'\d{8}_\d{6}_\d{6}_[0-9a-f]{8}', body), body
+    body = name[len(PRE_RESTORE_PREFIX) : -len(BACKUP_EXT)]
+    assert re.fullmatch(r"\d{8}_\d{6}_\d{6}_[0-9a-f]{8}", body), body
 
 
 def test_backup_filename_matches_glob():

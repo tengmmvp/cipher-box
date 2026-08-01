@@ -22,7 +22,9 @@ class TestSetupDialogFlags:
         dialog = QDialog()
         original_without_help = dialog.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint
         setup_dialog_flags(dialog)
-        assert (dialog.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint) == original_without_help
+        assert (
+            dialog.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint
+        ) == original_without_help
 
     def test_idempotent(self, qapp):
         dialog = QDialog()
@@ -36,16 +38,16 @@ class TestSetLabelSeverity:
 
     def test_sets_error_severity(self, qapp):
         label = QLabel()
-        set_label_severity(label, 'error')
-        assert label.property('severity') == 'error'
+        set_label_severity(label, "error")
+        assert label.property("severity") == "error"
 
     def test_sets_success_severity(self, qapp):
         label = QLabel()
-        set_label_severity(label, 'success')
-        assert label.property('severity') == 'success'
+        set_label_severity(label, "success")
+        assert label.property("severity") == "success"
 
     def test_changes_severity(self, qapp):
         label = QLabel()
-        set_label_severity(label, 'success')
-        set_label_severity(label, 'error')
-        assert label.property('severity') == 'error'
+        set_label_severity(label, "success")
+        set_label_severity(label, "error")
+        assert label.property("severity") == "error"

@@ -25,13 +25,13 @@ logger = logging.getLogger(__name__)
 # 故经 ctypes 调用 user32/kernel32。仅 Windows 加载，其余平台返回 False 回退 Qt setText。
 # 用 ``sys.platform == 'win32'`` 字面量比较而非中间变量：mypy 据此按平台缩窄，识别
 # typeshed 中 Windows 专属的 ctypes.WinDLL，避免非 Windows CI 报 attr-defined。
-if sys.platform == 'win32':
+if sys.platform == "win32":
     import ctypes
     from ctypes import wintypes
 
-    _user32 = ctypes.WinDLL('user32')
-    _kernel32 = ctypes.WinDLL('kernel32')
-    _EXCLUDE_CLIPBOARD_FORMAT = 'ExcludeClipboardContentFromMonitorProcessing'
+    _user32 = ctypes.WinDLL("user32")
+    _kernel32 = ctypes.WinDLL("kernel32")
+    _EXCLUDE_CLIPBOARD_FORMAT = "ExcludeClipboardContentFromMonitorProcessing"
     _CF_UNICODETEXT = 13
     # 显式标注 argtypes/restype：WinDLL 默认按 c_int（32 位）收发返回值，64 位 Windows
     # 下句柄为 64 位指针会被截断致空句柄/崩溃。
@@ -55,7 +55,6 @@ if sys.platform == 'win32':
     # GMEM_MOVEABLE=0x2000：SetClipboardData 要求可移动全局内存。
     _GMEM_MOVEABLE = 0x2000
 
-
     def _set_clipboard_data(fmt: int, data: bytes) -> bool:
         """分配全局内存、拷贝 data、SetClipboardData（SEC-CLIP-001 辅助）。
 
@@ -73,7 +72,6 @@ if sys.platform == 'win32':
         _kernel32.GlobalFree(hmem)
         return False
 
-
     def _copy_with_history_exclusion(text: str) -> bool:
         """单次 OpenClipboard 周期原子写 CF_UNICODETEXT + Win+V 历史排除标记（SEC-CLIP-001）。
 
@@ -88,12 +86,12 @@ if sys.platform == 'win32':
             try:
                 _user32.EmptyClipboard()
                 # CF_UNICODETEXT：UTF-16LE 编码 + 2 字节 null 终止符
-                if not _set_clipboard_data(_CF_UNICODETEXT, text.encode('utf-16-le') + b'\x00\x00'):
+                if not _set_clipboard_data(_CF_UNICODETEXT, text.encode("utf-16-le") + b"\x00\x00"):
                     return False
                 # Win+V 历史/云剪贴板排除标记（注册失败则仅写文本，降级）
                 fmt = _user32.RegisterClipboardFormatW(_EXCLUDE_CLIPBOARD_FORMAT)
                 if fmt:
-                    _set_clipboard_data(fmt, b'\x00')
+                    _set_clipboard_data(fmt, b"\x00")
                 return True
             finally:
                 _user32.CloseClipboard()
@@ -101,6 +99,7 @@ if sys.platform == 'win32':
             logger.warning("原子写入剪贴板失败，回退 Qt setText", exc_info=True)
             return False
 else:
+
     def _copy_with_history_exclusion(text: str) -> bool:
         """非 Windows：无 Win+V 历史排除需求，返回 False 使调用方走 Qt setText。"""
         return False
@@ -108,7 +107,7 @@ else:
 
 def _hmac_of(text: str) -> bytes:
     """对文本计算会话级 HMAC 摘要，用于常数时间比对剪贴板内容。"""
-    return hmac.digest(_CLIPBOARD_HMAC_KEY, text.encode('utf-8'), 'sha256')
+    return hmac.digest(_CLIPBOARD_HMAC_KEY, text.encode("utf-8"), "sha256")
 
 
 class ClipboardManager(QObject):
@@ -123,8 +122,8 @@ class ClipboardManager(QObject):
         self._clear_seconds = clear_seconds
         # text() 与 X11 Primary Selection 独立记 hash：Linux 下二者可分别替换，
         # 独立校验避免一方被替换时另一方仍残留密码（Windows 不支持 Selection）。
-        self._last_text_hash: bytes = b''
-        self._last_selection_hash: bytes = b''
+        self._last_text_hash: bytes = b""
+        self._last_selection_hash: bytes = b""
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._clear_clipboard)
@@ -156,7 +155,7 @@ class ClipboardManager(QObject):
                 clipboard.setText(text, QClipboard.Mode.Selection)
                 self._last_selection_hash = _hmac_of(text)
             else:
-                self._last_selection_hash = b''
+                self._last_selection_hash = b""
             if self._clear_seconds > 0:
                 self._timer.start(self._clear_seconds * 1000)
 
@@ -178,12 +177,12 @@ class ClipboardManager(QObject):
                 except RuntimeError:
                     # clear 被占用时用空字符串覆盖明文兜底，缩短密码残留窗口
                     try:
-                        clipboard.setText('')
+                        clipboard.setText("")
                     except RuntimeError:
                         logger.error("剪贴板清空与覆盖均失败，明文可能残留", exc_info=True)
                     else:
                         logger.warning("剪贴板 clear 失败，已用空字符串覆盖明文", exc_info=True)
-            self._last_text_hash = b''
+            self._last_text_hash = b""
         if self._last_selection_hash and clipboard.supportsSelection():
             if hmac.compare_digest(
                 _hmac_of(clipboard.text(QClipboard.Mode.Selection)),
@@ -193,18 +192,25 @@ class ClipboardManager(QObject):
                     clipboard.clear(QClipboard.Mode.Selection)
                 except RuntimeError:
                     try:
-                        clipboard.setText('', QClipboard.Mode.Selection)
+                        clipboard.setText("", QClipboard.Mode.Selection)
                     except RuntimeError:
                         logger.error("Selection 清空与覆盖均失败，明文可能残留", exc_info=True)
                     else:
                         logger.warning("Selection clear 失败，已用空字符串覆盖明文", exc_info=True)
-            self._last_selection_hash = b''
+            self._last_selection_hash = b""
 
     def cancel(self) -> None:
         """取消自动清空。"""
         self._timer.stop()
 
     def clear_now(self) -> None:
-        """立即清理应用写入的敏感剪贴板内容。"""
+        """立即清理应用写入的敏感剪贴板内容。
+
+        吞 RuntimeError：剪贴板被占用（X11/远程会话）时 ``text()`` 读取也可能抛，
+        不应中断锁定/隐藏到托盘等关键清理流程（与 emergency_clear_clipboard 对齐）。
+        """
         self._timer.stop()
-        self._clear_clipboard()
+        try:
+            self._clear_clipboard()
+        except RuntimeError:
+            logger.error("立即清空剪贴板失败，明文可能残留", exc_info=True)

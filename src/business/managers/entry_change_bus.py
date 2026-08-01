@@ -44,8 +44,10 @@ class EntryChangeBus:
         避免回调重入缓存方法时与持锁线程竞争。
         """
         self._cache.apply_change(
-            crypto_id=crypto_id, tags_changed=tags_changed,
-            category_changed=category_changed, clear_summaries=clear_summaries,
+            crypto_id=crypto_id,
+            tags_changed=tags_changed,
+            category_changed=category_changed,
+            clear_summaries=clear_summaries,
         )
         for cb in self._callbacks:
             try:

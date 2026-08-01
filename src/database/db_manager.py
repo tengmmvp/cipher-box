@@ -36,7 +36,7 @@ SECURE_FILES_DEBOUNCE_SECONDS = 1.0
 
 
 # 加密列密文的格式自检字符集：版本前缀后为 base64 字符。
-_B64_CHARS = frozenset('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=')
+_B64_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
 
 
 # 数据库连接 PRAGMA 配置（单一事实源），集中定义使调参一处生效。
@@ -44,12 +44,12 @@ _B64_CHARS = frozenset('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123
 # busy_timeout：锁竞争等待 5s；synchronous=FULL：每次 commit 强 fsync（耐久性优先）；
 # cache_size=-8000：约 8MB 页缓存；mmap_size=256MB：只读路径减少系统调用。
 _PRAGMAS = (
-    'PRAGMA foreign_keys=ON',
-    'PRAGMA secure_delete=ON',
-    'PRAGMA busy_timeout=5000',
-    'PRAGMA synchronous=FULL',
-    'PRAGMA cache_size=-8000',
-    'PRAGMA mmap_size=268435456',
+    "PRAGMA foreign_keys=ON",
+    "PRAGMA secure_delete=ON",
+    "PRAGMA busy_timeout=5000",
+    "PRAGMA synchronous=FULL",
+    "PRAGMA cache_size=-8000",
+    "PRAGMA mmap_size=268435456",
 )
 
 
@@ -109,7 +109,7 @@ class DatabaseManager:
     def connection(self) -> sqlite3.Connection:
         """数据库连接，供 Repository 使用。调用方须确保数据库已连接。"""
         if self._conn is None:
-            raise DatabaseError('数据库未连接')
+            raise DatabaseError("数据库未连接")
         return self._conn
 
     @property
@@ -212,18 +212,18 @@ class DatabaseManager:
             self._guard_write()
             self._savepoint_counter += 1
             savepoint = f'"cipherbox_sp_{self._savepoint_counter}"'
-            self._conn.execute(f'SAVEPOINT {savepoint}')
+            self._conn.execute(f"SAVEPOINT {savepoint}")
             # depth 不变量：外层事务 begin 设 depth=1，嵌套 savepoint 每次 +=1，finally
             # 中还原。commit_transaction 要求 depth==1（仅外层可 commit），嵌套层只 RELEASE。
             self._transaction_depth += 1
             try:
                 yield
-                self._conn.execute(f'RELEASE SAVEPOINT {savepoint}')
+                self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             except Exception:
                 # savepoint 回滚失败不掩盖原始异常；记录后交由外层事务统一处理。
                 try:
-                    self._conn.execute(f'ROLLBACK TO SAVEPOINT {savepoint}')
-                    self._conn.execute(f'RELEASE SAVEPOINT {savepoint}')
+                    self._conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                    self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
                 except sqlite3.Error:
                     logger.warning("savepoint 回滚失败，交由外层事务处理", exc_info=True)
                 raise
@@ -247,7 +247,7 @@ class DatabaseManager:
             # 纵深防御：in_transaction 守卫已排除重复 BEGIN。若仍触发（如 standalone
             # @_db_write 写失败后隐式事务悬挂的遗留态），归一为 DatabaseError 而非裸
             # 驱动异常上泄（与 @_db_write 失败回滚契约共同关闭连接毒化路径）。
-            raise DatabaseError(f'开始事务失败：{exc}') from exc
+            raise DatabaseError(f"开始事务失败：{exc}") from exc
         self._transaction_depth = 1
 
     def commit_transaction(self) -> None:
@@ -282,7 +282,7 @@ class DatabaseManager:
             # 仅吞「无活动事务」良性错误（重复回滚或事务已结束）；其余 OperationalError
             # （磁盘满/I/O 错误/数据库锁定）意味着回滚未生效，须升级处理。
             message = str(exc).lower()
-            if 'no transaction' in message or 'no active' in message:
+            if "no transaction" in message or "no active" in message:
                 logger.debug("回滚时无活动事务（良性）：%s", exc)
             else:
                 logger.error("回滚事务失败，数据库可能不一致", exc_info=True)
@@ -329,8 +329,8 @@ class DatabaseManager:
             # SQLite 会静默回退。WAL 未生效时 wal_checkpoint(TRUNCATE) 与 -wal/-shm 权限
             # 收紧等安全清理会静默降级为 no-op，须记告警让降级可见。
             mode_row = self._conn.execute("PRAGMA journal_mode=WAL").fetchone()
-            actual_mode = mode_row[0] if mode_row else ''
-            if str(actual_mode).lower() != 'wal':
+            actual_mode = mode_row[0] if mode_row else ""
+            if str(actual_mode).lower() != "wal":
                 logger.warning(
                     "WAL 模式未生效（实际为 %s），WAL 相关安全清理将静默降级；"
                     "建议将数据目录置于支持 WAL 的本地文件系统",
@@ -352,8 +352,8 @@ class DatabaseManager:
 
     def _secure_database_files(self) -> None:
         secure_file(self._db_path, strict=True)
-        secure_file(Path(f'{self._db_path}-wal'), strict=True)
-        secure_file(Path(f'{self._db_path}-shm'), strict=True)
+        secure_file(Path(f"{self._db_path}-wal"), strict=True)
+        secure_file(Path(f"{self._db_path}-shm"), strict=True)
 
     def close(self) -> None:
         """关闭数据库连接。
@@ -383,7 +383,7 @@ class DatabaseManager:
         row = self.connection.execute(
             "SELECT value FROM vault_meta WHERE key = ?", (key,)
         ).fetchone()
-        return row['value'] if row else None
+        return row["value"] if row else None
 
     @_db_operation
     def get_meta_batch(self, keys: list[str]) -> dict[str, str | None]:
@@ -397,14 +397,14 @@ class DatabaseManager:
         """
         if not keys:
             return {}
-        placeholders = ','.join('?' for _ in keys)
+        placeholders = ",".join("?" for _ in keys)
         rows = self.connection.execute(
             f"SELECT key, value FROM vault_meta WHERE key IN ({placeholders})",  # nosec B608 - 参数化占位符
             keys,
         ).fetchall()
         result: dict[str, str | None] = {k: None for k in keys}
         for row in rows:
-            result[row['key']] = row['value']
+            result[row["key"]] = row["value"]
         return result
 
     @_db_write
@@ -436,7 +436,7 @@ class DatabaseManager:
             try:
                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except sqlite3.Error as exc:
-                raise DatabaseError(f'WAL 安全截断失败：{exc}') from exc
+                raise DatabaseError(f"WAL 安全截断失败：{exc}") from exc
             self._secure_database_files()
 
     # ==================== 内部方法 ====================
@@ -456,14 +456,14 @@ class DatabaseManager:
             prefix = CIPHERTEXT_PREFIX
             if not value.startswith(prefix):
                 raise ValueError(
-                    f'数据层收到未加密的 {field_name}'
-                    f'（期望 {prefix} 前缀的 base64 密文），请通过 EntryManager 操作条目'
+                    f"数据层收到未加密的 {field_name}"
+                    f"（期望 {prefix} 前缀的 base64 密文），请通过 EntryManager 操作条目"
                 )
-            tail = value[len(prefix):]
+            tail = value[len(prefix) :]
             if not _B64_CHARS.issuperset(tail):
                 raise ValueError(
-                    f'数据层收到格式异常的 {field_name}'
-                    f'（{prefix} 前缀后须为 base64 密文），请通过 EntryManager 操作条目'
+                    f"数据层收到格式异常的 {field_name}"
+                    f"（{prefix} 前缀后须为 base64 密文），请通过 EntryManager 操作条目"
                 )
 
     def _sign_entry(self, entry: RawEntry) -> str:
@@ -530,10 +530,14 @@ class DatabaseManager:
         return self._entry_repo.add_entry(entry, preserve_metadata=preserve_metadata)
 
     def add_entries_batch(
-        self, entries: list[RawEntry], *, preserve_metadata: bool = False,
+        self,
+        entries: list[RawEntry],
+        *,
+        preserve_metadata: bool = False,
     ) -> dict[str, int]:
         return self._entry_repo.add_entries_batch(
-            entries, preserve_metadata=preserve_metadata,
+            entries,
+            preserve_metadata=preserve_metadata,
         )
 
     def update_entry(
@@ -576,7 +580,7 @@ class DatabaseManager:
         self,
         entry_id: int,
         old_password_enc: str,
-        changed_at: str = '',
+        changed_at: str = "",
     ) -> None:
         return self._entry_repo.add_password_history(entry_id, old_password_enc, changed_at)
 

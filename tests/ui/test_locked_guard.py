@@ -31,7 +31,7 @@ class TestRequireUnlocked:
         host = _Host()
         host._locked = True
 
-        result = host.do_work('a', key='v')
+        result = host.do_work("a", key="v")
 
         assert result is None
         assert host.calls == []
@@ -41,12 +41,12 @@ class TestRequireUnlocked:
         host = _Host()
         host._locked = False
 
-        host.do_work('positional', 42, flag=True, name='测试')
+        host.do_work("positional", 42, flag=True, name="测试")
 
         assert len(host.calls) == 1
         args, kwargs = host.calls[0]
-        assert args == ('positional', 42)
-        assert kwargs == {'flag': True, 'name': '测试'}
+        assert args == ("positional", 42)
+        assert kwargs == {"flag": True, "name": "测试"}
 
     def test_unlocked_state_returns_none(self):
         """被装饰方法返回 None（槽语义），守卫不改变返回类型。"""
@@ -56,9 +56,9 @@ class TestRequireUnlocked:
 
     def test_wraps_preserves_method_name_and_doc(self):
         """``@wraps`` 保留被装饰方法的 __name__ / __doc__，便于诊断与 Qt 反射。"""
-        assert _Host.do_work.__name__ == 'do_work'
+        assert _Host.do_work.__name__ == "do_work"
         assert _Host.do_work.__doc__ is not None
-        assert '记录调用参数' in _Host.do_work.__doc__
+        assert "记录调用参数" in _Host.do_work.__doc__
 
     def test_transition_from_locked_to_unlocked_executes(self):
         """同一宿主由锁定切到解锁后，方法恢复正常执行（状态驱动而非构造期固化）。"""
@@ -68,6 +68,6 @@ class TestRequireUnlocked:
         assert host.calls == []
 
         host._locked = False
-        host.do_work('now')
+        host.do_work("now")
         assert len(host.calls) == 1
-        assert host.calls[0][0] == ('now',)
+        assert host.calls[0][0] == ("now",)

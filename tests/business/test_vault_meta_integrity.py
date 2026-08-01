@@ -3,6 +3,7 @@
 验证 unlock 的 vault_meta 完整性校验（强制）：篡改安全相关字段（如 key_epoch）
 后即使主密码正确也会因 vault_meta_mac 不符而被拒绝；签名缺失亦被拒绝。
 """
+
 import pytest
 
 from src.exceptions import VaultIntegrityError
@@ -34,7 +35,7 @@ class TestVaultMetaIntegrity:
         assert conn is not None
         conn.execute(
             "UPDATE vault_meta SET value=? WHERE key='key_epoch'",
-            ('tampered_epoch_value',),
+            ("tampered_epoch_value",),
         )
         conn.commit()
         vault.close()

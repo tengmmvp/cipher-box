@@ -10,8 +10,8 @@ from src.crypto.master_key import KdfParams, MasterKeyManager
 # 弱化但合法的 KDF 参数（过 validate_params 安全下限 time≥2 / mem≥16MB / par≥1），
 # 加速测试派生。生产用 DEFAULT_KDF_PARAMS（time=3 / 64MB / p=4）。
 _TEST_PARAMS = KdfParams(time_cost=2, memory_cost=16 * 1024, parallelism=1)
-_SALT = b'\x00' * 32  # 固定盐便于复现/比对，长度满足 MIN_SALT_SIZE
-_PASSWORD = 'test_password_12345'
+_SALT = b"\x00" * 32  # 固定盐便于复现/比对，长度满足 MIN_SALT_SIZE
+_PASSWORD = "test_password_12345"
 
 
 def test_master_and_backup_keys_are_independent():
@@ -38,17 +38,23 @@ def test_password_or_salt_change_alters_both_keys():
     master_a = MasterKeyManager.derive_key(_PASSWORD, _SALT, _TEST_PARAMS)
     # 不同密码
     master_other_pwd = MasterKeyManager.derive_key(
-        'other_password_67890', _SALT, _TEST_PARAMS,
+        "other_password_67890",
+        _SALT,
+        _TEST_PARAMS,
     )
     # 不同盐
     master_other_salt = MasterKeyManager.derive_key(
-        _PASSWORD, b'\xff' * 32, _TEST_PARAMS,
+        _PASSWORD,
+        b"\xff" * 32,
+        _TEST_PARAMS,
     )
     assert master_a != master_other_pwd
     assert master_a != master_other_salt
     backup_a = MasterKeyManager.derive_backup_key(_PASSWORD, _SALT, _TEST_PARAMS)
     backup_other_pwd = MasterKeyManager.derive_backup_key(
-        'other_password_67890', _SALT, _TEST_PARAMS,
+        "other_password_67890",
+        _SALT,
+        _TEST_PARAMS,
     )
     assert backup_a != backup_other_pwd
 

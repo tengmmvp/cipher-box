@@ -16,7 +16,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # 平台判定单一常量（MAINT-2）：统一引用，避免 os.name=='nt' 与 sys.platform=='win32' 混用致跨平台漂移。
-IS_WINDOWS = sys.platform == 'win32'
+IS_WINDOWS = sys.platform == "win32"
 _SECURED_WINDOWS_OBJECTS: OrderedDict[str, tuple[int, int]] = OrderedDict()
 _SECURED_LOCK = threading.Lock()
 _MAX_SECURED_CACHE = 256
@@ -28,15 +28,22 @@ _SID_LOCK = threading.Lock()
 
 
 def _run_no_window(
-    cmd: list[str], *, timeout: int = 10, check: bool = False,
+    cmd: list[str],
+    *,
+    timeout: int = 10,
+    check: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """运行子进程，抑制 Windows 控制台窗口（CREATE_NO_WINDOW），统一文本输出与超时。
 
     收敛 whoami/icacls 公共参数，新增调用点复用即不漏 creationflags 致弹黑窗。
     """
     return subprocess.run(
-        cmd, capture_output=True, text=True, check=check,
-        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), timeout=timeout,
+        cmd,
+        capture_output=True,
+        text=True,
+        check=check,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        timeout=timeout,
     )
 
 
@@ -53,26 +60,27 @@ def _windows_user_sid() -> str:
         return cached
     if not IS_WINDOWS:
         with _SID_LOCK:
-            _CACHED_USER_SID = ''
-        return ''
+            _CACHED_USER_SID = ""
+        return ""
     with _SID_LOCK:
         if _CACHED_USER_SID is not None:
             return _CACHED_USER_SID
-        sid = ''
+        sid = ""
         try:
             result = _run_no_window(
-                ['whoami', '/user', '/fo', 'csv', '/nh'], check=True,
+                ["whoami", "/user", "/fo", "csv", "/nh"],
+                check=True,
             )
             # 用 csv 解析 whoami 输出，正确处理用户名含逗号的引号边界，避免 split(',') 误切。
             rows = list(csv.reader(io.StringIO(result.stdout.strip())))
-            sid = rows[0][1] if rows and len(rows[0]) >= 2 else ''
+            sid = rows[0][1] if rows and len(rows[0]) >= 2 else ""
         except (OSError, subprocess.SubprocessError, IndexError):
-            logger.error('无法获取当前 Windows 用户 SID，本次跳过 ACL 限制', exc_info=True)
-            return ''  # 不缓存，下次重试
+            logger.error("无法获取当前 Windows 用户 SID，本次跳过 ACL 限制", exc_info=True)
+            return ""  # 不缓存，下次重试
         if sid:
             _CACHED_USER_SID = sid
         else:
-            logger.error('whoami 未返回有效 SID，本次跳过 ACL 限制')
+            logger.error("whoami 未返回有效 SID，本次跳过 ACL 限制")
         return sid
 
 
@@ -94,7 +102,7 @@ def _restrict_windows_acl(
     """限制文件或目录的 ACL 权限为当前用户独占访问。"""
     sid = _windows_user_sid()
     if not sid:
-        message = f'无法获取 Windows 用户 SID，无法限制 ACL：{path}'
+        message = f"无法获取 Windows 用户 SID，无法限制 ACL：{path}"
         if strict:
             raise OSError(message)
         logger.warning(message)
@@ -107,18 +115,18 @@ def _restrict_windows_acl(
             # LRU：命中时更新为最近使用，避免常用路径被淘汰
             _SECURED_WINDOWS_OBJECTS.move_to_end(cache_key)
             return
-    permission = '(OI)(CI)F' if is_directory else 'F'
+    permission = "(OI)(CI)F" if is_directory else "F"
     try:
         grant = _run_no_window(
-            ['icacls', str(path), '/grant:r', f'*{sid}:{permission}'],
+            ["icacls", str(path), "/grant:r", f"*{sid}:{permission}"],
         )
         if grant.returncode != 0:
-            raise OSError(grant.stderr.strip() or 'icacls grant failed')
+            raise OSError(grant.stderr.strip() or "icacls grant failed")
         inherit = _run_no_window(
-            ['icacls', str(path), '/inheritance:r'],
+            ["icacls", str(path), "/inheritance:r"],
         )
         if inherit.returncode != 0:
-            raise OSError(inherit.stderr.strip() or 'icacls inheritance failed')
+            raise OSError(inherit.stderr.strip() or "icacls inheritance failed")
         if identity is not None:
             with _SECURED_LOCK:
                 _SECURED_WINDOWS_OBJECTS[cache_key] = identity
@@ -127,8 +135,8 @@ def _restrict_windows_acl(
                     _SECURED_WINDOWS_OBJECTS.popitem(last=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         if strict:
-            raise OSError(f'无法限制文件 ACL：{path}') from exc
-        logger.warning('无法限制文件 ACL：%s', path, exc_info=True)
+            raise OSError(f"无法限制文件 ACL：{path}") from exc
+        logger.warning("无法限制文件 ACL：%s", path, exc_info=True)
 
 
 def secure_directory(path: Path, *, strict: bool = False) -> Path:
@@ -143,7 +151,7 @@ def secure_directory(path: Path, *, strict: bool = False) -> Path:
         except OSError:
             if strict:
                 raise
-            logger.warning('无法限制目录权限：%s', path, exc_info=True)
+            logger.warning("无法限制目录权限：%s", path, exc_info=True)
     if IS_WINDOWS:
         _restrict_windows_acl(path, True, strict=strict)
     return path
@@ -176,8 +184,8 @@ def validate_file_path(
         解析后的安全路径，调用方应使用此返回值。
     """
     raw = Path(path)
-    if '..' in raw.parts:
-        raise ValueError('文件路径包含非法遍历组件')
+    if ".." in raw.parts:
+        raise ValueError("文件路径包含非法遍历组件")
     # 必须在 resolve() 之前对原始路径逐级检测：resolve() 会展开并跟随符号链接与
     # junction，若先 resolve 再检测，原始输入中经由 junction 的重定向在解析后路径
     # 上 is_symlink() 恒为 False，检测将静默失效（该控制曾因此长期无效）。
@@ -186,7 +194,7 @@ def validate_file_path(
     if base_dir is not None:
         base_resolved = Path(base_dir).resolve()
         if not resolved.is_relative_to(base_resolved):
-            raise ValueError('文件路径超出允许的目录范围')
+            raise ValueError("文件路径超出允许的目录范围")
     return resolved
 
 
@@ -213,11 +221,11 @@ def _reject_reparse_points(path: Path, *, check_ancestors: bool = False) -> None
         except FileNotFoundError:
             pass  # 不存在的叶子（待写入新文件）视作非重定向，继续祖先检测
         except OSError:
-            logger.debug('lstat 失败，跳过叶子重定向检测: %s', path, exc_info=True)
+            logger.debug("lstat 失败，跳过叶子重定向检测: %s", path, exc_info=True)
             pass
         else:
             if stat.S_ISLNK(st.st_mode):
-                raise ValueError(f'目标是符号链接，拒绝访问: {path}')
+                raise ValueError(f"目标是符号链接，拒绝访问: {path}")
         if not check_ancestors:
             # 默认仅检测叶子——祖先系统符号链接（/var、/tmp…）合法，逐级会大面积误伤。
             return
@@ -234,7 +242,7 @@ def _reject_reparse_points(path: Path, *, check_ancestors: bool = False) -> None
                 and stat.S_ISLNK(cst.st_mode)
                 and not _is_canonical_system_link(current)
             ):
-                raise ValueError(f'祖先目录是符号链接，拒绝访问: {current}')
+                raise ValueError(f"祖先目录是符号链接，拒绝访问: {current}")
             if current == current.parent:
                 break
             current = current.parent
@@ -249,16 +257,14 @@ def _reject_reparse_points(path: Path, *, check_ancestors: bool = False) -> None
         except FileNotFoundError:
             pass
         except OSError:
-            logger.debug('lstat 失败，跳过该组件重定向检测: %s', current, exc_info=True)
+            logger.debug("lstat 失败，跳过该组件重定向检测: %s", current, exc_info=True)
         if comp_st is not None:
             if stat.S_ISLNK(comp_st.st_mode):
-                raise ValueError(f'路径组件包含符号链接，拒绝访问: {current}')
+                raise ValueError(f"路径组件包含符号链接，拒绝访问: {current}")
             # st_file_attributes 为 Windows 专有属性，getattr 兜底跨平台访问
-            attrs = getattr(comp_st, 'st_file_attributes', 0)
+            attrs = getattr(comp_st, "st_file_attributes", 0)
             if attrs & 0x400:
-                raise ValueError(
-                    f'路径组件包含 reparse point/junction，拒绝访问: {current}'
-                )
+                raise ValueError(f"路径组件包含 reparse point/junction，拒绝访问: {current}")
         if current == current.parent:
             break
         current = current.parent
@@ -272,7 +278,7 @@ def _is_canonical_system_link(path: Path) -> bool:
     误伤所有经系统临时目录的合法路径（曾致 macOS CI 备份/导入测试全失败）。深层符号链接、
     Linux 祖先符号链接一律视为可疑。判定仅依赖 darwin 平台与 ``resolve()``，无硬编码路径表。
     """
-    if sys.platform != 'darwin':
+    if sys.platform != "darwin":
         return False
     parts = path.parts
     # 仅顶层单段绝对路径（('/','var')），避免误放深层重定向链接
@@ -282,7 +288,7 @@ def _is_canonical_system_link(path: Path) -> bool:
         target = str(path.resolve(strict=False))
     except OSError:
         return False
-    return target == '/' + 'private' + '/' + parts[1]
+    return target == "/" + "private" + "/" + parts[1]
 
 
 def _path_is_symlink_or_reparse(path: Path) -> bool:
@@ -296,12 +302,12 @@ def _path_is_symlink_or_reparse(path: Path) -> bool:
     except FileNotFoundError:
         return False
     except OSError:
-        logger.debug('lstat 失败，按非重定向处理: %s', path, exc_info=True)
+        logger.debug("lstat 失败，按非重定向处理: %s", path, exc_info=True)
         return False
     if stat.S_ISLNK(st.st_mode):
         return True
     if IS_WINDOWS:
-        attrs = getattr(st, 'st_file_attributes', 0)
+        attrs = getattr(st, "st_file_attributes", 0)
         return bool(attrs & 0x400)
     return False
 
@@ -319,7 +325,7 @@ def secure_file(path: Path, *, strict: bool = False) -> Path:
         except OSError:
             if strict:
                 raise
-            logger.warning('无法限制文件权限：%s', path, exc_info=True)
+            logger.warning("无法限制文件权限：%s", path, exc_info=True)
     if IS_WINDOWS:
         _restrict_windows_acl(path, False, strict=strict)
     return path
@@ -344,7 +350,7 @@ def secure_delete_file(path: Path) -> None:
         if size > 0:
             # 分块覆写（1MB）：恢复点/快照可达数十 MB，一次性 os.urandom(size) 等量分配内存，批量清理峰值 N×文件大小可能 OOM。
             _DELETE_CHUNK = 1024 * 1024
-            with open(path, 'r+b') as fp:
+            with open(path, "r+b") as fp:
                 remaining = size
                 while remaining > 0:
                     chunk = min(_DELETE_CHUNK, remaining)
@@ -358,7 +364,8 @@ def secure_delete_file(path: Path) -> None:
         # finally 仍 unlink 释放目录占用。
         logger.error(
             "安全覆写失败，文件 %s 可能含部分明文残留，建议检查磁盘空间与权限",
-            path, exc_info=True,
+            path,
+            exc_info=True,
         )
         raise
     finally:
@@ -375,7 +382,7 @@ def atomic_write(
     target: Path,
     write_cb: Callable[[Any], bool],
     *,
-    mode: str = 'wb',
+    mode: str = "wb",
     encoding: str | None = None,
     newline: str | None = None,
 ) -> bool:
@@ -387,12 +394,15 @@ def atomic_write(
     mode 位，靠继承已收紧的父目录 ACL。
     """
     target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(target.name + '.tmp')
-    open_kwargs: dict = {'opener': _open_file_restricted}
+    temp = target.with_name(target.name + ".tmp")
+    # 清理上次进程硬崩溃（SIGKILL/断电，无法触发下方 except BaseException）残留的
+    # .tmp（落地即 0600，但可能含明文配置），避免长期驻留至下次同路径写入才覆盖。
+    temp.unlink(missing_ok=True)
+    open_kwargs: dict = {"opener": _open_file_restricted}
     if encoding is not None:
-        open_kwargs['encoding'] = encoding
+        open_kwargs["encoding"] = encoding
     if newline is not None:
-        open_kwargs['newline'] = newline
+        open_kwargs["newline"] = newline
     try:
         with open(temp, mode, **open_kwargs) as f:
             completed = write_cb(f)
@@ -415,6 +425,7 @@ def atomic_write(
 # 用当前用户凭据封装敏感数据（如配置签名密钥），blob 即便被同权限进程读取也无法在别处
 # 解密，收缩读取密钥文件后离线重算签名绕过完整性校验的攻击面。非 Windows 或失败回退 None，
 # 调用方降级明文存储（靠文件权限保护），绝不阻断启动。
+
 
 def protect_with_dpapi(data: bytes) -> bytes | None:
     """用 Windows DPAPI 封装数据，返回封装后的 blob；非 Windows 或失败返回 None。"""
@@ -447,8 +458,8 @@ def _dpapi_crypt(data: bytes, *, protect: bool) -> bytes | None:
 
         class _DataBlob(ctypes.Structure):
             _fields_ = [
-                ('cbData', wintypes.DWORD),
-                ('pbData', ctypes.POINTER(ctypes.c_char)),
+                ("cbData", wintypes.DWORD),
+                ("pbData", ctypes.POINTER(ctypes.c_char)),
             ]
 
         buffer = ctypes.create_string_buffer(data, len(data))
@@ -456,34 +467,50 @@ def _dpapi_crypt(data: bytes, *, protect: bool) -> bytes | None:
         blob_out = _DataBlob()
         # ctypes 在非 Windows 既无 windll 也无 WinDLL；经 Any 访问避免平台 attr-defined。Linux 运行时 ctypes.WinDLL 抛 AttributeError → 下方 except 回退明文。
         ctypes_any: Any = ctypes
-        crypt32: Any = ctypes_any.WinDLL('crypt32')
+        crypt32: Any = ctypes_any.WinDLL("crypt32")
         if protect:
             ok = crypt32.CryptProtectData(
-                ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out),
+                ctypes.byref(blob_in),
+                None,
+                None,
+                None,
+                None,
+                0,
+                ctypes.byref(blob_out),
             )
         else:
             # ppszDataDescr 传 None 表示不接收描述字符串
             ok = crypt32.CryptUnprotectData(
-                ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out),
+                ctypes.byref(blob_in),
+                None,
+                None,
+                None,
+                None,
+                0,
+                ctypes.byref(blob_out),
             )
         if not ok:
-            raise OSError('DPAPI 调用失败')
+            raise OSError("DPAPI 调用失败")
         try:
-            return ctypes.string_at(blob_out.pbData, blob_out.cbData)
+            result = ctypes.string_at(blob_out.pbData, blob_out.cbData)
         finally:
-            kernel32: Any = ctypes_any.WinDLL('kernel32')
+            kernel32: Any = ctypes_any.WinDLL("kernel32")
             kernel32.LocalFree(blob_out.pbData)
+            # 清零输入侧 buffer 副本（封装前 data 的明文拷贝 / 解封前 blob 拷贝），收缩残留面
+            ctypes.memset(buffer, 0, ctypes.sizeof(buffer))
+        return result
     except AttributeError:
         # 平台性：非 Windows 无 ctypes.WinDLL/wintypes，DPAPI 不可用合法，静默回退明文。
         return None
     except OSError:
         # 调用性：crypt32 可用但 API 失败，敏感数据明文落盘，ERROR 告警避免静默掩盖安全降级。
-        logger.error("DPAPI %s 调用失败，敏感数据将以明文存储", '封装' if protect else '解封')
+        logger.error("DPAPI %s 调用失败，敏感数据将以明文存储", "封装" if protect else "解封")
         return None
     except Exception:
         # 未预期异常（Structure/类型 bug），ERROR 暴露而非掩盖。
         logger.error(
             "DPAPI %s 未预期异常，敏感数据将以明文存储",
-            '封装' if protect else '解封', exc_info=True,
+            "封装" if protect else "解封",
+            exc_info=True,
         )
         return None

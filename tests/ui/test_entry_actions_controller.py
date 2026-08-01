@@ -34,9 +34,9 @@ def _make_deps(calls: dict[str, list]) -> EntryActionsDeps:
         return _cb
 
     return EntryActionsDeps(
-        refresh_after_entry_change=_probe('refresh_after_entry_change'),
-        refresh_entries_only=_probe('refresh_entries_only'),
-        refresh_categories=_probe('refresh_categories'),
+        refresh_after_entry_change=_probe("refresh_after_entry_change"),
+        refresh_entries_only=_probe("refresh_entries_only"),
+        refresh_categories=_probe("refresh_categories"),
         get_dialog_options=lambda: ([], []),
     )
 
@@ -46,7 +46,12 @@ def _make_controller() -> tuple[EntryActionsController, dict[str, list], MagicMo
     calls: dict[str, list] = {}
     detail_panel = MagicMock()
     ctrl = EntryActionsController(
-        MagicMock(), MagicMock(), MagicMock(), detail_panel, MagicMock(), _make_deps(calls),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        detail_panel,
+        MagicMock(),
+        _make_deps(calls),
     )
     return ctrl, calls, detail_panel
 
@@ -133,7 +138,7 @@ class TestCallbacks:
         _setup(ctrl)
         ctrl.toggle_favorite(7)
         ctrl._entry_mgr.toggle_favorite.assert_called_once_with(7)
-        assert calls['refresh_entries_only'] == [()]
+        assert calls["refresh_entries_only"] == [()]
 
     def test_on_copy_feedback_shows_status_message(self, qapp):
         ctrl, _, _ = _make_controller()
@@ -144,9 +149,9 @@ class TestCallbacks:
     def test_on_password_selected_copies_to_clipboard(self, qapp, monkeypatch):
         ctrl, _, _ = _make_controller()
         _setup(ctrl)
-        monkeypatch.setattr('src.ui.controllers.entry_actions_controller.Toast.show', MagicMock())
-        ctrl.on_password_selected('secret')
-        ctrl._clipboard.copy_text.assert_called_once_with('secret')
+        monkeypatch.setattr("src.ui.controllers.entry_actions_controller.Toast.show", MagicMock())
+        ctrl.on_password_selected("secret")
+        ctrl._clipboard.copy_text.assert_called_once_with("secret")
 
 
 class TestDialogOps:
@@ -158,7 +163,8 @@ class TestDialogOps:
         _setup(ctrl)
         mock_dialog = MagicMock()
         monkeypatch.setattr(
-            'src.ui.controllers.entry_actions_controller.EntryDialog', mock_dialog,
+            "src.ui.controllers.entry_actions_controller.EntryDialog",
+            mock_dialog,
         )
         ctrl.add_entry()
         mock_dialog.assert_called_once()
@@ -170,15 +176,15 @@ class TestDialogOps:
         """确认删除后调 entry_mgr.delete_entry + refresh_after_entry_change。"""
         ctrl, calls, _ = _make_controller()
         _setup(ctrl)
-        ctrl._entry_mgr.get_entry.return_value = MagicMock(id=1, title='T')
+        ctrl._entry_mgr.get_entry.return_value = MagicMock(id=1, title="T")
         monkeypatch.setattr(
-            'src.ui.controllers.entry_actions_controller.QMessageBox.question',
+            "src.ui.controllers.entry_actions_controller.QMessageBox.question",
             lambda *a, **k: QMessageBox.StandardButton.Yes,
         )
-        monkeypatch.setattr('src.ui.controllers.entry_actions_controller.Toast.show', MagicMock())
+        monkeypatch.setattr("src.ui.controllers.entry_actions_controller.Toast.show", MagicMock())
         ctrl.delete_entry(1)
         ctrl._entry_mgr.delete_entry.assert_called_once_with(1)
-        assert calls['refresh_after_entry_change'] == [()]
+        assert calls["refresh_after_entry_change"] == [()]
 
 
 class TestLifecycle:

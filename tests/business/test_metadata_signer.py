@@ -16,25 +16,25 @@ from src.models import Category, RawEntry
 def _make_entry(**overrides) -> RawEntry:
     """构造用于测试的 RawEntry（签名操作密文态），提供合理默认值。"""
     entry = RawEntry(
-        crypto_id='test-crypto-id-001',
-        title='示例条目',
-        username='',
-        password='',
-        url='',
+        crypto_id="test-crypto-id-001",
+        title="示例条目",
+        username="",
+        password="",
+        url="",
         category_id=None,
-        tags='',
-        notes='',
-        custom_fields='',
+        tags="",
+        notes="",
+        custom_fields="",
         is_favorite=False,
         is_deleted=False,
         password_strength=0,
-        entry_type='login',
-        totp_secret='',
-        created_at='2025-01-01T00:00:00',
-        updated_at='2025-01-01T00:00:00',
-        deleted_at='',
-        password_changed_at='',
-        metadata_mac='',
+        entry_type="login",
+        totp_secret="",
+        created_at="2025-01-01T00:00:00",
+        updated_at="2025-01-01T00:00:00",
+        deleted_at="",
+        password_changed_at="",
+        metadata_mac="",
     )
     return dataclasses.replace(entry, **overrides)
 
@@ -43,19 +43,19 @@ def _make_category(**overrides) -> Category:
     """构造用于测试的 Category（name 为密文态，与签名载荷预期一致），提供合理默认值。"""
     category = Category(
         id=1,
-        name='cb2:category-name-ciphertext',
-        icon_char='[DIR]',
-        color='#666666',
+        name="cb2:category-name-ciphertext",
+        icon_char="[DIR]",
+        color="#666666",
         sort_order=0,
-        created_at='2025-01-01T00:00:00',
-        metadata_mac='',
+        created_at="2025-01-01T00:00:00",
+        metadata_mac="",
     )
     return dataclasses.replace(category, **overrides)
 
 
 def test_verify_passes_on_untampered_entry():
     """verify() 正常验证，未篡改条目验证通过。"""
-    master_key = b'test-master-key-for-verify'
+    master_key = b"test-master-key-for-verify"
     signer = MetadataSigner()
     signer.set_domain_key(MetadataSigner.compute_domain_key(master_key))
     entry = _make_entry()
@@ -68,14 +68,14 @@ def test_verify_passes_on_untampered_entry():
 
 def test_verify_detects_tampered_title():
     """verify() 篡改检测，修改 title 后验证失败。"""
-    master_key = b'test-master-key-for-tamper'
+    master_key = b"test-master-key-for-tamper"
     signer = MetadataSigner()
     signer.set_domain_key(MetadataSigner.compute_domain_key(master_key))
-    entry = _make_entry(title='原始标题')
+    entry = _make_entry(title="原始标题")
 
     entry = dataclasses.replace(entry, metadata_mac=signer.sign(entry))
 
-    entry = dataclasses.replace(entry, title='被篡改的标题')
+    entry = dataclasses.replace(entry, title="被篡改的标题")
 
     with pytest.raises(VaultIntegrityError):
         signer.verify(entry)
@@ -85,7 +85,7 @@ def test_verify_raises_when_no_key():
     """verify() 无域密钥时抛异常。"""
     signer = MetadataSigner()  # domain_key 为 None
     entry = _make_entry()
-    entry = dataclasses.replace(entry, metadata_mac='some-mac-value')
+    entry = dataclasses.replace(entry, metadata_mac="some-mac-value")
 
     with pytest.raises(VaultLockedError):
         signer.verify(entry)
@@ -93,7 +93,7 @@ def test_verify_raises_when_no_key():
 
 def test_sign_with_domain_key_matches_sign():
     """sign_with_domain_key() 与预设同一域密钥的 sign() 结果一致。"""
-    master_key = b'test-master-key-for-dk'
+    master_key = b"test-master-key-for-dk"
     domain_key = MetadataSigner.compute_domain_key(master_key)
     signer = MetadataSigner(domain_key=domain_key)
     entry = _make_entry()
@@ -106,7 +106,7 @@ def test_sign_with_domain_key_matches_sign():
 
 def test_compute_domain_key_returns_bytearray():
     """compute_domain_key() 返回 32 字节 bytearray，以便 secure_zero 真正清零。"""
-    master_key = b'any-key-material'
+    master_key = b"any-key-material"
     dk = MetadataSigner.compute_domain_key(master_key)
 
     assert isinstance(dk, bytearray)
@@ -116,7 +116,7 @@ def test_compute_domain_key_returns_bytearray():
 
 def test_sign_uses_preset_domain_key():
     """sign() 使用构造时设置的域密钥。"""
-    master_key = b'test-key-for-preset'
+    master_key = b"test-key-for-preset"
     domain_key = MetadataSigner.compute_domain_key(master_key)
     signer = MetadataSigner(domain_key=domain_key)
     entry = _make_entry()
@@ -133,11 +133,11 @@ def test_sign_uses_preset_domain_key():
 
 def test_verify_no_mac_raises_integrity_error():
     """verify() 条目 metadata_mac 为空时抛 VaultIntegrityError。"""
-    signer = MetadataSigner(domain_key=b'x' * 32)
+    signer = MetadataSigner(domain_key=b"x" * 32)
     entry = _make_entry()
-    entry = dataclasses.replace(entry, metadata_mac='')
+    entry = dataclasses.replace(entry, metadata_mac="")
 
-    with pytest.raises(VaultIntegrityError, match='缺少元数据完整性签名'):
+    with pytest.raises(VaultIntegrityError, match="缺少元数据完整性签名"):
         signer.verify(entry)
 
 
@@ -152,11 +152,11 @@ def test_sign_without_domain_key_raises():
 
 def test_different_entries_produce_different_macs():
     """不同条目应产生不同签名。"""
-    master_key = b'test-key-for-diff'
+    master_key = b"test-key-for-diff"
     domain_key = MetadataSigner.compute_domain_key(master_key)
     signer = MetadataSigner(domain_key=domain_key)
-    entry_a = _make_entry(title='条目 A')
-    entry_b = _make_entry(title='条目 B')
+    entry_a = _make_entry(title="条目 A")
+    entry_b = _make_entry(title="条目 B")
 
     mac_a = signer.sign(entry_a)
     mac_b = signer.sign(entry_b)
@@ -172,14 +172,19 @@ def test_payload_length_prefix_prevents_ciphertext_collision():
     """
     # 朴素 '|' join 下两 entry 的密文字段拼接完全相同（歧义场景）：
     # ('a', 'b|c') 与 ('a|b', 'c') 的 u|p 拼接均为 'a|b|c'，字段边界歧义
-    entry_a = _make_entry(username='a', password='b|c')
-    entry_b = _make_entry(username='a|b', password='c')
+    entry_a = _make_entry(username="a", password="b|c")
+    entry_b = _make_entry(username="a|b", password="c")
 
     def naive_concat(entry: RawEntry) -> str:
-        return '|'.join([
-            entry.username, entry.password, entry.notes,
-            entry.totp_secret, entry.custom_fields,
-        ])
+        return "|".join(
+            [
+                entry.username,
+                entry.password,
+                entry.notes,
+                entry.totp_secret,
+                entry.custom_fields,
+            ]
+        )
 
     assert naive_concat(entry_a) == naive_concat(entry_b)  # 朴素拼接确有歧义
 
@@ -193,12 +198,12 @@ def test_verify_detects_ciphertext_field_tamper():
     _enc_hash 绑定密文防止密文置换/回滚攻击；现有篡改测试仅覆盖明文 title，
     此测试补齐密文字段篡改的回归守护。
     """
-    master_key = b'test-key-for-cipher-tamper'
+    master_key = b"test-key-for-cipher-tamper"
     signer = MetadataSigner(domain_key=MetadataSigner.compute_domain_key(master_key))
-    entry = _make_entry(password='cb2:original-ciphertext')
+    entry = _make_entry(password="cb2:original-ciphertext")
     entry = dataclasses.replace(entry, metadata_mac=signer.sign(entry))
     # 模拟密文置换/回滚攻击：仅改密文字段，不改明文元数据
-    entry = dataclasses.replace(entry, password='cb2:attacker-ciphertext')
+    entry = dataclasses.replace(entry, password="cb2:attacker-ciphertext")
     with pytest.raises(VaultIntegrityError):
         signer.verify(entry)
 
@@ -248,29 +253,29 @@ def test_verify_category_fails_after_domain_key_rotation():
 
 # compute_vault_meta_mac 字段绑定边界测试用的基准值（覆盖全部 VAULT_META_SIGNED_KEYS）。
 _BASE_VAULT_META = {
-    'master_salt': 'salt-abc',
-    'master_verify': 'verify-token',
-    'master_kdf_time_cost': 3,
-    'master_kdf_memory_cost': 65536,
-    'master_kdf_parallelism': 4,
-    'ciphertext_format': 'cb2',
-    'key_epoch': 1,
-    'snapshot_key_enc': 'cb2:snapshot-original',
+    "master_salt": "salt-abc",
+    "master_verify": "verify-token",
+    "master_kdf_time_cost": 3,
+    "master_kdf_memory_cost": 65536,
+    "master_kdf_parallelism": 4,
+    "ciphertext_format": "cb2",
+    "key_epoch": 1,
+    "snapshot_key_enc": "cb2:snapshot-original",
 }
 # 每个签字段的篡改值（类型与原值一致，仅内容不同），供参数化篡改测试使用。
 _VAULT_META_TAMPERED_VALUES = {
-    'master_salt': 'salt-attacker',
-    'master_verify': 'verify-attacker',
-    'master_kdf_time_cost': 99,
-    'master_kdf_memory_cost': 32768,
-    'master_kdf_parallelism': 8,
-    'ciphertext_format': 'cb3',
-    'key_epoch': 2,
-    'snapshot_key_enc': 'cb2:snapshot-attacker',
+    "master_salt": "salt-attacker",
+    "master_verify": "verify-attacker",
+    "master_kdf_time_cost": 99,
+    "master_kdf_memory_cost": 32768,
+    "master_kdf_parallelism": 8,
+    "ciphertext_format": "cb3",
+    "key_epoch": 2,
+    "snapshot_key_enc": "cb2:snapshot-attacker",
 }
 
 
-@pytest.mark.parametrize('signed_key', VAULT_META_SIGNED_KEYS)
+@pytest.mark.parametrize("signed_key", VAULT_META_SIGNED_KEYS)
 def test_compute_vault_meta_mac_binds_each_signed_field(signed_key):
     """compute_vault_meta_mac 对每一个 VAULT_META_SIGNED_KEYS 字段都绑定：篡改任一字段 mac 必变。
 
@@ -297,10 +302,10 @@ def test_compute_vault_meta_mac_ignores_unsigned_field():
     面。注意 snapshot_key_enc 已纳入签名（防 GCM 重放回滚），不再是"非签字段"。
     """
     master_key = os.urandom(32)
-    meta = dict(_BASE_VAULT_META, master_kdf='argon2id')
+    meta = dict(_BASE_VAULT_META, master_kdf="argon2id")
     mac_original = MetadataSigner.compute_vault_meta_mac(meta, master_key)
 
-    meta['master_kdf'] = 'pbkdf2'
+    meta["master_kdf"] = "pbkdf2"
     mac_tampered = MetadataSigner.compute_vault_meta_mac(meta, master_key)
 
     assert mac_original == mac_tampered
@@ -312,9 +317,9 @@ def test_verify_category_no_mac_raises_integrity_error():
     与条目 verify() 的空签名拒绝对称——分类元数据篡改（icon/color/sort_order 等非加密
     字段）若仅记日志、空签名不拒绝，会使分类层 HMAC 失败对用户静默通过。
     """
-    signer = MetadataSigner(domain_key=b'x' * 32)
+    signer = MetadataSigner(domain_key=b"x" * 32)
     category = _make_category()
-    category = dataclasses.replace(category, metadata_mac='')
+    category = dataclasses.replace(category, metadata_mac="")
 
-    with pytest.raises(VaultIntegrityError, match='缺少元数据完整性签名'):
+    with pytest.raises(VaultIntegrityError, match="缺少元数据完整性签名"):
         signer.verify_category(category)

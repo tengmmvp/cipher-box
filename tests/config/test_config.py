@@ -20,19 +20,24 @@ def _manager(root: str) -> ConfigManager:
 
 def test_load_drops_unknown_and_invalid_values():
     with tempfile.TemporaryDirectory() as root:
-        path = Path(root) / 'config.json'
-        path.write_text(json.dumps({
-            'theme': 'invalid',
-            'auto_lock_minutes': 999,
-            'default_password_length': 20,  # 合法非安全键，无签名时仍加载
-            'unknown': True,
-        }), encoding='utf-8')
+        path = Path(root) / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "theme": "invalid",
+                    "auto_lock_minutes": 999,
+                    "default_password_length": 20,  # 合法非安全键，无签名时仍加载
+                    "unknown": True,
+                }
+            ),
+            encoding="utf-8",
+        )
         manager = _manager(root)
         manager.load()
-        assert manager.get('theme') == DEFAULT_CONFIG['theme']
-        assert manager.get('auto_lock_minutes') == DEFAULT_CONFIG['auto_lock_minutes']
-        assert manager.get('default_password_length') == 20
-        assert 'unknown' not in manager.get_all()
+        assert manager.get("theme") == DEFAULT_CONFIG["theme"]
+        assert manager.get("auto_lock_minutes") == DEFAULT_CONFIG["auto_lock_minutes"]
+        assert manager.get("default_password_length") == 20
+        assert "unknown" not in manager.get_all()
 
 
 def test_load_unsigned_drops_security_keys():
@@ -40,17 +45,22 @@ def test_load_unsigned_drops_security_keys():
     攻击者删除签名即可绕过校验，此时文件中的安全配置值不可信，强制回退默认
     收缩篡改面（如删除签名后将 auto_lock_minutes 改为 0 禁用自动锁定）。"""
     with tempfile.TemporaryDirectory() as root:
-        path = Path(root) / 'config.json'
-        path.write_text(json.dumps({
-            'clipboard_clear_seconds': 0,
-            'auto_lock_minutes': 0,
-        }), encoding='utf-8')
+        path = Path(root) / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "clipboard_clear_seconds": 0,
+                    "auto_lock_minutes": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
         manager = _manager(root)
         manager.load()
-        assert manager.get('clipboard_clear_seconds') == DEFAULT_CONFIG['clipboard_clear_seconds']
-        assert manager.get('auto_lock_minutes') == DEFAULT_CONFIG['auto_lock_minutes']
+        assert manager.get("clipboard_clear_seconds") == DEFAULT_CONFIG["clipboard_clear_seconds"]
+        assert manager.get("auto_lock_minutes") == DEFAULT_CONFIG["auto_lock_minutes"]
         assert not manager.check_integrity()
-        assert manager.integrity_reason == 'missing'
+        assert manager.integrity_reason == "missing"
 
 
 def test_tampered_backup_directory_falls_back_to_default():
@@ -63,32 +73,32 @@ def test_tampered_backup_directory_falls_back_to_default():
     """
     with tempfile.TemporaryDirectory() as root:
         manager = _manager(root)
-        manager.set('backup_directory', '/tmp/evil_backups')
+        manager.set("backup_directory", "/tmp/evil_backups")
         manager.save()
 
         # 篡改：改写 backup_directory 值，保留旧签名行 → 签名失配（mismatch）
-        raw = manager.config_path.read_text(encoding='utf-8')
-        json_text, sig_line = raw.rsplit('\n', 1)
+        raw = manager.config_path.read_text(encoding="utf-8")
+        json_text, sig_line = raw.rsplit("\n", 1)
         tampered = json_text.replace(
             '"backup_directory": "/tmp/evil_backups"',
             '"backup_directory": "/tmp/attacker_readable"',
         )
-        manager.config_path.write_text(tampered + '\n' + sig_line, encoding='utf-8')
+        manager.config_path.write_text(tampered + "\n" + sig_line, encoding="utf-8")
 
         # 重新加载
         reloaded = _manager(root)
         reloaded.load()
         assert not reloaded.check_integrity()
-        assert reloaded.integrity_reason == 'mismatch'
+        assert reloaded.integrity_reason == "mismatch"
         # 完整性失败，敏感键回退默认值（默认为空字符串），篡改值不被采信
-        assert reloaded.get('backup_directory') == DEFAULT_CONFIG['backup_directory']
-        assert reloaded.get('backup_directory') == ''
+        assert reloaded.get("backup_directory") == DEFAULT_CONFIG["backup_directory"]
+        assert reloaded.get("backup_directory") == ""
 
 
 def test_set_rejects_unknown_or_invalid_values():
     with tempfile.TemporaryDirectory() as root:
         manager = _manager(root)
         with pytest.raises(KeyError):
-            manager.set('unknown', True)
+            manager.set("unknown", True)
         with pytest.raises(ValueError):
-            manager.set('auto_lock_minutes', -1)
+            manager.set("auto_lock_minutes", -1)

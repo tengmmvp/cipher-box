@@ -41,16 +41,50 @@ logger = logging.getLogger(__name__)
 
 # 分类图标占位符候选（icon_char 值），存数据库并在 UI 直接显示；非 QtAwesome 字形常量
 ICON_CANDIDATES = [
-    '[CLIP]', '[DIR]', '[LIST]', '[ORG]', '[SOC]', '[CHAT]', '[MAIL]', '[WEB]',
-    '[BANK]', '[COIN]', '[CART]', '[BAG]', '[WORK]', '[GOAL]', '[GAME]', '[DICE]',
-    '[PC]', '[FILM]', '[BOOK]', '[MUSIC]', '[HOME]', '[FLY]', '[MED]', '[LOCK]',
-    '[KEY]', '[IDEA]', '[GEAR]', '[BELL]', '[EDU]', '[LOVE]', '[STAR]', '[GYM]',
+    "[CLIP]",
+    "[DIR]",
+    "[LIST]",
+    "[ORG]",
+    "[SOC]",
+    "[CHAT]",
+    "[MAIL]",
+    "[WEB]",
+    "[BANK]",
+    "[COIN]",
+    "[CART]",
+    "[BAG]",
+    "[WORK]",
+    "[GOAL]",
+    "[GAME]",
+    "[DICE]",
+    "[PC]",
+    "[FILM]",
+    "[BOOK]",
+    "[MUSIC]",
+    "[HOME]",
+    "[FLY]",
+    "[MED]",
+    "[LOCK]",
+    "[KEY]",
+    "[IDEA]",
+    "[GEAR]",
+    "[BELL]",
+    "[EDU]",
+    "[LOVE]",
+    "[STAR]",
+    "[GYM]",
 ]
 
 # 预设颜色
 PRESET_COLORS = [
-    '#4CAF50', '#2196F3', '#F44336', '#FF9800',
-    '#9C27B0', '#00BCD4', '#607D8B', '#E91E63',
+    "#4CAF50",
+    "#2196F3",
+    "#F44336",
+    "#FF9800",
+    "#9C27B0",
+    "#00BCD4",
+    "#607D8B",
+    "#E91E63",
 ]
 
 
@@ -82,7 +116,7 @@ class _ColorDotButton(QPushButton):
         self._update_style()
 
     def _update_style(self) -> None:
-        border_color = c('accent') if self._selected else 'transparent'
+        border_color = c("accent") if self._selected else "transparent"
         border_width = 3 if self._selected else 0
         self.setStyleSheet(
             f"QPushButton {{"
@@ -124,7 +158,7 @@ class CategoryDialog(QDialog):
 
     def _setup_ui(self) -> None:
         is_edit = self._category is not None
-        self.setWindowTitle('编辑分类' if is_edit else '新增分类')
+        self.setWindowTitle("编辑分类" if is_edit else "新增分类")
         self.setMinimumSize(*DIALOG_CATEGORY_MIN_SIZE)
         setup_dialog_flags(self)
 
@@ -137,20 +171,20 @@ class CategoryDialog(QDialog):
 
         # 名称
         self._name_edit = QLineEdit()
-        self._name_edit.setPlaceholderText('请输入分类名称')
-        form.addRow('名称 *：', self._name_edit)
+        self._name_edit.setPlaceholderText("请输入分类名称")
+        form.addRow("名称 *：", self._name_edit)
 
         # 图标选择
         self._icon_combo = QComboBox()
         for icon in ICON_CANDIDATES:
             self._icon_combo.addItem(icon)
         self._icon_combo.setMaxVisibleItems(12)
-        form.addRow('图标：', self._icon_combo)
+        form.addRow("图标：", self._icon_combo)
 
         layout.addLayout(form)
 
         # 颜色选择区域
-        color_label = QLabel('颜色：')
+        color_label = QLabel("颜色：")
         color_label.setStyleSheet(f"font-weight: bold; color: {c('text_primary')};")
         layout.addWidget(color_label)
 
@@ -166,7 +200,7 @@ class CategoryDialog(QDialog):
         color_row.addStretch()
 
         # 自定义颜色按钮
-        custom_color_btn = QPushButton('自定义…')
+        custom_color_btn = QPushButton("自定义…")
         custom_color_btn.setFixedHeight(32)
         custom_color_btn.setStyleSheet(
             f"QPushButton {{"
@@ -205,8 +239,8 @@ class CategoryDialog(QDialog):
 
         btn_layout.addWidget(create_cancel_button(self))
 
-        save_btn = QPushButton('保存')
-        save_btn.setObjectName('primaryBtn')
+        save_btn = QPushButton("保存")
+        save_btn.setObjectName("primaryBtn")
         save_btn.setFixedSize(*BTN_DIALOG)
         save_btn.clicked.connect(self._on_save)
         btn_layout.addWidget(save_btn)
@@ -236,7 +270,7 @@ class CategoryDialog(QDialog):
     def _update_color_selection(self) -> None:
         """同步刷新各圆点选中态与预览条颜色。"""
         for dot in self._color_dots:
-            dot.selected = (dot.color == self._selected_color)
+            dot.selected = dot.color == self._selected_color
         self._color_preview.setStyleSheet(
             f"background-color: {self._selected_color}; border-radius: 2px;"
         )
@@ -244,7 +278,7 @@ class CategoryDialog(QDialog):
     def _on_custom_color(self) -> None:
         """打开系统颜色选择器，允许用户选取调色板外的颜色。"""
         initial = QColor(self._selected_color)
-        color = QColorDialog.getColor(initial, self, '选择自定义颜色')
+        color = QColorDialog.getColor(initial, self, "选择自定义颜色")
         if color.isValid():
             self._selected_color = color.name()
             for dot in self._color_dots:
@@ -257,7 +291,7 @@ class CategoryDialog(QDialog):
         """校验名称后写入分类，成功则发出信号并关闭。"""
         name = self._name_edit.text().strip()
         if not name:
-            QMessageBox.warning(self, DLG_TITLE_INFO, '请输入分类名称')
+            QMessageBox.warning(self, DLG_TITLE_INFO, "请输入分类名称")
             return
 
         icon_char = self._icon_combo.currentText()
@@ -283,6 +317,9 @@ class CategoryDialog(QDialog):
             self.accept()
         except Exception as exc:
             logger.error(
-                "保存分类失败: %s: %s", type(exc).__name__, exc, exc_info=True,
+                "保存分类失败: %s: %s",
+                type(exc).__name__,
+                exc,
+                exc_info=True,
             )
             QMessageBox.critical(self, DLG_TITLE_ERROR, to_user_message(exc))

@@ -25,9 +25,9 @@ class EmptyStateWidget(QWidget):
     def __init__(
         self,
         icon_name: str = EMPTY_GENERIC,
-        title: str = '暂无数据',
-        subtitle: str = '',
-        action_text: str = '',
+        title: str = "暂无数据",
+        subtitle: str = "",
+        action_text: str = "",
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -48,21 +48,21 @@ class EmptyStateWidget(QWidget):
         # 主标题
         title_label = QLabel(title)
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_label.setStyleSheet(f'font-size: 14px; color: {c("text_secondary")};')
+        title_label.setStyleSheet(f"font-size: 14px; color: {c('text_secondary')};")
         layout.addWidget(title_label)
 
         # 副标题
         if subtitle:
             sub_label = QLabel(subtitle)
             sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            sub_label.setStyleSheet(f'font-size: 12px; color: {c("text_muted")};')
+            sub_label.setStyleSheet(f"font-size: 12px; color: {c('text_muted')};")
             sub_label.setWordWrap(True)
             layout.addWidget(sub_label)
 
         # 操作按钮
         if action_text:
             action_btn = QPushButton(action_text)
-            action_btn.setObjectName('primaryBtn')
+            action_btn.setObjectName("primaryBtn")
             action_btn.setFixedSize(*BTN_ACTION)
             action_btn.clicked.connect(self.action_clicked.emit)
             layout.addSpacing(8)

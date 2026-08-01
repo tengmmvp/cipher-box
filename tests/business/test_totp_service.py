@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 from src.business.services.totp_service import TotpService
 
-_VALID_SECRET = 'JBSWY3DPEHPK3PXP'  # 10 字节 base32，满足 validate_secret 下限
+_VALID_SECRET = "JBSWY3DPEHPK3PXP"  # 10 字节 base32，满足 validate_secret 下限
 
 
 def _make_service() -> tuple[TotpService, MagicMock]:
@@ -41,7 +41,7 @@ class TestGenerate:
     def test_generate_returns_none_for_empty_secret(self):
         """空 secret → None（TOTPGenerator.generate('') 返回 ''，被 falsy 命中）。"""
         svc, cache = _make_service()
-        cache.resolve_totp_secret.return_value = ''
+        cache.resolve_totp_secret.return_value = ""
 
         assert svc.generate(1) is None
 
@@ -72,10 +72,10 @@ class TestGetState:
         state = svc.get_state(9, preloaded_secret=_VALID_SECRET)
 
         assert state is not None
-        assert set(state) == {'code', 'remaining', 'period'}
-        assert len(state['code']) == 6 and state['code'].isdigit()
-        assert 1 <= state['remaining'] <= state['period']
-        assert state['period'] == 30  # 默认周期
+        assert set(state) == {"code", "remaining", "period"}
+        assert len(state["code"]) == 6 and state["code"].isdigit()
+        assert 1 <= state["remaining"] <= state["period"]
+        assert state["period"] == 30  # 默认周期
         cache.store_totp.assert_called_once_with(9, _VALID_SECRET)
 
     def test_get_state_without_preloaded_resolves_via_cache(self):
@@ -100,7 +100,7 @@ class TestGetState:
         svc, cache = _make_service()
         cache.resolve_totp_secret.return_value = _VALID_SECRET
 
-        state = svc.get_state(5, preloaded_secret='')
+        state = svc.get_state(5, preloaded_secret="")
 
         assert state is not None
         cache.resolve_totp_secret.assert_called_once_with(5, use_cache=True)

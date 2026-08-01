@@ -28,30 +28,31 @@ MAX_CSV_COLUMNS = 256
 # CSV 导入列名别名映射：每个字段对应一组可能的列名，匹配时不区分大小写。
 # 由 _parse_csv_like 经 _build_col_map 用于 CsvImporter。
 _CSV_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
-    'title':       ('title', 'Title', '名称', 'name'),
-    'username':    ('username', 'Username', '用户名', 'login', 'user'),
-    'password':    ('password', 'Password', '密码', 'login_password', 'pass'),
-    'url':         ('url', 'URL', '网址', 'website', 'login_uri', 'uri', 'origin'),
-    'tags':        ('tags', 'Tags', '标签'),
-    'notes':       ('notes', 'Notes', '备注', 'note', 'comment'),
-    'totp_secret': ('totp_secret', 'TOTP', 'totp'),
-    'category':    ('category', 'Category', '分类', 'folder'),
+    "title": ("title", "Title", "名称", "name"),
+    "username": ("username", "Username", "用户名", "login", "user"),
+    "password": ("password", "Password", "密码", "login_password", "pass"),
+    "url": ("url", "URL", "网址", "website", "login_uri", "uri", "origin"),
+    "tags": ("tags", "Tags", "标签"),
+    "notes": ("notes", "Notes", "备注", "note", "comment"),
+    "totp_secret": ("totp_secret", "TOTP", "totp"),
+    "category": ("category", "Category", "分类", "folder"),
 }
 
 # KeePass CSV 列名别名映射：键为内部字段名，值为 CSV 中可能的列名，均为小写用于匹配。
 # 值统一为 tuple，与 _CSV_COLUMN_ALIASES 保持一致，利用不可变性避免误改。
 _KEEPASS_COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
-    'title':    ('title',),
-    'username': ('username',),
-    'password': ('password',),
-    'url':      ('url',),
-    'notes':    ('notes',),
-    'group':    ('group',),
+    "title": ("title",),
+    "username": ("username",),
+    "password": ("password",),
+    "url": ("url",),
+    "notes": ("notes",),
+    "group": ("group",),
 }
 
 
 def _build_col_map(
-    headers: list[str], aliases: dict[str, tuple[str, ...]],
+    headers: list[str],
+    aliases: dict[str, tuple[str, ...]],
 ) -> dict[str, str]:
     """构建内部字段名到 CSV 实际列名的映射，大小写不敏感匹配。
 
@@ -90,7 +91,7 @@ def _parse_csv_like(
         return [], [], False
     headers = list(rows[0].keys())
     col_map = _build_col_map(headers, aliases)
-    password_present = 'password' in col_map
+    password_present = "password" in col_map
     # 长度受限字段的内部名→上限映射，单一事实源见 models.ENTRY_FIELD_LIMITS。
     # category_name 非长度受限字段，不在此校验；它对应 CSV 的 category 或 KeePass 的 group。
     field_limits = {name: limit for name, _label, limit in ENTRY_FIELD_LIMITS}
@@ -98,26 +99,27 @@ def _parse_csv_like(
     entries_data: list[dict[str, str]] = []
     for row in rows:
         kwargs: dict[str, Any] = {
-            entry_key_map[field]: (row.get(col_map[field], '') or '').strip()
-            for field in col_map
+            entry_key_map[field]: (row.get(col_map[field], "") or "").strip() for field in col_map
         }
         # 对长度受限字段做 MAX_FIELD_* 校验，与 Entry.from_dict 一致，
         # 避免 Entry(**kwargs) 绕过 from_dict 的校验逻辑导致超长字段入库。
         for internal_field, max_len in field_limits.items():
             if internal_field in col_map:
-                value = kwargs.get(entry_key_map[internal_field], '')
+                value = kwargs.get(entry_key_map[internal_field], "")
                 if len(value) > max_len:
                     raise ImportSizeError(
-                        f'导入条目字段 {internal_field} 过长（最多 {max_len} 字符）'
+                        f"导入条目字段 {internal_field} 过长（最多 {max_len} 字符）"
                     )
         # totp_secret / url scheme 校验经模块级统一函数，与 JSON/Bitwarden 路径共享单一事实源
-        kwargs['totp_secret'] = _sanitize_totp_secret(kwargs.get('totp_secret', ''))
-        kwargs['url'] = _sanitize_url_scheme(kwargs.get('url', ''))
+        kwargs["totp_secret"] = _sanitize_totp_secret(kwargs.get("totp_secret", ""))
+        kwargs["url"] = _sanitize_url_scheme(kwargs.get("url", ""))
         entries.append(Entry(**kwargs))
-        entries_data.append({
-            'title': kwargs.get('title', ''),
-            'username': kwargs.get('username', ''),
-        })
+        entries_data.append(
+            {
+                "title": kwargs.get("title", ""),
+                "username": kwargs.get("username", ""),
+            }
+        )
     return entries, entries_data, password_present
 
 
@@ -127,8 +129,10 @@ def _make_csv_merger(password_present: bool) -> Callable[[Entry, Entry], Entry]:
     source_has_password 在解析期才能确定（取决于 CSV 是否含 password 列），
     故用闭包捕获后返回稳定的合并器，供 ImportExportManager 在覆盖路径调用。
     """
+
     def _merge(entry: Entry, existing: Entry) -> Entry:
         return _merge_csv_secrets(entry, existing, password_present)
+
     return _merge
 
 
@@ -157,7 +161,7 @@ class _CsvLikeImporter:
         # 先于 ``list(reader)`` 物化整行进内存。csv.field_size_limit 是进程级全局设置，
         # 本应用导入串行执行，无负面影响。
         csv.field_size_limit(MAX_ENTRY_PAYLOAD_SIZE)
-        with open(filepath, encoding='utf-8-sig', newline='') as f:
+        with open(filepath, encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
             # 先校验 header 列数（SEC-001），防止单行×数百万列在 ``list(reader)``
             # 物化时每行生成超长 dict 触发 OOM。空文件（无 header）按空导入处理。
@@ -169,15 +173,15 @@ class _CsvLikeImporter:
                     source_label=self._source_label,
                 )
             if len(reader.fieldnames) > MAX_CSV_COLUMNS:
-                raise ImportSizeError(
-                    f'CSV 列数过多（最多 {MAX_CSV_COLUMNS} 列）'
-                )
+                raise ImportSizeError(f"CSV 列数过多（最多 {MAX_CSV_COLUMNS} 列）")
             rows = list(reader)
 
         _validate_items(rows)
 
         entries, entries_data, password_present = _parse_csv_like(
-            rows, self._aliases, self._entry_key_map,
+            rows,
+            self._aliases,
+            self._entry_key_map,
         )
         return ParsedImport(
             entries=entries,
@@ -194,11 +198,16 @@ class CsvImporter(_CsvLikeImporter):
         super().__init__(
             aliases=_CSV_COLUMN_ALIASES,
             entry_key_map={
-                'title': 'title', 'username': 'username', 'password': 'password',
-                'url': 'url', 'tags': 'tags', 'notes': 'notes',
-                'totp_secret': 'totp_secret', 'category': 'category_name',
+                "title": "title",
+                "username": "username",
+                "password": "password",
+                "url": "url",
+                "tags": "tags",
+                "notes": "notes",
+                "totp_secret": "totp_secret",
+                "category": "category_name",
             },
-            source_label='CSV 导入',
+            source_label="CSV 导入",
         )
 
 
@@ -209,8 +218,12 @@ class KeePassCsvImporter(_CsvLikeImporter):
         super().__init__(
             aliases=_KEEPASS_COLUMN_ALIASES,
             entry_key_map={
-                'title': 'title', 'username': 'username', 'password': 'password',
-                'url': 'url', 'notes': 'notes', 'group': 'category_name',
+                "title": "title",
+                "username": "username",
+                "password": "password",
+                "url": "url",
+                "notes": "notes",
+                "group": "category_name",
             },
-            source_label='KeePass CSV 导入',
+            source_label="KeePass CSV 导入",
         )

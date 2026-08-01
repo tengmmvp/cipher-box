@@ -46,30 +46,35 @@ def patched_modals(monkeypatch):
     cap: dict = {}
 
     monkeypatch.setattr(
-        'src.ui.dialogs.backup_dialog.QMessageBox.information', _recorder(cap, 'info'),
+        "src.ui.dialogs.backup_dialog.QMessageBox.information",
+        _recorder(cap, "info"),
     )
     monkeypatch.setattr(
-        'src.ui.dialogs.backup_dialog.QMessageBox.critical', _recorder(cap, 'critical'),
+        "src.ui.dialogs.backup_dialog.QMessageBox.critical",
+        _recorder(cap, "critical"),
     )
     monkeypatch.setattr(
-        'src.ui.dialogs.backup_dialog.QMessageBox.warning', _yes_recorder(cap, 'warning'),
+        "src.ui.dialogs.backup_dialog.QMessageBox.warning",
+        _yes_recorder(cap, "warning"),
     )
     monkeypatch.setattr(
-        'src.ui.dialogs.backup_dialog.QMessageBox.question', _yes_recorder(cap, 'question'),
+        "src.ui.dialogs.backup_dialog.QMessageBox.question",
+        _yes_recorder(cap, "question"),
     )
 
     def _fake_worker(run, parent=None):
-        cap['run'] = run
+        cap["run"] = run
         worker = MagicMock()
         worker.is_cancelled = False
         return worker
 
-    monkeypatch.setattr('src.ui.dialogs.backup_dialog.BackgroundWorker', _fake_worker)
+    monkeypatch.setattr("src.ui.dialogs.backup_dialog.BackgroundWorker", _fake_worker)
     return cap
 
 
 def _make_dialog():
     from src.ui.dialogs.backup_dialog import BackupDialog
+
     return BackupDialog(MagicMock())
 
 
@@ -80,65 +85,67 @@ class TestBackupDialogWiring:
         """_on_backup_done 成功：标记 data_changed、置成功状态、弹成功框。"""
         dlg = _make_dialog()
         dlg._worker = MagicMock()  # sentinel：sender() 与之比较通过
-        monkeypatch.setattr(dlg, 'sender', lambda: dlg._worker)
-        dlg._on_backup_done((True, ''))
+        monkeypatch.setattr(dlg, "sender", lambda: dlg._worker)
+        dlg._on_backup_done((True, ""))
         assert dlg.data_changed is True
-        assert '成功' in dlg._status_label.text()
-        assert patched_modals['info']
+        assert "成功" in dlg._status_label.text()
+        assert patched_modals["info"]
 
     def test_backup_done_failure_shows_business_error_text(self, qapp, patched_modals, monkeypatch):
         """_on_backup_done 失败：置失败状态并把业务返回的错误文案呈现给用户。"""
         dlg = _make_dialog()
         dlg._worker = MagicMock()
-        monkeypatch.setattr(dlg, 'sender', lambda: dlg._worker)
-        dlg._on_backup_done((False, '备份密码不正确'))
-        assert '失败' in dlg._status_label.text()
+        monkeypatch.setattr(dlg, "sender", lambda: dlg._worker)
+        dlg._on_backup_done((False, "备份密码不正确"))
+        assert "失败" in dlg._status_label.text()
         # 关键接线：业务错误文案须透传到用户可见的 critical 对话框
-        assert any('备份密码不正确' in str(arg) for arg in patched_modals['critical'])
+        assert any("备份密码不正确" in str(arg) for arg in patched_modals["critical"])
 
     def test_do_backup_passes_path_and_password_to_manager(self, qapp, patched_modals, monkeypatch):
         """_do_backup 把所选路径与两次输入一致的密码传给 create_backup。"""
         from src.ui.dialogs.backup_dialog import BackupDialog
 
         # 两次 QInputDialog：设置密码 + 确认密码，返回一致的强密码
-        inputs = iter([('StrongPwd!2026', True), ('StrongPwd!2026', True)])
+        inputs = iter([("StrongPwd!2026", True), ("StrongPwd!2026", True)])
         monkeypatch.setattr(
-            'src.ui.dialogs.backup_dialog.QInputDialog.getText',
+            "src.ui.dialogs.backup_dialog.QInputDialog.getText",
             lambda *a, **k: next(inputs),
         )
         monkeypatch.setattr(
-            'src.ui.dialogs.backup_dialog.PasswordService.validate_master_password',
-            lambda *a, **k: (True, ''),
+            "src.ui.dialogs.backup_dialog.PasswordService.validate_master_password",
+            lambda *a, **k: (True, ""),
         )
         mgr = MagicMock()
-        mgr.create_backup.return_value = (True, '')
+        mgr.create_backup.return_value = (True, "")
         dlg = BackupDialog(mgr)
-        dlg._do_backup('/tmp/test.cbox')
+        dlg._do_backup("/tmp/test.cbox")
         # 模拟 worker 线程执行捕获的任务闭包
-        result = patched_modals['run']()
+        result = patched_modals["run"]()
         mgr.create_backup.assert_called_once()
         call = mgr.create_backup.call_args
-        assert call.args[0] == '/tmp/test.cbox'
-        assert call.args[1] == 'StrongPwd!2026'
-        assert call.kwargs.get('cancel_check') is not None
-        assert result == (True, '')
+        assert call.args[0] == "/tmp/test.cbox"
+        assert call.args[1] == "StrongPwd!2026"
+        assert call.kwargs.get("cancel_check") is not None
+        assert result == (True, "")
 
-    def test_do_restore_passes_path_and_password_to_manager(self, qapp, patched_modals, monkeypatch):
+    def test_do_restore_passes_path_and_password_to_manager(
+        self, qapp, patched_modals, monkeypatch
+    ):
         """_do_restore 把路径与输入密码传给 restore_backup（password_required 路径）。"""
         from src.ui.dialogs.backup_dialog import BackupDialog
 
         monkeypatch.setattr(
-            'src.ui.dialogs.backup_dialog.inspect_backup',
-            lambda p: {'password_required': True},
+            "src.ui.dialogs.backup_dialog.inspect_backup",
+            lambda p: {"password_required": True},
         )
         monkeypatch.setattr(
-            'src.ui.dialogs.backup_dialog.QInputDialog.getText',
-            lambda *a, **k: ('RestorePwd!2026', True),
+            "src.ui.dialogs.backup_dialog.QInputDialog.getText",
+            lambda *a, **k: ("RestorePwd!2026", True),
         )
         mgr = MagicMock()
-        mgr.restore_backup.return_value = (True, '')
+        mgr.restore_backup.return_value = (True, "")
         dlg = BackupDialog(mgr)
-        dlg._do_restore('/tmp/backup.cbox')
-        result = patched_modals['run']()
-        mgr.restore_backup.assert_called_once_with('/tmp/backup.cbox', 'RestorePwd!2026')
-        assert result == (True, '')
+        dlg._do_restore("/tmp/backup.cbox")
+        result = patched_modals["run"]()
+        mgr.restore_backup.assert_called_once_with("/tmp/backup.cbox", "RestorePwd!2026")
+        assert result == (True, "")

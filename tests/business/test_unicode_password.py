@@ -7,7 +7,7 @@ str 仅接受 ASCII，主密码比较必须经 encode('utf-8')，否则新旧相
 
 from tests.helpers import make_vault
 
-_UNICODE_PWD = '主密码·Password·12345'  # 含中文与符号，18 字符 ≥ 15
+_UNICODE_PWD = "主密码·Password·12345"  # 含中文与符号，18 字符 ≥ 15
 
 
 def test_change_master_password_unicode_same_not_crash(vault_config):
@@ -17,7 +17,7 @@ def test_change_master_password_unicode_same_not_crash(vault_config):
     try:
         ok, msg = vault.change_master_password(_UNICODE_PWD, _UNICODE_PWD)
         assert not ok
-        assert '相同' in msg
+        assert "相同" in msg
     finally:
         vault.close()
 
@@ -27,7 +27,7 @@ def test_change_master_password_unicode_change_succeeds(vault_config):
     vault = make_vault(vault_config)
     vault.initialize(_UNICODE_PWD)
     try:
-        ok, msg = vault.change_master_password(_UNICODE_PWD, '新主密码·Password·67890')
+        ok, msg = vault.change_master_password(_UNICODE_PWD, "新主密码·Password·67890")
         assert ok, msg
     finally:
         vault.close()

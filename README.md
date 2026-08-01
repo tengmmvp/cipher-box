@@ -95,7 +95,7 @@ uv run python main.py
 | 包名 | 用途 |
 |------|------|
 | `PyQt6 >= 6.6.0` | 桌面端 UI 框架 |
-| `cryptography >= 42.0.0` | AES-256-GCM 加密 |
+| `cryptography >= 48.0.1` | AES-256-GCM 加密 |
 | `argon2-cffi >= 25.1.0` | Argon2id 密钥派生 |
 | `QtAwesome >= 1.3.0` | 统一矢量图标系统 |
 
@@ -141,7 +141,7 @@ src/
 │   ├── managers/    #   有状态编排（保险库、条目、导入导出、备份恢复）
 │   └── services/    #   协作模块（加解密、校验、签名、重加密、安全分析）
 ├── ui/              # PyQt6 界面
-│   ├── windows/     #   主窗口（拆分为职责文件 + 共享 mixin base）
+│   ├── windows/     #   主窗口（中心编排器，职责拆至 controllers/ 普通类）
 │   ├── dialogs/     #   对话框（登录、条目编辑、备份、设置等）
 │   ├── components/  #   可复用控件（详情面板、条目列表、TOTP、密码历史）
 │   ├── controllers/ #   数据到控件的映射与生命周期

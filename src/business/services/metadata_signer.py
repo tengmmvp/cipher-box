@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 
 # 域分离 info 标签：条目/分类元数据与 vault_meta 完整性各自派生独立域密钥，
 # 与主密钥/备份密钥域分离原则一致。
-_DOMAIN_INFO_ENTRY_METADATA = b'cipherbox:entry-metadata-key'
-_DOMAIN_INFO_VAULT_META = b'cipherbox:vault-meta-key'
+_DOMAIN_INFO_ENTRY_METADATA = b"cipherbox:entry-metadata-key"
+_DOMAIN_INFO_VAULT_META = b"cipherbox:vault-meta-key"
 
 # vault_meta 完整性签名覆盖的键集（源自 vault_meta_keys 单一事实源），此处 re-export
 # 供既有调用方引用（vault_meta_store / backup_restore 经本模块 import）。
@@ -23,7 +23,7 @@ _DOMAIN_INFO_VAULT_META = b'cipherbox:vault-meta-key'
 # 签名绑定的加密字段及固定顺序（顺序变更会破坏已有 metadata_mac）。等于
 # crypto_utils.SENSITIVE_ENCRYPTED_FIELDS 减 {title,url,tags}（这三者以密文形态直接
 # 入签），由 tests/test_field_consistency.py 守护此子集关系。custom_fields 取密文 db_value。
-SIGNATURE_ENCRYPTED_FIELD_ORDER = ('username', 'password', 'notes', 'totp_secret', 'custom_fields')
+SIGNATURE_ENCRYPTED_FIELD_ORDER = ("username", "password", "notes", "totp_secret", "custom_fields")
 
 
 class MetadataSigner:
@@ -35,13 +35,22 @@ class MetadataSigner:
     """
 
     def __init__(self, domain_key: bytes | bytearray | None = None):
-        self._domain_key = (
-            bytearray(domain_key) if domain_key is not None else None
-        )
+        self._domain_key = bytearray(domain_key) if domain_key is not None else None
 
     def set_domain_key(self, key: bytes | bytearray) -> None:
         """设置预计算的域密钥（解锁/改密成功后调用），统一归一为 bytearray 以便原地清零。"""
-        self._domain_key = self._normalize_domain_key(key)
+        self._rotate_domain_key(key)
+
+    def _rotate_domain_key(self, value: bytes | bytearray | None) -> None:
+        """替换域密钥：归一为新 bytearray 后，显式清零旧 bytearray 收缩残留面。
+
+        None 用于锁定/改密清零。与 ``compute_vault_meta_mac`` 的 finally 清零纪律一致
+        ——旧域密钥虽不可逆推主密钥，仍可独立伪造 ``metadata_mac``，不应在锁定后留存。
+        """
+        old = self._domain_key
+        self._domain_key = self._normalize_domain_key(value)
+        if old is not None:
+            secure_zero_buffer(old)
 
     @property
     def domain_key(self) -> bytearray | None:
@@ -51,7 +60,7 @@ class MetadataSigner:
     @domain_key.setter
     def domain_key(self, value: bytearray | None) -> None:
         # 归一为 bytearray 防 bytes 绕过清零；VaultManager 经此传 None 清零。
-        self._domain_key = self._normalize_domain_key(value)
+        self._rotate_domain_key(value)
 
     @staticmethod
     def _normalize_domain_key(value: bytes | bytearray | None) -> bytearray | None:
@@ -98,7 +107,7 @@ class MetadataSigner:
             VaultLockedError: 域密钥未设置（保险库未解锁）。
         """
         if self._domain_key is None:
-            raise VaultLockedError('保险库未解锁，无法签名条目元数据')
+            raise VaultLockedError("保险库未解锁，无法签名条目元数据")
         return hmac.new(
             self._domain_key,
             self._payload(entry),
@@ -126,10 +135,10 @@ class MetadataSigner:
             VaultLockedError: 保险库未解锁。
         """
         if not entry.metadata_mac:
-            raise VaultIntegrityError(f'条目 {entry.id} 缺少元数据完整性签名')
+            raise VaultIntegrityError(f"条目 {entry.id} 缺少元数据完整性签名")
         expected = self.sign(entry)
         if not hmac.compare_digest(entry.metadata_mac, expected):
-            raise VaultIntegrityError(f'条目 {entry.id} 元数据完整性校验失败')
+            raise VaultIntegrityError(f"条目 {entry.id} 元数据完整性校验失败")
 
     def sign_category(self, category: Category) -> str:
         """计算分类元数据 HMAC 签名，与条目签名共享同一域密钥。
@@ -138,13 +147,17 @@ class MetadataSigner:
         re_encrypt_categories 须在重加密分类名后重签。
         """
         if self._domain_key is None:
-            raise VaultLockedError('保险库未解锁，无法签名分类元数据')
+            raise VaultLockedError("保险库未解锁，无法签名分类元数据")
         return hmac.new(
-            self._domain_key, self._category_payload(category), hashlib.sha256,
+            self._domain_key,
+            self._category_payload(category),
+            hashlib.sha256,
         ).hexdigest()
 
     def sign_category_with_domain_key(
-        self, category: Category, domain_key: bytes | bytearray,
+        self,
+        category: Category,
+        domain_key: bytes | bytearray,
     ) -> str:
         """直接用预计算的域密钥签名分类，对称 :meth:`sign_with_domain_key`。
 
@@ -158,7 +171,9 @@ class MetadataSigner:
             domain_key: 预计算的域密钥，接受 bytes|bytearray。
         """
         return hmac.new(
-            domain_key, self._category_payload(category), hashlib.sha256,
+            domain_key,
+            self._category_payload(category),
+            hashlib.sha256,
         ).hexdigest()
 
     def verify_category(self, category: Category) -> None:
@@ -169,10 +184,10 @@ class MetadataSigner:
             VaultLockedError: 保险库未解锁。
         """
         if not category.metadata_mac:
-            raise VaultIntegrityError(f'分类 {category.id} 缺少元数据完整性签名')
+            raise VaultIntegrityError(f"分类 {category.id} 缺少元数据完整性签名")
         expected = self.sign_category(category)
         if not hmac.compare_digest(category.metadata_mac, expected):
-            raise VaultIntegrityError(f'分类 {category.id} 元数据完整性校验失败')
+            raise VaultIntegrityError(f"分类 {category.id} 元数据完整性校验失败")
 
     @staticmethod
     def _canonical_json_bytes(data: dict) -> bytes:
@@ -181,8 +196,11 @@ class MetadataSigner:
         供条目与分类载荷复用，确保两侧序列化参数一致，避免漂移致一侧验签失败。
         """
         return json.dumps(
-            data, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
-        ).encode('utf-8')
+            data,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
 
     @staticmethod
     def _payload(entry: RawEntry) -> bytes:
@@ -199,28 +217,28 @@ class MetadataSigner:
             （可改可执行文件/读内存密钥），故此项作为已知边界接受，不做部分有效的防御。
         """
         data = {
-            'crypto_id': entry.crypto_id,
-            'title': entry.title,
-            'url': entry.url,
-            'category_id': entry.category_id,
-            'tags': entry.tags,
-            'is_favorite': bool(entry.is_favorite),
-            'is_deleted': bool(entry.is_deleted),
-            'password_strength': entry.password_strength,
-            'entry_type': entry.entry_type,
-            'created_at': entry.created_at,
-            'updated_at': entry.updated_at,
-            'deleted_at': entry.deleted_at,
-            'password_changed_at': entry.password_changed_at,
+            "crypto_id": entry.crypto_id,
+            "title": entry.title,
+            "url": entry.url,
+            "category_id": entry.category_id,
+            "tags": entry.tags,
+            "is_favorite": bool(entry.is_favorite),
+            "is_deleted": bool(entry.is_deleted),
+            "password_strength": entry.password_strength,
+            "entry_type": entry.entry_type,
+            "created_at": entry.created_at,
+            "updated_at": entry.updated_at,
+            "deleted_at": entry.deleted_at,
+            "password_changed_at": entry.password_changed_at,
         }
         # 绑定加密字段密文到签名，防密文置换或回滚。长度前缀拼接避免固定分隔符
         # 在未来加密格式下产生歧义载荷。
         enc_parts = [
-            entry.custom_fields_db_value if field == 'custom_fields' else getattr(entry, field)
+            entry.custom_fields_db_value if field == "custom_fields" else getattr(entry, field)
             for field in SIGNATURE_ENCRYPTED_FIELD_ORDER
         ]
-        enc_concat = ''.join(f'{len(p)}:{p}' for p in enc_parts)
-        data['_enc_hash'] = hashlib.sha256(enc_concat.encode('utf-8')).hexdigest()
+        enc_concat = "".join(f"{len(p)}:{p}" for p in enc_parts)
+        data["_enc_hash"] = hashlib.sha256(enc_concat.encode("utf-8")).hexdigest()
         return MetadataSigner._canonical_json_bytes(data)
 
     @staticmethod
@@ -232,11 +250,11 @@ class MetadataSigner:
         范式「对齐」（会改签名格式、破坏已持久化的 metadata_mac）。id 入载荷防错配。
         """
         data = {
-            'id': category.id,
-            'name_hash': hashlib.sha256(category.name.encode('utf-8')).hexdigest(),
-            'icon_char': category.icon_char,
-            'color': category.color,
-            'sort_order': category.sort_order,
-            'created_at': category.created_at,
+            "id": category.id,
+            "name_hash": hashlib.sha256(category.name.encode("utf-8")).hexdigest(),
+            "icon_char": category.icon_char,
+            "color": category.color,
+            "sort_order": category.sort_order,
+            "created_at": category.created_at,
         }
         return MetadataSigner._canonical_json_bytes(data)

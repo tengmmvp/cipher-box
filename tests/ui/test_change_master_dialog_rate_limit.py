@@ -13,11 +13,12 @@ class TestChangeMasterDialogRateLimit:
     def test_auth_failure_counts_toward_rate_limit(self, qapp, tmp_path):
         """旧密码错误（认证失败）应计入失败计数。"""
         from src.ui.dialogs.change_master_dialog import ChangeMasterDialog
+
         vault = MagicMock()
         vault.data_dir = tmp_path
         dialog = ChangeMasterDialog(vault)
         try:
-            dialog._on_change_done((False, '当前主密码错误'))
+            dialog._on_change_done((False, "当前主密码错误"))
             assert dialog._rate_limiter._fail_count == 1
         finally:
             dialog.deleteLater()
@@ -25,16 +26,17 @@ class TestChangeMasterDialogRateLimit:
     def test_non_auth_failure_does_not_count(self, qapp, tmp_path):
         """非认证失败（系统错误、凭据问题等）不计入失败计数。"""
         from src.ui.dialogs.change_master_dialog import ChangeMasterDialog
+
         vault = MagicMock()
         vault.data_dir = tmp_path
         dialog = ChangeMasterDialog(vault)
         try:
             # 模拟系统错误或保险库凭据问题，文案非认证失败
-            dialog._on_change_done((False, '保险库凭据不完整'))
+            dialog._on_change_done((False, "保险库凭据不完整"))
             assert dialog._rate_limiter._fail_count == 0
 
             # 新密码校验问题同样不计入
-            dialog._on_change_done((False, '新密码强度不足'))
+            dialog._on_change_done((False, "新密码强度不足"))
             assert dialog._rate_limiter._fail_count == 0
         finally:
             dialog.deleteLater()

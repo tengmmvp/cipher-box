@@ -68,44 +68,73 @@ class EmptyStateResolver:
         # 优先级：搜索 → 回收站 → 弱/重复（含分析中）→ 近期 → 分类 → 空库 → 兜底
         if context.current_search:
             return EmptyStateSpec(
-                EMPTY_SEARCH, '没有找到匹配的条目', '尝试不同的搜索关键词',
-                '清除搜索', context.on_clear_search,
+                EMPTY_SEARCH,
+                "没有找到匹配的条目",
+                "尝试不同的搜索关键词",
+                "清除搜索",
+                context.on_clear_search,
             )
         filter_name = context.current_filter
-        if filter_name == 'trash':
+        if filter_name == "trash":
             return EmptyStateSpec(
-                EMPTY_TRASH, '回收站是空的', '删除的条目会出现在这里', '', None,
+                EMPTY_TRASH,
+                "回收站是空的",
+                "删除的条目会出现在这里",
+                "",
+                None,
             )
-        if filter_name in ('weak', 'duplicate'):
+        if filter_name in ("weak", "duplicate"):
             # 缓存未就绪时显示「分析中」，避免空列表被误读为「无弱/重复密码」
             if context.is_analyzing:
-                label = '密码强度' if filter_name == 'weak' else '重复密码'
+                label = "密码强度" if filter_name == "weak" else "重复密码"
                 return EmptyStateSpec(
-                    EMPTY_GENERIC, f'正在分析{label}...', '请稍候', '', None,
+                    EMPTY_GENERIC,
+                    f"正在分析{label}...",
+                    "请稍候",
+                    "",
+                    None,
                 )
-            if filter_name == 'weak':
+            if filter_name == "weak":
                 return EmptyStateSpec(
-                    EMPTY_SUCCESS, '没有发现弱密码', '所有密码强度良好', '', None,
+                    EMPTY_SUCCESS,
+                    "没有发现弱密码",
+                    "所有密码强度良好",
+                    "",
+                    None,
                 )
             return EmptyStateSpec(
-                EMPTY_SUCCESS, '没有重复密码', '所有密码都是唯一的', '', None,
+                EMPTY_SUCCESS,
+                "没有重复密码",
+                "所有密码都是唯一的",
+                "",
+                None,
             )
-        if filter_name == 'recent':
+        if filter_name == "recent":
             return EmptyStateSpec(
-                EMPTY_SUCCESS, '没有近期更新', '最近没有修改过条目', '', None,
+                EMPTY_SUCCESS,
+                "没有近期更新",
+                "最近没有修改过条目",
+                "",
+                None,
             )
         if context.current_category_id is not None:
             return EmptyStateSpec(
-                EMPTY_FOLDER, '该分类下暂无条目',
-                '新增或编辑条目时可选择该分类', '', None,
+                EMPTY_FOLDER,
+                "该分类下暂无条目",
+                "新增或编辑条目时可选择该分类",
+                "",
+                None,
             )
         # 默认/空库分支：total_entries 已由 controller 解析传入
         if context.total_entries == 0:
             return EmptyStateSpec(
-                EMPTY_VAULT, '还没有密码条目',
-                '点击工具栏「新增」按钮开始添加', '新增条目', context.on_add_entry,
+                EMPTY_VAULT,
+                "还没有密码条目",
+                "点击工具栏「新增」按钮开始添加",
+                "新增条目",
+                context.on_add_entry,
             )
-        return EmptyStateSpec(EMPTY_GENERIC, '暂无条目', '', '', None)
+        return EmptyStateSpec(EMPTY_GENERIC, "暂无条目", "", "", None)
 
 
 @dataclass(frozen=True)
@@ -129,17 +158,17 @@ class StatusBarRenderer:
         old_count: int,
     ) -> None:
         try:
-            view.stats_label.setText(f'共 {total} 项')
-            parts = [f'总计 {total} 条']
+            view.stats_label.setText(f"共 {total} 项")
+            parts = [f"总计 {total} 条"]
             if weak > 0:
-                parts.append(f'弱密码 {weak}')
+                parts.append(f"弱密码 {weak}")
             if duplicate > 0:
-                parts.append(f'重复 {duplicate}')
-            view.status_bar.showMessage('  |  '.join(parts))
+                parts.append(f"重复 {duplicate}")
+            view.status_bar.showMessage("  |  ".join(parts))
             # 密码过期警告：复用实例属性，避免 findChild
             warning_label = view.warning_label
             if old_count > 0:
-                warning_label.setText(f'  {old_count} 个密码已过期  ')
+                warning_label.setText(f"  {old_count} 个密码已过期  ")
                 warning_label.show()
                 if warning_label.parent() is not view.status_bar:
                     view.status_bar.addPermanentWidget(warning_label)
@@ -147,4 +176,4 @@ class StatusBarRenderer:
                 warning_label.hide()
         except (ValueError, RuntimeError):
             logger.debug("状态栏安全分析失败", exc_info=True)
-            view.status_bar.showMessage('安全分析暂时不可用')
+            view.status_bar.showMessage("安全分析暂时不可用")

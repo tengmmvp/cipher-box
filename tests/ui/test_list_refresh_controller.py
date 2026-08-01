@@ -4,10 +4,11 @@
 ``@require_unlocked`` 跳过、刷新防抖定时器、排序配置委托、``clear_search`` 分支、
 生命周期方法与缓存 property。
 
-worker 异步刷新的状态机（generation 守卫、锁定丢弃回调）经 ``test_product_hardening``
-端到端守护覆盖；本文件聚焦 controller 同步路径与状态。``_make_controller`` 配置
-mock 返回空集合，使 ``setup`` 的初始填充（refresh_categories/tag_filter/entries/
-status_bar）可在无真实数据下运行。
+worker 异步刷新的代际守卫经 ``test_product_hardening`` 端到端守护，亦由本文件
+``TestStaleWorkerResultDiscarded`` 经 ``_FakeAsyncWorker`` 手动发射 finished 槽
+直接驱动各丢弃分支；其余测试聚焦 controller 同步路径与状态。``_make_controller``
+配置 mock 返回空集合，使 ``setup`` 的初始填充（refresh_categories/tag_filter/
+entries/status_bar）可在无真实数据下运行。
 """
 
 # 测试大量用 MagicMock 注入依赖，抑制其属性访问的静态类型告警
@@ -39,11 +40,11 @@ class _FakeSignal:
 class _FakeAsyncWorker:
     """BackgroundWorker 替身：捕获 finished 槽，不启动真实线程。
 
-    供 ``_start_async_entry_refresh`` 的代际守卫测试：让测试能在锁定/过滤变更后
+    供 ``start_async_entry_refresh`` 的代际守卫测试：让测试能在锁定/过滤变更后
     手动发射 worker.finished，断言过期结果被丢弃而不刷新 UI。
     """
 
-    instances: list['_FakeAsyncWorker'] = []
+    instances: list["_FakeAsyncWorker"] = []
 
     def __init__(self, func=None, parent=None) -> None:
         self.func = func
@@ -91,7 +92,7 @@ def _make_view() -> ListRefreshView:
 def _make_controller() -> ListRefreshController:
     """构造 controller，配置 mock 使 setup 初始填充（空集合）可运行。"""
     entry_list_ctrl = MagicMock()
-    entry_list_ctrl.get_fetcher.return_value = lambda *a, **k: ([], '标题')
+    entry_list_ctrl.get_fetcher.return_value = lambda *a, **k: ([], "标题")
     entry_list_ctrl.sort_entries.return_value = []
     sidebar_ctrl = MagicMock()
     sidebar_ctrl.get_categories.return_value = []
@@ -102,10 +103,17 @@ def _make_controller() -> ListRefreshController:
     entry_mgr.get_entry_count.return_value = 0
     security = MagicMock()
     security.get_cached_counts.return_value = MagicMock(
-        total=0, weak_count=0, duplicate_count=0, old=0,
+        total=0,
+        weak_count=0,
+        duplicate_count=0,
+        old=0,
     )
     return ListRefreshController(
-        MagicMock(), entry_mgr, security, entry_list_ctrl, sidebar_ctrl,
+        MagicMock(),
+        entry_mgr,
+        security,
+        entry_list_ctrl,
+        sidebar_ctrl,
         ListRefreshDeps(on_add_entry=MagicMock()),
     )
 
@@ -134,7 +142,7 @@ class TestLifecycle:
         view = _setup(ctrl)
         ctrl.prepare_for_lock()
         assert ctrl._locked is True
-        assert ctrl._current_search == ''
+        assert ctrl._current_search == ""
         view.search_edit.clear.assert_called_once()
 
     def test_set_locked_toggles_state(self, qapp):
@@ -177,9 +185,9 @@ class TestRequireUnlocked:
         _setup(ctrl)
         ctrl.set_locked(True)
         item = QListWidgetItem()
-        item.setData(Qt.ItemDataRole.UserRole, 'favorite')
+        item.setData(Qt.ItemDataRole.UserRole, "favorite")
         ctrl.on_filter_changed(item, None)
-        assert ctrl._current_filter == 'all'
+        assert ctrl._current_filter == "all"
 
 
 class TestCallbacks:
@@ -203,7 +211,7 @@ class TestCallbacks:
     def test_clear_search_with_text_clears_input(self, qapp):
         ctrl = _make_controller()
         view = _make_view()
-        view.search_edit.text.return_value = 'abc'
+        view.search_edit.text.return_value = "abc"
         ctrl.setup(QMainWindow(), view)
         ctrl.clear_search()
         view.search_edit.clear.assert_called_once()
@@ -212,7 +220,7 @@ class TestCallbacks:
         """搜索框已空时 Escape 清空选中与详情面板（快捷键二次按 Escape 语义）。"""
         ctrl = _make_controller()
         view = _make_view()
-        view.search_edit.text.return_value = ''
+        view.search_edit.text.return_value = ""
         ctrl.setup(QMainWindow(), view)
         ctrl.clear_search()
         view.entry_list.setCurrentIndex.assert_called_once()
@@ -222,7 +230,7 @@ class TestCallbacks:
 class TestStaleWorkerResultDiscarded:
     """异步刷新的代际守卫：锁定后完成 / 过滤键变更后，旧 worker 结果被丢弃。
 
-    ``_start_async_entry_refresh`` 的 ``_done`` 回调在应用结果前校验
+    ``start_async_entry_refresh`` 的 ``_done`` 回调在应用结果前校验
     ``_locked / generation / filter_key / category_id / search`` 五项，任一过期即
     ``_release()`` 丢弃、不调 ``_apply_entry_results``。经 ``_FakeAsyncWorker``
     捕获 finished 槽后手动发射，模拟 worker 延迟完成时 controller 状态已变。
@@ -238,7 +246,7 @@ class TestStaleWorkerResultDiscarded:
         """构造 controller 并 patch BackgroundWorker，配置超阈值计数触发异步路径。"""
         # entry/tag worker 由 EntryRefreshCoordinator 创建，须 patch coordinator 模块的
         # BackgroundWorker 引用（status worker 在 controller 模块，本测试不涉及）。
-        monkeypatch.setattr(coordinator_module, 'BackgroundWorker', _FakeAsyncWorker)
+        monkeypatch.setattr(coordinator_module, "BackgroundWorker", _FakeAsyncWorker)
         _FakeAsyncWorker.instances = []
         ctrl = _make_controller()
         view = _setup(ctrl)
@@ -258,7 +266,7 @@ class TestStaleWorkerResultDiscarded:
         ctrl.refresh_entries()  # 启动异步 worker（filter 'all'）
         worker = _FakeAsyncWorker.instances[-1]
         ctrl.prepare_for_lock()  # _locked=True，模拟锁定请求已到来
-        self._fire_finished(worker, ([], '过期结果'))
+        self._fire_finished(worker, ([], "过期结果"))
 
         # 锁定态丢弃结果，不刷新列表
         view.entry_model.set_entries.assert_not_called()
@@ -271,7 +279,7 @@ class TestStaleWorkerResultDiscarded:
         worker_old = _FakeAsyncWorker.instances[-1]
         # 模拟用户再次触发刷新：代际推进，worker_old 的 generation 已过期
         ctrl._coordinator._entry_refresh_generation += 1
-        self._fire_finished(worker_old, ([], '过期结果'))
+        self._fire_finished(worker_old, ([], "过期结果"))
 
         view.entry_model.set_entries.assert_not_called()
 
@@ -282,8 +290,8 @@ class TestStaleWorkerResultDiscarded:
         ctrl.refresh_entries()  # worker 捕获 filter_key='all'
         worker = _FakeAsyncWorker.instances[-1]
         # 模拟用户切换过滤器，旧 worker 的 filter_key='all' 已与当前 _current_filter 不符
-        ctrl._current_filter = 'favorite'
-        self._fire_finished(worker, ([], '过期结果'))
+        ctrl._current_filter = "favorite"
+        self._fire_finished(worker, ([], "过期结果"))
 
         view.entry_model.set_entries.assert_not_called()
 
@@ -294,6 +302,6 @@ class TestStaleWorkerResultDiscarded:
         ctrl.refresh_entries()
         worker = _FakeAsyncWorker.instances[-1]
         # 状态未变，worker 结果新鲜 → 应用
-        self._fire_finished(worker, ([], '新结果'))
+        self._fire_finished(worker, ([], "新结果"))
 
         view.entry_model.set_entries.assert_called_once_with([])

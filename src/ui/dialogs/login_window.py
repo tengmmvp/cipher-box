@@ -68,20 +68,20 @@ class LoginWindow(WorkerBackedDialog):
         self._is_first_time = not vault_manager.is_initialized
         # 直接索引 data_dir（有类型 property）：缺失会在静态检查/运行时即时暴露，
         # 而非 getattr 静默退化为仅内存限流（跨会话退避与哨兵删文件检测全部失效）。
-        state_path = self._vault.data_dir / 'login_rate_limit.json'
+        state_path = self._vault.data_dir / "login_rate_limit.json"
         # 传入 config：把哨兵登记到签名 config，关闭「同时删除状态文件+哨兵即归零计数」的绕过
         self._rate_limiter = RateLimiter(state_path, config)
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        self.setWindowTitle('CipherBox - 登录')
+        self.setWindowTitle("CipherBox - 登录")
         self.setFixedWidth(LOGIN_WIDTH)
         setup_dialog_flags(self)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(34, 30, 34, 30)
         card = QFrame()
-        card.setObjectName('loginCard')
+        card.setObjectName("loginCard")
         outer.addWidget(card)
         layout = QVBoxLayout(card)
         layout.setSpacing(14)
@@ -92,7 +92,9 @@ class LoginWindow(WorkerBackedDialog):
         self._build_password_row(layout)
         self._build_confirm_section(layout)
         self._build_message_labels(layout)
-        layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding))
+        layout.addSpacerItem(
+            QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+        )
         layout.addLayout(self._build_action_button())
 
         # 不同 DPI 与系统字体下控件高度存在差异，不能使用固定高度压缩布局，
@@ -104,48 +106,46 @@ class LoginWindow(WorkerBackedDialog):
     def _build_header(self, layout: QVBoxLayout) -> None:
         """构建 logo、标题、产品说明与副标题。"""
         logo = QLabel()
-        logo.setPixmap(icon_pixmap(SHIELD, 'accent', 44))
+        logo.setPixmap(icon_pixmap(SHIELD, "accent", 44))
         logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(logo)
 
-        title = QLabel('CipherBox')
-        title.setObjectName('sectionLabel')
+        title = QLabel("CipherBox")
+        title.setObjectName("sectionLabel")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(
-            f'font-size: {LOGIN_TITLE_FONT_SIZE_PX}px; font-weight: 700; color: {c("text_primary")};'
+            f"font-size: {LOGIN_TITLE_FONT_SIZE_PX}px; font-weight: 700; color: {c('text_primary')};"
         )
         layout.addWidget(title)
 
-        product_note = QLabel('本地优先 · 端到端加密 · 数据不离开设备')
+        product_note = QLabel("本地优先 · 端到端加密 · 数据不离开设备")
         product_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        product_note.setObjectName('formMutedSmall')
+        product_note.setObjectName("formMutedSmall")
         layout.addWidget(product_note)
 
         if self._is_first_time:
-            subtitle = QLabel('首次使用，请设置主密码')
+            subtitle = QLabel("首次使用，请设置主密码")
         else:
-            subtitle = QLabel('请输入主密码以解锁保险库')
+            subtitle = QLabel("请输入主密码以解锁保险库")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setObjectName('formMutedPlain')
+        subtitle.setObjectName("formMutedPlain")
         layout.addWidget(subtitle)
 
     def _build_password_row(self, layout: QVBoxLayout) -> None:
         """构建主密码输入行。"""
-        pwd_label = QLabel('主密码：')
-        pwd_label.setStyleSheet('font-weight: bold;')
+        pwd_label = QLabel("主密码：")
+        pwd_label.setStyleSheet("font-weight: bold;")
         layout.addWidget(pwd_label)
 
         pwd_layout = QHBoxLayout()
         pwd_layout.setSpacing(6)
         self._password_edit = QLineEdit()
         self._password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self._password_edit.setPlaceholderText('请输入主密码')
+        self._password_edit.setPlaceholderText("请输入主密码")
         self._password_edit.returnPressed.connect(self._on_confirm)
         pwd_layout.addWidget(self._password_edit)
 
-        self._toggle_pwd_btn = create_password_toggle_btn(
-            self._password_edit, EYE, LOCK
-        )
+        self._toggle_pwd_btn = create_password_toggle_btn(self._password_edit, EYE, LOCK)
         pwd_layout.addWidget(self._toggle_pwd_btn)
         layout.addLayout(pwd_layout)
 
@@ -159,21 +159,19 @@ class LoginWindow(WorkerBackedDialog):
         confirm_layout.setContentsMargins(0, 0, 0, 0)
         confirm_layout.setSpacing(6)
 
-        confirm_label = QLabel('确认密码：')
-        confirm_label.setStyleSheet('font-weight: bold;')
+        confirm_label = QLabel("确认密码：")
+        confirm_label.setStyleSheet("font-weight: bold;")
         confirm_layout.addWidget(confirm_label)
 
         confirm_pwd_layout = QHBoxLayout()
         confirm_pwd_layout.setSpacing(6)
         self._confirm_edit = QLineEdit()
         self._confirm_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self._confirm_edit.setPlaceholderText('请再次输入主密码')
+        self._confirm_edit.setPlaceholderText("请再次输入主密码")
         self._confirm_edit.returnPressed.connect(self._on_confirm)
         confirm_pwd_layout.addWidget(self._confirm_edit)
 
-        self._toggle_confirm_btn = create_password_toggle_btn(
-            self._confirm_edit, EYE, LOCK
-        )
+        self._toggle_confirm_btn = create_password_toggle_btn(self._confirm_edit, EYE, LOCK)
         confirm_pwd_layout.addWidget(self._toggle_confirm_btn)
         confirm_layout.addLayout(confirm_pwd_layout)
 
@@ -184,15 +182,15 @@ class LoginWindow(WorkerBackedDialog):
 
     def _build_message_labels(self, layout: QVBoxLayout) -> None:
         """构建错误消息与密码强度提示（强度仅首设显示）。"""
-        self._message_label = QLabel('')
+        self._message_label = QLabel("")
         self._message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._message_label.setObjectName('formMessage')
-        set_label_severity(self._message_label, 'error')
+        self._message_label.setObjectName("formMessage")
+        set_label_severity(self._message_label, "error")
         layout.addWidget(self._message_label)
 
-        self._strength_label = QLabel('')
+        self._strength_label = QLabel("")
         self._strength_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._strength_label.setStyleSheet('font-size: 12px;')
+        self._strength_label.setStyleSheet("font-size: 12px;")
         if self._is_first_time:
             self._password_edit.textChanged.connect(self._on_password_changed)
             layout.addWidget(self._strength_label)
@@ -204,8 +202,8 @@ class LoginWindow(WorkerBackedDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        self._confirm_btn = QPushButton('确认')
-        self._confirm_btn.setObjectName('primaryBtn')
+        self._confirm_btn = QPushButton("确认")
+        self._confirm_btn.setObjectName("primaryBtn")
         self._confirm_btn.setFixedSize(*BTN_PRIMARY)
         self._confirm_btn.clicked.connect(self._on_confirm)
         btn_layout.addWidget(self._confirm_btn)
@@ -214,9 +212,11 @@ class LoginWindow(WorkerBackedDialog):
 
     def _on_password_changed(self, text: str) -> None:
         """密码输入变化时更新强度提示。"""
-        update_strength_label(self._strength_label, text, prefix='密码强度：')
+        update_strength_label(self._strength_label, text, prefix="密码强度：")
 
-    def _on_auth_result(self, success: bool, error_msg: str = '', is_auth_failure: bool = True) -> None:
+    def _on_auth_result(
+        self, success: bool, error_msg: str = "", is_auth_failure: bool = True
+    ) -> None:
         """处理初始化/解锁的结果。
 
         is_auth_failure 为 False（系统错误）时不计入速率锁定，避免故障触发账户级锁定。
@@ -234,9 +234,9 @@ class LoginWindow(WorkerBackedDialog):
             if is_auth_failure:
                 lock_seconds = self._rate_limiter.record_failure()
                 if lock_seconds > 0:
-                    self._show_error(f'尝试次数过多，请等待 {lock_seconds} 秒后重试')
+                    self._show_error(f"尝试次数过多，请等待 {lock_seconds} 秒后重试")
                     return
-            self._show_error(error_msg or '操作失败，请重试')
+            self._show_error(error_msg or "操作失败，请重试")
 
     def _clear_password_inputs(self) -> None:
         """清除主密码与确认密码输入框，缩短明文在控件中的驻留时间。
@@ -260,32 +260,34 @@ class LoginWindow(WorkerBackedDialog):
         password = self._password_edit.text()
 
         if not password:
-            self._show_error('请输入主密码')
+            self._show_error("请输入主密码")
             return
 
         if self._is_first_time:
             confirm_pwd = self._confirm_edit.text()
             if password != confirm_pwd:
-                self._show_error('两次输入的密码不一致')
+                self._show_error("两次输入的密码不一致")
                 return
             valid, error = PasswordService.validate_master_password(password)
             if not valid:
                 self._show_error(error)
                 return
             action: Callable[[str], tuple[bool, str]] = self._vault.initialize
-            error_default = '初始化失败，请重试'
+            error_default = "初始化失败，请重试"
         else:
             action = self._vault.unlock
-            error_default = '主密码错误'
+            error_default = "主密码错误"
 
         # 主密码派生使用 Argon2id（内存硬化 KDF），耗时较高，需在后台线程执行避免冻结 UI
         self._start_auth(action, password, error_default)
 
-    def _start_auth(self, action: Callable[[str], tuple[bool, str]], password: str, error_default: str) -> None:
+    def _start_auth(
+        self, action: Callable[[str], tuple[bool, str]], password: str, error_default: str
+    ) -> None:
         """在后台线程执行 KDF 并完成解锁或初始化。"""
         self._confirm_btn.setEnabled(False)
-        self._confirm_btn.setText('正在解锁...')
-        self._message_label.setText('')
+        self._confirm_btn.setText("正在解锁...")
+        self._message_label.setText("")
         self._worker = BackgroundWorker(lambda: action(password), parent=self)
         self._worker.finished.connect(self._on_auth_done)
         # worker.error 携带 str(e)，透传给 _on_auth_error 优先展示真实系统错误，无信息时回退 error_default
@@ -315,8 +317,8 @@ class LoginWindow(WorkerBackedDialog):
 
     def _reset_confirm_btn(self) -> None:
         self._confirm_btn.setEnabled(True)
-        self._confirm_btn.setText('确认')
+        self._confirm_btn.setText("确认")
 
     def _show_error(self, msg: str) -> None:
         self._message_label.setText(msg)
-        set_label_severity(self._message_label, 'error')
+        set_label_severity(self._message_label, "error")

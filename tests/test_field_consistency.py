@@ -23,9 +23,9 @@ def test_entry_and_raw_entry_share_field_names():
     entry_fields = {f.name for f in dataclasses.fields(Entry)}
     raw_fields = {f.name for f in dataclasses.fields(RawEntry)}
     assert entry_fields == raw_fields, (
-        'Entry/RawEntry 字段名不一致，crypto_utils.copy_entry_fields 的逐字段映射'
-        f'需同步更新：仅 Entry={entry_fields - raw_fields}，'
-        f'仅 RawEntry={raw_fields - entry_fields}'
+        "Entry/RawEntry 字段名不一致，crypto_utils.copy_entry_fields 的逐字段映射"
+        f"需同步更新：仅 Entry={entry_fields - raw_fields}，"
+        f"仅 RawEntry={raw_fields - entry_fields}"
     )
 
 
@@ -43,10 +43,9 @@ def test_signature_encrypted_field_order_is_subset():
     sensitive = set(SENSITIVE_ENCRYPTED_FIELDS)
     signature = set(SIGNATURE_ENCRYPTED_FIELD_ORDER)
     assert signature <= sensitive, (
-        'SIGNATURE_ENCRYPTED_FIELD_ORDER 含非加密字段：'
-        f'额外={signature - sensitive}'
+        f"SIGNATURE_ENCRYPTED_FIELD_ORDER 含非加密字段：额外={signature - sensitive}"
     )
-    assert signature == sensitive - {'title', 'url', 'tags'}
+    assert signature == sensitive - {"title", "url", "tags"}
 
 
 def test_entries_table_columns_single_source():
@@ -61,13 +60,13 @@ def test_entries_table_columns_single_source():
     from src.database.entry_repository import _ENTRY_COLUMNS
     from src.database.schema_manager import _TABLE_COLUMNS
 
-    schema_cols: set[str] = set(_TABLE_COLUMNS['entries'])
+    schema_cols: set[str] = set(_TABLE_COLUMNS["entries"])
     repo_cols: set[str] = set(_ENTRY_COLUMNS)
     # id 是 autoincrement PK，不在 INSERT 列(_ENTRY_COLUMNS)，但在建表列。
-    assert schema_cols - {'id'} == repo_cols, (
-        'entries 表列名在 schema_manager 与 entry_repository 间漂移：'
-        f'仅建表列={schema_cols - repo_cols - {"id"}}，'
-        f'仅 SQL 列={repo_cols - schema_cols}'
+    assert schema_cols - {"id"} == repo_cols, (
+        "entries 表列名在 schema_manager 与 entry_repository 间漂移："
+        f"仅建表列={schema_cols - repo_cols - {'id'}}，"
+        f"仅 SQL 列={repo_cols - schema_cols}"
     )
 
 

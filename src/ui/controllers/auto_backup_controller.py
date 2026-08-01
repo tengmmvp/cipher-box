@@ -96,7 +96,8 @@ class AutoBackupController:
             # 消除 holder 列表与 lambda 包装。锁定/隐藏到托盘时 wait_worker_shutdown
             # 设置取消标志，maybe_auto_backup 的全量解密循环据此及时退出。
             return self._backup.maybe_auto_backup(
-                self._config, force=force,
+                self._config,
+                force=force,
                 cancel_check=worker.cancel_check,
             )
 
@@ -109,12 +110,14 @@ class AutoBackupController:
                 # 含全量明文的快照连续失败是泄漏面/可恢复性问题，用户应知晓。
                 from ..components.toast import Toast
                 from ..resources.constants import MS_TOAST_DEFAULT
+
                 # self._parent 标注为 QObject（setup 宽接口），实际注入 MainWindow(QWidget)；
                 # Toast.show 需 QWidget，经 cast 桥接 + None 守卫。
                 if self._parent is not None:
                     Toast.show(
-                        cast('QWidget', self._parent),
-                        '自动快照失败，详见日志', Toast.WARNING,
+                        cast("QWidget", self._parent),
+                        "自动快照失败，详见日志",
+                        Toast.WARNING,
                         duration=MS_TOAST_DEFAULT,
                     )
 

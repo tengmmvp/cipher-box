@@ -11,6 +11,7 @@ label/icon 从 ``models.ENTRY_TYPES`` 派生（单一事实源），专用字段
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from ..models import (
     ENTRY_TYPE_CARD,
@@ -42,13 +43,13 @@ class SpecialFieldSpec:
     自定义字段名以 ``_card_`` / ``_id_`` / ``_server_`` 开头时被误判为专用字段的风险。
     """
 
-    field_key: str           # widget 标识，如 'card_holder'
-    storage_name: str        # custom_fields 中的存储名，如 '_card_holder'
-    label: str               # 表单标签文案
-    placeholder: str = ''
+    field_key: str  # widget 标识，如 'card_holder'
+    storage_name: str  # custom_fields 中的存储名，如 '_card_holder'
+    label: str  # 表单标签文案
+    placeholder: str = ""
     sensitive: bool = False  # 密码型字段（EchoMode.Password + field_type='password'）
-    max_length: int = 0      # 0 表示不设置 maxLength
-    kind: str = 'line'       # 'line' 或 'combo'
+    max_length: int = 0  # 0 表示不设置 maxLength
+    kind: str = "line"  # 'line' 或 'combo'
     combo_items: tuple = ()
 
 
@@ -83,22 +84,29 @@ class EntryTypeSchema:
 
 
 _CARD_FIELDS = (
-    SpecialFieldSpec('card_holder', SPECIAL_FIELD_CARD_HOLDER, '持卡人', '持卡人姓名'),
-    SpecialFieldSpec('card_number', SPECIAL_FIELD_CARD_NUMBER, '卡号', '卡号', sensitive=True),
-    SpecialFieldSpec('card_expiry', SPECIAL_FIELD_CARD_EXPIRY, '有效期', 'MM/YY', max_length=5),
-    SpecialFieldSpec('card_cvv', SPECIAL_FIELD_CARD_CVV, 'CVV', 'CVV', sensitive=True, max_length=4),
+    SpecialFieldSpec("card_holder", SPECIAL_FIELD_CARD_HOLDER, "持卡人", "持卡人姓名"),
+    SpecialFieldSpec("card_number", SPECIAL_FIELD_CARD_NUMBER, "卡号", "卡号", sensitive=True),
+    SpecialFieldSpec("card_expiry", SPECIAL_FIELD_CARD_EXPIRY, "有效期", "MM/YY", max_length=5),
+    SpecialFieldSpec(
+        "card_cvv", SPECIAL_FIELD_CARD_CVV, "CVV", "CVV", sensitive=True, max_length=4
+    ),
 )
 _IDENTITY_FIELDS = (
-    SpecialFieldSpec('id_fullname', SPECIAL_FIELD_ID_FULLNAME, '姓名', '姓名'),
-    SpecialFieldSpec('id_email', SPECIAL_FIELD_ID_EMAIL, '邮箱', '邮箱'),
-    SpecialFieldSpec('id_phone', SPECIAL_FIELD_ID_PHONE, '电话', '电话'),
-    SpecialFieldSpec('id_address', SPECIAL_FIELD_ID_ADDRESS, '地址', '地址'),
+    SpecialFieldSpec("id_fullname", SPECIAL_FIELD_ID_FULLNAME, "姓名", "姓名"),
+    SpecialFieldSpec("id_email", SPECIAL_FIELD_ID_EMAIL, "邮箱", "邮箱"),
+    SpecialFieldSpec("id_phone", SPECIAL_FIELD_ID_PHONE, "电话", "电话"),
+    SpecialFieldSpec("id_address", SPECIAL_FIELD_ID_ADDRESS, "地址", "地址"),
 )
 _SERVER_FIELDS = (
-    SpecialFieldSpec('server_host', SPECIAL_FIELD_SERVER_HOST, '主机', '主机地址'),
-    SpecialFieldSpec('server_port', SPECIAL_FIELD_SERVER_PORT, '端口', '22'),
-    SpecialFieldSpec('server_protocol', SPECIAL_FIELD_SERVER_PROTOCOL, '协议',
-                     kind='combo', combo_items=('SSH', 'FTP', 'HTTP', 'HTTPS', '其他')),
+    SpecialFieldSpec("server_host", SPECIAL_FIELD_SERVER_HOST, "主机", "主机地址"),
+    SpecialFieldSpec("server_port", SPECIAL_FIELD_SERVER_PORT, "端口", "22"),
+    SpecialFieldSpec(
+        "server_protocol",
+        SPECIAL_FIELD_SERVER_PROTOCOL,
+        "协议",
+        kind="combo",
+        combo_items=("SSH", "FTP", "HTTP", "HTTPS", "其他"),
+    ),
 )
 
 
@@ -112,28 +120,28 @@ def _build_schemas() -> dict[str, EntryTypeSchema]:
         ENTRY_TYPE_SERVER: _SERVER_FIELDS,
     }
     # 类型特化行为钩子覆写（ARCH-008）。未列出的类型沿用 EntryTypeSchema 默认值
-    #（uses_password=True，其余 False）。新增类型若需特化行为，在此追加覆写即可，
+    # （uses_password=True，其余 False）。新增类型若需特化行为，在此追加覆写即可，
     # 消费方（entry_dialog）只需查阅 schema 标志，无需新增 ``if entry_type ==`` 分支。
     behavior_overrides: dict[str, dict[str, bool]] = {
-        ENTRY_TYPE_CARD: {'validate_extra': True},
-        ENTRY_TYPE_NOTE: {'uses_password': False, 'notes_expanded': True},
-        ENTRY_TYPE_SERVER: {'composes_url': True},
+        ENTRY_TYPE_CARD: {"validate_extra": True},
+        ENTRY_TYPE_NOTE: {"uses_password": False, "notes_expanded": True},
+        ENTRY_TYPE_SERVER: {"composes_url": True},
     }
     schemas: dict[str, EntryTypeSchema] = {}
     for type_id, meta in ENTRY_TYPES.items():
         special = special_by_type.get(type_id, ())
         if type_id in (ENTRY_TYPE_CARD, ENTRY_TYPE_IDENTITY):
-            visible = ('title', *(s.field_key for s in special))
+            visible = ("title", *(s.field_key for s in special))
         elif type_id == ENTRY_TYPE_SERVER:
-            visible = ('title', *(s.field_key for s in special), 'username', 'password')
+            visible = ("title", *(s.field_key for s in special), "username", "password")
         elif type_id == ENTRY_TYPE_NOTE:
-            visible = ('title',)
+            visible = ("title",)
         else:  # LOGIN 及未知类型
-            visible = ('title', 'username', 'password', 'url')
+            visible = ("title", "username", "password", "url")
         schemas[type_id] = EntryTypeSchema(
             type_id=type_id,
-            label=meta['label'],
-            icon=meta['icon'],
+            label=meta["label"],
+            icon=meta["icon"],
             visible_fields=visible,
             special_fields=special,
             **behavior_overrides.get(type_id, {}),
@@ -141,7 +149,7 @@ def _build_schemas() -> dict[str, EntryTypeSchema]:
     return schemas
 
 
-ENTRY_TYPE_SCHEMAS: dict[str, EntryTypeSchema] = _build_schemas()
+ENTRY_TYPE_SCHEMAS: MappingProxyType[str, EntryTypeSchema] = MappingProxyType(_build_schemas())
 
 
 def get_schema(type_id: str) -> EntryTypeSchema:

@@ -44,7 +44,7 @@ class EntryListController:
         if 0 <= sort_index < len(SORT_OPTIONS):
             _, field, order = SORT_OPTIONS[sort_index]
             return field, order
-        return 'updated_at', 'desc'
+        return "updated_at", "desc"
 
     def sort_entries(self, entries: list[Entry], sort_index: int) -> list[Entry]:
         """对条目列表排序。
@@ -56,18 +56,18 @@ class EntryListController:
         field, order = self.get_sort_config(sort_index)
 
         def sort_key(e: Entry) -> Any:
-            if field == 'title':
-                return (e.title or '').lower()
-            elif field == 'password_strength':
+            if field == "title":
+                return (e.title or "").lower()
+            elif field == "password_strength":
                 # password_strength 可能为 None（未评估），统一回退 0，
                 # 避免与 int 混排时 Python3 抛 TypeError。
                 return e.password_strength or 0
-            elif field == 'created_at':
-                return e.created_at or ''
+            elif field == "created_at":
+                return e.created_at or ""
             else:  # updated_at
-                return e.updated_at or ''
+                return e.updated_at or ""
 
-        reverse = (order == 'desc')
+        reverse = order == "desc"
         return sorted(entries, key=sort_key, reverse=reverse)
 
     # ========== 过滤器数据获取 ==========
@@ -83,7 +83,7 @@ class EntryListController:
             category_id=category_id,
             search=search,
             cancel_check=cancel_check,
-        ), '全部条目'
+        ), "全部条目"
 
     def fetch_favorite(
         self,
@@ -92,9 +92,11 @@ class EntryListController:
     ) -> tuple[list[Entry], str]:
         return (
             self._entry_mgr.get_entry_summaries(
-                favorite_only=True, search=search, cancel_check=cancel_check,
+                favorite_only=True,
+                search=search,
+                cancel_check=cancel_check,
             ),
-            '收藏',
+            "收藏",
         )
 
     def fetch_weak(self, cancel_check: Callable[[], bool] | None = None) -> tuple[list[Entry], str]:
@@ -105,15 +107,17 @@ class EntryListController:
         """
         del cancel_check  # 签名对齐，无实际用途
         summary = self.get_security_summary()
-        weak = summary['weak_entries'] if summary is not None else []
-        return weak, '弱密码（全部分类）'
+        weak = summary["weak_entries"] if summary is not None else []
+        return weak, "弱密码（全部分类）"
 
-    def fetch_duplicate(self, cancel_check: Callable[[], bool] | None = None) -> tuple[list[Entry], str]:
+    def fetch_duplicate(
+        self, cancel_check: Callable[[], bool] | None = None
+    ) -> tuple[list[Entry], str]:
         """获取重复密码条目（``cancel_check`` 同 fetch_weak，仅签名对齐）。"""
         del cancel_check
         summary = self.get_security_summary()
-        groups = summary['duplicate_groups'] if summary is not None else []
-        return [e for group in groups for e in group], '重复密码（全部分类）'
+        groups = summary["duplicate_groups"] if summary is not None else []
+        return [e for group in groups for e in group], "重复密码（全部分类）"
 
     def fetch_recent(
         self,
@@ -128,13 +132,14 @@ class EntryListController:
         """
         if search:
             entries = self._entry_mgr.get_entry_summaries(
-                search=search, cancel_check=cancel_check,
+                search=search,
+                cancel_check=cancel_check,
             )
-            entries.sort(key=lambda e: e.updated_at or '', reverse=True)
+            entries.sort(key=lambda e: e.updated_at or "", reverse=True)
             entries = entries[:RECENT_ENTRY_LIMIT]
         else:
             entries = self._entry_mgr.get_recent_summaries(limit=RECENT_ENTRY_LIMIT)
-        return entries, '近期更新'
+        return entries, "近期更新"
 
     def fetch_trash(
         self,
@@ -143,19 +148,21 @@ class EntryListController:
     ) -> tuple[list[Entry], str]:
         return (
             self._entry_mgr.get_entry_summaries(
-                deleted_only=True, search=search, cancel_check=cancel_check,
+                deleted_only=True,
+                search=search,
+                cancel_check=cancel_check,
             ),
-            '回收站',
+            "回收站",
         )
 
     def get_fetcher(self, filter_key: str) -> Callable[..., tuple[list[Entry], str]]:
         fetchers: dict[str, Callable[..., tuple[list[Entry], str]]] = {
-            'all': self.fetch_all,
-            'favorite': self.fetch_favorite,
-            'weak': self.fetch_weak,
-            'duplicate': self.fetch_duplicate,
-            'recent': self.fetch_recent,
-            'trash': self.fetch_trash,
+            "all": self.fetch_all,
+            "favorite": self.fetch_favorite,
+            "weak": self.fetch_weak,
+            "duplicate": self.fetch_duplicate,
+            "recent": self.fetch_recent,
+            "trash": self.fetch_trash,
         }
         return fetchers.get(filter_key, self.fetch_all)
 
@@ -177,6 +184,4 @@ class EntryListController:
 
         当缓存未就绪时返回 None，调用方应处理此情况。
         """
-        return self._security.get_cached_report(
-            self._config.get(CFG_OLD_PASSWORD_WARNING_DAYS)
-        )
+        return self._security.get_cached_report(self._config.get(CFG_OLD_PASSWORD_WARNING_DAYS))

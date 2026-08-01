@@ -30,7 +30,7 @@ from src.database.entry_repository import EntryRepository
 
 # 豁免透传断言的 (Repository 类, 方法名) 对；新增项须在此登记并说明理由（理由见模块 docstring）。
 _DELEGATION_EXEMPT: set[tuple[type, str]] = {
-    (EntryRepository, 'clear_category_signatures'),
+    (EntryRepository, "clear_category_signatures"),
 }
 
 
@@ -44,7 +44,7 @@ def _public_methods(cls: type) -> set[str]:
     return {
         name
         for name, member in cls.__dict__.items()
-        if not name.startswith('_') and inspect.isfunction(member)
+        if not name.startswith("_") and inspect.isfunction(member)
     }
 
 
@@ -56,13 +56,13 @@ def db(tmp_path):
     ``hasattr`` 校验透传方法是否声明只需实例存在，无需活动连接或表结构，
     故不调用 ``open()`` / ``init_tables()``，保持测试轻量且无文件 I/O 副作用。
     """
-    return DatabaseManager(tmp_path / 'test_delegation.db', test_mode=True)
+    return DatabaseManager(tmp_path / "test_delegation.db", test_mode=True)
 
 
 @pytest.mark.parametrize(
-    'repo_cls',
+    "repo_cls",
     [EntryRepository, CategoryRepository],
-    ids=['EntryRepository', 'CategoryRepository'],
+    ids=["EntryRepository", "CategoryRepository"],
 )
 def test_all_repository_public_methods_accessible_on_database_manager(db, repo_cls):
     """每个 Repository 公有方法都应经 DatabaseManager 实例可访问。
@@ -74,7 +74,7 @@ def test_all_repository_public_methods_accessible_on_database_manager(db, repo_c
     public_methods = _public_methods(repo_cls)
     # 防御：若重构导致枚举返回空集（如方法被改成 property / 类结构变化），
     # 断言将无意义，此处显式守护枚举非空。
-    assert public_methods, f'{repo_cls.__name__} 未枚举到任何公有方法，断言失去意义'
+    assert public_methods, f"{repo_cls.__name__} 未枚举到任何公有方法，断言失去意义"
 
     missing = {
         name
@@ -82,10 +82,10 @@ def test_all_repository_public_methods_accessible_on_database_manager(db, repo_c
         if (repo_cls, name) not in _DELEGATION_EXEMPT and not hasattr(db, name)
     }
     assert not missing, (
-        f'{repo_cls.__name__} 的公有方法未在 DatabaseManager 上找到对应透传/原生方法：'
-        f'{sorted(missing)}。请在 src/database/db_manager.py「委托与编排」区补齐'
-        f'显式透传方法；或若属跨表编排/非对称接口，在 _DELEGATION_EXEMPT 显式登记'
-        f'并说明理由。'
+        f"{repo_cls.__name__} 的公有方法未在 DatabaseManager 上找到对应透传/原生方法："
+        f"{sorted(missing)}。请在 src/database/db_manager.py「委托与编排」区补齐"
+        f"显式透传方法；或若属跨表编排/非对称接口，在 _DELEGATION_EXEMPT 显式登记"
+        f"并说明理由。"
     )
 
 
@@ -98,10 +98,10 @@ def test_delegation_exempt_methods_are_actually_public_and_absent(db):
     """
     for repo_cls, method_name in _DELEGATION_EXEMPT:
         assert method_name in _public_methods(repo_cls), (
-            f'{repo_cls.__name__}.{method_name} 不再是公有方法，'
-            f'请从 _DELEGATION_EXEMPT 移除该失效豁免项'
+            f"{repo_cls.__name__}.{method_name} 不再是公有方法，"
+            f"请从 _DELEGATION_EXEMPT 移除该失效豁免项"
         )
         assert not hasattr(db, method_name), (
-            f'DatabaseManager 已提供 {method_name} 透传，'
-            f'请从 _DELEGATION_EXEMPT 移除该豁免项（豁免仅用于未透传的方法）'
+            f"DatabaseManager 已提供 {method_name} 透传，"
+            f"请从 _DELEGATION_EXEMPT 移除该豁免项（豁免仅用于未透传的方法）"
         )

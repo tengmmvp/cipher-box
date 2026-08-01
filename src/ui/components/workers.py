@@ -17,7 +17,7 @@ from ..error_messages import to_user_message
 
 logger = logging.getLogger(__name__)
 
-_T = TypeVar('_T')
+_T = TypeVar("_T")
 
 
 def _worker_error_message(exc: Exception) -> str:
@@ -152,6 +152,7 @@ def wait_worker_shutdown(
         return True
     if timeout is None:
         from ..resources.constants import WORKER_WAIT_TIMEOUT_MS
+
         timeout = WORKER_WAIT_TIMEOUT_MS
     if cancel:
         worker.cancel()

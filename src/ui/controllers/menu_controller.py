@@ -57,15 +57,15 @@ _MenuItem = tuple[str, str | None, str, Callable[..., object]]
 
 # 快捷键定义：每个条目由按键序列和显示描述组成，供 setup_shortcuts 与 show_shortcuts 共享。
 _SHORTCUT_DISPLAY = [
-    ('Ctrl+N', '新增条目'),
-    ('Ctrl+E', '编辑选中条目'),
-    ('Ctrl+F', '搜索'),
-    ('Ctrl+G', '密码生成器'),
-    ('Ctrl+L', '锁定保险库'),
-    ('Ctrl+,', '偏好设置'),
-    ('Ctrl+Q', '退出'),
-    ('Delete', '删除选中条目'),
-    ('Escape', '清空搜索/取消选择'),
+    ("Ctrl+N", "新增条目"),
+    ("Ctrl+E", "编辑选中条目"),
+    ("Ctrl+F", "搜索"),
+    ("Ctrl+G", "密码生成器"),
+    ("Ctrl+L", "锁定保险库"),
+    ("Ctrl+,", "偏好设置"),
+    ("Ctrl+Q", "退出"),
+    ("Delete", "删除选中条目"),
+    ("Escape", "清空搜索/取消选择"),
 ]
 
 
@@ -157,28 +157,40 @@ class MenuController:
             return
         slots = self._slots
         spec: list[tuple[str, list[_MenuItem | None]]] = [
-            ('文件', [
-                ('新增条目', 'Ctrl+N', PLUS, slots.add_entry),
-                None,
-                ('导入 / 导出', None, UPLOAD, self.show_import_export),
-                ('备份与恢复', None, FOLDER, self.show_backup),
-                None,
-                ('锁定保险库', 'Ctrl+L', LOCK_SOLID, slots.lock),
-                ('退出', 'Ctrl+Q', CLOSE, parent.close),
-            ]),
-            ('工具', [
-                ('密码生成器', None, GENERATE, self.show_password_generator),
-                ('安全仪表盘', None, SHIELD, self.show_security_dashboard),
-            ]),
-            ('设置', [
-                ('偏好设置', None, SETTINGS, self.show_settings),
-                ('修改主密码', None, KEY, self.show_change_master),
-            ]),
-            ('帮助', [
-                ('快捷键', None, SHORTCUT, self.show_shortcuts),
-                None,
-                ('关于 CipherBox', None, HELP, self.show_about),
-            ]),
+            (
+                "文件",
+                [
+                    ("新增条目", "Ctrl+N", PLUS, slots.add_entry),
+                    None,
+                    ("导入 / 导出", None, UPLOAD, self.show_import_export),
+                    ("备份与恢复", None, FOLDER, self.show_backup),
+                    None,
+                    ("锁定保险库", "Ctrl+L", LOCK_SOLID, slots.lock),
+                    ("退出", "Ctrl+Q", CLOSE, parent.close),
+                ],
+            ),
+            (
+                "工具",
+                [
+                    ("密码生成器", None, GENERATE, self.show_password_generator),
+                    ("安全仪表盘", None, SHIELD, self.show_security_dashboard),
+                ],
+            ),
+            (
+                "设置",
+                [
+                    ("偏好设置", None, SETTINGS, self.show_settings),
+                    ("修改主密码", None, KEY, self.show_change_master),
+                ],
+            ),
+            (
+                "帮助",
+                [
+                    ("快捷键", None, SHORTCUT, self.show_shortcuts),
+                    None,
+                    ("关于 CipherBox", None, HELP, self.show_about),
+                ],
+            ),
         ]
         for menu_title, items in spec:
             menu = menubar.addMenu(menu_title)
@@ -207,12 +219,12 @@ class MenuController:
         parent = self._parent
         search_edit = self._search_edit
         shortcuts = [
-            ('Ctrl+F', lambda: search_edit.setFocus()),
-            ('Ctrl+E', self._slots.edit_selected_entry),
-            ('Ctrl+G', self.show_password_generator),
-            ('Ctrl+,', self.show_settings),
-            ('Delete', self._slots.delete_selected_entry),
-            ('Escape', self._slots.clear_search),
+            ("Ctrl+F", lambda: search_edit.setFocus()),
+            ("Ctrl+E", self._slots.edit_selected_entry),
+            ("Ctrl+G", self.show_password_generator),
+            ("Ctrl+,", self.show_settings),
+            ("Delete", self._slots.delete_selected_entry),
+            ("Escape", self._slots.clear_search),
         ]
         # 保留引用防止 GC 回收：虽然 Qt parent=parent 持有引用，
         # 但显式保存更安全，避免 PyPy 等非引用计数实现的回收风险
@@ -258,7 +270,9 @@ class MenuController:
 
     def show_import_export(self) -> None:
         dialog = ImportExportDialog(
-            self._import_export, self._entry_mgr, self._parent,
+            self._import_export,
+            self._entry_mgr,
+            self._parent,
         )
         dialog.import_completed.connect(self._slots.refresh_all_data)
         dialog.exec()
@@ -287,11 +301,14 @@ class MenuController:
             self._auto_backup.trigger_check(force=True)
             from ..components.toast import Toast
             from ..resources.constants import MS_TOAST_DEFAULT
+
             # 备份异步进行，文案不谎称"已创建"（force=True 绕过开关，可能被并发跳过
             # 或后台失败）。完成后用户可在「备份与恢复」查看。
             Toast.show(
-                self._parent, '正在创建改密快照，完成后可在「备份与恢复」中查看或恢复',
-                Toast.INFO, duration=MS_TOAST_DEFAULT,
+                self._parent,
+                "正在创建改密快照，完成后可在「备份与恢复」中查看或恢复",
+                Toast.INFO,
+                duration=MS_TOAST_DEFAULT,
             )
             logger.info("改密成功，已触发强制快照")
 
@@ -302,7 +319,10 @@ class MenuController:
 
     def show_security_dashboard(self) -> None:
         dialog = SecurityDashboard(
-            self._security, self._entry_mgr, self._config, self._parent,
+            self._security,
+            self._entry_mgr,
+            self._config,
+            self._parent,
         )
         # fix_requested 经仪表盘 singleShot(0) 延迟 emit 触发 edit_entry；
         # 实际刷新由 EntryDialog.saved 信号驱动，此处不依赖 Accepted 状态刷新。
@@ -311,13 +331,13 @@ class MenuController:
         dialog.deleteLater()
 
     def show_shortcuts(self) -> None:
-        rows = ''.join(
+        rows = "".join(
             f'<tr><td>{key}</td><td style="padding-left:12px">{desc}</td></tr>'
             for key, desc in _SHORTCUT_DISPLAY
         )
-        text = f'<table>{rows}</table>'
+        text = f"<table>{rows}</table>"
         msg = QMessageBox(self._parent)
-        msg.setWindowTitle('快捷键')
+        msg.setWindowTitle("快捷键")
         msg.setTextFormat(Qt.TextFormat.RichText)
         msg.setText(text)
         msg.exec()

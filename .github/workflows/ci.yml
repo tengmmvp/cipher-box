@@ -9,10 +9,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # 三平台 × Python 支持区间两端（3.10 最低 / 3.13 最高）边界覆盖
         os: [windows-latest, ubuntu-latest, macos-latest]
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.10", "3.13"]
     runs-on: ${{ matrix.os }}
     env:
+      # CI 无显示器：用 Qt offscreen 平台插件，避免 PyQt6 因找不到显示后端初始化失败
       QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v5
@@ -33,6 +35,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --extra dev
       - run: uv run ruff check src tests
+      - run: uv run ruff format --check src tests
       - run: uv run mypy src
       - name: Tests with coverage
         run: uv run pytest --cov=src --cov-branch --cov-report=term-missing --cov-report=xml

@@ -37,10 +37,10 @@ class TestSnapshotKeyCrypto:
         模拟损坏或降级：构造 16 字节内层载荷，用相同的 snapshot-key AAD 加密，
         decrypt_snapshot_key 解密成功但长度校验（SNAPSHOT_KEY_LEN=32）失败。
         """
-        inner = base64.b64encode(b'\x00' * 16).decode('ascii')
+        inner = base64.b64encode(b"\x00" * 16).decode("ascii")
         encrypted = EncryptionEngine.encrypt(inner, _KEY, vault_meta_store._SNAPSHOT_KEY_AAD)
 
-        with pytest.raises(VaultIntegrityError, match='损坏'):
+        with pytest.raises(VaultIntegrityError, match="损坏"):
             VaultMetaStore.decrypt_snapshot_key(encrypted, _KEY)
 
     def test_decrypt_rejects_wrong_key(self):
@@ -63,10 +63,14 @@ class TestUpdate:
         把空值持久化到 vault_meta 造成后续恢复无法解密快照。
         """
         db = MagicMock()
-        with pytest.raises(VaultIntegrityError, match='snapshot_key 未加载'):
+        with pytest.raises(VaultIntegrityError, match="snapshot_key 未加载"):
             VaultMetaStore().update(
-                db, new_key=_KEY, new_salt=b'salt',
-                new_verify_token='tok', new_epoch='e1', snapshot_key=None,
+                db,
+                new_key=_KEY,
+                new_salt=b"salt",
+                new_verify_token="tok",
+                new_epoch="e1",
+                snapshot_key=None,
             )
 
     def test_update_delegates_to_write_with_provided_snapshot_key(self):
@@ -76,13 +80,17 @@ class TestUpdate:
         db = MagicMock()
 
         store.update(
-            db, new_key=_KEY, new_salt=b'salt', new_verify_token='tok',
-            new_epoch='e1', snapshot_key=snap,
+            db,
+            new_key=_KEY,
+            new_salt=b"salt",
+            new_verify_token="tok",
+            new_epoch="e1",
+            snapshot_key=snap,
         )
 
         assert store.write_called
-        assert store.write_kwargs['snapshot_key'] == snap
-        assert store.write_kwargs['key_epoch'] == 'e1'
+        assert store.write_kwargs["snapshot_key"] == snap
+        assert store.write_kwargs["key_epoch"] == "e1"
 
 
 class VaultStoreSpy(VaultMetaStore):
@@ -107,18 +115,29 @@ class TestWrite:
         snap = os.urandom(vault_meta_store.SNAPSHOT_KEY_LEN)
 
         VaultMetaStore().write(
-            db, salt=b'salt-bytes', verify_token='verify-tok',
-            snapshot_key=snap, key=_KEY, key_epoch='epoch-1',
+            db,
+            salt=b"salt-bytes",
+            verify_token="verify-tok",
+            snapshot_key=snap,
+            key=_KEY,
+            key_epoch="epoch-1",
         )
 
         set_meta_calls = db.set_meta.call_args_list
         written_keys = [c.args[0] for c in set_meta_calls]
         expected_keys = {
-            'master_salt', 'master_verify', 'master_kdf', 'master_kdf_time_cost',
-            'master_kdf_memory_cost', 'master_kdf_parallelism',
-            'ciphertext_format', 'snapshot_key_enc', 'key_epoch', 'vault_meta_mac',
+            "master_salt",
+            "master_verify",
+            "master_kdf",
+            "master_kdf_time_cost",
+            "master_kdf_memory_cost",
+            "master_kdf_parallelism",
+            "ciphertext_format",
+            "snapshot_key_enc",
+            "key_epoch",
+            "vault_meta_mac",
         }
         assert expected_keys.issubset(set(written_keys))
         # vault_meta_mac 是最后一个 set_meta（所有被签字段写完后再回读签名）
-        assert written_keys[-1] == 'vault_meta_mac'
+        assert written_keys[-1] == "vault_meta_mac"
         db.get_meta_batch.assert_called_once()

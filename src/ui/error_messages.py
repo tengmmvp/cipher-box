@@ -10,4 +10,4 @@ UI 层归一为「解密失败」）。本模块仅作 UI 层的稳定导入入�
 
 from ..business.services.error_messages import to_user_message
 
-__all__ = ['to_user_message']
+__all__ = ["to_user_message"]

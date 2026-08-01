@@ -42,7 +42,7 @@ def is_auto_backup_due(
     """
     if force:
         return True
-    last_text = config.get(CFG_LAST_AUTO_BACKUP_AT, '')
+    last_text = config.get(CFG_LAST_AUTO_BACKUP_AT, "")
     if not last_text:
         return True
     current = now or datetime.now(timezone.utc)
@@ -50,10 +50,11 @@ def is_auto_backup_due(
         elapsed = current - datetime.fromisoformat(last_text)
     except ValueError:
         # 时间戳损坏会让间隔检查每次都重新备份；记日志以便运维发现而非静默冗余备份。
-        logger.warning('last_auto_backup_at 解析失败，跳过间隔检查：%s', last_text)
+        logger.warning("last_auto_backup_at 解析失败，跳过间隔检查：%s", last_text)
         return True
     interval = config.get(
-        CFG_AUTO_BACKUP_INTERVAL_HOURS, DEFAULT_CONFIG[CFG_AUTO_BACKUP_INTERVAL_HOURS],
+        CFG_AUTO_BACKUP_INTERVAL_HOURS,
+        DEFAULT_CONFIG[CFG_AUTO_BACKUP_INTERVAL_HOURS],
     )
     return elapsed >= timedelta(hours=interval)
 

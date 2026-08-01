@@ -21,9 +21,7 @@ def secure_zero_buffer(data: bytes | bytearray) -> None:
         )
     try:
         mutable = bytearray(data) if isinstance(data, bytes) else data
-        ctypes.memset(
-            (ctypes.c_char * len(mutable)).from_buffer(mutable), 0, len(mutable)
-        )
+        ctypes.memset((ctypes.c_char * len(mutable)).from_buffer(mutable), 0, len(mutable))
     except Exception:
         logger.warning("安全清零失败（CPython 限制），密钥可能未被清零", exc_info=True)
 
@@ -37,8 +35,8 @@ def mark_secret_discarded(value: str) -> None:
     if not value:
         return
     try:
-        buf = bytearray(value.encode('utf-16-le'))
-        buf[:] = b'\x00' * len(buf)
+        buf = bytearray(value.encode("utf-16-le"))
+        buf[:] = b"\x00" * len(buf)
         del buf
     except Exception:
         logger.warning("字符串副本清零失败（CPython 限制）", exc_info=True)

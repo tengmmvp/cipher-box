@@ -63,32 +63,32 @@ class SettingsDialog(QDialog):
         self._load_settings()
 
     def _setup_ui(self) -> None:
-        self.setWindowTitle('设置')
+        self.setWindowTitle("设置")
         self.setMinimumSize(*DIALOG_SETTINGS_MIN_SIZE)
         setup_dialog_flags(self)
 
         layout = QVBoxLayout(self)
 
         tabs = QTabWidget()
-        tabs.addTab(self._create_general_tab(), '通用')
-        tabs.addTab(self._create_security_tab(), '安全')
-        tabs.addTab(self._create_password_tab(), '密码生成')
-        tabs.addTab(self._create_backup_tab(), '备份')
+        tabs.addTab(self._create_general_tab(), "通用")
+        tabs.addTab(self._create_security_tab(), "安全")
+        tabs.addTab(self._create_password_tab(), "密码生成")
+        tabs.addTab(self._create_backup_tab(), "备份")
         layout.addWidget(tabs)
 
         # 按钮
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
-        reset_btn = QPushButton('恢复默认')
+        reset_btn = QPushButton("恢复默认")
         reset_btn.setFixedSize(*BTN_DIALOG)
         reset_btn.clicked.connect(self._reset_to_defaults)
         btn_layout.addWidget(reset_btn)
 
         btn_layout.addWidget(create_cancel_button(self))
 
-        save_btn = QPushButton('保存')
-        save_btn.setObjectName('primaryBtn')
+        save_btn = QPushButton("保存")
+        save_btn.setObjectName("primaryBtn")
         save_btn.setFixedSize(*BTN_DIALOG)
         save_btn.clicked.connect(self._save_settings)
         btn_layout.addWidget(save_btn)
@@ -100,19 +100,19 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(widget)
 
         # 主题
-        theme_group = QGroupBox('外观')
+        theme_group = QGroupBox("外观")
         theme_layout = QFormLayout(theme_group)
         self._theme_combo = QComboBox()
-        self._theme_combo.addItems(['浅色', '深色'])
-        theme_layout.addRow('主题：', self._theme_combo)
+        self._theme_combo.addItems(["浅色", "深色"])
+        theme_layout.addRow("主题：", self._theme_combo)
         layout.addWidget(theme_group)
 
         # 系统托盘
-        tray_group = QGroupBox('系统托盘')
+        tray_group = QGroupBox("系统托盘")
         tray_layout = QVBoxLayout(tray_group)
-        self._show_tray_check = QCheckBox('显示系统托盘图标')
-        self._minimize_tray_check = QCheckBox('最小化到托盘')
-        self._close_tray_check = QCheckBox('关闭时最小化到托盘而非退出')
+        self._show_tray_check = QCheckBox("显示系统托盘图标")
+        self._minimize_tray_check = QCheckBox("最小化到托盘")
+        self._close_tray_check = QCheckBox("关闭时最小化到托盘而非退出")
         tray_layout.addWidget(self._show_tray_check)
         tray_layout.addWidget(self._minimize_tray_check)
         tray_layout.addWidget(self._close_tray_check)
@@ -126,31 +126,31 @@ class SettingsDialog(QDialog):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        lock_group = QGroupBox('自动锁定')
+        lock_group = QGroupBox("自动锁定")
         lock_layout = QFormLayout(lock_group)
         self._auto_lock_spin = QSpinBox()
         self._auto_lock_spin.setRange(*get_ui_int_range(CFG_AUTO_LOCK_MINUTES))
-        self._auto_lock_spin.setSpecialValueText('不自动锁定')
-        self._auto_lock_spin.setSuffix(' 分钟')
-        lock_layout.addRow('空闲自动锁定：', self._auto_lock_spin)
+        self._auto_lock_spin.setSpecialValueText("不自动锁定")
+        self._auto_lock_spin.setSuffix(" 分钟")
+        lock_layout.addRow("空闲自动锁定：", self._auto_lock_spin)
         layout.addWidget(lock_group)
 
-        clip_group = QGroupBox('剪贴板')
+        clip_group = QGroupBox("剪贴板")
         clip_layout = QFormLayout(clip_group)
         self._clipboard_spin = QSpinBox()
         # 下限取运行时安全下限 10：get_safe('clipboard_clear_seconds') 会将低于 10 的值钳制到 10，
         # 故 UI 不提供 0 /「不自动清空」选项，避免界面值与运行时实际值脱节。
         self._clipboard_spin.setRange(*get_ui_int_range(CFG_CLIPBOARD_CLEAR_SECONDS))
-        self._clipboard_spin.setSuffix(' 秒')
-        clip_layout.addRow('复制后自动清空：', self._clipboard_spin)
+        self._clipboard_spin.setSuffix(" 秒")
+        clip_layout.addRow("复制后自动清空：", self._clipboard_spin)
         layout.addWidget(clip_group)
 
-        pwd_group = QGroupBox('密码显示')
+        pwd_group = QGroupBox("密码显示")
         pwd_layout = QFormLayout(pwd_group)
         self._pwd_visible_spin = QSpinBox()
         self._pwd_visible_spin.setRange(*get_ui_int_range(CFG_PASSWORD_VISIBLE_SECONDS))
-        self._pwd_visible_spin.setSuffix(' 秒')
-        pwd_layout.addRow('密码显示自动隐藏：', self._pwd_visible_spin)
+        self._pwd_visible_spin.setSuffix(" 秒")
+        pwd_layout.addRow("密码显示自动隐藏：", self._pwd_visible_spin)
         layout.addWidget(pwd_group)
 
         layout.addStretch()
@@ -160,34 +160,34 @@ class SettingsDialog(QDialog):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        group = QGroupBox('默认密码生成规则')
+        group = QGroupBox("默认密码生成规则")
         form = QFormLayout(group)
 
         self._default_length_spin = QSpinBox()
         self._default_length_spin.setRange(*get_ui_int_range(CFG_DEFAULT_PASSWORD_LENGTH))
-        form.addRow('默认长度：', self._default_length_spin)
+        form.addRow("默认长度：", self._default_length_spin)
 
-        self._default_upper_check = QCheckBox('包含大写字母')
-        self._default_lower_check = QCheckBox('包含小写字母')
-        self._default_digits_check = QCheckBox('包含数字')
-        self._default_symbols_check = QCheckBox('包含特殊字符')
-        self._default_exclude_check = QCheckBox('排除模糊字符')
+        self._default_upper_check = QCheckBox("包含大写字母")
+        self._default_lower_check = QCheckBox("包含小写字母")
+        self._default_digits_check = QCheckBox("包含数字")
+        self._default_symbols_check = QCheckBox("包含特殊字符")
+        self._default_exclude_check = QCheckBox("排除模糊字符")
 
-        form.addRow('', self._default_upper_check)
-        form.addRow('', self._default_lower_check)
-        form.addRow('', self._default_digits_check)
-        form.addRow('', self._default_symbols_check)
-        form.addRow('', self._default_exclude_check)
+        form.addRow("", self._default_upper_check)
+        form.addRow("", self._default_lower_check)
+        form.addRow("", self._default_digits_check)
+        form.addRow("", self._default_symbols_check)
+        form.addRow("", self._default_exclude_check)
 
         layout.addWidget(group)
 
         # 过期提醒
-        warn_group = QGroupBox('安全提醒')
+        warn_group = QGroupBox("安全提醒")
         warn_layout = QFormLayout(warn_group)
         self._old_pwd_spin = QSpinBox()
         self._old_pwd_spin.setRange(*get_ui_int_range(CFG_OLD_PASSWORD_WARNING_DAYS))
-        self._old_pwd_spin.setSuffix(' 天')
-        warn_layout.addRow('密码超过此天数未修改时提醒：', self._old_pwd_spin)
+        self._old_pwd_spin.setSuffix(" 天")
+        warn_layout.addRow("密码超过此天数未修改时提醒：", self._old_pwd_spin)
         layout.addWidget(warn_group)
 
         layout.addStretch()
@@ -197,38 +197,36 @@ class SettingsDialog(QDialog):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        group = QGroupBox('备份路径')
+        group = QGroupBox("备份路径")
         path_layout = QHBoxLayout(group)
         self._backup_path_edit = QLineEdit()
-        self._backup_path_edit.setPlaceholderText('默认：应用数据目录')
+        self._backup_path_edit.setPlaceholderText("默认：应用数据目录")
         path_layout.addWidget(self._backup_path_edit)
 
-        browse_btn = QPushButton('浏览...')
+        browse_btn = QPushButton("浏览...")
         browse_btn.clicked.connect(self._browse_backup_dir)
         path_layout.addWidget(browse_btn)
         layout.addWidget(group)
 
-        auto_group = QGroupBox('本地自动快照')
+        auto_group = QGroupBox("本地自动快照")
         auto_form = QFormLayout(auto_group)
-        self._auto_backup_check = QCheckBox('启用自动快照')
-        self._auto_backup_check.setToolTip(
-            '自动快照使用当前保险库密钥，仅用于当前保险库快速回滚'
-        )
-        auto_form.addRow('', self._auto_backup_check)
+        self._auto_backup_check = QCheckBox("启用自动快照")
+        self._auto_backup_check.setToolTip("自动快照使用当前保险库密钥，仅用于当前保险库快速回滚")
+        auto_form.addRow("", self._auto_backup_check)
         self._backup_interval_spin = QSpinBox()
         self._backup_interval_spin.setRange(*get_ui_int_range(CFG_AUTO_BACKUP_INTERVAL_HOURS))
-        self._backup_interval_spin.setSuffix(' 小时')
-        auto_form.addRow('创建间隔：', self._backup_interval_spin)
+        self._backup_interval_spin.setSuffix(" 小时")
+        auto_form.addRow("创建间隔：", self._backup_interval_spin)
         self._backup_retention_spin = QSpinBox()
         self._backup_retention_spin.setRange(*get_ui_int_range(CFG_AUTO_BACKUP_RETENTION))
-        self._backup_retention_spin.setSuffix(' 份')
-        auto_form.addRow('保留数量：', self._backup_retention_spin)
+        self._backup_retention_spin.setSuffix(" 份")
+        auto_form.addRow("保留数量：", self._backup_retention_spin)
         self._auto_backup_check.toggled.connect(self._update_backup_options)
         layout.addWidget(auto_group)
 
         # 用 QLabel 而非禁用的 QPushButton 承载提示文本，避免屏幕阅读器将其识别为禁用按钮
-        hint = QLabel('手动备份可跨安装恢复；自动快照仅用于当前保险库。')
-        hint.setObjectName('hintLabel')
+        hint = QLabel("手动备份可跨安装恢复；自动快照仅用于当前保险库。")
+        hint.setObjectName("hintLabel")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
@@ -236,30 +234,90 @@ class SettingsDialog(QDialog):
         return widget
 
     def _browse_backup_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, '选择备份目录')
+        path = QFileDialog.getExistingDirectory(self, "选择备份目录")
         if path:
             self._backup_path_edit.setText(path)
 
     # 配置项映射表：四元组（配置键、控件属性、访问类型 combo/check/spin、默认值）。
     # 默认值统一引用 DEFAULT_CONFIG 单一事实源，改某项默认值只需改 config.DEFAULT_CONFIG 一处。
     _SETTINGS_MAP = [
-        (CFG_THEME, '_theme_combo', 'combo', DEFAULT_CONFIG[CFG_THEME]),
-        (CFG_SHOW_TRAY_ICON, '_show_tray_check', 'check', DEFAULT_CONFIG[CFG_SHOW_TRAY_ICON]),
-        (CFG_MINIMIZE_TO_TRAY, '_minimize_tray_check', 'check', DEFAULT_CONFIG[CFG_MINIMIZE_TO_TRAY]),
-        (CFG_CLOSE_TO_TRAY, '_close_tray_check', 'check', DEFAULT_CONFIG[CFG_CLOSE_TO_TRAY]),
-        (CFG_AUTO_LOCK_MINUTES, '_auto_lock_spin', 'spin', DEFAULT_CONFIG[CFG_AUTO_LOCK_MINUTES]),
-        (CFG_CLIPBOARD_CLEAR_SECONDS, '_clipboard_spin', 'spin', DEFAULT_CONFIG[CFG_CLIPBOARD_CLEAR_SECONDS]),
-        (CFG_PASSWORD_VISIBLE_SECONDS, '_pwd_visible_spin', 'spin', DEFAULT_CONFIG[CFG_PASSWORD_VISIBLE_SECONDS]),
-        (CFG_DEFAULT_PASSWORD_LENGTH, '_default_length_spin', 'spin', DEFAULT_CONFIG[CFG_DEFAULT_PASSWORD_LENGTH]),
-        (CFG_DEFAULT_UPPERCASE, '_default_upper_check', 'check', DEFAULT_CONFIG[CFG_DEFAULT_UPPERCASE]),
-        (CFG_DEFAULT_LOWERCASE, '_default_lower_check', 'check', DEFAULT_CONFIG[CFG_DEFAULT_LOWERCASE]),
-        (CFG_DEFAULT_DIGITS, '_default_digits_check', 'check', DEFAULT_CONFIG[CFG_DEFAULT_DIGITS]),
-        (CFG_DEFAULT_SYMBOLS, '_default_symbols_check', 'check', DEFAULT_CONFIG[CFG_DEFAULT_SYMBOLS]),
-        (CFG_DEFAULT_EXCLUDE_AMBIGUOUS, '_default_exclude_check', 'check', DEFAULT_CONFIG[CFG_DEFAULT_EXCLUDE_AMBIGUOUS]),
-        (CFG_OLD_PASSWORD_WARNING_DAYS, '_old_pwd_spin', 'spin', DEFAULT_CONFIG[CFG_OLD_PASSWORD_WARNING_DAYS]),
-        (CFG_AUTO_BACKUP_ENABLED, '_auto_backup_check', 'check', DEFAULT_CONFIG[CFG_AUTO_BACKUP_ENABLED]),
-        (CFG_AUTO_BACKUP_INTERVAL_HOURS, '_backup_interval_spin', 'spin', DEFAULT_CONFIG[CFG_AUTO_BACKUP_INTERVAL_HOURS]),
-        (CFG_AUTO_BACKUP_RETENTION, '_backup_retention_spin', 'spin', DEFAULT_CONFIG[CFG_AUTO_BACKUP_RETENTION]),
+        (CFG_THEME, "_theme_combo", "combo", DEFAULT_CONFIG[CFG_THEME]),
+        (CFG_SHOW_TRAY_ICON, "_show_tray_check", "check", DEFAULT_CONFIG[CFG_SHOW_TRAY_ICON]),
+        (
+            CFG_MINIMIZE_TO_TRAY,
+            "_minimize_tray_check",
+            "check",
+            DEFAULT_CONFIG[CFG_MINIMIZE_TO_TRAY],
+        ),
+        (CFG_CLOSE_TO_TRAY, "_close_tray_check", "check", DEFAULT_CONFIG[CFG_CLOSE_TO_TRAY]),
+        (CFG_AUTO_LOCK_MINUTES, "_auto_lock_spin", "spin", DEFAULT_CONFIG[CFG_AUTO_LOCK_MINUTES]),
+        (
+            CFG_CLIPBOARD_CLEAR_SECONDS,
+            "_clipboard_spin",
+            "spin",
+            DEFAULT_CONFIG[CFG_CLIPBOARD_CLEAR_SECONDS],
+        ),
+        (
+            CFG_PASSWORD_VISIBLE_SECONDS,
+            "_pwd_visible_spin",
+            "spin",
+            DEFAULT_CONFIG[CFG_PASSWORD_VISIBLE_SECONDS],
+        ),
+        (
+            CFG_DEFAULT_PASSWORD_LENGTH,
+            "_default_length_spin",
+            "spin",
+            DEFAULT_CONFIG[CFG_DEFAULT_PASSWORD_LENGTH],
+        ),
+        (
+            CFG_DEFAULT_UPPERCASE,
+            "_default_upper_check",
+            "check",
+            DEFAULT_CONFIG[CFG_DEFAULT_UPPERCASE],
+        ),
+        (
+            CFG_DEFAULT_LOWERCASE,
+            "_default_lower_check",
+            "check",
+            DEFAULT_CONFIG[CFG_DEFAULT_LOWERCASE],
+        ),
+        (CFG_DEFAULT_DIGITS, "_default_digits_check", "check", DEFAULT_CONFIG[CFG_DEFAULT_DIGITS]),
+        (
+            CFG_DEFAULT_SYMBOLS,
+            "_default_symbols_check",
+            "check",
+            DEFAULT_CONFIG[CFG_DEFAULT_SYMBOLS],
+        ),
+        (
+            CFG_DEFAULT_EXCLUDE_AMBIGUOUS,
+            "_default_exclude_check",
+            "check",
+            DEFAULT_CONFIG[CFG_DEFAULT_EXCLUDE_AMBIGUOUS],
+        ),
+        (
+            CFG_OLD_PASSWORD_WARNING_DAYS,
+            "_old_pwd_spin",
+            "spin",
+            DEFAULT_CONFIG[CFG_OLD_PASSWORD_WARNING_DAYS],
+        ),
+        (
+            CFG_AUTO_BACKUP_ENABLED,
+            "_auto_backup_check",
+            "check",
+            DEFAULT_CONFIG[CFG_AUTO_BACKUP_ENABLED],
+        ),
+        (
+            CFG_AUTO_BACKUP_INTERVAL_HOURS,
+            "_backup_interval_spin",
+            "spin",
+            DEFAULT_CONFIG[CFG_AUTO_BACKUP_INTERVAL_HOURS],
+        ),
+        (
+            CFG_AUTO_BACKUP_RETENTION,
+            "_backup_retention_spin",
+            "spin",
+            DEFAULT_CONFIG[CFG_AUTO_BACKUP_RETENTION],
+        ),
     ]
 
     def _set_widget_value(
@@ -270,26 +328,28 @@ class SettingsDialog(QDialog):
     ) -> None:
         # accessor_type 与 widget 子类型在 _SETTINGS_MAP 中一一配对；isinstance 兼顾
         # 类型 narrowing 与运行时契约（不配对属编程错误，静默跳过）。
-        if accessor_type == 'combo' and isinstance(widget, QComboBox):
+        if accessor_type == "combo" and isinstance(widget, QComboBox):
             widget.setCurrentIndex(0 if value == THEME_LIGHT else 1)
-        elif accessor_type == 'check' and isinstance(widget, QCheckBox):
+        elif accessor_type == "check" and isinstance(widget, QCheckBox):
             widget.setChecked(value)
-        elif accessor_type == 'spin' and isinstance(widget, QSpinBox):
+        elif accessor_type == "spin" and isinstance(widget, QSpinBox):
             widget.setValue(value)
 
-    def _get_widget_value(self, widget: QComboBox | QCheckBox | QSpinBox, accessor_type: str) -> Any:
-        if accessor_type == 'combo' and isinstance(widget, QComboBox):
+    def _get_widget_value(
+        self, widget: QComboBox | QCheckBox | QSpinBox, accessor_type: str
+    ) -> Any:
+        if accessor_type == "combo" and isinstance(widget, QComboBox):
             return THEME_LIGHT if widget.currentIndex() == 0 else THEME_DARK
-        if accessor_type == 'check' and isinstance(widget, QCheckBox):
+        if accessor_type == "check" and isinstance(widget, QCheckBox):
             return widget.isChecked()
-        if accessor_type == 'spin' and isinstance(widget, QSpinBox):
+        if accessor_type == "spin" and isinstance(widget, QSpinBox):
             return widget.value()
         return None
 
     def _load_settings(self) -> None:
         for key, attr, atype, default in self._SETTINGS_MAP:
             self._set_widget_value(getattr(self, attr), atype, self._config.get(key, default))
-        self._backup_path_edit.setText(self._config.get(CFG_BACKUP_DIRECTORY, ''))
+        self._backup_path_edit.setText(self._config.get(CFG_BACKUP_DIRECTORY, ""))
         self._update_tray_options(self._show_tray_check.isChecked())
         self._update_backup_options(self._auto_backup_check.isChecked())
 
@@ -310,13 +370,11 @@ class SettingsDialog(QDialog):
             self._default_symbols_check.isChecked(),
         )
         if not ok:
-            QMessageBox.warning(self, '生成规则无效', error)
+            QMessageBox.warning(self, "生成规则无效", error)
             return
         # 快照当前内存配置：save 失败时回滚，避免内存已写新值而磁盘仍为旧值，
         # 后续 config.get 读到未持久化的脏值。
-        snapshot: dict[str, object] = {
-            key: self._config.get(key) for key, *_ in self._SETTINGS_MAP
-        }
+        snapshot: dict[str, object] = {key: self._config.get(key) for key, *_ in self._SETTINGS_MAP}
         snapshot[CFG_BACKUP_DIRECTORY] = self._config.get(CFG_BACKUP_DIRECTORY)
         for key, attr, atype, _default in self._SETTINGS_MAP:
             self._config.set(key, self._get_widget_value(getattr(self, attr), atype))
@@ -328,8 +386,9 @@ class SettingsDialog(QDialog):
             for key, value in snapshot.items():
                 self._config.set(key, value)
             QMessageBox.critical(
-                self, '保存失败',
-                '无法写入配置文件，请检查磁盘空间和文件权限。',
+                self,
+                "保存失败",
+                "无法写入配置文件，请检查磁盘空间和文件权限。",
             )
             return
         self.accept()
@@ -338,4 +397,4 @@ class SettingsDialog(QDialog):
         """将所有配置控件恢复为默认值，不立即保存。"""
         for _key, attr, atype, default in self._SETTINGS_MAP:
             self._set_widget_value(getattr(self, attr), atype, default)
-        self._backup_path_edit.setText('')
+        self._backup_path_edit.setText("")

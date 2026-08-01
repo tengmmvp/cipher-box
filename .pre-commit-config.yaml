@@ -1,23 +1,26 @@
-# 本地质量门禁：ruff（lint + format）与 mypy，与 CI 配置同源。
+# 本地质量门禁：ruff（lint + format）与 mypy，统一经 `uv run` 复用 uv.lock 锁定的
+# 工具版本，与 CI 完全同源（单一事实源 = uv.lock），从结构上消除版本/依赖双源漂移。
 # 启用：pip install pre-commit && pre-commit install
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.8
+  - repo: local
     hooks:
-      - id: ruff
-        args: [--fix]
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check
+        language: system
+        types_or: [python, pyi]
       - id: ruff-format
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.18.2
-    hooks:
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
       - id: mypy
-        # 提供运行时依赖以便 mypy 解析 import（PyQt6 无存根，靠 ignore_missing_imports 兜底）
-        additional_dependencies:
-          - PyQt6==6.11.0
-          - cryptography==48.0.0
-          - argon2-cffi==25.1.0
-          - QtAwesome==1.4.2
-        # 与 CI 一致检查 src 目录；pass_filenames:false 使 mypy 整包检查而非仅暂存文件，
-        # 避免单文件检查因缺导入上下文误报。
-        args: [--config-file=pyproject.toml, src]
+        name: mypy
+        entry: uv run mypy
+        language: system
+        # 仅在 src 变更时触发；pass_filenames:false 使 mypy 整包检查而非仅暂存文件，
+        # 避免单文件检查因缺导入上下文误报。运行时依赖（PyQt6 等）由 uv 环境提供。
+        files: ^src/
+        types_or: [python]
         pass_filenames: false
+        args: [--config-file=pyproject.toml, src]

@@ -26,8 +26,8 @@ class CustomFieldsEditor:
 
     # 字段类型单一事实源：下拉框 addItem 顺序、index/type 双向映射、
     # 中文标签均从此列表派生，避免多处定义发散导致索引错位。
-    _TYPE_ORDER = ['text', 'password', 'url', 'email']
-    _TYPE_LABELS = {'text': '文本', 'password': '密码', 'url': '网址', 'email': '邮箱'}
+    _TYPE_ORDER = ["text", "password", "url", "email"]
+    _TYPE_LABELS = {"text": "文本", "password": "密码", "url": "网址", "email": "邮箱"}
     _TYPE_INDEX_MAP = {t: i for i, t in enumerate(_TYPE_ORDER)}
     _INDEX_TYPE_MAP = dict(enumerate(_TYPE_ORDER))
 
@@ -39,16 +39,16 @@ class CustomFieldsEditor:
     def _on_type_change(self, idx: int, value_edit: QLineEdit) -> None:
         """类型下拉框切换回调，按新类型切换值输入框的回显模式。"""
         field_type = self._INDEX_TYPE_MAP.get(idx)
-        if field_type == 'password':
+        if field_type == "password":
             value_edit.setEchoMode(QLineEdit.EchoMode.Password)
         else:
             value_edit.setEchoMode(QLineEdit.EchoMode.Normal)
 
-    def add_row(self, name: str = '', value: str = '', field_type: str = 'text') -> None:
+    def add_row(self, name: str = "", value: str = "", field_type: str = "text") -> None:
         """新增一行自定义字段，并绑定类型切换时切换回显模式。"""
         row_layout = QHBoxLayout()
         name_edit = QLineEdit(name)
-        name_edit.setPlaceholderText('字段名')
+        name_edit.setPlaceholderText("字段名")
         name_edit.setFixedWidth(120)
         # 控件层长度上限与 validate_plain_entry / CustomField.from_dict 对齐，
         # 输入时即截断提供前端反馈，避免到保存时才报错。
@@ -59,13 +59,13 @@ class CustomFieldsEditor:
         type_combo.addItems([self._TYPE_LABELS[t] for t in self._TYPE_ORDER])
         type_combo.setCurrentIndex(self._TYPE_INDEX_MAP.get(field_type, 0))
         type_combo.setFixedWidth(64)
-        type_combo.setToolTip('字段类型')
+        type_combo.setToolTip("字段类型")
         row_layout.addWidget(type_combo)
 
         value_edit = QLineEdit(value)
-        value_edit.setPlaceholderText('字段值')
+        value_edit.setPlaceholderText("字段值")
         value_edit.setMaxLength(MAX_CUSTOM_FIELD_VALUE)
-        if field_type == 'password':
+        if field_type == "password":
             value_edit.setEchoMode(QLineEdit.EchoMode.Password)
         type_combo.currentIndexChanged.connect(
             lambda idx, ve=value_edit: self._on_type_change(idx, ve)
@@ -73,9 +73,9 @@ class CustomFieldsEditor:
         row_layout.addWidget(value_edit)
 
         del_btn = QPushButton()
-        del_btn.setObjectName('iconBtn')
+        del_btn.setObjectName("iconBtn")
         del_btn.setFixedSize(*BTN_COPY)
-        set_icon(del_btn, CLOSE, 'danger')
+        set_icon(del_btn, CLOSE, "danger")
         del_btn.clicked.connect(lambda: self.remove_row(row_layout))
         row_layout.addWidget(del_btn)
 
@@ -115,12 +115,14 @@ class CustomFieldsEditor:
         fields = []
         for name_edit, type_combo, value_edit, _layout in self._rows:
             if name_edit.text().strip():
-                field_type = self._INDEX_TYPE_MAP.get(type_combo.currentIndex(), 'text')
-                fields.append(CustomField(
-                    name=name_edit.text().strip(),
-                    value=value_edit.text(),
-                    field_type=field_type,
-                ))
+                field_type = self._INDEX_TYPE_MAP.get(type_combo.currentIndex(), "text")
+                fields.append(
+                    CustomField(
+                        name=name_edit.text().strip(),
+                        value=value_edit.text(),
+                        field_type=field_type,
+                    )
+                )
         return fields
 
     def clear_sensitive_values(self) -> None:

@@ -34,10 +34,12 @@ def patched_msgbox(monkeypatch):
     """捕获 QMessageBox.warning / critical，避免模态对话框阻塞测试。"""
     cap: dict = {}
     monkeypatch.setattr(
-        'src.ui.dialogs.entry_dialog.QMessageBox.warning', _recorder(cap, 'warning'),
+        "src.ui.dialogs.entry_dialog.QMessageBox.warning",
+        _recorder(cap, "warning"),
     )
     monkeypatch.setattr(
-        'src.ui.dialogs.entry_dialog.QMessageBox.critical', _recorder(cap, 'critical'),
+        "src.ui.dialogs.entry_dialog.QMessageBox.critical",
+        _recorder(cap, "critical"),
     )
     return cap
 
@@ -45,6 +47,7 @@ def patched_msgbox(monkeypatch):
 def _make_dialog(qapp):
     """构造新增模式的 EntryDialog：MagicMock manager + 空 categories。"""
     from src.ui.dialogs.entry_dialog import EntryDialog
+
     return EntryDialog(MagicMock(), [])
 
 
@@ -65,10 +68,10 @@ class TestOnSaveValidationGuards:
     def test_empty_title_warns_and_returns(self, qapp, patched_msgbox):
         """空标题 → warning('请输入标题')，不调用 add_entry。"""
         dlg = _make_dialog(qapp)
-        dlg._title_edit.setText('')
+        dlg._title_edit.setText("")
         dlg._on_save()
-        assert patched_msgbox['warning']
-        assert any('标题' in str(arg) for arg in patched_msgbox['warning'][0])
+        assert patched_msgbox["warning"]
+        assert any("标题" in str(arg) for arg in patched_msgbox["warning"][0])
         dlg._entry_mgr.add_entry.assert_not_called()
 
     def test_card_number_validation_dispatched(self, qapp, patched_msgbox):
@@ -79,12 +82,12 @@ class TestOnSaveValidationGuards:
         被改后静默跳过信用卡格式校验。
         """
         dlg = _make_dialog(qapp)
-        _switch_type(dlg, 'card')
-        dlg._title_edit.setText('我的卡')
-        dlg._special_edits['card_number'].setText('1234')  # Luhn 不合法
+        _switch_type(dlg, "card")
+        dlg._title_edit.setText("我的卡")
+        dlg._special_edits["card_number"].setText("1234")  # Luhn 不合法
         dlg._on_save()
-        assert patched_msgbox['warning']
-        assert any('卡号' in str(arg) for arg in patched_msgbox['warning'][0])
+        assert patched_msgbox["warning"]
+        assert any("卡号" in str(arg) for arg in patched_msgbox["warning"][0])
         dlg._entry_mgr.add_entry.assert_not_called()
 
     def test_notes_too_long_warns(self, qapp, patched_msgbox):
@@ -94,11 +97,11 @@ class TestOnSaveValidationGuards:
         避免到达业务层后以 ValueError 形式暴露（错误阶段错位、文案不一致）。
         """
         dlg = _make_dialog(qapp)
-        dlg._title_edit.setText('标题')
-        dlg._notes_edit.setPlainText('x' * (MAX_FIELD_NOTES + 1))
+        dlg._title_edit.setText("标题")
+        dlg._notes_edit.setPlainText("x" * (MAX_FIELD_NOTES + 1))
         dlg._on_save()
-        assert patched_msgbox['warning']
-        assert any('备注过长' in str(arg) for arg in patched_msgbox['warning'][0])
+        assert patched_msgbox["warning"]
+        assert any("备注过长" in str(arg) for arg in patched_msgbox["warning"][0])
         dlg._entry_mgr.add_entry.assert_not_called()
 
 
@@ -113,13 +116,13 @@ class TestOnSaveExceptionBranches:
     def test_database_error_shows_critical_with_translated_message(self, qapp, patched_msgbox):
         """DatabaseError → critical，文案经 to_user_message 归一（不透传 str）。"""
         dlg = _make_dialog(qapp)
-        dlg._title_edit.setText('标题')
-        dlg._entry_mgr.add_entry.side_effect = DatabaseError('sqlite3 detail')
+        dlg._title_edit.setText("标题")
+        dlg._entry_mgr.add_entry.side_effect = DatabaseError("sqlite3 detail")
         dlg._on_save()
-        assert patched_msgbox['critical']
+        assert patched_msgbox["critical"]
         # 领域异常经 to_user_message 归一，不泄漏 sqlite3 细节
-        assert any('数据库' in str(arg) for arg in patched_msgbox['critical'][0])
-        assert not any('sqlite3' in str(arg) for arg in patched_msgbox['critical'][0])
+        assert any("数据库" in str(arg) for arg in patched_msgbox["critical"][0])
+        assert not any("sqlite3" in str(arg) for arg in patched_msgbox["critical"][0])
 
     def test_decryption_error_caught_before_value_error(self, qapp, patched_msgbox):
         """DecryptionError 被领域分支（先于 ValueError）捕获 → critical（非 warning）。
@@ -128,28 +131,29 @@ class TestOnSaveExceptionBranches:
         误捕为 warning 且透传 str(exc)。断言走 critical 即证明顺序正确。
         """
         dlg = _make_dialog(qapp)
-        dlg._title_edit.setText('标题')
-        dlg._entry_mgr.add_entry.side_effect = DecryptionError('InvalidTag detail')
+        dlg._title_edit.setText("标题")
+        dlg._entry_mgr.add_entry.side_effect = DecryptionError("InvalidTag detail")
         dlg._on_save()
         # 领域分支 → critical（解密失败文案），非 ValueError 分支的 warning
-        assert patched_msgbox['critical']
-        assert not patched_msgbox.get('warning')
-        assert any('解密' in str(arg) for arg in patched_msgbox['critical'][0])
+        assert patched_msgbox["critical"]
+        assert not patched_msgbox.get("warning")
+        assert any("解密" in str(arg) for arg in patched_msgbox["critical"][0])
 
     def test_entry_integrity_error_shows_critical(self, qapp, patched_msgbox):
         """EntryIntegrityError → 经领域分支（critical），而非 ValueError 分支（warning）。
 
-        EntryIntegrityError 双继承 CipherBoxError 与 ValueError；``_on_save`` 的
-        ``except (DatabaseError, DecryptionError, EntryIntegrityError)`` 必须先于
-        ``except ValueError`` 捕获它，否则完整性错误会被降级为 warning。断言走 critical
+        EntryIntegrityError 双继承 CipherBoxError 与 ValueError；``_on_save`` 经
+        ``except Exception`` 委托 ``_handle_save_error``，其领域分支
+        ``isinstance(exc, (DatabaseError, DecryptionError, EntryIntegrityError))`` 须先于
+        ``isinstance(exc, ValueError)`` 判定，否则完整性错误会被降级为 warning。断言走 critical
         即证明领域分支顺序正确。
         """
         dlg = _make_dialog(qapp)
-        dlg._title_edit.setText('标题')
-        dlg._entry_mgr.add_entry.side_effect = EntryIntegrityError('hmac mismatch')
+        dlg._title_edit.setText("标题")
+        dlg._entry_mgr.add_entry.side_effect = EntryIntegrityError("hmac mismatch")
         dlg._on_save()
-        assert patched_msgbox['critical']
-        assert not patched_msgbox.get('warning')
+        assert patched_msgbox["critical"]
+        assert not patched_msgbox.get("warning")
 
     def test_value_error_shows_warning_with_original_message(self, qapp, patched_msgbox):
         """纯 ValueError（字段校验）→ warning，透传 str(exc) 供用户操作。
@@ -158,12 +162,12 @@ class TestOnSaveExceptionBranches:
         （如「标题过长」），透传比归一更有操作性。
         """
         dlg = _make_dialog(qapp)
-        dlg._title_edit.setText('标题')
-        dlg._entry_mgr.add_entry.side_effect = ValueError('字段校验未通过')
+        dlg._title_edit.setText("标题")
+        dlg._entry_mgr.add_entry.side_effect = ValueError("字段校验未通过")
         dlg._on_save()
-        assert patched_msgbox['warning']
-        assert any('字段校验未通过' in str(arg) for arg in patched_msgbox['warning'][0])
-        assert not patched_msgbox.get('critical')
+        assert patched_msgbox["warning"]
+        assert any("字段校验未通过" in str(arg) for arg in patched_msgbox["warning"][0])
+        assert not patched_msgbox.get("critical")
 
     def test_unexpected_exception_shows_generic_critical(self, qapp, patched_msgbox):
         """catch-all 分支：意外异常 → critical 通用意外文案，不透传异常细节。
@@ -172,10 +176,10 @@ class TestOnSaveExceptionBranches:
         归并为「用户数据问题」而误导排查。
         """
         dlg = _make_dialog(qapp)
-        dlg._title_edit.setText('标题')
-        dlg._entry_mgr.add_entry.side_effect = RuntimeError('internal boom')
+        dlg._title_edit.setText("标题")
+        dlg._entry_mgr.add_entry.side_effect = RuntimeError("internal boom")
         dlg._on_save()
-        assert patched_msgbox['critical']
-        assert any('意外错误' in str(arg) for arg in patched_msgbox['critical'][0])
+        assert patched_msgbox["critical"]
+        assert any("意外错误" in str(arg) for arg in patched_msgbox["critical"][0])
         # 不透传内部异常信息
-        assert not any('internal boom' in str(arg) for arg in patched_msgbox['critical'][0])
+        assert not any("internal boom" in str(arg) for arg in patched_msgbox["critical"][0])

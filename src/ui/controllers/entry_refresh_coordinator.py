@@ -25,7 +25,6 @@ class ScrollRestore:
     """列表刷新后的滚动/选中恢复参数（仅过滤器未变时恢复）。"""
 
     should_restore_position: bool
-    saved_scroll: int
     saved_row: int
 
 
@@ -111,7 +110,7 @@ class EntryRefreshCoordinator:
         worker = BackgroundWorker(_fetch, parent=self._parent)
         self._entry_worker = worker
         self._entry_workers.add(worker)
-        deps.show_loading('加载中...')
+        deps.show_loading("加载中...")
 
         def _release() -> None:
             self._entry_workers.discard(worker)
@@ -141,7 +140,7 @@ class EntryRefreshCoordinator:
                 or deps.is_entry_stale(filter_key, category_id, search)
             ):
                 return
-            deps.show_loading('加载失败，请重试')
+            deps.show_loading("加载失败，请重试")
 
         worker.finished.connect(_done)
         worker.error.connect(_on_error)
@@ -200,7 +199,7 @@ class EntryRefreshCoordinator:
         self._tag_worker = None
 
     def cancel_all(self) -> None:
-        """紧急取消 entry/tag worker（不等待），供 host emergency_cancel / prepare_for_lock。
+        """紧急取消 entry/tag worker（不等待），供 host emergency_cancel_workers / prepare_for_lock。
 
         遍历 ``_entry_workers`` 全集快照（含并发 entry worker 与 tag worker），而非仅
         ``_entry_worker`` 单引用（最后一个），避免漏 cancel 并发 worker 残留持密钥继续
@@ -213,7 +212,7 @@ class EntryRefreshCoordinator:
                 pass
 
     def wait(self, timeout_ms: int) -> None:
-        """取消后等待 entry/tag worker 退出（host emergency_cancel 的 wait 分支）。"""
+        """取消后等待 entry/tag worker 退出（host emergency_cancel_workers 的 wait 分支）。"""
         for worker in tuple(self._entry_workers):
             try:
                 worker.wait(timeout_ms)

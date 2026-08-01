@@ -10,8 +10,8 @@ from .password_generator import PasswordGenerator
 from .totp import TOTPGenerator
 
 __all__ = [
-    'EncryptionEngine',
-    'MasterKeyManager',
-    'PasswordGenerator',
-    'TOTPGenerator',
+    "EncryptionEngine",
+    "MasterKeyManager",
+    "PasswordGenerator",
+    "TOTPGenerator",
 ]

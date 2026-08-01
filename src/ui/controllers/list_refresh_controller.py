@@ -131,10 +131,10 @@ class ListRefreshController:
         self._deps = deps
         self._locked = False
         # 过滤器状态
-        self._current_filter = 'all'
+        self._current_filter = "all"
         self._current_category_id: int | None = None
-        self._current_search = ''
-        self._current_tag = ''
+        self._current_search = ""
+        self._current_tag = ""
         # 缓存
         self._cached_categories: list[Category] = []
         self._cached_tag_names: list[str] = []
@@ -210,11 +210,21 @@ class ListRefreshController:
         调度，保持原 prepare_for_lock「先清状态 → 停定时器 → 等待 worker」的顺序。
         """
         self._locked = True
-        self._current_search = ''
+        self._current_search = ""
         view = self._view
         view.search_edit.blockSignals(True)
         view.search_edit.clear()
         view.search_edit.blockSignals(False)
+        # 分类名/标签名经加密存储（name_enc/tags_enc）视为敏感，锁定时须连同 UI 缓存
+        # 与控件一并清空，与条目/详情/剪贴板的清零纪律对齐，收缩锁定后内存残留面。
+        self._cached_categories = []
+        self._cached_tag_names = []
+        view.category_list.blockSignals(True)
+        view.category_list.clear()
+        view.category_list.blockSignals(False)
+        view.tag_combo.blockSignals(True)
+        view.tag_combo.clear()
+        view.tag_combo.blockSignals(False)
         self._invalidate_security_cache()
         self._entry_mgr.invalidate_caches()
 
@@ -312,7 +322,7 @@ class ListRefreshController:
         category_list.blockSignals(True)
         category_list.clear()
 
-        all_item = QListWidgetItem('全部分类')
+        all_item = QListWidgetItem("全部分类")
         all_item.setData(Qt.ItemDataRole.UserRole, None)
         all_item.setIcon(icon(FOLDER))
         category_list.addItem(all_item)
@@ -331,7 +341,10 @@ class ListRefreshController:
         if selected_category_id is not None:
             for row in range(category_list.count()):
                 selected_item = category_list.item(row)
-                if selected_item and selected_item.data(Qt.ItemDataRole.UserRole) == selected_category_id:
+                if (
+                    selected_item
+                    and selected_item.data(Qt.ItemDataRole.UserRole) == selected_category_id
+                ):
                     target_row = row
                     break
             else:
@@ -362,13 +375,13 @@ class ListRefreshController:
         tag_combo = self._view.tag_combo
         tag_combo.blockSignals(True)
         tag_combo.clear()
-        tag_combo.addItem('全部标签', '')
+        tag_combo.addItem("全部标签", "")
         for tag, count in all_tags:
-            tag_combo.addItem(f'{tag}  ·  {count}', tag)
+            tag_combo.addItem(f"{tag}  ·  {count}", tag)
         index = tag_combo.findData(current)
         tag_combo.setCurrentIndex(index if index >= 0 else 0)
         if index < 0:
-            self._current_tag = ''
+            self._current_tag = ""
         tag_combo.blockSignals(False)
         self._cached_tag_names = [t[0] for t in all_tags[:MAX_TAG_AUTOCOMPLETE]]
 
@@ -389,27 +402,27 @@ class ListRefreshController:
         分类、搜索等参数在此按 filter_key 统一绑定。排序在数据获取阶段完成（同步与
         异步 worker 均在此排序），使 _apply_entry_results 仅负责渲染。
         """
-        effective_search = self._current_search if use_current_state else (search or '')
+        effective_search = self._current_search if use_current_state else (search or "")
         effective_category = self._current_category_id if use_current_state else category_id
         fetcher = self._entry_list_ctrl.get_fetcher(filter_key)
-        if filter_key == 'all':
+        if filter_key == "all":
             entries, title = fetcher(effective_category, effective_search, cancel_check)
-        elif filter_key in ('favorite', 'recent', 'trash'):
+        elif filter_key in ("favorite", "recent", "trash"):
             entries, title = fetcher(effective_search, cancel_check)
         else:
             entries, title = fetcher()  # weak、duplicate 无参数
-        if filter_key in ('all', 'favorite', 'trash'):
+        if filter_key in ("all", "favorite", "trash"):
             entries = self._sort_entries(entries)
         return entries, title
 
     def _current_category_name(self) -> str:
         """返回当前选中分类的名称，无选中分类时返回空字符串。"""
         if self._current_category_id is None:
-            return ''
+            return ""
         for category in self._cached_categories:
             if category.id == self._current_category_id:
                 return category.name
-        return ''
+        return ""
 
     def refresh_entries(self, entry_count: int | None = None) -> None:
         # 重建列表后选择防抖的 pending 若已失效，由 EntryActionsController.do_select_entry
@@ -420,14 +433,10 @@ class ListRefreshController:
         # 未变时恢复同一数据集的刷新；切换过滤器后数据集不同，不应恢复旧位置。
         saved_filter = self._last_refresh_filter
         current_filter = self._current_filter
-        should_restore_position = (saved_filter == current_filter)
+        should_restore_position = saved_filter == current_filter
         self._last_refresh_filter = current_filter
-        scrollbar = view.entry_list.verticalScrollBar()
         scroll_restore = ScrollRestore(
             should_restore_position=should_restore_position,
-            saved_scroll=(
-                scrollbar.value() if should_restore_position and scrollbar is not None else 0
-            ),
             saved_row=view.entry_list.currentIndex().row() if should_restore_position else -1,
         )
 
@@ -435,14 +444,16 @@ class ListRefreshController:
         # 需全量解密，大库下须异步；recent 仅在有搜索时全量解密；weak/duplicate 来自
         # 缓存安全摘要，无需异步。
         filter_key = self._current_filter
-        needs_async = (
-            filter_key in ('all', 'favorite', 'trash')
-            or (filter_key == 'recent' and self._current_search)
+        needs_async = filter_key in ("all", "favorite", "trash") or (
+            filter_key == "recent" and self._current_search
         )
         if (
             needs_async
-            and (entry_count if entry_count is not None
-                 else self._entry_mgr.get_entry_count(include_deleted=True))
+            and (
+                entry_count
+                if entry_count is not None
+                else self._entry_mgr.get_entry_count(include_deleted=True)
+            )
             >= ASYNC_SEARCH_THRESHOLD
         ):
             self._coordinator.start_async_entry_refresh(
@@ -459,7 +470,8 @@ class ListRefreshController:
         self._apply_entry_results(entries, title, scroll_restore)
 
     def _build_entry_fetch(
-        self, filter_key: str,
+        self,
+        filter_key: str,
     ) -> Callable[[Callable[[], bool]], tuple[list, str]]:
         """构造异步 fetcher 工厂：冻结当前 filter/category/search，注入 cancel_check。
 
@@ -481,7 +493,10 @@ class ListRefreshController:
         return fetch
 
     def _is_entry_request_stale(
-        self, filter_key: str, category_id: int | None, search: str,
+        self,
+        filter_key: str,
+        category_id: int | None,
+        search: str,
     ) -> bool:
         """worker 捕获的请求指纹是否已被当前 UI 状态取代（供 coordinator 过期判定）。
 
@@ -506,7 +521,7 @@ class ListRefreshController:
             title = self._current_category_name() or title
         view.list_title.setText(title)
 
-        if self._current_search and self._current_filter in ('weak', 'duplicate'):
+        if self._current_search and self._current_filter in ("weak", "duplicate"):
             entries = self._entry_list_ctrl.filter_by_search(entries, self._current_search)
 
         if self._current_tag:
@@ -518,6 +533,11 @@ class ListRefreshController:
         if truncated:
             entries = entries[:MAX_SEARCH_RESULTS_DISPLAY]
 
+        # 异步刷新期间用户可能已滚动旧列表；set_entries 会重置滚动条，故先捕获实时
+        # 滚动位置，重建后据此恢复（同步路径下 live_scroll 即刷新前位置，行为等效；
+        # 异步路径下沿用用户当前关注位置，避免 worker 返回后视图被拉回旧位置）。
+        scrollbar = view.entry_list.verticalScrollBar()
+        live_scroll = scrollbar.value() if scrollbar is not None else 0
         # Model/View：一次替换全部数据，QListView 按需经 delegate 绘制。
         view.entry_model.set_entries(entries)
 
@@ -528,15 +548,13 @@ class ListRefreshController:
             and 0 <= scroll_restore.saved_row < view.entry_model.rowCount()
         ):
             view.entry_list.setCurrentIndex(view.entry_model.index(scroll_restore.saved_row))
-        if scroll_restore.should_restore_position:
-            scrollbar = view.entry_list.verticalScrollBar()
-            if scrollbar is not None:
-                scrollbar.setValue(scroll_restore.saved_scroll)
+        if scroll_restore.should_restore_position and scrollbar is not None:
+            scrollbar.setValue(live_scroll)
 
         if truncated:
-            view.count_label.setText(f'前 {len(entries)} 项（共 {original_count} 项）')
+            view.count_label.setText(f"前 {len(entries)} 项（共 {original_count} 项）")
         else:
-            view.count_label.setText(f'{len(entries)} 项')
+            view.count_label.setText(f"{len(entries)} 项")
 
         if entries:
             view.list_stack.setCurrentWidget(view.entry_list)
@@ -556,8 +574,10 @@ class ListRefreshController:
 
         spec = EmptyStateResolver.resolve(self._build_empty_state_context())
         empty = EmptyStateWidget(
-            icon_name=spec.icon_name, title=spec.title,
-            subtitle=spec.subtitle, action_text=spec.action_text,
+            icon_name=spec.icon_name,
+            title=spec.title,
+            subtitle=spec.subtitle,
+            action_text=spec.action_text,
         )
         if spec.action_slot is not None:
             empty.action_clicked.connect(spec.action_slot)
@@ -584,9 +604,10 @@ class ListRefreshController:
 
     def _is_security_analyzing(self) -> bool:
         """security 分析是否仍在进行（缓存未就绪），供 weak/duplicate 空态共享。"""
-        return self._security.get_cached_counts(
-            self._config.get(CFG_OLD_PASSWORD_WARNING_DAYS)
-        ) is None
+        return (
+            self._security.get_cached_counts(self._config.get(CFG_OLD_PASSWORD_WARNING_DAYS))
+            is None
+        )
 
     def update_status_bar(self) -> None:
         days = self._config.get(CFG_OLD_PASSWORD_WARNING_DAYS)
@@ -595,12 +616,15 @@ class ListRefreshController:
         counts = self._security.get_cached_counts(days)
         if counts is not None:
             self._render_status(
-                counts.total, counts.weak_count, counts.duplicate_count, counts.old,
+                counts.total,
+                counts.weak_count,
+                counts.duplicate_count,
+                counts.old,
             )
             return
         # 缓存未命中：显示占位文本，异步执行分析
         status_bar = self._view.status_bar
-        status_bar.showMessage('安全分析中...')
+        status_bar.showMessage("安全分析中...")
         if self._status_worker and self._status_worker.isRunning():
             return
         worker = BackgroundWorker(
@@ -613,10 +637,12 @@ class ListRefreshController:
             # 锁定后或非当前 worker 的延迟回调均不应用，避免访问已清零状态
             if self._locked or self._status_worker is not worker:
                 return
-            report = cast('SecurityReport', summary)
+            report = cast("SecurityReport", summary)
             self._render_status(
-                report['total'], report['weak_count'],
-                report['duplicate_count'], report['old'],
+                report["total"],
+                report["weak_count"],
+                report["duplicate_count"],
+                report["old"],
             )
             if self._status_worker is worker:
                 self._status_worker = None
@@ -626,7 +652,7 @@ class ListRefreshController:
         def _on_error(_msg: str) -> None:
             if self._locked or self._status_worker is not worker:
                 return
-            status_bar.showMessage('安全分析暂时不可用')
+            status_bar.showMessage("安全分析暂时不可用")
             if self._status_worker is worker:
                 self._status_worker = None
 
@@ -634,7 +660,11 @@ class ListRefreshController:
         worker.start()
 
     def _render_status(
-        self, total: int, weak: int, duplicate: int, old_count: int,
+        self,
+        total: int,
+        weak: int,
+        duplicate: int,
+        old_count: int,
     ) -> None:
         """据四项安全计数渲染状态栏；纯渲染下沉 StatusBarRenderer，控件引用经快照注入。"""
         StatusBarRenderer.render(
@@ -643,7 +673,10 @@ class ListRefreshController:
                 status_bar=self._view.status_bar,
                 warning_label=self._view.warning_label,
             ),
-            total, weak, duplicate, old_count,
+            total,
+            weak,
+            duplicate,
+            old_count,
         )
 
     # ========== 事件处理 ==========
@@ -701,7 +734,7 @@ class ListRefreshController:
         # _index 接收 currentIndexChanged 的信号参数并忽略：@require_unlocked 的
         # wrapper 用 *args 透传，会破坏 PyQt6 对「槽签名少于信号参数」的自动截断，
         # 故被装饰槽须显式接收其连接信号的全部参数（其余槽已与信号参数对齐）。
-        self._current_tag = self._view.tag_combo.currentData() or ''
+        self._current_tag = self._view.tag_combo.currentData() or ""
         self.refresh_entries()
 
     @require_unlocked
@@ -710,7 +743,9 @@ class ListRefreshController:
         self.refresh_entries()
 
     @require_unlocked
-    def on_filter_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
+    def on_filter_changed(
+        self, current: QListWidgetItem | None, _previous: QListWidgetItem | None
+    ) -> None:
         if current:
             self._current_filter = current.data(Qt.ItemDataRole.UserRole)
             self._current_category_id = None
@@ -723,10 +758,12 @@ class ListRefreshController:
             self.refresh_entries()
 
     @require_unlocked
-    def on_category_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
+    def on_category_changed(
+        self, current: QListWidgetItem | None, _previous: QListWidgetItem | None
+    ) -> None:
         if current:
             self._current_category_id = current.data(Qt.ItemDataRole.UserRole)
-            self._current_filter = 'all'
+            self._current_filter = "all"
             self._cached_total_entries = -1
             filter_list = self._view.filter_list
             filter_list.blockSignals(True)

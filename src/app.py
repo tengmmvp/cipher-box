@@ -36,7 +36,7 @@ class CipherBoxApplication(QApplication):
     正常退出路径（见 ``_install_crash_handlers``）。
     """
 
-    def notify(self, receiver: 'QObject | None', event: 'QEvent | None') -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
+    def notify(self, receiver: "QObject | None", event: "QEvent | None") -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
         # 根因：notify 在 typeshed 与 PyQt6 stub 间签名有已知差异，非真实方法冲突。
         try:
             return super().notify(receiver, event)
@@ -63,7 +63,7 @@ class CipherBoxApp:
             logger.warning("启动清理恢复点失败", exc_info=True)
         self._main_window: MainWindow | None = None
         self._running = False
-        self._instance_lock = QLockFile(str(self._config.data_dir / 'cipherbox.lock'))
+        self._instance_lock = QLockFile(str(self._config.data_dir / "cipherbox.lock"))
         # 崩溃/退出兜底：未捕获异常或绕过 closeEvent 的退出路径也要锁定保险库、
         # 清空剪贴板，收缩异常路径的明文残留面。
         self._install_crash_handlers()
@@ -104,7 +104,7 @@ class CipherBoxApp:
         try:
             fn()
         except Exception:
-            logger.warning(f'崩溃兜底：{label}失败', exc_info=True)
+            logger.warning(f"崩溃兜底：{label}失败", exc_info=True)
 
     def _emergency_cleanup(self, *, full: bool = False) -> None:
         """紧急清理：尽力锁定保险库并清空剪贴板。
@@ -125,9 +125,7 @@ class CipherBoxApp:
             logger.warning("崩溃兜底：检查解锁状态失败", exc_info=True)
         if full and self._main_window is not None:
             main_window = self._main_window
-            self._safe_cleanup(
-                'prepare_for_lock', lambda: main_window.prepare_for_lock()
-            )
+            self._safe_cleanup("prepare_for_lock", lambda: main_window.prepare_for_lock())
         if self._main_window is not None:
             main_window = self._main_window
 
@@ -135,29 +133,32 @@ class CipherBoxApp:
                 if not full:
                     # aboutToQuit 短超时等待 worker，让其退出后再 lock 清零，收缩
                     # 「已锁定」后明文残留窗口；超时放弃不阻塞退出。
-                    main_window.emergency_cancel_workers(wait_timeout_ms=ABOUT_TO_QUIT_WAIT_TIMEOUT_MS)
+                    main_window.emergency_cancel_workers(
+                        wait_timeout_ms=ABOUT_TO_QUIT_WAIT_TIMEOUT_MS
+                    )
                 # 经公共方法而非 getattr 访问私有属性：重命名时 getattr 返回 None
                 # 会无声错过清理，崩溃兜底最不应静默失效。
                 main_window.emergency_clear_clipboard()
 
-            self._safe_cleanup('清空剪贴板', _clear_clipboard)
-        self._safe_cleanup('锁定保险库', lambda: self._vault.lock())
+            self._safe_cleanup("清空剪贴板", _clear_clipboard)
+        self._safe_cleanup("锁定保险库", lambda: self._vault.lock())
 
     def run(self) -> int:
         """启动应用。"""
         # 应用全局样式；显式激活主题，使运行时 c() 解析的颜色与样式表一致（ARCH-009）
         theme = self._config.get(CFG_THEME, DEFAULT_THEME)
         from .ui.resources.theme_colors import set_theme
+
         set_theme(theme)
         self._app.setStyleSheet(get_style(theme))  # type: ignore[attr-defined]
 
         # 设置应用属性
-        self._app.setApplicationName('CipherBox')
-        self._app.setOrganizationName('CipherBox')
+        self._app.setApplicationName("CipherBox")
+        self._app.setOrganizationName("CipherBox")
         self._app.setApplicationVersion(__version__)
 
         if not self._instance_lock.tryLock(_SINGLE_INSTANCE_TIMEOUT_MS):
-            QMessageBox.warning(None, 'CipherBox', 'CipherBox 已在运行，请勿重复启动。')
+            QMessageBox.warning(None, "CipherBox", "CipherBox 已在运行，请勿重复启动。")
             return 1
 
         self._running = True
@@ -165,6 +166,12 @@ class CipherBoxApp:
 
         try:
             return self._app.exec()
+        except KeyboardInterrupt:
+            # Ctrl+C (SIGINT) 抛 KeyboardInterrupt（BaseException 子类，notify 的
+            # except Exception 捕获不到、不会发射 aboutToQuit）。显式执行紧急清理，
+            # 清空剪贴板残留密码并锁定保险库，收缩信号退出的明文残留面。
+            self._emergency_cleanup(full=False)
+            return 1
         finally:
             self._instance_lock.unlock()
 
@@ -181,14 +188,16 @@ class CipherBoxApp:
                 # MainWindow 构造涉及多个子系统，任一环节抛异常会留下半构造窗口。
                 # 捕获后回滚引用为 None，提示重启而非 show 状态不一致的窗口。
                 try:
-                    self._main_window = MainWindow(build_business_context(self._config, self._vault))
+                    self._main_window = MainWindow(
+                        build_business_context(self._config, self._vault)
+                    )
                 except Exception:
                     logger.error("主窗口构造失败，已回滚", exc_info=True)
                     self._main_window = None
                     QMessageBox.critical(
-                        None, '启动失败',
-                        '主窗口初始化失败，请重试或检查日志。保险库已解锁，'
-                        '退出前将自动锁定。',
+                        None,
+                        "启动失败",
+                        "主窗口初始化失败，请重试或检查日志。保险库已解锁，退出前将自动锁定。",
                     )
                     self._vault.lock()
                     self._running = False
@@ -198,22 +207,24 @@ class CipherBoxApp:
             # 逻辑不可达：_main_window 为 None 时上方 if 分支已 return。
             # 显式检查替代 assert，确保 python -O 下仍捕获意外状态。
             if self._main_window is None:
-                raise RuntimeError('主窗口未初始化')
+                raise RuntimeError("主窗口未初始化")
             self._main_window.refresh_after_unlock()
             self._main_window.show()
             # 首次显示时检查配置完整性，区分签名不符与签名缺失（更可疑：删除篡改痕迹）。
             if first_show and not self._config.check_integrity():
                 reason = self._config.integrity_reason
-                if reason == 'missing':
-                    detail = '配置文件的完整性签名缺失。这可能是文件损坏，也可能是外部修改后删除了签名。'
+                if reason == "missing":
+                    detail = (
+                        "配置文件的完整性签名缺失。这可能是文件损坏，也可能是外部修改后删除了签名。"
+                    )
                 else:
-                    detail = '配置文件完整性校验失败，文件可能已损坏或被外部修改。'
+                    detail = "配置文件完整性校验失败，文件可能已损坏或被外部修改。"
                 # 弱化「篡改」措辞：完整性 HMAC 密钥硬编码于源码，不防有意篡改
                 # （能改配置者也能重算签名），故不暗示这是防篡改保证。
                 QMessageBox.warning(
-                    self._main_window, '配置完整性提示',
-                    f'{detail}\n安全相关的配置值已回退为安全默认值，'
-                    '建议检查数据目录安全性。',
+                    self._main_window,
+                    "配置完整性提示",
+                    f"{detail}\n安全相关的配置值已回退为安全默认值，建议检查数据目录安全性。",
                 )
 
         login.login_success.connect(on_login)

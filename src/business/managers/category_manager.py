@@ -31,7 +31,7 @@ class CategoryManager:
 
     def __init__(
         self,
-        vault: 'VaultManager',
+        vault: "VaultManager",
         cache: EntryCacheManager,
         change_bus: EntryChangeBus,
     ):
@@ -83,9 +83,9 @@ class CategoryManager:
         查重（add_category 在调用前查重）与通知（调用方统一 notify）。调用方须保证非空名。
         """
         plaintext_name = category.name.strip()
-        pending_id = f'category-pending-{uuid.uuid4().hex}'
+        pending_id = f"category-pending-{uuid.uuid4().hex}"
         stored = Category(
-            name=encrypt_field(plaintext_name, self._key, pending_id, 'category_name'),
+            name=encrypt_field(plaintext_name, self._key, pending_id, "category_name"),
             icon_char=category.icon_char,
             color=category.color,
             sort_order=category.sort_order,
@@ -96,7 +96,10 @@ class CategoryManager:
         stored = replace(
             stored,
             name=encrypt_field(
-                plaintext_name, self._key, category_crypto_id(result), 'category_name',
+                plaintext_name,
+                self._key,
+                category_crypto_id(result),
+                "category_name",
             ),
         )
         self._vault.db.update_category(stored)
@@ -110,26 +113,29 @@ class CategoryManager:
         """
         plaintext_name = category.name.strip()
         if not plaintext_name:
-            raise EntryError('分类名称不能为空')
+            raise EntryError("分类名称不能为空")
         with self._vault.db.transaction():
-            existing_names = {
-                existing.name.casefold() for existing in self.get_categories()
-            }
+            existing_names = {existing.name.casefold() for existing in self.get_categories()}
             if plaintext_name.casefold() in existing_names:
-                raise EntryError('分类名称已存在')
+                raise EntryError("分类名称已存在")
             result = self._insert_category_two_phase(category)
         category = replace(category, id=result, name=plaintext_name)
         # 分类变更不改条目摘要内容（title/url/tags 不变），保留搜索摘要缓存；
         # 仅失效分类名缓存并通知回调刷新侧边栏分类列表。
         if notify:
             self._change_bus.notify(
-                password_changed=False, tags_changed=False,
-                category_changed=True, clear_summaries=False,
+                password_changed=False,
+                tags_changed=False,
+                category_changed=True,
+                clear_summaries=False,
             )
         return result
 
     def add_categories_batch(
-        self, categories: list[Category], *, notify: bool = True,
+        self,
+        categories: list[Category],
+        *,
+        notify: bool = True,
     ) -> list[int]:
         """批量新增分类（恢复路径），返回按输入顺序的新 id 列表（PF-003）。
 
@@ -141,8 +147,10 @@ class CategoryManager:
         if not categories:
             if notify:
                 self._change_bus.notify(
-                    password_changed=False, tags_changed=False,
-                    category_changed=True, clear_summaries=False,
+                    password_changed=False,
+                    tags_changed=False,
+                    category_changed=True,
+                    clear_summaries=False,
                 )
             return new_ids
         with self._vault.db.transaction():
@@ -153,15 +161,17 @@ class CategoryManager:
                 new_ids.append(self._insert_category_two_phase(category))
         if notify:
             self._change_bus.notify(
-                password_changed=False, tags_changed=False,
-                category_changed=True, clear_summaries=False,
+                password_changed=False,
+                tags_changed=False,
+                category_changed=True,
+                clear_summaries=False,
             )
         return new_ids
 
     def update_category(self, category: Category) -> None:
         """更新分类，重加密分类名并失效分类名缓存（条目摘要内容不变）。"""
         if category.id is None:
-            raise EntryError('分类 ID 不能为空')
+            raise EntryError("分类 ID 不能为空")
         plaintext_name = category.name.strip()
         stored = Category(
             id=category.id,
@@ -169,7 +179,7 @@ class CategoryManager:
                 plaintext_name,
                 self._key,
                 category_crypto_id(category.id),
-                'category_name',
+                "category_name",
             ),
             icon_char=category.icon_char,
             color=category.color,
@@ -179,8 +189,10 @@ class CategoryManager:
         self._vault.db.update_category(stored)
         # 分类名/icon 变更不影响条目摘要内容，仅失效分类名缓存。
         self._change_bus.notify(
-            password_changed=False, tags_changed=False,
-            category_changed=True, clear_summaries=False,
+            password_changed=False,
+            tags_changed=False,
+            category_changed=True,
+            clear_summaries=False,
         )
 
     def delete_category(self, category_id: int) -> None:
@@ -189,6 +201,8 @@ class CategoryManager:
         # 删除分类后关联条目 category_id 置 NULL，分类名缓存需失效；条目摘要
         # 内容（title/url/tags）不变，保留搜索摘要缓存避免全量重解密。
         self._change_bus.notify(
-            password_changed=False, tags_changed=False,
-            category_changed=True, clear_summaries=False,
+            password_changed=False,
+            tags_changed=False,
+            category_changed=True,
+            clear_summaries=False,
         )

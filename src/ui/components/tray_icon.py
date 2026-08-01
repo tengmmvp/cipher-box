@@ -25,9 +25,9 @@ class TrayIcon(QSystemTrayIcon):
         super().__init__(parent)
 
         # 使用文字作为图标，不依赖外部图标文件
-        self.setIcon(TrayIcon._create_icon(QColor(c('brand')), 'C'))
+        self.setIcon(TrayIcon._create_icon(QColor(c("brand")), "C"))
 
-        self.setToolTip('CipherBox')
+        self.setToolTip("CipherBox")
 
         self._create_menu()
 
@@ -47,33 +47,33 @@ class TrayIcon(QSystemTrayIcon):
             size=32,
             bg_color=bg,
             text=text,
-            text_color=c('text_on_accent'),
+            text_color=c("text_on_accent"),
             font_size=12 if len(text) > 1 else 16,
         )
         return QIcon(pixmap)
 
     def set_locked(self, locked: bool) -> None:
         if locked:
-            self.setIcon(TrayIcon._create_icon(QColor(c('text_muted')), 'LOCK'))
-            self.setToolTip('CipherBox（已锁定）')
+            self.setIcon(TrayIcon._create_icon(QColor(c("text_muted")), "LOCK"))
+            self.setToolTip("CipherBox（已锁定）")
         else:
-            self.setIcon(TrayIcon._create_icon(QColor(c('brand')), 'C'))
-            self.setToolTip('CipherBox')
+            self.setIcon(TrayIcon._create_icon(QColor(c("brand")), "C"))
+            self.setToolTip("CipherBox")
 
     def _create_menu(self) -> None:
         menu = QMenu()
 
-        show_action = QAction('显示主窗口', self)
+        show_action = QAction("显示主窗口", self)
         show_action.triggered.connect(self.show_window.emit)
         menu.addAction(show_action)
 
-        lock_action = QAction('锁定保险库', self)
+        lock_action = QAction("锁定保险库", self)
         lock_action.triggered.connect(self.lock_vault.emit)
         menu.addAction(lock_action)
 
         menu.addSeparator()
 
-        quit_action = QAction('退出', self)
+        quit_action = QAction("退出", self)
         quit_action.triggered.connect(self.quit_app.emit)
         menu.addAction(quit_action)
 

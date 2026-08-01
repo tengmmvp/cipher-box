@@ -484,6 +484,7 @@ def render_style(theme: str) -> str:
     """
     from .constants import FONT_FAMILY_CSS, FONT_FAMILY_MONOSPACE
     from .theme_colors import get_colors
+
     colors = get_colors(theme)
     return STYLE_TEMPLATE.format(
         font_family=FONT_FAMILY_CSS,
@@ -500,4 +501,3 @@ def get_style(theme: str) -> str:
     保证运行时 ``c()`` 配色（delegate 等控件）与样式表一致。
     """
     return render_style(theme)
-

@@ -14,13 +14,14 @@ from tests.helpers import make_test_config
 # （无法 try/except 捕获）。替代生产代码探测 'pytest' in sys.modules 的 prod/test 耦合
 # （MAINT-1）：测试运行经此环境变量显式声明，生产路径不设置它，行为分支不再依赖
 # 测试框架是否被加载。
-os.environ.setdefault('CIPHERBOX_DISABLE_WTS', '1')
+os.environ.setdefault("CIPHERBOX_DISABLE_WTS", "1")
 
 
-@pytest.fixture(scope='session')
+@pytest.fixture(scope="session")
 def qapp():
     """确保测试会话中有一个 QApplication 实例。"""
     from PyQt6.QtWidgets import QApplication
+
     app = QApplication.instance()
     if app is None:
         app = QApplication([])
@@ -53,15 +54,17 @@ def _weak_kdf_for_tests(monkeypatch):
     属可接受取舍。
     """
     from src.business.managers import vault_lifecycle
-    monkeypatch.setattr(vault_lifecycle, 'DEFAULT_KDF_PARAMS', _TEST_KDF_PARAMS)
+
+    monkeypatch.setattr(vault_lifecycle, "DEFAULT_KDF_PARAMS", _TEST_KDF_PARAMS)
 
 
 @pytest.fixture
 def vault(vault_config):
     """已初始化的 VaultManager 实例（经 build_vault 完整装配 db+signer+生命周期）。"""
     from tests.helpers import make_vault
+
     v = make_vault(vault_config, test_mode=True)
-    v.initialize('TestPassword123!', params=_TEST_KDF_PARAMS)
+    v.initialize("TestPassword123!", params=_TEST_KDF_PARAMS)
     yield v
     try:
         v.close()
@@ -75,6 +78,7 @@ def entry_mgr(vault):
     from src.business.managers.entry_cache import EntryCacheManager
     from src.business.managers.entry_change_bus import EntryChangeBus
     from src.business.managers.entry_manager import EntryManager
+
     cache = EntryCacheManager(vault)
     return EntryManager(vault, cache, EntryChangeBus(cache))
 
@@ -85,19 +89,21 @@ def make_entry():
 
     提供合理的默认值，调用方通过关键字参数覆盖所需字段。
     """
+
     def _make_entry(**overrides):
         entry = Entry(
-            title='Test',
-            username='user',
-            password='Pass123!@#',
-            url='',
-            notes='',
+            title="Test",
+            username="user",
+            password="Pass123!@#",
+            url="",
+            notes="",
             custom_fields=[],
-            tags='',
-            entry_type='login',
-            totp_secret='',
+            tags="",
+            entry_type="login",
+            totp_secret="",
         )
         return dataclasses.replace(entry, **overrides)
+
     return _make_entry
 
 
@@ -114,6 +120,7 @@ def _reclaim_qt_widgets():
     """
     yield
     from PyQt6.QtWidgets import QApplication
+
     app = QApplication.instance()
     # isinstance 同时排除 None 与非 QApplication（QGuiApplication/QCoreApplication
     # 无 topLevelWidgets），并窄化为 QApplication 以访问 topLevelWidgets/processEvents。

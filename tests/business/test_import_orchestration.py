@@ -29,17 +29,16 @@ def test_import_rejects_oversized_file(entry_mgr, tmp_path, monkeypatch):
     经 monkeypatch 把阈值降到很小，避免实际写出 25 MB 文件；``_validate_import_path``
     在调用时读取模块全局 ``MAX_IMPORT_FILE_SIZE``，monkeypatch 即时生效。
     """
-    monkeypatch.setattr(ie_module, 'MAX_IMPORT_FILE_SIZE', 10)
+    monkeypatch.setattr(ie_module, "MAX_IMPORT_FILE_SIZE", 10)
     mgr = ImportExportManager(entry_mgr)
-    csv_path = tmp_path / 'big.csv'
+    csv_path = tmp_path / "big.csv"
     csv_path.write_text(
-        'name,url,username,password\n'
-        'GitHub,https://github.com,alice,Pass123!\n',
-        encoding='utf-8',
+        "name,url,username,password\nGitHub,https://github.com,alice,Pass123!\n",
+        encoding="utf-8",
     )  # 内容远超 10 字节阈值
 
-    with pytest.raises(ImportSizeError, match='导入文件过大'):
-        mgr.import_file(str(csv_path), 'csv')
+    with pytest.raises(ImportSizeError, match="导入文件过大"):
+        mgr.import_file(str(csv_path), "csv")
 
 
 def test_import_skip_action_skips_duplicates(entry_mgr, tmp_path):
@@ -50,42 +49,56 @@ def test_import_skip_action_skips_duplicates(entry_mgr, tmp_path):
     """
     mgr = ImportExportManager(entry_mgr)
     # 现有条目：与导入的第一条重复（按 title+username 匹配）
-    entry_mgr.add_entry(Entry(
-        title='Existing', username='alice', password='OldPass!1',
-    ))
+    entry_mgr.add_entry(
+        Entry(
+            title="Existing",
+            username="alice",
+            password="OldPass!1",
+        )
+    )
 
-    json_path = tmp_path / 'dup.json'
-    json_path.write_text(json.dumps({
-        'app': 'CipherBox',
-        'secrets_included': True,
-        'entries': [
-            {'title': 'Existing', 'username': 'alice', 'password': 'NewPass!2'},
-            {'title': 'Brand New', 'username': 'bob', 'password': 'FreshPass!3'},
-        ],
-    }), encoding='utf-8')
+    json_path = tmp_path / "dup.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "app": "CipherBox",
+                "secrets_included": True,
+                "entries": [
+                    {"title": "Existing", "username": "alice", "password": "NewPass!2"},
+                    {"title": "Brand New", "username": "bob", "password": "FreshPass!3"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
-    count = mgr.import_file(str(json_path), 'json', duplicate_action='skip')
+    count = mgr.import_file(str(json_path), "json", duplicate_action="skip")
 
     assert count == 1
     by_title = {e.title: e for e in entry_mgr.get_entries()}
-    assert set(by_title) == {'Existing', 'Brand New'}
+    assert set(by_title) == {"Existing", "Brand New"}
     # 重复条目保留原密码，未被覆盖（区别于 duplicate_action='overwrite'）
-    assert by_title['Existing'].password == 'OldPass!1'
-    assert by_title['Brand New'].password == 'FreshPass!3'
+    assert by_title["Existing"].password == "OldPass!1"
+    assert by_title["Brand New"].password == "FreshPass!3"
 
 
 def test_import_rejects_non_cipherbox_json(entry_mgr, tmp_path):
     """app 字段非 'CipherBox' 应被拒绝（防误导入其他格式 JSON）。"""
     mgr = ImportExportManager(entry_mgr)
-    path = tmp_path / 'wrong_app.json'
-    path.write_text(json.dumps({
-        'app': 'SomethingElse',
-        'secrets_included': True,
-        'entries': [],
-    }), encoding='utf-8')
+    path = tmp_path / "wrong_app.json"
+    path.write_text(
+        json.dumps(
+            {
+                "app": "SomethingElse",
+                "secrets_included": True,
+                "entries": [],
+            }
+        ),
+        encoding="utf-8",
+    )
 
-    with pytest.raises(ImportFormatError, match='不是 CipherBox JSON 导出文件'):
-        mgr.import_file(str(path), 'json')
+    with pytest.raises(ImportFormatError, match="不是 CipherBox JSON 导出文件"):
+        mgr.import_file(str(path), "json")
 
 
 def test_import_rejects_json_without_secrets_declaration(entry_mgr, tmp_path):
@@ -96,28 +109,38 @@ def test_import_rejects_json_without_secrets_declaration(entry_mgr, tmp_path):
     代码保证的前置条件——声明缺失即拒绝，杜绝覆盖合并器据错误假设处理对抗性文件。
     """
     mgr = ImportExportManager(entry_mgr)
-    path = tmp_path / 'no_secrets_flag.json'
-    path.write_text(json.dumps({
-        'app': 'CipherBox',
-        'entries': [{'title': 'x', 'password': 'leak'}],
-    }), encoding='utf-8')
+    path = tmp_path / "no_secrets_flag.json"
+    path.write_text(
+        json.dumps(
+            {
+                "app": "CipherBox",
+                "entries": [{"title": "x", "password": "leak"}],
+            }
+        ),
+        encoding="utf-8",
+    )
 
-    with pytest.raises(ImportFormatError, match='缺少敏感字段声明'):
-        mgr.import_file(str(path), 'json')
+    with pytest.raises(ImportFormatError, match="缺少敏感字段声明"):
+        mgr.import_file(str(path), "json")
 
 
 def test_import_rejects_json_entries_not_list(entry_mgr, tmp_path):
     """entries 字段非 list 应被拒绝，而非静默按空导入处理非 list 结构。"""
     mgr = ImportExportManager(entry_mgr)
-    path = tmp_path / 'bad_entries.json'
-    path.write_text(json.dumps({
-        'app': 'CipherBox',
-        'secrets_included': True,
-        'entries': {'not': 'a list'},
-    }), encoding='utf-8')
+    path = tmp_path / "bad_entries.json"
+    path.write_text(
+        json.dumps(
+            {
+                "app": "CipherBox",
+                "secrets_included": True,
+                "entries": {"not": "a list"},
+            }
+        ),
+        encoding="utf-8",
+    )
 
-    with pytest.raises(ImportFormatError, match='JSON 导入结构无效'):
-        mgr.import_file(str(path), 'json')
+    with pytest.raises(ImportFormatError, match="JSON 导入结构无效"):
+        mgr.import_file(str(path), "json")
 
 
 def test_import_rejects_json_non_dict_item(entry_mgr, tmp_path):
@@ -127,12 +150,17 @@ def test_import_rejects_json_non_dict_item(entry_mgr, tmp_path):
     的 AttributeError（绕过友好提示），确保畸形条目以可定位的「第 N 项」消息暴露。
     """
     mgr = ImportExportManager(entry_mgr)
-    path = tmp_path / 'bad_item.json'
-    path.write_text(json.dumps({
-        'app': 'CipherBox',
-        'secrets_included': True,
-        'entries': ['a-string-item', {'title': 'valid'}],
-    }), encoding='utf-8')
+    path = tmp_path / "bad_item.json"
+    path.write_text(
+        json.dumps(
+            {
+                "app": "CipherBox",
+                "secrets_included": True,
+                "entries": ["a-string-item", {"title": "valid"}],
+            }
+        ),
+        encoding="utf-8",
+    )
 
-    with pytest.raises(ImportFormatError, match='不是有效的对象'):
-        mgr.import_file(str(path), 'json')
+    with pytest.raises(ImportFormatError, match="不是有效的对象"):
+        mgr.import_file(str(path), "json")

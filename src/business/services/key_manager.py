@@ -44,7 +44,9 @@ class KeyManager:
         self._snapshot_key = self._set_secret(self._snapshot_key, snapshot_key)
 
     def _set_secret(
-        self, current_value: bytearray | None, value: bytearray | bytes | None,
+        self,
+        current_value: bytearray | None,
+        value: bytearray | bytes | None,
     ) -> bytearray | None:
         """归一新值为 bytearray 副本，并在装入前安全清零旧 bytearray（_set_key/_set_snapshot_key 共用）。
 
@@ -59,7 +61,10 @@ class KeyManager:
         return new
 
     def activate(
-        self, key: bytearray | bytes, snapshot_key: bytearray | bytes, epoch: str,
+        self,
+        key: bytearray | bytes,
+        snapshot_key: bytearray | bytes,
+        epoch: str,
     ) -> None:
         """解锁或改密成功后，一次性设置全部密钥材料与版本。"""
         self._set_key(key)

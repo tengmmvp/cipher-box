@@ -16,9 +16,10 @@ if TYPE_CHECKING:
 
 class VerifyMode(Enum):
     """条目完整性校验模式。"""
-    STRICT = auto()    # 校验失败时抛出异常
-    LENIENT = auto()   # 设置 integrity_error 标志但不抛出异常
-    SKIP = auto()      # 完全跳过校验
+
+    STRICT = auto()  # 校验失败时抛出异常
+    LENIENT = auto()  # 设置 integrity_error 标志但不抛出异常
+    SKIP = auto()  # 完全跳过校验
 
 
 @dataclass(frozen=True)
@@ -41,8 +42,8 @@ class EntryQuery:
     def __post_init__(self) -> None:
         if self.deleted_only and self.include_deleted:
             raise ValueError(
-                'EntryQuery: deleted_only 与 include_deleted 互斥——'
-                'deleted_only=True 仅返回回收站，include_deleted=True 含全部（含回收站）'
+                "EntryQuery: deleted_only 与 include_deleted 互斥——"
+                "deleted_only=True 仅返回回收站，include_deleted=True 含全部（含回收站）"
             )
 
 
@@ -64,8 +65,9 @@ class ConnectionProvider(Protocol):
     @property
     def in_transaction(self) -> bool: ...
 
-    # schema_validated 可读写：Protocol 须以 property + setter 声明，Pyright 下
-    # 可读写数据属性不接受 property+setter 实现。
+    # schema_validated 可读写：Protocol 须以 property + setter 双声明。Pyright 严格
+    # 模式下，协议用普通可读写数据属性（``schema_validated: bool``）声明时，不匹配
+    # 实现方 DatabaseManager 的 property + setter 实现。
     @property
     def schema_validated(self) -> bool: ...
 
@@ -107,7 +109,10 @@ class EntryStore(Protocol):
     def add_entry(self, entry: RawEntry, preserve_metadata: bool = False) -> int: ...
 
     def add_entries_batch(
-        self, entries: list[RawEntry], *, preserve_metadata: bool = False,
+        self,
+        entries: list[RawEntry],
+        *,
+        preserve_metadata: bool = False,
     ) -> dict[str, int]: ...
 
     def update_entry(self, entry: RawEntry, preserve_updated_at: bool = False) -> None: ...
@@ -125,11 +130,16 @@ class EntryStore(Protocol):
     def clear_vault_data(self) -> None: ...
 
     def add_password_history(
-        self, entry_id: int, old_password_enc: str, changed_at: str = '',
+        self,
+        entry_id: int,
+        old_password_enc: str,
+        changed_at: str = "",
     ) -> None: ...
 
     def add_password_history_batch(
-        self, entry_id: int, items: list[tuple[str, str]],
+        self,
+        entry_id: int,
+        items: list[tuple[str, str]],
     ) -> None: ...
 
     def get_password_history(self, entry_id: int) -> list[PasswordHistory]: ...
@@ -137,7 +147,9 @@ class EntryStore(Protocol):
     def get_all_password_history(self) -> list[PasswordHistory]: ...
 
     def get_all_password_history_batch(
-        self, after_id: int = 0, limit: int = 200,
+        self,
+        after_id: int = 0,
+        limit: int = 200,
     ) -> list[PasswordHistory]: ...
 
     def get_password_history_count(self, entry_id: int) -> int: ...
@@ -207,6 +219,7 @@ class ReEncryptedEntry(NamedTuple):
     重加密 executemany 位置绑定。``ReEncryptionService`` 构造、``EntryRepository``
     消费，故定义于数据层避免反向依赖。
     """
+
     crypto_id: str
     title_enc: str
     username_enc: str
@@ -228,5 +241,6 @@ class ReEncryptedEntry(NamedTuple):
 
 class ReEncryptedHistory(NamedTuple):
     """重加密后密码历史的批量更新 DTO（密文, id）。"""
+
     ciphertext: str
     id: int

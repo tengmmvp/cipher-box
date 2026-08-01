@@ -48,22 +48,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_EXPORT_FORMATS = ['JSON', 'CSV']
+_EXPORT_FORMATS = ["JSON", "CSV"]
 _IMPORT_FILTERS = {
-    'JSON (CipherBox)':  ('JSON 文件 (*.json)', 'cipherbox_import.json'),
-    'CSV':               ('CSV 文件 (*.csv)', 'import.csv'),
-    'Chrome / Edge CSV': ('CSV 文件 (*.csv)', 'chrome_import.csv'),
-    'Bitwarden JSON':    ('JSON 文件 (*.json)', 'bitwarden_import.json'),
-    'KeePass CSV':       ('CSV 文件 (*.csv)', 'keepass_import.csv'),
+    "JSON (CipherBox)": ("JSON 文件 (*.json)", "cipherbox_import.json"),
+    "CSV": ("CSV 文件 (*.csv)", "import.csv"),
+    "Chrome / Edge CSV": ("CSV 文件 (*.csv)", "chrome_import.csv"),
+    "Bitwarden JSON": ("JSON 文件 (*.json)", "bitwarden_import.json"),
+    "KeePass CSV": ("CSV 文件 (*.csv)", "keepass_import.csv"),
 }
 _IMPORT_FORMATS = list(_IMPORT_FILTERS.keys())
 # UI 格式名 → 业务层 import_file 的 format_key（单一 dispatch 入口）。
 _IMPORT_FORMAT_KEYS = {
-    'JSON (CipherBox)': 'json',
-    'CSV': 'csv',
-    'Chrome / Edge CSV': 'chrome_csv',
-    'Bitwarden JSON': 'bitwarden_json',
-    'KeePass CSV': 'keepass_csv',
+    "JSON (CipherBox)": "json",
+    "CSV": "csv",
+    "Chrome / Edge CSV": "chrome_csv",
+    "Bitwarden JSON": "bitwarden_json",
+    "KeePass CSV": "keepass_csv",
 }
 
 
@@ -95,10 +95,10 @@ class ImportExportDialog(WorkerBackedDialog):
         return self._worker_is_export
 
     def _on_close_blocked(self) -> None:
-        self._status_label.setText('导入进行中，请等待完成后再关闭')
+        self._status_label.setText("导入进行中，请等待完成后再关闭")
 
     def _setup_ui(self) -> None:
-        self.setWindowTitle('导入 / 导出')
+        self.setWindowTitle("导入 / 导出")
         self.setMinimumSize(*DIALOG_IMPORT_EXPORT_MIN_SIZE)
         setup_dialog_flags(self)
 
@@ -109,12 +109,12 @@ class ImportExportDialog(WorkerBackedDialog):
         mode_layout = QHBoxLayout()
         self._mode_group = QButtonGroup(self)
 
-        export_radio = QRadioButton('导出')
+        export_radio = QRadioButton("导出")
         export_radio.setChecked(True)
         self._mode_group.addButton(export_radio, 0)
         mode_layout.addWidget(export_radio)
 
-        import_radio = QRadioButton('导入')
+        import_radio = QRadioButton("导入")
         self._mode_group.addButton(import_radio, 1)
         mode_layout.addWidget(import_radio)
 
@@ -125,7 +125,7 @@ class ImportExportDialog(WorkerBackedDialog):
 
         # 格式选择
         format_layout = QHBoxLayout()
-        format_layout.addWidget(QLabel('格式：'))
+        format_layout.addWidget(QLabel("格式："))
         self._format_combo = QComboBox()
         self._format_combo.addItems(_EXPORT_FORMATS)
         format_layout.addWidget(self._format_combo)
@@ -136,8 +136,8 @@ class ImportExportDialog(WorkerBackedDialog):
         self._password_container = QWidget()
         pwd_layout = QHBoxLayout(self._password_container)
         pwd_layout.setContentsMargins(0, 0, 0, 0)
-        self._include_pwd_check = QRadioButton('包含密码')
-        self._exclude_pwd_check = QRadioButton('不包含密码')
+        self._include_pwd_check = QRadioButton("包含密码")
+        self._exclude_pwd_check = QRadioButton("不包含密码")
         self._exclude_pwd_check.setChecked(True)
         pwd_layout.addWidget(self._include_pwd_check)
         pwd_layout.addWidget(self._exclude_pwd_check)
@@ -146,26 +146,26 @@ class ImportExportDialog(WorkerBackedDialog):
         self._duplicate_container = QWidget()
         duplicate_layout = QHBoxLayout(self._duplicate_container)
         duplicate_layout.setContentsMargins(0, 0, 0, 0)
-        duplicate_layout.addWidget(QLabel('重复项：'))
+        duplicate_layout.addWidget(QLabel("重复项："))
         self._duplicate_combo = QComboBox()
-        self._duplicate_combo.addItem('跳过已有条目', 'skip')
-        self._duplicate_combo.addItem('覆盖已有条目', 'overwrite')
-        self._duplicate_combo.addItem('仍然全部导入', 'import_all')
+        self._duplicate_combo.addItem("跳过已有条目", "skip")
+        self._duplicate_combo.addItem("覆盖已有条目", "overwrite")
+        self._duplicate_combo.addItem("仍然全部导入", "import_all")
         duplicate_layout.addWidget(self._duplicate_combo, 1)
         self._duplicate_container.hide()
         layout.addWidget(self._duplicate_container)
 
         # 文件路径
         path_layout = QHBoxLayout()
-        self._path_label = QLabel('文件：')
+        self._path_label = QLabel("文件：")
         path_layout.addWidget(self._path_label)
 
-        self._path_edit = QLabel('未选择')
-        self._path_edit.setStyleSheet(f'color: {c("text_muted")};')
+        self._path_edit = QLabel("未选择")
+        self._path_edit.setStyleSheet(f"color: {c('text_muted')};")
         self._path_edit.setWordWrap(True)
         path_layout.addWidget(self._path_edit, 1)
 
-        browse_btn = QPushButton('浏览...')
+        browse_btn = QPushButton("浏览...")
         browse_btn.clicked.connect(self._browse_file)
         path_layout.addWidget(browse_btn)
 
@@ -177,9 +177,9 @@ class ImportExportDialog(WorkerBackedDialog):
         layout.addWidget(self._progress)
 
         # 状态
-        self._status_label = QLabel('')
+        self._status_label = QLabel("")
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._status_label.setObjectName('formStatus')
+        self._status_label.setObjectName("formStatus")
         layout.addWidget(self._status_label)
 
         layout.addStretch()
@@ -190,8 +190,8 @@ class ImportExportDialog(WorkerBackedDialog):
 
         btn_layout.addWidget(create_cancel_button(self))
 
-        self._action_btn = QPushButton('导出')
-        self._action_btn.setObjectName('primaryBtn')
+        self._action_btn = QPushButton("导出")
+        self._action_btn.setObjectName("primaryBtn")
         self._action_btn.setFixedSize(*BTN_DIALOG)
         self._action_btn.clicked.connect(self._execute)
         # 经基类 _set_busy 统一禁用/启用主操作按钮
@@ -204,44 +204,47 @@ class ImportExportDialog(WorkerBackedDialog):
         self._is_export = self._mode_group.checkedId() == 0
         self._password_container.setVisible(self._is_export)
         self._duplicate_container.setVisible(not self._is_export)
-        self._action_btn.setText('导出' if self._is_export else '导入')
+        self._action_btn.setText("导出" if self._is_export else "导入")
 
         # 切换格式下拉项
         self._format_combo.blockSignals(True)
         self._format_combo.clear()
-        self._format_combo.addItems(
-            _EXPORT_FORMATS if self._is_export else _IMPORT_FORMATS
-        )
+        self._format_combo.addItems(_EXPORT_FORMATS if self._is_export else _IMPORT_FORMATS)
         self._format_combo.blockSignals(False)
 
         # 重置文件选择
         self._selected_path = None
-        self._path_edit.setText('未选择')
-        self._path_edit.setStyleSheet(f'color: {c("text_muted")};')
+        self._path_edit.setText("未选择")
+        self._path_edit.setStyleSheet(f"color: {c('text_muted')};")
 
     def _browse_file(self) -> None:
         if self._is_export:
             fmt = self._format_combo.currentText().lower()
             path, _ = QFileDialog.getSaveFileName(
-                self, '选择导出路径', f'cipherbox_export.{fmt}',
-                f'{fmt.upper()} 文件 (*.{fmt})',
+                self,
+                "选择导出路径",
+                f"cipherbox_export.{fmt}",
+                f"{fmt.upper()} 文件 (*.{fmt})",
             )
         else:
             fmt_name = self._format_combo.currentText()
             filter_str, default_name = _IMPORT_FILTERS.get(
-                fmt_name, ('密码文件 (*.json *.csv)', 'import.json')
+                fmt_name, ("密码文件 (*.json *.csv)", "import.json")
             )
             path, _ = QFileDialog.getOpenFileName(
-                self, '选择导入文件', default_name, filter_str,
+                self,
+                "选择导入文件",
+                default_name,
+                filter_str,
             )
         if path:
             self._selected_path = path
             self._path_edit.setText(path)
-            self._path_edit.setStyleSheet(f'color: {c("text_primary")};')
+            self._path_edit.setStyleSheet(f"color: {c('text_primary')};")
 
     def _execute(self) -> None:
         if not self._selected_path:
-            QMessageBox.warning(self, DLG_TITLE_INFO, '请先选择文件')
+            QMessageBox.warning(self, DLG_TITLE_INFO, "请先选择文件")
             return
 
         if self._is_export:
@@ -255,21 +258,23 @@ class ImportExportDialog(WorkerBackedDialog):
 
         if include_pwd:
             reply = QMessageBox.warning(
-                self, '安全警告',
-                '您选择导出包含密码的文件！\n\n'
-                '导出的文件将以明文形式保存所有密码，存在严重的安全风险。\n'
-                '请确保妥善保管导出文件，使用后立即删除。\n\n'
-                '确定要继续吗？',
+                self,
+                "安全警告",
+                "您选择导出包含密码的文件！\n\n"
+                "导出的文件将以明文形式保存所有密码，存在严重的安全风险。\n"
+                "请确保妥善保管导出文件，使用后立即删除。\n\n"
+                "确定要继续吗？",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return
         else:
             reply = QMessageBox.information(
-                self, '安全提示',
-                '导出文件包含标题、账号等敏感信息（不含密码）。\n'
-                '请妥善保管导出文件，使用后及时删除。\n\n'
-                '确定要继续吗？',
+                self,
+                "安全提示",
+                "导出文件包含标题、账号等敏感信息（不含密码）。\n"
+                "请妥善保管导出文件，使用后及时删除。\n\n"
+                "确定要继续吗？",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
@@ -281,17 +286,24 @@ class ImportExportDialog(WorkerBackedDialog):
             # worker 是下方赋值的自由变量，闭包延迟绑定（_export_task 在 worker.run
             # 时执行，worker 已赋值）。
             entries = self._entry_mgr.get_entries_for_export(
-                include_pwd, cancel_check=worker.cancel_check,
+                include_pwd,
+                cancel_check=worker.cancel_check,
             )
             if worker.is_cancelled:
                 return 0
-            if fmt == 'JSON':
+            if fmt == "JSON":
                 self._import_export.export_to_json(
-                    path, entries, include_pwd, cancel_check=worker.cancel_check,
+                    path,
+                    entries,
+                    include_pwd,
+                    cancel_check=worker.cancel_check,
                 )
             else:
                 self._import_export.export_to_csv(
-                    path, entries, include_pwd, cancel_check=worker.cancel_check,
+                    path,
+                    entries,
+                    include_pwd,
+                    cancel_check=worker.cancel_check,
                 )
             return len(entries)
 
@@ -313,8 +325,8 @@ class ImportExportDialog(WorkerBackedDialog):
         self._set_busy(False)
         self._progress.hide()
         if cancelled:
-            self._status_label.setText('导出已取消')
-            set_label_severity(self._status_label, 'accent')
+            self._status_label.setText("导出已取消")
+            set_label_severity(self._status_label, "accent")
             return
         # 防御性加保：业务层已调用 secure_file，UI 层再次收紧权限。
         # 用 _selected_path 而非文本框内容判空，避免用户编辑导致路径不可靠。
@@ -326,12 +338,12 @@ class ImportExportDialog(WorkerBackedDialog):
             except OSError:
                 logger.warning("导出文件权限设置失败: %s", path)
                 perm_warning = True
-        message = f'成功导出 {count} 条记录'
+        message = f"成功导出 {count} 条记录"
         if perm_warning:
             # 导出文件（可能含明文密码）权限未能收紧，明确提示用户手动限制访问
-            message += '（警告：文件权限未能收紧，建议手动限制该文件访问）'
+            message += "（警告：文件权限未能收紧，建议手动限制该文件访问）"
         self._status_label.setText(message)
-        set_label_severity(self._status_label, 'success')
+        set_label_severity(self._status_label, "success")
 
     def _on_export_error(self, error_msg: str) -> None:
         if not finalize_worker_if_current(self):
@@ -339,18 +351,19 @@ class ImportExportDialog(WorkerBackedDialog):
         self._set_busy(False)
         self._progress.hide()
         logger.error("导出失败: %s", error_msg)
-        self._status_label.setText(f'导出失败：{error_msg}')
-        set_label_severity(self._status_label, 'error')
+        self._status_label.setText(f"导出失败：{error_msg}")
+        set_label_severity(self._status_label, "error")
 
     def _do_import(self, path: str) -> None:
         fmt_index = self._format_combo.currentIndex()
-        duplicate_action = self._duplicate_combo.currentData() or 'skip'
+        duplicate_action = self._duplicate_combo.currentData() or "skip"
 
         reply = QMessageBox.question(
-            self, '确认导入',
-            '即将导入密码数据到保险库。\n\n'
-            f'重复项处理：{self._duplicate_combo.currentText()}。\n\n'
-            '确定要继续吗？',
+            self,
+            "确认导入",
+            "即将导入密码数据到保险库。\n\n"
+            f"重复项处理：{self._duplicate_combo.currentText()}。\n\n"
+            "确定要继续吗？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -367,12 +380,13 @@ class ImportExportDialog(WorkerBackedDialog):
         def _import_task() -> int:
             # worker 是下方赋值的自由变量，闭包延迟绑定。经 _IMPORT_FORMAT_KEYS
             # 映射到 format_key，调 import_file 单一 dispatch 入口。
-            fmt_name = _IMPORT_FORMATS[fmt_index] if 0 <= fmt_index < len(_IMPORT_FORMATS) else ''
+            fmt_name = _IMPORT_FORMATS[fmt_index] if 0 <= fmt_index < len(_IMPORT_FORMATS) else ""
             format_key = _IMPORT_FORMAT_KEYS.get(fmt_name)
             if format_key is None:
                 return 0
             return self._import_export.import_file(
-                path, format_key,
+                path,
+                format_key,
                 progress_callback=worker.emit_progress,
                 duplicate_action=duplicate_action,
                 cancel_check=worker.cancel_check,
@@ -395,8 +409,8 @@ class ImportExportDialog(WorkerBackedDialog):
             return
         self._set_busy(False)
         self._progress.hide()
-        self._status_label.setText(f'成功导入 {count} 条记录')
-        set_label_severity(self._status_label, 'success')
+        self._status_label.setText(f"成功导入 {count} 条记录")
+        set_label_severity(self._status_label, "success")
         if count > 0:
             self.import_completed.emit()
 
@@ -406,5 +420,5 @@ class ImportExportDialog(WorkerBackedDialog):
         self._set_busy(False)
         self._progress.hide()
         logger.error("导入失败: %s", error_msg)
-        self._status_label.setText(f'导入失败：{error_msg}')
-        set_label_severity(self._status_label, 'error')
+        self._status_label.setText(f"导入失败：{error_msg}")
+        set_label_severity(self._status_label, "error")

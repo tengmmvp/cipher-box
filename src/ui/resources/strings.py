@@ -7,6 +7,6 @@
 """
 
 # 对话框通用标题（QMessageBox.windowTitle，高频复用）
-DLG_TITLE_ERROR = '错误'
-DLG_TITLE_INFO = '提示'
-DLG_TITLE_SUCCESS = '成功'
+DLG_TITLE_ERROR = "错误"
+DLG_TITLE_INFO = "提示"
+DLG_TITLE_SUCCESS = "成功"

@@ -68,7 +68,7 @@ from .widgets import clear_layout, create_icon_button, disconnect_all
 logger = logging.getLogger(__name__)
 
 # 密码强度标签映射，模块级常量避免每次 show_entry 重建
-_STRENGTH_LABELS = {0: '非常弱', 1: '弱', 2: '一般', 3: '强', 4: '非常强'}
+_STRENGTH_LABELS = {0: "非常弱", 1: "弱", 2: "一般", 3: "强", 4: "非常强"}
 
 
 class DetailPanel(QWidget):
@@ -99,7 +99,7 @@ class DetailPanel(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setObjectName('detailPanel')
+        self.setObjectName("detailPanel")
         self._clipboard = clipboard_manager
         self._entry_mgr = entry_manager
         self._config = config
@@ -110,11 +110,11 @@ class DetailPanel(QWidget):
         self._pwd_hide_timer.timeout.connect(self._auto_hide_password)
         self._pwd_label_ref: QLabel | None = None
         self._show_btn_ref: QPushButton | None = None
-        self._current_password = ''
+        self._current_password = ""
         # 主条目中非主密码敏感字段的间接引用字典，自定义字段由 renderer 管理
         self._secret_values_main: dict[str, str] = {}
-        # 非主密码敏感字段与历史密码的自动掩码定时器，持久且可取消，
-        # 便于 _clear_content 统一停止并清空。
+        # 非主密码敏感字段与自定义字段的自动掩码定时器，持久且可取消，
+        # 便于 _clear_content 统一停止并清空（历史密码定时器由 PasswordHistoryWidget 自管）。
         self._field_hide_timers: list[QTimer] = []
         # 复制反馈定时器，可取消，避免控件销毁后回调访问已删对象；上限 20 防泄漏。
         self._copy_feedback_timers: OrderedDict[QTimer, QPushButton] = OrderedDict()
@@ -146,6 +146,7 @@ class DetailPanel(QWidget):
             # 否则按钮永久停留 CHECK。sip 守卫防止 btn 已 deleteLater。
             oldest, oldest_btn = self._copy_feedback_timers.popitem(last=False)
             oldest.stop()
+            oldest.deleteLater()
             if oldest_btn is not None and not sip.isdeleted(oldest_btn):
                 set_icon(oldest_btn, COPY)
         self._copy_feedback_timers[timer] = btn
@@ -153,7 +154,7 @@ class DetailPanel(QWidget):
     def _copy_with_feedback(self, btn: QPushButton, text: str) -> None:
         """复制文本到剪贴板并显示图标反馈，定时恢复为复制图标。"""
         self._copy(text)
-        set_icon(btn, CHECK, 'success')
+        set_icon(btn, CHECK, "success")
         timer = QTimer(self)
         timer.setSingleShot(True)
         self._add_copy_feedback_timer(timer, btn)
@@ -166,6 +167,7 @@ class DetailPanel(QWidget):
                 return
             set_icon(btn, COPY)
             self._copy_feedback_timers.pop(t, None)
+            t.deleteLater()
 
         timer.timeout.connect(_restore)
         timer.start(MS_FEEDBACK)
@@ -179,16 +181,16 @@ class DetailPanel(QWidget):
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(16, 12, 16, 8)
 
-        self._title_label = QLabel('选择一个条目查看详情')
-        self._title_label.setObjectName('detailTitle')
+        self._title_label = QLabel("选择一个条目查看详情")
+        self._title_label.setObjectName("detailTitle")
         self._title_label.setWordWrap(True)
         toolbar.addWidget(self._title_label)
 
         toolbar.addStretch()
 
-        self._fav_btn = create_icon_button(STAR_OUTLINE, '收藏', visible=False)
-        self._edit_btn = create_icon_button(EDIT, '编辑', visible=False)
-        self._delete_btn = create_icon_button(DELETE, '删除', visible=False)
+        self._fav_btn = create_icon_button(STAR_OUTLINE, "收藏", visible=False)
+        self._edit_btn = create_icon_button(EDIT, "编辑", visible=False)
+        self._delete_btn = create_icon_button(DELETE, "删除", visible=False)
         toolbar.addWidget(self._fav_btn)
         toolbar.addWidget(self._edit_btn)
         toolbar.addWidget(self._delete_btn)
@@ -197,7 +199,7 @@ class DetailPanel(QWidget):
 
         self._divider = QFrame()
         self._divider.setFixedHeight(1)
-        self._divider.setObjectName('detailDivider')
+        self._divider.setObjectName("detailDivider")
         layout.addWidget(self._divider)
 
         # 滚动内容
@@ -210,9 +212,9 @@ class DetailPanel(QWidget):
         self._content_layout.setContentsMargins(20, 16, 20, 16)
         self._content_layout.setSpacing(10)
 
-        self._empty_label = QLabel('请从列表中选择一个条目\n以查看详细信息')
+        self._empty_label = QLabel("请从列表中选择一个条目\n以查看详细信息")
         self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty_label.setObjectName('detailEmpty')
+        self._empty_label.setObjectName("detailEmpty")
         self._content_layout.addWidget(self._empty_label)
 
         scroll.setWidget(self._content)
@@ -230,10 +232,12 @@ class DetailPanel(QWidget):
             entry: 要显示的条目
             force: 强制重建，主题切换时需要刷新内联样式
         """
-        if (not force
-                and self._current_entry is not None
-                and self._current_entry.id == entry.id
-                and self._current_entry.updated_at == entry.updated_at):
+        if (
+            not force
+            and self._current_entry is not None
+            and self._current_entry.id == entry.id
+            and self._current_entry.updated_at == entry.updated_at
+        ):
             return
         logger.debug("显示条目详情: id=%d", entry.id)
         self._prepare_display(entry)
@@ -263,7 +267,7 @@ class DetailPanel(QWidget):
 
         闭包仅捕获 ``entry.id``，避免信号槽持有整个 entry 引用阻碍 GC。
         """
-        self._title_label.setText(f'{entry.type_icon} {entry.title}')
+        self._title_label.setText(f"{entry.type_icon} {entry.title}")
         self._edit_btn.setVisible(not entry.is_deleted)
         self._delete_btn.setVisible(not entry.is_deleted)
         self._fav_btn.setVisible(not entry.is_deleted)
@@ -285,10 +289,10 @@ class DetailPanel(QWidget):
         if not entry.integrity_error:
             return
         warning = QLabel(
-            f'部分数据无法解密：{entry.integrity_message}。为保护原始数据，已禁用编辑。'
+            f"部分数据无法解密：{entry.integrity_message}。为保护原始数据，已禁用编辑。"
         )
         warning.setWordWrap(True)
-        warning.setObjectName('detailWarning')
+        warning.setObjectName("detailWarning")
         self._content_layout.addWidget(warning)
         self._edit_btn.hide()
 
@@ -298,11 +302,13 @@ class DetailPanel(QWidget):
         core_form.setSpacing(10)
         core_form.setHorizontalSpacing(16)
         if entry.username:
-            core_form.addRow(*self._make_field_row('账号', entry.username, copyable=True))
+            core_form.addRow(*self._make_field_row("账号", entry.username, copyable=True))
         if entry.password:
-            core_form.addRow(*self._make_field_row('密码', entry.password, secret=True, main_password=True))
+            core_form.addRow(
+                *self._make_field_row("密码", entry.password, secret=True, main_password=True)
+            )
         if entry.url:
-            core_form.addRow('网址：', self._build_url_label(entry.url))
+            core_form.addRow("网址：", self._build_url_label(entry.url))
         self._content_layout.addLayout(core_form)
         if entry.password:
             self._build_strength_bar(entry)
@@ -315,10 +321,10 @@ class DetailPanel(QWidget):
         显示文本用转义后的原文。
         """
         parsed_url = urlparse(url)
-        safe_url = parsed_url.scheme.lower() in ('http', 'https')
+        safe_url = parsed_url.scheme.lower() in ("http", "https")
         escaped_url = escape(url, quote=True)
         if safe_url:
-            href = quote(url, safe='/:?&=#%+')
+            href = quote(url, safe="/:?&=#%+")
             text = (
                 f'<a href="{escape(href, quote=True)}" '
                 f'style="color: {c("link")}; text-decoration:none;">{escaped_url}</a>'
@@ -337,7 +343,10 @@ class DetailPanel(QWidget):
         """启动 TOTP 显示与密码历史延迟加载 stub。"""
         if entry.has_totp and entry.id and self._entry_mgr is not None:
             self._totp_widget.start(
-                entry.id, self._entry_mgr, self._content_layout, entry.totp_secret,
+                entry.id,
+                self._entry_mgr,
+                self._content_layout,
+                entry.totp_secret,
             )
         if entry.id and self._entry_mgr:
             self._history_widget.build_stub(entry.id, self._entry_mgr, self._content_layout)
@@ -345,11 +354,11 @@ class DetailPanel(QWidget):
     def _render_notes(self, entry: Entry) -> None:
         if not entry.notes:
             return
-        notes_group = QGroupBox('备注')
+        notes_group = QGroupBox("备注")
         notes_layout = QVBoxLayout(notes_group)
         notes_label = QLabel(entry.notes)
         notes_label.setWordWrap(True)
-        notes_label.setObjectName('notesValue')
+        notes_label.setObjectName("notesValue")
         notes_layout.addWidget(notes_label)
         self._content_layout.addWidget(notes_group)
 
@@ -359,25 +368,24 @@ class DetailPanel(QWidget):
         cf_timers = self._fields_renderer.render(entry, self._content_layout, self)
         self._field_hide_timers.extend(cf_timers)
 
-
     def _build_tags_section(self, entry: Entry) -> QHBoxLayout:
         """构建分类、类型和标签区域。"""
         header_info = QHBoxLayout()
         header_info.setSpacing(8)
 
         if entry.category_name:
-            cat_tag = QLabel(f'  {entry.category_name}  ')
-            cat_tag.setObjectName('tag')
+            cat_tag = QLabel(f"  {entry.category_name}  ")
+            cat_tag.setObjectName("tag")
             header_info.addWidget(cat_tag)
 
         if entry.entry_type and entry.entry_type != ENTRY_TYPE_LOGIN:
-            type_tag = QLabel(f'  {entry.type_label}  ')
-            type_tag.setObjectName('typeTag')
+            type_tag = QLabel(f"  {entry.type_label}  ")
+            type_tag.setObjectName("typeTag")
             header_info.addWidget(type_tag)
 
         for tag in entry.get_tag_list()[:MAX_TAG_DISPLAY]:
-            tag_label = QLabel(f'  {tag}  ')
-            tag_label.setObjectName('tag')
+            tag_label = QLabel(f"  {tag}  ")
+            tag_label.setObjectName("tag")
             header_info.addWidget(tag_label)
 
         header_info.addStretch()
@@ -390,8 +398,8 @@ class DetailPanel(QWidget):
         strength_row = QHBoxLayout()
         strength_row.setSpacing(8)
 
-        strength_label_title = QLabel('强度：')
-        strength_label_title.setObjectName('fieldLabel')
+        strength_label_title = QLabel("强度：")
+        strength_label_title.setObjectName("fieldLabel")
         strength_row.addWidget(strength_label_title)
 
         bar = QProgressBar()
@@ -405,8 +413,8 @@ class DetailPanel(QWidget):
         """)
         strength_row.addWidget(bar, 1)
 
-        strength_text = QLabel(f'{_STRENGTH_LABELS.get(score, "未知")} ({score}/4)')
-        strength_text.setStyleSheet(f'color: {strength_color}; font-weight: bold; font-size: 12px;')
+        strength_text = QLabel(f"{_STRENGTH_LABELS.get(score, '未知')} ({score}/4)")
+        strength_text.setStyleSheet(f"color: {strength_color}; font-weight: bold; font-size: 12px;")
         strength_row.addWidget(strength_text)
 
         self._content_layout.addLayout(strength_row)
@@ -416,32 +424,30 @@ class DetailPanel(QWidget):
         meta_form = QFormLayout()
         meta_form.setSpacing(4)
         if entry.created_at:
-            meta_form.addRow(
-                QLabel('创建：'),
-                QLabel(format_datetime(entry.created_at))
-            )
+            meta_form.addRow(QLabel("创建："), QLabel(format_datetime(entry.created_at)))
         if entry.updated_at:
-            meta_form.addRow(
-                QLabel('更新：'),
-                QLabel(format_datetime(entry.updated_at))
-            )
+            meta_form.addRow(QLabel("更新："), QLabel(format_datetime(entry.updated_at)))
         if entry.password and entry.password_changed_at:
             meta_form.addRow(
-                QLabel('密码更新：'),
-                QLabel(format_datetime(entry.password_changed_at))
+                QLabel("密码更新："), QLabel(format_datetime(entry.password_changed_at))
             )
         for i in range(meta_form.count()):
             item = meta_form.itemAt(i)
             if item:
                 w = item.widget()
                 if w:
-                    w.setObjectName('metaLabel')
+                    w.setObjectName("metaLabel")
         if meta_form.count() > 0:
             self._content_layout.addLayout(meta_form)
 
     def _make_field_row(
-        self, label: str, value: str,
-        *, secret: bool = False, copyable: bool = False, main_password: bool = False,
+        self,
+        label: str,
+        value: str,
+        *,
+        secret: bool = False,
+        copyable: bool = False,
+        main_password: bool = False,
     ) -> tuple[QLabel, QWidget]:
         """创建字段行的统一入口，根据是否敏感分发到具体方法。
 
@@ -458,11 +464,15 @@ class DetailPanel(QWidget):
         return self._make_plain_field_row(label, value, copyable=copyable)
 
     def _make_plain_field_row(
-        self, label: str, value: str, *, copyable: bool = False,
+        self,
+        label: str,
+        value: str,
+        *,
+        copyable: bool = False,
     ) -> tuple[QLabel, QWidget]:
         """创建普通字段行，明文显示并可选附带复制按钮。"""
-        name_label = QLabel(f'{label}：')
-        name_label.setObjectName('fieldLabel')
+        name_label = QLabel(f"{label}：")
+        name_label.setObjectName("fieldLabel")
 
         row_widget = QWidget()
         row_layout = QHBoxLayout(row_widget)
@@ -470,18 +480,20 @@ class DetailPanel(QWidget):
 
         val_label = QLabel(value)
         val_label.setWordWrap(True)
-        val_label.setObjectName('fieldValue')
+        val_label.setObjectName("fieldValue")
         row_layout.addWidget(val_label, 1)
 
         if copyable and value:
             copy_btn = QPushButton()
             set_icon(copy_btn, COPY)
-            copy_btn.setObjectName('iconBtn')
+            copy_btn.setObjectName("iconBtn")
             copy_btn.setFixedSize(*BTN_COPY)
-            copy_btn.setToolTip('复制')
+            copy_btn.setToolTip("复制")
 
             # 使用闭包捕获当前值，主条目字段无需间接引用，其生命周期与面板同步
-            def _copy_value(_checked: bool = False, v: str = value, btn: QPushButton = copy_btn) -> None:
+            def _copy_value(
+                _checked: bool = False, v: str = value, btn: QPushButton = copy_btn
+            ) -> None:
                 if sip.isdeleted(btn):
                     return
                 self._copy_with_feedback(btn, v)
@@ -494,7 +506,11 @@ class DetailPanel(QWidget):
         return name_label, row_widget
 
     def _make_secret_field_row(
-        self, label: str, value: str, *, main_password: bool = False,
+        self,
+        label: str,
+        value: str,
+        *,
+        main_password: bool = False,
     ) -> tuple[QLabel, QWidget]:
         """创建敏感字段行，默认掩码，附带显示/隐藏与复制按钮。
 
@@ -515,32 +531,36 @@ class DetailPanel(QWidget):
                     on_copy=self._copy_with_feedback,
                     on_copy_feedback=self.copy_feedback.emit,
                 ),
-                label, value, store_key=label,
+                label,
+                value,
+                store_key=label,
             )
         # 主密码字段：使用全局 _pwd_hide_timer 与 _current_password 独立引用，
         # 不复用共享逻辑（共享逻辑为每行使用独立 QTimer）。
-        name_label = QLabel(f'{label}：')
-        name_label.setObjectName('fieldLabel')
+        name_label = QLabel(f"{label}：")
+        name_label.setObjectName("fieldLabel")
 
         row_widget = QWidget()
         row_layout = QHBoxLayout(row_widget)
         row_layout.setContentsMargins(0, 0, 0, 0)
 
         val_label = QLabel(PWD_MASK)
-        val_label.setObjectName('secretValue')
+        val_label.setObjectName("secretValue")
         row_layout.addWidget(val_label, 1)
 
         show_btn = QPushButton()
         set_icon(show_btn, EYE)
-        show_btn.setObjectName('iconBtn')
+        show_btn.setObjectName("iconBtn")
         show_btn.setFixedSize(*BTN_COPY)
-        show_btn.setToolTip('显示/隐藏')
+        show_btn.setToolTip("显示/隐藏")
 
         self._pwd_label_ref = val_label
         self._show_btn_ref = show_btn
         self._current_password = value
 
-        def _toggle(_checked: bool = False, lbl: QLabel = val_label, btn: QPushButton = show_btn) -> None:
+        def _toggle(
+            _checked: bool = False, lbl: QLabel = val_label, btn: QPushButton = show_btn
+        ) -> None:
             # _clear_content 经 deleteLater 异步销毁控件；销毁窗口期内若仍有挂起的
             # clicked 事件触发闭包，操作已删除的 C++ 对象会抛 RuntimeError。守卫
             # 避免该竞态，与 _signal_connections 在 secure_clear 时显式断开的设计互补。
@@ -561,9 +581,9 @@ class DetailPanel(QWidget):
 
         copy_btn = QPushButton()
         set_icon(copy_btn, COPY)
-        copy_btn.setObjectName('iconBtn')
+        copy_btn.setObjectName("iconBtn")
         copy_btn.setFixedSize(*BTN_COPY)
-        copy_btn.setToolTip('复制密码')
+        copy_btn.setToolTip("复制密码")
 
         def _copy_secret(_checked: bool = False, btn: QPushButton = copy_btn) -> None:
             if sip.isdeleted(btn):
@@ -580,7 +600,9 @@ class DetailPanel(QWidget):
         """获取密码显示自动隐藏的毫秒数。"""
         seconds: int = PWD_VISIBLE_SECONDS_DEFAULT
         if self._config:
-            seconds = int(self._config.get_safe(CFG_PASSWORD_VISIBLE_SECONDS, PWD_VISIBLE_SECONDS_DEFAULT))
+            seconds = int(
+                self._config.get_safe(CFG_PASSWORD_VISIBLE_SECONDS, PWD_VISIBLE_SECONDS_DEFAULT)
+            )
         return seconds * 1000
 
     def _auto_hide_password(self) -> None:
@@ -599,8 +621,12 @@ class DetailPanel(QWidget):
         失效兜底，此处覆盖「保险库仍解锁但用户已离开该条目」的窗口。
         """
         prev = self._current_entry
-        if (self._entry_mgr is not None and prev is not None
-                and prev.id is not None and prev.has_totp):
+        if (
+            self._entry_mgr is not None
+            and prev is not None
+            and prev.id is not None
+            and prev.has_totp
+        ):
             self._entry_mgr.totp.evict(prev.id)
 
     def _clear_content(self) -> None:
@@ -610,10 +636,12 @@ class DetailPanel(QWidget):
         self._pwd_hide_timer.stop()
         for timer in self._field_hide_timers:
             timer.stop()
+            timer.deleteLater()
         self._field_hide_timers.clear()
         # 取消所有复制反馈定时器，避免控件销毁后回调访问已删对象。
         for timer in self._copy_feedback_timers:
             timer.stop()
+            timer.deleteLater()
         self._copy_feedback_timers.clear()
         # 安全擦除主条目字段间接引用中的敏感值
         for k in list(self._secret_values_main):
@@ -624,7 +652,7 @@ class DetailPanel(QWidget):
         self._history_widget.clear()
         self._fields_renderer.clear()
         mark_secret_discarded(self._current_password)
-        self._current_password = ''
+        self._current_password = ""
         # 先清空主密码 label 明文再置空引用，避免 deleteLater 异步销毁前明文驻留。
         if self._pwd_label_ref is not None:
             self._pwd_label_ref.setText(PWD_MASK)
@@ -645,15 +673,15 @@ class DetailPanel(QWidget):
     def hideEvent(self, a0: QHideEvent | None) -> None:
         """面板隐藏时停止 TOTP 定时器以节省资源。"""
         super().hideEvent(a0)
-        if hasattr(self, '_totp_widget'):
+        if hasattr(self, "_totp_widget"):
             self._totp_widget.stop()
 
     def showEvent(self, a0: QShowEvent | None) -> None:
         """面板显示时如果当前有条目含 TOTP 则重启定时器。"""
         super().showEvent(a0)
         if (
-            hasattr(self, '_totp_widget')
-            and hasattr(self, '_current_entry')
+            hasattr(self, "_totp_widget")
+            and hasattr(self, "_current_entry")
             and self._current_entry
             and self._current_entry.has_totp
         ):
@@ -663,13 +691,13 @@ class DetailPanel(QWidget):
         self._evict_current_totp()
         self._clear_content()
         self._current_entry = None
-        self._title_label.setText('选择一个条目查看详情')
+        self._title_label.setText("选择一个条目查看详情")
         self._edit_btn.hide()
         self._delete_btn.hide()
         self._fav_btn.hide()
         # 复用构造时创建的常驻 _empty_label，仅更新文本并显示，
         # 避免每次 show_empty 频繁 new QLabel + deleteLater 累积。
-        self._empty_label.setText('请从列表中选择一个条目\n以查看详细信息')
+        self._empty_label.setText("请从列表中选择一个条目\n以查看详细信息")
         self._content_layout.addWidget(self._empty_label)
         self._empty_label.show()
 

@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
 # ======== 信号断开与取消按钮 ========
 
+
 def disconnect_all(connections: Iterable[tuple[Any, object]]) -> None:
     """断开一组 (signal, slot) 连接，未连接的吞 TypeError。
 
@@ -49,7 +50,7 @@ def disconnect_all(connections: Iterable[tuple[Any, object]]) -> None:
 
 def create_cancel_button(parent_dialog: QDialog) -> QPushButton:
     """构造统一的「取消」按钮：固定尺寸并绑定 reject。"""
-    btn = QPushButton('取消')
+    btn = QPushButton("取消")
     btn.setFixedSize(*BTN_DIALOG)
     btn.clicked.connect(parent_dialog.reject)
     return btn
@@ -60,7 +61,7 @@ def create_icon_button(
     tooltip: str,
     *,
     visible: bool = True,
-    object_name: str = 'iconBtn',
+    object_name: str = "iconBtn",
 ) -> QPushButton:
     """构造统一的图标按钮：固定 BTN_ICON 尺寸、语义 objectName、图标与提示。
 
@@ -77,6 +78,7 @@ def create_icon_button(
 
 
 # ======== 密码显示/隐藏切换按钮 ========
+
 
 def create_password_toggle_btn(
     target_edit: QLineEdit,
@@ -99,7 +101,10 @@ def create_password_toggle_btn(
         已连接 clicked 信号的 :class:`PasswordToggleBtn` 实例。
     """
     return PasswordToggleBtn(
-        target_edit, eye_icon, lock_icon, auto_hide_seconds=auto_hide_seconds,
+        target_edit,
+        eye_icon,
+        lock_icon,
+        auto_hide_seconds=auto_hide_seconds,
     )
 
 
@@ -123,10 +128,10 @@ class PasswordToggleBtn(QPushButton):
         self._target = target_edit
         self._eye_icon = eye_icon
         self._lock_icon = lock_icon
-        self.setObjectName('iconBtn')
+        self.setObjectName("iconBtn")
         self.setFixedSize(*BTN_ICON)
         set_icon(self, eye_icon)
-        self.setToolTip('显示/隐藏密码')
+        self.setToolTip("显示/隐藏密码")
 
         # 可选自动隐藏定时器；parent 为 self，随按钮一并回收
         self._auto_hide_seconds = auto_hide_seconds
@@ -168,13 +173,14 @@ class PasswordToggleBtn(QPushButton):
 
 # ======== 密码强度标签更新 ========
 
+
 def update_strength_label(
     label: QLabel,
     password: str,
     *,
-    prefix: str = '强度：',
-    font_size: str = '12px',
-    extra_style: str = '',
+    prefix: str = "强度：",
+    font_size: str = "12px",
+    extra_style: str = "",
 ) -> None:
     """根据密码内容更新强度标签的文本和颜色。
 
@@ -188,17 +194,16 @@ def update_strength_label(
     if password:
         strength = PasswordService.check_strength(password)
         color = get_strength_color(strength.score)
-        label.setText(f'{prefix}{strength.label}')
-        label.setStyleSheet(
-            f'color: {color}; font-size: {font_size}; {extra_style}'
-        )
+        label.setText(f"{prefix}{strength.label}")
+        label.setStyleSheet(f"color: {color}; font-size: {font_size}; {extra_style}")
     else:
-        label.setText('')
+        label.setText("")
         if extra_style:
             label.setStyleSheet(extra_style)
 
 
 # ======== 移除 WindowContextHelpButtonHint ========
+
 
 def setup_dialog_flags(dialog: QDialog) -> None:
     """移除对话框标题栏上的「?» 帮助按钮。
@@ -210,9 +215,7 @@ def setup_dialog_flags(dialog: QDialog) -> None:
     Args:
         dialog: 目标对话框实例。
     """
-    dialog.setWindowFlags(
-        dialog.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint
-    )
+    dialog.setWindowFlags(dialog.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
 
 
 # ======== 布局清空工具 ========
@@ -221,11 +224,18 @@ def setup_dialog_flags(dialog: QDialog) -> None:
 # deleteLater 到实际删除间信号触发访问已删控件（如 type_combo.currentIndexChanged
 # 闭包持有已 deleteLater 的 value_edit）。getattr 动态探测，无该信号的控件跳过。
 _CLEAR_LAYOUT_SIGNALS = (
-    'clicked', 'toggled', 'stateChanged',
-    'textChanged', 'textEdited', 'editingFinished',
-    'currentIndexChanged', 'currentTextChanged',
-    'valueChanged', 'sliderMoved',
-    'triggered', 'changed',
+    "clicked",
+    "toggled",
+    "stateChanged",
+    "textChanged",
+    "textEdited",
+    "editingFinished",
+    "currentIndexChanged",
+    "currentTextChanged",
+    "valueChanged",
+    "sliderMoved",
+    "triggered",
+    "changed",
 )
 
 
@@ -261,6 +271,7 @@ def clear_layout(layout: QLayout, disconnect_signals: bool = True) -> None:
 
 # ======== Worker 释放工具 ========
 
+
 class WorkerHost(Protocol):
     """持有 BackgroundWorker 的对话框协议，约束 release_worker 的入参类型。
 
@@ -289,7 +300,7 @@ def release_worker(dialog: WorkerHost) -> None:
     worker = dialog._worker
     if worker is None:
         return
-    for sig_name in ('finished', 'error', 'cancelled', 'progress'):
+    for sig_name in ("finished", "error", "cancelled", "progress"):
         try:
             getattr(worker, sig_name).disconnect()
         except (TypeError, RuntimeError):
@@ -376,8 +387,12 @@ class WorkerBackedDialog(QDialog):
 
     def closeEvent(self, a0: QCloseEvent | None) -> None:
         """不可取消 worker 运行时拒绝关闭，避免中断写入副作用。"""
-        if (a0 is not None and self._worker is not None
-                and self._worker.isRunning() and not self._cancel_on_close()):
+        if (
+            a0 is not None
+            and self._worker is not None
+            and self._worker.isRunning()
+            and not self._cancel_on_close()
+        ):
             self._on_close_blocked()
             a0.ignore()
             return
@@ -396,10 +411,10 @@ class WorkerBackedDialog(QDialog):
             self._primary_action_btn.setEnabled(not busy)
         if self._status_label is not None:
             if busy:
-                self._status_label.setText('处理中...')
-                set_label_severity(self._status_label, 'accent')
+                self._status_label.setText("处理中...")
+                set_label_severity(self._status_label, "accent")
             else:
-                self._status_label.setText('')
+                self._status_label.setText("")
 
     def _report_worker_error(
         self,
@@ -433,7 +448,7 @@ class WorkerBackedDialog(QDialog):
             logger.error(log_message, error_msg)
         if self._status_label is not None:
             self._status_label.setText(status_text)
-            set_label_severity(self._status_label, 'error')
+            set_label_severity(self._status_label, "error")
         QMessageBox.critical(self, DLG_TITLE_ERROR, message)
         return True
 
@@ -446,7 +461,7 @@ def set_label_severity(label: QLabel, severity: str) -> None:
     setProperty 后需 unpolish+polish 触发 QSS 属性选择器重算，主题切换时由
     app.setStyleSheet 全局刷新，运行时改 severity 由本函数局部刷新。
     """
-    label.setProperty('severity', severity)
+    label.setProperty("severity", severity)
     style = label.style()
     if style is not None:
         style.unpolish(label)

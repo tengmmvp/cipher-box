@@ -19,35 +19,35 @@ logger = logging.getLogger(__name__)
 # 追加，建表与校验自动跟随，避免两份硬编码漂移。
 # tuple 形式：(索引名, 表名, 列定义, 是否 UNIQUE)
 _INDEX_DEFINITIONS: list[tuple[str, str, tuple[str, ...], bool]] = [
-    ('idx_entries_category', 'entries', ('category_id',), False),
-    ('idx_entries_deleted', 'entries', ('is_deleted',), False),
-    ('idx_entries_favorite', 'entries', ('is_favorite',), False),
-    ('idx_entries_updated', 'entries', ('updated_at',), False),
+    ("idx_entries_category", "entries", ("category_id",), False),
+    ("idx_entries_deleted", "entries", ("is_deleted",), False),
+    ("idx_entries_favorite", "entries", ("is_favorite",), False),
+    ("idx_entries_updated", "entries", ("updated_at",), False),
     # 复合索引：服务 WHERE is_deleted=0 + ORDER BY updated_at DESC，单列索引无法同时
     # 覆盖过滤与排序，组合后让 SQLite 走索引扫描而非全表 + filesort。
     (
-        'idx_entries_active_updated',
-        'entries',
-        ('is_deleted', 'updated_at DESC'),
+        "idx_entries_active_updated",
+        "entries",
+        ("is_deleted", "updated_at DESC"),
         False,
     ),
     # PERF-004：默认列表视图 ORDER BY is_favorite DESC, updated_at DESC 的复合索引，
     # 免 filesort。与 idx_entries_active_updated 共存（后者服务「近期更新」视图）。
     (
-        'idx_entries_active_favorite_updated',
-        'entries',
-        ('is_deleted', 'is_favorite DESC', 'updated_at DESC'),
+        "idx_entries_active_favorite_updated",
+        "entries",
+        ("is_deleted", "is_favorite DESC", "updated_at DESC"),
         False,
     ),
-    ('idx_entries_type', 'entries', ('entry_type',), False),
-    ('idx_entries_password_changed', 'entries', ('password_changed_at',), False),
-    ('idx_entries_crypto_id', 'entries', ('crypto_id',), True),
-    ('idx_pw_history_entry', 'password_history', ('entry_id',), False),
+    ("idx_entries_type", "entries", ("entry_type",), False),
+    ("idx_entries_password_changed", "entries", ("password_changed_at",), False),
+    ("idx_entries_crypto_id", "entries", ("crypto_id",), True),
+    ("idx_pw_history_entry", "password_history", ("entry_id",), False),
     # 复合索引：加速密码历史截断子查询 ORDER BY changed_at DESC
     (
-        'idx_pw_history_entry_time',
-        'password_history',
-        ('entry_id', 'changed_at DESC'),
+        "idx_pw_history_entry_time",
+        "password_history",
+        ("entry_id", "changed_at DESC"),
         False,
     ),
 ]
@@ -56,37 +56,52 @@ _INDEX_DEFINITIONS: list[tuple[str, str, tuple[str, ...], bool]] = [
 # 被篡改默认值（如 entry_type DEFAULT）的库仍通过结构校验。PRAGMA table_info 返回
 # 带引号原文（如 "'login'"、"0"），无默认为 None。
 _TABLE_COLUMNS = {
-    'vault_meta': {
-        'key': ('TEXT', 0, 1, None), 'value': ('TEXT', 1, 0, None),
+    "vault_meta": {
+        "key": ("TEXT", 0, 1, None),
+        "value": ("TEXT", 1, 0, None),
     },
-    'categories': {
-        'id': ('INTEGER', 0, 1, None), 'name_enc': ('TEXT', 1, 0, None),
-        'icon_char': ('TEXT', 0, 0, "'[DIR]'"), 'color': ('TEXT', 0, 0, "'#666666'"),
-        'sort_order': ('INTEGER', 0, 0, '0'), 'created_at': ('TEXT', 0, 0, "''"),
-        'metadata_mac': ('TEXT', 1, 0, "''"),
+    "categories": {
+        "id": ("INTEGER", 0, 1, None),
+        "name_enc": ("TEXT", 1, 0, None),
+        "icon_char": ("TEXT", 0, 0, "'[DIR]'"),
+        "color": ("TEXT", 0, 0, "'#666666'"),
+        "sort_order": ("INTEGER", 0, 0, "0"),
+        "created_at": ("TEXT", 0, 0, "''"),
+        "metadata_mac": ("TEXT", 1, 0, "''"),
     },
-    'entries': {
-        'id': ('INTEGER', 0, 1, None), 'crypto_id': ('TEXT', 1, 0, "''"),
-        'title_enc': ('TEXT', 1, 0, "''"), 'username_enc': ('TEXT', 0, 0, "''"),
-        'password_enc': ('TEXT', 0, 0, "''"), 'url_enc': ('TEXT', 0, 0, "''"),
-        'category_id': ('INTEGER', 0, 0, None), 'tags_enc': ('TEXT', 0, 0, "''"),
-        'notes_enc': ('TEXT', 0, 0, "''"), 'custom_fields_enc': ('TEXT', 0, 0, "''"),
-        'is_favorite': ('INTEGER', 0, 0, '0'), 'is_deleted': ('INTEGER', 0, 0, '0'),
-        'password_strength': ('INTEGER', 0, 0, '0'), 'entry_type': ('TEXT', 0, 0, f"'{ENTRY_TYPE_LOGIN}'"),
-        'totp_secret_enc': ('TEXT', 0, 0, "''"), 'created_at': ('TEXT', 0, 0, "''"),
-        'updated_at': ('TEXT', 0, 0, "''"), 'deleted_at': ('TEXT', 0, 0, "''"),
-        'password_changed_at': ('TEXT', 0, 0, "''"),
-        'metadata_mac': ('TEXT', 1, 0, "''"),
+    "entries": {
+        "id": ("INTEGER", 0, 1, None),
+        "crypto_id": ("TEXT", 1, 0, "''"),
+        "title_enc": ("TEXT", 1, 0, "''"),
+        "username_enc": ("TEXT", 0, 0, "''"),
+        "password_enc": ("TEXT", 0, 0, "''"),
+        "url_enc": ("TEXT", 0, 0, "''"),
+        "category_id": ("INTEGER", 0, 0, None),
+        "tags_enc": ("TEXT", 0, 0, "''"),
+        "notes_enc": ("TEXT", 0, 0, "''"),
+        "custom_fields_enc": ("TEXT", 0, 0, "''"),
+        "is_favorite": ("INTEGER", 0, 0, "0"),
+        "is_deleted": ("INTEGER", 0, 0, "0"),
+        "password_strength": ("INTEGER", 0, 0, "0"),
+        "entry_type": ("TEXT", 0, 0, f"'{ENTRY_TYPE_LOGIN}'"),
+        "totp_secret_enc": ("TEXT", 0, 0, "''"),
+        "created_at": ("TEXT", 0, 0, "''"),
+        "updated_at": ("TEXT", 0, 0, "''"),
+        "deleted_at": ("TEXT", 0, 0, "''"),
+        "password_changed_at": ("TEXT", 0, 0, "''"),
+        "metadata_mac": ("TEXT", 1, 0, "''"),
     },
-    'password_history': {
-        'id': ('INTEGER', 0, 1, None), 'entry_id': ('INTEGER', 1, 0, None),
-        'old_password_enc': ('TEXT', 0, 0, "''"), 'changed_at': ('TEXT', 0, 0, "''"),
+    "password_history": {
+        "id": ("INTEGER", 0, 1, None),
+        "entry_id": ("INTEGER", 1, 0, None),
+        "old_password_enc": ("TEXT", 0, 0, "''"),
+        "changed_at": ("TEXT", 0, 0, "''"),
     },
 }
 
 _FOREIGN_KEYS = {
-    'entries': {('category_id', 'categories', 'id', 'SET NULL')},
-    'password_history': {('entry_id', 'entries', 'id', 'CASCADE')},
+    "entries": {("category_id", "categories", "id", "SET NULL")},
+    "password_history": {("entry_id", "entries", "id", "CASCADE")},
 }
 
 
@@ -96,7 +111,7 @@ class SchemaManager:
     经 ``conn_provider`` 获取 sqlite3.Connection（通常为 DatabaseManager 实例）。
     """
 
-    SCHEMA_FORMAT = 'cipherbox-schema'
+    SCHEMA_FORMAT = "cipherbox-schema"
 
     def __init__(self, conn_provider: ConnectionProvider):
         self._mgr = conn_provider
@@ -119,8 +134,9 @@ class SchemaManager:
     def init_tables(self) -> None:
         """初始化数据库表。
 
-        对于已有数据库，schema 验证结果会被缓存，避免每次启动都执行
-        O(tables × columns) 的 PRAGMA 查询。仅当数据库文件变更后才重新验证。
+        对已有数据库，schema 验证结果经 ``schema_validated`` 连接级缓存，避免同一
+        连接内重复 O(tables × columns) 的 PRAGMA 查询；缓存随连接重开重置
+        （``open`` 后置 ``schema_validated=False``），故应用每次启动都会重新验证一次。
         """
         if self._conn is None:
             raise DatabaseError("数据库未连接")
@@ -191,14 +207,14 @@ class SchemaManager:
 
         # 默认分类仅在首次创建数据库时写入，尊重用户后续删除操作。
         default_categories = [
-            ('未分类', '[CAT]', '#888888', 0),
-            ('社交', '[SOC]', '#4CAF50', 1),
-            ('邮箱', '[MAIL]', '#2196F3', 2),
-            ('金融', '[FIN]', '#F44336', 3),
-            ('购物', '[CART]', '#FF9800', 4),
-            ('工作', '[WORK]', '#607D8B', 5),
-            ('娱乐', '[GAME]', '#9C27B0', 6),
-            ('开发', '[DEV]', '#00BCD4', 7),
+            ("未分类", "[CAT]", "#888888", 0),
+            ("社交", "[SOC]", "#4CAF50", 1),
+            ("邮箱", "[MAIL]", "#2196F3", 2),
+            ("金融", "[FIN]", "#F44336", 3),
+            ("购物", "[CART]", "#FF9800", 4),
+            ("工作", "[WORK]", "#607D8B", 5),
+            ("娱乐", "[GAME]", "#9C27B0", 6),
+            ("开发", "[DEV]", "#00BCD4", 7),
         ]
         # SEC-007：此处把公开默认分类名以明文写入 name_enc 列，是有意为之——schema_manager
         # 属 Data 层不持密钥，init_tables 在 DatabaseManager 装配密钥前/无密钥时调用，
@@ -214,7 +230,7 @@ class SchemaManager:
 
         cursor.execute(
             "INSERT INTO vault_meta (key, value) VALUES (?, ?)",
-            ('schema_format', self.SCHEMA_FORMAT),
+            ("schema_format", self.SCHEMA_FORMAT),
         )
 
         self._auto_commit()
@@ -226,23 +242,19 @@ class SchemaManager:
         Note: 返回前会对非空却不兼容的库（缺 vault_meta、schema_format 不符）直接抛
         SchemaError，调用方须同时处理 True / False / 异常三种结果。"""
         tables = {
-            row['name'] for row in cursor.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            row["name"]
+            for row in cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
             ).fetchall()
         }
         if not tables:
             return True
-        if 'vault_meta' not in tables:
-            raise SchemaError('数据库格式无效')
-        row = cursor.execute(
-            "SELECT value FROM vault_meta WHERE key = 'schema_format'"
-        ).fetchone()
-        if row is None or row['value'] != self.SCHEMA_FORMAT:
-            actual = row['value'] if row and row['value'] else '未知'
-            raise SchemaError(
-                f'不支持的数据库格式：{actual}'
-            )
+        if "vault_meta" not in tables:
+            raise SchemaError("数据库格式无效")
+        row = cursor.execute("SELECT value FROM vault_meta WHERE key = 'schema_format'").fetchone()
+        if row is None or row["value"] != self.SCHEMA_FORMAT:
+            actual = row["value"] if row and row["value"] else "未知"
+            raise SchemaError(f"不支持的数据库格式：{actual}")
         return False
 
     @staticmethod
@@ -251,43 +263,39 @@ class SchemaManager:
         for table, expected_columns in _TABLE_COLUMNS.items():
             # table 来自硬编码字典键，安全无注入风险；SQLite PRAGMA 不支持参数化，
             # f-string 是唯一方式。
-            rows = cursor.execute(f'PRAGMA table_info({table})').fetchall()
+            rows = cursor.execute(f"PRAGMA table_info({table})").fetchall()
             # 比对四元组（含 dflt_value），与 _TABLE_COLUMNS 预期一一对应。
             columns = {
-                row['name']: (row['type'].upper(), row['notnull'], row['pk'], row['dflt_value'])
+                row["name"]: (row["type"].upper(), row["notnull"], row["pk"], row["dflt_value"])
                 for row in rows
             }
             if columns != expected_columns:
-                raise SchemaError(f'数据库结构损坏或不是当前格式：{table}')
+                raise SchemaError(f"数据库结构损坏或不是当前格式：{table}")
 
         for index_name, table, expected_index_columns, is_unique in _INDEX_DEFINITIONS:
-            index_rows = cursor.execute(f'PRAGMA index_list({table})').fetchall()
-            index_row = next(
-                (row for row in index_rows if row['name'] == index_name), None
-            )
-            if index_row is None or bool(index_row['unique']) != is_unique:
-                raise SchemaError(f'数据库索引结构损坏：{index_name}')
+            index_rows = cursor.execute(f"PRAGMA index_list({table})").fetchall()
+            index_row = next((row for row in index_rows if row["name"] == index_name), None)
+            if index_row is None or bool(index_row["unique"]) != is_unique:
+                raise SchemaError(f"数据库索引结构损坏：{index_name}")
             actual_columns = tuple(
-                (row['name'], bool(row['desc']))
-                for row in cursor.execute(
-                    f'PRAGMA index_xinfo({index_name})'
-                ).fetchall()
-                if row['key']
+                (row["name"], bool(row["desc"]))
+                for row in cursor.execute(f"PRAGMA index_xinfo({index_name})").fetchall()
+                if row["key"]
             )
             normalized_expected = tuple(
                 (
-                    column.removesuffix(' DESC'),
-                    column.endswith(' DESC'),
+                    column.removesuffix(" DESC"),
+                    column.endswith(" DESC"),
                 )
                 for column in expected_index_columns
             )
             if actual_columns != normalized_expected:
-                raise SchemaError(f'数据库索引列损坏：{index_name}')
+                raise SchemaError(f"数据库索引列损坏：{index_name}")
 
         for table, expected in _FOREIGN_KEYS.items():
             actual = {
-                (row['from'], row['table'], row['to'], row['on_delete'].upper())
-                for row in cursor.execute(f'PRAGMA foreign_key_list({table})').fetchall()
+                (row["from"], row["table"], row["to"], row["on_delete"].upper())
+                for row in cursor.execute(f"PRAGMA foreign_key_list({table})").fetchall()
             }
             if actual != expected:
-                raise SchemaError(f'数据库外键结构损坏：{table}')
+                raise SchemaError(f"数据库外键结构损坏：{table}")

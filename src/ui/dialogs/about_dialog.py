@@ -27,7 +27,7 @@ class AboutDialog(QDialog):
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        self.setWindowTitle(f'关于 {__app_name__}')
+        self.setWindowTitle(f"关于 {__app_name__}")
         self.setMinimumSize(*DIALOG_ABOUT_MIN_SIZE)
         setup_dialog_flags(self)
 
@@ -44,31 +44,31 @@ class AboutDialog(QDialog):
 
         name = QLabel(__app_name__)
         name.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        name.setStyleSheet('font-size: 20px; font-weight: bold;')
+        name.setStyleSheet("font-size: 20px; font-weight: bold;")
         layout.addWidget(name)
 
-        version = QLabel(f'版本 {__version__}')
+        version = QLabel(f"版本 {__version__}")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        version.setObjectName('formMutedPlain')
+        version.setObjectName("formMutedPlain")
         layout.addWidget(version)
 
         desc = QLabel(
-            '一款安全的本地密码管理器\n'
-            '使用 AES-256-GCM 加密存储所有敏感数据\n'
-            '所有数据保存在本地，不上传至任何服务器'
+            "一款安全的本地密码管理器\n"
+            "使用 AES-256-GCM 加密存储所有敏感数据\n"
+            "所有数据保存在本地，不上传至任何服务器"
         )
         desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        desc.setStyleSheet(f'color: {c("text_secondary")}; font-size: 12px;')
+        desc.setStyleSheet(f"color: {c('text_secondary')}; font-size: 12px;")
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
         tech = QLabel(
-            '技术栈：Python + PyQt6\n'
-            '加密算法：AES-256-GCM（cryptography）+ Argon2id（argon2-cffi）\n'
-            '数据存储：SQLite'
+            "技术栈：Python + PyQt6\n"
+            "加密算法：AES-256-GCM（cryptography）+ Argon2id（argon2-cffi）\n"
+            "数据存储：SQLite"
         )
         tech.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tech.setObjectName('formMutedSmall')
+        tech.setObjectName("formMutedSmall")
         tech.setWordWrap(True)
         layout.addWidget(tech)
 
@@ -76,7 +76,7 @@ class AboutDialog(QDialog):
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
-        close_btn = QPushButton('关闭')
+        close_btn = QPushButton("关闭")
         close_btn.setFixedSize(*BTN_DIALOG)
         close_btn.clicked.connect(self.accept)
         btn_layout.addWidget(close_btn)

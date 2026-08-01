@@ -11,7 +11,7 @@ _CVV_LENGTH_MAX = 4
 
 def validate_card_number(number: str) -> bool:
     """使用 Luhn 算法校验信用卡号是否合法。"""
-    number = number.replace(' ', '').replace('-', '')
+    number = number.replace(" ", "").replace("-", "")
     # 限定 ASCII 数字：str.isdigit() 对全角/阿拉伯-印度数字也返回 True，虽能通过
     # Luhn 但与卡号规范不符，存储后显示异常。
     if not (number.isascii() and number.isdigit()):
@@ -34,7 +34,9 @@ def validate_card_expiry(expiry: str) -> bool:
 
     注意：仅校验格式与月份，**不校验是否已过期**——过期由 UI 层基于条目时间字段提示。
     """
-    if not re.match(r'^\d{2}/\d{2}$', expiry):
+    # 限定 ASCII 数字（[0-9]），与 validate_card_number/cvv 一致：\d 会匹配全角/
+    # 阿拉伯-印度数字，致卡号被拒但有效期通过的校验不一致。
+    if not re.match(r"^[0-9]{2}/[0-9]{2}$", expiry):
         return False
     month = int(expiry[:2])
     return 1 <= month <= 12

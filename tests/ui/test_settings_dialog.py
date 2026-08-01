@@ -10,6 +10,7 @@ from src.config import ConfigManager
 
 def _make_dialog(tmp_path):
     from src.ui.dialogs.settings_dialog import SettingsDialog
+
     config = ConfigManager.for_testing(tmp_path)
     return SettingsDialog(config), config
 
@@ -20,23 +21,24 @@ def test_save_settings_writes_widget_values_to_config(qapp, tmp_path):
     dlg._auto_lock_spin.setValue(10)
     dlg._theme_combo.setCurrentIndex(1)  # 深色
     dlg._save_settings()
-    assert config.get('auto_lock_minutes') == 10
-    assert config.get('theme') == 'dark'
+    assert config.get("auto_lock_minutes") == 10
+    assert config.get("theme") == "dark"
 
 
 def test_save_settings_rolls_back_on_persistence_failure(qapp, tmp_path, monkeypatch):
     """config.save 失败时回滚内存配置到快照，保持内存与磁盘（旧值）一致。"""
     dlg, config = _make_dialog(tmp_path)
-    original = config.get('auto_lock_minutes')
+    original = config.get("auto_lock_minutes")
     dlg._auto_lock_spin.setValue(15)  # 控件改为新值
 
     def _raise_save():
-        raise OSError('disk full')
+        raise OSError("disk full")
 
-    monkeypatch.setattr(config, 'save', _raise_save)
+    monkeypatch.setattr(config, "save", _raise_save)
     monkeypatch.setattr(
-        'src.ui.dialogs.settings_dialog.QMessageBox.critical', lambda *a, **k: None,
+        "src.ui.dialogs.settings_dialog.QMessageBox.critical",
+        lambda *a, **k: None,
     )
     dlg._save_settings()
     # 关键接线：save 失败后内存配置回滚到原值，而非残留控件新值 15
-    assert config.get('auto_lock_minutes') == original
+    assert config.get("auto_lock_minutes") == original

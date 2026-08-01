@@ -16,7 +16,9 @@ class DatabaseBootstrap:
 
     @staticmethod
     def bootstrap(
-        config: ConfigManager, *, test_mode: bool = False,
+        config: ConfigManager,
+        *,
+        test_mode: bool = False,
     ) -> tuple[DatabaseManager, MetadataSigner]:
         """创建 DatabaseManager 与 MetadataSigner，并注入分类/条目完整性 handler。
 

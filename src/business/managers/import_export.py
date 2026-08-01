@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # 装饰器 _validate_import_input 的返回类型透传 TypeVar。
-T = TypeVar('T')
+T = TypeVar("T")
 
 MAX_IMPORT_FILE_SIZE = 25 * 1024 * 1024
 
@@ -54,7 +54,7 @@ def _sanitize_formula_prefix(value: str) -> str:
     （:meth:`ImportExportManager._csv_safe`）复用同一逻辑作为纵深防御（覆盖非导入
     来源、如用户手建的危险前缀条目）。
     """
-    if value.startswith(('=', '+', '-', '@', '\t')):
+    if value.startswith(("=", "+", "-", "@", "\t")):
         return "'" + value
     return value
 
@@ -90,6 +90,7 @@ class ImportContext:
         duplicate_action: 重复处理策略 ``'import_all'``/``'skip'``/``'overwrite'``。
         source_label: 日志/用户提示中标识来源的文案（如「CSV 导入」）。
     """
+
     categories: dict[str, Category]
     default_category_id: int | None
     duplicate_action: str
@@ -111,6 +112,7 @@ class ImportCallbacks:
         overwrite_merger: 覆盖合并器 ``(导入条目, 已有条目) → 合并后条目``，由各
             格式策略类提供（如 CSV 保留源未携带的密码型字段）；None 表示不合并。
     """
+
     progress_callback: Callable[[int, int], None] | None = None
     cancel_check: Callable[[], bool] | None = None
     overwrite_merger: Callable[[Entry, Entry], Entry] | None = None
@@ -122,6 +124,7 @@ class OverwritePlan(NamedTuple):
     old_password 不在计划中收集（SEC-014）：延迟到 :meth:`_prepare_overwrite_batch` 写入前
     逐条解密提取，避免分类阶段全量收集旧密码明文随导入规模线性驻留。
     """
+
     source_idx: int
     entry: Entry
     raw: RawEntry
@@ -139,32 +142,33 @@ def _validate_import_input(method: Callable[..., T]) -> Callable[..., T]:
     method_sig = inspect.signature(method)
     # 装饰器应用即校验被装饰方法含 filepath 参数，让重命名/漏参在导入时立即暴露，
     # 而非延迟到运行时 bound.arguments['filepath'] 抛 KeyError（栈帧远离原因）。
-    if 'filepath' not in method_sig.parameters:
+    if "filepath" not in method_sig.parameters:
         raise TypeError(
-            f'@_validate_import_input 装饰的方法 {method.__qualname__} 必须含 filepath 参数'
+            f"@_validate_import_input 装饰的方法 {method.__qualname__} 必须含 filepath 参数"
         )
 
     @wraps(method)
-    def wrapper(self: 'ImportExportManager', *args: Any, **kwargs: Any) -> T:
+    def wrapper(self: "ImportExportManager", *args: Any, **kwargs: Any) -> T:
         # 按方法签名绑定参数，无论位置或关键字调用都能正确定位 filepath
         bound = method_sig.bind(self, *args, **kwargs)
         bound.apply_defaults()
-        filepath = bound.arguments['filepath']
+        filepath = bound.arguments["filepath"]
         resolved = self._validate_import_path(filepath)
-        bound.arguments['filepath'] = resolved
-        default_category_id = bound.arguments.get('default_category_id')
+        bound.arguments["filepath"] = resolved
+        default_category_id = bound.arguments.get("default_category_id")
         if (
             default_category_id is not None
             and self._entry_mgr.categories.get_category(default_category_id) is None
         ):
-            raise ImportFormatError('默认分类不存在或已被删除')
+            raise ImportFormatError("默认分类不存在或已被删除")
         try:
             return method(*bound.args, **bound.kwargs)
         except UnicodeDecodeError:
             raise ImportFormatError(
-                '文件编码不支持：请确保文件以 UTF-8 编码保存'
-                '（从其他密码管理器导出时，请先以 UTF-8 重新保存）。'
+                "文件编码不支持：请确保文件以 UTF-8 编码保存"
+                "（从其他密码管理器导出时，请先以 UTF-8 重新保存）。"
             ) from None  # 有意隐藏 UnicodeDecodeError，替换消息已自足
+
     return wrapper
 
 
@@ -176,7 +180,7 @@ class ImportExportManager:
     以及 CSV/JSON 导出与 CSV 注入防护。
     """
 
-    def __init__(self, entry_manager: 'EntryManager'):
+    def __init__(self, entry_manager: "EntryManager"):
         self._entry_mgr = entry_manager
 
     @staticmethod
@@ -185,16 +189,16 @@ class ImportExportManager:
         size = Path(resolved).stat().st_size
         if size > MAX_IMPORT_FILE_SIZE:
             raise ImportSizeError(
-                f'导入文件过大，最大允许 {MAX_IMPORT_FILE_SIZE // (1024 * 1024)} MB'
+                f"导入文件过大，最大允许 {MAX_IMPORT_FILE_SIZE // (1024 * 1024)} MB"
             )
         return resolved
 
     @staticmethod
     def _csv_safe(value: Any) -> str:
         """防护 CSV 注入：转义危险前缀（复用 :func:`_sanitize_formula_prefix`），替换内部控制字符。"""
-        text = str(value) if value is not None else ''
+        text = str(value) if value is not None else ""
         # 替换嵌入的换行符为空格，防止 CSV 行断裂
-        text = text.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
+        text = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
         return _sanitize_formula_prefix(text)
 
     def _duplicate_plan(
@@ -210,9 +214,9 @@ class ImportExportManager:
         - ``skip``：重复项索引收入跳过集，覆盖映射为空。
         - ``overwrite``：重复项 ``索引 → 已有条目`` 收入覆盖映射，跳过集为空。
         """
-        if duplicate_action not in {'import_all', 'skip', 'overwrite'}:
-            raise ValueError('无效的重复项处理策略')
-        if duplicate_action == 'import_all':
+        if duplicate_action not in {"import_all", "skip", "overwrite"}:
+            raise ValueError("无效的重复项处理策略")
+        if duplicate_action == "import_all":
             return set(), {}
 
         existing_entries = self._entry_mgr.get_entry_summaries()
@@ -224,19 +228,20 @@ class ImportExportManager:
         matched = {}
         for index, item in enumerate(entries_data):
             key = (
-                str(item.get('title') or '').strip().casefold(),
-                str(item.get('username') or '').strip().casefold(),
+                str(item.get("title") or "").strip().casefold(),
+                str(item.get("username") or "").strip().casefold(),
             )
             if key in existing_by_key:
                 matched[index] = existing_by_key[key]
-        if duplicate_action == 'skip':
-            logger.info('%s: 检测到 %d 个重复项，将跳过', source_label, len(matched))
+        if duplicate_action == "skip":
+            logger.info("%s: 检测到 %d 个重复项，将跳过", source_label, len(matched))
             return set(matched), {}
-        logger.info('%s: 检测到 %d 个重复项，将覆盖', source_label, len(matched))
+        logger.info("%s: 检测到 %d 个重复项，将覆盖", source_label, len(matched))
         return set(), matched
 
     def _prepare_overwrite_map(
-        self, overwrite: dict[int, Entry],
+        self,
+        overwrite: dict[int, Entry],
     ) -> dict[int, RawEntry]:
         """批量预读待覆盖条目的密文 raw（不解密），单次 SQL 查询替代 N+1。
 
@@ -256,7 +261,7 @@ class ImportExportManager:
         for idx, entry_id in ids_by_idx.items():
             raw = entries_by_id.get(entry_id)
             if raw is None:
-                raise EntryError(f'待覆盖条目 {entry_id} 已不存在')
+                raise EntryError(f"待覆盖条目 {entry_id} 已不存在")
             result[idx] = raw
         return result
 
@@ -289,19 +294,18 @@ class ImportExportManager:
                 break
             if i in duplicate_indices:
                 continue
-            name = (entry.category_name or '').strip()
+            name = (entry.category_name or "").strip()
             if not name:
                 continue
             if len(name) > MAX_CATEGORY_NAME:
-                raise ImportFormatError(f'分类名称过长（最多 {MAX_CATEGORY_NAME} 字符）')
+                raise ImportFormatError(f"分类名称过长（最多 {MAX_CATEGORY_NAME} 字符）")
             key = name.casefold()
             if key not in ctx.categories and key not in pending:
                 pending[key] = name
         if not pending:
             return
         new_cats = [
-            Category(name=orig, icon_char='[IMPORT]', color='#0f766e')
-            for orig in pending.values()
+            Category(name=orig, icon_char="[IMPORT]", color="#0f766e") for orig in pending.values()
         ]
         new_ids = self._entry_mgr.categories.add_categories_batch(new_cats, notify=False)
         for cat, new_id in zip(new_cats, new_ids, strict=True):
@@ -319,7 +323,7 @@ class ImportExportManager:
         ARCH-001：分类批量预创建后，本方法仅查内存映射，不再逐条 ``add_category``。
         正常不应到达「缺失」分支；防御性回退默认分类，避免 KeyError 中断导入。
         """
-        clean_name = (name or '').strip()
+        clean_name = (name or "").strip()
         if not clean_name:
             return default_category_id
         key = clean_name.casefold()
@@ -343,39 +347,38 @@ class ImportExportManager:
         :meth:`_validate_import_path` 对齐，拒绝目录遍历与符号链接重定向。
         """
         resolved = validate_file_path(filepath, check_ancestors=True)
+
         def write_cb(f: IO[str]) -> bool:
             header = {
-                'app': 'CipherBox',
-                'exported_at': utc_now_iso(),
-                'secrets_included': include_password,
+                "app": "CipherBox",
+                "exported_at": utc_now_iso(),
+                "secrets_included": include_password,
             }
-            f.write('{\n')
+            f.write("{\n")
             for key, value in header.items():
-                comma = ','  # header 后必跟 entries 数组，故每项后都加逗号
-                f.write(
-                    f'  {json.dumps(key)}: '
-                    f'{json.dumps(value, ensure_ascii=False)}{comma}\n'
-                )
+                comma = ","  # header 后必跟 entries 数组，故每项后都加逗号
+                f.write(f"  {json.dumps(key)}: {json.dumps(value, ensure_ascii=False)}{comma}\n")
             f.write('  "entries": [')
             first = True
             for entry in entries:
                 if cancel_check and cancel_check():
                     return False
                 if not first:
-                    f.write(',')
-                f.write('\n')
+                    f.write(",")
+                f.write("\n")
                 serialized = json.dumps(
                     entry.to_dict(include_password=include_password),
                     indent=2,
                     ensure_ascii=False,
                 )
-                f.write('\n'.join(f'    {line}' for line in serialized.splitlines()))
+                f.write("\n".join(f"    {line}" for line in serialized.splitlines()))
                 first = False
             if not first:
-                f.write('\n')
-            f.write('  ]\n}\n')
+                f.write("\n")
+            f.write("  ]\n}\n")
             return True
-        return atomic_write(resolved, write_cb, mode='w', encoding='utf-8')
+
+        return atomic_write(resolved, write_cb, mode="w", encoding="utf-8")
 
     def export_to_csv(
         self,
@@ -389,15 +392,25 @@ class ImportExportManager:
         导出前经 :func:`validate_file_path` 校验路径（SEC-003），与导入侧对齐。
         """
         resolved = validate_file_path(filepath, check_ancestors=True)
-        fieldnames = ['title', 'username', 'password', 'totp_secret', 'url',
-                       'category', 'tags', 'notes', 'is_favorite',
-                       'created_at', 'updated_at']
+        fieldnames = [
+            "title",
+            "username",
+            "password",
+            "totp_secret",
+            "url",
+            "category",
+            "tags",
+            "notes",
+            "is_favorite",
+            "created_at",
+            "updated_at",
+        ]
         if not include_password:
-            fieldnames.remove('password')
-            fieldnames.remove('totp_secret')
+            fieldnames.remove("password")
+            fieldnames.remove("totp_secret")
 
         def write_cb(f: IO[str]) -> bool:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
             for entry in entries:
                 if cancel_check and cancel_check():
@@ -409,19 +422,23 @@ class ImportExportManager:
                 if not isinstance(cf, list):
                     continue
                 exported_fields = [
-                    field for field in cf
-                    if include_password or field.field_type != 'password'
+                    field for field in cf if include_password or field.field_type != "password"
                 ]
-                cf_str = '; '.join(f"{f.name}={f.value}" for f in exported_fields)
-                if row.get('notes'):
+                cf_str = "; ".join(f"{f.name}={f.value}" for f in exported_fields)
+                if row.get("notes"):
                     if cf_str:
-                        row['notes'] += f'\n[自定义字段] {cf_str}'
+                        row["notes"] += f"\n[自定义字段] {cf_str}"
                 elif cf_str:
-                    row['notes'] = f'[自定义字段] {cf_str}'
+                    row["notes"] = f"[自定义字段] {cf_str}"
                 writer.writerow({key: self._csv_safe(value) for key, value in row.items()})
             return True
+
         return atomic_write(
-            resolved, write_cb, mode='w', encoding='utf-8-sig', newline='',
+            resolved,
+            write_cb,
+            mode="w",
+            encoding="utf-8-sig",
+            newline="",
         )
 
     # ======== 导入编排 ========
@@ -465,24 +482,30 @@ class ImportExportManager:
         self._ensure_categories(entries, duplicate_indices, ctx, callbacks.cancel_check)
 
         new_entries, overwrite_plans, classify_skipped = self._dedupe_and_classify(
-            entries, duplicate_indices, overwrite_raws, ctx, callbacks,
+            entries,
+            duplicate_indices,
+            overwrite_raws,
+            ctx,
+            callbacks,
         )
 
         # 锁外加密（MAINT-004）：加密前快照 pre_epoch，供写入事务复查防「加密后改密」。
         pre_epoch = self._entry_mgr.key_epoch
         enc_new, preserve, new_skipped = self._encrypt_new_batch(new_entries, ctx.source_label)
         overwrite_prepared, overwrite_skipped = self._prepare_overwrite_batch(
-            overwrite_plans, ctx.source_label,
+            overwrite_plans,
+            ctx.source_label,
         )
 
         # ---- 锁内：epoch 守卫事务内裸写入 ----
         # epoch 守卫是冗余防御层：真正的串行化由 db.transaction() 持有的数据库锁保证
         # （改密 _re_encrypt_all 同样经该锁串行），不会与导入并发写库。pre_epoch 复查是
         # 纵深防御——加密已移出 db_lock（MAINT-004），复查确保「加密后→写入前」未发生改密。
-        with self._entry_mgr.epoch_guarded_transaction(operation='导入', pre_epoch=pre_epoch):
+        with self._entry_mgr.epoch_guarded_transaction(operation="导入", pre_epoch=pre_epoch):
             self._entry_mgr.write_new_entries(enc_new, preserve=preserve, notify=False)
             overwrite_count = self._entry_mgr.write_overwrite_updates(
-                overwrite_prepared, pre_epoch,
+                overwrite_prepared,
+                pre_epoch,
             )
 
         # 批量导入统一通知一次（写入已传 notify=False 避免逐条回调）
@@ -546,9 +569,7 @@ class ImportExportManager:
                     # 逐条解密覆盖目标并合并：用毕即清（password/totp_secret 置零 + 删引用），
                     # 任一时刻仅 1 条覆盖目标完整明文驻留，与单条路径纪律一致。
                     # old_password 不在此提取（SEC-014），延迟到 _prepare_overwrite_batch 写入时刻。
-                    entry = self._merge_overwrite_entry(
-                        entry, raw, callbacks.overwrite_merger
-                    )
+                    entry = self._merge_overwrite_entry(entry, raw, callbacks.overwrite_merger)
                     overwrite_plans.append(OverwritePlan(i, entry, raw))
                 else:
                     new_entries.append(entry)
@@ -562,7 +583,7 @@ class ImportExportManager:
                     "%s: 跳过第 %d 个条目（crypto_id=%s）: %s",
                     ctx.source_label,
                     i + 1,
-                    entry.crypto_id or '(未生成)',
+                    entry.crypto_id or "(未生成)",
                     exc,
                 )
                 continue
@@ -590,18 +611,21 @@ class ImportExportManager:
         existing = self._entry_mgr.decrypt_entry(raw)
         try:
             entry = replace(
-                entry, id=existing.id, created_at=existing.created_at,
+                entry,
+                id=existing.id,
+                created_at=existing.created_at,
             )
             if overwrite_merger is not None:
                 entry = overwrite_merger(entry, existing)
             # 导入覆盖保留原 password_changed_at，避免批量导入把"久未
             # 修改"条目重置为"刚修改"从而绕过过期检测
             entry = replace(
-                entry, password_changed_at=existing.password_changed_at,
+                entry,
+                password_changed_at=existing.password_changed_at,
             )
         finally:
             # 用毕即清：明文 password/totp_secret 重新绑定到空串，旧明文由 GC 回收。
-            existing = replace(existing, password='', totp_secret='')
+            existing = replace(existing, password="", totp_secret="")
             del existing
         return entry
 
@@ -623,7 +647,9 @@ class ImportExportManager:
         except (EntryError, EntryIntegrityError) as exc:
             logger.warning(
                 "%s: 批量加密 %d 个新条目失败: %s",
-                source_label, len(new_entries), exc,
+                source_label,
+                len(new_entries),
+                exc,
             )
             return [], False, len(new_entries)
 
@@ -649,11 +675,11 @@ class ImportExportManager:
         # 由 prepare_overwrite_updates 的 prepared 阶段逐条解密、_prepare_password_update
         # 比对即 del 清零。
         batch_items: list[BatchUpdateItem] = [
-            BatchUpdateItem(plan.entry, plan.raw, None)
-            for plan in overwrite_plans
+            BatchUpdateItem(plan.entry, plan.raw, None) for plan in overwrite_plans
         ]
         prepared, batch_failures = self._entry_mgr.prepare_overwrite_updates(
-            batch_items, preserve_password_changed_at=True,
+            batch_items,
+            preserve_password_changed_at=True,
         )
         skipped = 0
         # batch_failures 索引对齐 batch_items（与 overwrite_plans 同序）；
@@ -669,7 +695,7 @@ class ImportExportManager:
                     "%s: 第 %d 个条目覆盖失败——目标条目 crypto_id=%s 已有数据损坏: %s",
                     source_label,
                     plan.source_idx + 1,
-                    plan.entry.crypto_id or '(未生成)',
+                    plan.entry.crypto_id or "(未生成)",
                     failure_exc,
                 )
             else:
@@ -678,17 +704,14 @@ class ImportExportManager:
                     "%s: 跳过覆盖第 %d 个条目（crypto_id=%s）: %s",
                     source_label,
                     plan.source_idx + 1,
-                    plan.entry.crypto_id or '(未生成)',
+                    plan.entry.crypto_id or "(未生成)",
                     failure_exc,
                 )
         return prepared, skipped
 
     def _categories_by_folded_name(self) -> dict[str, Category]:
         """构造分类名 casefold 映射，供导入按名匹配分类（大小写不敏感）。"""
-        return {
-            c.name.casefold(): c
-            for c in self._entry_mgr.categories.get_categories()
-        }
+        return {c.name.casefold(): c for c in self._entry_mgr.categories.get_categories()}
 
     def _run_importer(
         self,
@@ -712,9 +735,7 @@ class ImportExportManager:
         try:
             parsed = importer.parse(filepath)
         except (json.JSONDecodeError, RecursionError, csv.Error) as exc:
-            raise ImportFormatError(
-                f'文件解析失败，文件可能已损坏：{exc}'
-            ) from exc
+            raise ImportFormatError(f"文件解析失败，文件可能已损坏：{exc}") from exc
         categories = self._categories_by_folded_name()
         ctx = ImportContext(
             categories=categories,
@@ -735,11 +756,11 @@ class ImportExportManager:
     # 单一 dispatch，无需为每格式编写独立方法。chrome_csv 复用 CsvImporter
     # （Chrome/Edge 与 CipherBox CSV 共享列名格式）。
     _IMPORTERS: dict[str, type[FormatImporter]] = {
-        'json': JsonImporter,
-        'csv': CsvImporter,
-        'chrome_csv': CsvImporter,
-        'keepass_csv': KeePassCsvImporter,
-        'bitwarden_json': BitwardenImporter,
+        "json": JsonImporter,
+        "csv": CsvImporter,
+        "chrome_csv": CsvImporter,
+        "keepass_csv": KeePassCsvImporter,
+        "bitwarden_json": BitwardenImporter,
     }
 
     @_validate_import_input
@@ -749,7 +770,7 @@ class ImportExportManager:
         format_key: str,
         default_category_id: int | None = None,
         progress_callback: Callable[[int, int], None] | None = None,
-        duplicate_action: str = 'import_all',
+        duplicate_action: str = "import_all",
         cancel_check: Callable[[], bool] | None = None,
     ) -> int:
         """按格式键导入：单一 dispatch 入口，依 _IMPORTERS 注册表分发到策略类。
@@ -771,8 +792,12 @@ class ImportExportManager:
         """
         importer_cls = self._IMPORTERS.get(format_key)
         if importer_cls is None:
-            raise ImportFormatError(f'不支持的导入格式：{format_key}')
+            raise ImportFormatError(f"不支持的导入格式：{format_key}")
         return self._run_importer(
-            importer_cls(), filepath, default_category_id,
-            duplicate_action, progress_callback, cancel_check,
+            importer_cls(),
+            filepath,
+            default_category_id,
+            duplicate_action,
+            progress_callback,
+            cancel_check,
         )

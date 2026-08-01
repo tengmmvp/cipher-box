@@ -47,7 +47,7 @@ def secure_purge(
                     if collect_failures:
                         failed.append(path)
                     else:
-                        logger.warning('安全删除失败：%s', path, exc_info=True)
+                        logger.warning("安全删除失败：%s", path, exc_info=True)
     return failed
 
 

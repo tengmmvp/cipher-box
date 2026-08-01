@@ -9,7 +9,7 @@ import threading
 from dataclasses import replace
 from typing import Any
 
-from ..exceptions import TransactionError, VaultIntegrityError, VaultLockedError
+from ..exceptions import DatabaseError, TransactionError, VaultIntegrityError, VaultLockedError
 from ..models import Category
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation, _db_write
@@ -127,19 +127,25 @@ class CategoryRepository:
         if self._conn.execute(
             "SELECT 1 FROM categories WHERE name_enc=? LIMIT 1", (category.name,)
         ).fetchone():
-            raise ValueError(f'分类名称「{category.name}」已存在')
+            raise ValueError(f"分类名称「{category.name}」已存在")
         # 回填 created_at 至内存对象：保证两阶段重签与 INSERT 用同一值。否则 DB 层
         # 写真实时间戳而内存对象为空，重签用空 created_at 算 mac 致签名与持久化行错配、
         # 重载后验签永久失败。
         created_at = category.created_at or utc_now_iso()
         category = replace(category, created_at=created_at)
         category = replace(category, metadata_mac=self._sign_category(category))
-        self._assert_encrypted(category.name, 'name_enc')  # ARCH-003：拦截明文落库
+        self._assert_encrypted(category.name, "name_enc")  # ARCH-003：拦截明文落库
         cursor = self._conn.execute(
             "INSERT INTO categories (name_enc, icon_char, color, sort_order, created_at, metadata_mac) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (category.name, category.icon_char, category.color, category.sort_order,
-             created_at, category.metadata_mac),
+            (
+                category.name,
+                category.icon_char,
+                category.color,
+                category.sort_order,
+                created_at,
+                category.metadata_mac,
+            ),
         )
         self._auto_commit()
         return cursor.lastrowid or 0
@@ -148,13 +154,17 @@ class CategoryRepository:
     def _category_update_tuple(category: Category) -> tuple[Any, ...]:
         """构造 UPDATE categories 的参数元组，供单条与批量写入复用以消除列序重复。"""
         return (
-            category.name, category.icon_char, category.color,
-            category.sort_order, category.metadata_mac, category.id,
+            category.name,
+            category.icon_char,
+            category.color,
+            category.sort_order,
+            category.metadata_mac,
+            category.id,
         )
 
     def _update_category_row(self, category: Category) -> None:
         """写入分类行（不含查重/created_at 回填/签名），供 update_category 复用同一 UPDATE SQL。"""
-        self._assert_encrypted(category.name, 'name_enc')  # ARCH-003：拦截明文落库
+        self._assert_encrypted(category.name, "name_enc")  # ARCH-003：拦截明文落库
         self._conn.execute(
             "UPDATE categories SET name_enc=?, icon_char=?, color=?, sort_order=?, metadata_mac=? WHERE id=?",
             self._category_update_tuple(category),
@@ -168,18 +178,22 @@ class CategoryRepository:
         加密名每次 nonce 不同致本处查重无法触发，仅对直接传明文名的调用方兜底；
         生产路径的明文查重在 CategoryManager.update_category。
         """
-        if category.id is not None and self._conn.execute(
-            "SELECT 1 FROM categories WHERE name_enc=? AND id!=? LIMIT 1",
-            (category.name, category.id),
-        ).fetchone():
-            raise ValueError(f'分类名称「{category.name}」已被其他分类占用')
+        if (
+            category.id is not None
+            and self._conn.execute(
+                "SELECT 1 FROM categories WHERE name_enc=? AND id!=? LIMIT 1",
+                (category.name, category.id),
+            ).fetchone()
+        ):
+            raise ValueError(f"分类名称「{category.name}」已被其他分类占用")
         # created_at 创建后不可变（SQL 不写该列）：签名须用 DB 现有值，否则调用方传
         # 空/不一致值会使签名与持久化行错配、重载验签失败（与 add_category 回填对称）。
         existing = self._conn.execute(
             "SELECT created_at FROM categories WHERE id=?", (category.id,)
         ).fetchone()
-        if existing is not None:
-            category = replace(category, created_at=existing['created_at'])
+        if existing is None:
+            raise DatabaseError(f"分类 {category.id} 不存在，无法更新")
+        category = replace(category, created_at=existing["created_at"])
         category = replace(category, metadata_mac=self._sign_category(category))
         self._update_category_row(category)
 
@@ -195,7 +209,7 @@ class CategoryRepository:
         if not categories:
             return
         for c in categories:
-            self._assert_encrypted(c.name, 'name_enc')  # ARCH-003：拦截明文落库
+            self._assert_encrypted(c.name, "name_enc")  # ARCH-003：拦截明文落库
         self._conn.executemany(
             "UPDATE categories SET name_enc=?, icon_char=?, color=?, sort_order=?, metadata_mac=? WHERE id=?",
             [self._category_update_tuple(c) for c in categories],
@@ -215,7 +229,7 @@ class CategoryRepository:
         """
         if not self.in_transaction:
             raise TransactionError(
-                'delete_category 须在活动事务内调用（由 DatabaseManager.delete_category 编排）'
+                "delete_category 须在活动事务内调用（由 DatabaseManager.delete_category 编排）"
             )
         self._conn.execute("DELETE FROM categories WHERE id=?", (category_id,))
 
@@ -236,18 +250,18 @@ class CategoryRepository:
                WHERE is_deleted=0 AND category_id IS NOT NULL
                GROUP BY category_id"""
         ).fetchall()
-        return {row['category_id']: row['entry_count'] for row in rows}
+        return {row["category_id"]: row["entry_count"] for row in rows}
 
     # ========== 内部方法 ==========
 
     @staticmethod
     def _row_to_category(row: sqlite3.Row) -> Category:
         return Category(
-            id=row['id'],
-            name=row['name_enc'],
-            icon_char=row['icon_char'],
-            color=row['color'],
-            sort_order=row['sort_order'],
-            created_at=row['created_at'],
-            metadata_mac=row['metadata_mac'],
+            id=row["id"],
+            name=row["name_enc"],
+            icon_char=row["icon_char"],
+            color=row["color"],
+            sort_order=row["sort_order"],
+            created_at=row["created_at"],
+            metadata_mac=row["metadata_mac"],
         )

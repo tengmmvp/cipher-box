@@ -31,13 +31,16 @@ class TestComputeHealthScore:
         score = SecurityAnalyzer.compute_health_score(2, 1, 3, 100)
         assert score == 45
 
-    @pytest.mark.parametrize('weak,dup,old,total', [
-        (0, 0, 0, 0),
-        (5, 5, 5, 5),     # 全风险 → clamp 0
-        (100, 100, 100, 100),
-        (1, 1, 1, 100),   # 轻微风险
-        (0, 0, 100, 100), # 全过期
-    ])
+    @pytest.mark.parametrize(
+        "weak,dup,old,total",
+        [
+            (0, 0, 0, 0),
+            (5, 5, 5, 5),  # 全风险 → clamp 0
+            (100, 100, 100, 100),
+            (1, 1, 1, 100),  # 轻微风险
+            (0, 0, 100, 100),  # 全过期
+        ],
+    )
     def test_score_always_in_zero_to_hundred(self, weak, dup, old, total):
         """任意合法输入，得分恒在 [0, 100]。"""
         score = SecurityAnalyzer.compute_health_score(weak, dup, old, total)
@@ -56,20 +59,23 @@ class TestComputeHealthScore:
         assert score_weak < score_dup < score_old
 
 
-def _entry(title='', username='', url='', tags='') -> Entry:
+def _entry(title="", username="", url="", tags="") -> Entry:
     return Entry(title=title, username=username, url=url, tags=tags)
 
 
-@pytest.mark.parametrize('title,username,url,tags,query', [
-    ('GitHub', 'alice', 'https://github.com', 'dev,code', ''),
-    ('GitHub', 'alice', 'https://github.com', 'dev,code', 'git'),
-    ('GitHub', 'alice', 'https://github.com', 'dev,code', 'ALICE'),  # 大写关键词
-    ('GitHub', 'alice', 'https://github.com', 'dev,code', 'CODE'),   # 命中 tags
-    ('GitHub', 'alice', 'https://github.com', 'dev,code', 'xyz'),    # 无匹配
-    ('博客', '用户', 'https://blog.cn', '中文,测试', '中'),           # unicode 命中
-    ('博客', '用户', 'https://blog.cn', '中文,测试', 'BLOG'),        # url 命中
-    ('', '', '', '', 'missing'),  # 全空字段
-])
+@pytest.mark.parametrize(
+    "title,username,url,tags,query",
+    [
+        ("GitHub", "alice", "https://github.com", "dev,code", ""),
+        ("GitHub", "alice", "https://github.com", "dev,code", "git"),
+        ("GitHub", "alice", "https://github.com", "dev,code", "ALICE"),  # 大写关键词
+        ("GitHub", "alice", "https://github.com", "dev,code", "CODE"),  # 命中 tags
+        ("GitHub", "alice", "https://github.com", "dev,code", "xyz"),  # 无匹配
+        ("博客", "用户", "https://blog.cn", "中文,测试", "中"),  # unicode 命中
+        ("博客", "用户", "https://blog.cn", "中文,测试", "BLOG"),  # url 命中
+        ("", "", "", "", "missing"),  # 全空字段
+    ],
+)
 def test_matches_search_equivalence(title, username, url, tags, query):
     """``matches_search`` 与 ``matches_search_lower`` 对相同输入返回相同结果。
 
@@ -85,7 +91,7 @@ def test_matches_search_equivalence(title, username, url, tags, query):
 
 def test_matches_search_empty_query_always_matches():
     """空关键词匹配所有（两函数一致返回 True）。"""
-    entry = _entry('Any', 'u', 'https://x', 't')
-    lower = ('any', 'u', 'https://x', 't')
-    assert matches_search(entry, '') is True
-    assert matches_search_lower(lower, '') is True
+    entry = _entry("Any", "u", "https://x", "t")
+    lower = ("any", "u", "https://x", "t")
+    assert matches_search(entry, "") is True
+    assert matches_search_lower(lower, "") is True

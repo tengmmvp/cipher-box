@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 
 # 改密时旧主密码验证失败的错误消息。供 change_master_dialog 判定是否计入速率
 # 限制——以常量而非硬编码字面量比较，使文案变更不需同步改 dialog（单一事实源）。
-AUTH_FAILED_MESSAGE = '当前主密码错误'
+AUTH_FAILED_MESSAGE = "当前主密码错误"
 
 
 # unlock 单次批量读取的 vault_meta 键（单一事实源见 vault_meta_keys）。
@@ -88,7 +88,7 @@ class VaultLifecycleOrchestrator:
                 int(meta[KDF_PARALLELISM_KEY]),  # type: ignore[arg-type]
             )
         except (KeyError, TypeError, ValueError) as exc:
-            raise VaultLockedError('保险库缺少密钥派生参数') from exc
+            raise VaultLockedError("保险库缺少密钥派生参数") from exc
 
     def initialize(
         self,
@@ -107,21 +107,28 @@ class VaultLifecycleOrchestrator:
             if not valid:
                 raise ValueError(error)
             self._vault.ensure_db_open()
-            if self._db.get_meta('master_salt') or self._db.get_meta('master_verify'):
-                raise VaultAlreadyInitializedError('保险库已经初始化，不能重复设置主密码')
+            if self._db.get_meta("master_salt") or self._db.get_meta("master_verify"):
+                raise VaultAlreadyInitializedError("保险库已经初始化，不能重复设置主密码")
             salt, verify_token, derived_key = MasterKeyManager.create(master_password, params)
             snapshot_key = os.urandom(KEY_SIZE)
             key_epoch = uuid.uuid4().hex
             with self._db.transaction():
                 self._meta_store.write(
                     self._db,
-                    salt=salt, verify_token=verify_token, snapshot_key=snapshot_key,
-                    key=derived_key, key_epoch=key_epoch, params=params,
+                    salt=salt,
+                    verify_token=verify_token,
+                    snapshot_key=snapshot_key,
+                    key=derived_key,
+                    key_epoch=key_epoch,
+                    params=params,
                 )
             self._vault.activate_keys(derived_key, snapshot_key, key_epoch)
             encrypt_plaintext_category_names(self._db, derived_key)
-            return True, ''
+            return True, ""
         except VaultAlreadyInitializedError as exc:
+            # UI 流程下不会到达（_is_first_time 仅在 db 无 salt 时为真，与"已初始化"
+            # 互斥）。API/测试场景返回失败而非抛异常——db 已打开时抛异常的 traceback
+            # 会延迟连接 GC，致 Windows 下 close 后文件句柄未及时释放、清理失败。
             return False, str(exc)
         except CipherBoxError:
             raise
@@ -130,7 +137,9 @@ class VaultLifecycleOrchestrator:
             # 强制清除可能已激活的密钥：activate_keys 已激活密钥并置 is_unlocked=True。
             # 不清除会使 initialize 报失败但保险库处于半解锁状态（持密钥），状态不一致。
             self._vault.clear_vault_state()
-            return False, to_user_message(exc, default='保险库初始化失败')
+            # 系统错误（含密码强度不足的 ValueError）经异常路径传播至 worker.error，
+            # 登录窗按 is_auth_failure=False 处理（不计入速率锁定）。
+            raise VaultLockedError(to_user_message(exc, default="保险库初始化失败")) from exc
 
     def unlock(self, master_password: str) -> tuple[bool, str]:
         """使用主密码解锁保险库。"""
@@ -143,28 +152,28 @@ class VaultLifecycleOrchestrator:
             # 单次查询获取全部元数据，避免多次独立 DB 锁获取
             meta = self._db.get_meta_batch(_VAULT_META_KEYS)
 
-            salt_b64 = meta['master_salt']
-            verify_token = meta['master_verify']
+            salt_b64 = meta["master_salt"]
+            verify_token = meta["master_verify"]
 
             if not salt_b64 or not verify_token:
-                return False, '保险库凭据不完整'
+                raise VaultLockedError("保险库凭据不完整")
 
             salt = base64.b64decode(salt_b64)
             params = self._read_kdf_params(meta)
             key = MasterKeyManager.verify(master_password, salt, verify_token, params)
 
             if key is None:
-                return False, '主密码错误'
+                return False, "主密码错误"
 
             # 先完成全部元数据格式校验，再持有密钥，遵循最小暴露原则：格式校验失败时
             # key 仅作局部变量，不写入 KeyManager 也不触发加密缓存。
-            if meta['master_kdf'] != KDF_NAME:
-                raise VaultLockedError('不支持的主密钥派生格式')
-            if meta['ciphertext_format'] != EncryptionEngine.FORMAT_ID:
-                raise VaultLockedError('不支持的密文格式')
-            key_epoch = meta['key_epoch']
+            if meta["master_kdf"] != KDF_NAME:
+                raise VaultLockedError("不支持的主密钥派生格式")
+            if meta["ciphertext_format"] != EncryptionEngine.FORMAT_ID:
+                raise VaultLockedError("不支持的密文格式")
+            key_epoch = meta["key_epoch"]
             if not key_epoch:
-                raise VaultLockedError('保险库缺少当前格式的密钥版本')
+                raise VaultLockedError("保险库缺少当前格式的密钥版本")
             # snapshot_key_enc 用主密钥加密，load_snapshot_key 须在主密钥设置后调用，
             # 故无法进一步前置；其失败由下方 except 经 lock() 清零兜底。
             self._vault.set_master_key(key)
@@ -174,13 +183,13 @@ class VaultLifecycleOrchestrator:
             # 派生密钥错致 verify 失败），此处统一校验其余安全字段。mac 缺失亦拒绝——
             # initialize、改密、恢复均写入 mac，缺失意味着签名被删除篡改。mac 校验失败
             # 经 except CipherBoxError 清零 key + lock。
-            stored_meta_mac = meta.get('vault_meta_mac')
+            stored_meta_mac = meta.get("vault_meta_mac")
             if not stored_meta_mac:
-                raise VaultIntegrityError('保险库元数据完整性签名缺失')
+                raise VaultIntegrityError("保险库元数据完整性签名缺失")
             expected_meta_mac = MetadataSigner.compute_vault_meta_mac(meta, key)
             if not hmac.compare_digest(stored_meta_mac, expected_meta_mac):
-                raise VaultIntegrityError('保险库元数据完整性校验失败，可能已被篡改')
-            self._vault.load_snapshot_key(meta.get('snapshot_key_enc'))
+                raise VaultIntegrityError("保险库元数据完整性校验失败，可能已被篡改")
+            self._vault.load_snapshot_key(meta.get("snapshot_key_enc"))
             # 全部密钥材料就位后再标记解锁，缩小「主密钥已写入但 snapshot_key 尚未
             # 加载」的部分就位窗口：此窗口内 is_unlocked 为 False，并发读取者不会得到
             # 「已解锁但 snapshot_key 缺失」的中间态。
@@ -194,7 +203,7 @@ class VaultLifecycleOrchestrator:
             except Exception:
                 logger.warning("解锁后 WAL 安全截断失败（非致命）", exc_info=True)
             logger.info("解锁完成 (%.1fms)", (time.monotonic() - t0) * 1000)
-            return True, ''
+            return True, ""
         except CipherBoxError:
             # key 可能已写入 KeyManager（load_snapshot_key 在 set_master_key 后调用，
             # snapshot_key 损坏时 key 已就位）。secure_zero_buffer 清零该 bytearray，
@@ -206,7 +215,9 @@ class VaultLifecycleOrchestrator:
         except Exception as exc:
             self.lock()
             logger.warning("解锁失败", exc_info=True)
-            return False, to_user_message(exc, default='保险库无法解锁')
+            # 系统错误（DB 异常/磁盘等）经异常路径传播至 worker.error，登录窗按
+            # is_auth_failure=False 处理（不计入速率锁定），区别于"主密码错误"。
+            raise VaultLockedError(to_user_message(exc, default="保险库无法解锁")) from exc
 
     def lock(self) -> None:
         """锁定保险库，清除内存中的密钥材料。
@@ -246,7 +257,9 @@ class VaultLifecycleOrchestrator:
             self._vault.cancel_event.clear()
 
     def change_master_password(
-        self, old_password: str, new_password: str,
+        self,
+        old_password: str,
+        new_password: str,
     ) -> tuple[bool, str]:
         """修改主密码。
 
@@ -257,8 +270,16 @@ class VaultLifecycleOrchestrator:
             return self._change_master_password_locked(old_password, new_password)
 
     def _change_master_password_locked(
-        self, old_password: str, new_password: str,
+        self,
+        old_password: str,
+        new_password: str,
     ) -> tuple[bool, str]:
+        """改密核心逻辑（调用方须已持有 vault 写锁）。
+
+        校验新密码强度与新旧不同（常量时间比较防时序侧信道），经
+        :meth:`_re_encrypt_all` 用新密钥重加密全部数据。旧密码错误返回
+        ``(False, AUTH_FAILED_MESSAGE)``；重加密异常向上传播由调用方处理。
+        """
         try:
             valid, error = PasswordGenerator.validate_master_password(new_password)
             if not valid:
@@ -267,22 +288,28 @@ class VaultLifecycleOrchestrator:
             # 不同字符提前返回，泄露前缀信息）。encode('utf-8')：主密码可含 Unicode（如
             # 中文），hmac.compare_digest 对 str 仅接受 ASCII，非 ASCII 直接比较会抛
             # TypeError。
-            if hmac.compare_digest(
-                old_password.encode('utf-8'), new_password.encode('utf-8')
-            ):
-                return False, '新密码不能与当前主密码相同'
-            meta = self._db.get_meta_batch([
-                'master_salt', 'master_verify', *KDF_PARAM_KEYS,
-            ])
-            salt_b64 = meta['master_salt']
-            verify_token = meta['master_verify']
+            if hmac.compare_digest(old_password.encode("utf-8"), new_password.encode("utf-8")):
+                return False, "新密码不能与当前主密码相同"
+            meta = self._db.get_meta_batch(
+                [
+                    "master_salt",
+                    "master_verify",
+                    *KDF_PARAM_KEYS,
+                ]
+            )
+            salt_b64 = meta["master_salt"]
+            verify_token = meta["master_verify"]
             if not salt_b64 or not verify_token:
-                return False, '保险库凭据不完整'
+                return False, "保险库凭据不完整"
 
             old_salt = base64.b64decode(salt_b64)
             old_params = self._read_kdf_params(meta)
             result = MasterKeyManager.change_password(
-                old_password, new_password, old_salt, verify_token, old_params,
+                old_password,
+                new_password,
+                old_salt,
+                verify_token,
+                old_params,
                 DEFAULT_KDF_PARAMS,
             )
             if result is None:
@@ -293,7 +320,10 @@ class VaultLifecycleOrchestrator:
             try:
                 # 复用 MasterKeyManager.create 已派生的 new_key，省一次 Argon2id 派生
                 failed_purges = self._re_encrypt_all(
-                    new_key, new_salt, new_verify_token, new_params=DEFAULT_KDF_PARAMS,
+                    new_key,
+                    new_salt,
+                    new_verify_token,
+                    new_params=DEFAULT_KDF_PARAMS,
                 )
             except BaseException:
                 # 重加密失败：new_key 未被 activate_keys 持有，原地清零收缩驻留，
@@ -303,15 +333,15 @@ class VaultLifecycleOrchestrator:
             if failed_purges:
                 # 改密成功但旧明文快照未能清理：明确反馈用户，避免误以为泄漏面已收缩
                 return True, (
-                    f'主密码已修改，但 {len(failed_purges)} 个历史明文快照未能删除'
-                    '（可能被占用），建议在备份对话框手动清理以收缩泄漏面。'
+                    f"主密码已修改，但 {len(failed_purges)} 个历史明文快照未能删除"
+                    "（可能被占用），建议在备份对话框手动清理以收缩泄漏面。"
                 )
-            return True, ''
+            return True, ""
         except CipherBoxError:
             raise  # 所有 CipherBox 自定义异常向上传播
         except Exception as exc:
             logger.warning("修改主密码失败", exc_info=True)
-            return False, to_user_message(exc, default='修改主密码失败')
+            return False, to_user_message(exc, default="修改主密码失败")
 
     def _re_encrypt_all(
         self,
@@ -327,7 +357,7 @@ class VaultLifecycleOrchestrator:
         清零纪律分别抽独立方法，本方法仅保留阶段编排与贯穿全程的 finally。
         """
         if not self._vault.is_unlocked:
-            raise VaultLockedError('保险库未解锁，无法执行重加密')
+            raise VaultLockedError("保险库未解锁，无法执行重加密")
 
         # 重置取消事件，避免上一次 reject/close 的残留导致本次改密被误取消
         self._vault.cancel_event.clear()
@@ -343,12 +373,20 @@ class VaultLifecycleOrchestrator:
             t0 = time.monotonic()
             # 步骤 1：事务内重加密分类/条目/历史并写入新元数据。
             self._re_encrypt_vault_data(
-                old_key, new_key, new_salt, new_verify_token, new_epoch,
-                new_snapshot_key, new_params,
+                old_key,
+                new_key,
+                new_salt,
+                new_verify_token,
+                new_epoch,
+                new_snapshot_key,
+                new_params,
             )
             # 步骤 2：事务提交后激活新密钥、清理旧密钥缓存与快照、截断 WAL。
             return self._activate_and_finalize_re_encryption(
-                new_key, new_snapshot_key, new_epoch, t0,
+                new_key,
+                new_snapshot_key,
+                new_epoch,
+                t0,
             )
         except Exception:
             # transaction() 上下文已回滚所有数据库变更；锁定清零密钥防状态不一致。
@@ -383,17 +421,28 @@ class VaultLifecycleOrchestrator:
         """
         with self._db.transaction():
             self._rotator.re_encrypt_categories(
-                old_key, new_key, cancel_event=self._vault.cancel_event,
+                old_key,
+                new_key,
+                cancel_event=self._vault.cancel_event,
             )
             self._rotator.re_encrypt_entries(
-                old_key, new_key, cancel_event=self._vault.cancel_event,
+                old_key,
+                new_key,
+                cancel_event=self._vault.cancel_event,
             )
             self._rotator.re_encrypt_history(
-                old_key, new_key, cancel_event=self._vault.cancel_event,
+                old_key,
+                new_key,
+                cancel_event=self._vault.cancel_event,
             )
             self._meta_store.update(
-                self._db, new_key, new_salt, new_verify_token, new_epoch,
-                snapshot_key=new_snapshot_key, params=new_params,
+                self._db,
+                new_key,
+                new_salt,
+                new_verify_token,
+                new_epoch,
+                snapshot_key=new_snapshot_key,
+                params=new_params,
             )
 
     def _activate_and_finalize_re_encryption(
@@ -423,7 +472,7 @@ class VaultLifecycleOrchestrator:
                 "改密后未能删除 %d 个旧快照/恢复点（可能被占用或目录只读），"
                 "建议手动清理以收缩历史明文泄漏面：%s",
                 len(failed_purges),
-                ', '.join(str(p) for p in failed_purges),
+                ", ".join(str(p) for p in failed_purges),
             )
         # WAL 截断在事务提交之后执行；数据已落盘，截断失败非致命，单独捕获避免
         # 其异常冒泡导致 UI 显示模糊错误，而事务其实已成功。

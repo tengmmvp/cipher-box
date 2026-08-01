@@ -37,25 +37,26 @@ class TestAutoBackupController:
 
         class _FakeWorker:
             def __init__(self, func, parent=None):
-                captured['func'] = func
+                captured["func"] = func
                 self.error = MagicMock()
 
             def cancel_check(self):
                 return False
 
             def start(self):
-                captured['started'] = True
+                captured["started"] = True
 
         monkeypatch.setattr(
-            'src.ui.controllers.auto_backup_controller.BackgroundWorker', _FakeWorker,
+            "src.ui.controllers.auto_backup_controller.BackgroundWorker",
+            _FakeWorker,
         )
         ctrl._run_async()
-        assert captured.get('started') is True
+        assert captured.get("started") is True
         # 执行捕获的 task：验证 maybe_auto_backup 被调，且 cancel_check 是可调用探针
-        captured['func']()
+        captured["func"]()
         ctrl._backup.maybe_auto_backup.assert_called_once()
         kwargs = ctrl._backup.maybe_auto_backup.call_args.kwargs
-        assert callable(kwargs['cancel_check'])
+        assert callable(kwargs["cancel_check"])
 
 
 class TestAutoLockController:
@@ -102,6 +103,7 @@ class TestAutoLockController:
         锁定，须强制一个不可关闭的空闲锁定上限。
         """
         from src.config import DEFAULT_CONFIG
+
         ctrl = AutoLockController(MagicMock(), MagicMock(), lambda: None)
         timer = MagicMock()
         ctrl._lock_timer = timer
@@ -109,12 +111,12 @@ class TestAutoLockController:
         ctrl._config.get_safe.return_value = 0
         # 退化路径：_wts_registered 保持默认 False
         ctrl.reset_timer()
-        timer.start.assert_called_once_with(DEFAULT_CONFIG['auto_lock_minutes'] * 60 * 1000)
+        timer.start.assert_called_once_with(DEFAULT_CONFIG["auto_lock_minutes"] * 60 * 1000)
         timer.stop.assert_not_called()
 
     def test_setup_session_notification_short_circuits_on_disable_env(self, qapp, monkeypatch):
         """CIPHERBOX_DISABLE_WTS 设置时跳过 WTS 注册（不安装过滤器），降级为仅超时锁定。"""
-        monkeypatch.setenv('CIPHERBOX_DISABLE_WTS', '1')
+        monkeypatch.setenv("CIPHERBOX_DISABLE_WTS", "1")
         ctrl = AutoLockController(MagicMock(), MagicMock(), lambda: None)
         ctrl.setup_session_notification(MagicMock())
         assert ctrl._wts_setup_attempted is True
@@ -123,7 +125,7 @@ class TestAutoLockController:
 
     def test_setup_session_notification_is_idempotent(self, qapp, monkeypatch):
         """_wts_setup_attempted 守卫使注册仅发生一次，二次调用直接短路不抛错。"""
-        monkeypatch.setenv('CIPHERBOX_DISABLE_WTS', '1')
+        monkeypatch.setenv("CIPHERBOX_DISABLE_WTS", "1")
         ctrl = AutoLockController(MagicMock(), MagicMock(), lambda: None)
         ctrl.setup_session_notification(MagicMock())
         # 二次调用不应抛错且状态不变（幂等）

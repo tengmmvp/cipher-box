@@ -165,7 +165,7 @@ class VaultManager:
         重定向位置文件（SEC-004）。
         """
         directories = [self.data_dir / BACKUPS_DIR_NAME]
-        custom = self._config.get(CFG_BACKUP_DIRECTORY, '')
+        custom = self._config.get(CFG_BACKUP_DIRECTORY, "")
         if custom:
             try:
                 validated = validate_file_path(custom, check_ancestors=True)
@@ -186,7 +186,7 @@ class VaultManager:
         """
         if not self._config.db_path.exists():
             return False
-        salt_b64 = self._db.get_meta('master_salt')
+        salt_b64 = self._db.get_meta("master_salt")
         return salt_b64 is not None
 
     def ensure_db_open(self) -> None:
@@ -199,7 +199,7 @@ class VaultManager:
         if self._db_initialized:
             return
         if not self._db.is_open and not self._db.open():
-            raise DatabaseError('数据库无法打开')
+            raise DatabaseError("数据库无法打开")
         self._db.init_tables()
         self._db_initialized = True
 
@@ -216,13 +216,13 @@ class VaultManager:
         （如改密路径）也对称地抛而非返回 None 静默传播。
         """
         if not self.is_unlocked or self._key is None:
-            raise VaultLockedError('保险库未解锁')
+            raise VaultLockedError("保险库未解锁")
         return self._key
 
     @property
     def snapshot_key(self) -> bytes:
         if not self.is_unlocked or self._snapshot_key is None:
-            raise VaultLockedError('自动快照密钥不可用')
+            raise VaultLockedError("自动快照密钥不可用")
         return self._snapshot_key
 
     @property
@@ -261,7 +261,7 @@ class VaultManager:
             raise VaultLockedError("保险库已锁定，不能写入数据")
         if self._key_epoch is None:
             return  # 从未激活（initialize 前），守卫放行 vault_meta 写入
-        current_epoch = self._db.get_meta('key_epoch')
+        current_epoch = self._db.get_meta("key_epoch")
         if current_epoch and current_epoch != self._key_epoch:
             self.clear_vault_state()
             raise VaultKeyEpochMismatchError("保险库密钥已变更，请重新启动并解锁")
@@ -278,7 +278,10 @@ class VaultManager:
 
     @contextmanager
     def epoch_guarded_transaction(
-        self, *, operation: str = '操作', pre_epoch: str | None = None,
+        self,
+        *,
+        operation: str = "操作",
+        pre_epoch: str | None = None,
     ) -> Iterator[None]:
         """事务 + epoch 守卫：进入时快照 key_epoch，事务内复查防并发改密。
 
@@ -294,9 +297,7 @@ class VaultManager:
         snapshot = self.key_epoch if pre_epoch is None else pre_epoch
         with self.db.transaction():
             if self.key_epoch != snapshot:
-                raise VaultKeyEpochMismatchError(
-                    f'{operation}期间检测到密钥变更，已中止并回滚'
-                )
+                raise VaultKeyEpochMismatchError(f"{operation}期间检测到密钥变更，已中止并回滚")
             yield
 
     @contextmanager
@@ -318,9 +319,9 @@ class VaultManager:
         with self._db.db_lock:
             session_epoch = self._key_epoch
             if session_epoch is not None:
-                db_epoch = self._db.get_meta('key_epoch')
+                db_epoch = self._db.get_meta("key_epoch")
                 if db_epoch and db_epoch != session_epoch:
-                    raise VaultKeyEpochMismatchError('读取期间检测到密钥变更，已中止')
+                    raise VaultKeyEpochMismatchError("读取期间检测到密钥变更，已中止")
             yield
 
     # ---- 原子状态操作（供 VaultLifecycleOrchestrator）----
@@ -352,11 +353,11 @@ class VaultManager:
         """
         key = self._key
         if key is None:
-            raise VaultLockedError('保险库未解锁')
+            raise VaultLockedError("保险库未解锁")
         if encrypted is None:
-            encrypted = self._db.get_meta('snapshot_key_enc')
+            encrypted = self._db.get_meta("snapshot_key_enc")
         if not encrypted:
-            raise VaultLockedError('保险库缺少自动快照密钥')
+            raise VaultLockedError("保险库缺少自动快照密钥")
         self._snapshot_key = VaultMetaStore.decrypt_snapshot_key(encrypted, key)
 
     def mark_unlocked(self) -> None:
@@ -365,7 +366,10 @@ class VaultManager:
         self._ever_unlocked = True
 
     def activate_keys(
-        self, key: bytes | bytearray, snapshot_key: bytes | bytearray, epoch: str,
+        self,
+        key: bytes | bytearray,
+        snapshot_key: bytes | bytearray,
+        epoch: str,
     ) -> None:
         """原子激活主密钥、快照密钥与 epoch，并设置域密钥、标记解锁。
 
@@ -410,7 +414,7 @@ class VaultManager:
         epoch 已提交而 snapshot_key_enc 未写入的不一致窗口。
         """
         if self._key is None:
-            raise VaultLockedError('保险库未解锁')
+            raise VaultLockedError("保险库未解锁")
         return VaultMetaStore.encrypt_snapshot_key(snapshot_key, self._key)
 
     def apply_snapshot_key(self, snapshot_key: bytes | bytearray) -> None:
@@ -429,7 +433,8 @@ class VaultManager:
         解密且含历史明文，清理以收缩泄漏面。覆盖默认与自定义备份目录。
         """
         return secure_purge(
-            self.backup_directories, [PRE_RESTORE_GLOB, SNAPSHOT_GLOB],
+            self.backup_directories,
+            [PRE_RESTORE_GLOB, SNAPSHOT_GLOB],
         )
 
     def purge_restore_points(self) -> list[Path]:
@@ -478,11 +483,13 @@ class VaultManager:
         抛无信息的 ``AttributeError`` 而非清晰的「attach_lifecycle 未调用」。
         """
         if self._lifecycle is None:
-            raise RuntimeError('attach_lifecycle 未调用')
+            raise RuntimeError("attach_lifecycle 未调用")
         return self._lifecycle
 
     def initialize(
-        self, master_password: str, params: KdfParams | None = None,
+        self,
+        master_password: str,
+        params: KdfParams | None = None,
     ) -> tuple[bool, str]:
         """首次初始化保险库（委托 VaultLifecycleOrchestrator）。"""
         return self._require_lifecycle().initialize(master_password, params=params)
@@ -500,7 +507,9 @@ class VaultManager:
         self._require_lifecycle().close()
 
     def change_master_password(
-        self, old_password: str, new_password: str,
+        self,
+        old_password: str,
+        new_password: str,
     ) -> tuple[bool, str]:
         """修改主密码（委托 VaultLifecycleOrchestrator）。"""
         return self._require_lifecycle().change_master_password(old_password, new_password)

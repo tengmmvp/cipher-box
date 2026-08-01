@@ -82,7 +82,7 @@ class TOTPWidget(QWidget):
         # 先清空验证码明文再销毁：deleteLater 异步执行，销毁前 label 文本仍驻留
         # Qt 对象，锁定瞬间内存转储可读到。显式 setText 立即擦除可见明文。
         if self._code_label is not None:
-            self._code_label.setText('')
+            self._code_label.setText("")
         self._entry_id = None
         self._period = 30
         self._code_label = None
@@ -110,7 +110,7 @@ class TOTPWidget(QWidget):
         if not state:
             return
         self._entry_id = entry_id
-        self._period = state['period']
+        self._period = state["period"]
 
         # 使用 start 注入的 content_layout（显式依赖，避免反射父组件私有属性）
         content_layout = self._content_layout
@@ -130,24 +130,24 @@ class TOTPWidget(QWidget):
         totp_layout = QVBoxLayout(totp_frame)
         totp_layout.setSpacing(6)
 
-        totp_title = QLabel('验证码 (TOTP)')
-        totp_title.setStyleSheet(f'font-weight: bold; font-size: 13px; color: {c("accent_text")};')
+        totp_title = QLabel("验证码 (TOTP)")
+        totp_title.setStyleSheet(f"font-weight: bold; font-size: 13px; color: {c('accent_text')};")
         totp_layout.addWidget(totp_title)
 
         code_row = QHBoxLayout()
         code_row.setSpacing(12)
 
-        self._code_label = QLabel(state['code'])
+        self._code_label = QLabel(state["code"])
         self._code_label.setStyleSheet(
-            f'font-size: 28px; font-weight: bold; letter-spacing: 6px; '
-            f'color: {c("accent_text")}; font-family: {FONT_FAMILY_MONOSPACE};'
+            f"font-size: 28px; font-weight: bold; letter-spacing: 6px; "
+            f"color: {c('accent_text')}; font-family: {FONT_FAMILY_MONOSPACE};"
         )
         code_row.addWidget(self._code_label)
 
         # 倒计时进度条
         self._bar = QProgressBar()
-        self._bar.setRange(0, state['period'])
-        self._bar.setValue(state['remaining'])
+        self._bar.setRange(0, state["period"])
+        self._bar.setValue(state["remaining"])
         self._bar.setFixedHeight(6)
         self._bar.setTextVisible(False)
         self._bar.setStyleSheet(f"""
@@ -158,7 +158,7 @@ class TOTPWidget(QWidget):
 
         # 复制按钮
         copy_btn = QPushButton()
-        set_icon_with_text(copy_btn, '复制', COPY)
+        set_icon_with_text(copy_btn, "复制", COPY)
         copy_btn.setFixedSize(*BTN_TOTP_COPY)
         copy_btn.clicked.connect(self._copy_code)
         copy_btn.clicked.connect(self.copy_feedback.emit)

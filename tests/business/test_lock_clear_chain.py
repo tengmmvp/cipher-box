@@ -21,7 +21,7 @@ from tests.helpers import make_vault
 # par>=1），加速测试密钥派生。与 conftest._TEST_KDF_PARAMS 同值；生产路径仍用
 # DEFAULT_KDF_PARAMS（time=3 / 64MB / parallelism=4）。
 _WEAK_KDF = KdfParams(time_cost=2, memory_cost=16 * 1024, parallelism=1)
-_MASTER_PASSWORD = 'TestPassword123!'
+_MASTER_PASSWORD = "TestPassword123!"
 
 
 class TestLockClearsKeys:

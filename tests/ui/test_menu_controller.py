@@ -31,16 +31,16 @@ def _make_slots() -> tuple[MenuSlots, dict[str, list[tuple]]]:
         return _cb
 
     slots = MenuSlots(
-        add_entry=_probe('add_entry'),
-        edit_entry=_probe('edit_entry'),
-        edit_selected_entry=_probe('edit_selected_entry'),
-        delete_selected_entry=_probe('delete_selected_entry'),
-        on_password_selected=_probe('on_password_selected'),
-        clear_search=_probe('clear_search'),
-        refresh_all_data=_probe('refresh_all_data'),
-        apply_theme=_probe('apply_theme'),
-        apply_runtime_settings=_probe('apply_runtime_settings'),
-        lock=_probe('lock'),
+        add_entry=_probe("add_entry"),
+        edit_entry=_probe("edit_entry"),
+        edit_selected_entry=_probe("edit_selected_entry"),
+        delete_selected_entry=_probe("delete_selected_entry"),
+        on_password_selected=_probe("on_password_selected"),
+        clear_search=_probe("clear_search"),
+        refresh_all_data=_probe("refresh_all_data"),
+        apply_theme=_probe("apply_theme"),
+        apply_runtime_settings=_probe("apply_runtime_settings"),
+        lock=_probe("lock"),
     )
     return slots, calls
 
@@ -104,7 +104,7 @@ class TestMenuControllerSetup:
         menubar = parent.menuBar()
         assert menubar is not None
         titles = [a.text() for a in menubar.actions()]
-        assert titles == ['文件', '工具', '设置', '帮助']
+        assert titles == ["文件", "工具", "设置", "帮助"]
 
     def test_setup_registers_six_shortcuts(self, qapp):
         """setup 注册 6 个全局快捷键（Ctrl+F/E/G/逗号、Delete、Escape）。"""
@@ -120,20 +120,20 @@ class TestMenuActionWiring:
         ctrl, calls = _make_controller()
         parent = _setup_on_fresh_window(ctrl)
         for action in _all_menu_actions(parent):
-            if action.text() == '新增条目':
+            if action.text() == "新增条目":
                 action.trigger()
                 break
         # QAction.triggered 信号带 checked=False 入参，断言调用次数而非入参
-        assert len(calls['add_entry']) == 1
+        assert len(calls["add_entry"]) == 1
 
     def test_lock_action_triggers_slot(self, qapp):
         ctrl, calls = _make_controller()
         parent = _setup_on_fresh_window(ctrl)
         for action in _all_menu_actions(parent):
-            if action.text() == '锁定保险库':
+            if action.text() == "锁定保险库":
                 action.trigger()
                 break
-        assert len(calls['lock']) == 1
+        assert len(calls["lock"]) == 1
 
 
 class TestDialogDispatch:
@@ -143,30 +143,32 @@ class TestDialogDispatch:
         ctrl, calls = _make_controller()
         _setup_on_fresh_window(ctrl)
         monkeypatch.setattr(
-            'src.ui.controllers.menu_controller.SettingsDialog', _accepted_dialog_mock(),
+            "src.ui.controllers.menu_controller.SettingsDialog",
+            _accepted_dialog_mock(),
         )
         ctrl.show_settings()
-        assert calls['apply_theme'] == [()]
-        assert calls['apply_runtime_settings'] == [()]
+        assert calls["apply_theme"] == [()]
+        assert calls["apply_runtime_settings"] == [()]
 
     def test_show_settings_rejected_skips_apply(self, qapp, monkeypatch):
         ctrl, calls = _make_controller()
         _setup_on_fresh_window(ctrl)
         monkeypatch.setattr(
-            'src.ui.controllers.menu_controller.SettingsDialog', _rejected_dialog_mock(),
+            "src.ui.controllers.menu_controller.SettingsDialog",
+            _rejected_dialog_mock(),
         )
         ctrl.show_settings()
-        assert calls['apply_theme'] == []
-        assert calls['apply_runtime_settings'] == []
+        assert calls["apply_theme"] == []
+        assert calls["apply_runtime_settings"] == []
 
     def test_show_backup_data_changed_refreshes(self, qapp, monkeypatch):
         ctrl, calls = _make_controller()
         _setup_on_fresh_window(ctrl)
         mock_cls = MagicMock()
         mock_cls.return_value.data_changed = True
-        monkeypatch.setattr('src.ui.controllers.menu_controller.BackupDialog', mock_cls)
+        monkeypatch.setattr("src.ui.controllers.menu_controller.BackupDialog", mock_cls)
         ctrl.show_backup()
-        assert calls['refresh_all_data'] == [()]
+        assert calls["refresh_all_data"] == [()]
         ctrl._detail_panel.show_empty.assert_called_once()
 
     def test_show_backup_unchanged_skips_refresh(self, qapp, monkeypatch):
@@ -174,21 +176,22 @@ class TestDialogDispatch:
         _setup_on_fresh_window(ctrl)
         mock_cls = MagicMock()
         mock_cls.return_value.data_changed = False
-        monkeypatch.setattr('src.ui.controllers.menu_controller.BackupDialog', mock_cls)
+        monkeypatch.setattr("src.ui.controllers.menu_controller.BackupDialog", mock_cls)
         ctrl.show_backup()
-        assert calls['refresh_all_data'] == []
+        assert calls["refresh_all_data"] == []
 
     def test_show_change_master_accepted_triggers_force_backup(self, qapp, monkeypatch):
         """改密 Accepted 触发 refresh + show_empty + 强制快照（force=True）。"""
         ctrl, calls = _make_controller()
         _setup_on_fresh_window(ctrl)
         monkeypatch.setattr(
-            'src.ui.controllers.menu_controller.ChangeMasterDialog', _accepted_dialog_mock(),
+            "src.ui.controllers.menu_controller.ChangeMasterDialog",
+            _accepted_dialog_mock(),
         )
         # 屏蔽 Toast UI 副作用（Accepted 路径函数内 import Toast 并 show）
-        monkeypatch.setattr('src.ui.components.toast.Toast.show', MagicMock())
+        monkeypatch.setattr("src.ui.components.toast.Toast.show", MagicMock())
         ctrl.show_change_master()
-        assert calls['refresh_all_data'] == [()]
+        assert calls["refresh_all_data"] == [()]
         ctrl._detail_panel.show_empty.assert_called_once()
         ctrl._auto_backup.trigger_check.assert_called_once_with(force=True)
 
@@ -196,7 +199,8 @@ class TestDialogDispatch:
         ctrl, _ = _make_controller()
         _setup_on_fresh_window(ctrl)
         monkeypatch.setattr(
-            'src.ui.controllers.menu_controller.ChangeMasterDialog', _rejected_dialog_mock(),
+            "src.ui.controllers.menu_controller.ChangeMasterDialog",
+            _rejected_dialog_mock(),
         )
         ctrl.show_change_master()
         ctrl._auto_backup.trigger_check.assert_not_called()

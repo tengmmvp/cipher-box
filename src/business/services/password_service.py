@@ -23,7 +23,12 @@ class PasswordService:
     ) -> str:
         """生成随机密码。"""
         return PasswordGenerator.generate(
-            length, uppercase, lowercase, digits, symbols, exclude_ambiguous,
+            length,
+            uppercase,
+            lowercase,
+            digits,
+            symbols,
+            exclude_ambiguous,
         )
 
     @staticmethod
@@ -32,7 +37,7 @@ class PasswordService:
         return PasswordGenerator.check_strength(password)
 
     @staticmethod
-    def validate_master_password(password: str, label: str = '主密码') -> tuple[bool, str]:
+    def validate_master_password(password: str, label: str = "主密码") -> tuple[bool, str]:
         """验证主密码强度要求，返回由是否有效与错误信息组成的二元组。"""
         return PasswordGenerator.validate_master_password(password, label)
 
@@ -43,7 +48,10 @@ class PasswordService:
 
     @staticmethod
     def validate_charset_selection(
-        uppercase: bool, lowercase: bool, digits: bool, symbols: bool,
+        uppercase: bool,
+        lowercase: bool,
+        digits: bool,
+        symbols: bool,
     ) -> tuple[bool, str]:
         """校验密码生成至少选中一种字符集，返回 ``(是否有效, 错误信息)``。
 
@@ -51,8 +59,8 @@ class PasswordService:
         固定文案供直接经 ``QMessageBox.warning`` 展示。
         """
         if not any((uppercase, lowercase, digits, symbols)):
-            return False, '至少需要选择一种密码字符类型。'
-        return True, ''
+            return False, "至少需要选择一种密码字符类型。"
+        return True, ""
 
     @staticmethod
     def generate_totp_or_raise(secret: str) -> str:

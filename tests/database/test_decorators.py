@@ -99,13 +99,13 @@ class _WriteHost:
         """
         self._conn.execute("CREATE TABLE IF NOT EXISTS demo(x INTEGER)")
         self._conn.execute("INSERT INTO demo(x) VALUES(1)")
-        raise _StandaloneError('standalone write failed')
+        raise _StandaloneError("standalone write failed")
 
 
 @pytest.fixture
 def conn():
     """内存 SQLite 连接（经代理包裹），事务态可直接经 ``conn.in_transaction`` 观测。"""
-    proxy = _CountingConn(sqlite3.connect(':memory:'))
+    proxy = _CountingConn(sqlite3.connect(":memory:"))
     yield proxy
     proxy.close()
 
@@ -130,8 +130,8 @@ class TestDbWriteRollbackContract:
         # rollback 后隐式事务已结束
         assert conn.in_transaction is False
         # 关键回归点：显式 BEGIN 不再因残留隐式事务报错
-        conn.execute('BEGIN TRANSACTION')
-        conn.execute('ROLLBACK')
+        conn.execute("BEGIN TRANSACTION")
+        conn.execute("ROLLBACK")
 
     def test_nested_write_in_explicit_transaction_skips_rollback(self, conn):
         """``in_transaction=True`` 时不在本方法 rollback（外层事务统一处理）。
@@ -154,7 +154,7 @@ class TestDbWriteRollbackContract:
     def test_original_exception_propagates(self, conn):
         """无论是否 rollback，原异常（非包装异常）原样再抛。"""
         host = _WriteHost(conn, in_transaction=False)
-        with pytest.raises(_StandaloneError, match='standalone write failed'):
+        with pytest.raises(_StandaloneError, match="standalone write failed"):
             host.failing_write()
 
 
@@ -168,7 +168,7 @@ def test_db_write_raises_database_error_when_disconnected(conn):
     host = _WriteHost(conn, in_transaction=False)
     host._conn_real = None  # 模拟断连：_conn property 现返回 None
 
-    with pytest.raises(DatabaseError, match='数据库未连接'):
+    with pytest.raises(DatabaseError, match="数据库未连接"):
         host.failing_write()
     # 方法体未执行：无 rollback、无 guard_write（连接检查在 _guard_write 之前短路）
     assert conn.rollback_calls == 0

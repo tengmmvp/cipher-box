@@ -89,13 +89,13 @@ class TestWaitWorkerShutdown:
         # isRunning：entry=True，首_wait 后仍 True（触发兜底），兜底_wait 后 False
         worker = _FakeWorker([True, True, False, False])
 
-        with caplog.at_level(logging.ERROR, logger='src.ui.components.workers'):
+        with caplog.at_level(logging.ERROR, logger="src.ui.components.workers"):
             result = wait_worker_shutdown(worker, timeout=200)
 
         assert result is True
         assert worker.wait_calls == [200, 200]  # 两次等待
         assert worker.cancel_calls == 1
-        assert any('仍在运行' in r.message for r in caplog.records)
+        assert any("仍在运行" in r.message for r in caplog.records)
 
     def test_critical_abandons_when_still_running_after_secondary_wait(self, caplog):
         """兜底等待后仍运行（极端卡死）→ 记 critical 后放弃，返回 False。
@@ -106,24 +106,19 @@ class TestWaitWorkerShutdown:
         # isRunning：四次探测全 True（永不停止）
         worker = _FakeWorker([True, True, True, True])
 
-        with caplog.at_level(logging.CRITICAL, logger='src.ui.components.workers'):
+        with caplog.at_level(logging.CRITICAL, logger="src.ui.components.workers"):
             result = wait_worker_shutdown(worker, timeout=150)
 
         assert result is False
         assert worker.wait_calls == [150, 150]  # 兜底仅一次额外等待，不无限重试
-        assert any('放弃等待' in r.message for r in caplog.records)
+        assert any("放弃等待" in r.message for r in caplog.records)
 
     def test_timeout_none_uses_default_constant(self, monkeypatch):
         """timeout=None 时从 ``constants.WORKER_WAIT_TIMEOUT_MS`` 取默认值。"""
-        import src.ui.components.workers as workers_mod
-
-        monkeypatch.setattr(
-            workers_mod, '__getattr__', None, raising=False
-        )  # no-op；仅为显式表明不拦截模块属性
-        # 真正断言：patch constants 模块的常量，验证 wait 收到该值
+        # patch constants 模块的常量，验证 wait 收到该值
         from src.ui.resources import constants
 
-        monkeypatch.setattr(constants, 'WORKER_WAIT_TIMEOUT_MS', 4321)
+        monkeypatch.setattr(constants, "WORKER_WAIT_TIMEOUT_MS", 4321)
         worker = _FakeWorker([True, False, False, False])
 
         wait_worker_shutdown(worker)  # timeout 默认 None

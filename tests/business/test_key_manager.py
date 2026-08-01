@@ -1,6 +1,5 @@
 """KeyManager 单元测试：密钥持有、清零与 property 副本语义。"""
 
-
 from src.business.services import key_manager as key_manager_module
 from src.business.services.key_manager import KeyManager
 
@@ -96,7 +95,7 @@ def test_clear_zeroes_internal_key_content(monkeypatch):
         original(data)
         zeroed.append(data)
 
-    monkeypatch.setattr(key_manager_module, 'secure_zero_buffer', spy)
+    monkeypatch.setattr(key_manager_module, "secure_zero_buffer", spy)
 
     km = KeyManager()
     km.activate(_make_bytearray_key(0xAB), _make_bytearray_key(0xCD), 1)
@@ -104,7 +103,7 @@ def test_clear_zeroes_internal_key_content(monkeypatch):
 
     assert len(zeroed) == 2
     for buf in zeroed:
-        assert bytes(buf) == b'\x00' * len(buf)
+        assert bytes(buf) == b"\x00" * len(buf)
 
 
 def test_clear_invokes_secure_zero_buffer_for_each_secret(monkeypatch):
@@ -124,7 +123,7 @@ def test_clear_invokes_secure_zero_buffer_for_each_secret(monkeypatch):
         call_count += 1
         original(data)
 
-    monkeypatch.setattr(key_manager_module, 'secure_zero_buffer', spy)
+    monkeypatch.setattr(key_manager_module, "secure_zero_buffer", spy)
 
     km.clear()
 
@@ -234,8 +233,8 @@ def test_activate_copies_caller_can_zero_independently():
     km.activate(key, snapshot, 1)
 
     # 调用方清零自己的引用（模拟 finally secure_zero_buffer）
-    key[:] = b'\x00' * 32
-    snapshot[:] = b'\x00' * 32
+    key[:] = b"\x00" * 32
+    snapshot[:] = b"\x00" * 32
 
     # KeyManager 内部副本不受影响
     assert km.key == bytes([0x11] * 32)

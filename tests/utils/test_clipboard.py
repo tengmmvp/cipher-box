@@ -22,29 +22,29 @@ def _read_system_clipboard() -> str:
     copy_text 走 Qt setText，用 clipboard.text() 读一致。
     """
     clipboard = QApplication.clipboard()
-    if sys.platform != 'win32':
-        return clipboard.text() if clipboard else ''
+    if sys.platform != "win32":
+        return clipboard.text() if clipboard else ""
     import ctypes
     from ctypes import wintypes
-    user32 = ctypes.WinDLL('user32')
+
+    user32 = ctypes.WinDLL("user32")
     user32.OpenClipboard.argtypes = [wintypes.HWND]
     user32.OpenClipboard.restype = wintypes.BOOL
     user32.GetClipboardData.argtypes = [wintypes.UINT]
     user32.GetClipboardData.restype = wintypes.HANDLE
     user32.CloseClipboard.restype = wintypes.BOOL
     if not user32.OpenClipboard(None):
-        return ''
+        return ""
     try:
         ptr = user32.GetClipboardData(13)  # CF_UNICODETEXT
         if not ptr:
-            return ''
-        return ctypes.wstring_at(ptr) or ''
+            return ""
+        return ctypes.wstring_at(ptr) or ""
     finally:
         user32.CloseClipboard()
 
 
 class TestClipboardManager:
-
     @pytest.fixture(autouse=True)
     def _ensure_qapp(self, qapp):
         """在 setup_method 之前确保 QApplication 已创建。"""
@@ -73,7 +73,7 @@ class TestClipboardManager:
         clipboard = QApplication.clipboard()
         assert clipboard is not None
         assert _read_system_clipboard() == text
-        expected_hash = hmac.digest(_CLIPBOARD_HMAC_KEY, text.encode('utf-8'), 'sha256')
+        expected_hash = hmac.digest(_CLIPBOARD_HMAC_KEY, text.encode("utf-8"), "sha256")
         assert self.mgr._last_text_hash == expected_hash
 
     # ---- 自动清空计时器 ----
@@ -122,5 +122,5 @@ class TestClipboardManager:
         self.mgr.copy_text("")
 
         # _last_text_hash 应保持初始空值，未被设置
-        assert self.mgr._last_text_hash == b''
+        assert self.mgr._last_text_hash == b""
         assert not self.mgr._timer.isActive()

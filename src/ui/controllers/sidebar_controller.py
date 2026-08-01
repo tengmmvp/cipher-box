@@ -51,10 +51,10 @@ class SidebarController:
         分类元数据完整性校验失败时（``cat.integrity_error``）在名称前加 ⚠ 警告标识，
         使分类层 HMAC 篡改对用户可见（icon/color/sort_order 等非加密元数据被篡改）。
         """
-        name = f'⚠ {cat.name}' if cat.integrity_error else cat.name
+        name = f"⚠ {cat.name}" if cat.integrity_error else cat.name
         if count > 0:
-            return f'{cat.icon_char} {name} ({count})'
-        return f'{cat.icon_char} {name}'
+            return f"{cat.icon_char} {name} ({count})"
+        return f"{cat.icon_char} {name}"
 
     def build_delete_message(self, category_id: int) -> tuple[str, bool, str]:
         """构建删除分类的确认消息。
@@ -66,11 +66,11 @@ class SidebarController:
         """
         category = self._entry_mgr.categories.get_category(category_id)
         if not category:
-            return '', False, ''
+            return "", False, ""
         count = self._entry_mgr.categories.get_category_entry_count(category_id)
-        msg = f'确定要删除分类「{category.name}」吗？'
+        msg = f"确定要删除分类「{category.name}」吗？"
         if count > 0:
-            msg += f'\n\n该分类下有 {count} 个条目，删除后将取消分类归属。'
+            msg += f"\n\n该分类下有 {count} 个条目，删除后将取消分类归属。"
         return msg, count > 0, category.name
 
     def delete_category(self, category_id: int) -> bool:
