@@ -190,6 +190,12 @@ class EntryActionsController:
             return
         summary = idx.data(Qt.ItemDataRole.UserRole)
         if summary:
+            # 短路（PF-002）：详情面板已显示同一条目（id + updated_at 未变）时跳过重复
+            # get_entry 全量解密（含 password/totp），避免重复选中同一条目的解密开销。
+            current = self._detail_panel.current_entry
+            if (current is not None and current.id == summary.id
+                    and current.updated_at == summary.updated_at):
+                return
             entry = self._entry_mgr.get_entry(summary.id)
             if entry:
                 self._detail_panel.show_entry(entry)
@@ -320,10 +326,15 @@ class EntryActionsController:
     @require_unlocked
     def _copy_password(self, entry_id: int) -> None:
         """延迟解密并复制条目密码；仅当右键的是当前详情条目时触发复制反馈。"""
-        entry = self._entry_mgr.get_entry(entry_id)
+        # 复用面板已解密明文（PF-004）：右键复制密码的常是当前详情条目，直接取其已解密
+        # password 跳过重复 get_entry 全量解密；非当前条目回退延迟解密。
+        current = self._detail_panel.current_entry
+        entry = (
+            current if current is not None and current.id == entry_id
+            else self._entry_mgr.get_entry(entry_id)
+        )
         if entry and entry.password:
             self._clipboard.copy_text(entry.password)
-            current = self._detail_panel.current_entry
             if current is not None and current.id == entry_id:
                 self._detail_panel.copy_feedback.emit()
             Toast.show(self._parent, '已复制密码', Toast.SUCCESS, duration=MS_TOAST_SHORT)
@@ -366,10 +377,15 @@ class EntryActionsController:
 
     # ========== 条目 CRUD ==========
 
-    def add_entry(self) -> None:
+    def _resolve_dialog_options(self) -> tuple[list[Category], list[str]]:
+        """获取新增/编辑对话框预填的分类与标签，分类为空时回退全量查询（QL-010）。"""
         categories, tag_names = self._deps.get_dialog_options()
         if not categories:
             categories = self._entry_mgr.categories.get_categories()
+        return categories, tag_names
+
+    def add_entry(self) -> None:
+        categories, tag_names = self._resolve_dialog_options()
         parent = self._parent
         dialog = EntryDialog(self._entry_mgr, categories, tag_names, parent=parent, config=self._config)
         dialog.saved.connect(self._deps.refresh_after_entry_change)
@@ -390,9 +406,7 @@ class EntryActionsController:
                 '为避免覆盖原始密文，当前禁止编辑。请先创建备份并检查数据文件。',
             )
             return
-        categories, tag_names = self._deps.get_dialog_options()
-        if not categories:
-            categories = self._entry_mgr.categories.get_categories()
+        categories, tag_names = self._resolve_dialog_options()
         parent = self._parent
         dialog = EntryDialog(self._entry_mgr, categories, tag_names, entry=entry, parent=parent, config=self._config)
         dialog.saved.connect(self._deps.refresh_after_entry_change)
@@ -447,6 +461,7 @@ class EntryActionsController:
             if entry and not entry.is_deleted:
                 self.delete_entry(entry.id)
 
+    @require_unlocked
     def toggle_favorite(self, entry_id: int) -> None:
         self._entry_mgr.toggle_favorite(entry_id)
         self._deps.refresh_entries_only()

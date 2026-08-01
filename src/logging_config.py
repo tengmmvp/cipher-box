@@ -35,11 +35,13 @@ class SensitiveDataFilter(logging.Filter):
         (re.compile(r'otpauth://\S+'), 'otpauth://[REDACTED]'),
         # key=value / key:value 敏感赋值，等号/冒号后值贪婪到行尾（含空格 passphrase 整段打码）。
         # 过度打码（一行多赋值整行打码）优于漏打码。关键词前置否定环视 (?<![A-Za-z]) 避免
-        # mid-word 误匹配（donkey=…），中文关键词（密码/密钥/令牌）不受影响。
+        # mid-word 误匹配（donkey=…），中文关键词（密码/密钥/令牌）不受影响。SEC-009 补充
+        # username/信用卡字段(card_number/card_holder/card_cvv)/cvv 等账号与卡密关键词。
         (
             re.compile(
-                r'(?i)(?<![A-Za-z])(password|pwd|passwd|secret|token|api[_-]?key|key|密码|密钥|令牌)'
-                r'\s*[:=]\s*.+'
+                r'(?i)(?<![A-Za-z])(password|pwd|passwd|secret|token|api[_-]?key|key'
+                r'|username|user[_-]?name|card[_-]?(?:number|holder|cvv|cvc)|cvv|cvc'
+                r'|密码|密钥|令牌)\s*[:=]\s*.+'
             ),
             r'\1=[REDACTED]',
         ),

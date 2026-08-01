@@ -123,6 +123,56 @@ class CategoryManager:
             )
         return result
 
+    def add_categories_batch(
+        self, categories: list[Category], *, notify: bool = True,
+    ) -> list[int]:
+        """批量新增分类（恢复路径），返回按输入顺序的新 id 列表（PF-003）。
+
+        恢复前已 ``clear_vault_data`` 清空分类表，故无需逐条查重——消除原
+        ``restore_categories`` 循环 ``add_category`` 的 O(N²)（每次 ``add_category``
+        经 ``get_categories`` 全表解密查重）。两阶段加密事务（占位→真实 id→重加密）
+        逐条在单事务内完成，无逐次 commit/fsync。空名项记 0（调用方应过滤）。
+        """
+        new_ids: list[int] = []
+        if not categories:
+            if notify:
+                self._change_bus.notify(
+                    password_changed=False, tags_changed=False,
+                    category_changed=True, clear_summaries=False,
+                )
+            return new_ids
+        with self._vault.db.transaction():
+            for category in categories:
+                plaintext_name = category.name.strip()
+                if not plaintext_name:
+                    new_ids.append(0)
+                    continue
+                pending_id = f'category-pending-{uuid.uuid4().hex}'
+                stored = Category(
+                    name=encrypt_field(plaintext_name, self._key, pending_id, 'category_name'),
+                    icon_char=category.icon_char,
+                    color=category.color,
+                    sort_order=category.sort_order,
+                    created_at=category.created_at,
+                )
+                result = self._vault.db.add_category(stored)
+                stored = replace(stored, id=result)
+                stored = replace(
+                    stored,
+                    name=encrypt_field(
+                        plaintext_name, self._key,
+                        category_crypto_id(result), 'category_name',
+                    ),
+                )
+                self._vault.db.update_category(stored)
+                new_ids.append(result)
+        if notify:
+            self._change_bus.notify(
+                password_changed=False, tags_changed=False,
+                category_changed=True, clear_summaries=False,
+            )
+        return new_ids
+
     def update_category(self, category: Category) -> None:
         """更新分类，重加密分类名并失效分类名缓存（条目摘要内容不变）。"""
         if category.id is None:

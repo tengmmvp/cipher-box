@@ -56,6 +56,13 @@ _BADGE_BG_ALPHA = 0.13
 class _HealthScoreWidget(QWidget):
     """以圆环进度形式绘制安全健康评分的自定义组件。"""
 
+    # paintEvent 绘制参数（QL-016，提取魔数）：圆环几何与 Qt drawArc 角度常量。
+    _RING_PADDING_PX = 12  # 圆环与控件边缘的间距
+    _RING_PEN_WIDTH = 10  # 圆环线条粗细（像素）
+    _ANGLE_TICKS_PER_DEGREE = 16  # Qt drawArc 角度单位为 1/16 度
+    _FULL_CIRCLE_DEG = 360
+    _START_ANGLE_DEG = 90  # 起始角位于顶部
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._score = 100
@@ -77,8 +84,8 @@ class _HealthScoreWidget(QWidget):
             side = min(self.width(), self.height())
             center_x = self.width() / 2
             center_y = self.height() / 2
-            radius = side / 2 - 12  # 12px 内边距，圆环与控件边缘的间距
-            pen_width = 10  # 圆环线条粗细，单位为像素
+            radius = side / 2 - self._RING_PADDING_PX
+            pen_width = self._RING_PEN_WIDTH
 
             bg_pen = QPen(QColor(c('progress_bg')), pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
             painter.setPen(bg_pen)
@@ -86,13 +93,13 @@ class _HealthScoreWidget(QWidget):
                 center_x - radius, center_y - radius,
                 radius * 2, radius * 2,
             )
-            painter.drawArc(draw_rect, 0, 360 * 16)
+            painter.drawArc(draw_rect, 0, self._FULL_CIRCLE_DEG * self._ANGLE_TICKS_PER_DEGREE)
 
             score_color = self._health_score_color(self._score)
             fg_pen = QPen(QColor(score_color), pen_width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
             painter.setPen(fg_pen)
-            span_angle = int(self._score / 100 * 360 * 16)
-            start_angle = 90 * 16  # 起始角位于顶部，正值顺时针为 Qt 约定
+            span_angle = int(self._score / 100 * self._FULL_CIRCLE_DEG * self._ANGLE_TICKS_PER_DEGREE)
+            start_angle = self._START_ANGLE_DEG * self._ANGLE_TICKS_PER_DEGREE
             painter.drawArc(draw_rect, start_angle, -span_angle)
 
             painter.setPen(QColor(c('text_primary')))

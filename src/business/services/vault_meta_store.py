@@ -14,6 +14,7 @@ from ...crypto.master_key import DEFAULT_KDF_PARAMS, KDF_NAME, KdfParams
 from ...database.types import VaultDataConnection
 from ...exceptions import VaultIntegrityError
 from .metadata_signer import VAULT_META_SIGNED_KEYS, MetadataSigner
+from .vault_meta_keys import KDF_MEMORY_COST_KEY, KDF_PARALLELISM_KEY, KDF_TIME_COST_KEY
 
 # snapshot_key 为 32 字节的 AES-256 密钥
 SNAPSHOT_KEY_LEN = 32
@@ -74,9 +75,9 @@ class VaultMetaStore:
         db.set_meta('master_salt', base64.b64encode(salt).decode('ascii'))
         db.set_meta('master_verify', verify_token)
         db.set_meta('master_kdf', KDF_NAME)
-        db.set_meta('master_kdf_time_cost', str(params.time_cost))
-        db.set_meta('master_kdf_memory_cost', str(params.memory_cost))
-        db.set_meta('master_kdf_parallelism', str(params.parallelism))
+        db.set_meta(KDF_TIME_COST_KEY, str(params.time_cost))
+        db.set_meta(KDF_MEMORY_COST_KEY, str(params.memory_cost))
+        db.set_meta(KDF_PARALLELISM_KEY, str(params.parallelism))
         db.set_meta('ciphertext_format', EncryptionEngine.FORMAT_ID)
         db.set_meta('snapshot_key_enc', self.encrypt_snapshot_key(snapshot_key, key))
         db.set_meta('key_epoch', key_epoch)

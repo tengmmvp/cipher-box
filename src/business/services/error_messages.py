@@ -18,7 +18,7 @@ from ...exceptions import (
     BackupError,
     DatabaseError,
     DecryptionError,
-    ImportError,
+    ImportDataError,
     PayloadTooLargeError,
     SchemaError,
     VaultIntegrityError,
@@ -64,9 +64,9 @@ def to_user_message(exc: BaseException, *, default: str = '操作失败，请重
         # BackupError 归一为固定文案，不透传 str(exc)（校验消息可能含技术细节）。
         # 诊断信息已由调用方记日志。
         return '备份文件已损坏或格式无效，无法读取。'
-    # ---- ImportError 域（导入解析/校验，携带面向用户的消息）----
+    # ---- ImportDataError 域（导入解析/校验，携带面向用户的消息）----
     # 纯 CipherBoxError 不落入下方 ValueError 分支，str(exc) 本就是可操作消息，保留。
-    if isinstance(exc, ImportError):
+    if isinstance(exc, ImportDataError):
         msg = str(exc).strip()
         return msg or '导入文件格式无效或已损坏。'
     # ---- IO / 格式异常（驱动层，归一为固定文案）----

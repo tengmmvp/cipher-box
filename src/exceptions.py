@@ -27,7 +27,7 @@ __all__ = [
     'DatabaseError',
     'TransactionError',
     'SchemaError',
-    'ImportError',
+    'ImportDataError',
     'ImportFormatError',
     'ImportSizeError',
 ]
@@ -95,19 +95,20 @@ class PayloadTooLargeError(BackupError, ValueError):
     """
 
 
-class ImportError(CipherBoxError):
+class ImportDataError(CipherBoxError):
     """导入数据解析或校验异常。
 
-    与 Python 内置 ``ImportError`` 同名但属 CipherBox 导入数据领域；本模块及导入方
-    均不依赖内置 ``ImportError``（无可选 import 需捕获），同名遮蔽在本项目内安全。
+    命名 ImportDataError（QL-004）以消除与 Python 内置 ``ImportError`` 的同名遮蔽——
+    旧名 ``ImportError`` 会使 ``except (ImportError, ...)`` 误吞合并器调用链中真实的
+    内置 ImportError（如可选依赖缺失），改用语义化名称后类型边界清晰。
     """
 
 
-class ImportFormatError(ImportError):
+class ImportFormatError(ImportDataError):
     """导入文件格式或结构无效（如非 CipherBox JSON、字段类型不符）。"""
 
 
-class ImportSizeError(ImportError):
+class ImportSizeError(ImportDataError):
     """导入数据超出数量或大小上限（条目过多、字段/文件过大）。"""
 
 

@@ -38,6 +38,7 @@ from ..components.workers import BackgroundWorker
 from ..resources.constants import (
     BTN_DIALOG,
     DIALOG_CHANGE_MASTER_MIN_SIZE,
+    PWD_TOGGLE_AUTO_HIDE_SECONDS,
 )
 from ..resources.strings import DLG_TITLE_ERROR, DLG_TITLE_SUCCESS
 
@@ -108,7 +109,9 @@ class ChangeMasterDialog(WorkerBackedDialog):
         self._old_pwd.setEchoMode(QLineEdit.EchoMode.Password)
         self._old_pwd.setPlaceholderText('请输入当前主密码')
         old_pwd_layout.addWidget(self._old_pwd)
-        self._old_toggle = create_password_toggle_btn(self._old_pwd)
+        self._old_toggle = create_password_toggle_btn(
+            self._old_pwd, auto_hide_seconds=PWD_TOGGLE_AUTO_HIDE_SECONDS,
+        )
         old_pwd_layout.addWidget(self._old_toggle)
         layout.addLayout(old_pwd_layout)
 
@@ -120,7 +123,9 @@ class ChangeMasterDialog(WorkerBackedDialog):
         self._new_pwd.setPlaceholderText('请输入新主密码（至少 15 位）')
         self._new_pwd.textChanged.connect(self._on_pwd_changed)
         new_pwd_layout.addWidget(self._new_pwd)
-        self._new_toggle = create_password_toggle_btn(self._new_pwd)
+        self._new_toggle = create_password_toggle_btn(
+            self._new_pwd, auto_hide_seconds=PWD_TOGGLE_AUTO_HIDE_SECONDS,
+        )
         new_pwd_layout.addWidget(self._new_toggle)
         layout.addLayout(new_pwd_layout)
 
@@ -132,7 +137,9 @@ class ChangeMasterDialog(WorkerBackedDialog):
         self._confirm_pwd.setPlaceholderText('请再次输入新主密码')
         self._confirm_pwd.returnPressed.connect(self._on_change)
         confirm_pwd_layout.addWidget(self._confirm_pwd)
-        self._confirm_toggle = create_password_toggle_btn(self._confirm_pwd)
+        self._confirm_toggle = create_password_toggle_btn(
+            self._confirm_pwd, auto_hide_seconds=PWD_TOGGLE_AUTO_HIDE_SECONDS,
+        )
         confirm_pwd_layout.addWidget(self._confirm_toggle)
         layout.addLayout(confirm_pwd_layout)
 

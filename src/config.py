@@ -10,7 +10,7 @@ import sys
 import threading
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, overload
+from typing import Any, Literal, get_args, overload
 
 from .models import is_real_int
 from .utils.file_security import (
@@ -154,6 +154,22 @@ _BoolConfigKey = Literal[
     'minimize_to_tray', 'close_to_tray',
 ]
 
+# 启动期断言（QL-007）：overload 的 Literal 键集须与 DEFAULT_CONFIG 中对应类型键一致，
+# 新增配置键漏更新 Literal 在模块加载即报错。window_geometry/splitter_sizes/
+# security_sentinels 为特殊类型（由独立 overload 覆盖），不纳入此校验。
+if set(get_args(_StrConfigKey)) != {
+    k for k, v in DEFAULT_CONFIG.items() if isinstance(v, str)
+}:
+    raise RuntimeError('_StrConfigKey 与 DEFAULT_CONFIG 的 str 键不一致')
+if set(get_args(_IntConfigKey)) != {
+    k for k, v in DEFAULT_CONFIG.items() if is_real_int(v)
+}:
+    raise RuntimeError('_IntConfigKey 与 DEFAULT_CONFIG 的 int 键不一致')
+if set(get_args(_BoolConfigKey)) != {
+    k for k, v in DEFAULT_CONFIG.items() if type(v) is bool
+}:
+    raise RuntimeError('_BoolConfigKey 与 DEFAULT_CONFIG 的 bool 键不一致')
+
 
 class ConfigManager:
     """配置管理器 — 读写 JSON 配置文件。"""
@@ -190,8 +206,10 @@ class ConfigManager:
         """加载安装级配置签名密钥；缺失/损坏时原子生成新密钥。
 
         Windows 下经 DPAPI（当前用户凭据）封装存储，使 config.key 被读取也无法在别处
-        解密重算签名，收缩篡改配置绕过完整性校验的攻击面。非 Windows 回退明文存储，
-        绝不阻断启动。
+        解密重算签名，收缩篡改配置绕过完整性校验的攻击面。非 Windows 回退明文 0600 存储
+        （SEC-003 威胁边界：明文可读意味着本地有读权限者可重算签名伪造安全配置，如把
+        auto_lock 改 0；彻底修复需引入系统密钥链 keyring，权衡其跨平台失败模式与 CI 复杂度
+        后暂维持现状，以 Windows DPAPI 为主平台防护）。绝不阻断启动。
         """
         secure_directory(self._data_dir, strict=True)
         if self._integrity_key_path.exists():

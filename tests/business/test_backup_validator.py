@@ -301,11 +301,11 @@ class TestValidateEntryFields:
             validate_entry_fields(entry, {1})
 
     def test_field_too_long_rejected(self):
-        """单字段超过 MAX_TEXT_FIELD_SIZE(1MB) 但整体未超 MAX_ENTRY_JSON_SIZE(2MB)
-        时，应由 require_text 抛 PayloadTooLargeError。"""
+        """单字段超过其精确长度上限（notes > MAX_FIELD_NOTES）时，应由 require_text 抛
+        PayloadTooLargeError（SEC-006：字段精确上限取代统一 1MB）。"""
         entry = _valid_entry()
-        from src.business.services.backup_validator import MAX_TEXT_FIELD_SIZE
-        entry['notes'] = 'x' * (MAX_TEXT_FIELD_SIZE + 10)
+        from src.business.services.backup_validator import _BACKUP_FIELD_LIMITS
+        entry['notes'] = 'x' * (_BACKUP_FIELD_LIMITS['notes'] + 10)
         with pytest.raises(PayloadTooLargeError):
             validate_entry_fields(entry, {1})
 
@@ -462,14 +462,14 @@ class TestEncryptedFieldsSingleSource:
 
     @pytest.mark.parametrize('field', list(STRING_ENCRYPTED_FIELDS))
     def test_each_encrypted_field_length_enforced(self, field):
-        """每个字符串型加密字段超长均被拒绝，验证校验覆盖全部加密字段。
+        """每个字符串型加密字段超其精确上限均被拒绝，验证校验覆盖全部加密字段。
 
         若未来把新字段加入 SENSITIVE_ENCRYPTED_FIELDS，此处自动新增用例；若校验侧
         漏跟该字段，对应用例会因未抛 PayloadTooLargeError 而失败。
         """
-        from src.business.services.backup_validator import MAX_TEXT_FIELD_SIZE
+        from src.business.services.backup_validator import _BACKUP_FIELD_LIMITS
         entry = _valid_entry()
-        entry[field] = 'x' * (MAX_TEXT_FIELD_SIZE + 1)
+        entry[field] = 'x' * (_BACKUP_FIELD_LIMITS[field] + 1)
         with pytest.raises(PayloadTooLargeError):
             validate_entry_fields(entry, {1})
 

@@ -6,6 +6,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, Protocol
 
 from ...config import DEFAULT_CONFIG
 from ...utils.purge_files import secure_purge
@@ -14,8 +15,18 @@ from .backup_paths import SNAPSHOT_GLOB
 logger = logging.getLogger(__name__)
 
 
+class AutoBackupConfig(Protocol):
+    """自动备份间隔判定所需的 config 视图（QL-009，替代 ``object`` + ``type: ignore``）。
+
+    ConfigManager 满足此协议（duck typing），使本策略模块不硬依赖 ConfigManager 具体类型。
+    """
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """读取配置项。"""
+
+
 def is_auto_backup_due(
-    config: 'object',
+    config: AutoBackupConfig,
     *,
     force: bool,
     now: datetime | None = None,
@@ -25,14 +36,14 @@ def is_auto_backup_due(
     仅做时间间隔判定，假定调用方已过启用开关检查（禁用且非 force 时由调用方直接返回）。
 
     Args:
-        config: ConfigManager 实例（读取 ``last_auto_backup_at`` 与
-            ``auto_backup_interval_hours``）。
+        config: 提供 ``last_auto_backup_at`` 与 ``auto_backup_interval_hours`` 读取的
+            config（ConfigManager 满足 :class:`AutoBackupConfig` 协议）。
         force: 是否强制（忽略间隔）。
         now: 注入的当前时刻，供测试控制时间；默认 ``datetime.now(timezone.utc)``。
     """
     if force:
         return True
-    last_text = config.get('last_auto_backup_at', '')  # type: ignore[attr-defined]
+    last_text = config.get('last_auto_backup_at', '')
     if not last_text:
         return True
     current = now or datetime.now(timezone.utc)
@@ -42,7 +53,7 @@ def is_auto_backup_due(
         # 时间戳损坏会让间隔检查每次都重新备份；记日志以便运维发现而非静默冗余备份。
         logger.warning('last_auto_backup_at 解析失败，跳过间隔检查：%s', last_text)
         return True
-    interval = config.get(  # type: ignore[attr-defined]
+    interval = config.get(
         'auto_backup_interval_hours', DEFAULT_CONFIG['auto_backup_interval_hours'],
     )
     return elapsed >= timedelta(hours=interval)

@@ -36,7 +36,13 @@ from ..services.crypto_utils import encrypt_plaintext_category_names
 from ..services.error_messages import to_user_message
 from ..services.metadata_signer import MetadataSigner
 from ..services.re_encryption import ReEncryptionService
-from ..services.vault_meta_keys import VAULT_META_ALL_KEYS
+from ..services.vault_meta_keys import (
+    KDF_MEMORY_COST_KEY,
+    KDF_PARALLELISM_KEY,
+    KDF_PARAM_KEYS,
+    KDF_TIME_COST_KEY,
+    VAULT_META_ALL_KEYS,
+)
 from ..services.vault_meta_store import VaultMetaStore
 from .vault_manager import VaultManager
 
@@ -77,9 +83,9 @@ class VaultLifecycleOrchestrator:
         """从 vault_meta 解析 Argon2id 参数，缺失或非法时抛 VaultLockedError。"""
         try:
             return KdfParams(
-                int(meta['master_kdf_time_cost']),  # type: ignore[arg-type]
-                int(meta['master_kdf_memory_cost']),  # type: ignore[arg-type]
-                int(meta['master_kdf_parallelism']),  # type: ignore[arg-type]
+                int(meta[KDF_TIME_COST_KEY]),  # type: ignore[arg-type]
+                int(meta[KDF_MEMORY_COST_KEY]),  # type: ignore[arg-type]
+                int(meta[KDF_PARALLELISM_KEY]),  # type: ignore[arg-type]
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise VaultLockedError('保险库缺少密钥派生参数') from exc
@@ -266,8 +272,7 @@ class VaultLifecycleOrchestrator:
             ):
                 return False, '新密码不能与当前主密码相同'
             meta = self._db.get_meta_batch([
-                'master_salt', 'master_verify', 'master_kdf_time_cost',
-                'master_kdf_memory_cost', 'master_kdf_parallelism',
+                'master_salt', 'master_verify', *KDF_PARAM_KEYS,
             ])
             salt_b64 = meta['master_salt']
             verify_token = meta['master_verify']

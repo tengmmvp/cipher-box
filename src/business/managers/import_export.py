@@ -20,6 +20,7 @@ from ...exceptions import (
     DecryptionError,
     EntryError,
     EntryIntegrityError,
+    ImportDataError,
     ImportFormatError,
     ImportSizeError,
 )
@@ -488,9 +489,9 @@ class ImportExportManager:
                     overwrite_plans.append(OverwritePlan(i, entry, raw))
                 else:
                     new_entries.append(entry)
-            except (ImportError, EntryError, EntryIntegrityError) as exc:
+            except (ImportDataError, EntryError, EntryIntegrityError) as exc:
                 # 覆盖路径抛出校验错误（解密结构损坏 EntryIntegrityError / 合并器
-                # ImportError·EntryError），跳过该条目而非回滚整个导入。
+                # ImportDataError·EntryError），跳过该条目而非回滚整个导入。
                 # 不打印 title：标题可能含敏感信息，落入日志会扩大泄漏面。
                 # 用条目序号（导入数据中的位置）替代，便于排查又不暴露内容。
                 skipped += 1
@@ -573,9 +574,9 @@ class ImportExportManager:
         收敛逐条 ``update_entry`` 的 per-item SAVEPOINT/epoch 复查开销。
         ``preloaded_raw`` 复用预读跳过重复 ``get_entry``。
 
-        old_password 延迟提取（SEC-014）：分类阶段不收集旧密码明文，此处写入前逐条
-        经 :meth:`EntryManager.decrypt_password` 解密，收敛明文驻留面（不在新条目批量
-        插入期间驻留）。
+        old_password 延迟提取（SEC-014/PF-005）：分类与批量收集阶段均不预解密旧密码，
+        留 None 由 :meth:`update_entries_batch_with_history` 的 prepared 阶段逐条解密、
+        比对即 del，避免全部旧密码同刻驻留。
 
         per-item 错误隔离：验证/解密错误跳过单条，写/epoch 错误向上中止。
         ``batch_failures`` 索引对齐 ``overwrite_plans``（同序），取原 source idx 记日志，
@@ -583,10 +584,11 @@ class ImportExportManager:
         """
         if not overwrite_plans:
             return 0, 0
-        # 写入前逐条解密旧密码：用毕由 update_entries_batch_with_history 的 _prepare_password_update
-        # del 清零。延迟至此使旧密码不在新条目批量插入期间驻留（SEC-014）。
+        # old_password 留 None（PF-005）：不在批量收集阶段预解密全部旧密码（同刻驻留），
+        # 由 update_entries_batch_with_history 的 prepared 阶段逐条解密、_prepare_password_update
+        # 比对即 del 清零。
         batch_items: list[BatchUpdateItem] = [
-            BatchUpdateItem(plan.entry, plan.raw, self._entry_mgr.decrypt_password(plan.raw))
+            BatchUpdateItem(plan.entry, plan.raw, None)
             for plan in overwrite_plans
         ]
         success, batch_failures = (
@@ -599,8 +601,9 @@ class ImportExportManager:
         # 取原 source idx 记日志，不打印标题（可能含敏感信息）。
         for batch_idx, failure_exc in batch_failures:
             plan = overwrite_plans[batch_idx]
-            # 防御性：decrypt_password 容错返回空串使批量路径跳过旧密码解密异常，理论上
-            # 不抛 DecryptionError；保留区分仅为语义清晰（解密损坏用 ERROR，校验失败用 WARNING）。
+            # old_password 解密容错回退 ''（PF-005，在 _prepare_password_update 内），不抛
+            # DecryptionError；failures 主要含 EntryError/EntryIntegrityError。保留 ERROR/WARNING
+            # 区分仅为语义清晰。
             if isinstance(failure_exc, DecryptionError):
                 skipped += 1
                 logger.error(

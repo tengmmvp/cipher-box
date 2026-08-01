@@ -9,9 +9,18 @@ from ...crypto.password_generator import MAX_STRENGTH_SCORE
 from ...exceptions import BackupError, PayloadTooLargeError
 from ...models import (
     ENTRY_TYPES,
+    MAX_CUSTOM_FIELD_NAME,
+    MAX_CUSTOM_FIELD_VALUE,
     MAX_CUSTOM_FIELDS_PER_ENTRY,
     MAX_ENTRIES_LIMIT,
     MAX_ENTRY_PAYLOAD_SIZE,
+    MAX_FIELD_NOTES,
+    MAX_FIELD_PASSWORD,
+    MAX_FIELD_TAGS,
+    MAX_FIELD_TITLE,
+    MAX_FIELD_TOTP_SECRET,
+    MAX_FIELD_URL,
+    MAX_FIELD_USERNAME,
     MAX_PASSWORD_HISTORY,
     is_real_int,
 )
@@ -23,8 +32,28 @@ logger = logging.getLogger(__name__)
 # 备份语境别名（指向 models 单一源），非独立的第二份上限。
 MAX_BACKUP_ENTRIES = MAX_ENTRIES_LIMIT
 MAX_ENTRY_JSON_SIZE = MAX_ENTRY_PAYLOAD_SIZE
-MAX_TEXT_FIELD_SIZE = 1024 * 1024
 MAX_HISTORY_PER_ENTRY = MAX_PASSWORD_HISTORY * 2  # 每条目历史上限，2 倍余量
+MAX_BACKUP_CATEGORIES = 10_000  # 备份分类数量上限（远超实际，防恶意超大批量恢复致 UI 冻结）
+
+# 备份校验的字符串型加密字段→明文长度上限映射，派生自 models 单一源（SEC-006）：
+# 替代原先统一的 1MB MAX_TEXT_FIELD_SIZE，使恢复校验与加密侧 ENTRY_FIELD_LIMITS 对齐，
+# 避免 1MB 密码/备注绕过 validate_plain_entry 落库后致编辑拒绝或 UI 冻结。
+_BACKUP_FIELD_LIMITS: dict[str, int] = {
+    'title': MAX_FIELD_TITLE,
+    'username': MAX_FIELD_USERNAME,
+    'password': MAX_FIELD_PASSWORD,
+    'url': MAX_FIELD_URL,
+    'tags': MAX_FIELD_TAGS,
+    'notes': MAX_FIELD_NOTES,
+    'totp_secret': MAX_FIELD_TOTP_SECRET,
+}
+# 启动期断言：STRING_ENCRYPTED_FIELDS 须全部纳入 _BACKUP_FIELD_LIMITS，否则
+# validate_entry_fields 索引会 KeyError；模块加载即暴露字段集漂移。
+_missing_limits = set(STRING_ENCRYPTED_FIELDS) - set(_BACKUP_FIELD_LIMITS)
+if _missing_limits:
+    raise RuntimeError(
+        f'STRING_ENCRYPTED_FIELDS 未全部纳入 _BACKUP_FIELD_LIMITS：{sorted(_missing_limits)}'
+    )
 
 # 备份载荷各 TypedDict 的必备键集。提为模块级常量供 validate_* 复用；
 # backup_payload 启动期断言 Portable*.__annotations__ 与此一致，消除双重维护漂移。
@@ -86,7 +115,7 @@ def validate_restore_data(data: dict[str, Any]) -> None:
         raise PayloadTooLargeError('备份条目数量超出限制')
     if len(history) > len(entries) * MAX_HISTORY_PER_ENTRY:
         raise PayloadTooLargeError('密码历史数量超出限制')
-    if len(categories) > 10_000:
+    if len(categories) > MAX_BACKUP_CATEGORIES:
         raise PayloadTooLargeError('备份分类数量超出限制')
 
     category_ids = validate_categories(categories)
@@ -123,10 +152,10 @@ def validate_entry_fields(item: dict[str, Any], category_ids: set[int]) -> None:
     if sum(len(str(v).encode('utf-8')) for v in item.values()) > MAX_ENTRY_JSON_SIZE:
         raise BackupError('备份条目格式或大小无效')
 
-    # 字符串型加密字段明文长度校验，与加密侧字段集对称，新增加密字段自动跟随。
-    # custom_fields 为 list，由 validate_entry_custom_fields 单独校验。
+    # 字符串型加密字段明文长度按字段精确上限校验（_BACKUP_FIELD_LIMITS，SEC-006），与
+    # 加密侧 ENTRY_FIELD_LIMITS 对齐；custom_fields 为 list 由下方单独校验。
     for field in STRING_ENCRYPTED_FIELDS:
-        require_text(item[field], f'条目字段 {field}', MAX_TEXT_FIELD_SIZE)
+        require_text(item[field], f'条目字段 {field}', _BACKUP_FIELD_LIMITS[field])
     # 时间戳字段：64 字节上限（ISO 8601 字符串）
     for field in _ENTRY_TIMESTAMP_FIELDS:
         require_text(item[field], f'条目字段 {field}', 64)
@@ -164,9 +193,9 @@ def validate_entry_custom_fields(fields: list[dict[str, Any]]) -> None:
         require_keys(
             field, {'name', 'value', 'field_type'}, '备份自定义字段'
         )
-        require_text(field['name'], '自定义字段名称', 1024)
+        require_text(field['name'], '自定义字段名称', MAX_CUSTOM_FIELD_NAME)
         require_text(
-            field['value'], '自定义字段值', MAX_TEXT_FIELD_SIZE
+            field['value'], '自定义字段值', MAX_CUSTOM_FIELD_VALUE
         )
         if field['field_type'] not in {'text', 'password', 'url', 'email'}:
             raise BackupError('备份自定义字段类型无效')
@@ -215,7 +244,7 @@ def validate_history(history: list[dict[str, Any]], entry_ids: set[int]) -> None
         if entry_id not in entry_ids:
             raise BackupError('备份密码历史引用了不存在的条目')
         require_text(
-            item['password'], '密码历史密码', MAX_TEXT_FIELD_SIZE
+            item['password'], '密码历史密码', MAX_FIELD_PASSWORD
         )
         require_text(item['changed_at'], '密码历史时间', 64)
 

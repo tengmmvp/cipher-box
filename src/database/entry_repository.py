@@ -163,6 +163,9 @@ _TRUNCATE_PASSWORD_HISTORY_SQL = (
 
 # ID 分批阈值：SQLite 默认限制 999 个主机变量，取 500 留余量。
 _ID_BATCH_SIZE = 500
+# 密码历史重加密分页批量：与 re_encryption._RE_ENCRYPT_BATCH_SIZE 对齐，控制改密
+# 重加密内存峰值（QL-008，消除魔法数 200）。
+_DEFAULT_HISTORY_BATCH_LIMIT = 200
 
 
 def _classify_entry_integrity_error(prefix: str, exc: sqlite3.IntegrityError) -> DatabaseError:
@@ -460,13 +463,14 @@ class EntryRepository:
         """
         if not rows:
             return
-        # 采样首条加密列做格式自检，防重加密 bug 致明文落库。改密可达数万条，
-        # 逐行断言开销不可接受故仅采样；字段集从 ReEncryptedEntry._fields 的 *_enc
-        # 派生，新增 *_enc 列时采样断言自动覆盖。
-        first = rows[0]
-        for field in ReEncryptedEntry._fields:
-            if field.endswith('_enc'):
-                enc_value = getattr(first, field)
+        # 全量逐行断言加密列（SEC-005）：_assert_encrypted 仅做 O(1) ``cb2:`` 前缀检查，
+        # 全量遍历开销可忽略（数万条 × 加密列仍为微秒级），相比仅采样首行可防部分加密
+        # bug 致明文静默落库。字段集从 ReEncryptedEntry._fields 的 *_enc 派生，新增 *_enc
+        # 列自动覆盖。
+        enc_fields = [f for f in ReEncryptedEntry._fields if f.endswith('_enc')]
+        for row in rows:
+            for field in enc_fields:
+                enc_value = getattr(row, field)
                 if enc_value:
                     self._assert_encrypted(enc_value, 're_encrypt_batch')
         self._conn.executemany(_RE_ENCRYPT_BATCH_UPDATE_SQL, rows)
@@ -653,7 +657,7 @@ class EntryRepository:
 
     @_db_operation
     def get_all_password_history_batch(
-        self, after_id: int = 0, limit: int = 200
+        self, after_id: int = 0, limit: int = _DEFAULT_HISTORY_BATCH_LIMIT
     ) -> list[PasswordHistory]:
         """分批获取全部密码历史，用于改密重加密时控制内存峰值。
 

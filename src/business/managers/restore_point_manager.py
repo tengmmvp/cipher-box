@@ -109,6 +109,10 @@ class RestorePointManager:
         覆盖默认备份目录与用户自定义 backup_directory，避免用户改了备份目录后
         旧目录残留明文恢复点。供 UI 手动清理；改密时由 VaultManager 自动清理。
         恢复点含恢复前全部条目明文，定期清理可收缩泄漏面。
+
+        Note:
+            count_files + secure_purge 各 glob 一遍同目录同模式（PF-008），但恢复点文件
+            稀少（通常个位数），双重遍历开销可忽略，保持复用 purge 统一删除逻辑。
         """
         directories = self._vault.backup_directories
         total = count_files(directories, [PRE_RESTORE_GLOB])

@@ -3,6 +3,7 @@
 import hmac
 import logging
 import os
+import sys
 
 from PyQt6.QtCore import QObject, QTimer
 from PyQt6.QtGui import QClipboard
@@ -17,6 +18,68 @@ from ..resources.constants import CLIPBOARD_CLEAR_SECONDS_DEFAULT
 _CLIPBOARD_HMAC_KEY: bytes = os.urandom(32)
 
 logger = logging.getLogger(__name__)
+
+# Windows 剪贴板历史排除（SEC-001）：注册 ExcludeClipboardContentFromMonitorProcessing
+# 格式并随密码一同写入，使 Win+V 历史与云剪贴板不捕获密码。Qt 不暴露该 Win32 能力，
+# 故经 ctypes 调用 user32/kernel32。仅 Windows 加载，其余平台提供无操作占位。
+_IS_WINDOWS = sys.platform == 'win32'
+if _IS_WINDOWS:
+    import ctypes
+    from ctypes import wintypes
+
+    _user32 = ctypes.WinDLL('user32')
+    _kernel32 = ctypes.WinDLL('kernel32')
+    _EXCLUDE_CLIPBOARD_FORMAT = 'ExcludeClipboardContentFromMonitorProcessing'
+    # 显式标注 argtypes/restype：WinDLL 默认按 c_int（32 位）收发返回值，64 位 Windows
+    # 下句柄为 64 位指针会被截断致空句柄/崩溃。
+    _user32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
+    _user32.RegisterClipboardFormatW.restype = wintypes.UINT
+    _user32.OpenClipboard.argtypes = [wintypes.HWND]
+    _user32.OpenClipboard.restype = wintypes.BOOL
+    _user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    _user32.SetClipboardData.restype = wintypes.HANDLE
+    _user32.CloseClipboard.restype = wintypes.BOOL
+    _kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    _kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    _kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    _kernel32.GlobalLock.restype = wintypes.LPVOID
+    _kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    _kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+
+
+    def _exclude_from_clipboard_history() -> None:
+        """向剪贴板追加 ExcludeClipboardContentFromMonitorProcessing 格式（SEC-001）。
+
+        密码仍在剪贴板可用，但该标记使 Win+V 历史与云剪贴板跳过本次写入。
+        SetClipboardData 成功后 hmem 所有权转交剪贴板系统（不可 GlobalFree）；失败则
+        自行释放防泄漏。剪贴板被占用（OpenClipboard 失败）时跳过——密码仍可用但降级
+        进入历史（尽力而为，非致命）。
+        """
+        try:
+            fmt = _user32.RegisterClipboardFormatW(_EXCLUDE_CLIPBOARD_FORMAT)
+            if not fmt or not _user32.OpenClipboard(None):
+                return
+            hmem = 0
+            try:
+                hmem = _kernel32.GlobalAlloc(0x2000, 1)  # GMEM_MOVEABLE=0x2000；1 字节空载体
+                if not hmem:
+                    return
+                ptr = _kernel32.GlobalLock(hmem)
+                if ptr:
+                    (ctypes.c_char * 1).from_address(ptr)[0] = b'\x00'
+                    _kernel32.GlobalUnlock(hmem)
+                if _user32.SetClipboardData(fmt, hmem):
+                    hmem = 0  # 所有权转交剪贴板，标记不再释放
+            finally:
+                _user32.CloseClipboard()
+                if hmem:
+                    _kernel32.GlobalFree(hmem)
+        except OSError:
+            logger.warning("注册剪贴板历史排除格式失败，密码可能进入剪贴板历史", exc_info=True)
+else:
+    def _exclude_from_clipboard_history() -> None:
+        """非 Windows：无操作（无 Win+V 历史排除需求）。"""
+        return
 
 
 def _hmac_of(text: str) -> bytes:
@@ -60,6 +123,7 @@ class ClipboardManager(QObject):
         clipboard = QApplication.clipboard()
         if clipboard:
             clipboard.setText(text)
+            _exclude_from_clipboard_history()  # SEC-001：Win+V 历史/云剪贴板排除（Windows）
             self._last_text_hash = _hmac_of(text)
             # X11 Primary Selection：Linux 下中键粘贴使用的独立缓冲区
             if clipboard.supportsSelection():

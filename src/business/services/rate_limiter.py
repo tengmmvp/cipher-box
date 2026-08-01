@@ -147,6 +147,16 @@ class RateLimiter:
             )
             return False
 
+    def _apply_max_lockdown(self) -> None:
+        """降级到最高阶梯锁定（RATE_LIMITS[-1]）并持久化。
+
+        供状态文件缺失/损坏等绕过嫌疑场景复用（QL-003，三处重复抽此方法）：最高阶梯
+        既是暴破上限也是删除/损坏的降级锁定时长。
+        """
+        self._fail_count = RATE_LIMITS[-1][0]
+        self._lock_until = time.monotonic() + RATE_LIMITS[-1][1]
+        self._save_state()
+
     def _load_state(self) -> None:
         """加载持久化的限流状态；文件缺失或损坏时降级最高阶梯锁定以抵抗绕过。"""
         if self._state_path is None:
@@ -160,9 +170,7 @@ class RateLimiter:
                 logging.getLogger(__name__).warning(
                     "限流状态文件缺失但哨兵存在，判定为被删除，降级最高阶梯锁定"
                 )
-                self._fail_count = RATE_LIMITS[-1][0]
-                self._lock_until = time.monotonic() + RATE_LIMITS[-1][1]
-                self._save_state()
+                self._apply_max_lockdown()
                 return
             # 哨兵亦缺失：签名 config（HMAC）登记过哨兵建立——攻击者无法伪造签名
             # 抹除登记，故 config 记录已建立而两文件悉缺即判定为恶意删除，降级最高
@@ -173,9 +181,7 @@ class RateLimiter:
                     "限流状态文件与哨兵均缺失但签名 config 记录已建立，"
                     "判定为被删除，降级最高阶梯锁定"
                 )
-                self._fail_count = RATE_LIMITS[-1][0]
-                self._lock_until = time.monotonic() + RATE_LIMITS[-1][1]
-                self._save_state()
+                self._apply_max_lockdown()
             return
         try:
             data = json.loads(self._state_path.read_text(encoding='utf-8'))
@@ -194,9 +200,7 @@ class RateLimiter:
             )
         except (OSError, ValueError, json.JSONDecodeError, AttributeError):
             # 状态损坏时按最高阶梯短暂锁定，避免删除/破坏状态文件直接绕过限流。
-            self._fail_count = RATE_LIMITS[-1][0]
-            self._lock_until = time.monotonic() + RATE_LIMITS[-1][1]
-            self._save_state()
+            self._apply_max_lockdown()
 
     def _save_state(self) -> None:
         """持久化失败计数与剩余锁定秒数，经原子写入落地并补建哨兵。"""

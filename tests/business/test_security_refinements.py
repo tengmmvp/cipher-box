@@ -120,6 +120,7 @@ class TestGetCachedCounts:
     def _analyzer(cache, *, days: int = 90, ttl: int = 120, age: float = 0.0):
         import threading
         import time
+        from types import SimpleNamespace
 
         from src.business.services.security_analyzer import SecurityAnalyzer
 
@@ -129,6 +130,8 @@ class TestGetCachedCounts:
         analyzer._analysis_cache_days = days
         analyzer._cache_ttl_seconds = ttl
         analyzer._cache_lock = threading.Lock()
+        # key_epoch 校验（SEC-002）：cache 不含 _key_epoch 时配 key_epoch=None 使校验通过。
+        analyzer._vault = SimpleNamespace(key_epoch=None)
         return analyzer
 
     def test_returns_none_when_no_cache(self):

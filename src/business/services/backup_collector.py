@@ -75,7 +75,7 @@ def collect_portable_data(
         entries, entry_count, estimated_size = collect_portable_entries(
             key, db, cancel_check, estimated_size, raw_entries,
         )
-        history, _ = collect_portable_history(
+        history = collect_portable_history(
             key, db, cancel_check, entry_count, estimated_size, history_rows,
         )
     except _BackupCancelled:
@@ -143,10 +143,11 @@ def collect_portable_history(
     entry_count: int,
     estimated_size: int,
     history_rows: list[PasswordHistory] | None = None,
-) -> tuple[list[dict[str, Any]], int]:
-    """采集并解密密码历史，增量估算 payload 大小。
+) -> list[dict[str, Any]]:
+    """采集并解密密码历史，返回历史记录列表。
 
-    返回 ``(history, estimated_size)``。``entry_count`` 用于历史条数上限校验。
+    ``estimated_size`` 作为入参参与内部 payload 上限校验，不再返回——历史上返回的
+    累计值无调用方使用（QL-012）。``entry_count`` 用于历史条数上限校验。
     A4：``history_rows`` 锁内预读时直接解密传入，使解密循环可锁外运行。
     """
     if history_rows is None:
@@ -177,4 +178,4 @@ def collect_portable_history(
             + HISTORY_OVERHEAD_BYTES
         )
         check_payload_limit(estimated_size)
-    return history, estimated_size
+    return history

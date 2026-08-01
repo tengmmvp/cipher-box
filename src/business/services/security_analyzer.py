@@ -34,6 +34,11 @@ HEALTH_PENALTY_WEAK = 15
 HEALTH_PENALTY_DUPLICATE = 10
 HEALTH_PENALTY_OLD = 5
 
+# 过期检测默认天数（QL-006）：数值与 config.OLD_PASSWORD_WARNING_DAYS_DEFAULT 对齐，
+# 但 security_analyzer 属业务层不反向依赖 config，故本地声明同值常量解耦。供全部分析
+# 入口的 days 默认值引用，消除 90 字面量散落。
+DEFAULT_ANALYSIS_DAYS = 90
+
 
 class _SecurityReportBase(TypedDict):
     """安全分析报告的公开字段（生产/消费契约，required）。"""
@@ -202,7 +207,7 @@ class SecurityAnalyzer:
         return cache
 
     def _cached_analysis(
-        self, days: int = 90, *, cancel_check: Callable[[], bool] | None = None,
+        self, days: int = DEFAULT_ANALYSIS_DAYS, *, cancel_check: Callable[[], bool] | None = None,
     ) -> SecurityReport:
         """带缓存的安全分析，基础分析不依赖 days。
 
@@ -244,26 +249,34 @@ class SecurityAnalyzer:
             # 出口复制：与 hit 路径一致，防调用方修改污染缓存。
             return self._refilter_cache(result, days)
 
-    def get_cached_report(self, days: int = 90) -> SecurityReport | None:
-        """返回仍有效的缓存报告，无缓存或已过期返回 None。days 变化仅重过滤过期条目。"""
+    def get_cached_report(self, days: int = DEFAULT_ANALYSIS_DAYS) -> SecurityReport | None:
+        """返回仍有效的缓存报告，无缓存或已过期返回 None。days 变化仅重过滤过期条目。
+
+        除 TTL 外校验 key_epoch（SEC-002）：改密轮换密钥后，旧 epoch 派生的报告即便在
+        invalidate_cache 未及时触发的并发窗口内也不复用，避免锁定/改密后旧明文摘要驻留。
+        """
         with self._cache_lock:
             cached = self._analysis_cache
             if (cached is not None
-                    and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds):
+                    and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds
+                    and cached.get('_key_epoch') == self._vault.key_epoch):
                 return self._refilter_cache(cached, days)
         return None
 
-    def get_cached_counts(self, days: int = 90) -> SecurityCounts | None:
+    def get_cached_counts(self, days: int = DEFAULT_ANALYSIS_DAYS) -> SecurityCounts | None:
         """返回缓存计数（total/weak/duplicate/old），无缓存或过期返回 None。
 
         仅读计数消费者（状态栏刷新、空态「分析中」判定）用此轻量入口，跳过
         get_cached_report 的 Entry 深拷贝（PERF-2）。old 依赖 days：days 不同时
         按 days 计次（O(n) 日期比较，无深拷贝），其余直接读缓存。
+
+        除 TTL 外校验 key_epoch（SEC-002），与 get_cached_report 一致。
         """
         with self._cache_lock:
             cached = self._analysis_cache
             if (cached is None
-                    or (time.monotonic() - self._analysis_cache_time) >= self._cache_ttl_seconds):
+                    or (time.monotonic() - self._analysis_cache_time) >= self._cache_ttl_seconds
+                    or cached.get('_key_epoch') != self._vault.key_epoch):
                 return None
             if days == self._analysis_cache_days:
                 old = cached.get('old', 0)
@@ -281,7 +294,7 @@ class SecurityAnalyzer:
             )
 
     def get_or_compute_report(
-        self, days: int = 90, *, cancel_check: Callable[[], bool] | None = None,
+        self, days: int = DEFAULT_ANALYSIS_DAYS, *, cancel_check: Callable[[], bool] | None = None,
     ) -> SecurityReport:
         """返回缓存报告，若无效则重新计算并缓存。"""
         return self._cached_analysis(days, cancel_check=cancel_check)
@@ -323,7 +336,7 @@ class SecurityAnalyzer:
             return None
 
     def full_analysis(
-        self, days: int = 90, *, cancel_check: Callable[[], bool] | None = None,
+        self, days: int = DEFAULT_ANALYSIS_DAYS, *, cancel_check: Callable[[], bool] | None = None,
     ) -> SecurityReport:
         """一次性完成所有安全分析（弱/重复/过期），避免重复解密。结果由 _cached_analysis 缓存。
 

@@ -57,15 +57,15 @@ _INTEGRITY_FIELD_LABELS: dict[str, str] = {
 
 
 class BatchUpdateItem(NamedTuple):
-    """批量覆盖更新项（导入覆盖路径）：合并后条目、待覆盖条目密文 raw、旧密码明文。
+    """批量覆盖更新项（导入覆盖路径）：合并后条目、待覆盖条目密文 raw。
 
-    old_password 由 :meth:`ImportExportManager._apply_overwrites` 写入前逐条解密填入
-    （延迟提取，收敛明文驻留面），供 :meth:`EntryManager.update_entries_batch_with_history`
-    做密码变更判定与历史归档。
+    old_password 为 None 表示未预解密，由 :meth:`update_entries_batch_with_history` 在
+    prepared 阶段逐条解密（PF-005：不在 _apply_overwrites 批量预解密致全部旧密码同刻
+    驻留）；解密后经 _prepare_password_update 比对即 del，收敛明文驻留面。
     """
     entry: Entry
     raw: RawEntry
-    old_password: str
+    old_password: str | None
 
 
 class EntryManager:
@@ -190,22 +190,6 @@ class EntryManager:
         return _decrypt_field_impl(
             encrypted, self._key, crypto_id, field_name, strict=strict,
         )
-
-    def decrypt_password(self, raw: RawEntry) -> str:
-        """解密条目密码明文（容错：损坏返回空串），供导入覆盖路径延迟提取旧密码。
-
-        对称 :meth:`_decrypt_field` 的 strict 解密 + 容错回退，单独暴露使导入覆盖
-        路径（:meth:`ImportExportManager._apply_overwrites`）不必穿透 ``_decrypt_field``
-        私有方法即可在写入时刻逐条提取旧密码记录历史（SEC-014）。
-        """
-        if not raw.password:
-            return ''
-        try:
-            return self._decrypt_field(
-                raw.password, raw.crypto_id, 'password', strict=True,
-            )
-        except DecryptionError:
-            return ''
 
     def invalidate_caches(self) -> None:
         """外部调用：锁定或改密后显式清空明文缓存。委托 cache。"""
@@ -715,9 +699,16 @@ class EntryManager:
         if preloaded_old_password is not None:
             old_password = preloaded_old_password
         else:
-            old_password = self._decrypt_field(
-                old_pwd_enc, raw.crypto_id, 'password', strict=True,
-            ) if old_pwd_enc else ''
+            # 容错解密（PF-005）：批量覆盖路径 old_password 留 None 经此分支解密，损坏
+            # 回退 ''（与原 decrypt_password 语义一致）——'' 与新密码比较通常判定变更并
+            # 归档旧密文历史。单条路径因 update_entry 已据 integrity_error 拦截损坏条目，
+            # 不会经此分支遇损坏。
+            try:
+                old_password = self._decrypt_field(
+                    old_pwd_enc, raw.crypto_id, 'password', strict=True,
+                ) if old_pwd_enc else ''
+            except DecryptionError:
+                old_password = ''
         new_pwd_enc = self._encrypt_field(entry.password, raw.crypto_id, 'password')
         password_changed = not hmac.compare_digest(old_password, entry.password)
         del old_password  # 尽快释放明文引用
@@ -818,11 +809,13 @@ class EntryManager:
     ) -> list[Entry]:
         """获取并解密全部条目（含 password/totp_secret 等敏感字段）。
 
-        列表展示等不需要密码的场景应使用 :meth:`get_entry_summaries`；
-        按关键词过滤使用 ``get_entry_summaries(search=...)``。
+        生产代码无调用方——列表用 :meth:`get_entry_summaries`、详情用 :meth:`get_entry`、
+        导出用 :meth:`get_entries_for_export`；本方法解密全部密码的入口主要供测试断言与
+        「一次性获取全部明文」场景（QL-001）。
 
-        读路径经 :meth:`epoch_guarded_read` 守卫（ARCH-005）：改密窗口内 epoch 不一致
-        时返回空列表触发 UI 刷新；锁定期 :class:`VaultLockedError` 正常传播。
+        读路径经 :meth:`epoch_guarded_read` 守卫（ARCH-005）：with 块内仅读 raw，解密移
+        锁外（PF-001）；改密窗口内 epoch 不一致时返回空列表触发 UI 刷新；锁定期
+        :class:`VaultLockedError` 正常传播。
         """
         try:
             with self._vault.epoch_guarded_read():
@@ -834,7 +827,8 @@ class EntryManager:
                         favorite_only=favorite_only,
                     )
                 )
-                decrypted = [self.decrypt_entry(e) for e in raw_entries]
+            # 解密移出 db_lock（PF-001），与摘要路径一致。
+            decrypted = [self.decrypt_entry(e) for e in raw_entries]
         except VaultKeyEpochMismatchError:
             return []
         for dec_entry in decrypted:
@@ -843,8 +837,16 @@ class EntryManager:
         return decrypted
 
     def get_entry(self, entry_id: int) -> Entry | None:
-        """获取并解密单个条目。"""
-        raw = self._vault.db.get_entry(entry_id)
+        """获取并解密单个条目。
+
+        读路径经 :meth:`epoch_guarded_read` 守卫（ARCH-001）：with 块内仅读 raw、解密移
+        锁外（与摘要路径 PF-001 一致）；epoch 不一致时返回 None，调用方据此跳过。
+        """
+        try:
+            with self._vault.epoch_guarded_read():
+                raw = self._vault.db.get_entry(entry_id)
+        except VaultKeyEpochMismatchError:
+            return None
         if raw is None:
             return None
         return self.decrypt_entry(raw)
@@ -888,21 +890,22 @@ class EntryManager:
                         verify=VerifyMode.LENIENT,
                     )
                 )
-                # 循环外一次性 epoch 校验：本批 raw 在单次调用内 epoch 不可能变化
-                # （调用方事务内已固定），循环内走无校验路径避免每条目重复加锁取 epoch。
-                self._cache.invalidate_if_epoch_changed()
-                # search 与非 search 共用同一循环：search 时在 append 前做 matches_search 过滤。
-                # 摘要字段首次搜索后进入会话缓存，后续搜索无重复解密成本。
-                summaries = []
-                for raw in raw_entries:
-                    if cancel_check and cancel_check():
-                        break
-                    summary = self._decrypt_summary(raw, skip_epoch_check=True)
-                    if search and not matches_search_lower(
-                        self._cache.search_lower_no_check(raw), search,
-                    ):
-                        continue
-                    summaries.append(summary)
+            # 解密移出 db_lock（PF-001）：with 块内仅读 raw（持锁快速），锁外逐条解密，
+            # 释放 db_lock 供 TOTP 定时器读与写入。循环外一次性 invalidate_if_epoch_changed
+            # 固定本批缓存 epoch，循环内走无校验路径避免每条目重复加锁取 epoch。
+            self._cache.invalidate_if_epoch_changed()
+            # search 与非 search 共用同一循环：search 时在 append 前做 matches_search 过滤。
+            # 摘要字段首次搜索后进入会话缓存，后续搜索无重复解密成本。
+            summaries = []
+            for raw in raw_entries:
+                if cancel_check and cancel_check():
+                    break
+                summary = self._decrypt_summary(raw, skip_epoch_check=True)
+                if search and not matches_search_lower(
+                    self._cache.search_lower_no_check(raw), search,
+                ):
+                    continue
+                summaries.append(summary)
         except VaultKeyEpochMismatchError:
             return []
         # search 时 limit 未下推 SQL（避免先截断后过滤致命中失真），此处截断兑现契约
@@ -930,11 +933,12 @@ class EntryManager:
                 raw_entries = self.db.get_entries(
                     EntryQuery(sort_by_updated=True, limit=limit, verify=VerifyMode.LENIENT),
                 )
-                self._cache.invalidate_if_epoch_changed()
-                return [
-                    self._decrypt_summary(entry, skip_epoch_check=True)
-                    for entry in raw_entries
-                ]
+            # 解密移出 db_lock（PF-001），与 get_entry_summaries 一致。
+            self._cache.invalidate_if_epoch_changed()
+            return [
+                self._decrypt_summary(entry, skip_epoch_check=True)
+                for entry in raw_entries
+            ]
         except VaultKeyEpochMismatchError:
             return []
 
@@ -960,14 +964,16 @@ class EntryManager:
         """
         with self._vault.epoch_guarded_read():
             raw_entries = self.db.get_entries(EntryQuery(include_deleted=False))
-            entries = []
-            for raw_entry in raw_entries:
-                if cancel_check and cancel_check():
-                    break
-                entries.append(
-                    self.decrypt_entry_for_export(raw_entry, include_secrets)
-                )
-            return entries
+        # 解密移出 db_lock（PF-001）；epoch 不一致已在 with 块内抛 VaultKeyEpochMismatchError
+        # 向上传播（导出为用户主动操作，空结果会误导用户）。
+        entries = []
+        for raw_entry in raw_entries:
+            if cancel_check and cancel_check():
+                break
+            entries.append(
+                self.decrypt_entry_for_export(raw_entry, include_secrets)
+            )
+        return entries
 
     def toggle_favorite(self, entry_id: int) -> bool | None:
         """切换收藏状态，返回新的收藏状态；条目不存在时返回 None。

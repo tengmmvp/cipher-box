@@ -20,18 +20,23 @@ if TYPE_CHECKING:
 def restore_categories(
     entry_manager: 'EntryManager', backup: PortableBackup,
 ) -> dict[int, int]:
-    """重建分类，返回旧 ID 到新 ID 的映射。"""
-    category_map: dict[int, int] = {}
+    """重建分类，返回旧 ID 到新 ID 的映射（PF-003：批量两阶段加密，消除 O(N²) 查重）。"""
+    # 收集非空名分类及其旧 id（同步保序），经 add_categories_batch 在单事务内批量两阶段
+    # 加密写入——恢复前已 clear_vault_data 清空分类表，无需逐条查重。
+    categories: list[Category] = []
+    item_ids: list[int] = []
     for item in backup['categories']:
         # PortableCategory(TypedDict)经 cast 桥接到 dict 参数：pyright 不允许
         # TypedDict 隐式赋给 dict，validator 已保证键集，cast 安全。
         category = Category.from_dict(cast(dict[str, Any], item))
         if not category.name:
             continue
-        new_id = entry_manager.categories.add_category(category, notify=False)
-        # item['id'] 由 validator 校验为 int（非 None），直接索引建立映射。
-        category_map[item['id']] = new_id
-    return category_map
+        categories.append(category)
+        # item['id'] 由 validator 校验为 int（非 None），直接索引。
+        item_ids.append(item['id'])
+    new_ids = entry_manager.categories.add_categories_batch(categories, notify=False)
+    # categories 与 item_ids 同步收集、长度一致，strict=True 守护不变量。
+    return dict(zip(item_ids, new_ids, strict=True))
 
 
 def restore_entries(

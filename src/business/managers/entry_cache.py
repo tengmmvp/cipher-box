@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from ..managers.vault_manager import VaultManager
 
 from ...database.types import EntryQuery, VerifyMode
-from ...exceptions import DecryptionError
+from ...exceptions import DecryptionError, VaultKeyEpochMismatchError
 from ...models import MAX_ENTRIES_LIMIT, RawEntry
 from ..services.crypto_utils import (
     category_crypto_id,
@@ -262,19 +262,26 @@ class EntryCacheManager:
             entry_id: 条目 ID。
             use_cache: 是否读写会话内 totp_secret 缓存。TotpService.generate_cached
                 传 True 复用缓存；TotpService.generate 传 False 仅解密不落缓存。
+
+        读路径经 ``epoch_guarded_read`` 守卫（ARCH-001）：TOTP 定时器是真实并发读者，
+        改密 commit 与密钥激活的微秒窗口内裸读会用旧密钥解密新密文致 GCM 认证失败。
+        单条解密锁内开销可忽略；epoch 不一致时返回 None，下次定时器周期重新解析。
         """
         if use_cache:
             with self._cache_lock:
                 secret = self._totp_secret_cache.get(entry_id)
             if secret is not None:
                 return secret
-        # DB 查询与解密在锁外，避免持锁阻塞并发缓存访问
-        raw = self._vault.db.get_entry(entry_id)
-        if raw is None or not raw.totp_secret:
+        try:
+            with self._vault.epoch_guarded_read():
+                raw = self._vault.db.get_entry(entry_id)
+                if raw is None or not raw.totp_secret:
+                    return None
+                secret = _decrypt_field_impl(
+                    raw.totp_secret, self._key, raw.crypto_id, 'totp_secret',
+                )
+        except VaultKeyEpochMismatchError:
             return None
-        secret = _decrypt_field_impl(
-            raw.totp_secret, self._key, raw.crypto_id, 'totp_secret',
-        )
         if not secret:
             return None
         if use_cache:
@@ -297,12 +304,13 @@ class EntryCacheManager:
         with self._cache_lock:
             self._totp_secret_cache.clear()
 
-    def _decrypt_tags(self, raw_entry: RawEntry) -> str:
+    def _decrypt_tags(self, raw_entry: RawEntry, key: bytes | None = None) -> str:
         """仅解密 tags 字段供标签聚合。
 
         优先复用搜索摘要缓存的 tags（列表 worker 已解密填充于 ``tags`` 字段），命中则
         省去一次 AES-GCM 解密；未命中再走专用单字段解密（冷缓存下省去
-        title/username/url 的冗余解密，约 3/4 开销）。失败回退空串，与
+        title/username/url 的冗余解密，约 3/4 开销）。``key`` 由批量调用方循环外传入
+        快照避免每条经 ``self._key`` 复制密钥（PF-010）。失败回退空串，与
         :meth:`_cached_search_metadata_no_check` 的容错一致。
         """
         with self._cache_lock:
@@ -311,7 +319,8 @@ class EntryCacheManager:
             return cached.tags
         try:
             return _decrypt_field_impl(
-                raw_entry.tags, self._key, raw_entry.crypto_id, 'tags', strict=True,
+                raw_entry.tags, key if key is not None else self._key,
+                raw_entry.crypto_id, 'tags', strict=True,
             )
         except DecryptionError:
             return ''
@@ -332,10 +341,13 @@ class EntryCacheManager:
         # 安全性不降：tags_enc 完整性由 _decrypt_tags 的 GCM 认证保护（篡改即解密失败
         # 回退空串）；命中摘要缓存时 tags 已由列表 worker 以 LENIENT 验签。故标签聚合
         # 正确性不依赖元数据 HMAC。
+        # 循环外取密钥快照（PF-010）：_decrypt_tags 未命中缓存时经 self._key 每次复制
+        # 密钥，循环外取一次传入，收缩批量解密的密钥复制开销。
+        vault_key = self._key
         for raw in self._vault.db.get_entries(
             EntryQuery(include_deleted=False, verify=VerifyMode.SKIP)
         ):
-            tags_str = self._decrypt_tags(raw)
+            tags_str = self._decrypt_tags(raw, vault_key)
             for tag in (t.strip() for t in tags_str.split(',') if t.strip()):
                 tag_count[tag] = tag_count.get(tag, 0) + 1
         result = sorted(tag_count.items(), key=lambda x: -x[1])
@@ -344,7 +356,11 @@ class EntryCacheManager:
             # 比对 observed_epoch 避免返回跨 epoch 的脏缓存。
             if self._tags_cache is not None and self._cache_epoch == observed_epoch:
                 return self._tags_cache
-            self._tags_cache = result
+            # 仅当 epoch 未变才回填（SEC-010）：epoch 变化时 result 为旧密钥解密的旧明文，
+            # 而 _cache_epoch 已被 invalidate 更新为新值，此时回填会令下次命中返回跨 epoch
+            # 脏缓存。当前调用方返回 result（旧 epoch 上下文可接受），下次调用重新解密。
+            if self._cache_epoch == observed_epoch:
+                self._tags_cache = result
             return result
 
     @property

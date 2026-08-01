@@ -82,9 +82,11 @@ class CategoryRepository:
             verify: True 时对有签名的分类做 LENIENT 完整性验签（失败记日志）；
                 改密重签等路径传 False 跳过，避免旧签名在新域密钥下的假阳性告警。
         """
+        # 仅按 sort_order 排序：name_enc 为密文，密文序无意义；分类名排序由
+        # CategoryManager.get_categories 在解密后按 name.casefold() 完成（PF-009）。
         rows = self._conn.execute(
             "SELECT id, name_enc, icon_char, color, sort_order, created_at, metadata_mac "
-            "FROM categories ORDER BY sort_order, name_enc"
+            "FROM categories ORDER BY sort_order"
         ).fetchall()
         categories = [self._row_to_category(r) for r in rows]
         if verify:
