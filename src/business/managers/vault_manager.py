@@ -292,7 +292,10 @@ class VaultManager:
         不一致则抛 :class:`VaultKeyEpochMismatchError` 中止读取（ARCH-005）。
 
         持 db_lock 期间写路径无法 commit（需同一锁），故校验通过后读路径全程密钥与
-        密文版本一致。未解锁（key_epoch 为 None）时跳过校验，供初始化前的元数据读取。
+        密文版本一致。读路径仅持 db_lock、不取 vault_write_lock、不触发业务回调，故
+        无锁顺序反转或重入死锁风险（区别于 :meth:`enforce_key_epoch` 须改调
+        :meth:`clear_vault_state` 规避回调重入 db_lock）。未解锁（key_epoch 为 None）
+        时跳过校验，供初始化前的元数据读取。
         """
         with self._db.db_lock:
             session_epoch = self._key_epoch

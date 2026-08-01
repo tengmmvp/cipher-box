@@ -190,7 +190,7 @@ class ListRefreshController:
         view.category_list.currentItemChanged.connect(self.on_category_changed)
         view.sort_combo.currentIndexChanged.connect(self.on_sort_changed)
 
-        # 构造期初始化填充（原 _build_sidebar 内联调用 + __init__ _refresh_entries）
+        # 构造期初始化填充列表
         self.refresh_categories()
         self.refresh_tag_filter()
         self.refresh_entries()
@@ -463,9 +463,8 @@ class ListRefreshController:
     ) -> Callable[[Callable[[], bool]], tuple[list, str]]:
         """构造异步 fetcher 工厂：冻结当前 filter/category/search，注入 cancel_check。
 
-        闭包捕获赋值时的 ``_current_*`` 快照（非运行时读取），与原内联 ``_fetch`` 的
-        ``use_current_state=False`` 语义一致——worker 在后台线程执行时读快照而非主线程
-        可能已变更的当前状态。
+        闭包捕获赋值时的 ``_current_*`` 快照（非运行时读取）——worker 在后台线程执行
+        时读快照，而非主线程可能已变更的当前状态。
         """
         category_id = self._current_category_id
         search = self._current_search

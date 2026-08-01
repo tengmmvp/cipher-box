@@ -82,6 +82,13 @@ class ImportContext:
     收敛 ``_import_entries`` / ``_dedupe_and_classify`` 的 categories/
     default_category_id/duplicate_action/source_label 参数（MAINT-009），使方法签名
     收为 (entries, ctx, callbacks)，降低参数个数与调用点对齐负担。
+
+    字段含义：
+        categories: 现有分类的 casefold 名 → Category 映射（``_categories_by_folded_name``
+            构造），按名匹配避免重复创建同名分类。
+        default_category_id: 来源未指定分类时落入的默认分类；None 表示不指定。
+        duplicate_action: 重复处理策略 ``'import_all'``/``'skip'``/``'overwrite'``。
+        source_label: 日志/用户提示中标识来源的文案（如「CSV 导入」）。
     """
     categories: dict[str, Category]
     default_category_id: int | None
@@ -95,6 +102,14 @@ class ImportCallbacks:
 
     与 :class:`ImportContext` 分离：前者为不变配置，本类为可选的进度/取消探针与
     格式特定的合并器（MAINT-009）。
+
+    字段含义：
+        progress_callback: ``(current, total)`` 进度回调，total 为待处理条目总数
+            （含重复/跳过项，确保进度能到 100%）。
+        cancel_check: 取消探针，返回真值时中止分类循环（已分类部分随事务提交，
+            构成部分导入）。
+        overwrite_merger: 覆盖合并器 ``(导入条目, 已有条目) → 合并后条目``，由各
+            格式策略类提供（如 CSV 保留源未携带的密码型字段）；None 表示不合并。
     """
     progress_callback: Callable[[int, int], None] | None = None
     cancel_check: Callable[[], bool] | None = None

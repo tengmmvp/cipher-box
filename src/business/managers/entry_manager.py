@@ -280,8 +280,7 @@ class EntryManager:
     def _decrypt_field_lenient(
         self, encrypted: str, crypto_id: str, name: str, errors: list[str],
     ) -> str:
-        """详情路径字段级容错解密：失败记入 errors 返回空串（record_failure/decrypt
-        闭包的 lenient 分支提取为实例方法）。
+        """详情路径字段级容错解密：失败记入 errors 返回空串。
 
         始终用 strict=True 解密以触发 GCM 认证，失败处置为本方法的容错语义。
         """
@@ -294,8 +293,7 @@ class EntryManager:
     def _decrypt_field_strict(
         self, encrypted: str, crypto_id: str, name: str, entry_id: int | None,
     ) -> str:
-        """导出路径字段级解密：失败立即抛 DecryptionError（record_failure/decrypt
-        闭包的 strict 分支提取为实例方法），拒绝导出损坏数据。"""
+        """导出路径字段级解密：失败立即抛 DecryptionError，拒绝导出损坏数据。"""
         try:
             return self._decrypt_field(encrypted, crypto_id, name, strict=True)
         except DecryptionError:
@@ -336,8 +334,8 @@ class EntryManager:
             raw_entry.totp_secret, cid, 'totp_secret', integrity_errors,
         ))
 
-        # 分类名解密失败向上抛（与原 detail 语义一致）：分类名损坏使详情面板无法
-        # 正确展示分类，应由调用方感知而非静默汇总。
+        # 分类名解密失败向上抛：分类名损坏使详情面板无法正确展示分类，
+        # 应由调用方感知而非静默汇总。
         category_name = self._cache.decrypt_category_name(
             raw_entry.category_id, raw_entry.category_name,
         )
@@ -823,9 +821,8 @@ class EntryManager:
         列表展示等不需要密码的场景应使用 :meth:`get_entry_summaries`；
         按关键词过滤使用 ``get_entry_summaries(search=...)``。
 
-        读路径经 :meth:`epoch_guarded_read` 守卫：改密 commit 与密钥激活的微秒窗口
-        内若检测到 epoch 不一致（ARCH-005），返回空列表触发 UI 经回调刷新，
-        避免用旧密钥解密新密文致 GCM 认证失败。锁定期 :class:`VaultLockedError` 仍正常传播。
+        读路径经 :meth:`epoch_guarded_read` 守卫（ARCH-005）：改密窗口内 epoch 不一致
+        时返回空列表触发 UI 刷新；锁定期 :class:`VaultLockedError` 正常传播。
         """
         try:
             with self._vault.epoch_guarded_read():

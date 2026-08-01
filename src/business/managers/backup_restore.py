@@ -234,8 +234,9 @@ class BackupRestoreManager:
 
         PASSWORD 路径在此派生 backup_key；SNAPSHOT 路径用 prepared 锁内取的 snapshot_key
         副本。``cancel_check`` 在解密循环中及时中止。AAD、header 写入、payload/数量上限
-        与原持锁实现完全一致，备份格式不变。backup_key 的清零在 finally 完成，PASSWORD
-        路径派生密钥在所有退出路径均被清零；SNAPSHOT 路径借用 snapshot_key 不清零。
+        校验与持锁全流程路径（:meth:`_create_backup_locked`）一致，备份格式不变。backup_key
+        的清零在 finally 完成，PASSWORD 路径派生密钥在所有退出路径均被清零；SNAPSHOT 路径
+        借用 snapshot_key 不清零。
         """
         t0 = time.monotonic()
         backup_key: bytes | bytearray
@@ -313,7 +314,7 @@ class BackupRestoreManager:
         各阶段拆为独立私有方法，本方法仅编排阶段顺序与贯穿全程的 try/finally（backup_key
         清零）。事务边界（``epoch_guarded_transaction`` 在 :meth:`_restore_data` 内）、
         清零纪律（backup_key / new_snapshot_key / plaintext）、锁范围（``vault_write_lock``
-        包裹解密到 WAL 截断）与异常处理语义与原实现等价（MAINT-001）。
+        包裹解密到 WAL 截断）由各阶段方法与 try/finally 维护（MAINT-001）。
         """
         # 阶段 1：头部解析 + KDF 边界 + PASSWORD 密钥派生（锁外，缩短持锁与 UI 冻结）
         flags, salt, kdf_params = self._read_and_validate_header(file)
@@ -573,9 +574,10 @@ class BackupRestoreManager:
                     'vault_meta_mac',
                     MetadataSigner.compute_vault_meta_mac(meta_snapshot, key),
                 )
-            # WAL 截断已移至调用方 _restore_current（事务提交后显式 secure_checkpoint）。
-            # 此处不再截断避免重复；success 在 return 前置 True，保证 finally 不误清零
-            # 已落库的 snapshot_key（调用方 apply_snapshot_key 复制后才清零自身引用）。
+            # WAL 截断由 :meth:`_finalize_restored_state_locked` 在事务提交后执行
+            # （事务内 secure_checkpoint 会被跳过）；success 在 return 前置 True，保证
+            # finally 不误清零已落库的 snapshot_key（调用方 apply_snapshot_key 复制后才
+            # 清零自身引用）。
             success = True
             return new_epoch, new_snapshot_key
         finally:

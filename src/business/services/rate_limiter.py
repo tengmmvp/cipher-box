@@ -24,6 +24,10 @@ if TYPE_CHECKING:
 def apply_rate_limit(fail_count: int) -> int:
     """根据失败次数计算锁定秒数，采用递增退避策略。
 
+    阶梯表 ``RATE_LIMITS`` 定义于 config（(失败次数, 锁定秒数) 升序），逐档拉长
+    锁定窗口提高在线暴破成本；最高阶梯同时作为状态文件删除/损坏时的降级锁定时长
+    （``RATE_LIMITS[-1]``，见 :meth:`RateLimiter._load_state`），故调表须兼顾两端。
+
     Args:
         fail_count: 累计失败次数。
 
@@ -160,11 +164,10 @@ class RateLimiter:
                 self._lock_until = time.monotonic() + RATE_LIMITS[-1][1]
                 self._save_state()
                 return
-            # 哨兵亦缺失：区分「首次使用」与「状态文件 + 哨兵被同时删除」。
-            # 文件可被一并删除，但签名 config（HMAC）登记过哨兵建立——攻击者无法
-            # 伪造签名抹除登记，故签名 config 记录已建立而两文件悉缺即判定为恶意删除，
-            # 降级最高阶梯锁定，关闭「同时删两文件即归零计数」的绕过。无 config 见证
-            # （或读取异常）时退回「首次使用」，不误伤新用户、不削弱既有保护。
+            # 哨兵亦缺失：签名 config（HMAC）登记过哨兵建立——攻击者无法伪造签名
+            # 抹除登记，故 config 记录已建立而两文件悉缺即判定为恶意删除，降级最高
+            # 阶梯锁定，关闭「同时删两文件即归零计数」的绕过。无 config 见证（或读取
+            # 异常）退回「首次使用」，不误伤新用户、不削弱既有保护。
             if self._sentinel_established_via_config():
                 logging.getLogger(__name__).warning(
                     "限流状态文件与哨兵均缺失但签名 config 记录已建立，"
@@ -183,11 +186,9 @@ class RateLimiter:
             if not isinstance(remaining_seconds, (int, float)) or remaining_seconds < 0:
                 raise ValueError('剩余锁定时间无效')
             self._fail_count = fail_count
-            # 单调时钟还原锁定到期：remaining_seconds 是保存时刻距到期的剩余秒数，
-            # 加载时基于当前 monotonic 重算到期点。单调时钟不受系统时钟回拨影响，
-            # 攻击者前推/回拨系统时间无法跳过锁定。无历史兼容：旧版以 time.time()
-            # 绝对时间戳持久化的状态文件不含 remaining_seconds 字段，落入 except
-            # 分支降级最高阶梯锁定后以新格式重写。
+            # 经 remaining_seconds 在当前 monotonic 重算到期点，抵抗系统时钟回拨
+            # （格式理据见 _save_state）。旧版以 time.time() 绝对时间戳持久化的状态
+            # 文件无此字段，落入 except 分支降级最高阶梯锁定后以新格式重写。
             self._lock_until = (
                 time.monotonic() + remaining_seconds if remaining_seconds > 0 else 0.0
             )

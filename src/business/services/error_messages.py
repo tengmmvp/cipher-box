@@ -45,6 +45,8 @@ def to_user_message(exc: BaseException, *, default: str = '操作失败，请重
     if isinstance(exc, VaultLockedError):
         return '保险库已锁定，请先解锁后重试。'
     if isinstance(exc, VaultKeyEpochMismatchError):
+        # 并发改密/锁定致库内 key_epoch 与内存不一致时由 epoch 守卫抛出（ARCH-005），
+        # 已中止并回滚。归一为固定重试提示，不透传 str(exc) 的「密钥/epoch」措辞。
         return '操作期间检测到主密码已被修改，已中止并回滚，请重试。'
     if isinstance(exc, PayloadTooLargeError):
         return '数据或文件超出大小限制，请减少内容后重试。'

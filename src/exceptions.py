@@ -50,7 +50,13 @@ class VaultIntegrityError(VaultError):
 
 
 class VaultKeyEpochMismatchError(VaultError):
-    """主密钥版本不匹配，可能被其他进程更新。"""
+    """主密钥 epoch 与库内 ``key_epoch`` 不一致，通常因并发改密/锁定改写密钥。
+
+    由 ``VaultManager.epoch_guarded_read`` / ``vault_write_lock`` 在持 ``db_lock`` 期间
+    比对内存与库内 epoch 不一致时抛出（ARCH-005）：中止读路径以防用旧密钥解密新密文
+    致 GCM 认证失败，中止事务/单条写以防写入旧密钥密文。后台只读路径（列表/搜索/摘要）
+    捕获后返回空，用户主动路径（导出）向上传播。
+    """
 
 
 class VaultAlreadyInitializedError(VaultError):
