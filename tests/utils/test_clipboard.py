@@ -5,11 +5,42 @@
 """
 
 import hmac
+import sys
 
 import pytest
 from PyQt6.QtWidgets import QApplication
 
 from src.ui.utils.clipboard import _CLIPBOARD_HMAC_KEY, ClipboardManager
+
+
+def _read_system_clipboard() -> str:
+    """读取系统剪贴板文本，跨平台验证 copy_text 写入。
+
+    Windows 下 ``ClipboardManager.copy_text`` 经 Win32 直写系统剪贴板（SEC-CLIP-001），
+    而 Qt 在 offscreen 平台（CI）的 clipboard 不接系统剪贴板、``clipboard.text()`` 读
+    不到 Win32 写入；故 Windows 用 Win32 GetClipboardData 直读，与写入对称。其余平台
+    copy_text 走 Qt setText，用 clipboard.text() 读一致。
+    """
+    clipboard = QApplication.clipboard()
+    if sys.platform != 'win32':
+        return clipboard.text() if clipboard else ''
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL('user32')
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.OpenClipboard.restype = wintypes.BOOL
+    user32.GetClipboardData.argtypes = [wintypes.UINT]
+    user32.GetClipboardData.restype = wintypes.HANDLE
+    user32.CloseClipboard.restype = wintypes.BOOL
+    if not user32.OpenClipboard(None):
+        return ''
+    try:
+        ptr = user32.GetClipboardData(13)  # CF_UNICODETEXT
+        if not ptr:
+            return ''
+        return ctypes.wstring_at(ptr) or ''
+    finally:
+        user32.CloseClipboard()
 
 
 class TestClipboardManager:
@@ -41,7 +72,7 @@ class TestClipboardManager:
 
         clipboard = QApplication.clipboard()
         assert clipboard is not None
-        assert clipboard.text() == text
+        assert _read_system_clipboard() == text
         expected_hash = hmac.digest(_CLIPBOARD_HMAC_KEY, text.encode('utf-8'), 'sha256')
         assert self.mgr._last_text_hash == expected_hash
 
