@@ -14,6 +14,7 @@ from src.models import Category, CustomField, Entry, RawEntry
 
 
 def _make_entry(**kwargs) -> RawEntry:
+    """构造测试用 RawEntry，对可选字段填合法默认值，调用方经 kwargs 覆盖关注字段。"""
     kwargs.setdefault("username", "x")
     kwargs.setdefault("password", "x")
     kwargs.setdefault("notes", "")
@@ -37,6 +38,7 @@ def db(tmp_path):
 
 
 def test_init_tables(db):
+    """init_tables 注入默认分类,至少含「未分类」占位项。"""
     categories = db.get_categories()
     assert len(categories) > 0
     names = [c.name for c in categories]
@@ -44,6 +46,7 @@ def test_init_tables(db):
 
 
 def test_meta_operations(db):
+    """vault_meta 键值读写往返正确,缺失键返回 None。"""
     db.set_meta("test_key", "test_value")
     value = db.get_meta("test_key")
     assert value == "test_value"
@@ -53,6 +56,7 @@ def test_meta_operations(db):
 
 
 def test_add_get_category(db):
+    """分类写入后可按 id 读回,全部属性（名称/图标/颜色）保持一致。"""
     cat = Category(name="测试分类", icon_char="🧪", color="#FF0000")
     cat_id = db.add_category(cat)
     assert cat_id > 0
@@ -82,6 +86,7 @@ def test_update_category_rejects_duplicate_name(db):
 
 
 def test_add_get_entry(db):
+    """条目写入后按 id 读回,各字段（含 favorite/strength 等扩展字段）保持一致。"""
     entry = _make_entry(
         title="测试条目",
         username="enc_user",
@@ -104,29 +109,27 @@ def test_add_get_entry(db):
 
 
 def test_soft_delete_restore(db):
+    """软删除→回收站隔离→恢复 全流程:删除态可读、默认列表排除、恢复后还原。"""
     entry = _make_entry(title="待删除")
     entry_id = db.add_entry(entry)
 
-    # 软删除。
     db.soft_delete_entry(entry_id)
     deleted = db.get_entry(entry_id)
     assert deleted.is_deleted
 
-    # 正常列表不含已删除条目。
     active = db.get_entries(EntryQuery(include_deleted=False))
     assert not any(e.id == entry_id for e in active)
 
-    # 回收站包含已删除条目。
     trashed = db.get_entries(EntryQuery(include_deleted=True))
     assert any(e.id == entry_id for e in trashed)
 
-    # 恢复。
     db.restore_entry(entry_id)
     restored = db.get_entry(entry_id)
     assert not restored.is_deleted
 
 
 def test_permanent_delete(db):
+    """permanent_delete_entry 物理删除后 get_entry 返回 None。"""
     entry = _make_entry(title="永久删除")
     entry_id = db.add_entry(entry)
 
@@ -149,6 +152,7 @@ def test_search(db):
 
 
 def test_entry_count(db):
+    """get_entry_count 随新增条目递增。"""
     initial = db.get_entry_count()
     db.add_entry(_make_entry(title="新条目"))
     assert db.get_entry_count() == initial + 1
@@ -218,6 +222,7 @@ def test_get_entries_filter_branches(db):
 
 
 def test_entry_to_dict():
+    """to_dict 含 password 时输出密码字段,exclude 时不输出。"""
     entry = Entry(
         title="Test",
         username="user",
@@ -237,6 +242,7 @@ def test_entry_to_dict():
 
 
 def test_entry_from_dict():
+    """from_dict 解析 dict 构造 Entry,custom_fields 子结构正确还原。"""
     d = {
         "title": "Test",
         "username": "user",
@@ -251,6 +257,7 @@ def test_entry_from_dict():
 
 
 def test_entry_tag_list():
+    """get_tag_list 按逗号拆分并去除空白,空串返回空列表。"""
     entry = Entry(tags="a, b, c")
     assert entry.get_tag_list() == ["a", "b", "c"]
 

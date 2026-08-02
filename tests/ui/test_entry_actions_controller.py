@@ -78,6 +78,7 @@ class TestEntryActionsSetup:
     """setup 创建防抖定时器并连接控件信号。"""
 
     def test_setup_creates_select_timer(self, qapp):
+        """setup 创建选择防抖定时器。"""
         ctrl, _, _ = _make_controller()
         _setup(ctrl)
         assert ctrl._select_timer is not None
@@ -96,6 +97,7 @@ class TestSelectDebounce:
         ctrl._entry_mgr.get_entry.assert_not_called()
 
     def test_do_select_entry_none_pending_noop(self, qapp):
+        """无 pending 选中时 do_select_entry 空操作（不取条目）。"""
         ctrl, _, _ = _make_controller()
         _setup(ctrl)
         ctrl.do_select_entry()
@@ -116,6 +118,7 @@ class TestRequireUnlocked:
     """@require_unlocked 守卫：锁定态跳过 edit/delete/copy（不访问已清零密钥）。"""
 
     def test_edit_entry_locked_skips(self, qapp):
+        """锁定态 edit_entry 经 @require_unlocked 跳过（不访问已清零密钥）。"""
         ctrl, _, _ = _make_controller()
         _setup(ctrl)
         ctrl.set_locked(True)
@@ -123,6 +126,7 @@ class TestRequireUnlocked:
         ctrl._entry_mgr.get_entry.assert_not_called()
 
     def test_delete_entry_locked_skips(self, qapp):
+        """锁定态 delete_entry 经 @require_unlocked 跳过（不访问已清零密钥）。"""
         ctrl, _, _ = _make_controller()
         _setup(ctrl)
         ctrl.set_locked(True)
@@ -134,6 +138,7 @@ class TestCallbacks:
     """跨 controller 回调连通 + 简单操作（复制反馈/密码生成器回调）。"""
 
     def test_toggle_favorite_calls_refresh_entries_only(self, qapp):
+        """toggle_favorite 仅触发 refresh_entries_only（不重建分类）。"""
         ctrl, calls, _ = _make_controller()
         _setup(ctrl)
         ctrl.toggle_favorite(7)
@@ -141,12 +146,14 @@ class TestCallbacks:
         assert calls["refresh_entries_only"] == [()]
 
     def test_on_copy_feedback_shows_status_message(self, qapp):
+        """on_copy_feedback 在状态栏显示复制提示。"""
         ctrl, _, _ = _make_controller()
         view = _setup(ctrl)
         ctrl.on_copy_feedback()
         view.status_bar.showMessage.assert_called_once()
 
     def test_on_password_selected_copies_to_clipboard(self, qapp, monkeypatch):
+        """on_password_selected 将选中密码写入剪贴板。"""
         ctrl, _, _ = _make_controller()
         _setup(ctrl)
         monkeypatch.setattr("src.ui.controllers.entry_actions_controller.Toast.show", MagicMock())
@@ -191,6 +198,7 @@ class TestLifecycle:
     """set_locked / prepare_for_lock / stop_timers / cancel_pending_selection。"""
 
     def test_prepare_for_lock_sets_locked_and_clears_pending(self, qapp):
+        """prepare_for_lock 标记锁定态并清空 pending 选中（避免锁后回调处理残留）。"""
         ctrl, _, _ = _make_controller()
         _setup(ctrl)
         ctrl._pending_selection = 5
@@ -199,6 +207,7 @@ class TestLifecycle:
         assert ctrl._pending_selection is None
 
     def test_set_locked_toggles_state(self, qapp):
+        """set_locked 切换锁定状态标志（解锁后恢复为 False）。"""
         ctrl, _, _ = _make_controller()
         _setup(ctrl)
         ctrl.prepare_for_lock()
@@ -207,6 +216,7 @@ class TestLifecycle:
         assert ctrl._locked is False
 
     def test_stop_timers_stops_select_timer(self, qapp):
+        """stop_timers 停止选择防抖定时器（锁定时调用）。"""
         ctrl, _, _ = _make_controller()
         ctrl.setup(QMainWindow(), _make_view())
         timer = ctrl._select_timer
@@ -216,6 +226,7 @@ class TestLifecycle:
         assert not timer.isActive()
 
     def test_cancel_pending_selection_clears_without_changing_lock(self, qapp):
+        """cancel_pending_selection 清空 pending 选中但保持锁定状态不变。"""
         ctrl, _, _ = _make_controller()
         _setup(ctrl)
         ctrl._pending_selection = 3

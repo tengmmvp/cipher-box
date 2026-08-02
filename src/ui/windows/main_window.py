@@ -18,7 +18,7 @@ from PyQt6.QtCore import (
     QTimer,
     pyqtSignal,
 )
-from PyQt6.QtGui import QCloseEvent, QKeyEvent, QShowEvent
+from PyQt6.QtGui import QAction, QCloseEvent, QKeyEvent, QShowEvent
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -163,7 +163,7 @@ class MainWindow(QMainWindow):
             self._security,
             self._config,
         )
-        self._sidebar_ctrl = SidebarController(self._entry_mgr, self._config)
+        self._sidebar_ctrl = SidebarController(self._entry_mgr)
         self._auto_backup = AutoBackupController(self._vault, self._backup, self._config)
         self._auto_lock = AutoLockController(self._vault, self._config, self.lock_requested.emit)
         self._clipboard = ClipboardManager(
@@ -386,7 +386,13 @@ class MainWindow(QMainWindow):
         self._search_edit = QLineEdit()
         self._search_edit.setPlaceholderText("搜索标题、账号或标签")
         self._search_edit.setClearButtonEnabled(True)
-        self._search_edit.addAction(icon(SEARCH), QLineEdit.ActionPosition.LeadingPosition)
+        # 存引用供主题切换刷新（M13）：addAction 返回的 QAction 图标颜色烘焙到 QIcon，
+        # setStyleSheet 全局刷新不重建已烘焙图标，须在 _apply_theme 显式 setIcon。
+        # addAction stub 标注 QAction | None，构造期正常返回 QAction，None 分支由主题
+        # 刷新处的 is not None 守卫兜底。
+        self._search_action: QAction | None = self._search_edit.addAction(
+            icon(SEARCH), QLineEdit.ActionPosition.LeadingPosition
+        )
         sidebar_layout.addWidget(self._search_edit)
 
         self._tag_combo = QComboBox()
@@ -531,15 +537,18 @@ class MainWindow(QMainWindow):
         self._splitter.addWidget(list_container)
 
     def _setup_tray(self) -> None:
+        """创建托盘图标并连接其菜单信号；旧实例先清理避免占用任务栏槽位。
+
+        ``disconnect_all`` 断开旧 ``lock_requested`` 连接，防止禁用→重启用托盘时
+        ``_on_lock_tray`` 重复连接导致锁定事件多次触发。
+        """
         if not self._config.get(CFG_SHOW_TRAY_ICON, True):
             return
-        # 清理旧托盘实例，避免孤儿 QSystemTrayIcon 残留占用任务栏槽位
-        # （deleteLater 由 Qt 事件循环安全回收）。
+        # 旧实例先 hide + deleteLater（Qt 事件循环安全回收）。
         if self._tray is not None:
             self._tray.hide()
             self._tray.deleteLater()
             self._tray = None
-        # 断开旧连接，避免禁用→重启用托盘时 _on_lock_tray 重复连接
         disconnect_all([(self.lock_requested, self._on_lock_tray)])
         self._tray = TrayIcon(self)
         self._tray.show_window.connect(self._show_from_tray)
@@ -678,6 +687,11 @@ class MainWindow(QMainWindow):
             self._build_filter_list()
             self._menu.update_menu_icons()
             self._brand_icon.setPixmap(icon_pixmap(SHIELD, "accent", 24))
+            # _add_entry_btn 与搜索框 leading action 的图标颜色烘焙到 QIcon，
+            # setStyleSheet 全局刷新不重建已烘焙图标，须显式重设（M13）。
+            set_icon_with_text(self._add_entry_btn, "新增条目", PLUS, "text_on_accent")
+            if self._search_action is not None:
+                self._search_action.setIcon(icon(SEARCH))
             if self._tray:
                 self._tray.set_locked(False)
             # 数据未变，强制重绘列表控件即可
@@ -720,6 +734,7 @@ class MainWindow(QMainWindow):
         self._shutdown_workers()
 
     def closeEvent(self, a0: QCloseEvent | None) -> None:
+        """关闭前持久化窗口状态；按 ``close_to_tray`` 设置分流隐藏到托盘或完全退出。"""
         if a0 is None:
             return
         self._persist_window_state()
@@ -737,6 +752,7 @@ class MainWindow(QMainWindow):
             a0.accept()
 
     def changeEvent(self, a0: QEvent | None) -> None:
+        """最小化时按 ``minimize_to_tray`` 设置执行与关闭一致的安全清理后隐藏到托盘。"""
         if a0 is None:
             return
         if a0.type() == a0.Type.WindowStateChange:

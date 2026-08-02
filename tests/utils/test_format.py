@@ -11,6 +11,7 @@ class TestFormatDatetime:
     """format_datetime 各输入场景。"""
 
     def test_empty_returns_empty(self):
+        """空串原样返回，不抛异常。"""
         assert format_datetime("") == ""
 
     def test_z_suffix_parsed_on_py310(self):
@@ -20,6 +21,7 @@ class TestFormatDatetime:
         assert len(result) == 19
 
     def test_aware_utc(self):
+        """aware UTC 输入转本地 19 字符标准格式（输出非原串即证明已格式化）。"""
         result = format_datetime("2024-01-15T10:30:00+00:00")
         assert result != "2024-01-15T10:30:00+00:00"
         assert len(result) == 19
@@ -38,6 +40,7 @@ class TestUtcNowIso:
     """utc_now_iso 生成带 UTC 偏移的 ISO 字符串。"""
 
     def test_ends_with_utc_offset(self):
+        """输出以 ``+00:00`` 结尾，标记为 UTC 时区。"""
         result = utc_now_iso()
         assert result.endswith("+00:00")
 

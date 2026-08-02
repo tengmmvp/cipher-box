@@ -92,11 +92,10 @@ class BackgroundWorker(QThread, Generic[_T]):
         self._cancel_event.set()
 
     def cancel_check(self) -> bool:
-        """取消探针的 :class:`Callable[[], bool]` 形式，可作为绑定方法直接传入
-        业务层 ``cancel_check`` 形参。
+        """取消探针的 :class:`Callable[[], bool]` 形式。
 
-        与 :attr:`is_cancelled` 同义，前者是属性访问形态，本方法是无参方法形态，
-        可直接传入期望 ``Callable[[], bool]`` 的形参。
+        与 :attr:`is_cancelled` 同义（前者是属性访问，本方法是无参绑定方法），
+        便于直接传入业务层期望 ``Callable[[], bool]`` 的 ``cancel_check`` 形参。
         """
         return self._cancel_event.is_set()
 
@@ -108,6 +107,11 @@ class BackgroundWorker(QThread, Generic[_T]):
         self.progress.emit(current, total)
 
     def run(self) -> None:
+        """工作线程主体，``func`` 在此于工作线程执行。
+
+        ``func`` 内禁止直接操作 Qt 控件——控件仅可在主线程访问；结果须经由
+        ``finished``/``error``/``progress`` 等信号回到主线程，Qt 自动以队列连接跨线程投递。
+        """
         func = self._func
         if func is None:
             return

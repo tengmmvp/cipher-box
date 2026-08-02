@@ -1,4 +1,11 @@
-"""数据库层类型定义。"""
+"""数据库层类型定义 — 接口协议切片、查询 DTO、校验模式与重加密 DTO。
+
+集中声明三层间解耦用的 Protocol（``ConnectionProvider`` 供 Repository 消费
+DatabaseManager；``EntryStore`` / ``CategoryStore`` / ``VaultDataConnection`` /
+``VaultDataStore`` 收窄 Business 层暴露面），以及 ``EntryQuery``（查询参数）、
+``VerifyMode``（完整性校验模式）、``ReEncryptedEntry`` / ``ReEncryptedHistory``
+（改密重加密批量更新 DTO）。置于数据层避免 Business→Data 反向依赖。
+"""
 
 from __future__ import annotations
 
@@ -15,7 +22,12 @@ if TYPE_CHECKING:
 
 
 class VerifyMode(Enum):
-    """条目完整性校验模式。"""
+    """读取条目时的元数据完整性（HMAC）校验模式。
+
+    - ``STRICT``：校验失败抛 :class:`VaultIntegrityError`，单条详情路径用。
+    - ``LENIENT``：失败仅置 ``integrity_error`` 标志，列表/搜索/标签等只读路径默认。
+    - ``SKIP``：完全跳过，签名计算前的原始读取用（不能先验签再算签名）。
+    """
 
     STRICT = auto()  # 校验失败时抛出异常
     LENIENT = auto()  # 设置 integrity_error 标志但不抛出异常
@@ -240,7 +252,12 @@ class ReEncryptedEntry(NamedTuple):
 
 
 class ReEncryptedHistory(NamedTuple):
-    """重加密后密码历史的批量更新 DTO（密文, id）。"""
+    """重加密后密码历史的批量更新 DTO（密文, id）。
+
+    字段顺序与 ``EntryRepository.update_password_history_batch`` 的
+    ``UPDATE ... WHERE id=?`` SQL 位置绑定一致，供 ``executemany``。
+    ``ReEncryptionService`` 构造、``EntryRepository`` 消费，故定义于数据层避免反向依赖。
+    """
 
     ciphertext: str
     id: int

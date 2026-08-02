@@ -12,6 +12,7 @@ from src.models import ENTRY_TYPE_LOGIN, ENTRY_TYPES, Category, Entry, RawEntry
 
 
 def _make_entry(**kwargs) -> RawEntry:
+    """构造测试用 RawEntry,对可选字段填合法默认值,调用方经 kwargs 覆盖关注字段。"""
     kwargs.setdefault("password", "x")
     kwargs.setdefault("notes", "")
     kwargs.setdefault("custom_fields", "")
@@ -32,29 +33,35 @@ def test_generate_valid_secret(monkeypatch):
 
 
 def test_generate_empty_secret():
+    """空 secret 不抛异常,返回空串。"""
     assert TOTPGenerator.generate("") == ""
 
 
 def test_generate_invalid_secret():
+    """非法 Base32 secret 不抛异常,返回空串。"""
     assert TOTPGenerator.generate("!!!invalid!!!") == ""
 
 
 def test_remaining_seconds():
+    """get_remaining_seconds 落在 (0, 30] TOTP 周期内。"""
     remaining = TOTPGenerator.get_remaining_seconds()
     assert remaining > 0
     assert remaining <= 30
 
 
 def test_validate_secret_valid():
+    """合法 Base32 secret 通过校验。"""
     assert TOTPGenerator.validate_secret("JBSWY3DPEHPK3PXP")
 
 
 def test_validate_secret_invalid():
+    """空串与含非 Base32 字符的 secret 校验失败。"""
     assert not TOTPGenerator.validate_secret("")
     assert not TOTPGenerator.validate_secret("!!!")
 
 
 def test_two_codes_same_period():
+    """同一周期内多次 generate 返回相同验证码（确定性）。"""
     secret = "JBSWY3DPEHPK3PXP"
     code1 = TOTPGenerator.generate(secret)
     code2 = TOTPGenerator.generate(secret)
@@ -65,6 +72,7 @@ def test_two_codes_same_period():
 
 
 def test_entry_type_constants():
+    """5 种模板常量（login/card/identity/note/server）均注册在 ENTRY_TYPES。"""
     assert "login" in ENTRY_TYPES
     assert "card" in ENTRY_TYPES
     assert "identity" in ENTRY_TYPES
@@ -73,18 +81,21 @@ def test_entry_type_constants():
 
 
 def test_entry_type_icon():
+    """各 entry_type 映射正确的图标与中文标签。"""
     entry = RawEntry(title="Test", entry_type="card")
     assert entry.type_icon == "[CARD]"
     assert entry.type_label == "信用卡"
 
 
 def test_entry_default_type():
+    """不指定 entry_type 时默认 login,图标为 [KEY]。"""
     entry = RawEntry(title="Test")
     assert entry.entry_type == ENTRY_TYPE_LOGIN
     assert entry.type_icon == "[KEY]"
 
 
 def test_has_totp():
+    """has_totp 据 totp_secret 是否非空判定。"""
     entry1 = RawEntry(title="A", totp_secret="")
     assert not entry1.has_totp
 
@@ -93,6 +104,7 @@ def test_has_totp():
 
 
 def test_entry_to_dict_with_type():
+    """to_dict 输出 entry_type 与 totp_secret,exclude 模式下 totp_secret 不输出。"""
     entry = Entry(title="Test", entry_type="server", totp_secret="SECRET")
     d = entry.to_dict(include_password=True)
     assert d["entry_type"] == "server"
@@ -117,6 +129,7 @@ def db_history(tmp_path):
 
 
 def test_add_password_history(db_history):
+    """add_password_history 写入后 get_password_history 按写入条数返回。"""
     entry = _make_entry(title="Test")
     entry_id = db_history.add_entry(entry)
 
@@ -199,6 +212,7 @@ def db_category(tmp_path):
 
 
 def test_get_category_entry_count(db_category):
+    """get_category_entry_count 返回该分类下条目数,随新增递增。"""
     categories = db_category.get_categories()
     cat = categories[0]  # 未分类
     count = db_category.get_category_entry_count(cat.id)

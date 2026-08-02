@@ -1,4 +1,8 @@
-"""EntryManager 明文条目校验逻辑测试。"""
+"""validate_plain_entry 明文条目校验逻辑测试（entry_validation 服务）。
+
+覆盖字段类型与长度校验、自定义字段数量及单字段长度限制，以及导入/编辑路径
+校验一致的回归守护——堵住 Entry(...) 直接构造绕过 from_dict 的约束缺口。
+"""
 
 import dataclasses
 

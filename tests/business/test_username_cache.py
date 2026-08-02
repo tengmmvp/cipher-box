@@ -7,7 +7,7 @@ from tests.helpers import make_entry_manager
 
 
 class TestSearchMetadataCacheEpochInvalidation:
-    """验证 invalidate_if_epoch_changed 在 key_epoch 变化时清除缓存。"""
+    """验证搜索元数据缓存的 epoch 失效与显式 invalidate_caches 清空行为。"""
 
     def test_epoch_change_clears_cache(self):
         """key_epoch 变化时，搜索元数据缓存被清空。"""

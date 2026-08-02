@@ -67,7 +67,7 @@ from .widgets import clear_layout, create_icon_button, disconnect_all
 
 logger = logging.getLogger(__name__)
 
-# 密码强度标签映射，模块级常量避免每次 show_entry 重建
+# 密码强度标签映射，模块级常量避免每次 `show_entry` 重建
 _STRENGTH_LABELS = {0: "非常弱", 1: "弱", 2: "一般", 3: "强", 4: "非常强"}
 
 
@@ -75,11 +75,11 @@ class DetailPanel(QWidget):
     """密码条目详情面板。
 
     安全说明，受 CPython 运行时限制：
-    - 明文密码以 Python str 形式存储在 self._current_password 及闭包中。
-    - Python 字符串不可变，mark_secret_discarded 无法覆写原始对象内存。
-    - _clear_content 通过置空引用缩短敏感数据的驻留时间。
-    - 对主密码字段，_toggle 闭包从 self._current_password 读取而非直接
-      捕获值，使 _clear_content 清空后闭包同样读到空值。
+    - 明文密码以 Python `str` 形式存储在 `self._current_password` 及闭包中。
+    - Python 字符串不可变，`mark_secret_discarded` 无法覆写原始对象内存。
+    - `_clear_content` 通过置空引用缩短敏感数据的驻留时间。
+    - 对主密码字段，`_toggle` 闭包从 `self._current_password` 读取而非直接
+      捕获值，使 `_clear_content` 清空后闭包同样读到空值。
     """
 
     edit_requested = pyqtSignal(int)
@@ -87,8 +87,8 @@ class DetailPanel(QWidget):
     favorite_toggled = pyqtSignal(int)
     copy_feedback = pyqtSignal()
 
-    # 复制反馈定时器上限：可取消定时器替代 QTimer.singleShot，控件销毁前需逐个
-    # stop，上限防止极端情况下的定时器泄漏。
+    # 复制反馈定时器上限：可取消定时器替代 `QTimer.singleShot`，控件销毁前需逐个
+    # `stop`，上限防止极端情况下的定时器泄漏。
     _COPY_FEEDBACK_TIMERS_MAX = 20
 
     def __init__(
@@ -111,10 +111,10 @@ class DetailPanel(QWidget):
         self._pwd_label_ref: QLabel | None = None
         self._show_btn_ref: QPushButton | None = None
         self._current_password = ""
-        # 主条目中非主密码敏感字段的间接引用字典，自定义字段由 renderer 管理
+        # 主条目中非主密码敏感字段的间接引用字典，自定义字段由 `renderer` 管理
         self._secret_values_main: dict[str, str] = {}
         # 非主密码敏感字段与自定义字段的自动掩码定时器，持久且可取消，
-        # 便于 _clear_content 统一停止并清空（历史密码定时器由 PasswordHistoryWidget 自管）。
+        # 便于 `_clear_content` 统一停止并清空（历史密码定时器由 `PasswordHistoryWidget` 自管）。
         self._field_hide_timers: list[QTimer] = []
         # 复制反馈定时器，可取消，避免控件销毁后回调访问已删对象；上限 20 防泄漏。
         self._copy_feedback_timers: OrderedDict[QTimer, QPushButton] = OrderedDict()
@@ -142,8 +142,8 @@ class DetailPanel(QWidget):
     def _add_copy_feedback_timer(self, timer: QTimer, btn: QPushButton) -> None:
         """注册复制反馈定时器，超出上限时回收最旧的（FIFO）并恢复其按钮图标。"""
         if len(self._copy_feedback_timers) >= self._COPY_FEEDBACK_TIMERS_MAX:
-            # FIFO 回收最旧：其 _restore 回调因 stop() 不再触发，须主动恢复按钮图标，
-            # 否则按钮永久停留 CHECK。sip 守卫防止 btn 已 deleteLater。
+            # FIFO 回收最旧：其 `_restore` 回调因 `stop()` 不再触发，须主动恢复按钮图标，
+            # 否则按钮永久停留 `CHECK`。`sip.isdeleted` 守卫防止 `btn` 已 `deleteLater`。
             oldest, oldest_btn = self._copy_feedback_timers.popitem(last=False)
             oldest.stop()
             oldest.deleteLater()
@@ -160,8 +160,8 @@ class DetailPanel(QWidget):
         self._add_copy_feedback_timer(timer, btn)
 
         def _restore(btn: QPushButton = btn, t: QTimer = timer) -> None:
-            # 定时器回调触发时 btn 可能已 deleteLater 但事件循环未处理，
-            # 守卫避免对已释放 C++ 对象调用 set_icon 抛 RuntimeError。
+            # 定时器回调触发时 `btn` 可能已 `deleteLater` 但事件循环未处理，
+            # 守卫避免对已释放 C++ 对象调用 `set_icon` 抛 `RuntimeError`。
             if sip.isdeleted(btn):
                 self._copy_feedback_timers.pop(t, None)
                 return
@@ -561,9 +561,9 @@ class DetailPanel(QWidget):
         def _toggle(
             _checked: bool = False, lbl: QLabel = val_label, btn: QPushButton = show_btn
         ) -> None:
-            # _clear_content 经 deleteLater 异步销毁控件；销毁窗口期内若仍有挂起的
-            # clicked 事件触发闭包，操作已删除的 C++ 对象会抛 RuntimeError。守卫
-            # 避免该竞态，与 _signal_connections 在 secure_clear 时显式断开的设计互补。
+            # `_clear_content` 经 `deleteLater` 异步销毁控件；销毁窗口期内若仍有挂起的
+            # `clicked` 事件触发闭包，操作已删除的 C++ 对象会抛 `RuntimeError`。守卫
+            # 避免该竞态，与 `_signal_connections` 在 `secure_clear` 时显式断开的设计互补。
             if sip.isdeleted(lbl) or sip.isdeleted(btn):
                 return
             pwd = self._current_password
@@ -606,10 +606,10 @@ class DetailPanel(QWidget):
         return seconds * 1000
 
     def _auto_hide_password(self) -> None:
-        # 与 _toggle 一致的销毁守卫：_clear_content 经 deleteLater 异步销毁控件，
-        # 此定时器回调可能在销毁后触发，操作已删除的 C++ 对象会抛 RuntimeError。
-        # None 守卫覆盖 _clear_content 已置空引用的情况，sip.isdeleted 覆盖引用仍
-        # 指向但 C++ 对象已销毁的情况（deleteLater 异步生效期间）。
+        # 与 `_toggle` 一致的销毁守卫：`_clear_content` 经 `deleteLater` 异步销毁控件，
+        # 此定时器回调可能在销毁后触发，操作已删除的 C++ 对象会抛 `RuntimeError`。
+        # `None` 守卫覆盖 `_clear_content` 已置空引用的情况，`sip.isdeleted` 覆盖引用仍
+        # 指向但 C++ 对象已销毁的情况（`deleteLater` 异步生效期间）。
         if self._pwd_label_ref is None or self._show_btn_ref is None:
             return
         if sip.isdeleted(self._pwd_label_ref) or sip.isdeleted(self._show_btn_ref):
@@ -660,13 +660,13 @@ class DetailPanel(QWidget):
         self._fields_renderer.clear()
         mark_secret_discarded(self._current_password)
         self._current_password = ""
-        # 先清空主密码 label 明文再置空引用，避免 deleteLater 异步销毁前明文驻留。
+        # 先清空主密码 label 明文再置空引用，避免 `deleteLater` 异步销毁前明文驻留。
         if self._pwd_label_ref is not None:
             self._pwd_label_ref.setText(PWD_MASK)
         self._pwd_label_ref = None
         self._show_btn_ref = None
-        # _empty_label 为构造时一次创建的常驻控件，从布局中取出避免被
-        # _clear_layout 的 deleteLater 销毁，从而 show_empty 可直接复用。
+        # `_empty_label` 为构造时一次创建的常驻控件，从布局中取出避免被
+        # `_clear_layout` 的 `deleteLater` 销毁，从而 `show_empty` 可直接复用。
         if self._empty_label is not None:
             self._content_layout.removeWidget(self._empty_label)
             self._empty_label.hide()
@@ -703,8 +703,8 @@ class DetailPanel(QWidget):
         self._edit_btn.hide()
         self._delete_btn.hide()
         self._fav_btn.hide()
-        # 复用构造时创建的常驻 _empty_label，仅更新文本并显示，
-        # 避免每次 show_empty 频繁 new QLabel + deleteLater 累积。
+        # 复用构造时创建的常驻 `_empty_label`，仅更新文本并显示，
+        # 避免每次 `show_empty` 频繁 new `QLabel` + `deleteLater` 累积。
         self._empty_label.setText("请从列表中选择一个条目\n以查看详细信息")
         self._content_layout.addWidget(self._empty_label)
         self._empty_label.show()

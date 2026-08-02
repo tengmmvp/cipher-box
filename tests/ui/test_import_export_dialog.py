@@ -2,8 +2,8 @@
 
 import_export_dialog 经 ``_IMPORT_FORMAT_KEYS`` 把 UI 格式名映射到 ``import_file`` 的
 ``format_key``，再经 ``ImportExportManager._IMPORTERS`` 注册表 dispatch 到策略类。映射的
-format_key 与注册表键漂移会在运行时抛 ``ValueError``（不支持格式）。此处于收集期静态
-守护「UI 格式选项 ↔ format_key 映射 ↔ _IMPORTERS 注册表」三者一致，防重构时漏改映射。
+``format_key`` 与注册表键漂移会在运行时抛 ``ValueError``（不支持格式）。此处于收集期静态
+守护「UI 格式选项 ↔ ``format_key`` 映射 ↔ ``_IMPORTERS`` 注册表」三者一致，防重构时漏改映射。
 """
 
 from src.business.managers.import_export import ImportExportManager

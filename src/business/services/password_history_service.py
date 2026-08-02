@@ -43,8 +43,11 @@ class PasswordHistoryService:
         """
         result = []
         with self._vault.vault_write_lock():
+            # 循环外提取主密钥一次（对齐 full_analysis）：self._key 经 property 链每轮新建
+            # 32 字节副本，N 条历史会驻留 N 份主密钥副本，循环外取一份复用收缩驻留面。
+            key = self._key
             for h in history:
-                pwd = decrypt_field(h.old_password_enc, self._key, h.entry_crypto_id, "password")
+                pwd = decrypt_field(h.old_password_enc, key, h.entry_crypto_id, "password")
                 if pwd:
                     result.append(
                         {

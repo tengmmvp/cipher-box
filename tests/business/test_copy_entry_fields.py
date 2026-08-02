@@ -102,11 +102,13 @@ class TestBuildEntrySummary:
         assert summary.username == "user1"
 
     def test_summary_default_username(self):
+        """未显式传入 username 时回退为空串，不直接复用源密文值。"""
         raw = _make_entry(username="cb2:FIFSED/encrypted")
         summary = build_entry_summary(raw)
         assert summary.username == ""
 
     def test_summary_is_independent_copy(self):
+        """返回的摘要为独立副本，调用方修改不影响源 RawEntry。"""
         raw = _make_entry(title="Original")
         summary = build_entry_summary(raw, username="test")
         dataclasses.replace(summary, title="Modified")

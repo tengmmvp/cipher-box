@@ -1,6 +1,6 @@
 """设置对话框，按标签页组织通用、安全、密码生成与备份四类配置。
 
-配置项经 _SETTINGS_MAP 与控件属性映射，新增配置只需扩展映射表。
+配置项经 ``_SETTINGS_MAP`` 与控件属性映射，新增配置只需扩展映射表。
 """
 
 from __future__ import annotations

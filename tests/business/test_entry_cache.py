@@ -56,6 +56,44 @@ class TestSearchMetadataCache:
         cache.apply_change(crypto_id=None, clear_summaries=False, category_changed=True)
         assert len(cache._search_metadata_cache) == 1
 
+    def test_apply_change_advances_invalidate_version(self, cache):
+        """apply_change 推进 _invalidate_version（M4），使进行中的解密回写失效。"""
+        version_before = cache._invalidate_version
+        cache.apply_change(crypto_id="nonexistent")
+        assert cache._invalidate_version == version_before + 1
+
+    def test_concurrent_invalidate_during_decrypt_skips_stale_write(
+        self, entry_mgr, cache, monkeypatch
+    ):
+        """解密期间并发 apply_change 推进 version，旧密文解密结果不回写缓存（M4）。
+
+        模拟读线程锁外解密条目期间，写线程更新该条目并 apply_change pop 缓存。无
+        version 守卫时回写会把基于旧密文的摘要重新塞回已 pop 的缓存，下次命中返回
+        旧摘要（污染）；version 守卫使回写丢弃。
+        """
+        entry_mgr.add_entry(Entry(title="old", username="u", password="p"))
+        raw = entry_mgr.db.get_entries(EntryQuery())[0]
+        cid = raw.crypto_id
+
+        real_decrypt = entry_cache_module._decrypt_field_impl
+        triggered = {"done": False}
+
+        def _decrypt_with_concurrent_apply_change(encrypted, key, crypto_id, field_name, *, strict):
+            # 首次解密本条目时模拟并发写更新（apply_change pop + 推进 version）
+            if not triggered["done"] and crypto_id == cid:
+                triggered["done"] = True
+                cache.apply_change(crypto_id=cid)
+            return real_decrypt(encrypted, key, crypto_id, field_name, strict=strict)
+
+        monkeypatch.setattr(
+            entry_cache_module,
+            "_decrypt_field_impl",
+            _decrypt_with_concurrent_apply_change,
+        )
+        cache._cached_search_metadata_no_check(raw)
+        # version 守卫丢弃回写：缓存不含本条目（旧密文摘要未污染）
+        assert cid not in cache._search_metadata_cache
+
 
 class TestTotpSecretCache:
     """TOTP secret 缓存的 store/pop/clear 行为。"""

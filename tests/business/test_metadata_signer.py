@@ -62,7 +62,6 @@ def test_verify_passes_on_untampered_entry():
 
     entry = dataclasses.replace(entry, metadata_mac=signer.sign(entry))
 
-    # 不应抛出任何异常
     signer.verify(entry)
 
 

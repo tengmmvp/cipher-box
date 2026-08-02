@@ -4,8 +4,8 @@
 ``tests/business`` 充分覆盖；本文件守护「对话框控件值→正确业务参数→领域结果→用户文案」
 接线层，防止控件默认值漂移、参数错位、异常文案回归逃过测试。
 
-模态对话框（QInputDialog/QMessageBox/QFileDialog）与 BackgroundWorker 经 monkeypatch
-替换，避免真实模态阻塞与 QThread 异步——聚焦「参数传递与文案映射」这一同步接线契约。
+模态对话框（``QInputDialog``/``QMessageBox``/``QFileDialog``）与 ``BackgroundWorker`` 经 monkeypatch
+替换，避免真实模态阻塞与 ``QThread`` 异步——聚焦「参数传递与文案映射」这一同步接线契约。
 """
 
 from unittest.mock import MagicMock

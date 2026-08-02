@@ -10,6 +10,7 @@ from src.logging_config import RedactingFormatter, SensitiveDataFilter
 
 
 def _make_record(msg, args=None):
+    """构造 INFO 级 LogRecord 桩,供 SensitiveDataFilter.filter 喂入测试。"""
     return logging.LogRecord(
         "test",
         logging.INFO,
@@ -25,6 +26,7 @@ class TestSensitiveDataFilter:
     """验证敏感模式打码。"""
 
     def test_redacts_password_assignment(self):
+        """``password=`` 等号赋值的值整段打码为 [REDACTED]。"""
         record = _make_record("login password=hunter2-secret")
         SensitiveDataFilter().filter(record)
         message = record.getMessage()
@@ -32,6 +34,7 @@ class TestSensitiveDataFilter:
         assert "[REDACTED]" in message
 
     def test_redacts_cb2_ciphertext(self):
+        """``cb2:`` 前缀的密文标记整段打码,避免密文落日志被截获后离线推敲。"""
         ciphertext = "cb2:ABCDEFGHabcdefgh0123456789+/=="
         record = _make_record(f"decrypt failed: {ciphertext}")
         SensitiveDataFilter().filter(record)
@@ -40,6 +43,7 @@ class TestSensitiveDataFilter:
         assert "cb2:[REDACTED]" in message
 
     def test_redacts_chinese_key_assignment(self):
+        """中文敏感关键词（密码）赋值同样打码。"""
         record = _make_record("save 密码=p@ssw0rd done")
         SensitiveDataFilter().filter(record)
         message = record.getMessage()
@@ -84,6 +88,35 @@ class TestSensitiveDataFilter:
         record = _make_record(original)
         SensitiveDataFilter().filter(record)
         assert record.getMessage() == original
+
+    def test_redacts_otpauth_secret(self):
+        """otpauth URL 中的 secret 参数打码（M15），防 TOTP 凭证明文进日志。
+
+        otpauth URL 的 ``secret=`` 命中 secret 关键词模式，贪婪到行尾一并遮蔽后续参数，
+        不泄漏 Base32 TOTP 密钥。
+        """
+        secret = "JBSWY3DPEHPK3PDP"
+        record = _make_record(f"otpauth://totp/label?secret={secret}&issuer=Test")
+        SensitiveDataFilter().filter(record)
+        message = record.getMessage()
+        assert secret not in message
+        assert "[REDACTED]" in message
+
+    def test_redacts_username_assignment(self):
+        """username 关键词赋值打码（SEC-009 回归守护，防误删 alternation 分支）。"""
+        record = _make_record("login username=alice@example.com ok")
+        SensitiveDataFilter().filter(record)
+        message = record.getMessage()
+        assert "alice@example.com" not in message
+        assert "[REDACTED]" in message
+
+    def test_redacts_card_cvv_assignment(self):
+        """card cvv/cvc 关键词赋值打码（SEC-009 回归守护）。"""
+        record = _make_record("card cvv=123 saved")
+        SensitiveDataFilter().filter(record)
+        message = record.getMessage()
+        assert "123" not in message
+        assert "[REDACTED]" in message
 
 
 class TestRedactingFormatter:

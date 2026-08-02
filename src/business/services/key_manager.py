@@ -51,13 +51,13 @@ class KeyManager:
     ) -> bytearray | None:
         """归一新值为 bytearray 副本，并在装入前安全清零旧 bytearray（_set_key/_set_snapshot_key 共用）。
 
-        ``current_value is not new`` 跳过「传入的正是当前持有的同一 bytearray」（防御性
-        不变量），避免清零掉将要使用的值。current_value 来自 self._key/self._snapshot_key，
-        非 None 时类型已由 :meth:`_to_bytearray` 保证为 bytearray，无需额外 isinstance
-        守卫（QL-015）。
+        ``_to_bytearray`` 总返回全新副本（见其 docstring「总是复制」），故旧值
+        current_value 与新值 new 不可能是同一对象，current_value 非 None 即清零。
+        current_value 来自 self._key/self._snapshot_key，非 None 时类型已由
+        :meth:`_to_bytearray` 保证为 bytearray，无需额外 isinstance 守卫（QL-015）。
         """
         new = self._to_bytearray(value)
-        if current_value is not None and current_value is not new:
+        if current_value is not None:
             secure_zero_buffer(current_value)
         return new
 

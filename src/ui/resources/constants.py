@@ -32,7 +32,11 @@ MS_TOAST_DEFAULT = 3000  # 默认 Toast 显示
 MS_TOAST_LONG = 5000  # 长 Toast 显示，用于需用户注意的消息
 PWD_VISIBLE_SECONDS_DEFAULT: int = int(DEFAULT_CONFIG[CFG_PASSWORD_VISIBLE_SECONDS])
 CLIPBOARD_CLEAR_SECONDS_DEFAULT: int = int(DEFAULT_CONFIG[CFG_CLIPBOARD_CLEAR_SECONDS])
-WORKER_WAIT_TIMEOUT_MS = 3000  # 后台 Worker 等待超时
+WORKER_WAIT_TIMEOUT_MS = 3000  # 后台 Worker 等待超时（可取消操作）
+# 不可中断操作（恢复/导入，_cancel_on_close=False）的关闭等待超时。大库逐条 AES-GCM
+# 加密可能远超可取消操作的 3s，用更长超时避免 worker 仍在运行时对话框析构触发
+# QThread: Destroyed 崩溃（自动锁定/退出经 reject 绕过 closeEvent 守卫）。
+WORKER_WAIT_TIMEOUT_IRREVERSIBLE_MS = 120000
 ABOUT_TO_QUIT_WAIT_TIMEOUT_MS = 400  # aboutToQuit 短超时等待 worker 退出（不阻塞退出）
 MS_SEARCH_DEBOUNCE = 300  # 搜索输入防抖间隔
 MS_AUTO_BACKUP_CHECK = 10 * 60 * 1000  # 自动备份检查间隔

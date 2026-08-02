@@ -255,12 +255,14 @@ class MenuController:
     # ----- 对话框 -----
 
     def show_password_generator(self) -> None:
+        """打开密码生成器；选中的密码经 ``on_password_selected`` 回调处理。"""
         dialog = PasswordGeneratorDialog(self._clipboard, self._parent, config=self._config)
         dialog.password_selected.connect(self._slots.on_password_selected)
         dialog.exec()
         dialog.deleteLater()
 
     def show_settings(self) -> None:
+        """打开设置对话框；接受后应用主题与运行时设置（剪贴板/托盘/自动锁定等）。"""
         dialog = SettingsDialog(self._config, self._parent)
         accepted = dialog.exec() == SettingsDialog.DialogCode.Accepted
         dialog.deleteLater()
@@ -269,6 +271,7 @@ class MenuController:
             self._slots.apply_runtime_settings()
 
     def show_import_export(self) -> None:
+        """打开导入/导出对话框；导入完成后全量刷新（条目/分类/标签整体替换）。"""
         dialog = ImportExportDialog(
             self._import_export,
             self._entry_mgr,
@@ -279,9 +282,9 @@ class MenuController:
         dialog.deleteLater()
 
     def show_backup(self) -> None:
+        """打开备份/恢复对话框；仅在实际发生备份/恢复时全量刷新并清空详情面板。"""
         dialog = BackupDialog(self._backup, self._parent, config=self._config)
         dialog.exec()
-        # 仅在对话框实际执行了备份/恢复操作时才全量刷新
         data_changed = dialog.data_changed
         dialog.deleteLater()
         if data_changed:
@@ -289,21 +292,21 @@ class MenuController:
             self._detail_panel.show_empty()
 
     def show_change_master(self) -> None:
+        """打开修改主密码对话框；成功后全量刷新并触发强制改密快照。
+
+        快照 ``force=True`` 绕过自动备份开关——即使用户已禁用自动备份，改密前的
+        可回滚点仍须保留。Toast 文案不谎称「已创建」（异步可能被并发跳过或失败）。
+        """
         dialog = ChangeMasterDialog(self._vault, self._config, self._parent)
         result = dialog.exec()
         dialog.deleteLater()
         if result == ChangeMasterDialog.DialogCode.Accepted:
             self._slots.refresh_all_data()
             self._detail_panel.show_empty()
-            # 改密后强制创建当前保险库快照（force=True 绕过自动备份开关）。
-            # 即使用户已禁用自动备份，改密快照仍会创建以保留改密前的可回滚点；
-            # 显式 Toast 告知，避免用户误以为禁用自动备份后没有任何快照产生。
             self._auto_backup.trigger_check(force=True)
             from ..components.toast import Toast
             from ..resources.constants import MS_TOAST_DEFAULT
 
-            # 备份异步进行，文案不谎称"已创建"（force=True 绕过开关，可能被并发跳过
-            # 或后台失败）。完成后用户可在「备份与恢复」查看。
             Toast.show(
                 self._parent,
                 "正在创建改密快照，完成后可在「备份与恢复」中查看或恢复",
@@ -318,17 +321,22 @@ class MenuController:
         dialog.deleteLater()
 
     def show_security_dashboard(self) -> None:
+        """打开安全仪表盘；exec 返回后同步处理 pending 修复条目（M14）。
+
+        替代原 ``singleShot(0)`` 延迟 emit——dialog 随即 ``deleteLater``，延迟回调
+        访问已销毁 dialog 的信号会崩溃，故同步打开编辑对话框为单层模态。
+        """
         dialog = SecurityDashboard(
             self._security,
             self._entry_mgr,
             self._config,
             self._parent,
         )
-        # fix_requested 经仪表盘 singleShot(0) 延迟 emit 触发 edit_entry；
-        # 实际刷新由 EntryDialog.saved 信号驱动，此处不依赖 Accepted 状态刷新。
-        dialog.fix_requested.connect(self._slots.edit_entry)
         dialog.exec()
+        pending_fix_id = dialog.pending_fix_id
         dialog.deleteLater()
+        if pending_fix_id is not None:
+            self._slots.edit_entry(pending_fix_id)
 
     def show_shortcuts(self) -> None:
         rows = "".join(

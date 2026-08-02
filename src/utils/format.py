@@ -1,4 +1,8 @@
-"""公共格式化工具函数。"""
+"""公共格式化工具 — 全项目统一的时间戳格式与本地化展示。
+
+``utc_now_iso`` 提供 aware UTC ISO 8601 字符串作为数据库时间戳单一格式；
+``format_datetime`` 将其转换为本地时区的可读形式供 UI 展示。属零上层依赖共享层。
+"""
 
 from datetime import datetime, timezone
 

@@ -26,7 +26,7 @@ class _Host:
 
 
 class TestRequireUnlocked:
-    """require_unlocked 守卫：锁定态短路、解锁态透传、@wraps 元信息保留。"""
+    """``require_unlocked`` 守卫：锁定态短路、解锁态透传、``@wraps`` 元信息保留。"""
 
     def test_locked_state_returns_none_without_calling_method(self):
         """锁定态：守卫 return None 且被装饰方法不执行。"""
@@ -57,7 +57,7 @@ class TestRequireUnlocked:
         assert host.do_work() is None
 
     def test_wraps_preserves_method_name_and_doc(self):
-        """``@wraps`` 保留被装饰方法的 __name__ / __doc__，便于诊断与 Qt 反射。"""
+        """``@wraps`` 保留被装饰方法的 ``__name__`` / ``__doc__``，便于诊断与 Qt 反射。"""
         assert _Host.do_work.__name__ == "do_work"
         assert _Host.do_work.__doc__ is not None
         assert "记录调用参数" in _Host.do_work.__doc__

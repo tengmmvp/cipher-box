@@ -24,7 +24,12 @@ from PyQt6.QtWidgets import (
 )
 
 from ...business.services.password_service import PasswordService
-from ..resources.constants import BTN_DIALOG, BTN_ICON
+from ..resources.constants import (
+    BTN_DIALOG,
+    BTN_ICON,
+    WORKER_WAIT_TIMEOUT_IRREVERSIBLE_MS,
+    WORKER_WAIT_TIMEOUT_MS,
+)
 from ..resources.icons import EYE, LOCK, set_icon
 from ..resources.strings import DLG_TITLE_ERROR
 from ..resources.theme_colors import get_strength_color
@@ -220,9 +225,9 @@ def setup_dialog_flags(dialog: QDialog) -> None:
 
 # ======== 布局清空工具 ========
 
-# clear_layout 断开的常见可变控件信号：覆盖按钮/输入框/下拉/复选/滑动/动作等，防
-# deleteLater 到实际删除间信号触发访问已删控件（如 type_combo.currentIndexChanged
-# 闭包持有已 deleteLater 的 value_edit）。getattr 动态探测，无该信号的控件跳过。
+# `clear_layout` 断开的常见可变控件信号：覆盖按钮/输入框/下拉/复选/滑动/动作等，防
+# `deleteLater` 到实际删除间信号触发访问已删控件（如 `type_combo.currentIndexChanged`
+# 闭包持有已 `deleteLater` 的 `value_edit`）。`getattr` 动态探测，无该信号的控件跳过。
 _CLEAR_LAYOUT_SIGNALS = (
     "clicked",
     "toggled",
@@ -259,7 +264,7 @@ def clear_layout(layout: QLayout, disconnect_signals: bool = True) -> None:
         widget = item.widget()
         if widget:
             if disconnect_signals:
-                # 断开原因与 getattr 探测策略见模块级 _CLEAR_LAYOUT_SIGNALS 注释与本函数 docstring
+                # 断开原因与 `getattr` 探测策略见模块级 `_CLEAR_LAYOUT_SIGNALS` 注释与本函数 docstring
                 for sig_name in _CLEAR_LAYOUT_SIGNALS:
                     sig = getattr(widget, sig_name, None)
                     if sig is not None:
@@ -390,7 +395,11 @@ class WorkerBackedDialog(QDialog):
         ``_after_release`` 的敏感数据清理被跳过。统一经此方法收敛两条路径。
         """
         self._before_reject()
-        wait_worker_shutdown(self._worker, cancel=self._cancel_on_close())
+        cancel = self._cancel_on_close()
+        # 不可中断写入操作（恢复/导入）须自然完成：用更长超时，避免大库逐条加密
+        # 超时致 worker 仍在运行时对话框析构触发 QThread: Destroyed 崩溃。
+        timeout = WORKER_WAIT_TIMEOUT_MS if cancel else WORKER_WAIT_TIMEOUT_IRREVERSIBLE_MS
+        wait_worker_shutdown(self._worker, cancel=cancel, timeout=timeout)
         release_worker(self)
         self._after_release()
 

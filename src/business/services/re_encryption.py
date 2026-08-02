@@ -144,13 +144,16 @@ class ReEncryptionService:
                                     field,
                                     strict=True,
                                 )
-                                updates[field] = _encrypt_field_impl(
-                                    plain,
-                                    new_key,
-                                    raw_entry.crypto_id,
-                                    field,
-                                )
-                                del plain
+                                try:
+                                    updates[field] = _encrypt_field_impl(
+                                        plain,
+                                        new_key,
+                                        raw_entry.crypto_id,
+                                        field,
+                                    )
+                                finally:
+                                    # encrypt 异常时亦释放明文，不驻留至栈帧退出
+                                    del plain
                         re_encrypted = replace(raw_entry, **updates) if updates else raw_entry
                     except DecryptionError as exc:
                         logger.error("重加密中止：条目 id=%s 解密失败", raw_entry.id)
@@ -297,13 +300,16 @@ class ReEncryptionService:
                 except DecryptionError as exc:
                     logger.error("重加密中止：密码历史 id=%s 解密失败", history.id)
                     raise DecryptionError("某密码历史记录解密失败，数据可能已损坏。") from exc
-                ciphertext = _encrypt_field_impl(
-                    plaintext,
-                    new_key,
-                    history.entry_crypto_id,
-                    "password",
-                )
-                del plaintext
+                try:
+                    ciphertext = _encrypt_field_impl(
+                        plaintext,
+                        new_key,
+                        history.entry_crypto_id,
+                        "password",
+                    )
+                finally:
+                    # encrypt 异常时亦释放明文（与 fields 路径 del plain 对齐），不驻留至栈帧退出
+                    del plaintext
                 rows.append(
                     ReEncryptedHistory(
                         ciphertext=ciphertext,

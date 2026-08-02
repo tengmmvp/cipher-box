@@ -38,6 +38,7 @@ def _config(root: str):
 
 
 def test_unchanged_password_does_not_create_history():
+    """密码未变更的 update_entry 不应产生密码历史记录。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         assert vault.initialize("MasterPassword!2026")[0]
@@ -51,6 +52,7 @@ def test_unchanged_password_does_not_create_history():
 
 
 def test_password_history_survives_master_password_change():
+    """改密全量重加密后历史记录仍可解密（回归守护重加密覆盖密码历史）。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         assert vault.initialize("OldMasterPassword!2026")[0]
@@ -68,6 +70,7 @@ def test_password_history_survives_master_password_change():
 
 
 def test_portable_backup_restores_into_different_vault():
+    """可移植备份跨主密码恢复保留条目、自定义字段与密码历史。"""
     with tempfile.TemporaryDirectory() as source_root, tempfile.TemporaryDirectory() as target_root:
         source = make_vault(_config(source_root))
         assert source.initialize("SourceMasterPassword!2026")[0]
@@ -117,6 +120,7 @@ def test_portable_backup_restores_into_different_vault():
 
 
 def test_entry_dialog_restores_type_specific_fields():
+    """编辑对话框按条目类型恢复专属字段（如卡号掩码显示）。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         assert vault.initialize("MasterPassword!2026")[0]
@@ -141,6 +145,7 @@ def test_entry_dialog_restores_type_specific_fields():
 
 
 def test_lock_preparation_clears_decrypted_ui_and_clipboard():
+    """锁定前清理清空 UI 解密数据与剪贴板残留。"""
     with tempfile.TemporaryDirectory() as root:
         config = _config(root)
         vault = make_vault(config)
@@ -208,6 +213,7 @@ def test_change_master_success_triggers_force_backup(monkeypatch):
 
 
 def test_lock_closes_and_scrubs_open_entry_dialog():
+    """锁定关闭已打开的条目编辑对话框并擦除其中明文字段。"""
     with tempfile.TemporaryDirectory() as root:
         config = _config(root)
         vault = make_vault(config)
@@ -237,6 +243,7 @@ def test_lock_closes_and_scrubs_open_entry_dialog():
 
 
 def test_stale_key_session_cannot_write_after_master_password_change():
+    """改密后旧密钥会话写入被拒并锁定（密钥轮换一致性回归）。"""
     with tempfile.TemporaryDirectory() as root:
         first = make_vault(_config(root))
         assert first.initialize("OldMasterPassword!2026")[0]
@@ -258,6 +265,7 @@ def test_stale_key_session_cannot_write_after_master_password_change():
 
 
 def test_context_bound_ciphertext_rejects_cross_entry_swap():
+    """跨条目密文互换被 AAD 上下文绑定校验拦截（标记完整性错误）。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         assert vault.initialize("MasterPassword!2026")[0]
@@ -280,6 +288,7 @@ def test_context_bound_ciphertext_rejects_cross_entry_swap():
 
 
 def test_vault_persists_kdf_parameters_and_ciphertext_format():
+    """vault_meta 持久化 OWASP 级 KDF 参数与密文格式标识。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         # 显式用生产级 DEFAULT_KDF_PARAMS，绕过测试全局弱 KDF monkeypatch——
@@ -309,6 +318,7 @@ def test_vault_persists_kdf_parameters_and_ciphertext_format():
 
 
 def test_selecting_first_entry_opens_detail_panel_without_crash():
+    """深色主题下选中首条目经防抖触发详情面板渲染不崩溃。"""
     with tempfile.TemporaryDirectory() as root:
         config = _config(root)
         config.set("theme", "dark")
@@ -333,6 +343,7 @@ def test_selecting_first_entry_opens_detail_panel_without_crash():
 
 
 def test_first_time_login_password_fields_have_matching_dimensions(tmp_path):
+    """首次初始化登录窗口密码与确认框尺寸一致且可见（布局回归）。"""
     app_widget = cast(QWidget, _APP)
     previous_style = app_widget.styleSheet()
     app_widget.setStyleSheet(get_style("light"))
@@ -364,6 +375,7 @@ def test_first_time_login_password_fields_have_matching_dimensions(tmp_path):
 
 
 def test_visible_branding_uses_single_product_name(tmp_path):
+    """可见文案统一使用单一产品名 CipherBox（无内部代号残留）。"""
     vault = type(
         "FirstTimeVault",
         (),
@@ -399,6 +411,7 @@ def test_login_failure_clears_password_input(tmp_path):
 
 
 def test_totp_accepts_standard_otpauth_uri():
+    """TOTP 解析标准 otpauth URI 并生成 6 位验证码。"""
     uri = (
         "otpauth://totp/CipherBox:test@example.com?"
         "secret=JBSWY3DPEHPK3PXP&algorithm=SHA1&digits=6&period=60"
@@ -409,6 +422,7 @@ def test_totp_accepts_standard_otpauth_uri():
 
 
 def test_bitwarden_import_preserves_folder_totp_and_custom_fields():
+    """Bitwarden 导入保留文件夹分类、TOTP 与自定义字段。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         assert vault.initialize("MasterPassword!2026")[0]
@@ -447,6 +461,7 @@ def test_bitwarden_import_preserves_folder_totp_and_custom_fields():
 
 
 def test_import_rolls_back_when_any_entry_fails():
+    """导入遇异常经 epoch 守卫事务回滚，不留部分写入数据。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         assert vault.initialize("MasterPassword!2026")[0]
@@ -481,6 +496,7 @@ def test_import_rolls_back_when_any_entry_fails():
 
 
 def test_export_without_password_excludes_secret_custom_fields():
+    """不含密码导出时剔除敏感自定义字段（如卡号/CVV）。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         assert vault.initialize("MasterPassword!2026")[0]
@@ -514,6 +530,7 @@ def test_export_without_password_excludes_secret_custom_fields():
 
 
 def test_passwordless_overwrite_import_preserves_existing_secrets():
+    """无密码覆盖导入保留既有密码、TOTP 与敏感字段。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         assert vault.initialize("MasterPassword!2026")[0]
@@ -548,6 +565,7 @@ def test_passwordless_overwrite_import_preserves_existing_secrets():
 
 
 def test_favorite_change_does_not_reset_password_age():
+    """切换收藏不应重置密码变更时间（避免误触发过期判定）。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         assert vault.initialize("MasterPassword!2026")[0]
@@ -565,6 +583,7 @@ def test_favorite_change_does_not_reset_password_age():
 
 
 def test_main_window_filters_entries_by_tag():
+    """MainWindow 按标签筛选条目（端到端验证标签过滤管线）。"""
     with tempfile.TemporaryDirectory() as root:
         config = _config(root)
         vault = make_vault(config)
@@ -585,6 +604,7 @@ def test_main_window_filters_entries_by_tag():
 
 
 def test_existing_vault_cannot_be_initialized_again():
+    """已初始化的保险库拒绝再次初始化（防止覆盖既有数据）。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         assert vault.initialize("OriginalMaster!2026")[0]
@@ -603,6 +623,7 @@ def test_existing_vault_cannot_be_initialized_again():
 
 
 def test_entry_metadata_tampering_is_rejected():
+    """直接篡改加密字段的元数据 MAC 校验失败被拒。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         assert vault.initialize("MasterPassword!2026")[0]
@@ -627,6 +648,7 @@ def test_entry_metadata_tampering_is_rejected():
 
 
 def test_entry_metadata_is_resigned_after_master_password_change():
+    """改密后条目元数据重新签名（HMAC 随新密钥刷新）。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         assert vault.initialize("OldMasterPassword!2026")[0]
@@ -647,6 +669,7 @@ def test_entry_metadata_is_resigned_after_master_password_change():
 
 
 def test_vault_api_rejects_weak_master_passwords():
+    """弱主密码在 initialize 即被拒绝且不落库。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         with pytest.raises(VaultLockedError):
@@ -672,6 +695,7 @@ def test_initialize_system_error_raises_vault_locked(monkeypatch):
 
 
 def test_nested_transaction_uses_savepoint_for_inner_rollback():
+    """嵌套事务用 savepoint 实现内层独立回滚（外层提交保留）。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         assert vault.initialize("MasterPassword!2026")[0]
@@ -690,6 +714,7 @@ def test_nested_transaction_uses_savepoint_for_inner_rollback():
 
 
 def test_import_all_does_not_decrypt_existing_vault():
+    """import_all 模式导入不扫描解密既有条目（性能与隔离保证）。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         assert vault.initialize("MasterPassword!2026")[0]
@@ -751,6 +776,7 @@ def test_pre_restore_snapshot_purged_on_master_password_change():
 
 
 def test_existing_database_missing_table_is_rejected_without_repair():
+    """schema 损坏（缺表）打开数据库抛 SchemaError 而非静默修复（ARCH-004）。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         assert vault.initialize("MasterPassword!2026")[0]
@@ -782,6 +808,7 @@ def test_existing_database_missing_table_is_rejected_without_repair():
 
 
 def test_deleted_default_category_does_not_reappear_after_restart():
+    """删除的默认分类重启后不重新注入（默认分类仅首次初始化注入）。"""
     with tempfile.TemporaryDirectory() as root:
         vault = make_vault(_config(root))
         assert vault.initialize("MasterPassword!2026")[0]

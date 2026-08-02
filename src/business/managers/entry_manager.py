@@ -129,6 +129,7 @@ class EntryManager:
 
     @property
     def db(self) -> VaultDataStore:
+        """数据访问协议视图，委托 vault（收窄为 VaultDataStore，不含装配 setter）。"""
         return self._vault.db
 
     @property
@@ -428,7 +429,9 @@ class EntryManager:
         title, username, url, tags = self._cache.cached_search_metadata(raw_entry, key=key)
         failed = self._cache.get_failed_fields(cid)
         integrity_errors.extend(
-            name for name in ("title", "username", "url", "tags") if name in failed
+            _INTEGRITY_FIELD_LABELS[name]
+            for name in ("title", "username", "url", "tags")
+            if name in failed
         )
         return copy_entry_fields(
             raw_entry,
@@ -454,7 +457,7 @@ class EntryManager:
     def _decrypt_for_export(
         self,
         raw_entry: RawEntry,
-        include_secrets: bool = True,
+        include_secrets: bool = False,
         *,
         key: bytes | None = None,
     ) -> Entry:
@@ -462,7 +465,8 @@ class EntryManager:
 
         任一完整性/解密失败立即抛 :class:`DecryptionError`（拒绝导出损坏数据）；
         password/totp 返回明文（普通 str）供备份序列化。``include_secrets=False``
-        时跳过 password/totp_secret 解密。
+        时跳过 password/totp_secret 解密。默认 False 与公开 :meth:`decrypt_entry_for_export`
+        的安全默认对齐（避免内部入口默认解出密码，与公开 API 保守默认矛盾）。
 
         ``key`` 语义见 :meth:`_decrypt_field`（PF-001 并发修补）。
         """
@@ -598,6 +602,9 @@ class EntryManager:
                 key=key,
             )
         except DecryptionError:
+            # 解密失败时强制置空：summary.category_name 透传自 raw_entry.category_name，
+            # 是 base64 密文——保留会把不可读的密文当作分类名显示给用户（信息泄漏）。
+            category_name = ""
             failed = set(failed)
             failed.add("category")
         integrity_error = raw_entry.integrity_error or bool(failed)
@@ -706,20 +713,6 @@ class EntryManager:
         if notify:
             # 与 add_entry 一致：新条目不改变既有摘要，clear_summaries=False 保留缓存。
             self._change_bus.notify(clear_summaries=False)
-
-    def add_entries(self, entries: list[Entry], *, notify: bool = True) -> None:
-        """批量添加条目：加密 + 写入一体（便捷封装）。
-
-        单次 ``add_entries_batch`` 将 N 次 INSERT 合并为 1 次 executemany。导入路径为
-        缩短 db_lock 持有改用 :meth:`encrypt_new_entries` + :meth:`write_new_entries`
-        分离调用（MAINT-004）；本方法保留供需一体调用的场景（含空列表 notify 语义）。
-        """
-        if not entries:
-            if notify:
-                self._change_bus.notify(clear_summaries=False)
-            return
-        enc_entries, preserve = self.encrypt_new_entries(entries)
-        self.write_new_entries(enc_entries, preserve=preserve, notify=notify)
 
     def update_entry(
         self,
@@ -908,30 +901,6 @@ class EntryManager:
                 self.db.update_entry(item.enc_entry, preserve_updated_at=True)
             count += 1
         return count
-
-    def update_entries_batch_with_history(
-        self,
-        items: list[BatchUpdateItem],
-        *,
-        preserve_password_changed_at: bool = True,
-    ) -> tuple[int, list[tuple[int, Exception]]]:
-        """批量更新条目（导入覆盖路径），返回 ``(成功条数, 失败项)``。便捷封装。
-
-        拆分为 :meth:`prepare_overwrite_updates`（锁外加密）+ :meth:`write_overwrite_updates`
-        （锁内写入）。导入路径为缩短 db_lock 持有改用分离调用并自行快照 pre_epoch
-        （MAINT-004）；本方法保留供需一体调用的场景，``pre_epoch`` 在 prepare 后、write 前
-        快照（与原逐条复查时机一致）。导入整体已由外层 :meth:`_import_entries` 包裹
-        单事务，本方法的 SAVEPOINT 在该外层事务内嵌套（不会触发额外 fsync）。
-        """
-        if not items:
-            return 0, []
-        prepared, failures = self.prepare_overwrite_updates(
-            items,
-            preserve_password_changed_at=preserve_password_changed_at,
-        )
-        pre_epoch = self.key_epoch
-        count = self.write_overwrite_updates(prepared, pre_epoch)
-        return count, failures
 
     def _prepare_password_update(
         self,
@@ -1273,6 +1242,7 @@ class EntryManager:
         return result
 
     def get_entry_count(self, include_deleted: bool = False) -> int:
+        """获取条目总数。委托 vault。"""
         return self._vault.db.get_entry_count(include_deleted)
 
     def get_all_tags(self) -> list[tuple[str, int]]:

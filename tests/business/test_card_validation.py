@@ -49,6 +49,7 @@ class TestValidateCardNumber:
         assert validate_card_number("４１１１１１１１１１１１１１１１") is False
 
     def test_arabic_indic_digits_rejected(self):
+        """阿拉伯-印度数字（٤ 而非 4）应被拒绝：与全角同属 isdigit() 通过但非 ASCII 的越界输入。"""
         assert validate_card_number("٤١١١١١١١١١١١١١١") is False
 
 

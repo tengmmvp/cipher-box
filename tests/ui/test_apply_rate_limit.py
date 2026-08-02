@@ -12,9 +12,11 @@ class TestApplyRateLimit:
     """验证速率限制阶梯计算。"""
 
     def test_zero_failures_returns_zero(self):
+        """零次失败应不触发锁定。"""
         assert apply_rate_limit(0) == 0
 
     def test_below_first_threshold_returns_zero(self):
+        """未达首个锁定阈值时应不锁定。"""
         assert apply_rate_limit(1) == 0
         assert apply_rate_limit(2) == 0
 
@@ -23,6 +25,7 @@ class TestApplyRateLimit:
         assert apply_rate_limit(3) == 10
 
     def test_between_thresholds(self):
+        """落在两档阈值之间时取较低档的锁定时长。"""
         assert apply_rate_limit(4) == 10
 
     def test_second_threshold(self):
@@ -42,6 +45,7 @@ class TestApplyRateLimit:
         assert apply_rate_limit(15) == 600
 
     def test_beyond_max_threshold(self):
+        """超过最高阈值后锁定时长封顶不再累加。"""
         assert apply_rate_limit(20) == 600
         assert apply_rate_limit(100) == 600
 

@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 class BackupDialog(WorkerBackedDialog):
     """备份创建与恢复的统一对话框，按模式切换操作与文案。"""
 
-    # 收窄基类声明（QLabel | None → QLabel）：_setup_ui 构造期赋值，运行时不为 None。
+    # 收窄基类声明（QLabel | None → QLabel）：`_setup_ui` 构造期赋值，运行时不为 None。
     _status_label: QLabel
 
     def __init__(
@@ -71,7 +71,7 @@ class BackupDialog(WorkerBackedDialog):
         super().__init__(parent)
         self._backup = backup_manager
         self._config = config
-        # 记录 worker 启动时的模式，避免 reject 时读取已切换的按钮状态
+        # 记录 `worker` 启动时的模式，避免 `reject` 时读取已切换的按钮状态
         self._worker_is_backup: bool = True
         self._selected_path: str | None = None
         self.data_changed: bool = False
@@ -103,7 +103,7 @@ class BackupDialog(WorkerBackedDialog):
         self._btn_group.addButton(self._restore_radio, 1)
         mode_layout.addWidget(self._restore_radio)
 
-        # 去掉 ASCII [!]（屏幕阅读器会朗读该符号），用语义化 objectName 供 QSS 控制颜色
+        # 去掉 ASCII [!]（屏幕阅读器会朗读该符号），用语义化 `objectName` 供 QSS 控制颜色
         info2 = QLabel("恢复将覆盖当前所有数据！请谨慎操作")
         info2.setObjectName("warningText")
         info2.setStyleSheet(f"color: {c('danger')}; font-size: 12px;")
@@ -147,7 +147,7 @@ class BackupDialog(WorkerBackedDialog):
         self._exec_btn.setObjectName("primaryBtn")
         self._exec_btn.setFixedSize(*BTN_DIALOG_WIDE)
         self._exec_btn.clicked.connect(self._execute)
-        # 经基类 _set_busy 统一禁用/启用主操作按钮
+        # 经基类 `_set_busy` 统一禁用/启用主操作按钮
         self._primary_action_btn = self._exec_btn
         btn_layout.addWidget(self._exec_btn)
 
@@ -180,13 +180,13 @@ class BackupDialog(WorkerBackedDialog):
     def _set_busy(self, busy: bool) -> None:
         """busy 态除主操作按钮外，额外隔离 purge/浏览/模式切换控件。
 
-        purge 不持 vault_write_lock，与恢复（持锁创建 pre_restore 安全网快照）并发可能
+        purge 不持 `vault_write_lock`，与恢复（持锁创建 `pre_restore` 安全网快照）并发可能
         删除正在创建的回滚快照，令恢复失败后失去回滚安全网；浏览/模式切换会改进行中
-        操作的路径与目标。恢复时 purge 按 has_points 重算启用态（而非简单反相 busy）。
+        操作的路径与目标。恢复时 purge 按 `has_points` 重算启用态（而非简单反相 busy）。
         """
         super()._set_busy(busy)
         self._browse_btn.setEnabled(not busy)
-        # QButtonGroup 无 setEnabled（非 QWidget），逐个按钮隔离模式切换
+        # `QButtonGroup` 无 `setEnabled`（非 `QWidget`），逐个按钮隔离模式切换
         for btn in self._btn_group.buttons():
             btn.setEnabled(not busy)
         if busy:
@@ -244,8 +244,8 @@ class BackupDialog(WorkerBackedDialog):
     def _do_backup(self, path: str) -> None:
         """收集备份密码并启动后台创建任务（无写入副作用，可安全取消）。
 
-        密码经独立输入与二次确认；worker 闭包以默认参数拷贝密码，启动后立即 del
-        局部引用，最终释放由 release_worker 完成。
+        密码经独立输入与二次确认；`worker` 闭包以默认参数拷贝密码，启动后立即 `del`
+        局部引用，最终释放由 `release_worker` 完成。
         """
         password, ok = QInputDialog.getText(
             self,
@@ -265,8 +265,8 @@ class BackupDialog(WorkerBackedDialog):
             "请再次输入备份密码：",
             QLineEdit.EchoMode.Password,
         )
-        # encode('utf-8') 必须：备份密码可含非 ASCII 字符，而 compare_digest 对 str
-        # 仅接受 ASCII，否则抛 TypeError 被 Qt 槽吞掉致加密静默失败。与 change_master_dialog 对齐。
+        # `encode('utf-8')` 必须：备份密码可含非 ASCII 字符，而 `compare_digest` 对 `str`
+        # 仅接受 ASCII，否则抛 `TypeError` 被 Qt 槽吞掉致加密静默失败。与 `change_master_dialog` 对齐。
         if not ok or not hmac.compare_digest(confirm.encode("utf-8"), password.encode("utf-8")):
             QMessageBox.warning(self, "密码不一致", "两次输入的备份密码不一致。")
             return
@@ -274,8 +274,8 @@ class BackupDialog(WorkerBackedDialog):
         self._worker_is_backup = True
 
         def _run(pwd: str = password) -> tuple[bool, str]:
-            # worker 是下方赋值的自由变量，闭包延迟绑定（_run 在 worker.run 时执行）；
-            # 默认参数 pwd 在定义时拷贝 password，下方 del 局部 password 不影响 worker。
+            # `worker` 是下方赋值的自由变量，闭包延迟绑定（`_run` 在 `worker.run` 时执行）；
+            # 默认参数 pwd 在定义时拷贝 password，下方 del 局部 password 不影响 `worker`。
             return self._backup.create_backup(
                 path,
                 pwd,
@@ -287,8 +287,8 @@ class BackupDialog(WorkerBackedDialog):
         worker.finished.connect(self._on_backup_done)
         worker.error.connect(self._on_backup_error)
         worker.start()
-        # 删除局部 password 仅缩短局部引用；真正释放需等 worker 结束由 release_worker 完成
-        # （_run 默认参数已拷贝 password，del 不影响 worker）。
+        # 删除局部 password 仅缩短局部引用；真正释放需等 `worker` 结束由 `release_worker` 完成
+        # （`_run` 默认参数已拷贝 password，del 不影响 `worker`）。
         del password
 
     def _on_backup_done(self, result: object) -> None:
@@ -323,8 +323,8 @@ class BackupDialog(WorkerBackedDialog):
     def _do_restore(self, path: str) -> None:
         """启动后台恢复任务（有写入副作用，不可中途取消）。
 
-        先经 inspect_backup 探测是否需要密码；恢复覆盖全部数据，回滚安全网快照
-        （pre_restore_*.cbox）由 business 层在持锁事务内创建。
+        先经 `inspect_backup` 探测是否需要密码；恢复覆盖全部数据，回滚安全网快照
+        （`pre_restore_*.cbox`）由 business 层在持锁事务内创建。
         """
         reply = QMessageBox.warning(
             self,
@@ -338,8 +338,8 @@ class BackupDialog(WorkerBackedDialog):
         try:
             info = inspect_backup(path)
         except (OSError, BackupError) as exc:
-            # 不含裸 ValueError：PayloadTooLargeError 等领域异常是 BackupError 子类，
-            # 裸 ValueError 会先于 BackupError 吞掉它们（多重继承陷阱）。
+            # 不含裸 `ValueError`：`PayloadTooLargeError` 等领域异常是 `BackupError` 子类，
+            # 裸 `ValueError` 会先于 `BackupError` 吞掉它们（多重继承陷阱）。
             QMessageBox.critical(self, DLG_TITLE_ERROR, str(exc))
             return
         password = None
@@ -362,7 +362,7 @@ class BackupDialog(WorkerBackedDialog):
         self._worker.finished.connect(self._on_restore_done)
         self._worker.error.connect(self._on_restore_error)
         self._worker.start()
-        # 删除局部 password 仅缩短局部引用，与 _do_backup 对齐。
+        # 删除局部 password 仅缩短局部引用，与 `_do_backup` 对齐。
         del password
 
     def _on_restore_done(self, result: object) -> None:

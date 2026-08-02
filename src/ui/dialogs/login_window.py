@@ -62,12 +62,12 @@ class LoginWindow(WorkerBackedDialog):
         super().__init__(parent)
         self._vault = vault_manager
         self._config = config
-        # 命令-查询分离（ARCH-004）：is_initialized 为纯查询，先显式打开数据库（命令）
-        # 再查询是否已初始化。db 文件不存在时 is_initialized 直接返回 False，无需打开。
+        # 命令-查询分离（ARCH-004）：`is_initialized` 为纯查询，先显式打开数据库（命令）
+        # 再查询是否已初始化。db 文件不存在时 `is_initialized` 直接返回 False，无需打开。
         vault_manager.ensure_db_open()
         self._is_first_time = not vault_manager.is_initialized
-        # 直接索引 data_dir（有类型 property）：缺失会在静态检查/运行时即时暴露，
-        # 而非 getattr 静默退化为仅内存限流（跨会话退避与哨兵删文件检测全部失效）。
+        # 直接索引 `data_dir`（有类型 property）：缺失会在静态检查/运行时即时暴露，
+        # 而非 `getattr` 静默退化为仅内存限流（跨会话退避与哨兵删文件检测全部失效）。
         state_path = self._vault.data_dir / "login_rate_limit.json"
         # 传入 config：把哨兵登记到签名 config，关闭「同时删除状态文件+哨兵即归零计数」的绕过
         self._rate_limiter = RateLimiter(state_path, config)
@@ -219,7 +219,7 @@ class LoginWindow(WorkerBackedDialog):
     ) -> None:
         """处理初始化/解锁的结果。
 
-        is_auth_failure 为 False（系统错误）时不计入速率锁定，避免故障触发账户级锁定。
+        ``is_auth_failure`` 为 False（系统错误）时不计入速率锁定，避免故障触发账户级锁定。
         """
         if success:
             self._rate_limiter.record_success()
@@ -228,7 +228,7 @@ class LoginWindow(WorkerBackedDialog):
             self.login_success.emit()
             self.accept()
         else:
-            # 失败后立即清除主密码明文，与成功路径及 change_master_dialog 的清零策略对齐；
+            # 失败后立即清除主密码明文，与成功路径及 `change_master_dialog` 的清零策略对齐；
             # 失败尝试的密码仍是用户真实密码，残留会扩大肩窥/内存 dump 暴露面。
             self._clear_password_inputs()
             if is_auth_failure:
@@ -241,7 +241,7 @@ class LoginWindow(WorkerBackedDialog):
     def _clear_password_inputs(self) -> None:
         """清除主密码与确认密码输入框，缩短明文在控件中的驻留时间。
 
-        _confirm_edit 无条件创建（首设显示，登录态隐藏），故无需 hasattr 守卫。
+        ``_confirm_edit`` 无条件创建（首设显示，登录态隐藏），故无需 ``hasattr`` 守卫。
         """
         self._password_edit.clear()
         self._confirm_edit.clear()
@@ -290,15 +290,15 @@ class LoginWindow(WorkerBackedDialog):
         self._message_label.setText("")
         self._worker = BackgroundWorker(lambda: action(password), parent=self)
         self._worker.finished.connect(self._on_auth_done)
-        # worker.error 携带 str(e)，透传给 _on_auth_error 优先展示真实系统错误，无信息时回退 error_default
+        # `worker.error` 携带 `str(e)`，透传给 `_on_auth_error` 优先展示真实系统错误，无信息时回退 `error_default`
         self._worker.error.connect(lambda msg: self._on_auth_error(msg, error_default))
         self._worker.start()
-        # SEC-LOGIN-001：password 已作为闭包传入 worker，KDF 派生期间（后台线程耗时）
+        # SEC-LOGIN-001：`password` 已作为闭包传入 worker，KDF 派生期间（后台线程耗时）
         # 立即清空输入框，缩短明文在控件的驻留窗口（无需等到结果返回）。
         self._clear_password_inputs()
 
     def _on_auth_done(self, result: tuple[bool, str]) -> None:
-        """后台认证完成回调，result 为来自 VaultManager 的元组。"""
+        """后台认证完成回调，``result`` 为来自 ``VaultManager`` 的元组。"""
         if not finalize_worker_if_current(self):
             return
         self._reset_confirm_btn()
@@ -308,7 +308,7 @@ class LoginWindow(WorkerBackedDialog):
     def _on_auth_error(self, error_msg: str, error_default: str) -> None:
         """后台认证异常回调（系统错误，非认证失败）。
 
-        优先展示真实异常信息，无信息时回退 error_default。系统错误不计入速率锁定。
+        优先展示真实异常信息，无信息时回退 ``error_default``。系统错误不计入速率锁定。
         """
         if not finalize_worker_if_current(self):
             return

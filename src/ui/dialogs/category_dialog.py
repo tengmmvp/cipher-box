@@ -222,9 +222,7 @@ class CategoryDialog(QDialog):
         # 颜色预览
         self._color_preview = QLabel()
         self._color_preview.setFixedHeight(4)
-        self._color_preview.setStyleSheet(
-            f"background-color: {self._selected_color}; border-radius: 2px;"
-        )
+        self._set_color_preview()
         layout.addWidget(self._color_preview)
 
         # 分隔线
@@ -257,10 +255,14 @@ class CategoryDialog(QDialog):
 
         if category.color:
             self._selected_color = category.color
+            # _update_color_selection 内部已调 _set_color_preview 刷新预览条
             self._update_color_selection()
-            self._color_preview.setStyleSheet(
-                f"background-color: {self._selected_color}; border-radius: 2px;"
-            )
+
+    def _set_color_preview(self) -> None:
+        """刷新颜色预览条样式，供 _setup_ui / _update_color_selection / _on_custom_color 统一调用（DRY）。"""
+        self._color_preview.setStyleSheet(
+            f"background-color: {self._selected_color}; border-radius: 2px;"
+        )
 
     def _on_color_dot_clicked(self, index: int) -> None:
         """点击预设颜色圆点时更新选中色。"""
@@ -271,9 +273,7 @@ class CategoryDialog(QDialog):
         """同步刷新各圆点选中态与预览条颜色。"""
         for dot in self._color_dots:
             dot.selected = dot.color == self._selected_color
-        self._color_preview.setStyleSheet(
-            f"background-color: {self._selected_color}; border-radius: 2px;"
-        )
+        self._set_color_preview()
 
     def _on_custom_color(self) -> None:
         """打开系统颜色选择器，允许用户选取调色板外的颜色。"""
@@ -283,9 +283,7 @@ class CategoryDialog(QDialog):
             self._selected_color = color.name()
             for dot in self._color_dots:
                 dot.selected = False
-            self._color_preview.setStyleSheet(
-                f"background-color: {self._selected_color}; border-radius: 2px;"
-            )
+            self._set_color_preview()
 
     def _on_save(self) -> None:
         """校验名称后写入分类，成功则发出信号并关闭。"""

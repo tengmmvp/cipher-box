@@ -28,13 +28,14 @@ class TestToUserMessage:
     """各异常类型 → 用户文案映射。"""
 
     def test_vault_locked(self):
+        """VaultLockedError → 提示需解锁保险库。"""
         msg = to_user_message(VaultLockedError("locked"))
         assert "解锁" in msg
 
     def test_vault_key_epoch_mismatch(self):
+        """采用「操作期间检测到主密码已被修改」文案：准确描述改密/恢复/导入
+        期间 ``epoch`` 复查失败的场景（多数为同进程另一操作改密，非字面「其他进程」）。"""
         msg = to_user_message(VaultKeyEpochMismatchError("epoch"))
-        # 采用「操作期间检测到主密码已被修改」文案：准确描述改密/恢复/导入
-        # 期间 epoch 复查失败的场景（多数为同进程另一操作改密，非字面「其他进程」）。
         assert "已被修改" in msg or "重试" in msg
 
     def test_payload_too_large_precedes_backup_error(self):
@@ -44,17 +45,20 @@ class TestToUserMessage:
         assert "损坏" not in msg
 
     def test_backup_error(self):
+        """BackupError → 备份损坏/格式提示，且不泄漏内部加密字段名。"""
         msg = to_user_message(BackupError("detail username_enc leaked"))
         assert "损坏" in msg or "格式" in msg
         # 不应泄漏内部技术细节
         assert "username_enc" not in msg
 
     def test_vault_integrity_error(self):
+        """VaultIntegrityError → 完整性校验失败提示，且不泄漏 hmac 等技术细节。"""
         msg = to_user_message(VaultIntegrityError("hmac mismatch"))
         assert "完整性" in msg
         assert "hmac" not in msg
 
     def test_decryption_error(self):
+        """DecryptionError → 解密失败提示，且不泄漏 InvalidTag 等内部细节。"""
         msg = to_user_message(DecryptionError("InvalidTag"))
         assert "解密" in msg
         assert "InvalidTag" not in msg
@@ -65,6 +69,7 @@ class TestToUserMessage:
         assert "数据库结构" in msg or "结构" in msg
 
     def test_database_error(self):
+        """DatabaseError → 数据库错误提示，且不泄漏 sqlite3、字段名等内部细节。"""
         msg = to_user_message(DatabaseError("sqlite3 error: entry_id"))
         assert "数据库" in msg
         assert "sqlite3" not in msg

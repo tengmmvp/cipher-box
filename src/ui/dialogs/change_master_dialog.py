@@ -60,10 +60,10 @@ class ChangeMasterDialog(WorkerBackedDialog):
         super().__init__(parent)
         self._vault = vault_manager
         self._config = config
-        # 直接索引 data_dir：缺失时即时暴露，而非 getattr 静默退化为仅内存限流。
+        # 直接索引 `data_dir`：缺失时即时暴露，而非 `getattr` 静默退化为仅内存限流。
         state_path = self._vault.data_dir / "change_master_rate_limit.json"
-        # 传入 config：使 RateLimiter 把哨兵登记到签名 config，关闭「同时删除
-        # 状态文件+哨兵即归零计数」的绕过。config=None 时退回仅文件配对检测。
+        # 传入 config：使 `RateLimiter` 把哨兵登记到签名 config，关闭「同时删除
+        # 状态文件+哨兵即归零计数」的绕过。`config=None` 时退回仅文件配对检测。
         self._rate_limiter = RateLimiter(state_path, config)
         self._setup_ui()
 
@@ -74,8 +74,8 @@ class ChangeMasterDialog(WorkerBackedDialog):
         self._confirm_pwd.clear()
 
     def _before_reject(self) -> None:
-        # 桥接取消：设 vault 取消事件以中断重加密循环（worker.cancel 仅设
-        # worker 自身标志，重加密不检查它）。重加密检测后抛异常回滚。
+        # 桥接取消：设 vault 取消事件以中断重加密循环（`worker.cancel` 仅设
+        # `worker` 自身标志，重加密不检查它）。重加密检测后抛异常回滚。
         if self._worker is not None and self._worker.isRunning():
             self._vault.request_cancel()
 
@@ -177,7 +177,7 @@ class ChangeMasterDialog(WorkerBackedDialog):
         update_strength_label(self._strength_label, text)
 
     def _on_change(self) -> None:
-        # 重复提交守卫：重加密期间 returnPressed 仍可触发本方法（setEnabled
+        # 重复提交守卫：重加密期间 `returnPressed` 仍可触发本方法（`setEnabled`
         # 只禁按钮点击），需显式拦截。
         if self._worker is not None and self._worker.isRunning():
             return
@@ -200,9 +200,9 @@ class ChangeMasterDialog(WorkerBackedDialog):
         if not valid:
             self._msg_label.setText(error)
             return
-        # 常量时间比较，避免短路 == 的时序侧信道泄露公共前缀长度。
-        # encode('utf-8') 必须：主密码可含非 ASCII 字符，而 compare_digest 对 str
-        # 仅接受 ASCII。与 vault_manager._change_master_password_locked 保持一致。
+        # 常量时间比较，避免短路 `==` 的时序侧信道泄露公共前缀长度。
+        # `encode('utf-8')` 必须：主密码可含非 ASCII 字符，而 `compare_digest` 对 `str`
+        # 仅接受 ASCII。与 `vault_manager._change_master_password_locked` 保持一致。
         if not hmac.compare_digest(new.encode("utf-8"), confirm.encode("utf-8")):
             self._msg_label.setText("两次输入的新密码不一致")
             return
@@ -231,8 +231,8 @@ class ChangeMasterDialog(WorkerBackedDialog):
         self._worker.finished.connect(self._on_change_done)
         self._worker.error.connect(self._on_change_error)
         self._worker.start()
-        # old/new 已作为 lambda 闭包值捕获，清控件不影响 worker；启动即清空，缩短
-        # 明文在控件的驻留窗口，对齐 login_window SEC-LOGIN-001 纪律。
+        # old/new 已作为 `lambda` 闭包值捕获，清控件不影响 `worker`；启动即清空，缩短
+        # 明文在控件的驻留窗口，对齐 `login_window` SEC-LOGIN-001 纪律。
         self._clear_password_inputs()
 
     def _on_change_done(self, result: tuple[bool, str]) -> None:
@@ -272,6 +272,6 @@ class ChangeMasterDialog(WorkerBackedDialog):
         set_label_severity(self._msg_label, "error")
         self._msg_label.setText("")
         self._clear_password_inputs()
-        # error 信号已脱离异常上下文，exc_info 无堆栈；记录消息文本即可
+        # `error` 信号已脱离异常上下文，`exc_info` 无堆栈；记录消息文本即可
         logger.error("主密码修改失败: %s", error_msg)
         QMessageBox.critical(self, DLG_TITLE_ERROR, error_msg)

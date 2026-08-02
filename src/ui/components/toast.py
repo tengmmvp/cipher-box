@@ -54,7 +54,7 @@ class ToastWidget(QFrame):
     """单个 Toast 通知卡片。
 
     使用 QGraphicsOpacityEffect 实现淡入淡出，因为子控件无法使用 windowOpacity。
-    阴影通过在 ToastWidget 外层套一个 ShadowContainer 实现，使透明度效果与
+    阴影通过在 ToastWidget 外层叠放一个阴影 QFrame 实现，使透明度效果与
     阴影效果分别作用于不同的 widget，互不冲突。
     """
 
@@ -395,7 +395,7 @@ class ToastManager:
         if toast in self._toasts:
             self._toasts.remove(toast)
         # 移除阴影
-        if hasattr(toast, "_shadow_frame") and toast._shadow_frame:
+        if toast._shadow_frame:
             toast._shadow_frame.hide()
             toast._shadow_frame.deleteLater()
         toast.deleteLater()
@@ -429,7 +429,7 @@ class ToastManager:
             y -= toast_height
             toast.move(x, y)
             # 同步阴影位置，向右下偏移 2px
-            if hasattr(toast, "_shadow_frame") and toast._shadow_frame:
+            if toast._shadow_frame:
                 toast._shadow_frame.setFixedHeight(toast_height + 4)
                 toast._shadow_frame.move(x - 2, y + 2)
                 toast._shadow_frame.show()

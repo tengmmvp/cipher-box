@@ -67,6 +67,11 @@ class EntryCacheManager:
         self._totp_secret_cache: dict[int, str] = {}
         self._tags_cache: list[tuple[str, int]] | None = None
         self._cache_epoch: str | None = None
+        # 失效版本号（M4）：单调递增，任何 apply_change / invalidate 都推进。与
+        # _cache_epoch（改密/锁定整体失效）正交——单条 apply_change 只 pop 个别条目
+        # 不改 epoch，但锁外解密回写仍会基于旧密文重新污染已 pop 的条目；解密回写时
+        # 复查 version 未变，确保「解密开始 → 回写」期间发生过任何失效则丢弃结果。
+        self._invalidate_version: int = 0
         # 缓存锁：保护上述缓存及 _cache_epoch 的结构性读写，消除 TOTP 定时器线程
         # 与锁定 invalidate_all 并发时的竞态。锁内不调用数据库方法或变更回调。
         self._cache_lock = threading.RLock()
@@ -93,6 +98,7 @@ class EntryCacheManager:
                     self._totp_secret_cache.clear()
                     self._tags_cache = None
                     self._cache_epoch = current
+                    self._invalidate_version += 1
 
     def invalidate_all(self) -> None:
         """外部调用：锁定或改密后显式清空全部明文缓存。"""
@@ -103,6 +109,7 @@ class EntryCacheManager:
             self._totp_secret_cache.clear()
             self._tags_cache = None
             self._cache_epoch = None
+            self._invalidate_version += 1
 
     def apply_change(
         self,
@@ -122,6 +129,10 @@ class EntryCacheManager:
         - category_changed：分类名改变时失效 _category_name_cache。
         """
         with self._cache_lock:
+            # 推进失效版本号（M4）：apply_change 必因条目/分类/tags 变更调用，使进行中的
+            # 锁外解密回写丢弃结果——单条 pop 不改 epoch，若无 version 守卫，并发解密会
+            # 基于旧密文重新污染刚 pop 的条目摘要/分类名。
+            self._invalidate_version += 1
             if crypto_id is not None:
                 self._search_metadata_cache.pop(crypto_id, None)
                 self._search_metadata_failed.pop(crypto_id, None)
@@ -183,6 +194,7 @@ class EntryCacheManager:
                 self._search_metadata_cache.move_to_end(cid)
                 return cached
             entry_epoch = self._cache_epoch
+            entry_version = self._invalidate_version
 
         # PF-001 并发修补（M3）：用调用方传入的锁内快照密钥，避免锁外解密期间
         # 改密 activate 致 self._key 轮换为新密钥、本批 raw 仍旧密文引发 GCM 失败。
@@ -220,7 +232,9 @@ class EntryCacheManager:
             values[3].lower(),
         )
         with self._cache_lock:
-            if self._cache_epoch == entry_epoch:
+            # epoch 守卫（改密/锁定整体失效）+ version 守卫（M4：单条 apply_change 未改
+            # epoch 但已 pop 本条目，须丢弃基于旧密文的解密结果避免回写污染）。
+            if self._cache_epoch == entry_epoch and self._invalidate_version == entry_version:
                 self._search_metadata_cache[cid] = result
                 self._search_metadata_cache.move_to_end(cid)
                 if len(self._search_metadata_cache) > _MAX_SEARCH_METADATA_CACHE_SIZE:
@@ -294,6 +308,7 @@ class EntryCacheManager:
             # 采样 epoch，回写时复查（与 _cached_search_metadata_no_check 对称）：锁外
             # 解密期间若改密清缓存致 _cache_epoch 变化，不回写避免旧明文 stale 污染。
             entry_epoch = self._cache_epoch
+            entry_version = self._invalidate_version
         if cached is not None:
             return cached
         name = _decrypt_field_impl(
@@ -304,7 +319,8 @@ class EntryCacheManager:
             strict=True,
         )
         with self._cache_lock:
-            if self._cache_epoch == entry_epoch:
+            # epoch + version 双重守卫，语义同 _cached_search_metadata_no_check（M4）。
+            if self._cache_epoch == entry_epoch and self._invalidate_version == entry_version:
                 self._category_name_cache[category_id] = name
         return name
 
@@ -351,7 +367,13 @@ class EntryCacheManager:
         return secret
 
     def store_totp(self, entry_id: int, secret: str) -> None:
-        """预热 TOTP secret 缓存（供 TotpService.get_state 首次展示后预热）。"""
+        """预热 TOTP secret 缓存（供 TotpService.get_state 首次展示后预热）。
+
+        空串归一：与 :meth:`resolve_totp_secret` 的 ``if not secret: return None`` 对齐——
+        空串等价无 secret，不入缓存，避免空串落缓存后 use_cache 命中返回空串绕过归一。
+        """
+        if not secret:
+            return
         with self._cache_lock:
             self._totp_secret_cache[entry_id] = secret
 

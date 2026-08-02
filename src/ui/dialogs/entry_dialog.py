@@ -135,7 +135,6 @@ class EntryDialog(QDialog):
         self._all_tags = all_tags or []
         self._entry = entry
         self._config = config
-        self._current_type = entry.entry_type if entry else ENTRY_TYPE_LOGIN
         self._field_rows: dict[str, tuple[QLabel, QWidget]] = {}
         # 专用字段按控件类型分类存储：combo → _special_combos，其余（QLineEdit）→
         # _special_edits。键→类型映射由存储侧归类保证，使后续访问无需 cast。

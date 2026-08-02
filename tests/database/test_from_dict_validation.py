@@ -10,6 +10,7 @@ from src.models import ENTRY_TYPE_LOGIN, ENTRY_TYPES, Entry
 
 
 def _base_dict(**overrides):
+    """构建 Entry.from_dict 的最小合法输入 dict,调用方经 kwargs 覆盖关注字段。"""
     d = dict(
         title="Test",
         username="user",

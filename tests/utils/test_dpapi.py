@@ -17,12 +17,13 @@ class TestDpapiRoundTrip:
     """DPAPI 封装-解封往返与明文 unprotect 回退判定测试。"""
 
     def test_protect_unprotect_roundtrip(self):
+        """protect → unprotect 往返还原原字节，且封装产物非明文、含 DPAPI 头部。"""
         data = b"x" * 32
         protected = protect_with_dpapi(data)
         if protected is None:
             pytest.skip("DPAPI 在当前测试环境不可用")
-        assert protected != data  # 封装后非明文
-        assert len(protected) > len(data)  # DPAPI blob 含头部，远大于明文
+        assert protected != data
+        assert len(protected) > len(data)
         assert unprotect_with_dpapi(protected) == data
 
     def test_unprotect_plain_returns_none(self):

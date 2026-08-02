@@ -1,4 +1,10 @@
-"""业务层共享加密工具函数。"""
+"""业务层字段加解密与列表搜索/标签过滤的共享工具。
+
+``encrypt_field``/``decrypt_field`` 为条目与分类字段加解密的统一入口，确保 AAD 构造
+一致（防密文在条目或字段间置换）；``SENSITIVE_ENCRYPTED_FIELDS`` 为全项目加密字段集
+的单一事实源，新增加密字段须同步解密/构建与签名绑定（详见常量处注释）。另含保险库
+解锁守卫（:func:`require_vault_key`）与列表搜索、标签过滤等无状态辅助。
+"""
 
 from __future__ import annotations
 

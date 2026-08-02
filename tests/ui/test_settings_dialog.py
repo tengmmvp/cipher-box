@@ -16,7 +16,7 @@ def _make_dialog(tmp_path):
 
 
 def test_save_settings_writes_widget_values_to_config(qapp, tmp_path):
-    """_save_settings 把控件值经 _SETTINGS_MAP 写入 config 并持久化。"""
+    """``_save_settings`` 把控件值经 ``_SETTINGS_MAP`` 写入 ``config`` 并持久化。"""
     dlg, config = _make_dialog(tmp_path)
     dlg._auto_lock_spin.setValue(10)
     dlg._theme_combo.setCurrentIndex(1)  # 深色
@@ -26,7 +26,7 @@ def test_save_settings_writes_widget_values_to_config(qapp, tmp_path):
 
 
 def test_save_settings_rolls_back_on_persistence_failure(qapp, tmp_path, monkeypatch):
-    """config.save 失败时回滚内存配置到快照，保持内存与磁盘（旧值）一致。"""
+    """``config.save`` 失败时回滚内存配置到快照，保持内存与磁盘（旧值）一致。"""
     dlg, config = _make_dialog(tmp_path)
     original = config.get("auto_lock_minutes")
     dlg._auto_lock_spin.setValue(15)
@@ -40,5 +40,5 @@ def test_save_settings_rolls_back_on_persistence_failure(qapp, tmp_path, monkeyp
         lambda *a, **k: None,
     )
     dlg._save_settings()
-    # 关键接线：save 失败后内存配置回滚到原值，而非残留控件新值 15
+    # 关键接线：``save`` 失败后内存配置回滚到原值，而非残留控件新值 15
     assert config.get("auto_lock_minutes") == original

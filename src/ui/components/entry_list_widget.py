@@ -17,7 +17,7 @@ from ..resources.theme_colors import c, get_strength_color
 
 FAVORITE_MARKER = "★ "
 
-# paint 行内垂直布局不变量（单位：像素）。
+# `paint` 行内垂直布局不变量（单位：像素）。
 # 标题区域必须完整落在副标题区域之前，避免两段文本垂直重叠。
 _TITLE_Y_OFFSET = 7  # 绘制基线 Y 偏移（相对 rect.top()）
 _TITLE_HEIGHT = 22
@@ -31,14 +31,14 @@ if _TITLE_Y_OFFSET + _TITLE_HEIGHT > _SUBTITLE_Y_OFFSET:
 def _resolve_font_family() -> str:
     """返回当前平台上第一个可用的字体族名称。
 
-    惰性初始化：由 EntryItemDelegate 在实例属性 ``_resolved_family`` 中缓存，
+    惰性初始化：由 ``EntryItemDelegate`` 在实例属性 ``_resolved_family`` 中缓存，
     首次需要主字体时解析一次，之后所有绘制调用复用已解析的值。
 
-    PyQt6 ≥ 6.5 不再支持 QFontDatabase() 构造，需使用静态方法 families()。
+    PyQt6 ≥ 6.5 不再支持 ``QFontDatabase()`` 构造，需使用静态方法 ``families()``。
     """
     from PyQt6.QtGui import QFontDatabase
 
-    # PyQt6 ≥ 6.5: families() 为静态方法；Pyright 类型桩仍标注为实例方法，需忽略。
+    # PyQt6 ≥ 6.5: `families()` 为静态方法；Pyright 类型桩仍标注为实例方法，需忽略。
     available = QFontDatabase.families()  # pyright: ignore[reportCallIssue]
     if FONT_FAMILY_PRIMARY in available:
         return FONT_FAMILY_PRIMARY
@@ -49,11 +49,11 @@ def _resolve_font_family() -> str:
 
 
 class EntryListModel(QAbstractItemModel):
-    """条目列表数据模型，按需向 delegate 提供 Entry 摘要。
+    """条目列表数据模型，按需向 delegate 提供 ``Entry`` 摘要。
 
-    ``set_entries`` 一次替换全部数据，QListView 仅对可见行调用 ``data()``/``paint``，
+    ``set_entries`` 一次替换全部数据，``QListView`` 仅对可见行调用 ``data()``/``paint``，
     避免为每条目创建常驻 item 对象，降低大库下的内存占用与刷新开销。加密字段无法
-    SQL 过滤需内存匹配，但 item 对象开销与逐项 setData 消除。
+    SQL 过滤需内存匹配，但 item 对象开销与逐项 ``setData`` 消除。
     """
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -90,7 +90,7 @@ class EntryListModel(QAbstractItemModel):
 
 
 class EntryItemDelegate(QStyledItemDelegate):
-    """按需绘制条目卡片，避免为每条记录创建常驻 QWidget。"""
+    """按需绘制条目卡片，避免为每条记录创建常驻 ``QWidget``。"""
 
     ROW_HEIGHT = 62
     # 布局常量，单位为像素
@@ -107,9 +107,9 @@ class EntryItemDelegate(QStyledItemDelegate):
     DELETE_BADGE_HEIGHT = 20
     _TEXT_RIGHT_MARGIN = 38
     _DELETE_TEXT_RIGHT_EXTRA = 28  # 删除徽章额外保留宽度
-    # paint 内行内垂直坐标偏移（相对 rect.top()）。
-    # _TITLE_Y_OFFSET / _TITLE_HEIGHT / _SUBTITLE_Y_OFFSET 直接引用模块级不变量
-    # 常量（模块加载时由 raise RuntimeError 校验几何关系），避免类属性复制的双份事实源。
+    # `paint` 内行内垂直坐标偏移（相对 `rect.top()`）。
+    # `_TITLE_Y_OFFSET` / `_TITLE_HEIGHT` / `_SUBTITLE_Y_OFFSET` 直接引用模块级不变量
+    # 常量（模块加载时由 raise `RuntimeError` 校验几何关系），避免类属性复制的双份事实源。
     _SUBTITLE_HEIGHT = 19
     _MARKER_DOT_Y_OFFSET = 10  # 强度圆点 Y 偏移
     _MARKER_DOT_WIDTH = 12  # 强度圆点绘制区域宽度
@@ -126,8 +126,8 @@ class EntryItemDelegate(QStyledItemDelegate):
         self._resolved_family: str | None = None
 
     def _get_font(self, family: str, size: int, weight: int = -1) -> QFont:
-        """获取 QFont，带缓存避免 paint() 重复创建。"""
-        # 首次需要主字体时解析；用 None 标志避免解析结果恰为初始值时重复解析
+        """获取 ``QFont``，带缓存避免 ``paint()`` 重复创建。"""
+        # 首次需要主字体时解析；用 `None` 标志避免解析结果恰为初始值时重复解析
         if family == FONT_FAMILY_PRIMARY:
             if self._resolved_family is None:
                 self._resolved_family = _resolve_font_family()

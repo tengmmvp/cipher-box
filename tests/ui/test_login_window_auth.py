@@ -1,8 +1,8 @@
 """LoginWindow 认证胶水行为级测试。
 
-聚焦登录整合链路（不依赖真实 worker/事件循环）：失败计数→限流器 record_failure→
-锁定态提示；成功→record_success + login_success 信号；限流器 check() 锁定时 _on_confirm
-直接提示且不启动 worker。底层（RateLimiter 哨兵/config 见证、vault.unlock 成败、改密重加密）
+聚焦登录整合链路（不依赖真实 ``worker``/事件循环）：失败计数→限流器 ``record_failure``→
+锁定态提示；成功→``record_success`` + ``login_success`` 信号；限流器 ``check()`` 锁定时 ``_on_confirm``
+直接提示且不启动 ``worker``。底层（``RateLimiter`` 哨兵/``config`` 见证、``vault.unlock`` 成败、改密重加密）
 已有专门测试，此处补整合胶水的状态机断言——登录是密码管理器最关键的安全入口，其整合
 行为不应被 UI 18% 覆盖门槛均摊掉。
 """
@@ -33,7 +33,7 @@ class TestLoginWindowAuthGlue:
     """认证结果→限流器联动→UI 状态机的整合胶水。"""
 
     def test_failure_records_and_shows_lock_wait(self, qapp, tmp_path):
-        """认证失败经 record_failure；返回锁定秒数时显示等待提示。"""
+        """认证失败经 ``record_failure``；返回锁定秒数时显示等待提示。"""
         dialog = LoginWindow(_make_vault(tmp_path))  # type: ignore[arg-type]
         try:
             dialog._rate_limiter = MagicMock()
@@ -45,7 +45,7 @@ class TestLoginWindowAuthGlue:
             dialog.close()
 
     def test_failure_without_lock_shows_raw_error(self, qapp, tmp_path):
-        """认证失败但未触发锁定（record_failure 返回 0）时显示原始错误文案。"""
+        """认证失败但未触发锁定（``record_failure`` 返回 0）时显示原始错误文案。"""
         dialog = LoginWindow(_make_vault(tmp_path))  # type: ignore[arg-type]
         try:
             dialog._rate_limiter = MagicMock()
@@ -57,7 +57,7 @@ class TestLoginWindowAuthGlue:
             dialog.close()
 
     def test_success_records_and_emits_signal(self, qapp, tmp_path):
-        """认证成功经 record_success 并发射 login_success 信号。"""
+        """认证成功经 ``record_success`` 并发射 ``login_success`` 信号。"""
         dialog = LoginWindow(_make_vault(tmp_path))  # type: ignore[arg-type]
         try:
             dialog._rate_limiter = MagicMock()
@@ -70,9 +70,9 @@ class TestLoginWindowAuthGlue:
             dialog.close()
 
     def test_locked_check_aborts_before_worker(self, qapp, tmp_path):
-        """限流器 check() 返回锁定提示时，_on_confirm 直接提示且不启动后台 worker。
+        """限流器 ``check()`` 返回锁定提示时，``_on_confirm`` 直接提示且不启动后台 ``worker``。
 
-        锁定态应短路在 worker 启动前，避免无谓的解锁尝试（被限流拒绝）与 worker 开销。
+        锁定态应短路在 ``worker`` 启动前，避免无谓的解锁尝试（被限流拒绝）与 ``worker`` 开销。
         """
         dialog = LoginWindow(_make_vault(tmp_path))  # type: ignore[arg-type]
         try:
@@ -80,6 +80,6 @@ class TestLoginWindowAuthGlue:
             dialog._rate_limiter.check.return_value = "请等待 60 秒后重试"
             dialog._on_confirm()
             assert "等待 60 秒" in dialog._message_label.text()
-            assert dialog._worker is None  # 未启动后台 worker
+            assert dialog._worker is None  # 未启动后台 ``worker``
         finally:
             dialog.close()

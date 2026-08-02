@@ -56,21 +56,29 @@ _PRAGMAS = (
 # 签名/验证函数的类型协议
 @runtime_checkable
 class EntrySigner(Protocol):
+    """条目元数据 HMAC 签名回调协议：传入条目返回 ``metadata_mac``。"""
+
     def __call__(self, entry: RawEntry) -> str: ...
 
 
 @runtime_checkable
 class EntryVerifier(Protocol):
+    """条目元数据 HMAC 验签回调协议：校验失败抛 :class:`VaultIntegrityError`。"""
+
     def __call__(self, entry: RawEntry) -> None: ...
 
 
 @runtime_checkable
 class CategorySigner(Protocol):
+    """分类元数据 HMAC 签名回调协议：传入分类返回 ``metadata_mac``。"""
+
     def __call__(self, category: Category) -> str: ...
 
 
 @runtime_checkable
 class CategoryVerifier(Protocol):
+    """分类元数据 HMAC 验签回调协议：校验失败抛 :class:`VaultIntegrityError`。"""
+
     def __call__(self, category: Category) -> None: ...
 
 
@@ -353,6 +361,12 @@ class DatabaseManager:
             return False
 
     def _secure_database_files(self) -> None:
+        """收紧数据库主文件及 ``-wal``/``-shm`` 文件权限为当前用户独占。
+
+        ``strict=True``：权限失败即抛 ``OSError``。事务提交与 WAL checkpoint 会重写
+        这些文件，须立即重新收紧 ACL（不依赖防抖刷新或目录继承 ACL）。被
+        ``commit_transaction`` / ``_auto_commit`` / ``secure_checkpoint`` 复用。
+        """
         secure_file(self._db_path, strict=True)
         secure_file(Path(f"{self._db_path}-wal"), strict=True)
         secure_file(Path(f"{self._db_path}-shm"), strict=True)
@@ -436,9 +450,13 @@ class DatabaseManager:
         """
         if self._conn is not None and not self.in_transaction:
             try:
-                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                # fetchone 取 (busy, log, checkpointed)：busy=1 表示并发读取阻止截断，
+                # -wal 残留密文/明文，须抛错让高敏感路径感知（SEC-010），不可静默当成功。
+                row = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
             except sqlite3.Error as exc:
                 raise DatabaseError(f"WAL 安全截断失败：{exc}") from exc
+            if row is not None and row[0] == 1:
+                raise DatabaseError("WAL 安全截断未完成（busy），密文可能在 -wal 残留")
             self._secure_database_files()
 
     # ==================== 内部方法 ====================

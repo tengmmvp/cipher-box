@@ -150,6 +150,7 @@ class TestLifecycle:
         view.search_edit.clear.assert_called_once()
 
     def test_set_locked_toggles_state(self, qapp):
+        """set_locked 切换锁定状态标志（解锁后恢复为 False）。"""
         ctrl = _make_controller()
         _setup(ctrl)
         ctrl.prepare_for_lock()
@@ -158,6 +159,7 @@ class TestLifecycle:
         assert ctrl._locked is False
 
     def test_stop_timers_stops_all_three(self, qapp):
+        """stop_timers 停止全部三个防抖定时器（锁定时调用）。"""
         ctrl = _make_controller()
         ctrl.setup(QMainWindow(), _make_view())
         timers = (ctrl._status_timer, ctrl._entry_change_timer, ctrl._search_timer)
@@ -168,6 +170,7 @@ class TestLifecycle:
         assert not any(timer.isActive() for timer in timers)
 
     def test_start_status_timer_starts(self, qapp):
+        """start_status_timer 启动状态栏防抖定时器。"""
         ctrl = _make_controller()
         ctrl.setup(QMainWindow(), _make_view())
         ctrl.start_status_timer()
@@ -179,6 +182,7 @@ class TestCachedProperties:
     """cached_categories / cached_tag_names 缓存初始空态。"""
 
     def test_cached_properties_initial_empty(self, qapp):
+        """cached_categories / cached_tag_names 在 setup 填充前返回空列表。"""
         ctrl = _make_controller()
         assert ctrl.cached_categories == []
         assert ctrl.cached_tag_names == []
@@ -219,6 +223,7 @@ class TestCallbacks:
         ctrl._entry_list_ctrl.get_sort_config.assert_called_once_with(2)
 
     def test_clear_search_with_text_clears_input(self, qapp):
+        """搜索框有文本时 clear_search 清空输入（首次 Escape 语义）。"""
         ctrl = _make_controller()
         view = _make_view()
         view.search_edit.text.return_value = "abc"

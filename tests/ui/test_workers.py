@@ -44,7 +44,7 @@ class _FakeWorker:
 
 
 class TestWaitWorkerShutdown:
-    """wait_worker_shutdown 的短路、cancel 分支与超时兜底关闭。"""
+    """``wait_worker_shutdown`` 的短路、cancel 分支与超时兜底关闭。"""
 
     def test_none_worker_short_circuits(self):
         """worker=None 直接返回 True，无 cancel/wait 调用。"""

@@ -124,7 +124,9 @@ class PasswordGeneratorDialog(QDialog):
         self._length_slider.valueChanged.connect(self._on_length_changed)
         settings_layout.addWidget(self._length_slider, 0, 1)
 
-        self._length_label = QLabel(str(default_length))
+        # 标签取 setValue 钳制后的实际值（slider range [4,64]）：default_length 越界时
+        # 直接用会显示与滑块不一致的错误长度（config 手改/迁移漂移时复现）。
+        self._length_label = QLabel(str(self._length_slider.value()))
         self._length_label.setFixedWidth(30)
         settings_layout.addWidget(self._length_label, 0, 2)
 
@@ -252,7 +254,7 @@ class PasswordGeneratorDialog(QDialog):
     def reject(self) -> None:
         """取消/关闭前清除敏感输入。
 
-        仅重写 reject（不重写 closeEvent）避免双重清理：X 关闭、Esc、close()
+        仅重写 ``reject``（不重写 ``closeEvent``）避免双重清理：X 关闭、Esc、``close()``
         均经此单一入口。
         """
         self._clear_sensitive()

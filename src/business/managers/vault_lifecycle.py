@@ -142,7 +142,14 @@ class VaultLifecycleOrchestrator:
             raise VaultLockedError(to_user_message(exc, default="保险库初始化失败")) from exc
 
     def unlock(self, master_password: str) -> tuple[bool, str]:
-        """使用主密码解锁保险库。"""
+        """使用主密码解锁保险库。
+
+        经 Argon2id 派生主密钥并校验验证令牌，通过后完成 vault_meta 完整性
+        （MAC）校验、加载 snapshot_key、标记解锁，并截断 WAL 清除上次运行残留
+        旧明文页。主密码错误返回 ``(False, "主密码错误")``；格式/完整性校验
+        失败经 lock() 兜底清零密钥后抛 :class:`VaultLockedError`/
+        :class:`VaultIntegrityError`。
+        """
         # 预声明 key：verify 未执行（凭据校验前异常）时，except 仍需引用它清零。
         key: bytearray | None = None
         try:

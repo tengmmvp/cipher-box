@@ -31,8 +31,8 @@ if TYPE_CHECKING:
 class PasswordHistoryWidget(QObject):
     """密码历史折叠区组件（纯控制器，无可视自身）。
 
-    构建的折叠区控件加入外部传入的 content_layout，自身从不 show，故继承 QObject
-    而非 QWidget。通过注入的 EntryManager 引用获取密码历史，采用延迟加载：先显示
+    构建的折叠区控件加入外部传入的 ``content_layout``，自身从不 ``show``，故继承 ``QObject``
+    而非 ``QWidget``。通过注入的 ``EntryManager`` 引用获取密码历史，采用延迟加载：先显示
     摘要，点击展开后才解密记录。
     """
 
@@ -41,11 +41,11 @@ class PasswordHistoryWidget(QObject):
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self._history_passwords: list[str] = []
-        # 已渲染的密码 QLabel 引用：clear() 时先 setText 掩码再销毁，
-        # 避免 deleteLater 异步销毁前明文驻留 Qt 对象（锁定时内存转储可读）。
+        # 已渲染的密码 `QLabel` 引用：`clear()` 时先 `setText` 掩码再销毁，
+        # 避免 `deleteLater` 异步销毁前明文驻留 Qt 对象（锁定时内存转储可读）。
         self._pwd_labels: list[QLabel] = []
         self._entry_mgr: EntryManager | None = None
-        # 本组件自管的密码显示超时定时器，clear() 时统一停止，所有权清晰。
+        # 本组件自管的密码显示超时定时器，`clear()` 时统一停止，所有权清晰。
         self._own_timers: list[QTimer] = []
         # 回调：获取密码可见毫秒数
         self._get_pwd_visible_ms: Callable[[], int] | None = None
@@ -78,8 +78,8 @@ class PasswordHistoryWidget(QObject):
 
         Args:
             entry_id: 条目 ID
-            entry_manager: EntryManager 实例
-            content_layout: 目标布局，通常为 DetailPanel._content_layout
+            entry_manager: ``EntryManager`` 实例
+            content_layout: 目标布局，通常为 ``DetailPanel._content_layout``
         """
         self._entry_mgr = entry_manager
         if not entry_manager:
@@ -102,8 +102,8 @@ class PasswordHistoryWidget(QObject):
             mgr = self._entry_mgr
             if not mgr:
                 return
-            # 仅渲染 MAX_HISTORY_DISPLAY 条，截断后再解密，避免持 vault_write_lock 解密
-            # 全量历史。get 已按 changed_at DESC 返回，切片取最近 N 条。
+            # 仅渲染 `MAX_HISTORY_DISPLAY` 条，截断后再解密，避免持 `vault_write_lock` 解密
+            # 全量历史。`get` 已按 `changed_at` DESC 返回，切片取最近 N 条。
             full = mgr.password_history.get(eid)
             decrypted = mgr.password_history.decrypt(full[:MAX_HISTORY_DISPLAY])
             if decrypted:
@@ -120,7 +120,7 @@ class PasswordHistoryWidget(QObject):
         for timer in self._own_timers:
             timer.stop()
         self._own_timers.clear()
-        # 先掩码已渲染的明文 QLabel 再释放，避免 deleteLater 异步销毁前明文驻留。
+        # 先掩码已渲染的明文 `QLabel` 再释放，避免 `deleteLater` 异步销毁前明文驻留。
         for lbl in self._pwd_labels:
             lbl.setText(PWD_MASK)
         self._pwd_labels.clear()
@@ -156,7 +156,7 @@ class PasswordHistoryWidget(QObject):
             self._pwd_labels.append(pwd_label)
 
             # 历史密码存入间接引用列表，闭包通过索引读取，
-            # clear() 时清空列表即可释放明文。
+            # `clear()` 时清空列表即可释放明文。
             hist_idx = len(self._history_passwords)
             self._history_passwords.append(pwd_text)
 
@@ -173,7 +173,7 @@ class PasswordHistoryWidget(QObject):
 
             def _on_hist_timeout(lbl: QLabel = pwd_label, btn: QPushButton = show_btn) -> None:
                 # 仅重置显示，不清空槽位：历史密码需支持显示→隐藏→再显示，
-                # 与主密码字段一致；明文释放统一交给 clear() 的 mark_secret_discarded。
+                # 与主密码字段一致；明文释放统一交给 `clear()` 的 `mark_secret_discarded`。
                 lbl.setText(PWD_MASK)
                 set_icon(btn, EYE)
 
@@ -222,7 +222,7 @@ class PasswordHistoryWidget(QObject):
             group_layout.addLayout(row)
 
         content_layout.addWidget(group)
-        # record dict 的 password 明文已提取到 _history_passwords，不再需要 dict 中的
-        # 明文副本——显式 pop 收缩驻留面，不依赖 _expand 返回后的 GC 回收。
+        # record dict 的 password 明文已提取到 `_history_passwords`，不再需要 dict 中的
+        # 明文副本——显式 `pop` 收缩驻留面，不依赖 `_expand` 返回后的 GC 回收。
         for record in history:
             record.pop("password", None)

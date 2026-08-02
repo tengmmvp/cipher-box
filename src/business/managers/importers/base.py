@@ -99,7 +99,7 @@ def _retain_password_custom_fields(
     """合并密码型自定义字段：从 existing 中保留 entry 缺失的密码型字段。
 
     Args:
-        entry: 导入条目，就地修改。
+        entry: 导入条目（frozen，经 replace 返回新副本，非就地修改）。
         existing: 已有条目，用于读取敏感字段。
         replace_all: True 时用 existing 的全部密码型字段替换 entry 的字段，
             适用于 CSV 或非导出场景，源格式无法表达密码型字段。

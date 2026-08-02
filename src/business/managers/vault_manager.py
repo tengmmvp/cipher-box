@@ -26,7 +26,6 @@ from ...exceptions import (
     VaultLockedError,
 )
 from ...utils.file_security import validate_file_path
-from ...utils.memory import secure_zero_buffer
 from ...utils.purge_files import secure_purge
 from ..services.backup_paths import BACKUPS_DIR_NAME, PRE_RESTORE_GLOB, SNAPSHOT_GLOB
 from ..services.key_manager import KeyManager
@@ -152,6 +151,7 @@ class VaultManager:
 
     @property
     def data_dir(self) -> Path:
+        """保险库数据目录（vault.db、backups/、logs/ 等所在路径）。"""
         return self._config.data_dir
 
     @property
@@ -206,6 +206,11 @@ class VaultManager:
     # ---- 解锁状态查询 ----
     @property
     def is_unlocked(self) -> bool:
+        """保险库是否已解锁（双条件：解锁标志 + 主密钥实际就位）。
+
+        flag 与 key 分离校验是防御性设计：lock() 先清零 key 再置 flag 为 False，
+        并发读者在中间窗口不会因仅 flag=True 而误判为已解锁、用过期密钥读写。
+        """
         return self._is_unlocked and self._key is not None
 
     @property
@@ -393,10 +398,8 @@ class VaultManager:
         """
         # 密钥材料由 KeyManager 集中清零，含主密钥、快照密钥与 epoch
         self._key_mgr.clear()
-        # 清零 MetadataSigner 中的域密钥
-        dk = self._signer.domain_key
-        if dk is not None:
-            secure_zero_buffer(dk)
+        # 清零 MetadataSigner 中的域密钥：经 setter 传 None 触发内部 secure_zero_buffer
+        # （MetadataSigner._rotate_domain_key 的 old is not None 分支），无需手动重复清零。
         self._signer.domain_key = None
         self._is_unlocked = False
         # 重置初始化标志：下次 ensure_db_open 将重新验证 schema。

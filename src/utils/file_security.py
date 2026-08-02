@@ -1,4 +1,10 @@
-"""应用数据文件的最小权限控制。"""
+"""应用数据文件的最小权限控制 — 跨平台 ACL、原子写入、安全覆写删除与 DPAPI。
+
+Unix 经 ``chmod`` 0600/0700，Windows 经 ``icacls`` 收紧为当前用户独占（含 ACL 缓存
+与 SID 解析）；``atomic_write`` 经临时文件 + ``os.replace`` + 落地即 0600 实现原子写，
+消除收紧前的世界可读窗口（SEC-2）；``secure_delete_file`` 覆写再 unlink 收缩取证还原面；
+``validate_file_path`` 拒绝目录遍历与符号链接/reparse 重定向；DPAPI 封装敏感配置密钥。
+"""
 
 import csv
 import io
@@ -20,6 +26,9 @@ IS_WINDOWS = sys.platform == "win32"
 _SECURED_WINDOWS_OBJECTS: OrderedDict[str, tuple[int, int]] = OrderedDict()
 _SECURED_LOCK = threading.Lock()
 _MAX_SECURED_CACHE = 256
+# secure_delete_file 分块覆写粒度（1MB）：恢复点/快照可达数十 MB，一次性 os.urandom(size)
+# 等量分配内存，批量清理峰值 N×文件大小可能 OOM；模块级常量避免每次调用重新求值。
+_SECURE_DELETE_CHUNK_BYTES = 1024 * 1024
 
 # 用户 SID 缓存：None=未解析，''=非 Windows（运行期不变），非空串=有效 SID。
 # Windows 解析失败**不缓存**空串，否则一次瞬时失败会让整会话静默跳过 ACL 限制。
@@ -87,8 +96,10 @@ def _windows_user_sid() -> str:
 def _windows_object_identity(path: Path) -> tuple[int, int] | None:
     """获取文件的设备号和 inode，用于 ACL 缓存的唯一标识。"""
     try:
-        stat = path.stat()
-        return stat.st_dev, stat.st_ino
+        # 命名 st 而非 stat：避免遮蔽模块级 import stat（同文件大量用 stat.S_ISLNK，
+        # 若后续在此追加 mode 判定会静默拿到错误属性）。
+        st = path.stat()
+        return st.st_dev, st.st_ino
     except OSError:
         return None
 
@@ -348,12 +359,10 @@ def secure_delete_file(path: Path) -> None:
     try:
         size = path.stat().st_size
         if size > 0:
-            # 分块覆写（1MB）：恢复点/快照可达数十 MB，一次性 os.urandom(size) 等量分配内存，批量清理峰值 N×文件大小可能 OOM。
-            _DELETE_CHUNK = 1024 * 1024
             with open(path, "r+b") as fp:
                 remaining = size
                 while remaining > 0:
-                    chunk = min(_DELETE_CHUNK, remaining)
+                    chunk = min(_SECURE_DELETE_CHUNK_BYTES, remaining)
                     fp.write(os.urandom(chunk))
                     remaining -= chunk
                 fp.flush()

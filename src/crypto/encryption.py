@@ -197,6 +197,8 @@ class EncryptionEngine:
             DecryptionError: 密文格式不符、长度不足或认证失败时抛出。双继承
                 ValueError，旧 ``except ValueError`` 兜底仍能捕获。
         """
+        if not data:
+            raise DecryptionError("收到空密文字节")
         if not data.startswith(cls.BYTES_PREFIX):
             raise DecryptionError("不支持的密文字节格式")
         payload = data[len(cls.BYTES_PREFIX) :]

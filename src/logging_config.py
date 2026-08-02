@@ -42,9 +42,10 @@ class SensitiveDataFilter(logging.Filter):
         # 冒号间而漏匹配；捕获引号使 \1\2 回填，避免 'password=[REDACTED] 引号不平衡。
         (
             re.compile(
-                r"(?i)(?<![A-Za-z])(password|pwd|passwd|secret|token|api[_-]?key|key"
+                r"(?i)(?<![A-Za-z])(password|pwd|passwd|passphrase|passcode|secret"
+                r"|token|api[_-]?key|key"
                 r"|username|user[_-]?name|card[_-]?(?:number|holder|cvv|cvc)|cvv|cvc"
-                r'|密码|密钥|令牌)([\'"]?)\s*[:=]\s*.+'
+                r'|密码|密钥|令牌|口令)([\'"]?)\s*[:=]\s*.+'
             ),
             r"\1\2=[REDACTED]",
         ),

@@ -117,7 +117,8 @@ def restore_history(
         # entry_map 命中则 crypto_id_map 必存在（同填充），直接取避免空 crypto_id 致 AAD 不一致。
         crypto_id = crypto_id_map[item["entry_id"]]
         ciphertext = encrypt_field(item["password"], key, crypto_id, "password")
-        if ciphertext:
-            history_by_entry.setdefault(new_entry_id, []).append((ciphertext, item["changed_at"]))
+        # encrypt_field 经 EncryptionEngine.encrypt 总返回非空密文（空明文亦产 cb2: 前缀），
+        # 无需 if 守卫；保留恒真分支会暗示 encrypt_field 可能返回空串的错误心智模型。
+        history_by_entry.setdefault(new_entry_id, []).append((ciphertext, item["changed_at"]))
     for entry_id, items in history_by_entry.items():
         db.add_password_history_batch(entry_id, items)

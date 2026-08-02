@@ -1,17 +1,17 @@
-"""BackgroundWorker 基础测试。
+"""``BackgroundWorker`` 基础测试。
 
-覆盖后台工作器的 finished 与 error 信号发射、异常上报、取消后抑制信号，
-以及返回 None 时信号仍正常发射的行为。
+覆盖后台工作器的 ``finished`` 与 ``error`` 信号发射、异常上报、取消后抑制信号，
+以及返回 ``None`` 时信号仍正常发射的行为。
 """
 
 from src.ui.components.workers import BackgroundWorker
 
 
 class TestBackgroundWorker:
-    """BackgroundWorker 信号发射和错误处理测试。"""
+    """``BackgroundWorker`` 信号发射和错误处理测试。"""
 
     def test_finished_emits_result(self, qapp):
-        """正常函数应通过 finished 信号返回结果。"""
+        """正常函数应通过 ``finished`` 信号返回结果。"""
         results = []
 
         worker = BackgroundWorker(lambda: (True, "ok"), None)
@@ -26,7 +26,7 @@ class TestBackgroundWorker:
         assert results[0] == (True, "ok")
 
     def test_error_emits_on_exception(self, qapp):
-        """函数抛异常应通过 error 信号报告。"""
+        """函数抛异常应通过 ``error`` 信号报告。"""
         errors = []
 
         def _fail():
@@ -43,7 +43,7 @@ class TestBackgroundWorker:
         assert "test error" in errors[0]
 
     def test_cancelled_worker_no_signal(self, qapp):
-        """已取消的工作器不应发射 finished 信号。"""
+        """已取消的工作器不应发射 ``finished`` 信号。"""
         results = []
 
         import threading
@@ -67,7 +67,7 @@ class TestBackgroundWorker:
         assert len(results) == 0
 
     def test_none_result_emitted(self, qapp):
-        """函数返回 None 时 finished 信号仍发射 None。"""
+        """函数返回 ``None`` 时 ``finished`` 信号仍发射 ``None``。"""
         results = []
 
         worker = BackgroundWorker(lambda: None, None)

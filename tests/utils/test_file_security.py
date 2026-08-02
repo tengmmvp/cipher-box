@@ -35,10 +35,12 @@ class TestSecureDeleteFile:
         secure_delete_file(target)
         assert not target.exists()
 
-    def test_overwrite_replaces_content_before_unlink(self, tmp_path):
+    def test_overwrite_replaces_content_before_unlink(self, tmp_path, monkeypatch):
         """覆写确实发生：覆写后、unlink 前内容应与原明文不同。
 
         通过 monkeypatch 让 unlink 失败（保留文件），读取覆写后的内容验证非原文。
+        monkeypatch 自动还原 Path.unlink，避免 try/finally 在赋值与 try 间被中断（如
+        SIGINT）污染全局 Path.unlink 影响后续所有测试。
         """
         target = tmp_path / "probe.cbox"
         original = b"A" * 64
@@ -49,15 +51,12 @@ class TestSecureDeleteFile:
         def _keep(self, *args, **kwargs):
             pass
 
-        Path.unlink = _keep  # type: ignore[method-assign]
-        try:
-            secure_delete_file(target)
-            overwritten = target.read_bytes()
-        finally:
-            Path.unlink = real_unlink  # type: ignore[method-assign]
+        monkeypatch.setattr(Path, "unlink", _keep)
+        secure_delete_file(target)
+        overwritten = target.read_bytes()
         assert overwritten != original
         assert len(overwritten) == len(original)
-        # 清理：用真实 unlink 删除探测文件
+        # 清理：Path.unlink 仍被 monkeypatch，用保存的真实引用删除探测文件
         real_unlink(target)
 
     def test_overwrite_failure_logs_plaintext_residue(self, tmp_path, monkeypatch, caplog):
@@ -137,6 +136,7 @@ class TestSecureDirectory:
         assert result == target
 
     def test_creates_nested_directory(self, tmp_path):
+        """parents=True 行为:中间目录不存在时连同祖先一并创建。"""
         target = tmp_path / "a" / "b" / "c"
         secure_directory(target)
         assert target.is_dir()
@@ -161,6 +161,22 @@ class TestSecureDirectory:
         assert isinstance(result, Path)
         assert result == target
 
+    def test_strict_propagates_chmod_failure(self, tmp_path, monkeypatch):
+        """secure_directory(strict=True) 在 chmod 失败时传播 OSError（非 Windows）。
+
+        config.get_data_dir 用 strict=False 降级，strict=True 分支无回归守护（覆盖缺口）。
+        Windows 忽略 POSIX chmod，跳过。
+        """
+        if os.name == "nt":
+            pytest.skip("Windows 忽略 POSIX chmod")
+
+        def _raise(*args, **kwargs):
+            raise OSError("denied")
+
+        monkeypatch.setattr(os, "chmod", _raise)
+        with pytest.raises(OSError):
+            secure_directory(tmp_path / "strict_dir", strict=True)
+
 
 class TestSecureFile:
     """secure_file 的权限设置、Windows ACL、幂等性与 strict 失败传播测试。"""
@@ -176,6 +192,7 @@ class TestSecureFile:
             assert not (mode & 0o177)  # 其他用户无权限
 
     def test_nonexistent_file_returns_path(self, tmp_path):
+        """文件不存在时仍返回路径、不创建文件（atomic_write 目标 pre-check 依赖此契约）。"""
         target = tmp_path / "nonexistent.dat"
         result = secure_file(target)
         assert result == target
@@ -210,6 +227,7 @@ class TestSecureFile:
         assert target.read_text(encoding="utf-8") == "test"
 
     def test_strict_mode_propagates_permission_failure(self, tmp_path, monkeypatch):
+        """secure_file(strict=True) 在权限加固失败时传播 OSError（与 secure_directory 的 strict 分支对称）。"""
         target = tmp_path / "strict.txt"
         target.write_text("secret", encoding="utf-8")
 
@@ -522,3 +540,17 @@ class TestAtomicWritePermissions:
             return
         mode = stat_mod.S_IMODE(target.stat().st_mode)
         assert mode == 0o600
+
+    def test_atomic_write_cancel_returns_false_and_cleans_temp(self, tmp_path):
+        """write_cb 返回 False 取消写入：返回 False、target 未创建、temp 已清理。
+
+        import_export 取消导出经 atomic_write 返回值透传，该路径需守护（覆盖缺口）。
+        """
+        from src.utils.file_security import atomic_write
+
+        target = tmp_path / "cancelled.json"
+        result = atomic_write(target, lambda f: False, mode="wb")
+        assert result is False
+        assert not target.exists()
+        # temp（target.name + .tmp）已清理，不残留
+        assert not (tmp_path / "cancelled.json.tmp").exists()

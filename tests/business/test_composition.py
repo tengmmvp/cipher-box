@@ -25,7 +25,7 @@ def test_lock_callback_invalidates_entry_cache(tmp_path):
     ctx, vault = _make_ctx(str(tmp_path))
     ctx.entry_mgr.add_entry(Entry(title="t", username="u", password="pw123456"))
     ctx.entry_mgr.get_entry_summaries()  # 填充搜索摘要缓存
-    assert ctx.entry_mgr._cache._search_metadata_cache  # 已填充
+    assert ctx.entry_mgr._cache._search_metadata_cache
     vault.lock()
     # 经 register_on_lock 回调（entry_mgr.invalidate_caches → cache.invalidate_all）
     # 锁定后明文摘要缓存须清空，避免崩溃 dump 残留明文

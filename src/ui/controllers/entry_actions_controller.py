@@ -408,6 +408,7 @@ class EntryActionsController:
 
     @require_unlocked
     def add_entry(self) -> None:
+        """打开新增条目对话框；保存后触发全量刷新（新增可能引入新分类/标签）。"""
         categories, tag_names = self._resolve_dialog_options()
         parent = self._parent
         dialog = EntryDialog(
@@ -419,8 +420,11 @@ class EntryActionsController:
 
     @require_unlocked
     def edit_entry(self, entry_id: int) -> None:
-        # 延迟回调（仪表盘 singleShot fix_requested）可能在锁定后触发，
-        # @require_unlocked 守卫避免锁定态访问已清零密钥导致崩溃
+        """打开编辑对话框；完整性异常条目禁止编辑以防覆盖原始密文。
+
+        仪表盘修复回调（exec 返回后同步调用，M14）可能在锁定后触发，
+        ``@require_unlocked`` 守卫避免锁定态访问已清零密钥导致崩溃。
+        """
         entry = self._entry_mgr.get_entry(entry_id)
         if not entry:
             return
@@ -450,6 +454,11 @@ class EntryActionsController:
 
     @require_unlocked
     def delete_entry(self, entry_id: int) -> None:
+        """软删除条目（移入回收站），提供带撤销 Toast 的可恢复路径。
+
+        撤销回调带锁定态守卫，并校验条目仍在回收站——撤销 Toast 存活期间条目
+        可能已被永久删除或保险库已锁定。
+        """
         entry = self._entry_mgr.get_entry(entry_id)
         if not entry:
             return
@@ -502,6 +511,7 @@ class EntryActionsController:
 
     @require_unlocked
     def toggle_favorite(self, entry_id: int) -> None:
+        """切换收藏标志；仅需刷新条目列表（分类/标签/安全摘要不变）。"""
         try:
             self._entry_mgr.toggle_favorite(entry_id)
         except Exception as exc:
@@ -517,6 +527,7 @@ class EntryActionsController:
 
     @require_unlocked
     def add_category(self) -> None:
+        """打开新增分类对话框；保存后仅刷新分类（条目归属不变）。"""
         parent = self._parent
         dialog = CategoryDialog(self._entry_mgr, parent=parent)
         dialog.saved.connect(self._deps.refresh_categories)
@@ -525,6 +536,7 @@ class EntryActionsController:
 
     @require_unlocked
     def _edit_category(self, category_id: int) -> None:
+        """打开编辑分类对话框；分类不存在时（已被他处删除）静默返回。"""
         category = self._entry_mgr.categories.get_category(category_id)
         if not category:
             return
@@ -536,6 +548,7 @@ class EntryActionsController:
 
     @require_unlocked
     def _delete_category(self, category_id: int) -> None:
+        """删除分类；其下条目保留但取消归属，故刷新走全量条目路径。"""
         msg, _has_entries, cat_name = self._sidebar_ctrl.build_delete_message(category_id)
         if not msg:
             return

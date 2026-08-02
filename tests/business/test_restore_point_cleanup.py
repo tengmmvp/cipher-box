@@ -1,8 +1,9 @@
-"""恢复点启动重试清理测试。
+"""恢复点清理与 purge 失败反馈测试。
 
-验证 VaultManager.purge_restore_points 删除残留的 pre_restore_*.cbox 恢复点，
-收缩历史明文泄漏面。恢复点为恢复操作前的临时全量明文快照，恢复成功后应删除；
-之前因文件占用 purge 失败的残留在应用启动时重试清理。
+验证 ``VaultManager.purge_restore_points`` 与 ``RestorePointManager.clear_all``
+删除残留的 ``pre_restore_*.cbox`` 恢复点以收缩明文泄漏面，并守护改密成功后
+purge 失败的用户可见反馈。恢复点为恢复操作前的临时全量明文快照，恢复成功后
+应删除；因文件占用 purge 失败的残留在应用启动时重试清理。
 """
 
 from pathlib import Path

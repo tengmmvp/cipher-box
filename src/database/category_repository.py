@@ -127,7 +127,7 @@ class CategoryRepository:
         if self._conn.execute(
             "SELECT 1 FROM categories WHERE name_enc=? LIMIT 1", (category.name,)
         ).fetchone():
-            raise ValueError(f"分类名称「{category.name}」已存在")
+            raise ValueError("分类名称已存在（加密名冲突，明文查重见 CategoryManager）")
         # 回填 created_at 至内存对象：保证两阶段重签与 INSERT 用同一值。否则 DB 层
         # 写真实时间戳而内存对象为空，重签用空 created_at 算 mac 致签名与持久化行错配、
         # 重载后验签永久失败。

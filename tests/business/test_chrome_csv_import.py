@@ -7,6 +7,10 @@ from src.exceptions import ImportFormatError
 
 
 def test_import_from_chrome_csv_maps_columns(entry_mgr, tmp_path):
+    """固化 Chrome/Edge CSV 的 name/url/username/password 列到内部字段的映射。
+
+    与 ``test_keepass_csv_import.py`` 平行，防列别名映射回归。
+    """
     mgr = ImportExportManager(entry_mgr)
     csv_path = tmp_path / "chrome.csv"
     csv_path.write_text(
@@ -42,6 +46,10 @@ def test_import_from_chrome_csv_empty(entry_mgr, tmp_path):
 
 
 def test_import_rejects_missing_default_category(entry_mgr, tmp_path):
+    """default_category_id 指向不存在的分类时应以 ImportFormatError 拒绝。
+
+    拒绝而非静默把条目落库到无效分类，避免后续按 category_id 回填分类名时落空。
+    """
     mgr = ImportExportManager(entry_mgr)
     csv_path = tmp_path / "chrome.csv"
     csv_path.write_text(

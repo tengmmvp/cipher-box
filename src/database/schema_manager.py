@@ -137,6 +137,10 @@ class SchemaManager:
         对已有数据库，schema 验证结果经 ``schema_validated`` 连接级缓存，避免同一
         连接内重复 O(tables × columns) 的 PRAGMA 查询；缓存随连接重开重置
         （``open`` 后置 ``schema_validated=False``），故应用每次启动都会重新验证一次。
+
+        锁契约：本方法直接用 cursor 做 DDL/DML/PRAGMA，不经 ``_db_operation`` 装饰器
+        也不持 ``_lock``——仅在设计为单线程的初始化期（``open`` 后首次访问、无其他
+        操作者）调用，故无需锁；运行期并发访问须经 ``_db_operation`` 路径。
         """
         if self._conn is None:
             raise DatabaseError("数据库未连接")
@@ -259,7 +263,13 @@ class SchemaManager:
 
     @staticmethod
     def _validate_current_schema(cursor: sqlite3.Cursor) -> None:
-        """校验当前数据库的表结构和索引是否符合预期。"""
+        """校验表结构、索引与外键与预期完全一致，不匹配则抛 :class:`SchemaError`。
+
+        比对内容：每列四元组（类型/notnull/pk/``dflt_value``，含默认值防篡改如
+        ``entry_type`` DEFAULT）、索引的列序与 UNIQUE 性、外键的 ``ON DELETE`` 动作。
+        任一不符抛 :class:`SchemaError`——本层拒绝打开不兼容/被篡改的库，**不做旧格式
+        迁移**（CLAUDE.md 约定），由调用方提示用户。
+        """
         for table, expected_columns in _TABLE_COLUMNS.items():
             # table 来自硬编码字典键，安全无注入风险；SQLite PRAGMA 不支持参数化，
             # f-string 是唯一方式。

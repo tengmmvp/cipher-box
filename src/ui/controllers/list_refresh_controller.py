@@ -318,6 +318,11 @@ class ListRefreshController:
     # ========== 数据操作 ==========
 
     def refresh_categories(self) -> None:
+        """重建分类列表并尽量恢复原选中行；信号阻塞期间静默填充避免回流。
+
+        选中分类已不存在时回退到「全部分类」。重建后回填 ``_cached_categories``，
+        供新增/编辑对话框预填。
+        """
         selected_category_id = self._current_category_id
         category_list = self._view.category_list
         category_list.blockSignals(True)
@@ -613,6 +618,11 @@ class ListRefreshController:
         )
 
     def update_status_bar(self) -> None:
+        """刷新状态栏四项安全计数：缓存命中同步渲染，未命中启动后台 worker。
+
+        锁定后或被取代的 worker 回调经 ``_locked`` / identity 守卫丢弃，避免
+        对已清零状态应用结果。
+        """
         days = self._config.get(CFG_OLD_PASSWORD_WARNING_DAYS)
         # 快速路径：缓存命中时仅取计数——get_cached_counts 跳过 get_cached_report 经
         # _refilter_cache 的 Entry 深拷贝，状态栏只需四个计数。

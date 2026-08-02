@@ -8,7 +8,6 @@ import sqlite3
 import threading
 import uuid
 from collections.abc import Callable, Sequence
-from contextlib import AbstractContextManager
 from dataclasses import replace
 from typing import Any
 
@@ -223,12 +222,6 @@ class EntryRepository:
     @property
     def in_transaction(self) -> bool:
         return self._mgr.in_transaction
-
-    def transaction(self) -> AbstractContextManager[None]:
-        return self._mgr.transaction()
-
-    def secure_checkpoint(self) -> None:
-        return self._mgr.secure_checkpoint()
 
     # ======== 防御性断言 ========
 

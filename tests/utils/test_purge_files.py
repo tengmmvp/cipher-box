@@ -12,6 +12,7 @@ from src.utils.purge_files import count_files, secure_purge
 
 
 def _touch(directory: Path, name: str) -> Path:
+    """在 directory 下创建含 1 字节内容的命名文件,返回其路径,供 purge/count 测试 fixture。"""
     p = directory / name
     p.write_bytes(b"x")
     return p
@@ -129,6 +130,7 @@ class TestCountFiles:
     """count_files 计数。"""
 
     def test_counts_matches(self, tmp_path):
+        """单目录下按各 glob 模式分别计数正确，多模式合并计数求和。"""
         d1 = tmp_path / "d1"
         d1.mkdir()
         for name in ["a.cbox", "b.cbox", "c.txt"]:
@@ -138,6 +140,7 @@ class TestCountFiles:
         assert count_files([d1], ["*.cbox", "*.txt"]) == 3
 
     def test_multiple_directories(self, tmp_path):
+        """多目录匹配文件求并集计数。"""
         d1 = tmp_path / "d1"
         d2 = tmp_path / "d2"
         d1.mkdir()
@@ -148,9 +151,11 @@ class TestCountFiles:
         assert count_files([d1, d2], ["*.cbox"]) == 3
 
     def test_nonexistent_directory_returns_zero(self, tmp_path):
+        """不存在的目录计为 0，不抛异常。"""
         assert count_files([tmp_path / "missing"], ["*.cbox"]) == 0
 
     def test_no_match_returns_zero(self, tmp_path):
+        """无匹配文件计为 0。"""
         _touch(tmp_path, "a.txt")
         assert count_files([tmp_path], ["*.cbox"]) == 0
 

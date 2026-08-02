@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from PyQt6.QtCore import QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtGui import QColor, QFont, QPainter, QPaintEvent, QPen
 from PyQt6.QtWidgets import (
     QFrame,
@@ -57,7 +57,7 @@ _BADGE_BG_ALPHA = 0.13
 class _HealthScoreWidget(QWidget):
     """以圆环进度形式绘制安全健康评分的自定义组件。"""
 
-    # paintEvent 绘制参数（QL-016，提取魔数）：圆环几何与 Qt drawArc 角度常量。
+    # `paintEvent` 绘制参数（QL-016，提取魔数）：圆环几何与 Qt `drawArc` 角度常量。
     _RING_PADDING_PX = 12  # 圆环与控件边缘的间距
     _RING_PEN_WIDTH = 10  # 圆环线条粗细（像素）
     _ANGLE_TICKS_PER_DEGREE = 16  # Qt drawArc 角度单位为 1/16 度
@@ -68,7 +68,7 @@ class _HealthScoreWidget(QWidget):
         super().__init__(parent)
         self._score = 100
         self.setFixedSize(160, 160)
-        # 预创建字体，避免 paintEvent 每帧重复构造 QFont
+        # 预创建字体，避免 `paintEvent` 每帧重复构造 `QFont`
         self._score_font = QFont(FONT_FAMILY_DISPLAY, 28, QFont.Weight.Bold)
         self._label_font = QFont(FONT_FAMILY_DISPLAY, 9)
 
@@ -186,8 +186,6 @@ class SecurityDashboard(WorkerBackedDialog):
     部件发出信号。
     """
 
-    fix_requested = pyqtSignal(int)  # 请求修复条目，参数为对应 entry_id
-
     def __init__(
         self,
         security_analyzer: SecurityAnalyzer,
@@ -196,6 +194,7 @@ class SecurityDashboard(WorkerBackedDialog):
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
+        self._pending_fix_id: int | None = None
         self._security = security_analyzer
         self._entry_mgr = entry_manager
         self._config = config
@@ -346,14 +345,14 @@ class SecurityDashboard(WorkerBackedDialog):
         # 校验回调来源仍是当前 worker，防止 reject 后旧 worker 回调访问已销毁控件
         if self.sender() is not self._worker:
             return
-        # _status_hint 位于 _weak_layout 中，由后续 _populate_weak_tab 的 _clear_layout
-        # 统一回收，此处仅清属性引用，避免 deleteLater 造成双重回收。
+        # `_status_hint` 位于 `_weak_layout` 中，由后续 `_populate_weak_tab` 的 `_clear_layout`
+        # 统一回收，此处仅清属性引用，避免 `deleteLater` 造成双重回收。
         self._status_hint = None
 
         import dataclasses
 
         def _project(e: Entry) -> Entry:
-            # 清空敏感字段，仅保留展示所需，避免驻留完整明文 Entry
+            # 清空敏感字段，仅保留展示所需，避免驻留完整明文 `Entry`
             return dataclasses.replace(
                 e, password="", totp_secret="", notes="", url="", custom_fields=[]
             )
@@ -366,14 +365,14 @@ class SecurityDashboard(WorkerBackedDialog):
             self._old_entries = [_project(e) for e in analysis["old_entries"]]
         except Exception as exc:
             logger.error("加载安全报告失败: %s", type(exc).__name__, exc_info=True)
-            # 异常出口同样回收 _status_hint，避免提示残留
+            # 异常出口同样回收 `_status_hint`，避免提示残留
             self._clear_layout(self._weak_layout)
             self._status_hint = None
             QMessageBox.critical(self, DLG_TITLE_ERROR, "加载安全数据失败，请重试")
             return
         finally:
-            # 成功与异常出口合并到 finally，避免漏调 release_worker 造成引用泄漏；
-            # _on_data_error（worker.error 信号）是另一独立路径，自行 release
+            # 成功与异常出口合并到 finally，避免漏调 `release_worker` 造成引用泄漏；
+            # `_on_data_error`（`worker.error` 信号）是另一独立路径，自行 `release_worker`
             release_worker(self)
 
         weak_count = len(self._weak_entries)
@@ -395,7 +394,7 @@ class SecurityDashboard(WorkerBackedDialog):
 
     def _on_data_error(self, error_msg: str) -> None:
         """worker.error 信号路径，独立于 _on_data_loaded 的成功/异常出口。"""
-        # 与 _on_data_loaded 对称，防止 reject 后旧 worker 回调访问已销毁控件
+        # 与 `_on_data_loaded` 对称，防止 reject 后旧 worker 回调访问已销毁控件
         if not finalize_worker_if_current(self):
             return
         self._clear_layout(self._weak_layout)
@@ -465,7 +464,9 @@ class SecurityDashboard(WorkerBackedDialog):
             if entry.id is None:
                 continue
             updated = entry.password_changed_at or entry.updated_at or entry.created_at or "未知"
-            formatted = format_datetime(updated)[:10]  # 统一处理 naive/aware，取日期部分
+            # `format_datetime` 输出 ISO 8601（YYYY-MM-DD HH:MM:SS），前 10 字符恒为日期
+            # 部分；若 `format_datetime` 改为非 ISO 格式须同步调整此切片。
+            formatted = format_datetime(updated)[:10]
             row = self._create_entry_row(
                 title=entry.title or "未命名",
                 subtitle=f"上次更新: {formatted}",
@@ -486,7 +487,7 @@ class SecurityDashboard(WorkerBackedDialog):
         """创建一条包含标题、副标题、徽章与修复按钮的条目行。"""
         row_widget = QWidget()
         row_widget.setObjectName("secEntryRow")
-        # 启用 hover 属性，使 QSS 的 QWidget#secEntryRow:hover 生效
+        # 启用 hover 属性，使 QSS 的 `QWidget#secEntryRow:hover` 生效
         row_widget.setAttribute(Qt.WidgetAttribute.WA_Hover)
         row_layout = QHBoxLayout(row_widget)
         row_layout.setContentsMargins(12, 8, 12, 8)
@@ -541,8 +542,16 @@ class SecurityDashboard(WorkerBackedDialog):
     def _on_fix_weak(self) -> None:
         self._tabs.setCurrentIndex(0)
 
+    @property
+    def pending_fix_id(self) -> int | None:
+        """:meth:`_request_fix` 记录的待修复条目 id，供调用方 ``exec`` 返回后读取（M14）。"""
+        return self._pending_fix_id
+
     def _request_fix(self, entry_id: int) -> None:
-        # 先 accept 退出仪表盘模态循环，再延迟到下一事件循环 emit，避免嵌套
-        # 打开编辑对话框形成双层模态
+        # 记录待修复条目并 `accept` 退出仪表盘模态循环；`edit_entry` 由 `menu_controller`
+        # 在 `exec()` 返回后同步调用（单层模态，无嵌套）。原实现经 `singleShot`(0) 延迟
+        # emit `fix_requested`，但 dialog 随即 `deleteLater`，`singleShot` 触发时 dialog 可能
+        # 已销毁致访问 `self.fix_requested` 崩溃（M14）；`pending_fix_id` 在 `exec` 返回后、
+        # `deleteLater` 前由调用方读取，避免竞态。
+        self._pending_fix_id = entry_id
         self.accept()
-        QTimer.singleShot(0, lambda: self.fix_requested.emit(entry_id))

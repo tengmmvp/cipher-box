@@ -97,6 +97,7 @@ class TestHostEmergencyCancelWorkers:
         return mw
 
     def test_delegates_cancel_to_list_refresh_and_auto_backup(self):
+        """无超时参数时，仅委托 ``auto_backup.cancel`` 与 ``list_refresh.cancel_all_workers``，不调 ``wait_workers``。"""
         mw = self._make_host()
         mw.emergency_cancel_workers()
         mw._auto_backup.cancel.assert_called_once()
@@ -104,6 +105,7 @@ class TestHostEmergencyCancelWorkers:
         mw._list_refresh.wait_workers.assert_not_called()
 
     def test_waits_when_timeout_positive(self):
+        """传正 ``wait_timeout_ms`` 时，额外委托 ``list_refresh.wait_workers`` 等待 worker 收尾。"""
         mw = self._make_host()
         mw.emergency_cancel_workers(wait_timeout_ms=400)
         mw._list_refresh.wait_workers.assert_called_once_with(400)

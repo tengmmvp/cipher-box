@@ -39,7 +39,6 @@ from ...exceptions import (
 )
 from ...utils.file_security import (
     atomic_write,
-    secure_delete_file,
     secure_directory,
     validate_file_path,
 )
@@ -111,7 +110,9 @@ class BackupRestoreManager:
         # （持锁全流程入口）延迟绑定，避免 BackupRestoreManager ↔ RestorePointManager
         # 构造期循环依赖；恢复点复用与正式备份同一加密格式。
         self._restore_points.bind_backup_creator(
-            lambda path: self._create_backup_locked(path, None, True, None)
+            lambda path: self._create_backup_locked(
+                path, backup_password=None, use_snapshot_key=True, cancel_check=None
+            )
         )
 
     @property
@@ -270,8 +271,6 @@ class BackupRestoreManager:
         try:
             data = collect_portable_data(
                 prepared.master_key,
-                self._vault.db,
-                self._entry_mgr,
                 cancel_check=cancel_check,
                 raw_entries=prepared.raw_entries,
                 history_rows=prepared.history_rows,
@@ -480,23 +479,18 @@ class BackupRestoreManager:
     ) -> tuple[str, bytearray]:
         """锁内创建恢复点并在 epoch 守卫事务内重建全部数据。
 
-        事务由 :meth:`_restore_data` 的 ``epoch_guarded_transaction`` 提供；失败时清理
-        刚创建的恢复点（含恢复前明文，避免反复尝试占用磁盘）。无论成败均释放明文引用。
-        恢复点创建经 :class:`RestorePointManager` 单一事实源（ARCH-006）。
+        事务由 :meth:`_restore_data` 的 ``epoch_guarded_transaction`` 提供；失败时**保留**
+        恢复点（含恢复前明文）作安全网——事务回滚本身失败（磁盘满/IO 错误）时它是唯一
+        干净全量副本，删除会致灾难性数据丢失。MAX_RESTORE_POINTS 上限覆盖反复尝试占盘。
+        无论成败均释放明文引用。恢复点创建经 :class:`RestorePointManager` 单一事实源（ARCH-006）。
         """
         plaintext = payload.plaintext
         data = payload.data
-        restore_path = self._restore_points.create()
+        # 创建恢复点（注册到 _restore_points 单一事实源，路径经其管理）；失败时保留
+        # 作安全网（见 docstring），不在此删除。
+        self._restore_points.create()
         try:
             new_epoch, new_snapshot_key = self._restore_data(data)
-        except Exception:
-            # 恢复失败时清理刚创建的恢复点，避免反复尝试时占用磁盘空间。
-            if restore_path is not None:
-                try:
-                    secure_delete_file(restore_path)
-                except OSError:
-                    logger.debug("清理恢复点失败", exc_info=True)
-            raise
         finally:
             # 释放明文引用（成功路径 plaintext/data 必然已赋值）。
             del plaintext

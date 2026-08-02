@@ -25,7 +25,6 @@ class TestAutoBackupController:
         running.isRunning.return_value = True
         ctrl._worker = running
         ctrl._run_async()
-        # worker 未被替换（新请求被跳过），maybe_auto_backup 未被调用
         assert ctrl._worker is running
         ctrl._backup.maybe_auto_backup.assert_not_called()
 

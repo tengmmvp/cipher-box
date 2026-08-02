@@ -255,7 +255,10 @@ class ConfigManager:
         auto_lock 改 0；彻底修复需引入系统密钥链 keyring，权衡其跨平台失败模式与 CI 复杂度
         后暂维持现状，以 Windows DPAPI 为主平台防护）。绝不阻断启动。
         """
-        secure_directory(self._data_dir, strict=True)
+        # strict=False：启动路径绝不阻断。Windows SID 解析失败（EDR/企业策略禁用
+        # whoami）时 _restrict_windows_acl 会抛 OSError 致启动崩溃，违背本方法
+        # 「绝不阻断启动」契约。权限加固失败降级（warning）而非阻断启动。
+        secure_directory(self._data_dir, strict=False)
         if self._integrity_key_path.exists():
             try:
                 blob = self._integrity_key_path.read_bytes()
@@ -269,7 +272,8 @@ class ConfigManager:
                     # 非 DPAPI 封装：当作明文密钥（旧格式或非 Windows），长度校验
                     key = blob if len(blob) == _CONFIG_KEY_SIZE else None
                 if key is not None and len(key) == _CONFIG_KEY_SIZE:
-                    secure_file(self._integrity_key_path, strict=True)
+                    # strict=False：启动路径同上，权限加固失败降级而非崩溃。
+                    secure_file(self._integrity_key_path, strict=False)
                     return key
                 logger.warning("配置签名密钥损坏，将生成新密钥")
 

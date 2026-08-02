@@ -1,4 +1,8 @@
-"""安全分析器，提供弱密码检测、重复密码检测与过期提醒。"""
+"""密码安全分析器：提供弱密码、重复密码、过期密码三项分析，结果经 TTL 缓存复用。
+
+缓存分层（基础分析不依赖 days，days 变化仅重过滤过期条目）、失效策略与线程安全
+细节见 :class:`SecurityAnalyzer`。
+"""
 
 import dataclasses
 import hmac
@@ -334,13 +338,12 @@ class SecurityAnalyzer:
     def invalidate_cache(self, password_changed: bool = True) -> None:
         """清除分析缓存，下次访问时重新计算。
 
-        password_changed 为 False（非密码字段变更）时直接返回：三项分析仅依赖
-        strength/password/password_changed_at，复用缓存避免无谓全量 HMAC。边界：
-        「从未改过密码」条目过期检测回退到 updated_at，其归属至多延迟一个 TTL 自动
-        修正，可接受。
+        无条件失效（M12）：安全报告含 Entry 元数据（title/username 等），任何字段
+        变更都可能令缓存的 weak_entries/duplicate_groups 元数据陈旧，故不再据
+        password_changed 跳过——原优化「非密码字段不失效」会保留陈旧元数据。参数仅为
+        匹配 EntryChangeBus 回调签名 ``Callable[[bool], None]`` 保留，不影响行为。
         """
-        if not password_changed:
-            return
+        del password_changed  # 不再据密码变更区分（M12）；保留参数仅为匹配回调签名
         with self._cache_lock:
             self._analysis_cache = None
             self._analysis_cache_time = 0

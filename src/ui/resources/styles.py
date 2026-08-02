@@ -1,4 +1,10 @@
-"""QSS 样式表 — 使用动态颜色模板。"""
+"""QSS 样式表 — 颜色占位符模板与主题渲染。
+
+``STYLE_TEMPLATE`` 以 ``{color_key}`` 占位符引用 ``theme_colors`` 的颜色 token，
+同一份模板可渲染浅色/深色两套样式表，避免双主题样式重复维护。``render_style`` 为
+纯渲染（不触碰全局活跃主题）；``get_style`` 同样纯渲染，激活主题由调用方经
+``set_theme`` 显式完成（ARCH-009），保证运行时 ``c()`` 配色与样式表一致。
+"""
 
 STYLE_TEMPLATE = """
 QMainWindow, QDialog {{

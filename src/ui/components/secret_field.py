@@ -105,7 +105,7 @@ def make_secret_field_row(
         key: _StoreKey = store_key,
         timer: QTimer = field_timer,
     ) -> None:
-        # 控件可能已被 deleteLater，异步回调（定时器/点击）触发前守卫，避免 RuntimeError
+        # 控件可能已被 `deleteLater`，异步回调（定时器/点击）触发时用 `sip.isdeleted` 守卫，避免访问已销毁控件抛 `RuntimeError`
         if sip.isdeleted(lbl) or sip.isdeleted(btn):
             return
         pwd = env.store.get(key, "")

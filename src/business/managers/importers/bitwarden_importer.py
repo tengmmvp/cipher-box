@@ -3,6 +3,7 @@
 import enum
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from ....exceptions import EntryError, ImportFormatError
@@ -63,6 +64,27 @@ def _as_str(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _parse_bitwarden_date(value: Any) -> str:
+    """解析 Bitwarden ISO 日期为 CipherBox 统一 ISO 格式，失败返回空串。
+
+    Bitwarden 的 passwordRevisionDate 等为 ISO 8601 字符串（如
+    ``2024-01-15T10:30:00.000Z``）。Python 3.10 ``datetime.fromisoformat`` 不支持末尾
+    ``Z``，替换为 ``+00:00`` 后解析；无时区视作 UTC；解析失败返回空串使调用方回退
+    当前时间。
+    """
+    raw = _as_str(value)
+    if not raw:
+        return ""
+    normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
 class BitwardenItemType(enum.IntEnum):
     """Bitwarden item 的 type 字段值映射。
 
@@ -91,6 +113,17 @@ class BitwardenFieldType(enum.IntEnum):
     BOOLEAN = 2
 
 
+def _bitwarden_field_value(field: dict[str, Any]) -> str:
+    """提取 Bitwarden 自定义字段值，布尔型转 true/false 字符串保真（P2）。
+
+    Bitwarden 布尔字段（type=2）值为 JSON bool，``_as_str`` 对非 str 返回空串会丢失；
+    转为 ``true``/``false`` 字符串保留语义。文本/隐藏字段经 ``_as_str`` 守卫。
+    """
+    if field.get("type") == BitwardenFieldType.BOOLEAN:
+        return "true" if field.get("value") else "false"
+    return _as_str(field.get("value"))
+
+
 def _bitwarden_entry_fields(item: dict[str, Any]) -> tuple[str, list[CustomField]]:
     """解析 Bitwarden item 的条目类型与自定义字段。
 
@@ -104,7 +137,7 @@ def _bitwarden_entry_fields(item: dict[str, Any]) -> tuple[str, list[CustomField
     custom_fields = [
         CustomField(
             name=_as_str(field.get("name")) or "自定义字段",
-            value=_as_str(field.get("value")),
+            value=_bitwarden_field_value(field),
             field_type="password" if field.get("type") == BitwardenFieldType.HIDDEN else "text",
         )
         for field in _as_list(item.get("fields"))
@@ -233,6 +266,10 @@ class BitwardenImporter:
                 totp_secret=_sanitize_totp_secret(_as_str(login.get("totp"))),
                 is_favorite=bool(item.get("favorite", False)),
                 category_name=folder_name,
+                # 保留 Bitwarden 密码修改时间（M5）：避免导入后 password_changed_at 全部
+                # 冻结为导入时刻，使过期检测把本应过期的密码当作「刚修改」而漏报。
+                # passwordRevisionDate 仅 login 有值；note/card 为 null → 空串回退当前时间。
+                password_changed_at=_parse_bitwarden_date(login.get("passwordRevisionDate")),
             )
             # 校验类型/长度/自定义字段结构，闭合 skip_validation=True 的假设；失败跳过
             # 单条而非中断整个导入，与 _import_entries 的逐条容错语义一致。

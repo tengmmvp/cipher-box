@@ -3,14 +3,18 @@
 无状态函数：全入参注入，与 manager 状态解耦，便于锁外 finalize 复用（A4）与单元测试。
 ``cancel_check`` 触发时经 :class:`_BackupCancelled` 中止采集，编排层捕获后返回 None
 （不产出残缺备份）。payload 字节数增量估算超限抛 :class:`PayloadTooLargeError`。
+
+A4 契约：raw_entries/history_rows/categories 须由 prepare_backup_locked 锁内预读传入，
+全量解密移出锁以缩短 ``lock()`` 阻塞。三者原为可选参数、None 时锁外自读 DB 回退，
+但唯一调用方（finalize_backup）恒传入预读数据，回退属死代码且锁外读 DB 与并发写有
+竞态（读到部分提交状态），故改为必传并移除回退（M11）。
 """
 
 import json
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from ...database.types import EntryQuery
 from ...exceptions import BackupError, DecryptionError, PayloadTooLargeError
 from ...models import PasswordHistory, RawEntry
 from ...utils.format import utc_now_iso
@@ -22,10 +26,6 @@ from .backup_payload import (
 )
 from .backup_validator import MAX_BACKUP_ENTRIES, MAX_HISTORY_PER_ENTRY
 from .crypto_utils import decrypt_entry_to_portable_dict, decrypt_field
-
-if TYPE_CHECKING:
-    from ...database.types import VaultDataStore
-    from ..managers.entry_manager import EntryManager
 
 logger = logging.getLogger(__name__)
 
@@ -45,21 +45,18 @@ def check_payload_limit(estimated_size: int) -> None:
 
 def collect_portable_data(
     key: bytes,
-    db: "VaultDataStore",
-    entry_mgr: "EntryManager",
-    cancel_check: Callable[[], bool] | None = None,
-    raw_entries: list[RawEntry] | None = None,
-    history_rows: list[PasswordHistory] | None = None,
-    categories: list[dict[str, Any]] | None = None,
+    cancel_check: Callable[[], bool] | None,
+    raw_entries: list[RawEntry],
+    history_rows: list[PasswordHistory],
+    categories: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
     """收集备份数据：解密所有字段为明文，构建可移植字典。
 
     A4：本函数在 ``finalize_backup`` 锁外调用，``raw_entries``/``history_rows``/``categories``
-    由 prepare_backup_locked 锁内预读传入，全量解密移出锁以缩短 ``lock()`` 阻塞；三者任一
-    为 None 时回退自读 DB。返回嵌套项值类型混合，故标注 ``dict[str, Any]``（结构由 validate_restore_data 校验）。
+    须由 prepare_backup_locked 锁内预读传入（必传，M11：移除原 None 锁外自读 DB 回退，
+    避免与并发写竞态读到部分提交状态）。返回嵌套项值类型混合，故标注
+    ``dict[str, Any]``（结构由 validate_restore_data 校验）。
     """
-    if categories is None:
-        categories = [category.to_dict() for category in entry_mgr.categories.get_categories()]
     # 基于字段原始字节长度的粗略估算，避免逐条 json.dumps 双重序列化开销
     estimated_size = sum(
         len(c.get("name", "").encode("utf-8")) + CATEGORY_OVERHEAD_BYTES for c in categories
@@ -67,14 +64,12 @@ def collect_portable_data(
     try:
         entries, entry_count, estimated_size = collect_portable_entries(
             key,
-            db,
             cancel_check,
             estimated_size,
             raw_entries,
         )
         history = collect_portable_history(
             key,
-            db,
             cancel_check,
             entry_count,
             estimated_size,
@@ -94,18 +89,15 @@ def collect_portable_data(
 
 def collect_portable_entries(
     key: bytes,
-    db: "VaultDataStore",
     cancel_check: Callable[[], bool] | None,
     estimated_size: int,
-    raw_entries: list[RawEntry] | None = None,
+    raw_entries: list[RawEntry],
 ) -> tuple[list[dict[str, Any]], int, int]:
     """采集并解密全部条目为可移植字典，增量估算 payload 大小。
 
     返回 ``(entries, entry_count, estimated_size)``（元素含义同参数名）。条目完整性失败
-    抛 :class:`BackupError`；``raw_entries`` 锁内预读后传入，使解密循环可锁外运行（A4）。
+    抛 :class:`BackupError`；``raw_entries`` 锁内预读后必传（A4 + M11），解密循环锁外运行。
     """
-    if raw_entries is None:
-        raw_entries = db.get_entries(EntryQuery(include_deleted=True))
     if len(raw_entries) > MAX_BACKUP_ENTRIES:
         raise PayloadTooLargeError("备份条目数量超出限制")
     entries: list[dict[str, Any]] = []
@@ -137,19 +129,16 @@ def collect_portable_entries(
 
 def collect_portable_history(
     key: bytes,
-    db: "VaultDataStore",
     cancel_check: Callable[[], bool] | None,
     entry_count: int,
     estimated_size: int,
-    history_rows: list[PasswordHistory] | None = None,
+    history_rows: list[PasswordHistory],
 ) -> list[dict[str, Any]]:
     """采集并解密密码历史，返回历史记录列表。
 
     ``estimated_size`` 入参参与 payload 上限校验，累计值不再返回（无调用方使用，QL-012）；
-    ``entry_count`` 用于历史上限校验。``history_rows`` 锁内预读后传入，解密循环可锁外运行（A4）。
+    ``entry_count`` 用于历史上限校验。``history_rows`` 锁内预读后必传（A4 + M11），解密循环锁外运行。
     """
-    if history_rows is None:
-        history_rows = db.get_all_password_history()
     if len(history_rows) > entry_count * MAX_HISTORY_PER_ENTRY:
         raise PayloadTooLargeError("密码历史数量超出限制")
     history: list[dict[str, Any]] = []

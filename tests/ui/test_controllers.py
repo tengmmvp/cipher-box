@@ -15,22 +15,26 @@ from src.ui.controllers.sidebar_controller import SidebarController
 
 
 def _entry_list_controller():
+    """构造注入 mock 依赖的列表控制器实例。"""
     return EntryListController(MagicMock(), MagicMock(), MagicMock())
 
 
 def _sidebar_controller():
-    return SidebarController(MagicMock(), MagicMock())
+    """构造注入 mock 依赖的侧边栏控制器实例。"""
+    return SidebarController(MagicMock())
 
 
 class TestGetSortConfig:
     """EntryListController.get_sort_config 的索引边界与有效返回守护。"""
 
     def test_out_of_range_returns_default(self):
+        """越界索引应回退默认排序配置。"""
         ctrl = _entry_list_controller()
         assert ctrl.get_sort_config(-1) == ("updated_at", "desc")
         assert ctrl.get_sort_config(999) == ("updated_at", "desc")
 
     def test_valid_index_returns_field_and_order(self):
+        """有效索引应返回非空字段名与合法排序方向。"""
         ctrl = _entry_list_controller()
         field, order = ctrl.get_sort_config(0)
         assert isinstance(field, str) and field
@@ -41,6 +45,7 @@ class TestSortEntries:
     """EntryListController.sort_entries 排序结果的不变量守护。"""
 
     def test_preserves_length(self):
+        """排序不应改变条目集合大小与成员。"""
         ctrl = _entry_list_controller()
         entries = [
             SimpleNamespace(title="b", updated_at="1", created_at="1", password_strength=0),
@@ -55,11 +60,13 @@ class TestGetFetcher:
     """EntryListController.get_fetcher 的过滤器键映射与兜底。"""
 
     def test_known_filters_return_callables(self):
+        """已知的过滤器键应都返回可调用 fetcher。"""
         ctrl = _entry_list_controller()
         for key in ("all", "favorite", "weak", "duplicate", "recent", "trash"):
             assert callable(ctrl.get_fetcher(key))
 
     def test_unknown_filter_falls_back_to_all(self):
+        """未知过滤器键应兜底到全量 fetcher。"""
         ctrl = _entry_list_controller()
         # bound method 每次访问创建新对象，比较底层函数而非对象身份
         assert ctrl.get_fetcher("nonexistent").__func__ is EntryListController.fetch_all
@@ -73,10 +80,12 @@ class TestBuildCategoryLabel:
         return SimpleNamespace(icon_char="[KEY]", name="社交", integrity_error=False)
 
     def test_with_entries_shows_count(self):
+        """条目数大于零时标签带计数后缀。"""
         ctrl = _sidebar_controller()
         assert ctrl.build_category_label(self._cat(), 5) == "[KEY] 社交 (5)"
 
     def test_zero_entries_omits_count(self):
+        """条目数为零时标签省略计数。"""
         ctrl = _sidebar_controller()
         assert ctrl.build_category_label(self._cat(), 0) == "[KEY] 社交"
 
@@ -98,9 +107,10 @@ class TestBuildDeleteMessage:
             SimpleNamespace(name=name) if name else None
         )
         entry_mgr.categories.get_category_entry_count.return_value = count
-        return SidebarController(entry_mgr, MagicMock())
+        return SidebarController(entry_mgr)
 
     def test_missing_category_returns_empty(self):
+        """分类不存在时返回空消息与空名。"""
         ctrl = self._ctrl_with_category(None, 0)
         msg, has_entries, name = ctrl.build_delete_message(42)
         assert msg == ""
@@ -108,6 +118,7 @@ class TestBuildDeleteMessage:
         assert name == ""
 
     def test_empty_category_no_extra_warning(self):
+        """空分类不追加条目删除警告。"""
         ctrl = self._ctrl_with_category("工作", 0)
         msg, has_entries, name = ctrl.build_delete_message(1)
         assert "工作" in msg
@@ -115,6 +126,7 @@ class TestBuildDeleteMessage:
         assert name == "工作"
 
     def test_category_with_entries_adds_warning(self):
+        """含条目的分类追加删除条目警告。"""
         ctrl = self._ctrl_with_category("金融", 3)
         msg, has_entries, name = ctrl.build_delete_message(1)
         assert "3" in msg

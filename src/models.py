@@ -313,7 +313,7 @@ class Entry:
     is_deleted: bool = False
     password_strength: int = 0
     entry_type: str = ENTRY_TYPE_LOGIN  # login, card, identity, note, server
-    totp_secret: str = ""  # 加密后的 TOTP 密钥，空字符串表示未设置
+    totp_secret: str = ""  # TOTP 密钥（明文 Base32），空字符串表示未设置
     created_at: str = ""
     updated_at: str = ""
     deleted_at: str = ""

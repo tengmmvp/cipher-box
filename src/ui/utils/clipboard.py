@@ -93,10 +93,11 @@ if sys.platform == "win32":
                 # CF_UNICODETEXT：UTF-16LE 编码 + 2 字节 null 终止符
                 if not _set_clipboard_data(_CF_UNICODETEXT, text.encode("utf-16-le") + b"\x00\x00"):
                     return False
-                # Win+V 历史/云剪贴板排除标记（注册失败则仅写文本，降级）
+                # Win+V 历史/云剪贴板排除标记（注册失败则仅写文本，降级）。标记写入失败
+                # 不可静默——文本已在剪贴板但无排除保护，密码可能进历史/云同步，须告警可见。
                 fmt = _user32.RegisterClipboardFormatW(_EXCLUDE_CLIPBOARD_FORMAT)
-                if fmt:
-                    _set_clipboard_data(fmt, b"\x00")
+                if fmt and not _set_clipboard_data(fmt, b"\x00"):
+                    logger.warning("Win+V 历史排除标记写入失败，密码可能出现在剪贴板历史/云同步")
                 return True
             finally:
                 _user32.CloseClipboard()
@@ -145,6 +146,9 @@ class ClipboardManager(QObject):
         """复制文本到剪贴板，并设置自动清空定时器。
 
         同时写入 X11 Primary Selection 中键粘贴缓冲区，确保定时清空时一并清除。
+        写入失败（Windows 下剪贴板被其他进程持续占用致 setText 抛 RuntimeError）降级：
+        记 warning 不崩 UI，不设 hash/不启定时器——``_clear_clipboard`` 仅在确认内容
+        仍为本会话写入时清空，写入未成功则无内容可清。
         """
         if not text:
             return
@@ -153,12 +157,26 @@ class ClipboardManager(QObject):
             # SEC-CLIP-001：Windows 下单次 OpenClipboard 原子写文本 + Win+V 历史排除标记，
             # 消除 setText 与排除标记分两次写入的时序窗口；非 Windows 或失败回退 Qt setText。
             if not _copy_with_history_exclusion(text):
-                clipboard.setText(text)
+                # setText 容错（SEC-CLIP-002）：与 _clear_clipboard 的 text() 读取容错对称——
+                # H1 已使读取失败降级，写入失败同样须降级，否则 Windows 下剪贴板被占用时
+                # 复制操作直接崩 UI。写入失败则无内容可清，直接返回不设 hash/不定时。
+                try:
+                    clipboard.setText(text)
+                except RuntimeError:
+                    logger.warning("写入剪贴板失败（被占用），复制未完成", exc_info=True)
+                    return
             self._last_text_hash = _hmac_of(text)
             # X11 Primary Selection：Linux 下中键粘贴使用的独立缓冲区
             if clipboard.supportsSelection():
-                clipboard.setText(text, QClipboard.Mode.Selection)
-                self._last_selection_hash = _hmac_of(text)
+                try:
+                    clipboard.setText(text, QClipboard.Mode.Selection)
+                except RuntimeError:
+                    # Selection 写入失败不影响主文本已复制；selection 残留由 hash 为空
+                    # （_clear_clipboard 跳过该缓冲区比对）兜底，不阻断复制流程。
+                    logger.warning("写入 X11 Primary Selection 失败", exc_info=True)
+                    self._last_selection_hash = b""
+                else:
+                    self._last_selection_hash = _hmac_of(text)
             else:
                 self._last_selection_hash = b""
             if self._clear_seconds > 0:

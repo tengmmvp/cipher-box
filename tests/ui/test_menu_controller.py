@@ -117,6 +117,7 @@ class TestMenuActionWiring:
     """菜单动作经 MenuSlots 回调连通。"""
 
     def test_add_entry_action_triggers_slot(self, qapp):
+        """「新增条目」菜单动作触发 add_entry 回调。"""
         ctrl, calls = _make_controller()
         parent = _setup_on_fresh_window(ctrl)
         for action in _all_menu_actions(parent):
@@ -127,6 +128,7 @@ class TestMenuActionWiring:
         assert len(calls["add_entry"]) == 1
 
     def test_lock_action_triggers_slot(self, qapp):
+        """「锁定保险库」菜单动作触发 lock 回调。"""
         ctrl, calls = _make_controller()
         parent = _setup_on_fresh_window(ctrl)
         for action in _all_menu_actions(parent):
@@ -140,6 +142,7 @@ class TestDialogDispatch:
     """show_* 对话框调度与 Accepted/Rejected 分支副作用。"""
 
     def test_show_settings_accepted_applies_theme_and_runtime(self, qapp, monkeypatch):
+        """设置对话框 Accepted 时应用主题与运行时设置。"""
         ctrl, calls = _make_controller()
         _setup_on_fresh_window(ctrl)
         monkeypatch.setattr(
@@ -151,6 +154,7 @@ class TestDialogDispatch:
         assert calls["apply_runtime_settings"] == [()]
 
     def test_show_settings_rejected_skips_apply(self, qapp, monkeypatch):
+        """设置对话框 Rejected 时跳过主题与运行时设置应用。"""
         ctrl, calls = _make_controller()
         _setup_on_fresh_window(ctrl)
         monkeypatch.setattr(
@@ -162,6 +166,7 @@ class TestDialogDispatch:
         assert calls["apply_runtime_settings"] == []
 
     def test_show_backup_data_changed_refreshes(self, qapp, monkeypatch):
+        """备份对话框数据变更（data_changed=True）时刷新列表并清空详情。"""
         ctrl, calls = _make_controller()
         _setup_on_fresh_window(ctrl)
         mock_cls = MagicMock()
@@ -172,6 +177,7 @@ class TestDialogDispatch:
         ctrl._detail_panel.show_empty.assert_called_once()
 
     def test_show_backup_unchanged_skips_refresh(self, qapp, monkeypatch):
+        """备份对话框数据未变（data_changed=False）时跳过刷新。"""
         ctrl, calls = _make_controller()
         _setup_on_fresh_window(ctrl)
         mock_cls = MagicMock()
@@ -196,6 +202,7 @@ class TestDialogDispatch:
         ctrl._auto_backup.trigger_check.assert_called_once_with(force=True)
 
     def test_show_change_master_rejected_skips_backup(self, qapp, monkeypatch):
+        """改密对话框 Rejected 时不触发强制备份（trigger_check 不调用）。"""
         ctrl, _ = _make_controller()
         _setup_on_fresh_window(ctrl)
         monkeypatch.setattr(
@@ -210,6 +217,7 @@ class TestUpdateMenuIcons:
     """update_menu_icons 按 QAction.data() 存储的 icon name 重建图标。"""
 
     def test_update_menu_icons_does_not_raise(self, qapp):
+        """update_menu_icons 按 data() 重建图标不抛异常（主题切换回归）。"""
         ctrl, _ = _make_controller()
         _setup_on_fresh_window(ctrl)
         # setup 已建菜单并设置 data()=icon name，主题切换时重建不应抛错

@@ -24,6 +24,7 @@ class TestKeyManagerZeroing:
     """
 
     def test_update_key_zeroes_old_internal_copy(self, monkeypatch):
+        """经 spy 捕获清零对象，验证 update_key 仅清零旧主密钥内部副本、不动 snapshot。"""
         km = KeyManager()
         km.activate(bytearray(b"x" * 32), bytearray(b"y" * 32), epoch=1)
 
@@ -42,6 +43,7 @@ class TestKeyManagerZeroing:
         assert bytes(zeroed[0]) == b"x" * 32
 
     def test_update_snapshot_key_zeroes_old_internal_copy(self, monkeypatch):
+        """经 spy 捕获清零对象，验证 update_snapshot_key 仅清零旧 snapshot 内部副本。"""
         km = KeyManager()
         km.activate(bytearray(b"k" * 32), bytearray(b"s" * 32), epoch=1)
 

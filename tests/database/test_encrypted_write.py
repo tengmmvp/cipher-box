@@ -111,12 +111,14 @@ class TestEncryptedWriteAssertions:
         assert entry_id is not None
 
     def test_password_history_rejects_plaintext(self, secure_db):
+        """add_password_history 应拒绝明文 password。"""
         entry_id = secure_db.add_entry(_make_encrypted_entry())
 
         with pytest.raises(ValueError, match="未加密"):
             secure_db.add_password_history(entry_id, "plaintext password")
 
     def test_password_history_batch_rejects_plaintext(self, secure_db):
+        """add_password_history_batch 在含明文条目时拒绝整批。"""
         entry_id = secure_db.add_entry(_make_encrypted_entry())
 
         with pytest.raises(ValueError, match="未加密"):

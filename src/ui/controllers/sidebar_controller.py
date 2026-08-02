@@ -6,20 +6,14 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ...business.managers.entry_manager import EntryManager
-    from ...config import ConfigManager
     from ...models import Category
 
 
 class SidebarController:
     """侧边栏分类管理的纯数据逻辑控制器，不持有任何 UI 控件引用。"""
 
-    def __init__(
-        self,
-        entry_manager: EntryManager,
-        config: ConfigManager,
-    ) -> None:
+    def __init__(self, entry_manager: EntryManager) -> None:
         self._entry_mgr = entry_manager
-        self._config = config
 
     # ========== 分类数据读取 ==========
 

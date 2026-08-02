@@ -75,6 +75,7 @@ class TestRateLimiterSentinel:
     """验证哨兵机制：状态文件被删除即降级最高阶梯锁定。"""
 
     def test_save_creates_sentinel(self, tmp_path):
+        """``record_failure`` 触发 ``_save_state`` 写状态文件时同时落哨兵文件。"""
         state = tmp_path / "rate_limit.json"
         rl = RateLimiter(state)
         rl.record_failure()  # 触发 _save_state → 创建哨兵
