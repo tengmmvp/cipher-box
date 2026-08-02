@@ -30,8 +30,9 @@ def _read_resource_text(name: str) -> str:
     对包重命名健壮（绝对包名字符串会在重命名后运行期才暴雷）。资源经 pyproject package-data
     分发（packages.find 仅收集 .py，非 Python 资源须显式声明）。
     """
+    if __package__ is None:  # 包内模块恒非 None；显式 if 替代 assert 收窄 pyright 推断（QL-017）
+        raise ShareError(f"解密器资源缺失：{name}")
     try:
-        assert __package__ is not None  # 包内模块恒非 None；收窄 pyright 的 str|None 推断
         return (files(__package__) / "share_resources" / name).read_text(encoding="utf-8")
     except (FileNotFoundError, ModuleNotFoundError) as exc:
         raise ShareError(f"解密器资源缺失：{name}") from exc

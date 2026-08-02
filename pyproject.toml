@@ -78,6 +78,20 @@ select = ["E9", "F401", "F63", "F7", "F82", "F811", "W292", "I", "UP", "B"]
 # Qt Model 子类的 rowCount/columnCount/index 等重写方法以 QModelIndex() 作默认
 # 参数是 PyQt6 官方推荐签名，B008（默认参数函数调用）对此误报，整文件豁免。
 "src/ui/components/entry_list_widget.py" = ["B008"]
+# S105 误报：变量/常量名含 "password/pwd" 但值是配置键名/SQL 文本/掩码字符串，非密码。
+"src/config.py" = ["S105"]
+"src/database/entry_repository.py" = ["S105", "S608", "PERF203"]
+"src/database/db_manager.py" = ["S608"]
+"src/ui/resources/constants.py" = ["S105"]
+# S608：SQL 经 ? 占位符参数化、列名硬编码自常量（_ENTRY_COLUMNS 等），无注入面（既有 nosec B608 兼容 bandit）。
+# PERF203：try-except 在循环内是容错语义（单回调/行/文件失败隔离，不影响其他），外提 try 会一次失败中止全部。
+# S603：subprocess 仅执行内部构造的 whoami/icacls（路径经 validate_file_path 校验），无 untrusted input。
+"src/business/managers/entry_change_bus.py" = ["PERF203"]
+"src/business/managers/vault_manager.py" = ["PERF203"]
+"src/ui/components/widgets.py" = ["PERF203"]
+"src/ui/controllers/entry_refresh_coordinator.py" = ["PERF203"]
+"src/utils/purge_files.py" = ["PERF203"]
+"src/utils/file_security.py" = ["S603"]
 
 [tool.ruff.lint.isort]
 # 合并 as 重命名 import 到主块，匹配项目既有的单块 import 风格，避免同一模块

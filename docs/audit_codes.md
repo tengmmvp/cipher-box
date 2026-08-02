@@ -7,6 +7,7 @@
 - **格式**：`<维度前缀>-NNN`，三位零填充（如 `SEC-003`、`PERF-012`、`ARCH-005`）。
 - **维度前缀**：`ARCH`（架构）/ `MAINT`（维护·可维护性）/ `PERF`（性能）/ `QL`（质量·可读性）/ `SEC`（安全）。
 - **新增编号**须在本文件对应维度表登记，避免跨文件漂移与编号复用。
+- **双向引用**：新编号除登记索引外，须在对应代码注释以 ``（XXX-NNN）`` 引用，保证索引-代码一致（MAINT-014）。纯约定/已放弃编号（处数=0）豁免。
 
 ## 历史重编号说明
 
@@ -34,7 +35,7 @@ message 中的旧编号引用。
 | `ARCH-010` | `ARCH-024` | 3 | # 只读映射（MappingProxyType 防误写，ARCH-010）：均派生自 _INT_SPECS。 |
 | `ARCH-011` | `ARCH-3` | 1 | # 的值再签，与恢复路径对称，消除手工键集漂移（ARCH-011）。回读须在调用方事务内， |
 
-### MAINT — 维护/可维护性（13 项）
+### MAINT — 维护/可维护性（14 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
@@ -51,8 +52,9 @@ message 中的旧编号引用。
 | `MAINT-011` | `MAINT-1` | 2 | # 分支于测试框架存在性（MAINT-011）。 |
 | `MAINT-012` | `MAINT-2` | 1 | # 平台判定单一常量（MAINT-012）：统一引用，避免 os.name=='nt' 与 sys.platform=='win32' 混用 |
 | `MAINT-013` | `MAINT-3` | 3 | """BackupDialog 接线测试：控件值→业务参数→结果文案（MAINT-013）。 |
+| `MAINT-014` | — | 0 | 审计编号双向引用约定：新编号须在代码注释 ``（XXX-NNN）`` 引用，使 rg 可从代码回溯决策（本轮 PERF-017/QL-015/QL-016/QL-017 已补齐；纯约定/已放弃编号处数=0 豁免）。 |
 
-### PERF — 性能（16 项）
+### PERF — 性能（17 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
@@ -72,8 +74,9 @@ message 中的旧编号引用。
 | `PERF-014` | `PERF-2` | 3 | 不含 Entry 列表，获取时无需 :meth:`_refilter_cache` 深拷贝（PERF-014）。 |
 | `PERF-015` | — | 0 | （已放弃）HMAC 验签结论缓存漏检 db 内容篡改（改字段不改 mac），安全优先放弃，代码无引用，详见 memory `perf015-skipped-verify-cache`。 |
 | `PERF-016` | — | 2 | 搜索热路径一次取完整 SearchMetadata，摘要构建与小写匹配共用，省第二次缓存查询。 |
+| `PERF-017` | — | 1 | generate_password 先 list comprehension 收必选字符、再 extend 填充剩余，替代逐次 append 循环（PERF401）。 |
 
-### QL — 质量/可读性（14 项）
+### QL — 质量/可读性（17 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
@@ -91,6 +94,9 @@ message 中的旧编号引用。
 | `QL-012` | `QL-015` | 1 | :meth:`_to_bytearray` 保证为 bytearray，无需额外 isinstance 守卫（QL-012）。 |
 | `QL-013` | `QL-016` | 1 | # `paintEvent` 绘制参数（QL-013，提取魔数）：圆环几何与 Qt `drawArc` 角度常量。 |
 | `QL-014` | `QL-3` | 2 | 可见（QL-014）。 |
+| `QL-015` | — | 1 | error_messages 用 ``_FIXED_MESSAGES`` 映射表替代 if-elif 链归一异常文案，降 to_user_message 圈复杂度（radon D→A）。 |
+| `QL-016` | — | 1 | config 用 ``_KEY_VALIDATORS`` 分发表 + 校验辅助函数替代长 if-elif，降 ``_is_valid`` 圈复杂度（radon E→A）。 |
+| `QL-017` | — | 2 | share_renderer/font_loader 用显式 ``if`` 检查替代 ``assert`` 收窄 pyright 推断（S101，避免 python -O 剥离致收窄失效）。 |
 
 ### SEC — 安全（15 项）
 

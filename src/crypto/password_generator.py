@@ -182,13 +182,11 @@ class PasswordGenerator:
 
         # 先从每类字符集各取一个：纯随机填充可能偶然漏掉某字符类，致实际字符多样
         # 性低于调用方配置预期（如勾选 symbols 但全程未出现符号）。
-        password_chars = []
-        for req_chars in required:
-            password_chars.append(_RNG.choice(req_chars))
+        # comprehension 收必选字符 + extend 填充剩余，替代逐次 append 循环（PERF-017）。
+        password_chars = [_RNG.choice(req_chars) for req_chars in required]
 
         remaining = length - len(password_chars)
-        for _ in range(max(0, remaining)):
-            password_chars.append(_RNG.choice(charset))
+        password_chars.extend(_RNG.choice(charset) for _ in range(max(0, remaining)))
 
         _RNG.shuffle(password_chars)
         return "".join(password_chars)

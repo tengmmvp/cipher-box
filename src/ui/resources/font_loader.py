@@ -26,8 +26,10 @@ def load_bundled_fonts() -> list[str]:
     用 ``files(__package__) / "fonts"`` 相对定位字体包：随本模块位置自动跟随，对包重命名
     健壮。单文件加载失败记 ``warning`` 并继续，绝不抛出——字体缺失应回退系统字体而非阻断启动。
     """
+    if __package__ is None:  # 包内模块恒非 None；显式 if 替代 assert 收窄 pyright 推断（QL-017）
+        logger.warning("字体包路径不可用（__package__ 为 None），跳过加载")
+        return []
     added: list[str] = []
-    assert __package__ is not None  # 包内模块恒非 None；收窄 pyright 的 str|None 推断
     for name in _BUNDLED_FONTS:
         try:
             font_path = files(__package__) / "fonts" / name

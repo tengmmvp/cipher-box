@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final, Literal, get_args, overload
@@ -213,6 +214,60 @@ if set(get_args(_IntConfigKey)) != {k for k, v in DEFAULT_CONFIG.items() if is_r
     raise RuntimeError("_IntConfigKey 与 DEFAULT_CONFIG 的 int 键不一致")
 if set(get_args(_BoolConfigKey)) != {k for k, v in DEFAULT_CONFIG.items() if type(v) is bool}:
     raise RuntimeError("_BoolConfigKey 与 DEFAULT_CONFIG 的 bool 键不一致")
+
+
+def _validate_pathlike(value: Any) -> bool:
+    """限长、无 NUL 的字符串（备份目录/上次备份时间戳路径）。"""
+    return isinstance(value, str) and len(value) <= 4096 and "\x00" not in value
+
+
+def _validate_geometry(value: Any) -> bool:
+    """窗口几何：None 或上限内的 hex 字符串（与 MainWindow 恢复共用 MAX 上限）。"""
+    if value is None:
+        return True
+    if not isinstance(value, str) or len(value) > MAX_WINDOW_GEOMETRY_BYTES * 2:
+        return False
+    try:
+        bytes.fromhex(value)
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_splitter(value: Any) -> bool:
+    """分隔条尺寸：None 或三元组整型（各项 1-10000）。"""
+    return value is None or (
+        isinstance(value, list)
+        and len(value) == 3
+        and all(is_real_int(item) and 1 <= item <= 10000 for item in value)
+    )
+
+
+def _validate_sentinels(value: Any) -> bool:
+    """安全哨兵：限长、非空、无 NUL 的纯字符串列表（RateLimiter 状态文件 stem）。"""
+    return (
+        isinstance(value, list)
+        and len(value) <= 64
+        and all(
+            isinstance(item, str) and item and len(item) <= 128 and "\x00" not in item
+            for item in value
+        )
+    )
+
+
+# 具体键校验派发表（QL-016）：替代长 if-elif 降 _is_valid 圈复杂度；集合键 _INT_RANGES/_BOOL_KEYS 在 _is_valid 内联判断。
+_KEY_VALIDATORS: Final[dict[str, Callable[[Any], bool]]] = {
+    CFG_THEME: lambda v: isinstance(v, str) and v in {"light", "dark"},
+    CFG_SORT_FIELD: lambda v: (
+        isinstance(v, str) and v in {"title", "updated_at", "created_at", "password_strength"}
+    ),
+    CFG_SORT_ORDER: lambda v: isinstance(v, str) and v in {"asc", "desc"},
+    CFG_BACKUP_DIRECTORY: _validate_pathlike,
+    CFG_LAST_AUTO_BACKUP_AT: _validate_pathlike,
+    CFG_WINDOW_GEOMETRY: _validate_geometry,
+    CFG_SPLITTER_SIZES: _validate_splitter,
+    CFG_SECURITY_SENTINELS: _validate_sentinels,
+}
 
 
 class ConfigManager:
@@ -502,55 +557,19 @@ class ConfigManager:
     def _is_valid(key: str, value: Any) -> bool:
         """按 key 分组校验配置值合法性，供 load（容错）与 set（拒绝）复用单一规则。
 
-        分发顺序：整型范围 → bool → 枚举（theme/sort_*）→ 限长字符串 →
-        window_geometry（hex）→ splitter_sizes（三元组）→ security_sentinels。
-        无匹配规则（未知键）记 debug 并拒绝——配置键白名单由 DEFAULT_CONFIG 把关，
-        此处只校验已知键的值。load 据返回值跳过非法项保留默认，set 据其抛 ValueError。
+        集合键（_INT_RANGES 整型范围、_BOOL_KEYS）内联判断；具体键经 _KEY_VALIDATORS
+        派发到对应校验器（枚举/限长字符串/窗口几何/分隔条/安全哨兵）。无匹配规则
+        （未知键）记 debug 并拒绝——配置键白名单由 DEFAULT_CONFIG 把关，此处只校验
+        已知键的值。load 据返回值跳过非法项保留默认，set 据其抛 ValueError。
         """
         if key in _INT_RANGES:
             minimum, maximum = _INT_RANGES[key]
             return is_real_int(value) and minimum <= value <= maximum
         if key in _BOOL_KEYS:
             return type(value) is bool
-        if key == CFG_THEME:
-            return isinstance(value, str) and value in {"light", "dark"}
-        if key == CFG_SORT_FIELD:
-            return isinstance(value, str) and value in {
-                "title",
-                "updated_at",
-                "created_at",
-                "password_strength",
-            }
-        if key == CFG_SORT_ORDER:
-            return isinstance(value, str) and value in {"asc", "desc"}
-        if key in {CFG_BACKUP_DIRECTORY, CFG_LAST_AUTO_BACKUP_AT}:
-            return isinstance(value, str) and len(value) <= 4096 and "\x00" not in value
-        if key == CFG_WINDOW_GEOMETRY:
-            if value is None:
-                return True
-            if not isinstance(value, str) or len(value) > MAX_WINDOW_GEOMETRY_BYTES * 2:
-                return False
-            try:
-                bytes.fromhex(value)
-                return True
-            except ValueError:
-                return False
-        if key == CFG_SPLITTER_SIZES:
-            return value is None or (
-                isinstance(value, list)
-                and len(value) == 3
-                and all(is_real_int(item) and 1 <= item <= 10000 for item in value)
-            )
-        if key == CFG_SECURITY_SENTINELS:
-            # 登记名为限长、无 NUL 的纯字符串列表（RateLimiter 状态文件 stem）。
-            return (
-                isinstance(value, list)
-                and len(value) <= 64
-                and all(
-                    isinstance(item, str) and item and len(item) <= 128 and "\x00" not in item
-                    for item in value
-                )
-            )
+        validator = _KEY_VALIDATORS.get(key)
+        if validator is not None:
+            return validator(value)
         logger.debug("配置键 %s 无验证规则，已拒绝", key)
         return False
 
