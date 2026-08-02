@@ -130,7 +130,7 @@ class AutoLockController:
         # 仅 Windows 交互会话注册。测试环境（经 CIPHERBOX_DISABLE_WTS 标记）的窗口未进入
         # 真实消息循环，WTSRegisterSessionNotification 会触发 C 层 access violation（无法
         # try/except 捕获）。用环境变量替代 'pytest' in sys.modules 探测，避免生产代码
-        # 分支于测试框架存在性（MAINT-1）。
+        # 分支于测试框架存在性（MAINT-011）。
         if sys.platform != "win32" or os.environ.get("CIPHERBOX_DISABLE_WTS"):
             return
         try:

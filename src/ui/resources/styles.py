@@ -3,7 +3,7 @@
 ``STYLE_TEMPLATE`` 以 ``{color_key}`` / ``{radius_*}`` 占位符引用 ``theme_colors`` 的
 颜色 token 与 ``radius`` 的圆角档位，同一份模板可渲染浅色/深色两套样式表，避免双主题
 样式重复维护。``render_style`` 为纯渲染（不触碰全局活跃主题）；``get_style`` 同样纯
-渲染，激活主题由调用方经 ``set_theme`` 显式完成（ARCH-009），保证运行时 ``c()`` 配色
+渲染，激活主题由调用方经 ``set_theme`` 显式完成（ARCH-008），保证运行时 ``c()`` 配色
 与样式表一致。
 """
 
@@ -518,7 +518,7 @@ def get_style(theme: str) -> str:
     """获取指定主题的样式表（纯渲染，无副作用）。
 
     样式表生成与全局活跃主题激活解耦，由调用方显式经 ``set_theme(theme)``
-    激活（ARCH-009）。调用方须在 ``get_style`` 前或同序列调用 ``set_theme``，
+    激活（ARCH-008）。调用方须在 ``get_style`` 前或同序列调用 ``set_theme``，
     保证运行时 ``c()`` 配色（delegate 等控件）与样式表一致。
     """
     return render_style(theme)

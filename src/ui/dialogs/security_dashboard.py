@@ -58,7 +58,7 @@ _BADGE_BG_ALPHA = 0.13
 class _HealthScoreWidget(QWidget):
     """以圆环进度形式绘制安全健康评分的自定义组件。"""
 
-    # `paintEvent` 绘制参数（QL-016，提取魔数）：圆环几何与 Qt `drawArc` 角度常量。
+    # `paintEvent` 绘制参数（QL-013，提取魔数）：圆环几何与 Qt `drawArc` 角度常量。
     _RING_PADDING_PX = 12  # 圆环与控件边缘的间距
     _RING_PEN_WIDTH = 10  # 圆环线条粗细（像素）
     _ANGLE_TICKS_PER_DEGREE = 16  # Qt drawArc 角度单位为 1/16 度

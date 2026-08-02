@@ -21,7 +21,7 @@ def restore_categories(
     add_categories_batch: Callable[[list[Category]], list[int]],
     backup: PortableBackup,
 ) -> dict[int, int]:
-    """重建分类，返回旧 ID 到新 ID 的映射（PF-003：批量两阶段加密，消除 O(N²) 查重）。
+    """重建分类，返回旧 ID 到新 ID 的映射（PERF-004：批量两阶段加密，消除 O(N²) 查重）。
 
     ARCH-002：经 ``add_categories_batch`` 回调注入写能力，本纯变换模块不再依赖
     EntryManager 类型——恢复前已 clear_vault_data 清空分类表，回调内批量写入无需查重。

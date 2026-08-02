@@ -1,4 +1,4 @@
-"""SettingsDialog 接线测试：控件值→config 写入 + 持久化失败回滚（MAINT-3）。
+"""SettingsDialog 接线测试：控件值→config 写入 + 持久化失败回滚（MAINT-013）。
 
 业务层（``ConfigManager`` 的 ``_is_valid``/``get_safe``/原子 ``save``）已由 ``tests/config``
 覆盖；本文件守护「对话框控件值→``_SETTINGS_MAP``→``config.set``→持久化」接线层，

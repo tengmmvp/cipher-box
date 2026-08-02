@@ -2,7 +2,7 @@
 
 Unix 经 ``chmod`` 0600/0700，Windows 经 ``icacls`` 收紧为当前用户独占（含 ACL 缓存
 与 SID 解析）；``atomic_write`` 经临时文件 + ``os.replace`` + 落地即 0600 实现原子写，
-消除收紧前的世界可读窗口（SEC-2）；``secure_delete_file`` 覆写再 unlink 收缩取证还原面；
+消除收紧前的世界可读窗口（SEC-015）；``secure_delete_file`` 覆写再 unlink 收缩取证还原面；
 ``validate_file_path`` 拒绝目录遍历与符号链接/reparse 重定向；DPAPI 封装敏感配置密钥。
 """
 
@@ -21,7 +21,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# 平台判定单一常量（MAINT-2）：统一引用，避免 os.name=='nt' 与 sys.platform=='win32' 混用致跨平台漂移。
+# 平台判定单一常量（MAINT-012）：统一引用，避免 os.name=='nt' 与 sys.platform=='win32' 混用致跨平台漂移。
 IS_WINDOWS = sys.platform == "win32"
 _SECURED_WINDOWS_OBJECTS: OrderedDict[str, tuple[int, int]] = OrderedDict()
 _SECURED_LOCK = threading.Lock()
@@ -306,7 +306,7 @@ def _path_is_symlink_or_reparse(path: Path) -> bool:
     """检测叶子本身是否为符号链接 / Windows reparse point/junction（``lstat`` 不跟随）。
 
     供 :func:`secure_delete_file` 覆写前判定：若是链接/reparse point 直接 ``unlink`` 链接本身，
-    避免 purge 经恶意链接把覆写重定向到任意目标（SEC-1，与 :func:`validate_file_path` 同源）。
+    避免 purge 经恶意链接把覆写重定向到任意目标（SEC-014，与 :func:`validate_file_path` 同源）。
     """
     try:
         st = path.lstat()
@@ -347,10 +347,10 @@ def secure_delete_file(path: Path) -> None:
 
     用于含明文的敏感文件（恢复点 pre_restore_*.cbox、自动快照、临时备份），统一删除强度，
     避免敏感快照仅被 unlink 而明文扇区可被取证还原。文件不存在直接返回；SSD 磨损均衡下
-    覆写非密码学保证但显著强于单纯 unlink。符号链接/reparse point 仅删链接不覆写目标（SEC-1）。
+    覆写非密码学保证但显著强于单纯 unlink。符号链接/reparse point 仅删链接不覆写目标（SEC-014）。
     """
     if _path_is_symlink_or_reparse(path):
-        # 叶子是符号链接/reparse point：仅 unlink 链接本身，绝不覆写其目标（SEC-1），missing_ok 防 TOCTOU。
+        # 叶子是符号链接/reparse point：仅 unlink 链接本身，绝不覆写其目标（SEC-014），missing_ok 防 TOCTOU。
         path.unlink(missing_ok=True)
         return
     if not path.exists():
@@ -383,7 +383,7 @@ def secure_delete_file(path: Path) -> None:
 
 
 def _open_file_restricted(name: str, flags: int) -> int:
-    """``open()`` 的 opener 回调：以 0600 创建文件，供 :func:`atomic_write` 消除明文临时文件在 ``secure_file`` 收紧前的世界可读窗口（SEC-2）。"""
+    """``open()`` 的 opener 回调：以 0600 创建文件，供 :func:`atomic_write` 消除明文临时文件在 ``secure_file`` 收紧前的世界可读窗口（SEC-015）。"""
     return os.open(name, flags, 0o600)
 
 
@@ -399,7 +399,7 @@ def atomic_write(
 
     write_cb 接收已打开文件对象，返回 True 完成替换，False 取消（删临时文件不替换）。
     异常时删临时文件并重新抛出。临时文件落地即 0600（经 ``_open_file_restricted`` opener），
-    消除「写明文 → 关闭 → secure_file 收紧」间的世界可读窗口（SEC-2）。Windows 忽略 POSIX
+    消除「写明文 → 关闭 → secure_file 收紧」间的世界可读窗口（SEC-015）。Windows 忽略 POSIX
     mode 位，靠继承已收紧的父目录 ACL。
     """
     target.parent.mkdir(parents=True, exist_ok=True)

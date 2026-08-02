@@ -75,7 +75,7 @@ class CategoryRepository:
                 return replace(category, integrity_error=True)
             except VaultLockedError:
                 # 锁定竞态：域密钥在取行后被 prepare_for_lock 清零，锁定态验签无意义。
-                # 与 entry_repository._row_to_entry 一致向上传播（SEC-013），让调用方
+                # 与 entry_repository._row_to_entry 一致向上传播（SEC-012），让调用方
                 # 统一处理锁定竞态，避免分类读路径静默返回未验签数据与条目路径行为不一致。
                 raise
         return category
@@ -91,7 +91,7 @@ class CategoryRepository:
                 改密重签等路径传 False 跳过，避免旧签名在新域密钥下的假阳性告警。
         """
         # 仅按 sort_order 排序：name_enc 为密文，密文序无意义；分类名排序由
-        # CategoryManager.get_categories 在解密后按 name.casefold() 完成（PF-009）。
+        # CategoryManager.get_categories 在解密后按 name.casefold() 完成（PERF-008）。
         rows = self._conn.execute(
             "SELECT id, name_enc, icon_char, color, sort_order, created_at, metadata_mac "
             "FROM categories ORDER BY sort_order"

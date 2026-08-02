@@ -69,7 +69,7 @@ ENTRY_TYPE_NOTE = "note"
 ENTRY_TYPE_SERVER = "server"
 
 # 只读映射：MappingProxyType 使误用 ``ENTRY_TYPES[k] = ...`` / ``.pop()`` 等原地突变
-# 在运行时即抛 TypeError，防止模块级常量被无意改写（ARCH-024）。读取路径
+# 在运行时即抛 TypeError，防止模块级常量被无意改写（ARCH-010）。读取路径
 # （``in`` / ``[]`` / ``.items()`` / ``.get()``）与原 dict 完全一致。
 ENTRY_TYPES = MappingProxyType(
     {

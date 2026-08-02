@@ -292,7 +292,7 @@ class MainWindow(QMainWindow):
         self.resize(*WINDOW_DEFAULT_SIZE)
 
         theme = self._config.get(CFG_THEME, DEFAULT_THEME)
-        # 显式激活主题，使运行时 c() 解析的颜色与样式表一致（ARCH-009）。
+        # 显式激活主题，使运行时 c() 解析的颜色与样式表一致（ARCH-008）。
         # 样式表统一经 app 级应用（app.py 启动时 setStyleSheet），不在窗口级重复设置——
         # 否则 _apply_theme 仅更 app 级时，主窗口子树会停留旧主题 QSS（widget 自身样式表
         # 优先于 app 级），与运行时图标新主题割裂。
@@ -653,7 +653,7 @@ class MainWindow(QMainWindow):
         self._shutdown_workers()
         # reject 模态对话框：托盘菜单是原生菜单不受 application-modal 阻拦，故可达；
         # 须在 vault.close 前 reject 使其 worker 退出，否则 vault 关闭撕裂共享
-        # sqlite 事务 + QThread running 析构崩溃（ARCH-019）。
+        # sqlite 事务 + QThread running 析构崩溃（ARCH-009）。
         for widget in list(QApplication.topLevelWidgets()):
             if widget is self or not isinstance(widget, QDialog):
                 continue
@@ -676,7 +676,7 @@ class MainWindow(QMainWindow):
         theme = self._config.get(CFG_THEME, DEFAULT_THEME)
         if theme != self._current_theme:
             self._current_theme = theme
-            # 显式激活主题，使运行时 c() 解析的颜色与样式表一致（ARCH-009）
+            # 显式激活主题，使运行时 c() 解析的颜色与样式表一致（ARCH-008）
             set_theme(theme)
             style = get_style(theme)
             app = QApplication.instance()

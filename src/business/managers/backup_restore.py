@@ -264,7 +264,7 @@ class BackupRestoreManager:
         else:
             snapshot_key = prepared.snapshot_key
             # prepare 已保证 SNAPSHOT 路径 snapshot_key 非 None；显式检查替代 assert
-            # （python -O 跳过），满足类型 narrow 与意外状态防御（对称 PASSWORD 分支，PF-obs）。
+            # （python -O 跳过），满足类型 narrow 与意外状态防御（对称 PASSWORD 分支，obs）。
             if snapshot_key is None:
                 raise BackupError("快照密钥不可用")
             backup_key = snapshot_key
@@ -683,7 +683,7 @@ class BackupRestoreManager:
 
         retention = config.get(CFG_AUTO_BACKUP_RETENTION, DEFAULT_CONFIG[CFG_AUTO_BACKUP_RETENTION])
         # 过期快照清理下沉 auto_backup_policy.purge_expired_auto_backups（纯策略函数）。
-        # PF-001-R：清理异常就地捕获降级 warning，不漂移致「备份已成功却被误报失败」
+        # PERF-002：清理异常就地捕获降级 warning，不漂移致「备份已成功却被误报失败」
         # （purge 内部 secure_purge 已对单文件删除告警，此处兜底 glob 等非预期 OSError）。
         try:
             purge_expired_auto_backups(directory, retention)

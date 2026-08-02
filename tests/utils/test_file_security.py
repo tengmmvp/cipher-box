@@ -82,7 +82,7 @@ class TestSecureDeleteFile:
         assert not target.exists()
 
     def test_secure_delete_file_symlink_preserves_target(self, tmp_path):
-        """真实符号链接：仅删链接本身，目标文件内容与存在性保持（SEC-1）。
+        """真实符号链接：仅删链接本身，目标文件内容与存在性保持（SEC-014）。
 
         回归守护：secure_purge 经 glob 匹配，若 secure_delete_file 跟随符号链接覆写，
         攻击者在备份目录植入的恶意链接会诱导 purge 随机覆写链接指向的任意目标文件。
@@ -101,7 +101,7 @@ class TestSecureDeleteFile:
         assert target.read_bytes() == original  # 目标内容未被覆写
 
     def test_secure_delete_file_skips_overwrite_when_reparse(self, tmp_path, monkeypatch):
-        """叶子判定为符号链接/reparse 时仅 unlink，不触发覆写 open（SEC-1）。
+        """叶子判定为符号链接/reparse 时仅 unlink，不触发覆写 open（SEC-014）。
 
         monkeypatch 模拟重定向判定，不依赖真实符号链接创建权限，本地任意平台即可
         验证分支：命中即走 unlink-only 路径，绝不 open(path, 'r+b') 覆写。
@@ -492,7 +492,7 @@ class TestValidateFilePathStrictAncestors:
 
 
 class TestAtomicWritePermissions:
-    """atomic_write 临时文件落地即 0600，消除明文临时文件世界可读窗口（SEC-2）。"""
+    """atomic_write 临时文件落地即 0600，消除明文临时文件世界可读窗口（SEC-015）。"""
 
     def test_open_file_restricted_creates_0600(self, tmp_path):
         """_open_file_restricted opener 以 0600 创建文件（Unix 验证 mode 位）。"""
@@ -509,7 +509,7 @@ class TestAtomicWritePermissions:
         assert mode == 0o600
 
     def test_atomic_write_uses_restricted_opener(self, tmp_path, monkeypatch):
-        """atomic_write 把 _open_file_restricted 作为 opener 传给 open（SEC-2）。"""
+        """atomic_write 把 _open_file_restricted 作为 opener 传给 open（SEC-015）。"""
         from src.utils import file_security
         from src.utils.file_security import atomic_write
 
@@ -526,7 +526,7 @@ class TestAtomicWritePermissions:
         assert captured["opener"] is file_security._open_file_restricted
 
     def test_atomic_write_roundtrip_restricted(self, tmp_path):
-        """atomic_write 完整写入后目标文件 0600 且内容正确（SEC-2 端到端）。"""
+        """atomic_write 完整写入后目标文件 0600 且内容正确（SEC-015 端到端）。"""
         import stat as stat_mod
 
         from src.utils.file_security import atomic_write

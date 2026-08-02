@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import QMainWindow, QMenu, QMessageBox
 from ..components.toast import Toast
 from ..dialogs.category_dialog import CategoryDialog
 from ..dialogs.entry_dialog import EntryDialog
-from ..dialogs.share_package_dialog import SharePackageDialog
+from ..dialogs.share_package_dialog import open_share_package_dialog
 from ..error_messages import to_user_message
 from ..resources.constants import (
     MS_ENTRY_SELECT_DEBOUNCE,
@@ -196,7 +196,7 @@ class EntryActionsController:
             return
         summary = idx.data(Qt.ItemDataRole.UserRole)
         if summary:
-            # 短路（PF-002）：详情面板已显示同一条目（id + updated_at 未变）时跳过重复
+            # 短路（PERF-003）：详情面板已显示同一条目（id + updated_at 未变）时跳过重复
             # get_entry 全量解密（含 password/totp），避免重复选中同一条目的解密开销。
             current = self._detail_panel.current_entry
             if (
@@ -352,7 +352,7 @@ class EntryActionsController:
     @require_unlocked
     def _copy_password(self, entry_id: int) -> None:
         """延迟解密并复制条目密码；仅当右键的是当前详情条目时触发复制反馈。"""
-        # 复用面板已解密明文（PF-004）：右键复制密码的常是当前详情条目，直接取其已解密
+        # 复用面板已解密明文（PERF-005）：右键复制密码的常是当前详情条目，直接取其已解密
         # password 跳过重复 get_entry 全量解密；非当前条目回退延迟解密。
         current = self._detail_panel.current_entry
         entry = (
@@ -407,7 +407,7 @@ class EntryActionsController:
     # ========== 条目 CRUD ==========
 
     def _resolve_dialog_options(self) -> tuple[list[Category], list[str]]:
-        """获取新增/编辑对话框预填的分类与标签，分类为空时回退全量查询（QL-010）。"""
+        """获取新增/编辑对话框预填的分类与标签，分类为空时回退全量查询（QL-009）。"""
         categories, tag_names = self._deps.get_dialog_options()
         if not categories:
             categories = self._entry_mgr.categories.get_categories()
@@ -533,17 +533,7 @@ class EntryActionsController:
         entry = self._entry_mgr.get_entry(entry_id)
         if not entry:
             return
-        if entry.integrity_error:
-            QMessageBox.critical(
-                self._parent,
-                "数据完整性异常",
-                f"该条目的以下字段无法解密：{entry.integrity_message}。\n\n"
-                "当前无法创建共享包，请先创建备份并检查数据文件。",
-            )
-            return
-        dialog = SharePackageDialog([entry], parent=self._parent)
-        dialog.exec()
-        dialog.deleteLater()
+        open_share_package_dialog(entry, self._parent)
 
     def on_copy_feedback(self) -> None:
         self._view.status_bar.showMessage("已复制到剪贴板", MS_TOAST_DEFAULT)

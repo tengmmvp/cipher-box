@@ -1,4 +1,4 @@
-"""BackupDialog 接线测试：控件值→业务参数→结果文案（MAINT-3）。
+"""BackupDialog 接线测试：控件值→业务参数→结果文案（MAINT-013）。
 
 业务层（``BackupRestoreManager.create_backup/restore_backup``、``inspect_backup``）已由
 ``tests/business`` 充分覆盖；本文件守护「对话框控件值→正确业务参数→领域结果→用户文案」

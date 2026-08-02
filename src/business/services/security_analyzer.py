@@ -38,7 +38,7 @@ HEALTH_PENALTY_WEAK = 15
 HEALTH_PENALTY_DUPLICATE = 10
 HEALTH_PENALTY_OLD = 5
 
-# 过期检测默认天数（QL-006）：数值与 config.OLD_PASSWORD_WARNING_DAYS_DEFAULT 对齐，
+# 过期检测默认天数（QL-005）：数值与 config.OLD_PASSWORD_WARNING_DAYS_DEFAULT 对齐，
 # 但 security_analyzer 属业务层不反向依赖 config，故本地声明同值常量解耦。供全部分析
 # 入口的 days 默认值引用，消除 90 字面量散落。
 DEFAULT_ANALYSIS_DAYS = 90
@@ -71,7 +71,7 @@ class SecurityReport(_SecurityReportBase, total=False):
 class SecurityCounts(NamedTuple):
     """安全分析的计数视图（total/weak/duplicate/old），供仅读计数的消费者。
 
-    不含 Entry 列表，获取时无需 :meth:`_refilter_cache` 深拷贝（PERF-2）。
+    不含 Entry 列表，获取时无需 :meth:`_refilter_cache` 深拷贝（PERF-014）。
     """
 
     total: int
@@ -297,7 +297,7 @@ class SecurityAnalyzer:
         """返回缓存计数（total/weak/duplicate/old），无缓存或过期返回 None。
 
         仅读计数消费者（状态栏刷新、空态「分析中」判定）用此轻量入口，跳过
-        get_cached_report 的 Entry 深拷贝（PERF-2）。old 依赖 days：days 不同时
+        get_cached_report 的 Entry 深拷贝（PERF-014）。old 依赖 days：days 不同时
         按 days 计次（O(n) 日期比较，无深拷贝），其余直接读缓存。
 
         除 TTL 外校验 key_epoch（SEC-002），与 get_cached_report 一致。
@@ -387,7 +387,7 @@ class SecurityAnalyzer:
         # 全量分析持有主密钥并逐条解密，整个敏感生命周期持 vault_write_lock，
         # 使 lock() 须等分析释放密钥后才能清零，避免后台 Worker 超时后仍持密钥。
         with self._vault.vault_write_lock():
-            # PERF-002：逐条解密已含 GCM 认证，_classify_entry 双重判定损坏，
+            # PERF-010：逐条解密已含 GCM 认证，_classify_entry 双重判定损坏，
             # 故跳过 HMAC 验签省去全量重算。
             entries = self._vault.db.get_entries(
                 EntryQuery(include_deleted=False, verify=VerifyMode.SKIP)

@@ -81,7 +81,7 @@ class RestorePointManager:
             raise BackupError(f"无法创建恢复前安全快照：{error}")
         # 按文件名降序保留最新 MAX_RESTORE_POINTS 个恢复点，删除过期项；删除失败
         # 仅告警（恢复点含全量明文，残留由调用方据创建结果决定是否重试清理）。
-        # PF-001-R：retention 清理异常就地捕获降级 warning，不漂移致「恢复已成功却被
+        # PERF-002：retention 清理异常就地捕获降级 warning，不漂移致「恢复已成功却被
         # 误报失败」（secure_purge 的 collect_failures=False 已对单文件删除告警，
         # 此处仅兜底 glob 等非预期 OSError）。
         try:
@@ -119,7 +119,7 @@ class RestorePointManager:
         恢复点含恢复前全部条目明文，定期清理可收缩泄漏面。
 
         Note:
-            count_files + secure_purge 各 glob 一遍同目录同模式（PF-008），但恢复点文件
+            count_files + secure_purge 各 glob 一遍同目录同模式（PERF-007），但恢复点文件
             稀少（通常个位数），双重遍历开销可忽略，保持复用 purge 统一删除逻辑。
         """
         directories = self._vault.backup_directories

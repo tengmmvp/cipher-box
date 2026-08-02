@@ -66,6 +66,25 @@ _EXPIRY_OPTIONS: list[tuple[str, int]] = [
 _SHARED_PASSWORD_MIN_LEN = 8
 
 
+def open_share_package_dialog(entry: Entry, parent: QWidget) -> None:
+    """校验条目完整性并打开共享包创建对话框。
+
+    完整性异常条目禁止分享：其部分字段无法解密，强行打包会泄漏损坏数据或致接收方
+    解密失败。统一经此入口开对话框，消除各调用点（菜单/右键）的文案漂移。
+    """
+    if entry.integrity_error:
+        QMessageBox.critical(
+            parent,
+            "数据完整性异常",
+            f"该条目的以下字段无法解密：{entry.integrity_message}。\n\n"
+            "当前无法创建共享包，请先创建备份并检查数据文件。",
+        )
+        return
+    dialog = SharePackageDialog(entry, parent=parent)
+    dialog.exec()
+    dialog.deleteLater()
+
+
 class SharePackageDialog(WorkerBackedDialog):
     """限时加密共享包创建对话框。"""
 
@@ -74,9 +93,9 @@ class SharePackageDialog(WorkerBackedDialog):
     _browse_btn: QPushButton
     _generate_btn: QPushButton
 
-    def __init__(self, entries: list[Entry], parent: QWidget | None = None) -> None:
+    def __init__(self, entry: Entry, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._entries = entries
+        self._entry = entry
         self._selected_dir: str | None = None
         self._setup_ui()
 
@@ -111,8 +130,7 @@ class SharePackageDialog(WorkerBackedDialog):
         preview_layout = QVBoxLayout(preview_group)
         self._entry_list = QListWidget()
         self._entry_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
-        for entry in self._entries:
-            self._entry_list.addItem(entry.title or "(无标题)")
+        self._entry_list.addItem(self._entry.title or "(无标题)")
         self._entry_list.setFixedHeight(96)
         preview_layout.addWidget(self._entry_list)
         layout.addWidget(preview_group)
@@ -250,7 +268,7 @@ class SharePackageDialog(WorkerBackedDialog):
             # worker 是下方赋值的自由变量，闭包延迟绑定；默认参数 pwd 在定义时拷贝
             # password，下方 del 局部 password 不影响 worker。
             return create_share_package(
-                self._entries,
+                [self._entry],
                 pwd,
                 include_secrets=include_secrets,
                 expire_at=expire_at,

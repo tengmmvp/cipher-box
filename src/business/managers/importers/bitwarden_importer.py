@@ -24,11 +24,11 @@ from ....models import (
     Entry,
 )
 from ...services.entry_validation import validate_plain_entry
+from ...services.url_hygiene import sanitize_url_scheme
 from .base import (
     ParsedImport,
     _merge_bitwarden_secrets,
     _sanitize_totp_secret,
-    _sanitize_url_scheme,
     _validate_items,
 )
 
@@ -258,8 +258,8 @@ class BitwardenImporter:
                 username=_as_str(login.get("username")),
                 password=_as_str(login.get("password")),
                 # url scheme / totp_secret 经模块级清洗，与 CSV/JSON 路径一致
-                # （_sanitize_url_scheme / _sanitize_totp_secret）。
-                url=_sanitize_url_scheme(url),
+                # （url_hygiene.sanitize_url_scheme / _sanitize_totp_secret）。
+                url=sanitize_url_scheme(url),
                 notes=_as_str(item.get("notes")),
                 custom_fields=custom_fields,
                 entry_type=entry_type,

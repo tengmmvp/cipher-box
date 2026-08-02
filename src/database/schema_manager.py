@@ -31,7 +31,7 @@ _INDEX_DEFINITIONS: list[tuple[str, str, tuple[str, ...], bool]] = [
         ("is_deleted", "updated_at DESC"),
         False,
     ),
-    # PERF-004：默认列表视图 ORDER BY is_favorite DESC, updated_at DESC 的复合索引，
+    # PERF-011：默认列表视图 ORDER BY is_favorite DESC, updated_at DESC 的复合索引，
     # 免 filesort。与 idx_entries_active_updated 共存（后者服务「近期更新」视图）。
     (
         "idx_entries_active_favorite_updated",

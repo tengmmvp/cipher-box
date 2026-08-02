@@ -24,7 +24,7 @@ from ..dialogs.import_export_dialog import ImportExportDialog
 from ..dialogs.password_generator_dialog import PasswordGeneratorDialog
 from ..dialogs.security_dashboard import SecurityDashboard
 from ..dialogs.settings_dialog import SettingsDialog
-from ..dialogs.share_package_dialog import SharePackageDialog
+from ..dialogs.share_package_dialog import open_share_package_dialog
 from ..resources.icons import (
     CLOSE,
     FOLDER,
@@ -300,16 +300,7 @@ class MenuController:
         if entry is None:
             QMessageBox.information(self._parent, "提示", "请先选择一个条目。")
             return
-        if entry.integrity_error:
-            QMessageBox.critical(
-                self._parent,
-                "数据完整性异常",
-                "该条目部分数据无法解密，无法创建共享包。",
-            )
-            return
-        dialog = SharePackageDialog([entry], parent=self._parent)
-        dialog.exec()
-        dialog.deleteLater()
+        open_share_package_dialog(entry, self._parent)
 
     def show_change_master(self) -> None:
         """打开修改主密码对话框；成功后全量刷新并触发强制改密快照。

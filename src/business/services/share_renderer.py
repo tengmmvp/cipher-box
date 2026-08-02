@@ -22,15 +22,17 @@ from .share_header_codec import SHARE_VERSION
 
 logger = logging.getLogger(__name__)
 
-# 资源包路径：hash-wasm-argon2.js 与 decrypter_template.html 所在包（经 pyproject
-# package-data 分发；packages.find 仅收集 .py，非 Python 资源须显式声明）。
-_RESOURCE_PACKAGE = "src.business.services.share_resources"
-
 
 def _read_resource_text(name: str) -> str:
-    """读取资源文本，缺失时抛 ShareError。"""
+    """读取资源文本，缺失时抛 ShareError。
+
+    用 ``files(__package__) / "share_resources"`` 相对定位资源包：随本模块位置自动跟随，
+    对包重命名健壮（绝对包名字符串会在重命名后运行期才暴雷）。资源经 pyproject package-data
+    分发（packages.find 仅收集 .py，非 Python 资源须显式声明）。
+    """
     try:
-        return (files(_RESOURCE_PACKAGE) / name).read_text(encoding="utf-8")
+        assert __package__ is not None  # 包内模块恒非 None；收窄 pyright 的 str|None 推断
+        return (files(__package__) / "share_resources" / name).read_text(encoding="utf-8")
     except (FileNotFoundError, ModuleNotFoundError) as exc:
         raise ShareError(f"解密器资源缺失：{name}") from exc
 

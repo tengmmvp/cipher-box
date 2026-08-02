@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class AutoBackupConfig(Protocol):
-    """自动备份间隔判定所需的 config 视图（QL-009，替代 ``object`` + ``type: ignore``）。
+    """自动备份间隔判定所需的 config 视图（QL-008，替代 ``object`` + ``type: ignore``）。
 
     ConfigManager 满足此协议（duck typing），使本策略模块不硬依赖 ConfigManager 具体类型。
     """

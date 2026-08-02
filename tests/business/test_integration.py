@@ -253,7 +253,7 @@ def test_initialize_and_unlock(vault_lifecycle_env):
     # 2. 锁定
     vault.lock()
     assert not vault.is_unlocked
-    # MAINT-009：vault.key 锁定态 fail-fast（与 snapshot_key 对称），访问即抛 VaultLockedError
+    # MAINT-007：vault.key 锁定态 fail-fast（与 snapshot_key 对称），访问即抛 VaultLockedError
     with pytest.raises(VaultLockedError):
         _ = vault.key
 

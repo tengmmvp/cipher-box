@@ -136,7 +136,7 @@ def collect_portable_history(
 ) -> list[dict[str, Any]]:
     """采集并解密密码历史，返回历史记录列表。
 
-    ``estimated_size`` 入参参与 payload 上限校验，累计值不再返回（无调用方使用，QL-012）；
+    ``estimated_size`` 入参参与 payload 上限校验，累计值不再返回（无调用方使用，QL-010）；
     ``entry_count`` 用于历史上限校验。``history_rows`` 锁内预读后必传（A4 + M11），解密循环锁外运行。
     """
     if len(history_rows) > entry_count * MAX_HISTORY_PER_ENTRY:

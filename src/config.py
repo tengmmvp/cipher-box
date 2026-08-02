@@ -128,7 +128,7 @@ _INT_SPECS: dict[str, tuple[int, int, int | None]] = {
     CFG_AUTO_BACKUP_RETENTION: (2, 50, None),
     CFG_OLD_PASSWORD_WARNING_DAYS: (30, 365, None),
 }
-# 只读映射（MappingProxyType 防误写，ARCH-024）：均派生自 _INT_SPECS。
+# 只读映射（MappingProxyType 防误写，ARCH-010）：均派生自 _INT_SPECS。
 _INT_RANGES = MappingProxyType({k: (lo, hi) for k, (lo, hi, _) in _INT_SPECS.items()})
 _SECURITY_MINIMUMS = MappingProxyType(
     {k: sm for k, (_, _, sm) in _INT_SPECS.items() if sm is not None}
@@ -204,7 +204,7 @@ _BoolConfigKey = Literal[
     "close_to_tray",
 ]
 
-# 启动期断言（QL-007）：overload 的 Literal 键集须与 DEFAULT_CONFIG 中对应类型键一致，
+# 启动期断言（QL-006）：overload 的 Literal 键集须与 DEFAULT_CONFIG 中对应类型键一致，
 # 新增配置键漏更新 Literal 在模块加载即报错。window_geometry/splitter_sizes/
 # security_sentinels 为特殊类型（由独立 overload 覆盖），不纳入此校验。
 if set(get_args(_StrConfigKey)) != {k for k, v in DEFAULT_CONFIG.items() if isinstance(v, str)}:
@@ -283,7 +283,7 @@ class ConfigManager:
         if stored is None:
             stored = key
 
-        # 经 atomic_write 落地即 0600，消除「写明文密钥 → 关闭 → secure_file 收紧」间的世界可读窗口（SEC-2）。
+        # 经 atomic_write 落地即 0600，消除「写明文密钥 → 关闭 → secure_file 收紧」间的世界可读窗口（SEC-015）。
         def _write_key(f: Any) -> bool:
             f.write(stored)
             return True
@@ -387,7 +387,7 @@ class ConfigManager:
                 hashlib.sha256,
             ).hexdigest()
 
-            # 经 atomic_write 落地即 0600，消除「写含安全配置明文 → 关闭 → secure_file 收紧」间的世界可读窗口（SEC-2）。
+            # 经 atomic_write 落地即 0600，消除「写含安全配置明文 → 关闭 → secure_file 收紧」间的世界可读窗口（SEC-015）。
             def _write_config(f: Any) -> bool:
                 f.write(content)
                 f.write(f"\n{_CONFIG_SIG_PREFIX}{sig}")

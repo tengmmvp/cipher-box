@@ -4,32 +4,38 @@
 （:meth:`EncryptionEngine.encrypt_bytes` 产出：``CB2`` 前缀 + nonce + ct + tag，与备份格式
 及 WebCrypto AES-GCM 字节布局兼容）。头纳入 GCM-AAD 防篡改（仿 backup_header_codec）。
 expire_at 为软限制——嵌入元数据供解密器诚实提示，无法防恶意接收方（一旦解密即得明文）。
+
+版本升级为破坏性：``SHARE_VERSION`` 一旦 bump，旧 ``decrypt.html`` 拒绝新 ``.cboxshare``、
+新解密器拒绝旧包，双向不兼容；升级版本号时已分发的旧包须用对应旧版解密器，或重新生成。
 """
 
 import struct
 from pathlib import Path
 from typing import IO, Any
 
-from ...crypto.master_key import DEFAULT_KDF_PARAMS, KdfParams, MasterKeyManager
+from ...crypto.master_key import KdfParams, MasterKeyManager
 from ...exceptions import PayloadTooLargeError, ShareError
 from ...utils.file_security import validate_file_path
 
 SHARE_MAGIC = b"CipherBoxShare\x00"
 SHARE_FORMAT = "CipherBoxShare"
 SHARE_VERSION = 1
+# GCM-AAD 域前缀（跨语言契约）：浏览器解密器 decrypter_template.html 内联同值常量
+# （``var SHARE_AAD = "CipherBox:share"``），修改须两端同步，否则解密认证失败。
 SHARE_AAD = b"CipherBox:share"
 SHARE_SALT_SIZE = 32
 
 # 固定头：version(B) + time_cost(I) + memory_cost(I) + parallelism(I) + expire_at(Q) + created_at(Q)。
 # expire_at/created_at 为 Unix 秒（UTC），expire_at=0（EXPIRE_NEVER）表示永不过期。
 SHARE_HEADER_STRUCT = struct.Struct("<BIIIQQ")
-SHARE_HEADER_SIZE = len(SHARE_MAGIC) + SHARE_HEADER_STRUCT.size + SHARE_SALT_SIZE
 
 # 文件/payload 大小上限（小于备份，共享包设计为少量条目瞬时分享）。
 MAX_SHARE_FILE_SIZE = 4 * 1024 * 1024
 MAX_SHARE_PAYLOAD_SIZE = 2 * 1024 * 1024
 
-# 不可信共享包解析时的 KDF 紧上界倍数（防内存耗尽 DoS，与 backup_header_codec 同思路）。
+# 解密器（浏览器 JS）解析不可信共享包时的 KDF 紧上界倍数，防恶意极大参数致 OOM/冻结 DoS。
+# Python 创建端恒以默认参数写入、不从不可信头派生 share key，故本常量无 Python 消费方；
+# 保留为 decrypter_template.html 的 doDecrypt 内联校验（D.time*2 等）的契约锚点。
 MAX_SHARE_KDF_MULTIPLIER = 2
 
 # 永不过期标记值（expire_at 字段）。
@@ -37,7 +43,11 @@ EXPIRE_NEVER = 0
 
 
 def derive_share_key(password: str, salt: bytes, params: KdfParams) -> bytearray:
-    """用共享密码与 salt 派生 share_key，使用给定 KDF 参数。"""
+    """用共享密码与 salt 派生 share_key，使用给定 KDF 参数。
+
+    透传 :meth:`MasterKeyManager.derive_share_key` 作为 share 域密钥派生入口，与
+    master/backup 域派生对称；集中于此使 share 调用方不直接耦合 MasterKeyManager。
+    """
     return MasterKeyManager.derive_share_key(password, salt, params)
 
 
@@ -91,7 +101,7 @@ def read_share_header(file: IO[bytes]) -> tuple[int, bytes, KdfParams, int, int]
     return version, salt, params, expire_at, created_at
 
 
-def share_header_aad(
+def header_aad(
     salt: bytes,
     params: KdfParams,
     expire_at: int,
@@ -117,36 +127,6 @@ def share_header_aad(
         )
         + salt
     )
-
-
-def enforce_kdf_floor(params: KdfParams) -> None:
-    """拒绝低于默认值的 Argon2id 参数（防降级，GCM 认证之外的纵深防御）。
-
-    头篡改降级已在解密阶段由 :func:`share_header_aad` 的 GCM 认证拦截，本函数保留为
-    派生前早期校验：投入 Argon2id（64MB 内存）前即拒绝异常参数，避免浪费派生开销。
-    """
-    floor = DEFAULT_KDF_PARAMS
-    if (
-        params.time_cost < floor.time_cost
-        or params.memory_cost < floor.memory_cost
-        or params.parallelism < floor.parallelism
-    ):
-        raise ShareError("共享包 KDF 参数异常，可能已被篡改")
-
-
-def enforce_kdf_ceiling(params: KdfParams) -> None:
-    """解析不可信共享包时拒绝远超默认的 Argon2id 参数，防内存耗尽 DoS。
-
-    合法共享包恒以 DEFAULT_KDF_PARAMS 创建，紧上界不影响正常解密；恶意构造的极大参数
-    会在派生前被早期拒绝，避免接收方浏览器/解析端 OOM。
-    """
-    m = MAX_SHARE_KDF_MULTIPLIER
-    if (
-        params.time_cost > DEFAULT_KDF_PARAMS.time_cost * m
-        or params.memory_cost > DEFAULT_KDF_PARAMS.memory_cost * m
-        or params.parallelism > DEFAULT_KDF_PARAMS.parallelism * m
-    ):
-        raise ShareError("共享包 KDF 参数异常（超出解析允许上界），可能已被篡改")
 
 
 def inspect_share(filepath: str) -> dict[str, Any]:
@@ -177,16 +157,13 @@ __all__ = [
     "MAX_SHARE_PAYLOAD_SIZE",
     "SHARE_AAD",
     "SHARE_FORMAT",
-    "SHARE_HEADER_SIZE",
     "SHARE_HEADER_STRUCT",
     "SHARE_MAGIC",
     "SHARE_SALT_SIZE",
     "SHARE_VERSION",
     "derive_share_key",
-    "enforce_kdf_ceiling",
-    "enforce_kdf_floor",
     "inspect_share",
     "read_share_header",
-    "share_header_aad",
+    "header_aad",
     "write_share_header",
 ]

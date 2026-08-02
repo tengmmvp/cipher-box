@@ -80,7 +80,7 @@ footer{margin-top:24px;color:#86868b;font-size:12px;text-align:center}
   var CB2_LEN = 3;                       // encrypt_bytes 的 "CB2" 前缀
   var NONCE_SIZE = 12;
   var KEY_SIZE = 32;
-  var SHARE_AAD = "CipherBox:share";
+  var SHARE_AAD = "CipherBox:share";  // GCM-AAD 域前缀，须与 Python share_header_codec.SHARE_AAD 一致
   var HKDF_INFO = "cipherbox:share-key";
 
   var fileBytes = null;
@@ -170,6 +170,15 @@ footer{margin-top:24px;color:#86868b;font-size:12px;text-align:center}
 
   async function doDecrypt(pwd) {
     try {
+      // KDF 参数上下界（镜像 Python MAX_SHARE_KDF_MULTIPLIER=2 与 DEFAULT_KDF_PARAMS
+      // t3/m64MiB/p4）：拒绝恶意构造的极大参数（浏览器 OOM/长时间冻结）与降级参数，
+      // 在投入 Argon2id 派生前即返回，避免内存/算力耗尽 DoS。
+      var D = { time: 3, mem: 64 * 1024, parallel: 4 };
+      if (header.time < D.time || header.mem < D.mem || header.parallel < D.parallel ||
+          header.time > D.time * 2 || header.mem > D.mem * 2 || header.parallel > D.parallel * 2) {
+        showError("共享包 KDF 参数异常，可能已被篡改");
+        return;
+      }
       var pwBytes = new TextEncoder().encode(pwd.normalize("NFC"));
       var prk = await hashwasm.argon2id({
         password: pwBytes,
@@ -256,7 +265,9 @@ footer{margin-top:24px;color:#86868b;font-size:12px;text-align:center}
     var h = '<div class="field"><span class="label">' + esc(label) + "</span>";
     if (secret) {
       h += '<span class="value secret" data-reveal="' + esc(value) + '">●●●●●●</span>';
-    } else if (url) {
+    } else if (url && /^(https?:|\/\/)/i.test(url)) {
+      // 仅 http(s) 与协议相对 URL 渲染为可点击链接，拦截 javascript:/data:/file: 等
+      // scheme 经单击触发脚本执行（与主 App detail_panel._build_url_label 一致）。
       h += '<a class="value" href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(value) + "</a>";
     } else {
       h += '<span class="value">' + esc(value) + "</span>";

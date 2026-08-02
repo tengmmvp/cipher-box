@@ -118,7 +118,7 @@ def test_get_entries_verify_modes(vault, entry_mgr):
 
 
 class TestGetCachedCounts:
-    """get_cached_counts 轻量计数入口（PERF-2）：跳过 _refilter_cache 的 Entry 深拷贝。
+    """get_cached_counts 轻量计数入口（PERF-014）：跳过 _refilter_cache 的 Entry 深拷贝。
 
     仅读计数的消费者（状态栏刷新、weak/duplicate 空态判定）经此入口避免无谓深拷贝。
     用 __new__ 绕过完整构造、手动填充缓存，聚焦计数提取与 days 影响 old 的逻辑。

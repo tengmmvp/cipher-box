@@ -1,4 +1,4 @@
-"""ImportExportDialog 接线守护：UI 格式键映射与业务层 import_file 一致（MAINT-3）。
+"""ImportExportDialog 接线守护：UI 格式键映射与业务层 import_file 一致（MAINT-013）。
 
 import_export_dialog 经 ``_IMPORT_FORMAT_KEYS`` 把 UI 格式名映射到 ``import_file`` 的
 ``format_key``，再经 ``ImportExportManager._IMPORTERS`` 注册表 dispatch 到策略类。映射的

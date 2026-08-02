@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # 新增列必须在此追加，INSERT/UPDATE/SELECT 派生 SQL 自动跟随；新增 *_enc 加密列
 # 还须同步 SENSITIVE_ENCRYPTED_FIELDS（签名载荷绑其子集），由 test_field_consistency 守护。
 # 用 tuple（不可变）：误用 append 会在运行时抛 AttributeError，防止列序被无意改写
-# 致 SQL 列错位（ARCH-024）。
+# 致 SQL 列错位（ARCH-010）。
 _ENTRY_COLUMNS = (
     "crypto_id",
     "title_enc",
@@ -171,7 +171,7 @@ _TRUNCATE_PASSWORD_HISTORY_SQL = (
 # ID 分批阈值：SQLite 默认限制 999 个主机变量，取 500 留余量。
 _ID_BATCH_SIZE = 500
 # 密码历史重加密分页批量：与 re_encryption._RE_ENCRYPT_BATCH_SIZE 对齐，控制改密
-# 重加密内存峰值（QL-008，消除魔法数 200）。
+# 重加密内存峰值（QL-007，消除魔法数 200）。
 _DEFAULT_HISTORY_BATCH_LIMIT = 200
 
 

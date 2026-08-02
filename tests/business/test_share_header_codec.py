@@ -18,11 +18,9 @@ from src.business.services.share_header_codec import (
     SHARE_SALT_SIZE,
     SHARE_VERSION,
     derive_share_key,
-    enforce_kdf_ceiling,
-    enforce_kdf_floor,
+    header_aad,
     inspect_share,
     read_share_header,
-    share_header_aad,
     write_share_header,
 )
 from src.crypto.master_key import DEFAULT_KDF_PARAMS, KdfParams
@@ -96,10 +94,10 @@ class TestShareHeaderRoundtrip:
 
 
 class TestShareHeaderAad:
-    """share_header_aad 内容构造。"""
+    """header_aad 内容构造。"""
 
     def test_aad_contains_magic_struct_and_salt(self):
-        aad = share_header_aad(_SALT, DEFAULT_KDF_PARAMS, _EXPIRE, _CREATED)
+        aad = header_aad(_SALT, DEFAULT_KDF_PARAMS, _EXPIRE, _CREATED)
         assert aad.startswith(SHARE_AAD + SHARE_MAGIC)
         assert aad.endswith(_SALT)
         packed = SHARE_HEADER_STRUCT.pack(
@@ -114,50 +112,15 @@ class TestShareHeaderAad:
 
     def test_aad_differs_per_expire(self):
         """过期时间变化应反映到 AAD（绑定过期到 payload，防头篡改改过期）。"""
-        aad1 = share_header_aad(_SALT, DEFAULT_KDF_PARAMS, _EXPIRE, _CREATED)
-        aad2 = share_header_aad(_SALT, DEFAULT_KDF_PARAMS, _EXPIRE + 1, _CREATED)
+        aad1 = header_aad(_SALT, DEFAULT_KDF_PARAMS, _EXPIRE, _CREATED)
+        aad2 = header_aad(_SALT, DEFAULT_KDF_PARAMS, _EXPIRE + 1, _CREATED)
         assert aad1 != aad2
 
     def test_aad_differs_per_params(self):
         weak = KdfParams(time_cost=2, memory_cost=16 * 1024, parallelism=1)
-        aad_default = share_header_aad(_SALT, DEFAULT_KDF_PARAMS, _EXPIRE, _CREATED)
-        aad_weak = share_header_aad(_SALT, weak, _EXPIRE, _CREATED)
+        aad_default = header_aad(_SALT, DEFAULT_KDF_PARAMS, _EXPIRE, _CREATED)
+        aad_weak = header_aad(_SALT, weak, _EXPIRE, _CREATED)
         assert aad_default != aad_weak
-
-
-class TestEnforceKdfFloor:
-    """enforce_kdf_floor 拒绝低于默认值的参数。"""
-
-    def test_rejects_low_time(self):
-        with pytest.raises(ShareError, match="KDF"):
-            enforce_kdf_floor(
-                KdfParams(
-                    time_cost=DEFAULT_KDF_PARAMS.time_cost - 1,
-                    memory_cost=DEFAULT_KDF_PARAMS.memory_cost,
-                    parallelism=DEFAULT_KDF_PARAMS.parallelism,
-                )
-            )
-
-    def test_accepts_default(self):
-        enforce_kdf_floor(DEFAULT_KDF_PARAMS)  # 不抛异常即通过
-
-
-class TestEnforceKdfCeiling:
-    """enforce_kdf_ceiling 拒绝远超默认的参数，防解析路径内存耗尽 DoS。"""
-
-    def test_accepts_default(self):
-        enforce_kdf_ceiling(DEFAULT_KDF_PARAMS)
-
-    def test_rejects_oversized_time(self):
-        m = share_header_codec.MAX_SHARE_KDF_MULTIPLIER
-        with pytest.raises(ShareError, match="上界"):
-            enforce_kdf_ceiling(
-                KdfParams(
-                    DEFAULT_KDF_PARAMS.time_cost * (m + 1),
-                    DEFAULT_KDF_PARAMS.memory_cost,
-                    DEFAULT_KDF_PARAMS.parallelism,
-                )
-            )
 
 
 class TestInspectShare:

@@ -137,7 +137,7 @@ class CategoryManager:
         *,
         notify: bool = True,
     ) -> list[int]:
-        """批量新增分类（恢复路径），返回按输入顺序的新 id 列表（PF-003）。
+        """批量新增分类（恢复路径），返回按输入顺序的新 id 列表（PERF-004）。
 
         恢复前已 ``clear_vault_data`` 清空分类表，故无需逐条查重——逐条 ``add_category``
         经 ``get_categories`` 全表解密查重为 O(N²)。经 :meth:`_insert_category_two_phase`

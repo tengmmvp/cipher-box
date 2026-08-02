@@ -4,11 +4,11 @@ import json
 
 from ....exceptions import ImportFormatError
 from ....models import Entry
+from ...services.url_hygiene import sanitize_url_scheme
 from .base import (
     ParsedImport,
     _merge_non_exported_secrets,
     _sanitize_totp_secret,
-    _sanitize_url_scheme,
     _validate_items,
 )
 
@@ -63,10 +63,10 @@ class JsonImporter:
                     item.pop("totp_secret", None)
 
         # url scheme / totp_secret 经模块级清洗，与 CSV/Bitwarden 路径共享单一事实源
-        # （定位见 _sanitize_url_scheme / _sanitize_totp_secret）。
+        # （定位见 url_hygiene.sanitize_url_scheme / _sanitize_totp_secret）。
         for item in items:
             if isinstance(item.get("url"), str):
-                item["url"] = _sanitize_url_scheme(item["url"])
+                item["url"] = sanitize_url_scheme(item["url"])
             if isinstance(item.get("totp_secret"), str):
                 item["totp_secret"] = _sanitize_totp_secret(item["totp_secret"])
         entries = [Entry.from_dict(item) for item in items]

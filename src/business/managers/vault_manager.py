@@ -113,7 +113,7 @@ class VaultManager:
 
         调用点为 lock 清零密钥后。回调异常不中断后续回调，仅记 WARNING——单个回调
         失败不应阻止其余缓存清理，但安全相关失效（如锁定时明文缓存未清）应在生产日志
-        可见（QL-3）。
+        可见（QL-014）。
         """
         self._invoke_callbacks(self._on_lock_callbacks, "锁定回调")
 
@@ -132,7 +132,7 @@ class VaultManager:
 
     @staticmethod
     def _invoke_callbacks(callbacks: list[Callable[[], None]], label: str) -> None:
-        """逐个触发回调：单个回调异常不中断后续，记 WARNING 保留可审计性（QL-3）。"""
+        """逐个触发回调：单个回调异常不中断后续，记 WARNING 保留可审计性（QL-014）。"""
         for cb in callbacks:
             try:
                 cb()
@@ -215,7 +215,7 @@ class VaultManager:
 
     @property
     def key(self) -> bytes:
-        """当前主密钥；未解锁抛 VaultLockedError（与 snapshot_key 对称，MAINT-009）。
+        """当前主密钥；未解锁抛 VaultLockedError（与 snapshot_key 对称，MAINT-007）。
 
         加解密统一经 ``require_vault_key`` 守卫；本 property 补 fail-fast 使直接读取
         （如改密路径）也对称地抛而非返回 None 静默传播。
@@ -226,7 +226,7 @@ class VaultManager:
 
     @property
     def snapshot_key(self) -> bytes:
-        """自动快照密钥；未解锁抛 VaultLockedError（与 key 对称，MAINT-009）。"""
+        """自动快照密钥；未解锁抛 VaultLockedError（与 key 对称，MAINT-007）。"""
         if not self.is_unlocked or self._snapshot_key is None:
             raise VaultLockedError("自动快照密钥不可用")
         return self._snapshot_key

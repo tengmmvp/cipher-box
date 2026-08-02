@@ -92,7 +92,7 @@ def test_sanitize_url_scheme_rejects_dangerous_schemes():
     覆盖全部导入路径（CSV/Chrome CSV/KeePass/JSON/Bitwarden 共享 _sanitize_url_scheme），
     防止恶意 scheme 被详情面板渲染为可点击链接导致钓鱼/协议注入。
     """
-    from src.business.managers.importers.base import _sanitize_url_scheme
+    from src.business.services.url_hygiene import sanitize_url_scheme as _sanitize_url_scheme
 
     assert _sanitize_url_scheme("javascript:alert(1)") == ""
     assert _sanitize_url_scheme("data:text/html,<script>") == ""

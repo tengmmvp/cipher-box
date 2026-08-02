@@ -26,7 +26,14 @@ from ...exceptions import (
 from ...models import MAX_CATEGORY_NAME, Category, Entry, RawEntry
 from ...utils.file_security import atomic_write, validate_file_path
 from ...utils.format import utc_now_iso
-from .entry_manager import BatchUpdateItem, PreparedUpdate
+from ..services.entry_batch_writer import (
+    BatchUpdateItem,
+    PreparedUpdate,
+    encrypt_new_entries,
+    prepare_overwrite_updates,
+    write_new_entries,
+    write_overwrite_updates,
+)
 from .importers import (
     BitwardenImporter,
     CsvImporter,
@@ -80,7 +87,7 @@ class ImportContext:
     """导入写入编排的上下文（去重/分类所需的不变配置）。
 
     收敛 ``_import_entries`` / ``_dedupe_and_classify`` 的 categories/
-    default_category_id/duplicate_action/source_label 参数（MAINT-009），使方法签名
+    default_category_id/duplicate_action/source_label 参数（MAINT-007），使方法签名
     收为 (entries, ctx, callbacks)，降低参数个数与调用点对齐负担。
 
     字段含义：
@@ -102,7 +109,7 @@ class ImportCallbacks:
     """导入写入编排的回调（进度/取消/覆盖合并）。
 
     与 :class:`ImportContext` 分离：前者为不变配置，本类为可选的进度/取消探针与
-    格式特定的合并器（MAINT-009）。
+    格式特定的合并器（MAINT-007）。
 
     字段含义：
         progress_callback: ``(current, total)`` 进度回调，total 为待处理条目总数
@@ -121,7 +128,7 @@ class ImportCallbacks:
 class OverwritePlan(NamedTuple):
     """覆盖计划项：源序号、合并后条目、待覆盖条目密文 raw。
 
-    old_password 不在计划中收集（SEC-014）：延迟到 :meth:`_prepare_overwrite_batch` 写入前
+    old_password 不在计划中收集（SEC-013）：延迟到 :meth:`_prepare_overwrite_batch` 写入前
     逐条解密提取，避免分类阶段全量收集旧密码明文随导入规模线性驻留。
     """
 
@@ -502,8 +509,9 @@ class ImportExportManager:
         # （改密 _re_encrypt_all 同样经该锁串行），不会与导入并发写库。pre_epoch 复查是
         # 纵深防御——加密已移出 db_lock（MAINT-004），复查确保「加密后→写入前」未发生改密。
         with self._entry_mgr.epoch_guarded_transaction(operation="导入", pre_epoch=pre_epoch):
-            self._entry_mgr.write_new_entries(enc_new, preserve=preserve, notify=False)
-            overwrite_count = self._entry_mgr.write_overwrite_updates(
+            write_new_entries(self._entry_mgr, enc_new, preserve=preserve, notify=False)
+            overwrite_count = write_overwrite_updates(
+                self._entry_mgr,
                 overwrite_prepared,
                 pre_epoch,
             )
@@ -539,7 +547,7 @@ class ImportExportManager:
         total = len(entries)
         new_entries: list[Entry] = []
         # OverwritePlan(source_idx, entry, raw)：old_password 延迟到 _prepare_overwrite_batch
-        # 写入前逐条解密（SEC-014），不在分类阶段收集，避免旧密码明文随导入规模线性驻留。
+        # 写入前逐条解密（SEC-013），不在分类阶段收集，避免旧密码明文随导入规模线性驻留。
         overwrite_plans: list[OverwritePlan] = []
         skipped = 0
 
@@ -568,7 +576,7 @@ class ImportExportManager:
                     raw = overwrite_raws[i]
                     # 逐条解密覆盖目标并合并：用毕即清（password/totp_secret 置零 + 删引用），
                     # 任一时刻仅 1 条覆盖目标完整明文驻留，与单条路径纪律一致。
-                    # old_password 不在此提取（SEC-014），延迟到 _prepare_overwrite_batch 写入时刻。
+                    # old_password 不在此提取（SEC-013），延迟到 _prepare_overwrite_batch 写入时刻。
                     entry = self._merge_overwrite_entry(entry, raw, callbacks.overwrite_merger)
                     overwrite_plans.append(OverwritePlan(i, entry, raw))
                 else:
@@ -599,7 +607,7 @@ class ImportExportManager:
         """覆盖单条：解密 existing、合并、保留 password_changed_at、用毕即清。
 
         返回合并后的 entry（不含 old_password——延迟到 :meth:`_prepare_overwrite_batch` 写入
-        时刻逐条解密提取，SEC-014）。解密/合并异常向上传播，由
+        时刻逐条解密提取，SEC-013）。解密/合并异常向上传播，由
         :meth:`_dedupe_and_classify` 捕获（GCM 认证失败的 :class:`DecryptionError` 不在
         该捕获范围，向上中止导入）。
 
@@ -637,12 +645,12 @@ class ImportExportManager:
         """锁外加密新条目（MAINT-004），返回 ``(enc_entries, preserve, skipped)``。
 
         加密在 db_lock 外完成（CPU 密集不阻塞 db 读），写入由调用方在 epoch 守卫事务内
-        经 :meth:`EntryManager.write_new_entries` 执行。数据问题（字段非法/损坏）跳过整批。
+        经 :func:`entry_batch_writer.write_new_entries` 执行。数据问题（字段非法/损坏）跳过整批。
         """
         if not new_entries:
             return [], False, 0
         try:
-            enc_entries, preserve = self._entry_mgr.encrypt_new_entries(new_entries)
+            enc_entries, preserve = encrypt_new_entries(self._entry_mgr, new_entries)
             return enc_entries, preserve, 0
         except (EntryError, EntryIntegrityError) as exc:
             logger.warning(
@@ -661,23 +669,24 @@ class ImportExportManager:
         """锁外 prepare 覆盖项（MAINT-004），返回 ``(prepared, skipped)``。
 
         验证/解密/加密在 db_lock 外完成，写入由调用方在 epoch 守卫事务内经
-        :meth:`EntryManager.write_overwrite_updates` 执行。per-item 错误隔离：验证/解密
+        :func:`entry_batch_writer.write_overwrite_updates` 执行。per-item 错误隔离：验证/解密
         错误跳过单条（收集到 failures），写/epoch 错误由 write_overwrite_updates 向上中止。
 
-        old_password 延迟提取（SEC-014/PF-005）：留 None 由 prepare_overwrite_updates
+        old_password 延迟提取（SEC-013/PERF-006）：留 None 由 prepare_overwrite_updates
         的 prepared 阶段逐条解密、比对即 del，避免全部旧密码同刻驻留。
         ``failures`` 索引对齐 ``overwrite_plans``（同序），取原 source idx 记日志，
         不打印标题（可能含敏感信息）。
         """
         if not overwrite_plans:
             return [], 0
-        # old_password 留 None（PF-005）：不在批量收集阶段预解密全部旧密码（同刻驻留），
+        # old_password 留 None（PERF-006）：不在批量收集阶段预解密全部旧密码（同刻驻留），
         # 由 prepare_overwrite_updates 的 prepared 阶段逐条解密、_prepare_password_update
         # 比对即 del 清零。
         batch_items: list[BatchUpdateItem] = [
             BatchUpdateItem(plan.entry, plan.raw, None) for plan in overwrite_plans
         ]
-        prepared, batch_failures = self._entry_mgr.prepare_overwrite_updates(
+        prepared, batch_failures = prepare_overwrite_updates(
+            self._entry_mgr,
             batch_items,
             preserve_password_changed_at=True,
         )
@@ -686,7 +695,7 @@ class ImportExportManager:
         # 取原 source idx 记日志，不打印标题（可能含敏感信息）。
         for batch_idx, failure_exc in batch_failures:
             plan = overwrite_plans[batch_idx]
-            # old_password 解密容错回退 ''（PF-005，在 _prepare_password_update 内），不抛
+            # old_password 解密容错回退 ''（PERF-006，在 _prepare_password_update 内），不抛
             # DecryptionError；failures 主要含 EntryError/EntryIntegrityError。保留 ERROR/WARNING
             # 区分仅为语义清晰。
             if isinstance(failure_exc, DecryptionError):

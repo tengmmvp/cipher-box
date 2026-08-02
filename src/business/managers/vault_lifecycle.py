@@ -360,7 +360,7 @@ class VaultLifecycleOrchestrator:
         """使用新密钥重新加密所有条目（含已删除），受事务保护。
 
         调用方须已持有 vault 写锁（change_master_password 经 vault_write_lock 持有）。
-        编排分两步（MAINT-008）：事务内重加密+元数据 → 事务后激活密钥+清理；异常兜底与
+        编排分两步（MAINT-006）：事务内重加密+元数据 → 事务后激活密钥+清理；异常兜底与
         清零纪律分别抽独立方法，本方法仅保留阶段编排与贯穿全程的 finally。
         """
         if not self._vault.is_unlocked:

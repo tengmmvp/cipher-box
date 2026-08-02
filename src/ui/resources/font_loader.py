@@ -16,7 +16,6 @@ from PyQt6.QtGui import QFontDatabase
 
 logger = logging.getLogger(__name__)
 
-_FONT_PACKAGE = "src.ui.resources.fonts"
 # 打包字体文件名；variable font 单文件覆盖全部 weight。
 _BUNDLED_FONTS: tuple[str, ...] = ("Inter-Variable.ttf",)
 
@@ -24,12 +23,14 @@ _BUNDLED_FONTS: tuple[str, ...] = ("Inter-Variable.ttf",)
 def load_bundled_fonts() -> list[str]:
     """加载打包字体，返回成功注册的 family 列表（供诊断日志）。
 
-    单文件加载失败记 ``warning`` 并继续，绝不抛出——字体缺失应回退系统字体而非阻断启动。
+    用 ``files(__package__) / "fonts"`` 相对定位字体包：随本模块位置自动跟随，对包重命名
+    健壮。单文件加载失败记 ``warning`` 并继续，绝不抛出——字体缺失应回退系统字体而非阻断启动。
     """
     added: list[str] = []
+    assert __package__ is not None  # 包内模块恒非 None；收窄 pyright 的 str|None 推断
     for name in _BUNDLED_FONTS:
         try:
-            font_path = files(_FONT_PACKAGE) / name
+            font_path = files(__package__) / "fonts" / name
             font_id = QFontDatabase.addApplicationFont(str(font_path))
         except Exception:
             logger.warning("加载打包字体失败：%s", name, exc_info=True)

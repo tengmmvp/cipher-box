@@ -83,7 +83,7 @@ STRING_ENCRYPTED_FIELDS: tuple[str, ...] = tuple(
 def require_vault_key(vault_manager: VaultManager) -> bytes:
     """获取保险库加密密钥，未解锁时抛出 VaultLockedError。
 
-    vault.key 自身已 fail-fast 守卫（MAINT-009）；本函数保留 is_unlocked 前置检查
+    vault.key 自身已 fail-fast 守卫（MAINT-007）；本函数保留 is_unlocked 前置检查
     收紧 unlock 窗口（unlock 在 vault_meta_mac 校验通过前 key 已装入但 is_unlocked
     仍为 False，前置检查在此窄窗即抛，无需依赖 key 守卫的二次判定）。
 

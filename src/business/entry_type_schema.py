@@ -60,7 +60,7 @@ class EntryTypeSchema:
     type_id / label / icon 标识类型；visible_fields 为通用 + 专用字段的显示顺序，
     驱动类型切换时的显隐；special_fields 为该类型的专用字段配置。
 
-    行为钩子（ARCH-008）以布尔标志形式挂入，消除消费方 ``if entry_type ==``
+    行为钩子（ARCH-007）以布尔标志形式挂入，消除消费方 ``if entry_type ==``
     类型身份判断——改为查阅 schema 标志。标志默认无副作用（不会触发密码置空、
     备注展开、URL 拼接或额外校验）；按类型覆写即可启用对应行为。具体「如何」
     执行（如卡号校验算法、URL 拼接格式）仍由消费方（entry_dialog）实现，
@@ -119,7 +119,7 @@ def _build_schemas() -> dict[str, EntryTypeSchema]:
         ENTRY_TYPE_NOTE: (),
         ENTRY_TYPE_SERVER: _SERVER_FIELDS,
     }
-    # 类型特化行为钩子覆写（ARCH-008）。未列出的类型沿用 EntryTypeSchema 默认值
+    # 类型特化行为钩子覆写（ARCH-007）。未列出的类型沿用 EntryTypeSchema 默认值
     # （uses_password=True，其余 False）。新增类型若需特化行为，在此追加覆写即可，
     # 消费方（entry_dialog）只需查阅 schema 标志，无需新增 ``if entry_type ==`` 分支。
     behavior_overrides: dict[str, dict[str, bool]] = {

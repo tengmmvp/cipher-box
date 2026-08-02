@@ -269,7 +269,7 @@ class PasswordGenerator:
         score = min(MAX_STRENGTH_SCORE, max(0, score))
 
         # 重复字符惩罚：降低 1 分，但不低于 0。password 已在方法入口 ``not password``
-        # 守卫，此处必非空，无需除零保护分支（QL-013）。
+        # 守卫，此处必非空，无需除零保护分支（QL-011）。
         unique_ratio = len(set(password)) / len(password)
         if unique_ratio < WEAK_UNIQUE_RATIO:
             score = max(0, score - 1)

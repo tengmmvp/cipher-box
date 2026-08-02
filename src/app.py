@@ -149,7 +149,7 @@ class CipherBoxApp:
 
     def run(self) -> int:
         """启动应用。"""
-        # 应用全局样式；显式激活主题，使运行时 c() 解析的颜色与样式表一致（ARCH-009）
+        # 应用全局样式；显式激活主题，使运行时 c() 解析的颜色与样式表一致（ARCH-008）
         theme = self._config.get(CFG_THEME, DEFAULT_THEME)
         from .ui.resources.theme_colors import set_theme
 

@@ -55,7 +55,7 @@ class PasswordService:
     ) -> tuple[bool, str]:
         """校验密码生成至少选中一种字符集，返回 ``(是否有效, 错误信息)``。
 
-        统一字符类型校验为单一事实源（MAINT-019）。有效时错误信息为空串，无效时返回
+        统一字符类型校验为单一事实源（MAINT-010）。有效时错误信息为空串，无效时返回
         固定文案供直接经 ``QMessageBox.warning`` 展示。
         """
         if not any((uppercase, lowercase, digits, symbols)):

@@ -228,7 +228,7 @@ class RateLimiter:
 
         try:
             # 经 atomic_write 落地即 0600（opener 回调）：消除「写入限流状态 → 关闭 →
-            # secure_file 收紧」间的世界可读窗口（与 SEC-2 一致）。写盘失败（只读盘/
+            # secure_file 收紧」间的世界可读窗口（与 SEC-015 一致）。写盘失败（只读盘/
             # 磁盘满/权限）不中断登录流程：RateLimiter 是内存限流，持久化仅为跨会话
             # 保留；失败时内存状态仍生效，仅记日志。
             atomic_write(self._state_path, _write_state, mode="w", encoding="utf-8")

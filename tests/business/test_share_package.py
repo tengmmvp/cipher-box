@@ -18,8 +18,8 @@ from src.business.services.share_header_codec import (
     SHARE_HEADER_STRUCT,
     SHARE_MAGIC,
     derive_share_key,
+    header_aad,
     read_share_header,
-    share_header_aad,
 )
 from src.business.services.share_package import (
     build_share_payload,
@@ -69,7 +69,7 @@ def _decrypt_blob(blob: bytes, password: str) -> dict:
     _version, salt, params, expire_at, created_at = read_share_header(buf)
     ct_block = buf.read()
     key = derive_share_key(password, salt, params)
-    aad = share_header_aad(salt, params, expire_at, created_at)
+    aad = header_aad(salt, params, expire_at, created_at)
     plain = EncryptionEngine.decrypt_bytes(ct_block, key, aad)
     return json.loads(plain)
 
@@ -193,7 +193,7 @@ class TestCreateSharePackage:
         )
         result = create_share_package(
             [_make_entry()],
-            "sharepass",
+            "SharePack-Test-123!",
             include_secrets=True,
             expire_at=EXPIRE_NEVER,
             output_dir=str(tmp_path),
@@ -205,7 +205,7 @@ class TestCreateSharePackage:
         assert share_path.suffix == ".cboxshare"
         assert decrypter_path.suffix == ".html"
         # .cboxshare 可被独立解密
-        data = _decrypt_blob(share_path.read_bytes(), "sharepass")
+        data = _decrypt_blob(share_path.read_bytes(), "SharePack-Test-123!")
         assert data["entries"][0]["title"] == "测试条目"
         # 解密器 HTML 内容写入
         assert "decrypter" in decrypter_path.read_text(encoding="utf-8")
@@ -214,7 +214,7 @@ class TestCreateSharePackage:
         monkeypatch.setattr(share_package, "_render_decrypter_html", lambda: "<html></html>")
         result = create_share_package(
             [_make_entry()],
-            "sharepass",
+            "SharePack-Test-123!",
             include_secrets=True,
             expire_at=EXPIRE_NEVER,
             output_dir=str(tmp_path),
@@ -223,3 +223,30 @@ class TestCreateSharePackage:
         assert result is None
         # 取消时不产出任何文件
         assert not list(tmp_path.iterdir())
+
+    def test_rolls_back_share_on_decrypter_failure(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
+        """decrypt.html 写入失败时回滚删除已写的 .cboxshare，不留孤立半成品。
+
+        接收方拿到无解密器的 .cboxshare 无法使用，故第二个文件失败须回滚第一个。
+        """
+        monkeypatch.setattr(share_package, "_render_decrypter_html", lambda: "<html></html>")
+        original_write = share_package.atomic_write
+        calls = [0]
+
+        def flaky_write(path, writer):
+            calls[0] += 1
+            if calls[0] == 2:  # 第二次（decrypt.html）模拟失败
+                raise OSError("simulated decrypter write failure")
+            return original_write(path, writer)
+
+        monkeypatch.setattr(share_package, "atomic_write", flaky_write)
+        with pytest.raises(OSError):
+            create_share_package(
+                [_make_entry()],
+                "SharePack-Test-123!",
+                include_secrets=True,
+                expire_at=EXPIRE_NEVER,
+                output_dir=str(tmp_path),
+            )
+        # 回滚：目录无任何文件（.cboxshare 已删，decrypt.html 未写成）
+        assert list(tmp_path.iterdir()) == []
