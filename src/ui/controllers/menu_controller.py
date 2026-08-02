@@ -24,6 +24,7 @@ from ..dialogs.import_export_dialog import ImportExportDialog
 from ..dialogs.password_generator_dialog import PasswordGeneratorDialog
 from ..dialogs.security_dashboard import SecurityDashboard
 from ..dialogs.settings_dialog import SettingsDialog
+from ..dialogs.share_package_dialog import SharePackageDialog
 from ..resources.icons import (
     CLOSE,
     FOLDER,
@@ -33,6 +34,7 @@ from ..resources.icons import (
     LOCK_SOLID,
     PLUS,
     SETTINGS,
+    SHARE,
     SHIELD,
     SHORTCUT,
     UPLOAD,
@@ -164,6 +166,7 @@ class MenuController:
                     None,
                     ("导入 / 导出", None, UPLOAD, self.show_import_export),
                     ("备份与恢复", None, FOLDER, self.show_backup),
+                    ("创建共享包", None, SHARE, self.show_share_package),
                     None,
                     ("锁定保险库", "Ctrl+L", LOCK_SOLID, slots.lock),
                     ("退出", "Ctrl+Q", CLOSE, parent.close),
@@ -290,6 +293,23 @@ class MenuController:
         if data_changed:
             self._slots.refresh_all_data()
             self._detail_panel.show_empty()
+
+    def show_share_package(self) -> None:
+        """打开共享包创建对话框；分享当前详情面板选中条目。"""
+        entry = self._detail_panel.current_entry
+        if entry is None:
+            QMessageBox.information(self._parent, "提示", "请先选择一个条目。")
+            return
+        if entry.integrity_error:
+            QMessageBox.critical(
+                self._parent,
+                "数据完整性异常",
+                "该条目部分数据无法解密，无法创建共享包。",
+            )
+            return
+        dialog = SharePackageDialog([entry], parent=self._parent)
+        dialog.exec()
+        dialog.deleteLater()
 
     def show_change_master(self) -> None:
         """打开修改主密码对话框；成功后全量刷新并触发强制改密快照。

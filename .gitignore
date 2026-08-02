@@ -54,3 +54,9 @@ logs/
 *.tmp
 # 备份文件（含明文恢复快照，误提交风险高）
 *.cbox
+
+# 工具产物（playwright MCP 截图/快照）
+.playwright-mcp/
+
+# 本地临时测试目录
+.tmp_share_test/

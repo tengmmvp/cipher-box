@@ -83,6 +83,9 @@ EMPTY_FOLDER = "empty_folder"
 EMPTY_VAULT = "empty_vault"
 EMPTY_GENERIC = "empty_generic"
 
+# --- 共享 ---
+SHARE = "share"
+
 # --- 其他 ---
 UPLOAD = "upload"
 HELP = "help"
@@ -134,6 +137,8 @@ _ICON_MAP: dict[str, tuple[str, str]] = {
     EMPTY_FOLDER: ("fa6s.folder-open", "text_muted"),
     EMPTY_VAULT: ("fa6s.shield-halved", "accent"),
     EMPTY_GENERIC: ("fa6s.clipboard", "text_muted"),
+    # 共享
+    SHARE: ("fa6s.share-nodes", "accent"),
     # 其他
     UPLOAD: ("fa6s.upload", "accent"),
     HELP: ("fa6s.circle-question", "text_secondary"),

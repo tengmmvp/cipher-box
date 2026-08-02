@@ -46,6 +46,7 @@ KDF_NAME = "argon2id"
 # 派生（HKDF 保证不同 info → 输出独立）。新增密钥域只需追加常量并复用 _hkdf_expand。
 _DOMAIN_INFO_MASTER = b"cipherbox:vault-master-key"
 _DOMAIN_INFO_BACKUP = b"cipherbox:backup-key"
+_DOMAIN_INFO_SHARE = b"cipherbox:share-key"  # 共享包域：限时加密共享包派生密钥
 
 
 class KdfParams(NamedTuple):
@@ -179,6 +180,26 @@ class MasterKeyManager:
         material = cls._derive_master_material(password, salt, params)
         try:
             return cls._hkdf_expand(material, _DOMAIN_INFO_BACKUP)
+        finally:
+            secure_zero_buffer(material)
+
+    @classmethod
+    def derive_share_key(
+        cls,
+        password: str,
+        salt: bytes,
+        params: KdfParams = DEFAULT_KDF_PARAMS,
+    ) -> bytearray:
+        """从共享密码派生限时加密共享包的密钥（共享域），与主/备份密钥域分离。
+
+        与 :meth:`derive_key`/:meth:`derive_backup_key` 共享同一 Argon2id 主材料，
+        经 :data:`_DOMAIN_INFO_SHARE` 的 HKDF info 派生实现域分离。共享包经此密钥
+        AES-256-GCM 加密，接收方浏览器用同一 password+salt+params 复刻 Argon2id +
+        HKDF-Expand 派生相同密钥解密。
+        """
+        material = cls._derive_master_material(password, salt, params)
+        try:
+            return cls._hkdf_expand(material, _DOMAIN_INFO_SHARE)
         finally:
             secure_zero_buffer(material)
 

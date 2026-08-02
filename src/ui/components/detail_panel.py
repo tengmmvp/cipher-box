@@ -54,6 +54,7 @@ from ..resources.icons import (
     EDIT,
     EYE,
     LOCK,
+    SHARE,
     STAR,
     STAR_OUTLINE,
     set_icon,
@@ -84,6 +85,7 @@ class DetailPanel(QWidget):
 
     edit_requested = pyqtSignal(int)
     delete_requested = pyqtSignal(int)
+    share_requested = pyqtSignal(int)
     favorite_toggled = pyqtSignal(int)
     copy_feedback = pyqtSignal()
 
@@ -190,9 +192,11 @@ class DetailPanel(QWidget):
 
         self._fav_btn = create_icon_button(STAR_OUTLINE, "收藏", visible=False)
         self._edit_btn = create_icon_button(EDIT, "编辑", visible=False)
+        self._share_btn = create_icon_button(SHARE, "创建共享包", visible=False)
         self._delete_btn = create_icon_button(DELETE, "删除", visible=False)
         toolbar.addWidget(self._fav_btn)
         toolbar.addWidget(self._edit_btn)
+        toolbar.addWidget(self._share_btn)
         toolbar.addWidget(self._delete_btn)
 
         layout.addLayout(toolbar)
@@ -269,6 +273,7 @@ class DetailPanel(QWidget):
         """
         self._title_label.setText(f"{entry.type_icon} {entry.title}")
         self._edit_btn.setVisible(not entry.is_deleted)
+        self._share_btn.setVisible(not entry.is_deleted)
         self._delete_btn.setVisible(not entry.is_deleted)
         self._fav_btn.setVisible(not entry.is_deleted)
         if not entry.is_deleted:
@@ -278,6 +283,7 @@ class DetailPanel(QWidget):
         eid = entry.id
         self._signal_connections = [
             (self._edit_btn.clicked, lambda: self.edit_requested.emit(eid)),
+            (self._share_btn.clicked, lambda: self.share_requested.emit(eid)),
             (self._delete_btn.clicked, lambda: self.delete_requested.emit(eid)),
             (self._fav_btn.clicked, lambda: self.favorite_toggled.emit(eid)),
         ]
@@ -295,6 +301,7 @@ class DetailPanel(QWidget):
         warning.setObjectName("detailWarning")
         self._content_layout.addWidget(warning)
         self._edit_btn.hide()
+        self._share_btn.hide()
 
     def _render_core_form(self, entry: Entry) -> None:
         """渲染核心信息区（账号/密码/网址）及密码强度条。"""
@@ -701,6 +708,7 @@ class DetailPanel(QWidget):
         self._current_entry = None
         self._title_label.setText("选择一个条目查看详情")
         self._edit_btn.hide()
+        self._share_btn.hide()
         self._delete_btn.hide()
         self._fav_btn.hide()
         # 复用构造时创建的常驻 `_empty_label`，仅更新文本并显示，

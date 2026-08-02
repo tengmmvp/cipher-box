@@ -24,6 +24,7 @@ __all__ = [
     "EntryIntegrityError",
     "BackupError",
     "PayloadTooLargeError",
+    "ShareError",
     "DatabaseError",
     "TransactionError",
     "SchemaError",
@@ -93,6 +94,10 @@ class PayloadTooLargeError(BackupError, ValueError):
 
     双重继承：上层可经 ``except BackupError`` 归入备份错误，也可被 ``except ValueError`` 兜底。
     """
+
+
+class ShareError(CipherBoxError):
+    """限时加密共享包操作异常（创建/解析/解密/篡改）。"""
 
 
 class ImportDataError(CipherBoxError):

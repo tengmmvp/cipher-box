@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>密匣共享包解密器</title>
+<style>
+*{box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"Microsoft YaHei","Segoe UI",sans-serif;background:#f5f6f8;color:#222;margin:0;padding:20px;line-height:1.5}
+.container{max-width:720px;margin:0 auto}
+h1{font-size:22px;margin:0}
+.version{color:#888;font-size:12px;margin:4px 0 0}
+.step{margin:16px 0;padding:16px;background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.file-label{display:inline-block;padding:10px 20px;background:#4a6cf7;color:#fff;border-radius:6px;cursor:pointer;font-size:14px}
+.file-label:hover{background:#3a5ce0}
+#file-info{margin:8px 0 0;color:#666;font-size:14px}
+#password{padding:8px 12px;border:1px solid #ddd;border-radius:6px;width:60%;font-size:14px}
+#decrypt-btn{padding:8px 20px;background:#4a6cf7;color:#fff;border:none;border-radius:6px;cursor:pointer;margin-left:8px;font-size:14px}
+#decrypt-btn:disabled{background:#aaa;cursor:not-allowed}
+.status{padding:8px 12px;border-radius:6px;margin:12px 0;font-size:14px}
+.status.info{background:#e8f0fe;color:#1a56c4}
+.status.success{background:#e6f4ea;color:#1e7e34}
+.status.error{background:#fdecea;color:#c0392b}
+.warn{padding:10px;background:#fff4e5;color:#b35900;border-radius:6px;margin:8px 0;font-size:14px}
+.notice{padding:10px;background:#e8f0fe;color:#1a56c4;border-radius:6px;margin:8px 0;font-size:14px}
+.count{color:#666;font-size:14px;margin:8px 0}
+.entry{background:#fff;border-radius:8px;padding:16px;margin:12px 0;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.entry-title{font-size:17px;font-weight:600;margin-bottom:8px}
+.badge{display:inline-block;padding:2px 8px;background:#eef;color:#4a6cf7;border-radius:10px;font-size:12px;margin-left:8px;vertical-align:middle}
+.field{display:flex;align-items:flex-start;gap:8px;padding:4px 0;font-size:14px}
+.field .label{color:#888;min-width:64px;flex-shrink:0}
+.field .value{flex:1;word-break:break-all}
+.field .value.secret{cursor:pointer;letter-spacing:2px;color:#4a6cf7}
+.field pre.value{white-space:pre-wrap;margin:0;font-family:inherit}
+.field a.value{color:#4a6cf7}
+.copy{padding:2px 10px;background:#f0f0f0;border:1px solid #ddd;border-radius:4px;cursor:pointer;font-size:12px;flex-shrink:0}
+.copy:hover{background:#e0e0e0}
+footer{margin-top:24px;color:#aaa;font-size:12px;text-align:center}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🔐 密匣共享包解密器</h1>
+  <p class="version">格式版本 {{VERSION}} · 本地解密，无任何网络通信</p>
+
+  <div class="step">
+    <label class="file-label">
+      <input type="file" id="file-input" accept=".cboxshare" hidden>
+      <span>选择 .cboxshare 文件</span>
+    </label>
+    <p id="file-info"></p>
+  </div>
+
+  <div id="step-password" class="step" hidden>
+    <input type="password" id="password" placeholder="输入共享密码" autocomplete="off">
+    <button id="decrypt-btn">解密</button>
+  </div>
+
+  <div id="status" class="status" hidden></div>
+  <div id="entries"></div>
+
+  <footer>
+    <p>所有解密在本机浏览器完成，密码与明文均不离开本机。</p>
+  </footer>
+</div>
+
+<script>{{HASH_WASM_JS}}</script>
+<script>{{ASMCRYPTO_JS}}</script>
+<script>
+(function () {
+  "use strict";
+
+  // 头部布局常量（须与 Python share_header_codec 保持一致）。
+  var MAGIC = "CipherBoxShare\u0000";   // 15 字节：14 字符 + NUL
+  var MAGIC_LEN = 15;
+  var STRUCT_SIZE = 29;                  // B + I + I + I + Q + Q
+  var SALT_SIZE = 32;
+  var HEADER_SIZE = MAGIC_LEN + STRUCT_SIZE + SALT_SIZE;  // 76
+  var CB2_LEN = 3;                       // encrypt_bytes 的 "CB2" 前缀
+  var NONCE_SIZE = 12;
+  var KEY_SIZE = 32;
+  var SHARE_AAD = "CipherBox:share";
+  var HKDF_INFO = "cipherbox:share-key";
+
+  var fileBytes = null;
+  var header = null;
+
+  var fileInput = document.getElementById("file-input");
+  var fileInfo = document.getElementById("file-info");
+  var stepPwd = document.getElementById("step-password");
+  var pwdInput = document.getElementById("password");
+  var decryptBtn = document.getElementById("decrypt-btn");
+  var statusEl = document.getElementById("status");
+  var entriesEl = document.getElementById("entries");
+
+  fileInput.addEventListener("change", onFileChange);
+  decryptBtn.addEventListener("click", onDecrypt);
+  pwdInput.addEventListener("keydown", function (e) { if (e.key === "Enter") onDecrypt(); });
+  entriesEl.addEventListener("click", onEntriesClick);
+
+  function showStatus(msg, kind) {
+    statusEl.hidden = !msg;
+    statusEl.textContent = msg || "";
+    statusEl.className = "status" + (kind ? " " + kind : "");
+  }
+
+  function showError(msg) {
+    showStatus(msg, "error");
+    entriesEl.innerHTML = "";
+  }
+
+  function onFileChange(e) {
+    var file = e.target.files[0];
+    if (!file) return;
+    showStatus("正在读取文件…", "info");
+    file.arrayBuffer().then(function (buf) {
+      fileBytes = new Uint8Array(buf);
+      try {
+        header = parseHeader(fileBytes);
+      } catch (err) {
+        header = null;
+        showError("文件格式无效：" + err.message);
+        return;
+      }
+      fileInfo.textContent = "已加载：" + file.name;
+      stepPwd.hidden = false;
+      pwdInput.focus();
+      showStatus("请输入共享密码后点击「解密」", "info");
+    });
+  }
+
+  function parseHeader(bytes) {
+    if (bytes.length < HEADER_SIZE + CB2_LEN + NONCE_SIZE + 16) {
+      throw new Error("文件过短");
+    }
+    var magicStr = new TextDecoder("utf-8").decode(bytes.subarray(0, MAGIC_LEN));
+    if (magicStr !== MAGIC) throw new Error("非密匣共享包");
+    var dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    var version = dv.getUint8(MAGIC_LEN);
+    if (version !== {{VERSION}}) throw new Error("不支持的版本 " + version);
+    var time = dv.getUint32(MAGIC_LEN + 1, true);
+    var mem = dv.getUint32(MAGIC_LEN + 5, true);
+    var parallel = dv.getUint32(MAGIC_LEN + 9, true);
+    var expire = Number(dv.getBigUint64(MAGIC_LEN + 13, true));
+    var created = Number(dv.getBigUint64(MAGIC_LEN + 21, true));
+    // slice 复制为独立缓冲，避免 byteOffset!=0 时下游库误读。
+    var salt = bytes.slice(HEADER_SIZE - SALT_SIZE, HEADER_SIZE);
+    var ctBlock = bytes.subarray(HEADER_SIZE);
+    var cb2 = new TextDecoder("ascii").decode(ctBlock.subarray(0, CB2_LEN));
+    if (cb2 !== "CB2") throw new Error("密文格式损坏");
+    var nonce = bytes.slice(HEADER_SIZE + CB2_LEN, HEADER_SIZE + CB2_LEN + NONCE_SIZE);
+    var ctWithTag = bytes.slice(HEADER_SIZE + CB2_LEN + NONCE_SIZE);
+    return {
+      time: time, mem: mem, parallel: parallel, expire: expire, created: created,
+      salt: salt, nonce: nonce, ctWithTag: ctWithTag,
+      headerBytes: bytes.slice(0, HEADER_SIZE),
+    };
+  }
+
+  function onDecrypt() {
+    if (!header) return;
+    var pwd = pwdInput.value;
+    if (!pwd) { showStatus("请输入密码", "error"); return; }
+    decryptBtn.disabled = true;
+    showStatus("正在派生密钥（Argon2id，约 1-2 秒）…", "info");
+    // 让状态先渲染再进入耗时的派生。
+    setTimeout(function () { doDecrypt(pwd); }, 30);
+  }
+
+  async function doDecrypt(pwd) {
+    try {
+      var pwBytes = new TextEncoder().encode(pwd.normalize("NFC"));
+      var prk = await hashwasm.argon2id({
+        password: pwBytes,
+        salt: header.salt,
+        parallelism: header.parallel,
+        memorySize: header.mem,
+        iterations: header.time,
+        hashLength: 32,
+        outputType: "binary",
+      });
+      var aesKey = hkdfExpand(prk, HKDF_INFO, KEY_SIZE);
+      var aad = buildAad(header.headerBytes);
+      var pt = asmCrypto.AES_GCM.decrypt(header.ctWithTag, aesKey, header.nonce, aad);
+      var json = new TextDecoder("utf-8").decode(pt);
+      var data = JSON.parse(json);
+      renderEntries(data, header);
+      showStatus("解密成功", "success");
+    } catch (err) {
+      showError("解密失败：密码错误或文件已损坏");
+    } finally {
+      decryptBtn.disabled = false;
+    }
+  }
+
+  // HKDF-Expand（RFC 5869）：length=32 时单轮 T(1)=HMAC(PRK, info||0x01)。
+  function hkdfExpand(prk, info, length) {
+    var infoBytes = new TextEncoder().encode(info);
+    var data = new Uint8Array(infoBytes.length + 1);
+    data.set(infoBytes, 0);
+    data[infoBytes.length] = 1;
+    var h = new asmCrypto.HmacSha256(prk);
+    h.process(data);
+    var t = new Uint8Array(h.finish().result);
+    return t.slice(0, length);
+  }
+
+  function buildAad(headerBytes) {
+    var prefix = new TextEncoder().encode(SHARE_AAD);
+    var aad = new Uint8Array(prefix.length + headerBytes.length);
+    aad.set(prefix, 0);
+    aad.set(headerBytes, prefix.length);
+    return aad;
+  }
+
+  function renderEntries(data, hdr) {
+    var html = "";
+    if (hdr.expire > 0) {
+      var now = Math.floor(Date.now() / 1000);
+      if (hdr.expire < now) {
+        html += '<div class="warn">⚠ 此共享包已超过有效期（软限制，仍可查看）</div>';
+      } else {
+        var hours = Math.ceil((hdr.expire - now) / 3600);
+        html += '<div class="notice">此共享包将在约 ' + hours + ' 小时后过期</div>';
+      }
+    }
+    var entries = (data && data.entries) || [];
+    html += '<p class="count">共 ' + entries.length + ' 个条目</p>';
+    entries.forEach(function (e) { html += renderEntry(e); });
+    entriesEl.innerHTML = html;
+    bindCopyButtons();
+  }
+
+  function renderEntry(e) {
+    var h = '<div class="entry"><div class="entry-title">' + esc(e.title || "(无标题)") + "";
+    if (e.entry_type) h += '<span class="badge">' + esc(e.entry_type) + "</span>";
+    h += "</div>";
+    h += field("账号", e.username, false);
+    if ("password" in e) h += field("密码", e.password, true);
+    if (e.url) h += field("网址", e.url, false, e.url);
+    if ("totp_secret" in e && e.totp_secret) h += field("TOTP", e.totp_secret, true);
+    if (e.tags) h += field("标签", e.tags, false);
+    if (e.notes) h += '<div class="field"><span class="label">备注</span><pre class="value">' + esc(e.notes) + "</pre></div>";
+    if (e.custom_fields && e.custom_fields.length) {
+      e.custom_fields.forEach(function (cf) {
+        h += field(cf.name, cf.value, cf.field_type === "password");
+      });
+    }
+    h += "</div>";
+    return h;
+  }
+
+  function field(label, value, secret, url) {
+    if (!value) return "";
+    var h = '<div class="field"><span class="label">' + esc(label) + "</span>";
+    if (secret) {
+      h += '<span class="value secret" data-reveal="' + esc(value) + '">●●●●●●</span>';
+    } else if (url) {
+      h += '<a class="value" href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(value) + "</a>";
+    } else {
+      h += '<span class="value">' + esc(value) + "</span>";
+    }
+    h += '<button class="copy" data-copy="' + esc(value) + '">复制</button></div>';
+    return h;
+  }
+
+  function bindCopyButtons() {
+    entriesEl.querySelectorAll("[data-copy]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        copyText(btn.getAttribute("data-copy"));
+        var old = btn.textContent;
+        btn.textContent = "已复制";
+        setTimeout(function () { btn.textContent = old; }, 1000);
+      });
+    });
+  }
+
+  function onEntriesClick(e) {
+    if (e.target.classList.contains("secret")) {
+      var v = e.target.getAttribute("data-reveal");
+      e.target.textContent = e.target.textContent === "●●●●●●" ? v : "●●●●●●";
+    }
+  }
+
+  function esc(s) {
+    if (s == null) return "";
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text);
+      return;
+    }
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+})();
+</script>
+</body>
+</html>

@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import QMainWindow, QMenu, QMessageBox
 from ..components.toast import Toast
 from ..dialogs.category_dialog import CategoryDialog
 from ..dialogs.entry_dialog import EntryDialog
+from ..dialogs.share_package_dialog import SharePackageDialog
 from ..error_messages import to_user_message
 from ..resources.constants import (
     MS_ENTRY_SELECT_DEBOUNCE,
@@ -29,7 +30,7 @@ from ..resources.constants import (
     MS_TOAST_LONG,
     MS_TOAST_SHORT,
 )
-from ..resources.icons import CLOSE, COPY, DELETE, EDIT, REFRESH, STAR, STAR_OUTLINE, icon
+from ..resources.icons import CLOSE, COPY, DELETE, EDIT, REFRESH, SHARE, STAR, STAR_OUTLINE, icon
 from ._locked_guard import require_unlocked
 
 if TYPE_CHECKING:
@@ -121,6 +122,7 @@ class EntryActionsController:
 
         # 详情面板信号 → 条目编辑/删除/收藏/复制反馈
         self._detail_panel.edit_requested.connect(self.edit_entry)
+        self._detail_panel.share_requested.connect(self.share_entry)
         self._detail_panel.delete_requested.connect(self.delete_entry)
         self._detail_panel.favorite_toggled.connect(self.toggle_favorite)
         self._detail_panel.copy_feedback.connect(self.on_copy_feedback)
@@ -319,6 +321,10 @@ class EntryActionsController:
             fav_act.setIcon(icon(STAR))
         menu.addAction(fav_act)
         menu.addSeparator()
+        share_act = QAction("创建共享包", parent)
+        share_act.setIcon(icon(SHARE))
+        menu.addAction(share_act)
+        menu.addSeparator()
         del_act = QAction("删除", parent)
         del_act.setIcon(icon(DELETE))
         menu.addAction(del_act)
@@ -328,6 +334,7 @@ class EntryActionsController:
             copy_pwd_act: lambda: self._copy_password(entry_id),
             edit_act: lambda: self.edit_entry(entry_id),
             fav_act: lambda: self.toggle_favorite(entry_id),
+            share_act: lambda: self.share_entry(entry_id),
             del_act: lambda: self.delete_entry(entry_id),
         }
         if copy_totp_act is not None:
@@ -519,6 +526,24 @@ class EntryActionsController:
             Toast.show(self._parent, to_user_message(exc), Toast.ERROR, duration=MS_TOAST_DEFAULT)
             return
         self._deps.refresh_entries_only()
+
+    @require_unlocked
+    def share_entry(self, entry_id: int) -> None:
+        """打开共享包创建对话框；完整性异常条目禁止分享以防泄漏损坏数据。"""
+        entry = self._entry_mgr.get_entry(entry_id)
+        if not entry:
+            return
+        if entry.integrity_error:
+            QMessageBox.critical(
+                self._parent,
+                "数据完整性异常",
+                f"该条目的以下字段无法解密：{entry.integrity_message}。\n\n"
+                "当前无法创建共享包，请先创建备份并检查数据文件。",
+            )
+            return
+        dialog = SharePackageDialog([entry], parent=self._parent)
+        dialog.exec()
+        dialog.deleteLater()
 
     def on_copy_feedback(self) -> None:
         self._view.status_bar.showMessage("已复制到剪贴板", MS_TOAST_DEFAULT)
