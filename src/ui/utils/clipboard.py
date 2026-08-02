@@ -1,4 +1,22 @@
-"""剪贴板管理器 — 复制密码后自动清空。"""
+"""剪贴板管理器 — 敏感文本复制与定时自动清空。
+
+复制密码后启动 singleShot 定时器，到时仅当剪贴板内容仍为本会话写入值（HMAC 常数时间
+比对）才清空，避免误清用户后续复制的其它内容。关键设计：
+
+- ``SEC-CLIP-001``：Windows 下经 ctypes 在单次 ``OpenClipboard`` 周期原子写入
+  CF_UNICODETEXT 与 Win+V 历史/云剪贴板排除标记，消除文本与标记分两次写入（剪贴板
+  序号 N 与 N+1）致密码在标记就位前被快照进历史的时序窗口；非 Windows 或失败回退
+  Qt ``setText``。
+- ``SEC-CLIP-002``：``text()`` / ``clear()`` / ``setText()`` 在剪贴板被其他进程占用
+  （X11/远程会话/Windows 抢占）时可能抛 ``RuntimeError``，全程吞异常降级，不阻断 UI
+  或锁定/隐藏到托盘等关键清理流程。
+- fail-safe：读取失败即无法判定内容是否仍是密码，按安全优先强制清空（宁可误清不留密码），
+  避免 singleShot 定时器已停而密码无限期残留。
+- X11 Primary Selection 与 text() 独立记 hash 比对，避免一方被替换时另一方仍残留密码。
+
+继承 ``QObject`` 使内部 ``QTimer`` 以本对象为 parent；由 ``MainWindow`` 持有，随其
+生命周期回收。
+"""
 
 import hmac
 import logging

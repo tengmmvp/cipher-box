@@ -62,6 +62,7 @@ class TrayIcon(QSystemTrayIcon):
             self.setToolTip("CipherBox")
 
     def _create_menu(self) -> None:
+        """构建托盘右键菜单：显示主窗口、锁定保险库、退出应用。"""
         menu = QMenu()
 
         show_action = QAction("显示主窗口", self)

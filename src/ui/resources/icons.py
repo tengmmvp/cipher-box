@@ -1,5 +1,9 @@
 """统一图标管理模块 — 基于 QtAwesome 的语义化图标系统。
 
+通过语义化常量（如 :data:`EYE`、:data:`COPY`）解耦调用方与底层 qtawesome 字形名；
+颜色经 ``theme_colors`` token 在创建时烘焙进 :class:`QIcon`，并按 (name, color, theme)
+键缓存复用以省字体渲染开销（详见 ``_icon_cache``）。主题切换时缓存键变化自动失效重建。
+
 使用方式：
     from .resources.icons import icon, set_icon, EYE, COPY
     set_icon(btn, EYE)                    # 设置按钮图标，并自动清除文字

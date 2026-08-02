@@ -12,7 +12,7 @@ from src.utils.purge_files import count_files, secure_purge
 
 
 def _touch(directory: Path, name: str) -> Path:
-    """在 directory 下创建含 1 字节内容的命名文件,返回其路径,供 purge/count 测试 fixture。"""
+    """在 directory 下创建含 1 字节内容的命名文件，返回其路径，供 purge/count 测试 fixture。"""
     p = directory / name
     p.write_bytes(b"x")
     return p

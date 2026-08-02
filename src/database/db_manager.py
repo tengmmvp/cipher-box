@@ -181,7 +181,7 @@ class DatabaseManager:
         if self._write_guard:
             self._write_guard()
 
-    # ========== 事务管理 ==========
+    # ==================== 事务管理 ====================
 
     @property
     def in_transaction(self) -> bool:
@@ -325,7 +325,7 @@ class DatabaseManager:
                     logger.warning("提交后刷新数据库文件权限失败", exc_info=True)
                 self._last_secure_ts = now
 
-    # ========== 连接管理 ==========
+    # ==================== 连接管理 ====================
 
     def open(self) -> bool:
         """打开数据库连接。"""

@@ -255,6 +255,7 @@ class ToastWidget(QFrame):
         self._stable_height = self.sizeHint().height() or self.height()
 
     def _start_fade_out(self) -> None:
+        """触发淡出动画，完成后通知 ``ToastManager`` 移除本卡片。"""
         self._auto_close_timer.stop()
 
         # 启动新动画前停止旧动画，防止淡入/淡出动画重叠导致闪烁

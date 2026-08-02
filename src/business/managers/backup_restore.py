@@ -144,8 +144,8 @@ class BackupRestoreManager:
         bytearray 清零影响。master_key 与 raw_entries 在同一持锁阶段采集，锁外改密
         （轮换主密钥 + 重加密 DB）不会令 finalize 用新密钥解密旧密文而失败。
 
-        ``_create_backup_locked`` 保留为持锁全流程入口，供 :meth:`_create_restore_point`
-        在已持锁上下文复用（恢复点快照体积小，无需 A4 优化）。
+        ``_create_backup_locked`` 保留为持锁全流程入口，供 :meth:`RestorePointManager.create`
+        经 ``bind_backup_creator`` 绑定的链路在已持锁上下文复用（恢复点快照体积小，无需 A4 优化）。
         """
         try:
             filepath = str(validate_file_path(filepath))
@@ -264,7 +264,7 @@ class BackupRestoreManager:
         else:
             snapshot_key = prepared.snapshot_key
             # prepare 已保证 SNAPSHOT 路径 snapshot_key 非 None；显式检查替代 assert
-            # （python -O 跳过），满足类型 narrow 与意外状态防御（对称 PASSWORD 分支，obs）。
+            # （python -O 跳过），满足类型 narrow 与意外状态防御（对称 PASSWORD 分支）。
             if snapshot_key is None:
                 raise BackupError("快照密钥不可用")
             backup_key = snapshot_key

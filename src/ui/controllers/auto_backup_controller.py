@@ -58,6 +58,7 @@ class AutoBackupController:
             self._timer.start()
 
     def stop_timer(self) -> None:
+        """锁定前停止定时器（prepare_for_lock 调用）。"""
         if self._timer is not None:
             self._timer.stop()
 
@@ -86,7 +87,7 @@ class AutoBackupController:
         """
         if not self._vault.is_unlocked:
             return
-        # 上一个备份仍在运行则跳过，避免覆盖引用导致孤儿线程在锁定后访问已清零密钥
+        # 上一个备份仍在运行则跳过，避免覆盖引用导致孤儿线程在锁定后访问已清零密钥。
         if self._worker is not None and self._worker.isRunning():
             return
 

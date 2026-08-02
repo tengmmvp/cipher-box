@@ -161,6 +161,15 @@ class EntryItemDelegate(QStyledItemDelegate):
         option: QStyleOptionViewItem,
         index: QModelIndex,
     ) -> None:
+        """按需绘制单个条目卡片。
+
+        重写 ``QStyledItemDelegate.paint``，在 ``painter`` 上一次性合成卡片：圆角
+        背景与边框、选中态左侧高亮条、类型图标、标题（含收藏星标）与副标题（用户名
+        /分类/netloc 拼接，均按可用宽度省略）、密码强度圆点、完整性警示符、已删除
+        徽章。颜色经 ``_get_color`` 缓存、字体经 ``_get_font`` 缓存，避免每帧重建；
+        行内垂直布局由模块级常量 ``_TITLE_Y_OFFSET`` 等守护，防止文本区域重叠。
+        ``painter`` 为 ``None`` 或取不到 ``Entry`` 时回退父类绘制。
+        """
         if painter is None:
             return
         entry = index.data(Qt.ItemDataRole.UserRole)

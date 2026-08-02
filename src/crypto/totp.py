@@ -189,7 +189,7 @@ class TOTPGenerator:
             TOTP 验证码字符串，失败时返回空字符串。
 
         Note:
-            静默失败是有意设计：用于定时器刷新等非交互场景，弹出错误框干扰用户。
+            静默失败是有意设计：用于定时器刷新等非交互场景，弹出错误框会干扰用户。
             如需错误传播，使用 generate_or_raise()。
         """
         code, error = TOTPGenerator._generate_impl(secret, algorithm, period, digits)

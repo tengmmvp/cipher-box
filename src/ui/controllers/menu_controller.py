@@ -230,7 +230,7 @@ class MenuController:
             ("Escape", self._slots.clear_search),
         ]
         # 保留引用防止 GC 回收：虽然 Qt parent=parent 持有引用，
-        # 但显式保存更安全，避免 PyPy 等非引用计数实现的回收风险
+        # 但显式保存更安全，避免 PyPy 等非引用计数实现的回收风险。
         self._shortcuts = []
         for key, callback in shortcuts:
             shortcut = QShortcut(QKeySequence(key), parent)
@@ -327,6 +327,7 @@ class MenuController:
             logger.info("改密成功，已触发强制快照")
 
     def show_about(self) -> None:
+        """打开关于对话框。"""
         dialog = AboutDialog(self._parent)
         dialog.exec()
         dialog.deleteLater()
@@ -350,6 +351,7 @@ class MenuController:
             self._slots.edit_entry(pending_fix_id)
 
     def show_shortcuts(self) -> None:
+        """以富文本表格展示全部快捷键。"""
         rows = "".join(
             f'<tr><td>{key}</td><td style="padding-left:12px">{desc}</td></tr>'
             for key, desc in _SHORTCUT_DISPLAY

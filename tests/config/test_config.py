@@ -19,6 +19,7 @@ def _manager(root: str) -> ConfigManager:
 
 
 def test_load_drops_unknown_and_invalid_values():
+    """加载时丢弃未知键、非法值回退默认，合法非安全键保留。"""
     with tempfile.TemporaryDirectory() as root:
         path = Path(root) / "config.json"
         path.write_text(
@@ -96,6 +97,7 @@ def test_tampered_backup_directory_falls_back_to_default():
 
 
 def test_set_rejects_unknown_or_invalid_values():
+    """set 拒绝未知键（KeyError）与越界值（ValueError）。"""
     with tempfile.TemporaryDirectory() as root:
         manager = _manager(root)
         with pytest.raises(KeyError):
