@@ -23,6 +23,8 @@ def _write_csv(tmp_path, name: str, text: str) -> str:
 
 
 class TestBitwardenBoundaries:
+    """BitwardenImporter.parse 的边界守卫：login 非 dict、顶层结构、items 类型与 fields 元素。"""
+
     def test_login_as_list_does_not_crash(self, tmp_path):
         """login 为 list 经 ``_as_dict`` 守卫，不抛 AttributeError（最常见导入入口）。
 
@@ -66,6 +68,8 @@ class TestBitwardenBoundaries:
 
 
 class TestJsonBoundaries:
+    """JsonImporter.parse 的格式守卫：顶层结构、app 标识、secrets_included 类型与空 entries。"""
+
     def test_top_level_list_rejected(self, tmp_path):
         path = _write_json(tmp_path, "b.json", [{"app": "CipherBox"}])
         with pytest.raises(ImportFormatError):
@@ -121,6 +125,8 @@ class TestJsonBoundaries:
 
 
 class TestCsvBoundaries:
+    """CsvImporter.parse 的边界：BOM 剥离、超长字段中止与行字段缺失容忍。"""
+
     def test_bom_stripped(self, tmp_path):
         """utf-8-sig 剥离 BOM：含 BOM 的 CSV 正常解析（回归保护，防改回 utf-8）。"""
         # write_text('﻿...', encoding='utf-8') 将 BOM 写为字节；CsvImporter 用
@@ -149,6 +155,8 @@ class TestCsvBoundaries:
 
 
 class TestKeePassAliasIsolation:
+    """固化 KeePass 与 CSV 列别名的隔离边界，防 _build_col_map 重构时互相误匹配。"""
+
     def test_bitwarden_specific_aliases_not_matched(self, tmp_path):
         """KeePass 严格别名不命中 Bitwarden/CSV 专有列名（name/login_uri/login_password）。
 

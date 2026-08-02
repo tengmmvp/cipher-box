@@ -136,6 +136,8 @@ class EntryCacheManager:
     def cached_search_metadata(
         self,
         raw_entry: RawEntry,
+        *,
+        key: bytes | None = None,
     ) -> tuple[str, str, str, str]:
         """解密并缓存列表/搜索所需的 title、username、url、tags（单条路径）。
 
@@ -144,22 +146,33 @@ class EntryCacheManager:
         加锁取 epoch——同一批 raw 在单次列表/搜索调用内 epoch 不可能变化
         （调用方事务内已固定），逐条校验属冗余的 N 次 RLock + epoch 查询。
 
+        ``key`` 为 PF-001 并发修补（M3）：调用方（如 :meth:`EntryManager.get_entry`
+        经 ``_decrypt_for_detail``）在 ``epoch_guarded_read`` with 块内快照的主密钥。
+        不传则用实时 ``self._key``，保持非并发调用方零改动。锁外解密期间若发生改密，
+        实时 ``self._key`` 已轮换为新密钥，与本批旧密文不匹配会致 GCM 认证失败、
+        错误摘要以新 epoch 写入缓存而持续污染；传 ``key`` 用快照密钥解密旧密文确保
+        结果正确。
+
         返回明文原形 4 元组；小写形式经 :meth:`search_lower_no_check` 取得，
         两者一同缓存以避免 matches_search 每条目实时 .lower()。
         """
         self.invalidate_if_epoch_changed()
-        meta = self._cached_search_metadata_no_check(raw_entry)
+        meta = self._cached_search_metadata_no_check(raw_entry, key=key)
         return (meta.title, meta.username, meta.url, meta.tags)
 
     def _cached_search_metadata_no_check(
         self,
         raw_entry: RawEntry,
+        *,
+        key: bytes | None = None,
     ) -> SearchMetadata:
         """cached_search_metadata 的无 epoch 校验版本，供批量循环复用。
 
         返回 :class:`SearchMetadata`：前 4 项为明文原形（title/username/url/tags，
         列表展示），后 4 项为对应小写形式（供 matches_search 跳过实时 .lower()）。
         两者一同解密一次并缓存。
+
+        ``key`` 语义见 :meth:`cached_search_metadata`（PF-001 并发修补）。
 
         调用方须保证循环外已调用 ``invalidate_if_epoch_changed``。
         """
@@ -171,6 +184,9 @@ class EntryCacheManager:
                 return cached
             entry_epoch = self._cache_epoch
 
+        # PF-001 并发修补（M3）：用调用方传入的锁内快照密钥，避免锁外解密期间
+        # 改密 activate 致 self._key 轮换为新密钥、本批 raw 仍旧密文引发 GCM 失败。
+        decrypt_key = key if key is not None else self._key
         values: list[str] = []
         failed: set[str] = set()
         for field_name, encrypted in (
@@ -182,7 +198,7 @@ class EntryCacheManager:
             try:
                 value = _decrypt_field_impl(
                     encrypted,
-                    self._key,
+                    decrypt_key,
                     cid,
                     field_name,
                     strict=True,
@@ -216,6 +232,8 @@ class EntryCacheManager:
     def search_metadata_for_analysis(
         self,
         raw_entry: RawEntry,
+        *,
+        key: bytes | None = None,
     ) -> tuple[str, str, str, str]:
         """供批量分析路径复用的摘要解密（公开入口，无逐条 epoch 校验）。
 
@@ -224,22 +242,29 @@ class EntryCacheManager:
         managers 的私有方法，守住分层方向（services 不反向耦合 managers
         内部实现）。调用方须在循环外调用 :meth:`invalidate_if_epoch_changed`。
 
+        ``key`` 语义见 :meth:`cached_search_metadata`（PF-001 并发修补）；
+        services 层的非并发调用方不传 key，保持实时 ``self._key`` 行为。
+
         返回明文原形 4 元组（取自 :class:`SearchMetadata` 前 4 字段）。
         """
-        meta = self._cached_search_metadata_no_check(raw_entry)
+        meta = self._cached_search_metadata_no_check(raw_entry, key=key)
         return (meta.title, meta.username, meta.url, meta.tags)
 
     def search_lower_no_check(
         self,
         raw_entry: RawEntry,
+        *,
+        key: bytes | None = None,
     ) -> tuple[str, str, str, str]:
         """返回摘要字段的小写形式 (title, username, url, tags)，供搜索匹配复用。
 
         直接复用 :meth:`_cached_search_metadata_no_check` 已填充的缓存取后 4 项
         （命中缓存时为纯锁内 dict 查询），跳过 :func:`matches_search` 每条目 4 字段
         实时 ``.lower()``。调用方须在循环外已调用 ``invalidate_if_epoch_changed``。
+
+        ``key`` 语义见 :meth:`cached_search_metadata`（PF-001 并发修补）。
         """
-        meta = self._cached_search_metadata_no_check(raw_entry)
+        meta = self._cached_search_metadata_no_check(raw_entry, key=key)
         return (meta.title_lower, meta.username_lower, meta.url_lower, meta.tags_lower)
 
     def get_failed_fields(self, crypto_id: str) -> set[str]:
@@ -247,23 +272,40 @@ class EntryCacheManager:
         with self._cache_lock:
             return self._search_metadata_failed.get(crypto_id, set())
 
-    def decrypt_category_name(self, category_id: int | None, value: str) -> str:
-        """解密分类名并缓存（首次解密后缓存）。"""
+    def decrypt_category_name(
+        self,
+        category_id: int | None,
+        value: str,
+        *,
+        key: bytes | None = None,
+    ) -> str:
+        """解密分类名并缓存（首次解密后缓存）。
+
+        ``key`` 语义见 :meth:`cached_search_metadata`（PF-001 并发修补）：调用方
+        （如 :meth:`EntryManager._decrypt_for_detail` / ``_decrypt_summary``）在
+        ``epoch_guarded_read`` with 块内快照的主密钥。锁外解密期间若发生改密，
+        实时 ``self._key`` 已轮换为新密钥与本批旧密文不匹配致 GCM 认证失败、错误
+        空分类名以新 epoch 写入缓存持续污染；传 ``key`` 用快照解密旧密文确保正确。
+        """
         if category_id is None or not value:
             return ""
         with self._cache_lock:
             cached = self._category_name_cache.get(category_id)
+            # 采样 epoch，回写时复查（与 _cached_search_metadata_no_check 对称）：锁外
+            # 解密期间若改密清缓存致 _cache_epoch 变化，不回写避免旧明文 stale 污染。
+            entry_epoch = self._cache_epoch
         if cached is not None:
             return cached
         name = _decrypt_field_impl(
             value,
-            self._key,
+            key if key is not None else self._key,
             category_crypto_id(category_id),
             "category_name",
             strict=True,
         )
         with self._cache_lock:
-            self._category_name_cache[category_id] = name
+            if self._cache_epoch == entry_epoch:
+                self._category_name_cache[category_id] = name
         return name
 
     def resolve_totp_secret(

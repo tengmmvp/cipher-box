@@ -1,4 +1,7 @@
-"""条目明文校验。供 add_entry/update_entry 写入前校验 entry_type、字段类型/长度、custom_fields 结构与数量。"""
+"""条目明文校验。
+
+供 add_entry/update_entry 写入前校验 entry_type、字段类型/长度、custom_fields 结构与数量。
+"""
 
 from ...exceptions import EntryError
 from ...models import (

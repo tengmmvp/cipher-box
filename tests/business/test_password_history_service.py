@@ -38,6 +38,8 @@ def _hist(crypto_id: str, enc: str, changed_at: str = "2026-01-01T00:00:00Z") ->
 
 
 class TestDecrypt:
+    """PasswordHistoryService.decrypt 测试：正常解密、损坏记录跳过与持锁契约。"""
+
     def test_decrypt_returns_decrypted_passwords(self):
         """正常加密的历史密码经 decrypt 返回带 changed_at 与明文密码的字典。"""
         vault = _make_vault()
@@ -99,6 +101,8 @@ class TestDecrypt:
 
 
 class TestGetAndGetCount:
+    """get / get_count 委托 vault.db 的查询与计数。"""
+
     def test_get_delegates_to_db(self):
         vault = _make_vault()
         vault.db.get_password_history.return_value = ["h1", "h2"]

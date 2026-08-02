@@ -318,7 +318,7 @@ def test_selecting_first_entry_opens_detail_panel_without_crash():
         entry_id = manager.add_entry(Entry(title="Selectable", password="Strong!2026Password"))
         window = MainWindow(build_business_context(config, vault))
         window._entry_list.setCurrentIndex(window._entry_model.index(0))
-        # 等待 80ms 选择防抖定时器触发并处理事件
+        # 等待 150ms 选择防抖定时器触发并处理事件
         # PyQt6 QtTest.pyi 将 qWait 误标为实例方法，首个形参为 self，
         # 导致 pyright 把位置实参绑定到 self 而报 ms 缺失；此处将 qWait
         # cast 为接受单一 int 的可调用对象，消除类型误差，运行时行为不变。

@@ -30,7 +30,7 @@ class TestValidatePlainEntry:
     """validate_plain_entry 的合法通过与各类非法拒绝。"""
 
     def test_valid_login_entry_passes(self):
-        validate_plain_entry(_make_entry())  # 不抛即通过
+        validate_plain_entry(_make_entry())
 
     def test_valid_each_entry_type_passes(self):
         for entry_type in ("login", "card", "identity", "note", "server"):
@@ -169,4 +169,4 @@ def test_validate_plain_entry_accepts_custom_field_at_length_limit():
             )
         ],
     )
-    validate_plain_entry(entry)  # 不抛即通过
+    validate_plain_entry(entry)

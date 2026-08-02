@@ -156,6 +156,7 @@ class DatabaseManager:
         signer: EntrySigner,
         verifier: EntryVerifier,
     ) -> None:
+        """注入条目元数据 HMAC 签名/验签回调，供写入时签名、读取时完整性校验。"""
         self._entry_signer = signer
         self._entry_verifier = verifier
 
@@ -164,6 +165,7 @@ class DatabaseManager:
         signer: CategorySigner,
         verifier: CategoryVerifier,
     ) -> None:
+        """注入分类元数据 HMAC 签名/验签回调（与 set_entry_integrity_handlers 对称）。"""
         self._category_signer = signer
         self._category_verifier = verifier
 

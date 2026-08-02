@@ -74,10 +74,17 @@ class EncryptionEngine:
 
     @staticmethod
     def _aad_bytes(associated_data: str | bytes) -> bytes:
-        """将 AAD 归一为 bytes：str 经 UTF-8 编码，bytes 原样返回。"""
-        return (
-            associated_data.encode("utf-8") if isinstance(associated_data, str) else associated_data
-        )
+        """将 AAD 归一为 bytes：str 经 UTF-8 编码，bytes 原样返回。
+
+        非 str/bytes 类型（含 None）一律抛 TypeError：AAD 承担字段级域绑定的认证职责，
+        而 ``None`` 在 AESGCM 语义为「无 AAD」——静默放过会让调用方 bug 致加密无 AAD
+        绑定（安全降级）却不可见。安全边界应对无效输入显性失败而非悄悄降级。
+        """
+        if isinstance(associated_data, str):
+            return associated_data.encode("utf-8")
+        if isinstance(associated_data, bytes):
+            return associated_data
+        raise TypeError(f"AAD 类型无效：期望 str/bytes，实际 {type(associated_data).__name__}")
 
     @classmethod
     def encrypt(

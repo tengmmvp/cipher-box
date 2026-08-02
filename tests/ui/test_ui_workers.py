@@ -18,7 +18,7 @@ class TestBackgroundWorker:
         worker.finished.connect(lambda r: results.append(r))
         worker.start()
 
-        worker.wait(5000)
+        assert worker.wait(5000), "worker 未在 5s 超时内结束"
         # 处理待发信号
         qapp.processEvents()
 
@@ -36,7 +36,7 @@ class TestBackgroundWorker:
         worker.error.connect(lambda e: errors.append(e))
         worker.start()
 
-        worker.wait(5000)
+        assert worker.wait(5000), "worker 未在 5s 超时内结束"
         qapp.processEvents()
 
         assert len(errors) == 1
@@ -61,7 +61,7 @@ class TestBackgroundWorker:
         worker.cancel()
         barrier.set()  # 让函数继续
 
-        worker.wait(5000)
+        assert worker.wait(5000), "worker 未在 5s 超时内结束"
         qapp.processEvents()
 
         assert len(results) == 0
@@ -74,7 +74,7 @@ class TestBackgroundWorker:
         worker.finished.connect(lambda r: results.append(r))
         worker.start()
 
-        worker.wait(5000)
+        assert worker.wait(5000), "worker 未在 5s 超时内结束"
         qapp.processEvents()
 
         assert len(results) == 1
@@ -96,7 +96,7 @@ class TestBackgroundWorker:
         worker = BackgroundWorker(_fail, None)
         worker.error.connect(lambda e: errors.append(e))
         worker.start()
-        worker.wait(5000)
+        assert worker.wait(5000), "worker 未在 5s 超时内结束"
         qapp.processEvents()
 
         assert len(errors) == 1
@@ -115,7 +115,7 @@ class TestBackgroundWorker:
         worker = BackgroundWorker(_fail, None)
         worker.error.connect(lambda e: errors.append(e))
         worker.start()
-        worker.wait(5000)
+        assert worker.wait(5000), "worker 未在 5s 超时内结束"
         qapp.processEvents()
 
         assert len(errors) == 1

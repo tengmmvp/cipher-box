@@ -52,7 +52,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# 菜单项类型：(标签, 快捷键|None, 图标名, 触发回调)。供 _setup_menubar 规格表使用。
+# 菜单项类型：（标签，快捷键|None，图标名，触发回调）。供 _setup_menubar 规格表使用。
 _MenuItem = tuple[str, str | None, str, Callable[..., object]]
 
 # 快捷键定义：每个条目由按键序列和显示描述组成，供 setup_shortcuts 与 show_shortcuts 共享。

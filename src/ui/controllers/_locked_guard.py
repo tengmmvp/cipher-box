@@ -1,8 +1,11 @@
 """组合化控制器的锁定态守卫（项目唯一锁定态守卫）。
 
 读组合化 controller 自有的 ``_locked`` 属性，由 host 经 ``set_locked()`` /
-``prepare_for_lock()`` 广播。MenuController / EntryActionsController /
-ListRefreshController 的锁定态守卫统一承载于此。
+``prepare_for_lock()`` 广播。EntryActionsController / ListRefreshController 的
+锁定态守卫统一承载于此。
+
+MenuController 不经此守卫：其菜单入口经主窗口锁定态直接禁用/隐藏隔离（锁定后
+菜单不可见或禁用），不存在「锁定态触发槽访问已清零密钥」的路径，无需装饰器守卫。
 """
 
 from __future__ import annotations

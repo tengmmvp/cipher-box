@@ -779,6 +779,13 @@ class EntryDialog(QDialog):
         if not self._validate_field_lengths(entry_type):
             return
 
+        # TOTP secret 前置校验：无效 Base32/URI 入库会致详情面板生成验证码时报错，
+        # 在保存前拦截与 _test_totp 同源的校验逻辑。
+        totp_secret = self._totp_edit.text().strip()
+        if totp_secret and not PasswordService.validate_totp_secret(totp_secret):
+            QMessageBox.warning(self, "验证失败", "无效的 TOTP 密钥或 URI，请检查后重试。")
+            return
+
         entry = self._collect_entry(entry_type)
 
         try:

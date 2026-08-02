@@ -82,7 +82,7 @@ class TestEntryChangeBusCallbacks:
         bus.register(boom)
         bus.register(lambda pw: second_called.append(True))
 
-        bus.notify(password_changed=True)  # 不应抛出
+        bus.notify(password_changed=True)
         assert second_called == [True]
 
     def test_callback_exception_logged_not_raised(self):
@@ -90,7 +90,6 @@ class TestEntryChangeBusCallbacks:
         cache = MagicMock()
         bus = EntryChangeBus(cache)
         bus.register(lambda pw: (_ for _ in ()).throw(ValueError("x")))
-        # 不应抛异常
         bus.notify(password_changed=True)
 
 

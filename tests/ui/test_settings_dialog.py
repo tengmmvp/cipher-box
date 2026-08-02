@@ -29,7 +29,7 @@ def test_save_settings_rolls_back_on_persistence_failure(qapp, tmp_path, monkeyp
     """config.save 失败时回滚内存配置到快照，保持内存与磁盘（旧值）一致。"""
     dlg, config = _make_dialog(tmp_path)
     original = config.get("auto_lock_minutes")
-    dlg._auto_lock_spin.setValue(15)  # 控件改为新值
+    dlg._auto_lock_spin.setValue(15)
 
     def _raise_save():
         raise OSError("disk full")

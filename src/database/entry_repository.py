@@ -342,7 +342,9 @@ class EntryRepository:
         updated_at = entry.updated_at if preserve_metadata and entry.updated_at else now
         is_deleted = bool(preserve_metadata and entry.is_deleted)
         deleted_at = entry.deleted_at if preserve_metadata else ""
-        password_changed_at = entry.password_changed_at or created_at or now
+        # created_at 上一行已保证非空（entry.created_at or now），此处回退到 created_at
+        # 即可（与 docstring 一致），无需再兜底 now。
+        password_changed_at = entry.password_changed_at or created_at
         entry = replace(
             entry,
             crypto_id=crypto_id,
@@ -660,6 +662,7 @@ class EntryRepository:
 
     @_db_operation
     def get_password_history(self, entry_id: int) -> list[PasswordHistory]:
+        """获取指定条目的密码历史，按变更时间倒序返回（供 UI 展示）。"""
         rows = self._conn.execute(
             f"{_SELECT_PASSWORD_HISTORY_SQL} "
             "WHERE h.entry_id = ? ORDER BY h.changed_at DESC, h.id DESC",

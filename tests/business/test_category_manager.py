@@ -27,7 +27,6 @@ class TestCategoryManagerAdd:
     """add_category 成功与各类拒绝路径。"""
 
     def test_add_returns_id_and_encrypts_name(self, entry_mgr, vault):
-        """成功新增返回 id，数据库层分类名为 cb2: 密文。"""
         name = _unique_name("工作")
         cat_id = entry_mgr.categories.add_category(
             Category(name=name, icon_char="[DIR]", color="#fff"),
@@ -47,12 +46,10 @@ class TestCategoryManagerAdd:
             entry_mgr.categories.add_category(Category(name=base.swapcase()))
 
     def test_add_empty_name_rejected(self, entry_mgr):
-        """空名或纯空白应拒绝。"""
         with pytest.raises(ValueError, match="空"):
             entry_mgr.categories.add_category(Category(name="   "))
 
     def test_add_decrypts_back_to_plaintext_via_get(self, entry_mgr):
-        """新增后经 get_categories 读取应得到明文名。"""
         name = _unique_name("财务")
         entry_mgr.categories.add_category(Category(name=name))
         cats = entry_mgr.categories.get_categories()
@@ -124,7 +121,6 @@ class TestCategoryManagerUpdate:
         signer.verify_category(raw)
 
     def test_update_requires_id(self, entry_mgr):
-        """id 为 None 应拒绝。"""
         with pytest.raises(ValueError, match="ID"):
             entry_mgr.categories.update_category(Category(name=_unique_name("X")))
 
@@ -173,7 +169,6 @@ class TestCategoryManagerCount:
         assert entry_mgr.categories.get_category_entry_count(cat_id) == 0
 
     def test_entry_counts_dict_structure(self, entry_mgr):
-        """get_category_entry_counts 返回 dict[int, int]。"""
         entry_mgr.categories.add_category(Category(name=_unique_name("C")))
         counts = entry_mgr.categories.get_category_entry_counts()
         assert isinstance(counts, dict)

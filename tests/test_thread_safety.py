@@ -24,6 +24,8 @@ def _join_all(threads: list[threading.Thread]) -> None:
 
 
 class TestDatabaseThreadSafety:
+    """DatabaseManager 在 RLock 保护下的并发读、并发写与读写混合安全性测试。"""
+
     def test_concurrent_reads(self, tmp_path):
         """多个线程同时读取不应崩溃。"""
         db = DatabaseManager(tmp_path / "test.db", test_mode=True)
@@ -138,6 +140,8 @@ class TestDatabaseThreadSafety:
 
 
 class TestVaultThreadSafety:
+    """VaultManager 多线程并发读取的安全性测试。"""
+
     def test_concurrent_vault_reads(self, vault):
         """多线程同时通过 VaultManager.db 读取条目。"""
         errors: list[Exception] = []
@@ -153,11 +157,5 @@ class TestVaultThreadSafety:
         threads = [threading.Thread(target=read_entries) for _ in range(5)]
         for t in threads:
             t.start()
-        for t in threads:
-            t.join(timeout=10)
-
-        # join 超时返回不设 errors 会使死锁线程静默「通过」：显式检查线程是否仍
-        # 存活，暴露死锁/超时而非误报成功。
-        alive = [t for t in threads if t.is_alive()]
-        assert not alive, f"线程未在超时内结束（可能死锁）：{len(alive)} 个"
+        _join_all(threads)
         assert not errors, f"线程安全测试失败: {errors}"

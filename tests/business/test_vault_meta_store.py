@@ -22,6 +22,8 @@ _KEY = os.urandom(32)
 
 
 class TestSnapshotKeyCrypto:
+    """snapshot_key 加解密往返与解密后的长度/密钥校验。"""
+
     def test_snapshot_key_round_trip(self):
         """encrypt → decrypt 恢复原始 32 字节 snapshot_key。"""
         snap = os.urandom(vault_meta_store.SNAPSHOT_KEY_LEN)
@@ -56,6 +58,8 @@ class TestSnapshotKeyCrypto:
 
 
 class TestUpdate:
+    """update 的 snapshot_key=None 拒绝写与非空时委托 write 写入。"""
+
     def test_update_raises_when_snapshot_key_none(self):
         """update 收到 snapshot_key=None 时抛 VaultIntegrityError（防 None 落库）。
 
@@ -107,6 +111,8 @@ class VaultStoreSpy(VaultMetaStore):
 
 
 class TestWrite:
+    """write 持久化全部字段并在最后写入 vault_meta_mac 完整性签名。"""
+
     def test_write_persists_all_fields_and_mac(self):
         """write 写入 8 个值字段 + vault_meta_mac（最后写入，覆盖全部已签字段）。"""
         db = MagicMock()

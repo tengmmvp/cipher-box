@@ -11,6 +11,8 @@ from tests.helpers import make_vault
 
 
 class TestVaultMetaIntegrity:
+    """验证 unlock 的 vault_meta_mac 校验：正常通过、篡改签字段拒绝与签名缺失拒绝。"""
+
     def test_normal_unlock_passes(self, vault_config):
         """正常库的 vault_meta_mac 与 unlock 重算一致，解锁通过。"""
         vault = make_vault(vault_config)

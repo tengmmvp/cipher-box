@@ -48,8 +48,10 @@ def is_auto_backup_due(
     current = now or datetime.now(timezone.utc)
     try:
         elapsed = current - datetime.fromisoformat(last_text)
-    except ValueError:
-        # 时间戳损坏会让间隔检查每次都重新备份；记日志以便运维发现而非静默冗余备份。
+    except (ValueError, TypeError):
+        # 时间戳损坏（ValueError：非法格式）或 naive datetime（TypeError：aware 减 naive，
+        # 如用户手编 config.json 写无时区时间戳）会让间隔检查每次都重新备份；记日志
+        # 以便运维发现而非静默冗余备份。
         logger.warning("last_auto_backup_at 解析失败，跳过间隔检查：%s", last_text)
         return True
     interval = config.get(

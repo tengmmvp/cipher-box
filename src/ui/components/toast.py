@@ -5,7 +5,6 @@
 入口，ToastManager 负责按父窗口维度复用与定位。
 """
 
-import weakref
 from collections.abc import Callable
 from typing import cast
 
@@ -307,7 +306,11 @@ class ToastManager:
     parent 的右下角，从下向上堆叠，同时为每个 Toast 创建一层独立的阴影包装。
     """
 
-    _instances: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+    # 普通字典：Manager 持 ``self._parent = parent`` 强引用，会击穿 WeakKeyDictionary
+    # 的弱键（parent 永不死 → 弱键回调永不触发），「自动清理」是错觉。清理靠
+    # ``_remove_toast`` 在末条 Toast 移除后显式 ``pop``；toast parent（主窗口/对话框）
+    # 通常长期存活，无需弱引用兜底。
+    _instances: dict[QWidget, "ToastManager"] = {}
 
     def __init__(self, parent: QWidget):
         self._parent = parent

@@ -11,6 +11,8 @@ from src.utils.memory import mark_secret_discarded, secure_zero_buffer
 
 
 class TestSecureZeroBuffer:
+    """secure_zero_buffer 的 bytearray 原地清零、空输入短路与 bytes 误传告警测试。"""
+
     def test_bytearray_zeroed_in_place(self):
         buf = bytearray(b"sensitive_key_data_123")
         secure_zero_buffer(buf)
@@ -31,6 +33,8 @@ class TestSecureZeroBuffer:
 
 
 class TestMarkSecretDiscarded:
+    """mark_secret_discarded 对空字符串与临时副本清零的边界行为测试。"""
+
     def test_empty_string_noop(self):
         mark_secret_discarded("")
 

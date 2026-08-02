@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from typing import Any
 
 from PyQt6.QtWidgets import (
@@ -235,8 +237,24 @@ class SettingsDialog(QDialog):
 
     def _browse_backup_dir(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "选择备份目录")
-        if path:
-            self._backup_path_edit.setText(path)
+        if not path:
+            return
+        # 轻量可写性探测：尝试在所选目录创建并删除临时文件，提前警告无写权限的目录，
+        # 避免后续自动备份静默失败。
+        try:
+            fd, tmp = tempfile.mkstemp(dir=path)
+            try:
+                os.close(fd)
+            finally:
+                os.remove(tmp)
+        except OSError:
+            QMessageBox.warning(
+                self,
+                "目录不可用",
+                f"所选目录不可写或不可访问：\n{path}\n请选择其他目录。",
+            )
+            return
+        self._backup_path_edit.setText(path)
 
     # 配置项映射表：四元组（配置键、控件属性、访问类型 combo/check/spin、默认值）。
     # 默认值统一引用 DEFAULT_CONFIG 单一事实源，改某项默认值只需改 config.DEFAULT_CONFIG 一处。

@@ -9,6 +9,7 @@ import hmac
 import logging
 import os
 from typing import NamedTuple
+from unicodedata import normalize
 
 from argon2.low_level import Type, hash_secret_raw
 from cryptography.hazmat.primitives import hashes
@@ -104,9 +105,13 @@ class MasterKeyManager:
             raise TypeError(f"密码类型无效：期望 str，实际 {type(password).__name__}")
         cls._validate_params(params)
         cls._validate_salt(salt)
+        # Unicode 归一化（NFC）：同一视觉密码在 NFC/NFD 下 UTF-8 字节不同，会派生出
+        # 不同密钥——跨 OS 便携备份恢复、不同 IME/输入法输入若归一化不一致，将导致
+        # 不可恢复的锁库。编码前统一 NFC，与 OS/IME 解耦。
+        normalized = normalize("NFC", password)
         return bytearray(
             hash_secret_raw(
-                secret=password.encode("utf-8"),
+                secret=normalized.encode("utf-8"),
                 salt=bytes(salt),
                 time_cost=params.time_cost,
                 memory_cost=params.memory_cost,

@@ -34,7 +34,6 @@ def _make_category(**overrides) -> Category:
 
 
 def test_sign_verify_category_roundtrip():
-    """签名后验签通过。"""
     signer = _make_signer()
     cat = _make_category()
     cat = dataclasses.replace(cat, metadata_mac=signer.sign_category(cat))
@@ -62,7 +61,6 @@ def test_verify_category_detects_metadata_tamper():
 
 
 def test_verify_category_missing_mac_raises():
-    """空签名（未签名）验签应拒绝。"""
     signer = _make_signer()
     cat = _make_category(metadata_mac="")
     with pytest.raises(VaultIntegrityError):
@@ -70,7 +68,6 @@ def test_verify_category_missing_mac_raises():
 
 
 def test_sign_category_requires_domain_key():
-    """未解锁（域密钥未设）签名应抛 VaultLockedError。"""
     signer = MetadataSigner()  # 无 domain_key
     cat = _make_category()
     with pytest.raises(VaultLockedError):

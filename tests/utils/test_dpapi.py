@@ -14,6 +14,8 @@ from src.utils.file_security import protect_with_dpapi, unprotect_with_dpapi
 
 @pytest.mark.skipif(sys.platform != "win32", reason="DPAPI 仅 Windows 可用")
 class TestDpapiRoundTrip:
+    """DPAPI 封装-解封往返与明文 unprotect 回退判定测试。"""
+
     def test_protect_unprotect_roundtrip(self):
         data = b"x" * 32
         protected = protect_with_dpapi(data)

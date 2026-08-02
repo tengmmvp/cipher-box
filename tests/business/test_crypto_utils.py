@@ -313,6 +313,8 @@ class TestRequireVaultKey:
 
     def test_returns_key_when_unlocked(self, aes_key):
         class FakeVaultManager:
+            """替代 VaultManager 的已解锁态（持密钥），用于 require_vault_key 正常返回密钥。"""
+
             key = aes_key
             is_unlocked = True
 
@@ -321,6 +323,8 @@ class TestRequireVaultKey:
 
     def test_raises_when_locked(self):
         class FakeVaultManager:
+            """替代 VaultManager 的锁定态（密钥为 None），用于 require_vault_key 抛 VaultLockedError。"""
+
             key = None
             is_unlocked = False
 

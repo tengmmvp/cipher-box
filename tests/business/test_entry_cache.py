@@ -18,6 +18,8 @@ def cache(entry_mgr):
 
 
 class TestSearchMetadataCache:
+    """cached_search_metadata 的填充/命中与单条、全清失效矩阵。"""
+
     def test_decrypts_and_caches_summary(self, entry_mgr, cache):
         entry_mgr.add_entry(Entry(title="GitHub", username="alice", password="p"))
         raw = entry_mgr.db.get_entries(EntryQuery())[0]
@@ -56,6 +58,8 @@ class TestSearchMetadataCache:
 
 
 class TestTotpSecretCache:
+    """TOTP secret 缓存的 store/pop/clear 行为。"""
+
     def test_store_pop_clear(self, cache):
         cache.store_totp(1, "SECRET")
         assert cache._totp_secret_cache.get(1) == "SECRET"
@@ -67,6 +71,8 @@ class TestTotpSecretCache:
 
 
 class TestTagsCacheValid:
+    """tags_cache_valid 在填充与失效前后的状态迁移。"""
+
     def test_invalid_before_population(self, cache):
         """初始未填充标签缓存，tags_cache_valid 为 False。"""
         assert not cache.tags_cache_valid
@@ -87,6 +93,8 @@ class TestTagsCacheValid:
 
 
 class TestInvalidateAll:
+    """invalidate_all 清空全部多级缓存。"""
+
     def test_clears_all_caches(self, entry_mgr, cache):
         entry_mgr.add_entry(Entry(title="A", username="u", password="p"))
         raw = entry_mgr.db.get_entries(EntryQuery())[0]
@@ -98,6 +106,8 @@ class TestInvalidateAll:
 
 
 class TestLruEviction:
+    """搜索摘要缓存超容量时 LRU 驱逐最旧条目。"""
+
     def test_evicts_oldest_beyond_capacity(self, entry_mgr, cache, monkeypatch):
         # 缩小缓存上限，避免构造 2000 条目
         monkeypatch.setattr(entry_cache_module, "_MAX_SEARCH_METADATA_CACHE_SIZE", 2)

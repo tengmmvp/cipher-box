@@ -126,6 +126,8 @@ def _setup(ctrl: ListRefreshController) -> ListRefreshView:
 
 
 class TestSetup:
+    """setup 创建防抖定时器与控件信号连接。"""
+
     def test_setup_creates_three_timers(self, qapp):
         """setup 创建状态栏/条目变更/搜索三个防抖定时器。"""
         ctrl = _make_controller()
@@ -136,6 +138,8 @@ class TestSetup:
 
 
 class TestLifecycle:
+    """prepare_for_lock / set_locked / stop_timers / start_status_timer 生命周期。"""
+
     def test_prepare_for_lock_sets_locked_and_clears_search(self, qapp):
         """prepare_for_lock 标记锁定态并清空搜索输入。"""
         ctrl = _make_controller()
@@ -172,6 +176,8 @@ class TestLifecycle:
 
 
 class TestCachedProperties:
+    """cached_categories / cached_tag_names 缓存初始空态。"""
+
     def test_cached_properties_initial_empty(self, qapp):
         ctrl = _make_controller()
         assert ctrl.cached_categories == []
@@ -179,6 +185,8 @@ class TestCachedProperties:
 
 
 class TestRequireUnlocked:
+    """@require_unlocked 守卫：锁定态过滤变更不改 _current_filter。"""
+
     def test_on_filter_changed_locked_skips(self, qapp):
         """锁定态 on_filter_changed 不改 _current_filter（守卫跳过）。"""
         ctrl = _make_controller()
@@ -191,6 +199,8 @@ class TestRequireUnlocked:
 
 
 class TestCallbacks:
+    """防抖定时器、排序委托、clear_search 等回调分支。"""
+
     def test_refresh_after_entry_change_starts_debounce_timer(self, qapp):
         """refresh_after_entry_change 启动条目变更防抖定时器。"""
         ctrl = _make_controller()
@@ -305,3 +315,38 @@ class TestStaleWorkerResultDiscarded:
         self._fire_finished(worker, ([], "新结果"))
 
         view.entry_model.set_entries.assert_called_once_with([])
+
+    def test_cancel_entry_worker_advances_generation_and_discards(self, qapp, monkeypatch):
+        """cancel_entry_worker 推进代际计数器，使在飞 worker 延迟结果丢弃（M4 回归守护）。
+
+        同步刷新路径调 cancel_entry_worker（如永久删除降计数触发同步分支），须推进
+        generation——旧实现不推进、仅靠 is_entry_stale 指纹，filter 未变时无法丢弃
+        finished 已入队的旧 worker 结果，致其覆盖刚渲染的新数据。
+        """
+        ctrl, view = self._async_controller(monkeypatch)
+        ctrl.refresh_entries()  # 启动异步 worker（generation=G）
+        worker = _FakeAsyncWorker.instances[-1]
+        gen_before = ctrl._coordinator._entry_refresh_generation
+        ctrl._coordinator.cancel_entry_worker()
+        assert ctrl._coordinator._entry_refresh_generation == gen_before + 1
+        # 旧 worker 延迟完成：generation 不匹配 → 丢弃，不刷新 UI
+        self._fire_finished(worker, ([], "过期结果"))
+        view.entry_model.set_entries.assert_not_called()
+
+    def test_cancel_tag_worker_advances_generation_and_discards(self, qapp, monkeypatch):
+        """cancel_tag_worker 推进 tag 代际，使在飞 tag worker 延迟结果丢弃（M5 回归守护）。
+
+        与 cancel_entry_worker 对称：同步刷新路径取消在飞 tag worker 时推进 tag
+        generation，避免旧标签快照覆盖刚渲染结果（tag 侧原同步分支漏取消）。
+        """
+        ctrl, view = self._async_controller(monkeypatch)
+        ctrl._sidebar_ctrl.tags_cache_valid = False
+        ctrl.refresh_tag_filter()  # 大库 + 缓存失效 → 启动异步 tag worker
+        tag_worker = _FakeAsyncWorker.instances[-1]
+        gen_before = ctrl._coordinator._tag_refresh_generation
+        view.tag_combo.clear.reset_mock()  # 隔离 setup 初始同步填充的重建调用
+        ctrl._coordinator.cancel_tag_worker()
+        assert ctrl._coordinator._tag_refresh_generation == gen_before + 1
+        # 旧 tag worker 延迟完成：tag generation 不匹配 → 丢弃，不重建下拉
+        self._fire_finished(tag_worker, [("t", 1)])
+        view.tag_combo.clear.assert_not_called()

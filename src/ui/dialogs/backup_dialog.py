@@ -119,9 +119,9 @@ class BackupDialog(WorkerBackedDialog):
         self._path_label.setWordWrap(True)
         file_layout.addWidget(self._path_label, 1)
 
-        browse_btn = QPushButton("浏览...")
-        browse_btn.clicked.connect(self._browse)
-        file_layout.addWidget(browse_btn)
+        self._browse_btn = QPushButton("浏览...")
+        self._browse_btn.clicked.connect(self._browse)
+        file_layout.addWidget(self._browse_btn)
         layout.addWidget(file_group)
 
         # 状态
@@ -177,12 +177,32 @@ class BackupDialog(WorkerBackedDialog):
     def _on_close_blocked(self) -> None:
         self._status_label.setText("恢复进行中，请等待完成后再关闭")
 
+    def _set_busy(self, busy: bool) -> None:
+        """busy 态除主操作按钮外，额外隔离 purge/浏览/模式切换控件。
+
+        purge 不持 vault_write_lock，与恢复（持锁创建 pre_restore 安全网快照）并发可能
+        删除正在创建的回滚快照，令恢复失败后失去回滚安全网；浏览/模式切换会改进行中
+        操作的路径与目标。恢复时 purge 按 has_points 重算启用态（而非简单反相 busy）。
+        """
+        super()._set_busy(busy)
+        self._browse_btn.setEnabled(not busy)
+        # QButtonGroup 无 setEnabled（非 QWidget），逐个按钮隔离模式切换
+        for btn in self._btn_group.buttons():
+            btn.setEnabled(not busy)
+        if busy:
+            self._purge_btn.setEnabled(False)
+        else:
+            self._update_purge_button()
+
     def _on_mode_changed(self) -> None:
         is_backup = self._btn_group.checkedId() == 0
         self._exec_btn.setText("创建备份" if is_backup else "恢复数据")
         self._selected_path = None
         self._path_label.setText("未选择")
         self._path_label.setStyleSheet(f"color: {c('text_muted')};")
+        # 清除上一操作的残留状态文案与 severity 颜色，避免新操作起步时仍显示旧结果。
+        self._status_label.setText("")
+        set_label_severity(self._status_label, "accent")
 
     def _browse(self) -> None:
         is_backup = self._btn_group.checkedId() == 0
@@ -222,6 +242,11 @@ class BackupDialog(WorkerBackedDialog):
             self._do_restore(self._selected_path)
 
     def _do_backup(self, path: str) -> None:
+        """收集备份密码并启动后台创建任务（无写入副作用，可安全取消）。
+
+        密码经独立输入与二次确认；worker 闭包以默认参数拷贝密码，启动后立即 del
+        局部引用，最终释放由 release_worker 完成。
+        """
         password, ok = QInputDialog.getText(
             self,
             "设置备份密码",
@@ -296,6 +321,11 @@ class BackupDialog(WorkerBackedDialog):
         )
 
     def _do_restore(self, path: str) -> None:
+        """启动后台恢复任务（有写入副作用，不可中途取消）。
+
+        先经 inspect_backup 探测是否需要密码；恢复覆盖全部数据，回滚安全网快照
+        （pre_restore_*.cbox）由 business 层在持锁事务内创建。
+        """
         reply = QMessageBox.warning(
             self,
             "危险操作",

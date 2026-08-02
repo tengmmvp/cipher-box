@@ -21,6 +21,7 @@ dev = [
   "mypy>=1.10",
   "pytest>=8.0",
   "pytest-cov>=5.0",
+  "pyright>=1.1.390",
   "ruff>=0.6",
 ]
 
@@ -97,6 +98,10 @@ module = "src.ui.controllers.auto_lock_controller"
 disable_error_code = ["override"]
 
 [tool.pyright]
+# 只检查 src（生产代码），与 mypy（mypy src）对齐。tests 由 pytest 守护；测试中 Mock
+# 属性（assert_not_called/side_effect）、Optional 成员访问、私有属性访问等模式与 pyright
+# 严格模式摩擦多，不纳入 pyright 门禁，避免为测试代码铺满 type: ignore。
+include = ["src"]
 # 指向项目 venv 解析 PyQt6 等第三方依赖；pyright CLI 默认不用 .venv，会误报
 # reportMissingImports（PyQt6 未解析），并连带触发 reportOptionalMemberAccess。
 venvPath = "."

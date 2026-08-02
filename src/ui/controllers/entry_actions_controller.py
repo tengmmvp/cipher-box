@@ -10,6 +10,7 @@ dataclass view-handle（``EntryActionsView``），创建选择防抖定时器并
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -21,6 +22,7 @@ from PyQt6.QtWidgets import QMainWindow, QMenu, QMessageBox
 from ..components.toast import Toast
 from ..dialogs.category_dialog import CategoryDialog
 from ..dialogs.entry_dialog import EntryDialog
+from ..error_messages import to_user_message
 from ..resources.constants import (
     MS_ENTRY_SELECT_DEBOUNCE,
     MS_TOAST_DEFAULT,
@@ -39,6 +41,8 @@ if TYPE_CHECKING:
     from ..components.detail_panel import DetailPanel
     from ..controllers.sidebar_controller import SidebarController
     from ..utils.clipboard import ClipboardManager
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -238,8 +242,13 @@ class EntryActionsController:
         chosen = menu.exec(self._view.entry_list.mapToGlobal(pos))
 
         if chosen == restore_act:
-            self._entry_mgr.restore_entry(entry_id)
-            self._deps.refresh_after_entry_change()
+            try:
+                self._entry_mgr.restore_entry(entry_id)
+                self._deps.refresh_after_entry_change()
+            except Exception as exc:
+                logger.error("恢复条目失败: %s", exc, exc_info=True)
+                Toast.show(parent, to_user_message(exc), Toast.ERROR, duration=MS_TOAST_DEFAULT)
+                return
             Toast.show(parent, f"已恢复「{entry.title}」", Toast.SUCCESS)
         elif chosen == delete_act:
             reply = QMessageBox.warning(
@@ -249,8 +258,12 @@ class EntryActionsController:
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply == QMessageBox.StandardButton.Yes:
-                self._entry_mgr.permanent_delete_entry(entry_id)
-                self._deps.refresh_after_entry_change()
+                try:
+                    self._entry_mgr.permanent_delete_entry(entry_id)
+                    self._deps.refresh_after_entry_change()
+                except Exception as exc:
+                    logger.error("永久删除条目失败: %s", exc, exc_info=True)
+                    Toast.show(parent, to_user_message(exc), Toast.ERROR, duration=MS_TOAST_DEFAULT)
 
     def _show_active_entry_menu(self, summary: Entry, pos: QPoint) -> None:
         """活跃条目右键菜单 — dict dispatch，复制操作延迟解密。"""
@@ -448,7 +461,12 @@ class EntryActionsController:
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self._entry_mgr.delete_entry(entry_id)
+            try:
+                self._entry_mgr.delete_entry(entry_id)
+            except Exception as exc:
+                logger.error("删除条目失败: %s", exc, exc_info=True)
+                Toast.show(parent, to_user_message(exc), Toast.ERROR, duration=MS_TOAST_DEFAULT)
+                return
             self._detail_panel.show_empty()
             entry_title = entry.title
 
@@ -484,7 +502,12 @@ class EntryActionsController:
 
     @require_unlocked
     def toggle_favorite(self, entry_id: int) -> None:
-        self._entry_mgr.toggle_favorite(entry_id)
+        try:
+            self._entry_mgr.toggle_favorite(entry_id)
+        except Exception as exc:
+            logger.error("切换收藏失败: %s", exc, exc_info=True)
+            Toast.show(self._parent, to_user_message(exc), Toast.ERROR, duration=MS_TOAST_DEFAULT)
+            return
         self._deps.refresh_entries_only()
 
     def on_copy_feedback(self) -> None:
@@ -524,8 +547,13 @@ class EntryActionsController:
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self._sidebar_ctrl.delete_category(category_id)
-            self._deps.refresh_after_entry_change()
+            try:
+                self._sidebar_ctrl.delete_category(category_id)
+                self._deps.refresh_after_entry_change()
+            except Exception as exc:
+                logger.error("删除分类失败: %s", exc, exc_info=True)
+                Toast.show(parent, to_user_message(exc), Toast.ERROR, duration=MS_TOAST_DEFAULT)
+                return
             Toast.show(parent, f"已删除分类「{cat_name}」", Toast.SUCCESS)
 
     # ========== 密码生成器回调 ==========

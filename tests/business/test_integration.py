@@ -371,7 +371,7 @@ def test_backup_and_restore_preserves_all_fields(backup_restore_env):
     )
     entry_mgr.update_entry(entry)
 
-    # 必须指定密码或使用快照密钥
+    # 3. 创建备份（用快照密钥加密，无需另指定主密码）
     backup_path = str(Path(tmp_dir) / "test_backup.cbox")
     assert backup_mgr.create_backup(backup_path, use_snapshot_key=True)
     assert os.path.exists(backup_path)
@@ -523,6 +523,20 @@ def test_full_analysis(security_analyzer_env):
     assert result["duplicate_count"] == 1
 
 
+def test_empty_password_not_counted_as_weak(security_analyzer_env):
+    """无密码条目（password=''）不计为弱密码（M15-2 回归守护）。
+
+    空明文经加密仍产生非空密文，旧实现 ``bool(raw.password)`` 恒 True 致 note/identity
+    等无密码条目（check_strength('') score=0）假阳性计入 weak_count、拉低健康分；修复后
+    解密确认空即 is_weak=False。
+    """
+    entry_mgr, analyzer, _vault, _tmp_dir = security_analyzer_env
+    entry_mgr.add_entry(Entry(title="笔记", password="", entry_type="note"))
+    result = analyzer.full_analysis()
+    assert result["total"] == 1
+    assert result["weak_count"] == 0
+
+
 @pytest.fixture()
 def db_env():
     """创建 DatabaseManager。"""
@@ -609,7 +623,7 @@ def import_export_env():
     import_export = ImportExportManager(entry_mgr)
     yield entry_mgr, import_export, vault, tmpdir
     vault.close()
-    shutil.rmtree(tmpdir)
+    shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def test_json_roundtrip(import_export_env):
@@ -722,7 +736,7 @@ def test_backup_with_locked_vault():
     assert len(result[1]) > 0
 
     vault.close()
-    shutil.rmtree(tmp_dir)
+    shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def test_change_password_wrong_old():
@@ -741,7 +755,7 @@ def test_change_password_wrong_old():
     assert vault.unlock("OriginalMaster!2026")[0]
 
     vault.close()
-    shutil.rmtree(tmp_dir)
+    shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def test_ensure_db_open_raises_when_db_cannot_open():
@@ -765,4 +779,4 @@ def test_ensure_db_open_raises_when_db_cannot_open():
                 vault.ensure_db_open()
 
     vault.close()
-    shutil.rmtree(tmp_dir)
+    shutil.rmtree(tmp_dir, ignore_errors=True)

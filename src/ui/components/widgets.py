@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
-from PyQt6.QtCore import QObject, Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QDialog,
@@ -242,6 +242,11 @@ _CLEAR_LAYOUT_SIGNALS = (
 def clear_layout(layout: QLayout, disconnect_signals: bool = True) -> None:
     """递归清除布局中的所有控件和子布局。
 
+    信号断开依赖 ``_CLEAR_LAYOUT_SIGNALS`` 清单式枚举，是固有脆弱点：新增带自定义
+    信号（非清单所列名称）的可复用控件时，须扩展 ``_CLEAR_LAYOUT_SIGNALS`` 清单，
+    或由调用方在清理前显式断开该控件的自定义信号，否则 deleteLater 到实际删除间
+    自定义信号触发仍可能访问已删控件。
+
     Args:
         layout: 要清除的布局。
         disconnect_signals: 是否在删除前断开 widget 信号连接，默认为 True。
@@ -272,30 +277,14 @@ def clear_layout(layout: QLayout, disconnect_signals: bool = True) -> None:
 # ======== Worker 释放工具 ========
 
 
-class WorkerHost(Protocol):
-    """持有 BackgroundWorker 的对话框协议，约束 release_worker 的入参类型。
-
-    所有运行后台 worker 的对话框声明 ``_worker: BackgroundWorker | None`` 即满足
-    本协议。用 Protocol 而非具体 QDialog 子类：release_worker 只依赖「持有 _worker」
-    这一结构契约，且属性访问使「_worker 被重命名」能在静态类型检查阶段暴露，
-    而非运行时静默返回 None、worker 信号未断开、关闭后回调访问已销毁控件。
-    ``sender`` 源自 QObject，所有实现者均为 QDialog（QObject 子类），故纳入协议
-    以支持 :func:`finalize_worker_if_current` 的过期 worker 守卫。
-    """
-
-    _worker: BackgroundWorker | None
-
-    def sender(self) -> QObject | None: ...
-
-
-def release_worker(dialog: WorkerHost) -> None:
+def release_worker(dialog: WorkerBackedDialog) -> None:
     """安全释放对话框持有的 BackgroundWorker。
 
     断开所有信号并将 ``dialog._worker`` 置 None，防止对话框关闭后
     Worker 回调访问已销毁的控件。应在 reject() 和完成回调中调用。
 
     Args:
-        dialog: 持有 ``_worker`` 属性的对话框实例（满足 :class:`WorkerHost`）。
+        dialog: 持有 ``_worker`` 属性的对话框实例（:class:`WorkerBackedDialog` 子类）。
     """
     worker = dialog._worker
     if worker is None:
@@ -308,7 +297,7 @@ def release_worker(dialog: WorkerHost) -> None:
     dialog._worker = None
 
 
-def finalize_worker_if_current(dialog: WorkerHost) -> bool:
+def finalize_worker_if_current(dialog: WorkerBackedDialog) -> bool:
     """过期 worker 守卫 + 当前 worker 释放。
 
     若回调来自当前 worker 则释放并返回 True，否则返回 False（调用方应直接
@@ -320,7 +309,7 @@ def finalize_worker_if_current(dialog: WorkerHost) -> bool:
         # ...处理结果...
 
     Args:
-        dialog: 持有 ``_worker`` 的对话框（满足 :class:`WorkerHost`）。
+        dialog: 持有 ``_worker`` 的对话框（:class:`WorkerBackedDialog` 子类）。
 
     Returns:
         True 表示回调来自当前 worker 且已释放；False 表示来自过期 worker。
@@ -353,11 +342,21 @@ class WorkerBackedDialog(QDialog):
       ``_after_release``。
     """
 
+    # 类级注解：_worker 启动前为 None（Optional）；_primary_action_btn/_status_label 经
+    # 占位控件初始化为非 Optional——子类 _setup_ui 赋值真实控件时类型一致（QLabel=QLabel），
+    # 避免 pyright 按赋值推断为非 Optional 与基类 Optional 声明触发 reportIncompatibleVariableOverride
+    # （PyQt 实例属性不变性）。
+    _worker: BackgroundWorker | None
+    _primary_action_btn: QPushButton
+    _status_label: QLabel
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._worker: BackgroundWorker | None = None
-        self._primary_action_btn: QPushButton | None = None
-        self._status_label: QLabel | None = None
+        self._worker = None
+        # 占位控件：子类 _setup_ui 覆盖为真实控件（加入布局）。未覆盖时 _set_busy 对不可见
+        # 占位操作无害；占位随覆盖后引用断开被 GC。
+        self._primary_action_btn = QPushButton()
+        self._status_label = QLabel()
 
     def _cancel_on_close(self) -> bool:
         """reject 时是否取消正在运行的 worker。
@@ -369,21 +368,44 @@ class WorkerBackedDialog(QDialog):
         return True
 
     def _before_reject(self) -> None:
-        """等待 worker 前的钩子（如请求 vault 取消），默认无操作。"""
+        """等待 worker 前的钩子（如请求 vault 取消），默认无操作。
+
+        经 :meth:`_prepare_close` 在 ``accept`` 与 ``reject`` 两条关闭路径都触发
+        （命名沿用历史，实际不限于 reject）。
+        """
 
     def _after_release(self) -> None:
-        """worker 释放后、``super().reject()`` 前的钩子（如清除敏感输入），默认无操作。"""
+        """worker 释放后、``super().accept()``/``super().reject()`` 前的钩子（如清除敏感输入）。
 
-    def reject(self) -> None:
-        """关闭前按 ``_cancel_on_close`` 等待后台 worker 完成并释放引用。
+        经 :meth:`_prepare_close` 在 ``accept`` 与 ``reject`` 两条关闭路径都触发。
+        """
 
-        完成后释放 worker 引用，防止对话框关闭后 worker 回调访问已销毁控件。
+    def _prepare_close(self) -> None:
+        """关闭前按 ``_cancel_on_close`` 等待后台 worker 完成并释放引用、清敏感数据。
+
+        ``accept`` 与 ``reject`` 两条关闭路径共用此清理管线。``accept`` 经
+        ``done()→hide()`` 不触发 ``closeEvent``，且 QDialog 原生 ``accept`` 不等待
+        worker——若子类以 ``accept()`` 退出（如 ``SecurityDashboard`` 的关闭按钮），
+        运行中 worker 会随对话框销毁触发 ``QThread: Destroyed`` 致命警告，且
+        ``_after_release`` 的敏感数据清理被跳过。统一经此方法收敛两条路径。
         """
         self._before_reject()
         wait_worker_shutdown(self._worker, cancel=self._cancel_on_close())
         release_worker(self)
         self._after_release()
+
+    def reject(self) -> None:
+        """关闭前等待后台 worker 完成并释放引用（清理见 ``_prepare_close``）。"""
+        self._prepare_close()
         super().reject()
+
+    def accept(self) -> None:
+        """关闭前等待后台 worker 完成并释放引用，与 ``reject`` 共用清理管线。
+
+        防止子类以 ``accept()`` 退出时绕过 worker 等待与 ``_after_release`` 敏感清理。
+        """
+        self._prepare_close()
+        super().accept()
 
     def closeEvent(self, a0: QCloseEvent | None) -> None:
         """不可取消 worker 运行时拒绝关闭，避免中断写入副作用。"""
@@ -404,17 +426,15 @@ class WorkerBackedDialog(QDialog):
     def _set_busy(self, busy: bool) -> None:
         """busy 态切换：禁用/启用主操作按钮并更新状态标签。
 
-        依赖子类在 ``_setup_ui`` 中赋值的 ``_primary_action_btn`` 与 ``_status_label``；
-        二者未赋值时该方法为无操作，便于 busy 语义不同的子类不参与此默认流程。
+        ``_primary_action_btn`` 与 ``_status_label`` 经基类占位初始化，子类 ``_setup_ui``
+        覆盖为真实控件。busy 语义不同的子类可覆写本方法。
         """
-        if self._primary_action_btn is not None:
-            self._primary_action_btn.setEnabled(not busy)
-        if self._status_label is not None:
-            if busy:
-                self._status_label.setText("处理中...")
-                set_label_severity(self._status_label, "accent")
-            else:
-                self._status_label.setText("")
+        self._primary_action_btn.setEnabled(not busy)
+        if busy:
+            self._status_label.setText("处理中...")
+            set_label_severity(self._status_label, "accent")
+        else:
+            self._status_label.setText("")
 
     def _report_worker_error(
         self,
@@ -446,9 +466,8 @@ class WorkerBackedDialog(QDialog):
         self._set_busy(False)
         if log_message is not None:
             logger.error(log_message, error_msg)
-        if self._status_label is not None:
-            self._status_label.setText(status_text)
-            set_label_severity(self._status_label, "error")
+        self._status_label.setText(status_text)
+        set_label_severity(self._status_label, "error")
         QMessageBox.critical(self, DLG_TITLE_ERROR, message)
         return True
 

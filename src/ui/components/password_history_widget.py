@@ -10,14 +10,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QVBoxLayout,
-    QWidget,
 )
 
 from ...utils.memory import mark_secret_discarded
@@ -29,16 +28,17 @@ if TYPE_CHECKING:
     from ...business.managers.entry_manager import EntryManager
 
 
-class PasswordHistoryWidget(QWidget):
-    """密码历史折叠区组件。
+class PasswordHistoryWidget(QObject):
+    """密码历史折叠区组件（纯控制器，无可视自身）。
 
-    通过注入的 EntryManager 引用获取密码历史，采用延迟加载：先显示摘要，
-    点击展开后才解密完整记录。
+    构建的折叠区控件加入外部传入的 content_layout，自身从不 show，故继承 QObject
+    而非 QWidget。通过注入的 EntryManager 引用获取密码历史，采用延迟加载：先显示
+    摘要，点击展开后才解密记录。
     """
 
     copy_feedback = pyqtSignal()
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self._history_passwords: list[str] = []
         # 已渲染的密码 QLabel 引用：clear() 时先 setText 掩码再销毁，
@@ -102,7 +102,10 @@ class PasswordHistoryWidget(QWidget):
             mgr = self._entry_mgr
             if not mgr:
                 return
-            decrypted = mgr.password_history.decrypt(mgr.password_history.get(eid))
+            # 仅渲染 MAX_HISTORY_DISPLAY 条，截断后再解密，避免持 vault_write_lock 解密
+            # 全量历史。get 已按 changed_at DESC 返回，切片取最近 N 条。
+            full = mgr.password_history.get(eid)
+            decrypted = mgr.password_history.decrypt(full[:MAX_HISTORY_DISPLAY])
             if decrypted:
                 content_layout.removeWidget(button)
                 button.deleteLater()

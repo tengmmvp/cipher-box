@@ -86,14 +86,14 @@ class AutoLockController:
     def reset_timer(self) -> None:
         """按 auto_lock_minutes 重置定时器；未解锁或关闭时停止。
 
-        auto_lock_minutes=0 表"禁用空闲锁定、依赖会话锁屏兜底"。仅当会话锁屏联动实际
-        可用(Windows 且 WTS 注册成功,self._wts_registered)时才允许 0;退化路径(非
-        Windows / WTS 注册失败 / 测试环境)下无会话锁屏兜底,0 即彻底无自动锁定,降级为
-        默认值强制一个不可关闭的空闲锁定上限(SEC-005)。
+        auto_lock_minutes=0 表「禁用空闲锁定、依赖会话锁屏兜底」。仅当会话锁屏联动实际
+        可用（Windows 且 WTS 注册成功，self._wts_registered）时才允许 0；退化路径（非
+        Windows / WTS 注册失败 / 测试环境）下无会话锁屏兜底，0 即彻底无自动锁定，降级为
+        默认值强制一个不可关闭的空闲锁定上限（SEC-005）。
         """
         if self._lock_timer is None:
             return
-        # 默认值引用 DEFAULT_CONFIG 单一事实源,与 constants.py 派生 clipboard 默认值的路径一致,
+        # 默认值引用 DEFAULT_CONFIG 单一事实源，与 constants.py 派生 clipboard 默认值的路径一致，
         # 避免「改了默认却此处仍是字面量 5」的漂移。
         minutes = self._config.get_safe(
             CFG_AUTO_LOCK_MINUTES, DEFAULT_CONFIG[CFG_AUTO_LOCK_MINUTES]

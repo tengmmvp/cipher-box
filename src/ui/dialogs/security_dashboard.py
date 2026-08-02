@@ -131,6 +131,7 @@ class _HealthScoreWidget(QWidget):
 
     @staticmethod
     def _health_score_color(score: int) -> str:
+        """按健康评分区间映射颜色 token：≥80 success、≥60 warning、≥40 warning_orange、其余 danger。"""
         if score >= 80:
             return c("success")
         elif score >= 60:
@@ -142,6 +143,8 @@ class _HealthScoreWidget(QWidget):
 
 
 class _StatCard(QFrame):
+    """安全仪表盘顶部统计卡片，展示单项风险计数并提供跳转/修复入口。"""
+
     def __init__(
         self, title: str, count: int, color: str, button_text: str, parent: QWidget | None = None
     ) -> None:

@@ -111,6 +111,8 @@ def conn():
 
 
 class TestDbWriteRollbackContract:
+    """_db_write 装饰器写失败回滚契约：standalone 回滚、嵌套跳过、原异常再抛三分支。"""
+
     def test_standalone_write_failure_rolls_back_implicit_transaction(self, conn):
         """``in_transaction=False`` 时装饰器 rollback 隐式事务，后续 BEGIN 不报错。
 

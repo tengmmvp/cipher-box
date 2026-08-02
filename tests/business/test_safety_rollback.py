@@ -11,10 +11,11 @@
 3. 导入事务内 epoch 被并发改密轮换 → 导入被守卫中止，数据保持一致
 """
 
+import contextlib
 import json
 import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 import pytest
 
@@ -416,41 +417,41 @@ class TestImportEpochGuard:
         ``pre_epoch``，写入时 ``epoch_guarded_transaction(pre_epoch=...)`` 复查；若
         「加密后→写入前」主密码被改导致 epoch 轮换，复查检测到不匹配，必须抛
         VaultKeyEpochMismatchError 并回滚事务，避免旧密钥密文落到新 epoch 库。
-        本测试通过 monkeypatch 模拟 epoch 在快照与复查间变化，验证守卫触发。
+
+        经包装 ``epoch_guarded_transaction``：捕获 ``_import_entries`` 传入的 ``pre_epoch``
+        （验证快照契约），并在守卫复查侧把 ``key_epoch`` 轮换为伪造值（模拟并发改密）。
+        不依赖 ``_import_entries`` 内部读 ``key_epoch`` 的次数——``pre_epoch`` 作为显式
+        参数传入、复查侧 ``key_epoch`` 经 patch 轮换，二者来源解耦，实现新增 key_epoch
+        读取（日志/校验）不会令测试错位漏报。
         """
         real_epoch = self._vault.key_epoch
         assert real_epoch is not None
 
         entry_count_before = len(self._entry_mgr.get_entries())
 
-        # 模拟并发改密：_import_entries 加密前读 pre_epoch（首次，真实值），
-        # epoch_guarded_transaction 写入时复查读 key_epoch（第二次，伪造值）——
-        # 两次不一致触发守卫。
-        original_key_epoch_property = type(self._vault).key_epoch
+        original_egt = self._vault.epoch_guarded_transaction
+        captured: dict[str, object] = {}
 
-        call_count = {"n": 0}
+        @contextlib.contextmanager
+        def _shifting_egt(*args: object, **kwargs: object):
+            # 捕获 _import_entries 传入的 pre_epoch（MAINT-004 快照契约的显式证据）
+            captured["pre_epoch"] = kwargs.get("pre_epoch")
+            # 复查侧轮换 key_epoch：模拟「加密后→写入前」并发改密，pre_epoch 仍是
+            # 调用前快照的真实值，二者不一致触发守卫。
+            with patch.object(
+                type(self._vault),
+                "key_epoch",
+                new=PropertyMock(return_value=real_epoch + "_concurrent_rotation"),
+            ):
+                with original_egt(*args, **kwargs) as cm:
+                    yield cm
 
-        class _ShiftingEpoch:
-            """描述符：首次访问返回真实 epoch，之后返回伪造值。
-
-            _import_entries 加密前读 pre_epoch，epoch_guarded_transaction 写入时
-            复查读 key_epoch。本描述符让两次读取得到不同值，模拟并发轮换。
-            """
-
-            def __get__(self, obj, objtype=None):
-                if obj is None:
-                    return self
-                call_count["n"] += 1
-                if call_count["n"] <= 1:
-                    return real_epoch
-                return real_epoch + "_concurrent_rotation"
-
-        with patch.object(type(self._vault), "key_epoch", _ShiftingEpoch()):
+        with patch.object(self._vault, "epoch_guarded_transaction", _shifting_egt):
             with pytest.raises(VaultKeyEpochMismatchError):
                 self._import_export.import_file(self._json_path, "json")
 
-        # patch 上下文管理器退出时已自动恢复 key_epoch property，无需手动还原
-        _ = original_key_epoch_property
+        # _import_entries 正确把 pre_epoch 传入守卫（快照契约生效）
+        assert captured["pre_epoch"] == real_epoch
 
         # 导入被中止，数据保持一致：条目数不变
         entry_count_after = len(self._entry_mgr.get_entries())

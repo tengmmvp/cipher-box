@@ -90,6 +90,7 @@ class EntryListController:
         search: str,
         cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[list[Entry], str]:
+        """获取收藏条目，可按搜索过滤。"""
         return (
             self._entry_mgr.get_entry_summaries(
                 favorite_only=True,
@@ -146,6 +147,7 @@ class EntryListController:
         search: str,
         cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[list[Entry], str]:
+        """获取回收站条目（已软删除），可按搜索过滤。"""
         return (
             self._entry_mgr.get_entry_summaries(
                 deleted_only=True,
@@ -156,6 +158,7 @@ class EntryListController:
         )
 
     def get_fetcher(self, filter_key: str) -> Callable[..., tuple[list[Entry], str]]:
+        """按过滤器键返回对应的 fetcher，未知键回退 fetch_all。"""
         fetchers: dict[str, Callable[..., tuple[list[Entry], str]]] = {
             "all": self.fetch_all,
             "favorite": self.fetch_favorite,
@@ -175,6 +178,7 @@ class EntryListController:
 
     @staticmethod
     def filter_by_tag(entries: list[Entry], tag: str) -> list[Entry]:
+        """对条目列表施加标签过滤，与 filter_by_search 对称。"""
         return [e for e in entries if matches_tag(e, tag)]
 
     # ========== 安全摘要 ==========

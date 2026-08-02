@@ -7,7 +7,6 @@ from src.exceptions import ImportFormatError
 
 
 def test_import_from_chrome_csv_maps_columns(entry_mgr, tmp_path):
-    """Chrome CSV 的 name/url/username/password 列应正确映射到条目字段。"""
     mgr = ImportExportManager(entry_mgr)
     csv_path = tmp_path / "chrome.csv"
     csv_path.write_text(

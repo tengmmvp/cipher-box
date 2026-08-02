@@ -7,7 +7,6 @@ BackupRestoreManager 的拒绝行为，以及快照密钥备份、已删除条�
 
 import os
 import struct
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -17,7 +16,6 @@ from src.business.managers.restore_point_manager import RestorePointManager
 from src.business.services.backup_header_codec import (
     BACKUP_MAGIC,
     BACKUP_SALT_SIZE,
-    MAX_BACKUP_FILE_SIZE,
     inspect_backup,
 )
 from src.crypto.master_key import DEFAULT_KDF_PARAMS, MasterKeyManager
@@ -262,19 +260,20 @@ class TestBackupCorruption:
 class TestBackupSizeLimits:
     """备份大小限制测试。"""
 
-    def test_inspect_rejects_oversized_file(self):
+    def test_inspect_rejects_oversized_file(self, tmp_path, monkeypatch):
         """过大的备份文件应被拒绝。"""
-        path = os.path.join(tempfile.mkdtemp(), "huge.cbox")
-        try:
-            # 仅写入正确的文件头，body 部分填充超过上限的随机字节
-            with open(path, "wb") as f:
-                f.write(BACKUP_MAGIC)
-                f.write(b"\x00" * (MAX_BACKUP_FILE_SIZE + 1))
-            with pytest.raises(ValueError):
-                inspect_backup(path)
-        finally:
-            Path(path).unlink(missing_ok=True)
-            os.rmdir(os.path.dirname(path))
+        # 缩容上限到 1KB，避免每次写真实 64MB+1（CI 6 job ≈ 384MB I/O），与
+        # test_rejects_oversized_backup_payload 的 monkeypatch 缩容模式一致。
+        import src.business.services.backup_header_codec as codec
+
+        monkeypatch.setattr(codec, "MAX_BACKUP_FILE_SIZE", 1024)
+        path = tmp_path / "huge.cbox"
+        # 写正确文件头 + body 超过缩容上限（inspect_backup 读模块级常量判定）
+        with open(path, "wb") as f:
+            f.write(BACKUP_MAGIC)
+            f.write(b"\x00" * (1024 + 1))
+        with pytest.raises(ValueError):
+            inspect_backup(path)
 
 
 class TestAADCentralization:

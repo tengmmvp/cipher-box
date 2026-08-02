@@ -221,6 +221,7 @@ class VaultManager:
 
     @property
     def snapshot_key(self) -> bytes:
+        """自动快照密钥；未解锁抛 VaultLockedError（与 key 对称，MAINT-009）。"""
         if not self.is_unlocked or self._snapshot_key is None:
             raise VaultLockedError("自动快照密钥不可用")
         return self._snapshot_key

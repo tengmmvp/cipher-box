@@ -21,9 +21,6 @@ def _make_entry(**kwargs) -> RawEntry:
     return RawEntry(**kwargs)
 
 
-# Fixture: 创建临时数据库，关闭加密断言
-
-
 @pytest.fixture
 def db(tmp_path):
     """创建一个临时数据库并初始化表结构。
@@ -37,9 +34,6 @@ def db(tmp_path):
     database.init_tables()
     yield database
     database.close()
-
-
-# TestDatabaseManager
 
 
 def test_init_tables(db):
@@ -221,9 +215,6 @@ def test_get_entries_filter_branches(db):
     # sort_by_updated：走 updated_at DESC 分支（与默认 is_favorite DESC 排序分支区分）
     by_updated = db.get_entries(EntryQuery(sort_by_updated=True))
     assert len(by_updated) == 2  # A + Fav（Del 已软删除，默认不含）
-
-
-# TestModels
 
 
 def test_entry_to_dict():

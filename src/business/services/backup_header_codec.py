@@ -21,7 +21,11 @@ BACKUP_SALT_SIZE = 32
 # 固定头：flags、Argon2 time/memory/parallelism，随后为 32 字节 salt。
 BACKUP_HEADER_STRUCT = struct.Struct("<BIII")
 BACKUP_HEADER_SIZE = len(BACKUP_MAGIC) + BACKUP_HEADER_STRUCT.size + BACKUP_SALT_SIZE
+# 备份文件大小硬上限（64 MB）：inspect_backup 读取前拒绝超大文件，防恶意文件致 OOM。
+# 高于 MAX_BACKUP_PAYLOAD_SIZE 因 header/salt 等开销与压缩载荷尚未展开。
 MAX_BACKUP_FILE_SIZE = 64 * 1024 * 1024
+# 解密后明文 payload 大小上限（32 MB）：恢复路径逐字段累计字节数超限即中止，
+# 防恶意构造的大字段经解密展开后撑爆内存。
 MAX_BACKUP_PAYLOAD_SIZE = 32 * 1024 * 1024
 
 

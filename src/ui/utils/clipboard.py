@@ -64,9 +64,14 @@ if sys.platform == "win32":
         if not hmem:
             return False
         ptr = _kernel32.GlobalLock(hmem)
-        if ptr:
-            _kernel32.RtlMoveMemory(ptr, data, len(data))
-            _kernel32.GlobalUnlock(hmem)
+        if not ptr:
+            # GlobalLock 失败（ptr=0）：不可继续 SetClipboardData 提交未初始化内存
+            # （会令剪贴板持有任意堆内容）。释放 hmem 防泄漏，返回 False 使调用方
+            # 回退 Qt setText。
+            _kernel32.GlobalFree(hmem)
+            return False
+        _kernel32.RtlMoveMemory(ptr, data, len(data))
+        _kernel32.GlobalUnlock(hmem)
         if _user32.SetClipboardData(fmt, hmem):
             return True  # 所有权转交剪贴板
         _kernel32.GlobalFree(hmem)
@@ -163,41 +168,51 @@ class ClipboardManager(QObject):
         """清空剪贴板，仅当缓冲区内容仍为上次复制的文本时才清空。
 
         text() 与 Selection 独立校验，避免用户已替换的一方被误清、仍为密码的一方残留。
+
+        fail-safe：``text()`` 在 X11/远程会话剪贴板被占用时也可能抛 RuntimeError（见
+        ``clear_now`` docstring）。读取失败即无法判定剪贴板是否仍是本会话写入的密码，
+        此时宁可误清也不留密码——按「仍可能是密码」强制清空。这避免了 ``text()`` 抛错时
+        ``clear()`` 从未执行、``_last_text_hash`` 未清零、singleShot 定时器已停导致的
+        密码无限期残留（fail-unsafe）。
         """
         self._timer.stop()
         clipboard = QApplication.clipboard()
         if not clipboard:
             return
         if self._last_text_hash:
-            if hmac.compare_digest(_hmac_of(clipboard.text()), self._last_text_hash):
-                # clipboard.clear 被其它进程占用或模式不支持时可能抛 RuntimeError，
-                # 捕获以免中断锁定等后续清理流程
-                try:
-                    clipboard.clear()
-                except RuntimeError:
-                    # clear 被占用时用空字符串覆盖明文兜底，缩短密码残留窗口
-                    try:
-                        clipboard.setText("")
-                    except RuntimeError:
-                        logger.error("剪贴板清空与覆盖均失败，明文可能残留", exc_info=True)
-                    else:
-                        logger.warning("剪贴板 clear 失败，已用空字符串覆盖明文", exc_info=True)
+            self._clear_clipboard_mode(clipboard, QClipboard.Mode.Clipboard, self._last_text_hash)
             self._last_text_hash = b""
         if self._last_selection_hash and clipboard.supportsSelection():
-            if hmac.compare_digest(
-                _hmac_of(clipboard.text(QClipboard.Mode.Selection)),
-                self._last_selection_hash,
-            ):
-                try:
-                    clipboard.clear(QClipboard.Mode.Selection)
-                except RuntimeError:
-                    try:
-                        clipboard.setText("", QClipboard.Mode.Selection)
-                    except RuntimeError:
-                        logger.error("Selection 清空与覆盖均失败，明文可能残留", exc_info=True)
-                    else:
-                        logger.warning("Selection clear 失败，已用空字符串覆盖明文", exc_info=True)
+            self._clear_clipboard_mode(
+                clipboard, QClipboard.Mode.Selection, self._last_selection_hash
+            )
             self._last_selection_hash = b""
+
+    @staticmethod
+    def _clear_clipboard_mode(
+        clipboard: QClipboard, mode: QClipboard.Mode, expected_hash: bytes
+    ) -> None:
+        """按指定模式清空剪贴板，fail-safe。
+
+        ``text(mode)`` 读取失败 → 无法判定内容 → 按安全优先强制清空（宁可误清不留密码）；
+        ``clear(mode)`` 被占用时退回 ``setText("")`` 覆盖明文兜底，缩短残留窗口。
+        """
+        try:
+            matches = hmac.compare_digest(_hmac_of(clipboard.text(mode)), expected_hash)
+        except RuntimeError:
+            # 读不到内容 → 无法判定是否仍是密码 → 按安全优先强制清空
+            matches = True
+        if not matches:
+            return
+        try:
+            clipboard.clear(mode)
+        except RuntimeError:
+            try:
+                clipboard.setText("", mode)
+            except RuntimeError:
+                logger.error("%s 清空与覆盖均失败，明文可能残留", mode.name, exc_info=True)
+            else:
+                logger.warning("%s clear 失败，已用空字符串覆盖明文", mode.name, exc_info=True)
 
     def cancel(self) -> None:
         """取消自动清空。"""

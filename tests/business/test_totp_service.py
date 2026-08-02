@@ -20,6 +20,8 @@ def _make_service() -> tuple[TotpService, MagicMock]:
 
 
 class TestGenerate:
+    """generate 直生验证码：合法 secret 返回 6 位码，无/空 secret 返回 None。"""
+
     def test_generate_returns_six_digit_code_for_valid_secret(self):
         """合法 secret 经 generate 返回 6 位验证码（不经会话缓存写入）。"""
         svc, cache = _make_service()
@@ -47,6 +49,8 @@ class TestGenerate:
 
 
 class TestGenerateCached:
+    """generate_cached 经会话缓存生码：先做 epoch 失效检查再走缓存解析。"""
+
     def test_generate_cached_uses_session_cache(self):
         """generate_cached 走会话缓存（use_cache=True）并先做 epoch 失效检查。"""
         svc, cache = _make_service()
@@ -65,6 +69,8 @@ class TestGenerateCached:
 
 
 class TestGetState:
+    """get_state 状态组装：preloaded 预热、resolve 回填与无/空 secret 的空值返回。"""
+
     def test_get_state_with_preloaded_secret_stores_and_returns_state(self):
         """preloaded_secret 非空时直接使用并预热缓存，返回完整状态。"""
         svc, cache = _make_service()
@@ -107,6 +113,8 @@ class TestGetState:
 
 
 class TestEvictAndRemaining:
+    """evict 委托清理与 remaining_seconds 纯时间计算。"""
+
     def test_evict_delegates_to_cache_pop(self):
         """evict 委托 cache.pop_totp 清理单条 TOTP secret 明文缓存。"""
         svc, cache = _make_service()

@@ -45,6 +45,8 @@ def _read_system_clipboard() -> str:
 
 
 class TestClipboardManager:
+    """ClipboardManager 的复制读取、自动清空计时器、仅清匹配内容与空串处理测试。"""
+
     @pytest.fixture(autouse=True)
     def _ensure_qapp(self, qapp):
         """在 setup_method 之前确保 QApplication 已创建。"""
@@ -124,3 +126,24 @@ class TestClipboardManager:
         # _last_text_hash 应保持初始空值，未被设置
         assert self.mgr._last_text_hash == b""
         assert not self.mgr._timer.isActive()
+
+    # ---- fail-safe：text() 抛错时强制清空 ----
+
+    def test_clear_forces_when_text_raises_runtime_error(self):
+        """text() 抛 RuntimeError 时按 fail-safe 强制清空（H1 回归守护）。
+
+        X11/远程会话剪贴板被占用时 ``text()`` 读取可能抛 RuntimeError，读取失败即无法
+        判定内容，须按「仍可能是密码」matches=True 强制 clear，而非旧实现上抛中断致
+        clear 从未执行、hash 未清零、密码无限期残留。直接测 ``_clear_clipboard_mode``
+        （用 MagicMock 绕过真实 QClipboard 的 C++ 绑定限制）。
+        """
+        from unittest.mock import MagicMock
+
+        from PyQt6.QtGui import QClipboard
+
+        mock_clip = MagicMock()
+        mock_clip.text.side_effect = RuntimeError("clipboard busy")
+        ClipboardManager._clear_clipboard_mode(
+            mock_clip, QClipboard.Mode.Clipboard, b"any_expected_hash"
+        )
+        mock_clip.clear.assert_called_once_with(QClipboard.Mode.Clipboard)

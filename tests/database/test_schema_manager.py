@@ -39,6 +39,8 @@ def _tamper(db_path, *, drop: str, add_sql: str) -> None:
 
 
 class TestColumnTamperDetection:
+    """_validate_current_schema 列篡改检测：默认值/类型/notnull/多表四维篡改均触发 SchemaError，含正对照。"""
+
     def test_init_tables_accepts_valid_unchanged_schema(self, tmp_path):
         """正对照：未篡改的合法库重开时 init_tables 不抛（非误报）。"""
         db_path = tmp_path / "valid.db"

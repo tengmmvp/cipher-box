@@ -58,6 +58,11 @@ class SensitiveDataFilter(logging.Filter):
         return text
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """原地打码后放行所有记录（恒返回 True），绝不因脱敏丢弃日志。
+
+        对 message 命中敏感模式时回填 ``record.msg`` 并清空 ``record.args`` 避免 handler
+        二次插值还原原值；``getMessage`` 抛异常时仍放行，避免脱敏逻辑本身致日志丢失。
+        """
         try:
             message = record.getMessage()
         except Exception:

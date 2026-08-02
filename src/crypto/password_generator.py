@@ -64,14 +64,18 @@ def _has_sequential_runway(pwd_lower: str) -> bool:
 
 
 def _has_keyboard_runway(pwd_lower: str) -> bool:
-    """检测键盘行走查序列（任一行含 ≥ 阈值字符的连续走查段子串）。
+    """检测键盘行走查序列（任一行正向或反向含 ≥ 阈值字符的连续走查段子串）。
 
-    覆盖 ``qwerty`` / ``asdfgh`` / ``zxcvbn`` 及其更长变体（如 ``qwertyuiopasdf``）。
+    覆盖 ``qwerty`` / ``asdfgh`` / ``zxcvbn`` 及其更长变体，以及反向走查
+    （``poiuyt`` / ``hgfdsa`` / ``nbvcxz``）。反向键盘走查是字典攻击的标准成分，仅检测
+    正向会令 ``poiuytrewq`` 这类弱密码漏检——与 ``_has_sequential_runway`` 已处理 ±1
+    双向对齐，使两类连续模式检测方向一致。
     """
     for row in _KEYBOARD_ROWS:
-        for i in range(len(row) - _SEQUENTIAL_MIN_RUN + 1):
-            if row[i : i + _SEQUENTIAL_MIN_RUN] in pwd_lower:
-                return True
+        for candidate in (row, row[::-1]):
+            for i in range(len(candidate) - _SEQUENTIAL_MIN_RUN + 1):
+                if candidate[i : i + _SEQUENTIAL_MIN_RUN] in pwd_lower:
+                    return True
     return False
 
 
@@ -176,7 +180,8 @@ class PasswordGenerator:
             charset = string.ascii_lowercase
             required = [charset]
 
-        # 确保每种要求的字符类型至少出现一次
+        # 先从每类字符集各取一个：纯随机填充可能偶然漏掉某字符类，致实际字符多样
+        # 性低于调用方配置预期（如勾选 symbols 但全程未出现符号）。
         password_chars = []
         for req_chars in required:
             password_chars.append(_RNG.choice(req_chars))
@@ -263,7 +268,7 @@ class PasswordGenerator:
         # 而非被最终 clamp 重新拉回上限。
         score = min(MAX_STRENGTH_SCORE, max(0, score))
 
-        # 有重复字符惩罚：降低 1 分，但不低于 0。password 已在方法入口 ``not password``
+        # 重复字符惩罚：降低 1 分，但不低于 0。password 已在方法入口 ``not password``
         # 守卫，此处必非空，无需除零保护分支（QL-013）。
         unique_ratio = len(set(password)) / len(password)
         if unique_ratio < WEAK_UNIQUE_RATIO:

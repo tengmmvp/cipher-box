@@ -606,9 +606,16 @@ class DetailPanel(QWidget):
         return seconds * 1000
 
     def _auto_hide_password(self) -> None:
-        if self._pwd_label_ref and self._show_btn_ref:
-            self._pwd_label_ref.setText(PWD_MASK)
-            set_icon(self._show_btn_ref, EYE)
+        # 与 _toggle 一致的销毁守卫：_clear_content 经 deleteLater 异步销毁控件，
+        # 此定时器回调可能在销毁后触发，操作已删除的 C++ 对象会抛 RuntimeError。
+        # None 守卫覆盖 _clear_content 已置空引用的情况，sip.isdeleted 覆盖引用仍
+        # 指向但 C++ 对象已销毁的情况（deleteLater 异步生效期间）。
+        if self._pwd_label_ref is None or self._show_btn_ref is None:
+            return
+        if sip.isdeleted(self._pwd_label_ref) or sip.isdeleted(self._show_btn_ref):
+            return
+        self._pwd_label_ref.setText(PWD_MASK)
+        set_icon(self._show_btn_ref, EYE)
 
     def _copy(self, text: str) -> None:
         self._clipboard.copy_text(text)
@@ -688,6 +695,7 @@ class DetailPanel(QWidget):
             self._totp_widget.resume_if_active()
 
     def show_empty(self) -> None:
+        """切回空状态：驱逐当前条目 TOTP、安全清除内容并隐藏操作按钮。"""
         self._evict_current_totp()
         self._clear_content()
         self._current_entry = None

@@ -23,6 +23,8 @@ def _sidebar_controller():
 
 
 class TestGetSortConfig:
+    """EntryListController.get_sort_config 的索引边界与有效返回守护。"""
+
     def test_out_of_range_returns_default(self):
         ctrl = _entry_list_controller()
         assert ctrl.get_sort_config(-1) == ("updated_at", "desc")
@@ -36,6 +38,8 @@ class TestGetSortConfig:
 
 
 class TestSortEntries:
+    """EntryListController.sort_entries 排序结果的不变量守护。"""
+
     def test_preserves_length(self):
         ctrl = _entry_list_controller()
         entries = [
@@ -48,6 +52,8 @@ class TestSortEntries:
 
 
 class TestGetFetcher:
+    """EntryListController.get_fetcher 的过滤器键映射与兜底。"""
+
     def test_known_filters_return_callables(self):
         ctrl = _entry_list_controller()
         for key in ("all", "favorite", "weak", "duplicate", "recent", "trash"):
@@ -60,6 +66,8 @@ class TestGetFetcher:
 
 
 class TestBuildCategoryLabel:
+    """SidebarController.build_category_label 的计数显示与完整性告警分支。"""
+
     @staticmethod
     def _cat():
         return SimpleNamespace(icon_char="[KEY]", name="社交", integrity_error=False)
@@ -80,6 +88,8 @@ class TestBuildCategoryLabel:
 
 
 class TestBuildDeleteMessage:
+    """SidebarController.build_delete_message 的分类缺失与条目计数文案。"""
+
     @staticmethod
     def _ctrl_with_category(name, count):
         # 直接持有 MagicMock 引用，避免通过类型为 EntryManager 的属性访问 return_value
@@ -113,6 +123,8 @@ class TestBuildDeleteMessage:
 
 
 class TestFetchRecent:
+    """EntryListController.fetch_recent 的 SQL 下推与内存排序分支。"""
+
     def test_no_search_uses_sql_recent_summaries(self):
         """无搜索时下推到 get_recent_summaries（SQL ORDER BY updated_at DESC LIMIT），
         controller 不做内存排序，直接透传 DB 已排序结果，避免全量解密。"""

@@ -28,6 +28,7 @@ from ..components.workers import BackgroundWorker, wait_worker_shutdown
 from ..resources.constants import (
     ASYNC_SEARCH_THRESHOLD,
     MAX_SEARCH_RESULTS_DISPLAY,
+    MAX_TAG_AUTOCOMPLETE,
     MS_ENTRY_CHANGE_DEBOUNCE,
     MS_SEARCH_DEBOUNCE,
     MS_STATUS_BAR_DEBOUNCE,
@@ -365,12 +366,13 @@ class ListRefreshController:
         if count >= ASYNC_SEARCH_THRESHOLD and not self._sidebar_ctrl.tags_cache_valid:
             self._coordinator.start_async_tag_refresh(self._sidebar_ctrl.get_all_tags)
             return
+        # 同步分支取消在飞的异步 tag worker（与 refresh_entries 同步分支调 cancel_entry_worker
+        # 对称）：推进 tag generation 使其延迟 _done 回调丢弃，避免旧标签快照覆盖刚渲染结果。
+        self._coordinator.cancel_tag_worker()
         self._apply_tag_filter(self._sidebar_ctrl.get_all_tags())
 
     def _apply_tag_filter(self, all_tags: list[tuple[str, int]]) -> None:
         """用给定标签列表重建标签下拉，保留当前选中（若仍存在）。"""
-        from ..resources.constants import MAX_TAG_AUTOCOMPLETE
-
         current = self._current_tag
         tag_combo = self._view.tag_combo
         tag_combo.blockSignals(True)
@@ -500,8 +502,9 @@ class ListRefreshController:
     ) -> bool:
         """worker 捕获的请求指纹是否已被当前 UI 状态取代（供 coordinator 过期判定）。
 
-        同步刷新路径不推进 generation（省去无谓计数），靠此处的 filter/category/search
-        指纹比对兜底——worker 协作取消后仍可能延迟回调，此时指纹必与当前状态不符。
+        与 coordinator 的 generation 计数器构成双重守卫：generation 处理「filter 未变但
+        数据版本已变」（如永久删除降计数触发同步分支），指纹处理「filter/category/search
+        已切换」。worker 协作取消后仍可能延迟回调，两道守卫共同丢弃过期结果。
         """
         return (
             self._current_filter != filter_key

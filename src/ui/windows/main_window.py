@@ -107,7 +107,12 @@ logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
-    """CipherBox 主窗口。"""
+    """CipherBox 主窗口，UI 层中心编排器。
+
+    经 ``BusinessContext`` 注入业务层 manager；自身仅装配依赖 Qt 线程亲和性的
+    控制器与子组件，把菜单调度、条目 CRUD、列表刷新等委托给组合化 controller。
+    职责划分与控制器协作细节见模块 docstring。
+    """
 
     lock_requested = pyqtSignal()
 
@@ -287,9 +292,11 @@ class MainWindow(QMainWindow):
         self.resize(*WINDOW_DEFAULT_SIZE)
 
         theme = self._config.get(CFG_THEME, DEFAULT_THEME)
-        # 显式激活主题，使运行时 c() 解析的颜色与样式表一致（ARCH-009）
+        # 显式激活主题，使运行时 c() 解析的颜色与样式表一致（ARCH-009）。
+        # 样式表统一经 app 级应用（app.py 启动时 setStyleSheet），不在窗口级重复设置——
+        # 否则 _apply_theme 仅更 app 级时，主窗口子树会停留旧主题 QSS（widget 自身样式表
+        # 优先于 app 级），与运行时图标新主题割裂。
         set_theme(theme)
-        self.setStyleSheet(get_style(theme))
         self._current_theme: str = theme
 
         central = QWidget()
@@ -313,7 +320,7 @@ class MainWindow(QMainWindow):
         )
         self._splitter.addWidget(self._detail_panel)
 
-        # 设置分割比例
+        # 分割比例：优先恢复用户上次保存值，缺失或非法（非 3 段）则回退默认
         saved_sizes = self._config.get(CFG_SPLITTER_SIZES)
         if saved_sizes and len(saved_sizes) == 3:
             self._splitter.setSizes(saved_sizes)
@@ -473,6 +480,7 @@ class MainWindow(QMainWindow):
         self._filter_list.blockSignals(False)
 
     def _build_entry_list(self) -> None:
+        """构建中间条目列表区：标题/计数栏、Model/View 列表（含空态切换）与新增按钮。"""
         list_container = QWidget()
         list_container.setObjectName("listPane")
         list_layout = QVBoxLayout(list_container)
@@ -600,8 +608,34 @@ class MainWindow(QMainWindow):
         self._list_refresh.shutdown()
         self._auto_backup.shutdown()
 
-    def _quit_app(self) -> None:
-        # 与 closeEvent 退出分支对齐：移除事件过滤器，防止已销毁对象仍被引用。
+    def _persist_window_state(self) -> None:
+        """持久化窗口几何/分割比例/排序偏好到 config。
+
+        ``closeEvent`` 与 ``_quit_app``（托盘退出经 ``QApplication.quit`` 不触发
+        ``closeEvent``）共用，避免经托盘退出丢失窗口配置——原 ``_quit_app`` 漏存，
+        每次托盘退出后窗口大小/侧栏比例/排序偏好回退默认值。
+        """
+        try:
+            geo = self.saveGeometry()
+            self._config.set(CFG_WINDOW_GEOMETRY, geo.data().hex())
+            sizes = self._splitter.sizes()
+            self._config.set(CFG_SPLITTER_SIZES, list(sizes))
+            field, order = self._list_refresh.get_sort_config()
+            self._config.set(CFG_SORT_FIELD, field)
+            self._config.set(CFG_SORT_ORDER, order)
+            self._config.save()
+        except (OSError, ValueError, TypeError):
+            logger.debug("保存窗口状态失败", exc_info=True)
+
+    def _perform_exit_cleanup(self) -> None:
+        """完全退出的共用清理序列（_quit_app 与 closeEvent 退出分支共用）。
+
+        收敛两处曾各自维护的重复步骤，避免漂移：移除事件过滤器、解除会话锁屏
+        过滤器引用、等待后台 worker、reject 模态对话框、清剪贴板明文、关闭 vault、
+        隐藏托盘。窗口状态持久化与退出动作（QApplication.quit / event.accept）
+        由各调用方自行处理——_persist_window_state 须在调用本方法前完成。
+        """
+        # 移除事件过滤器，防止已销毁对象仍被 QApplication 引用。
         app = QApplication.instance()
         if app:
             app.removeEventFilter(self)
@@ -620,6 +654,11 @@ class MainWindow(QMainWindow):
         self._vault.close()
         if self._tray:
             self._tray.hide()
+
+    def _quit_app(self) -> None:
+        # 持久化窗口状态：QApplication.quit() 不触发 closeEvent，须显式保存。
+        self._persist_window_state()
+        self._perform_exit_cleanup()
         QApplication.quit()
 
     # ========== 主题刷新 ==========
@@ -683,17 +722,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, a0: QCloseEvent | None) -> None:
         if a0 is None:
             return
-        try:
-            geo = self.saveGeometry()
-            self._config.set(CFG_WINDOW_GEOMETRY, geo.data().hex())
-            sizes = self._splitter.sizes()
-            self._config.set(CFG_SPLITTER_SIZES, list(sizes))
-            field, order = self._list_refresh.get_sort_config()
-            self._config.set(CFG_SORT_FIELD, field)
-            self._config.set(CFG_SORT_ORDER, order)
-            self._config.save()
-        except (OSError, ValueError, TypeError):
-            logger.debug("保存窗口状态失败", exc_info=True)
+        self._persist_window_state()
 
         if self._config.get(CFG_CLOSE_TO_TRAY, False) and self._tray:
             # 隐藏到托盘（非退出、非锁定）：安全清理后隐藏。保持 vault 解锁、列表模型
@@ -703,19 +732,8 @@ class MainWindow(QMainWindow):
             a0.ignore()
             self.hide()
         else:
-            # 完全退出：移除事件过滤器，防止已销毁对象仍被 QApplication 引用。
-            app = QApplication.instance()
-            if app:
-                app.removeEventFilter(self)
-            # 解除 QApplication 对会话锁屏过滤器闭包（绑定 lock_requested）的引用。
-            self._auto_lock.remove_session_filter()
-            # 取消并等待后台 worker 结束，确保退出前不再持有密钥。
-            self._shutdown_workers()
-            # 完全退出时清除剪贴板明文密码
-            self._clipboard.clear_now()
-            self._vault.close()
-            if self._tray:
-                self._tray.hide()
+            # 完全退出：共用清理序列（与 _quit_app 对齐），event.accept 退出。
+            self._perform_exit_cleanup()
             a0.accept()
 
     def changeEvent(self, a0: QEvent | None) -> None:

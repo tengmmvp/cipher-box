@@ -26,6 +26,8 @@ class _Host:
 
 
 class TestRequireUnlocked:
+    """require_unlocked 守卫：锁定态短路、解锁态透传、@wraps 元信息保留。"""
+
     def test_locked_state_returns_none_without_calling_method(self):
         """锁定态：守卫 return None 且被装饰方法不执行。"""
         host = _Host()

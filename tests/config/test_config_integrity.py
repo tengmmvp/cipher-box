@@ -16,6 +16,8 @@ def config(tmp_path):
 
 
 class TestConfigIntegrity:
+    """配置 save/load 的 HMAC 签名往返、篡改检测与原子写入测试。"""
+
     def test_save_load_round_trip(self, config):
         """save() 写入 HMAC 签名，load() 正常加载且无警告。"""
         config._config["theme"] = "dark"

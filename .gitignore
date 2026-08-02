@@ -52,3 +52,5 @@ backups/
 logs/
 *.log
 *.tmp
+# 备份文件（含明文恢复快照，误提交风险高）
+*.cbox

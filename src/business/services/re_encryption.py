@@ -52,6 +52,7 @@ class ReEncryptionDB(Protocol):
     def update_categories_batch(self, categories: list[Category]) -> None: ...
 
 
+# 重加密分批大小：单批 executemany 一次性写入，控制内存峰值并将 N 次 UPDATE 压缩为 N/200 次。
 _RE_ENCRYPT_BATCH_SIZE = 200
 # 重加密的敏感字段集，与加解密字段集共用单一事实源，避免新增加密字段时漏列致改密后无法解密。
 _ENCRYPTED_ENTRY_FIELDS = SENSITIVE_ENCRYPTED_FIELDS

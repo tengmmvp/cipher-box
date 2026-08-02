@@ -193,7 +193,6 @@ def test_update_epoch_none():
 def test_clear_on_empty_manager_is_noop_safe():
     """对未激活的 KeyManager 调用 clear 应安全无副作用，三属性保持 None。"""
     km = KeyManager()
-    # 初始即未设置任何密钥
     assert km.key is None and km.snapshot_key is None and km.key_epoch is None
 
     km.clear()

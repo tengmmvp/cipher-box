@@ -183,6 +183,11 @@ class Category:
     integrity_error: bool = False
 
     def to_dict(self) -> dict[str, Any]:
+        """序列化为字典（与 from_dict 对称），不含 ``metadata_mac`` 与 ``integrity_error``。
+
+        ``metadata_mac`` 由 metadata_signer 单独签名/持久化，``integrity_error`` 为
+        运行时标志（不入库、不序列化），故均排除。
+        """
         return {
             "id": self.id,
             "name": self.name,
@@ -197,7 +202,7 @@ class Category:
         """从字典创建 Category，与 to_dict 对称。
 
         对文本字段做长度校验，作为导入/恢复路径的纵深防御；
-        上游备份恢复的 _validate_categories 已做更严格的结构校验。
+        上游备份恢复的 validate_categories 已做更严格的结构校验。
         """
         name = data.get("name", "")
         if not isinstance(name, str):
@@ -219,13 +224,18 @@ class Category:
         # 排除 bool（bool 是 int 子类），与 Entry.from_dict 的严格类型校验风格对齐
         if not is_real_int(sort_order):
             raise EntryError("分类排序值类型无效，必须为整数")
+        # 时间戳类型校验，与 Entry.from_dict 对齐：防外部数据 int 时间戳破坏 str
+        # 类型不变量、致 format_datetime 异常。
+        created_at = data.get("created_at", "")
+        if not isinstance(created_at, str):
+            raise EntryError("分类创建时间类型无效，必须为字符串")
         return cls(
             id=data.get("id"),
             name=name,
             icon_char=icon_char,
             color=color,
             sort_order=sort_order,
-            created_at=data.get("created_at", ""),
+            created_at=created_at,
         )
 
 

@@ -87,6 +87,8 @@ def test_emergency_cleanup_swallows_main_window_errors():
         assert vault.initialize("MasterPassword!2026")[0]
 
         class _BoomWindow:
+            """替代 MainWindow 的桩，prepare_for_lock 与 clear_clipboard 抛异常以验证兜底容错。"""
+
             def prepare_for_lock(self):
                 raise RuntimeError("prepare_for_lock 模拟失败")
 
@@ -127,6 +129,8 @@ def test_main_window_construction_failure_rolls_back(monkeypatch):
         """LoginWindow 桩：捕获 login_success 信号注册的回调，exec 立即返回 Accepted。"""
 
         class DialogCode:
+            """模拟 QDialog.DialogCode，提供 exec 返回值比较用的 Accepted 常量。"""
+
             Accepted = 1
 
         def __init__(self, vault, config):

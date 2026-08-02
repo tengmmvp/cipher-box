@@ -470,7 +470,10 @@ class SecurityAnalyzer:
             logger.debug("安全分析跳过损坏条目 id=%s，原因：密码解密失败", raw.id)
             return _ClassifyResult(summary, changed_utc, is_weak, None, True)
         if not password:
-            return _ClassifyResult(summary, changed_utc, is_weak, None, False)
+            # 空密码（note/identity 等无密码条目）不计为弱：is_weak 在上方用密文 bool
+            # 判断（空明文也产生非空密文，bool 恒 True），此处解密确认空后置 False，
+            # 避免无密码条目虚增 weak_count、拉低健康分。
+            return _ClassifyResult(summary, changed_utc, False, None, False)
         fingerprint = self._password_fingerprint(password, vault_key)
         del password
         return _ClassifyResult(summary, changed_utc, is_weak, fingerprint, False)

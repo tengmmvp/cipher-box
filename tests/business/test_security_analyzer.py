@@ -14,6 +14,8 @@ from src.models import Entry
 
 
 class TestComputeHealthScore:
+    """compute_health_score 边界与权重：空库满分、clamp、各档累加与权重排序。"""
+
     def test_empty_vault_scores_full(self):
         """total=0（空库）得满分 100：无风险条目即无扣分。"""
         assert SecurityAnalyzer.compute_health_score(0, 0, 0, 0) == 100

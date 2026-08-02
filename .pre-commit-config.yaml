@@ -24,3 +24,12 @@ repos:
         types_or: [python]
         pass_filenames: false
         args: [--config-file=pyproject.toml, src]
+      - id: pyright
+        name: pyright
+        entry: uv run pyright
+        language: system
+        # 与 mypy 一致：仅 src 变更触发、整包检查。pyright 经 pyproject include=["src"]
+        # 限定范围，tests 由 pytest 守护（Mock/Optional/私有访问模式与 pyright 严格模式摩擦）。
+        files: ^src/
+        types_or: [python]
+        pass_filenames: false

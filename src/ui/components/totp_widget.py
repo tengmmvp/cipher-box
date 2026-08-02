@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QTimer, pyqtSignal
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -16,7 +16,6 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QVBoxLayout,
-    QWidget,
 )
 
 from ..resources.constants import BTN_TOTP_COPY, FONT_FAMILY_MONOSPACE
@@ -30,17 +29,19 @@ if TYPE_CHECKING:
 MS_TOTP_REFRESH = 1000
 
 
-class TOTPWidget(QWidget):
-    """TOTP 验证码显示与刷新组件。
+class TOTPWidget(QObject):
+    """TOTP 验证码显示与刷新组件（纯控制器，无可视自身）。
 
-    通过注入的 EntryManager 引用获取 TOTP 状态。定时器启停由父级 DetailPanel
-    在 hideEvent / showEvent 中调用 stop / resume_if_active 控制。
+    构建的验证码控件加入外部传入的 content_layout，自身从不 show，故继承 QObject
+    而非 QWidget——QTimer 等仍可以 self 为 parent。通过注入的 EntryManager 引用获取
+    TOTP 状态。定时器启停由父级 DetailPanel 在 hideEvent / showEvent 中调用
+    stop / resume_if_active 控制。
     """
 
     copy_requested = pyqtSignal(str)
     copy_feedback = pyqtSignal()
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self._entry_mgr: EntryManager | None = None
         self._timer = QTimer(self)

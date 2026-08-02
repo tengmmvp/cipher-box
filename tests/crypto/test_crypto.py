@@ -14,8 +14,6 @@ from src.crypto.master_key import KdfParams, MasterKeyManager
 from src.crypto.password_generator import PasswordGenerator
 from src.exceptions import DecryptionError
 
-# TestEncryptionEngine
-
 AAD = "test:secret"
 
 
@@ -80,9 +78,6 @@ def test_rejects_ciphertext_without_current_prefix():
         EncryptionEngine.decrypt_bytes(b"legacy", key, AAD)
 
 
-# TestMasterKeyManager
-
-
 def test_create_and_verify():
     salt, verify_token, derived_key = MasterKeyManager.create("test_password_123")
     assert salt is not None
@@ -126,7 +121,18 @@ def test_change_wrong_old_password():
     assert result is None
 
 
-# TestPasswordGenerator
+def test_password_unicode_normalization() -> None:
+    """NFC 与 NFD 形式的同一视觉密码派生出相同密钥（归一化守护）。
+
+    未归一化时 NFC/NFD 的 UTF-8 字节不同 → Argon2id 派生不同密钥 → 跨归一化输入
+    （便携备份跨 OS 恢复、不同 IME/输入法）致不可恢复锁库。编码前统一 NFC 后，
+    NFD 密码应能验证 NFC 创建的验证令牌。
+    """
+    salt, verify_token, _ = MasterKeyManager.create("café")  # NFC 形式
+    nfd_password = "café"  # NFD（e + 组合重音），视觉同「café」但码点序列不同
+    assert nfd_password != "café"  # 归一化前字符串确不相等
+    key = MasterKeyManager.verify(nfd_password, salt, verify_token)
+    assert key is not None  # NFD 密码能验证 NFC 令牌（归一化拉齐派生）
 
 
 def test_generate_default():
@@ -180,6 +186,24 @@ def test_strength_long_keyboard_runway_detected():
     assert result.is_common
 
 
+@pytest.mark.parametrize(
+    "pwd",
+    [
+        "poiuytrewqasdfg",  # 顶行反向（qwertyuiop 反转）
+        "lkjhgfdsaqwerty",  # 中行反向（asdfghjkl 反转）
+        "mnbvcxzqwertyui",  # 底行反向（zxcvbnm 反转）
+    ],
+)
+def test_strength_reverse_keyboard_runway_detected(pwd):
+    """反向键盘走查串（≥6 连续反向 QWERTY）判为常见弱密码。
+
+    回归守护：原 ``_has_keyboard_runway`` 仅正向匹配，反向串漏检。覆盖三行
+    （顶 qwertyuiop / 中 asdfghjkl / 底 zxcvbnm）反向，确保 ``_has_keyboard_runway``
+    对 ``(row, row[::-1])`` 双向遍历三行均对称生效。
+    """
+    assert PasswordGenerator.check_strength(pwd).is_common
+
+
 def test_strength_empty():
     result = PasswordGenerator.check_strength("")
     assert result.score == 0
@@ -196,9 +220,6 @@ def test_exclude_ambiguous():
     assert not any(c in ambiguous for c in pwd)
 
 
-# TestEncryptionEdgeCases
-
-
 def test_encrypt_empty_string_no_aad():
     """空明文仍走完整加密路径，AAD 参与认证。"""
     result = EncryptionEngine.encrypt("", b"\x00" * 32, "any_aad")
@@ -212,9 +233,6 @@ def test_decrypt_empty_string_raises():
     """空密文是非法输入，应抛出 ValueError。"""
     with pytest.raises(ValueError):
         EncryptionEngine.decrypt("", b"\x00" * 32, "any_aad")
-
-
-# TestAESGCMCache
 
 
 @pytest.fixture(autouse=True)
@@ -307,9 +325,6 @@ def test_decrypt_generic_no_internal_info():
     assert "Error" not in msg or "解密失败" in msg
 
 
-# TestConstantTimeComparison
-
-
 def test_constant_time_compare_correct_password():
     """验证正确密码的验证流程。"""
     salt, verify_token, derived_key = MasterKeyManager.create("test_password")
@@ -363,6 +378,18 @@ def test_aad_empty_vs_nonempty_differ():
     encrypted = EncryptionEngine.encrypt("secret", key, "")
     with pytest.raises(DecryptionError):
         EncryptionEngine.decrypt(encrypted, key, "non-empty")
+
+
+@pytest.mark.parametrize("invalid_aad", [None, 123, 4.5, [], object()])
+def test_aad_invalid_type_raises(invalid_aad: object) -> None:
+    """None/int 等 AAD 抛 TypeError，而非静默按「无 AAD」加密（安全降级）。
+
+    AESGCM 把 None 语义化为无 AAD；调用方误传时静默成功会丢失字段级域绑定，且
+    不可见。``_aad_bytes`` 对非 str/bytes 显性失败，把调用方 bug 从静默降级转为报错。
+    """
+    key = os.urandom(32)
+    with pytest.raises(TypeError):
+        EncryptionEngine.encrypt("secret", key, invalid_aad)  # type: ignore[arg-type]
 
 
 # ======== PasswordGenerator 每类字符≥1 保证 ========

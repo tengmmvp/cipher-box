@@ -33,6 +33,7 @@ class KeyManager:
 
     @property
     def key_epoch(self) -> str | None:
+        """当前密钥版本标识（epoch），改密/恢复时轮换。"""
         return self._key_epoch
 
     def _set_key(self, key: bytearray | bytes | None) -> None:
@@ -72,12 +73,15 @@ class KeyManager:
         self._key_epoch = epoch
 
     def update_key(self, key: bytearray | bytes) -> None:
+        """更换主密钥，旧密钥经 _set_key 装入前安全清零。"""
         self._set_key(key)
 
     def update_snapshot_key(self, snapshot_key: bytearray | bytes) -> None:
+        """更换快照密钥，旧密钥经 _set_snapshot_key 装入前安全清零。"""
         self._set_snapshot_key(snapshot_key)
 
     def update_epoch(self, epoch: str) -> None:
+        """更新密钥版本标识（epoch），不改密钥材料本身。"""
         self._key_epoch = epoch
 
     @staticmethod

@@ -165,12 +165,16 @@ def secure_db(tmp_path):
     非 test_mode → _enforce_encrypted_fields 默认 True，配合 EncryptionEngine 产出的
     合法 cb2: 密文，真实走 _assert_entry_encrypted_fields / _assert_encrypted 拦截路径，
     确保 happy-path 在生产态加密断言启用下成立（而非仅 test_mode 放行）。
+
+    teardown 须 clear_cache：批量写经 EncryptionEngine.encrypt 填充全局 _cipher_cache
+    （以 _BATCH_KEY / 各 new_key 摘要索引），不清会泄漏到后续测试污染断言。
     """
     database = DatabaseManager(tmp_path / "batch_writes.db")
     database.open()
     database.init_tables()
     yield database
     database.close()
+    EncryptionEngine.clear_cache()
 
 
 def _enc(plaintext: str, crypto_id: str, field: str, *, key: bytes = _BATCH_KEY) -> str:

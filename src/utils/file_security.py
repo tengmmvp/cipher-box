@@ -457,6 +457,8 @@ def _dpapi_crypt(data: bytes, *, protect: bool) -> bytes | None:
         from ctypes import wintypes
 
         class _DataBlob(ctypes.Structure):
+            """Windows CRYPT_DATA_BLOB 结构，DPAPI 输入/输出载体（长度 + 数据指针）。"""
+
             _fields_ = [
                 ("cbData", wintypes.DWORD),
                 ("pbData", ctypes.POINTER(ctypes.c_char)),

@@ -42,6 +42,8 @@ def _make_controller() -> ListRefreshController:
 
 
 class TestCancelAllWorkers:
+    """cancel_all_workers / wait_workers 对 coordinator 与 status worker 的委托编排。"""
+
     def test_cancels_via_coordinator_and_status(self):
         """cancel_all_workers 委托 coordinator 取消 entry/tag worker + 取消 status worker。"""
         ctrl = _make_controller()

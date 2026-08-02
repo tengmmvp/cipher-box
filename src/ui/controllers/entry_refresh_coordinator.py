@@ -28,7 +28,7 @@ class ScrollRestore:
     saved_row: int
 
 
-# entry 异步 fetcher 工厂：接受 cancel_check，返回 (条目列表, 标题)。
+# entry 异步 fetcher 工厂：接受 cancel_check，返回（条目列表，标题）。
 # cancel_check 由 coordinator 注入（worker.cancel_check），使长循环可协作取消。
 EntryFetchFactory = Callable[[Callable[[], bool]], tuple[list[Any], str]]
 # tag 异步 fetcher：直接返回标签列表，无 cancel_check（标签查询无长循环）。
@@ -74,14 +74,30 @@ class EntryRefreshCoordinator:
     # ========== entry 异步刷新 ==========
 
     def cancel_entry_worker(self) -> None:
-        """取消当前 entry worker（同步刷新路径调用，清引用让旧回调短路）。
+        """取消当前 entry worker（同步刷新路径调用）。
 
-        同步路径不推进 generation（省去无谓计数），靠 ``_done`` 的请求指纹校验
-        （``is_entry_stale``）丢弃旧 worker 的延迟回调。
+        推进 generation：同步刷新已渲染最新数据，任何在飞 worker 的延迟 ``_done`` 回调
+        见到 generation 不匹配而丢弃。仅靠 ``is_entry_stale`` 请求指纹（filter/category/
+        search）不足以覆盖「filter 未变但数据版本已变」的场景（如永久删除降计数触发同步
+        分支），旧 worker 的 finished 信号若已入事件队列，cancel 是空操作，须靠 generation
+        不匹配丢弃其结果，避免覆盖刚渲染的新数据。
         """
+        self._entry_refresh_generation += 1
         if self._entry_worker is not None:
             self._entry_worker.cancel()
             self._entry_worker = None
+
+    def cancel_tag_worker(self) -> None:
+        """取消当前 tag worker（同步刷新路径调用），与 :meth:`cancel_entry_worker` 对称。
+
+        推进 tag generation：同步路径已渲染最新标签，在飞 tag worker 的延迟 ``_done``
+        回调见 generation 不匹配而丢弃，避免旧标签快照覆盖（tag 侧原同步分支漏取消，
+        与 entry 侧不对称）。
+        """
+        self._tag_refresh_generation += 1
+        if self._tag_worker is not None:
+            self._tag_worker.cancel()
+            self._tag_worker = None
 
     def start_async_entry_refresh(
         self,

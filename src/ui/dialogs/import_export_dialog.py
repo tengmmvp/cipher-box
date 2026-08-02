@@ -253,6 +253,11 @@ class ImportExportDialog(WorkerBackedDialog):
             self._do_import(self._selected_path)
 
     def _do_export(self, path: str) -> None:
+        """启动后台导出任务（无写入副作用，可安全取消）。
+
+        包含密码的导出先经二次确认警告明文风险；任务内采集与写入均传 cancel_check，
+        取消时业务层清理 temp 文件且不生成目标文件。
+        """
         include_pwd = self._include_pwd_check.isChecked()
         fmt = self._format_combo.currentText()
 
@@ -355,6 +360,11 @@ class ImportExportDialog(WorkerBackedDialog):
         set_label_severity(self._status_label, "error")
 
     def _do_import(self, path: str) -> None:
+        """启动后台导入任务（有写入副作用，不可中途取消）。
+
+        UI 格式名经 _IMPORT_FORMAT_KEYS 映射到业务层 format_key；重复项处理策略经
+        下拉选择传入；进度经 worker.progress 信号驱动不确定→确定进度条切换。
+        """
         fmt_index = self._format_combo.currentIndex()
         duplicate_action = self._duplicate_combo.currentData() or "skip"
 

@@ -128,6 +128,8 @@ class TestSecureDeleteFile:
 
 
 class TestSecureDirectory:
+    """secure_directory 的目录创建、嵌套创建、幂等性与权限设置测试。"""
+
     def test_creates_directory(self, tmp_path):
         target = tmp_path / "new_dir"
         result = secure_directory(target)
@@ -161,6 +163,8 @@ class TestSecureDirectory:
 
 
 class TestSecureFile:
+    """secure_file 的权限设置、Windows ACL、幂等性与 strict 失败传播测试。"""
+
     def test_existing_file_sets_permissions(self, tmp_path):
         target = tmp_path / "test_file.dat"
         target.write_text("test", encoding="utf-8")
@@ -368,6 +372,8 @@ class TestRejectReparseBranches:
         monkeypatch.setattr(file_security, "IS_WINDOWS", False)
 
         class _FakeStat:
+            """模拟符号链接 st_mode 的 lstat 返回值桩。"""
+
             st_mode = stat.S_IFLNK
 
         target = tmp_path / "evil.txt"

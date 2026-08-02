@@ -496,6 +496,13 @@ class ConfigManager:
 
     @staticmethod
     def _is_valid(key: str, value: Any) -> bool:
+        """按 key 分组校验配置值合法性，供 load（容错）与 set（拒绝）复用单一规则。
+
+        分发顺序：整型范围 → bool → 枚举（theme/sort_*）→ 限长字符串 →
+        window_geometry（hex）→ splitter_sizes（三元组）→ security_sentinels。
+        无匹配规则（未知键）记 debug 并拒绝——配置键白名单由 DEFAULT_CONFIG 把关，
+        此处只校验已知键的值。load 据返回值跳过非法项保留默认，set 据其抛 ValueError。
+        """
         if key in _INT_RANGES:
             minimum, maximum = _INT_RANGES[key]
             return is_real_int(value) and minimum <= value <= maximum

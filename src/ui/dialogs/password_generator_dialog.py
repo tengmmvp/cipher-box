@@ -220,11 +220,12 @@ class PasswordGeneratorDialog(QDialog):
             return
         if self._clipboard:
             self._clipboard.copy_text(password)
+            set_icon_with_text(self._copy_btn, "已复制 ✓", COPY)
         else:
-            # 剪贴板管理器不可用时直接返回，避免绕过自动清除机制直接写入系统剪贴板
-            return
+            # 剪贴板管理器不可用：避免绕过自动清除机制直接写入系统剪贴板；给按钮临时
+            # 文案反馈，避免用户误以为复制成功。复用反馈定时器复位为「复制」。
+            set_icon_with_text(self._copy_btn, "剪贴板不可用", COPY)
         # 复用单个 QTimer（首次创建并连接，后续仅 restart），避免连续点击累积未释放的 QTimer
-        set_icon_with_text(self._copy_btn, "已复制 ✓", COPY)
         if self._copy_feedback_timer is None:
             self._copy_feedback_timer = QTimer(self)
             self._copy_feedback_timer.setSingleShot(True)
