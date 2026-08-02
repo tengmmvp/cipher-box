@@ -17,7 +17,7 @@ jobs:
       # CI 无显示器：用 Qt offscreen 平台插件，避免 PyQt6 因找不到显示后端初始化失败
       QT_QPA_PLATFORM: offscreen
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Install Qt system libraries (Linux)
         if: runner.os == 'Linux'
         run: |
