@@ -107,7 +107,7 @@ class PasswordGeneratorDialog(QDialog):
         # 强度显示
         self._strength_label = QLabel("")
         self._strength_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._strength_label.setStyleSheet("font-size: 13px; font-weight: bold;")
+        self._strength_label.setStyleSheet("font-size: 14px; font-weight: 600;")
         layout.addWidget(self._strength_label)
 
         # 设置区域
@@ -211,7 +211,7 @@ class PasswordGeneratorDialog(QDialog):
         strength = PasswordService.check_strength(password)
         color = get_strength_color(strength.score)
         self._strength_label.setText(f"强度：{strength.label} ({strength.score}/4)")
-        self._strength_label.setStyleSheet(f"color: {color}; font-size: 13px; font-weight: bold;")
+        self._strength_label.setStyleSheet(f"color: {color}; font-size: 14px; font-weight: 600;")
 
     def _on_length_changed(self, value: int) -> None:
         self._length_label.setText(str(value))

@@ -88,19 +88,28 @@ TOAST_HOVER_RESTART_MS = 1000
 LOGIN_WIDTH = 500  # 登录窗口固定宽度
 LOGIN_HEIGHT_FIRST = 520
 LOGIN_HEIGHT_LOGIN = 450
-LOGIN_TITLE_FONT_SIZE_PX = 24  # 登录窗口标题字号（QSS 内联，单位 px）
+LOGIN_TITLE_FONT_SIZE_PX = 26  # 登录窗口标题字号（QSS 内联，单位 px）
 
 
 # ---------- 字体 ----------
-# 字体栈：Windows 优先 Microsoft YaHei，macOS 回退 PingFang SC，
-# Linux 回退 Noto Sans CJK SC，最终回退系统无衬线字体。
-FONT_FAMILY_PRIMARY = "Microsoft YaHei UI"
-FONT_FAMILY_DISPLAY = "Microsoft YaHei"
+# 主字体 Inter（打包随应用分发，启动经 font_loader 注册到 QFontDatabase）。加载失败或
+# 缺失字形（如中文）时回退系统字体：Windows Microsoft YaHei UI、macOS PingFang SC、
+# Linux Noto Sans CJK SC，最终系统无衬线。
+FONT_FAMILY_PRIMARY = "Inter"
+FONT_FAMILY_DISPLAY = "Inter"
 # QFont 不支持 CSS 字体栈，此处列出回退顺序供 QFont 构造使用。
-FONT_FAMILY_FALLBACKS = ["PingFang SC", "Noto Sans CJK SC", "SimHei", "sans-serif"]
+FONT_FAMILY_FALLBACKS = [
+    "Microsoft YaHei UI",
+    "PingFang SC",
+    "Noto Sans CJK SC",
+    "SimHei",
+    "sans-serif",
+]
 
 # CSS/QSS 字体栈，供 QSS 样式表 font-family 属性使用
-FONT_FAMILY_CSS = '"Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Segoe UI", sans-serif'
+FONT_FAMILY_CSS = (
+    '"Inter", "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", "Segoe UI", sans-serif'
+)
 
 # ---------- 密码相关默认值 ----------
 PWD_TOGGLE_AUTO_HIDE_SECONDS = 30  # 密码切换按钮自动隐藏秒数

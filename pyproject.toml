@@ -36,6 +36,7 @@ include = ["src*"]
 # 在安装/打包后读不到（开发期源码树可读是巧合，sdist/wheel 会遗漏）。
 [tool.setuptools.package-data]
 "src.business.services.share_resources" = ["*"]
+"src.ui.resources.fonts" = ["*.ttf", "LICENSE.txt"]
 
 [tool.setuptools.dynamic]
 # 版本号单一源：从 src.__version__ 读取，消除 pyproject 与 src/__init__.py 双源漂移。

@@ -30,6 +30,7 @@ from ...models import Category
 from ..components.widgets import create_cancel_button, setup_dialog_flags
 from ..error_messages import to_user_message
 from ..resources.constants import BTN_DIALOG, DIALOG_CATEGORY_MIN_SIZE
+from ..resources.radius import RADIUS_TINY
 from ..resources.strings import DLG_TITLE_ERROR, DLG_TITLE_INFO
 from ..resources.theme_colors import c
 
@@ -185,7 +186,7 @@ class CategoryDialog(QDialog):
 
         # 颜色选择区域
         color_label = QLabel("颜色：")
-        color_label.setStyleSheet(f"font-weight: bold; color: {c('text_primary')};")
+        color_label.setStyleSheet(f"font-weight: 600; color: {c('text_primary')};")
         layout.addWidget(color_label)
 
         color_row = QHBoxLayout()
@@ -205,7 +206,7 @@ class CategoryDialog(QDialog):
         custom_color_btn.setStyleSheet(
             f"QPushButton {{"
             f"  border: 1px dashed {c('border')};"
-            f"  border-radius: 4px;"
+            f"  border-radius: {RADIUS_TINY}px;"
             f"  padding: 4px 12px;"
             f"  color: {c('text_secondary')};"
             f"}}"

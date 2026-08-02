@@ -41,6 +41,7 @@ from ..resources.constants import (
     DIALOG_SECURITY_DASHBOARD_MIN_SIZE,
     FONT_FAMILY_DISPLAY,
 )
+from ..resources.radius import RADIUS_TAG
 from ..resources.strings import DLG_TITLE_ERROR
 from ..resources.theme_colors import c, get_strength_color
 
@@ -69,8 +70,8 @@ class _HealthScoreWidget(QWidget):
         self._score = 100
         self.setFixedSize(160, 160)
         # 预创建字体，避免 `paintEvent` 每帧重复构造 `QFont`
-        self._score_font = QFont(FONT_FAMILY_DISPLAY, 28, QFont.Weight.Bold)
-        self._label_font = QFont(FONT_FAMILY_DISPLAY, 9)
+        self._score_font = QFont(FONT_FAMILY_DISPLAY, 28, QFont.Weight.DemiBold)
+        self._label_font = QFont(FONT_FAMILY_DISPLAY, 11)
 
     def set_score(self, score: int) -> None:
         self._score = max(0, min(100, score))
@@ -166,7 +167,7 @@ class _StatCard(QFrame):
         layout.addWidget(title_label)
 
         count_label = QLabel(str(count))
-        count_label.setStyleSheet(f"font-size: 32px; font-weight: bold; color: {color};")
+        count_label.setStyleSheet(f"font-size: 32px; font-weight: 600; color: {color};")
         self._count_label = count_label  # 保存引用供 update_count 刷新
         layout.addWidget(count_label)
 
@@ -512,10 +513,10 @@ class SecurityDashboard(WorkerBackedDialog):
         badge.setStyleSheet(
             f"background-color: rgba({bc.red()},{bc.green()},{bc.blue()},{bc.alpha()});"
             f"color: {badge_color};"
-            f"border-radius: 10px;"
+            f"border-radius: {RADIUS_TAG}px;"
             f"padding: 3px 10px;"
             f"font-size: 11px;"
-            f"font-weight: bold;"
+            f"font-weight: 600;"
         )
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         row_layout.addWidget(badge)

@@ -18,6 +18,7 @@ from .config import CFG_THEME, DEFAULT_THEME, ConfigManager
 from .logging_config import configure_logging
 from .ui.dialogs.login_window import LoginWindow
 from .ui.resources.constants import ABOUT_TO_QUIT_WAIT_TIMEOUT_MS
+from .ui.resources.font_loader import load_bundled_fonts
 from .ui.resources.styles import get_style
 from .ui.windows.main_window import MainWindow
 
@@ -54,6 +55,9 @@ class CipherBoxApp:
         self._app = QApplication.instance() or CipherBoxApplication(sys.argv)
         self._config = ConfigManager()
         configure_logging(self._config.data_dir)
+        # 打包 Inter 字体注册到 QFontDatabase；须在 QApplication 创建后、任何 widget
+        # 构造前调用，否则首屏字面仍为回退字体。加载失败不阻塞（回退系统字体）。
+        load_bundled_fonts()
         self._vault = build_vault(self._config)
         # 重试清理之前 purge 失败的恢复点（pre_restore_*.cbox，含恢复前全部明文）。
         # 恢复成功后应删除，之前因文件占用未删净的残留在此重试（重启后占用已释放）。

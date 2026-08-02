@@ -195,7 +195,7 @@ class CustomFieldsRenderer:
             label,
             value,
             store_key=row_id,
-            name_label_style=f"font-weight: bold; color: {c('text_secondary')};",
+            name_label_style=f"font-weight: 600; color: {c('text_secondary')};",
             val_label_style=(
                 f"font-family: {FONT_FAMILY_MONOSPACE}; font-size: 13px;"
                 f" color: {c('text_primary')};"

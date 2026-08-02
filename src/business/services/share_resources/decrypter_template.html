@@ -6,36 +6,37 @@
 <title>密匣共享包解密器</title>
 <style>
 *{box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,"Microsoft YaHei","Segoe UI",sans-serif;background:#f5f6f8;color:#222;margin:0;padding:20px;line-height:1.5}
+body{font-family:"Inter",-apple-system,BlinkMacSystemFont,"Microsoft YaHei","Segoe UI",sans-serif;background:#fbfbfd;color:#1d1d1f;margin:0;padding:20px;line-height:1.5}
 .container{max-width:720px;margin:0 auto}
 h1{font-size:22px;margin:0}
-.version{color:#888;font-size:12px;margin:4px 0 0}
-.step{margin:16px 0;padding:16px;background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
-.file-label{display:inline-block;padding:10px 20px;background:#4a6cf7;color:#fff;border-radius:6px;cursor:pointer;font-size:14px}
-.file-label:hover{background:#3a5ce0}
-#file-info{margin:8px 0 0;color:#666;font-size:14px}
-#password{padding:8px 12px;border:1px solid #ddd;border-radius:6px;width:60%;font-size:14px}
-#decrypt-btn{padding:8px 20px;background:#4a6cf7;color:#fff;border:none;border-radius:6px;cursor:pointer;margin-left:8px;font-size:14px}
-#decrypt-btn:disabled{background:#aaa;cursor:not-allowed}
-.status{padding:8px 12px;border-radius:6px;margin:12px 0;font-size:14px}
-.status.info{background:#e8f0fe;color:#1a56c4}
-.status.success{background:#e6f4ea;color:#1e7e34}
-.status.error{background:#fdecea;color:#c0392b}
-.warn{padding:10px;background:#fff4e5;color:#b35900;border-radius:6px;margin:8px 0;font-size:14px}
-.notice{padding:10px;background:#e8f0fe;color:#1a56c4;border-radius:6px;margin:8px 0;font-size:14px}
-.count{color:#666;font-size:14px;margin:8px 0}
-.entry{background:#fff;border-radius:8px;padding:16px;margin:12px 0;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.version{color:#86868b;font-size:12px;margin:4px 0 0}
+.step{margin:16px 0;padding:16px;background:#fff;border-radius:8px;border:1px solid #d2d2d7}
+.file-label{display:inline-block;padding:10px 20px;background:#0071e3;color:#fff;border-radius:980px;cursor:pointer;font-size:14px}
+.file-label:hover{background:#0058b9}
+#file-info{margin:8px 0 0;color:#6e6e73;font-size:14px}
+#password{padding:8px 12px;border:1px solid #d2d2d7;border-radius:8px;width:60%;font-size:14px}
+#password:focus{outline:none;border-color:#0071e3}
+#decrypt-btn{padding:8px 20px;background:#0071e3;color:#fff;border:none;border-radius:980px;cursor:pointer;margin-left:8px;font-size:14px;font-weight:600}
+#decrypt-btn:disabled{background:#c7c7cc;cursor:not-allowed}
+.status{padding:8px 12px;border-radius:8px;margin:12px 0;font-size:14px}
+.status.info{background:#e8f1fb;color:#0071e3}
+.status.success{background:#e8f8ed;color:#248a3d}
+.status.error{background:#ffe1e1;color:#d70015}
+.warn{padding:10px;background:#fff4e0;color:#c93400;border-radius:8px;margin:8px 0;font-size:14px}
+.notice{padding:10px;background:#e8f1fb;color:#0071e3;border-radius:8px;margin:8px 0;font-size:14px}
+.count{color:#6e6e73;font-size:14px;margin:8px 0}
+.entry{background:#fff;border-radius:8px;padding:16px;margin:12px 0;border:1px solid #d2d2d7}
 .entry-title{font-size:17px;font-weight:600;margin-bottom:8px}
-.badge{display:inline-block;padding:2px 8px;background:#eef;color:#4a6cf7;border-radius:10px;font-size:12px;margin-left:8px;vertical-align:middle}
+.badge{display:inline-block;padding:2px 8px;background:#e8f1fb;color:#0071e3;border-radius:980px;font-size:12px;margin-left:8px;vertical-align:middle}
 .field{display:flex;align-items:flex-start;gap:8px;padding:4px 0;font-size:14px}
-.field .label{color:#888;min-width:64px;flex-shrink:0}
+.field .label{color:#86868b;min-width:64px;flex-shrink:0}
 .field .value{flex:1;word-break:break-all}
-.field .value.secret{cursor:pointer;letter-spacing:2px;color:#4a6cf7}
+.field .value.secret{cursor:pointer;letter-spacing:2px;color:#0071e3}
 .field pre.value{white-space:pre-wrap;margin:0;font-family:inherit}
-.field a.value{color:#4a6cf7}
-.copy{padding:2px 10px;background:#f0f0f0;border:1px solid #ddd;border-radius:4px;cursor:pointer;font-size:12px;flex-shrink:0}
-.copy:hover{background:#e0e0e0}
-footer{margin-top:24px;color:#aaa;font-size:12px;text-align:center}
+.field a.value{color:#0071e3}
+.copy{padding:2px 10px;background:#f5f5f7;border:1px solid #d2d2d7;border-radius:980px;cursor:pointer;font-size:12px;flex-shrink:0}
+.copy:hover{background:#e5e5e7}
+footer{margin-top:24px;color:#86868b;font-size:12px;text-align:center}
 </style>
 </head>
 <body>

@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 
 from ..resources.constants import BTN_TOTP_COPY, FONT_FAMILY_MONOSPACE
 from ..resources.icons import COPY, set_icon_with_text
+from ..resources.radius import RADIUS_CARD, RADIUS_TINY
 from ..resources.theme_colors import c
 
 if TYPE_CHECKING:
@@ -124,7 +125,7 @@ class TOTPWidget(QObject):
             QFrame {{
                 background: {c("accent_light")};
                 border: 1px solid {c("tag_border")};
-                border-radius: 8px;
+                border-radius: {RADIUS_CARD}px;
                 padding: 8px;
             }}
         """)
@@ -132,7 +133,7 @@ class TOTPWidget(QObject):
         totp_layout.setSpacing(6)
 
         totp_title = QLabel("验证码 (TOTP)")
-        totp_title.setStyleSheet(f"font-weight: bold; font-size: 13px; color: {c('accent_text')};")
+        totp_title.setStyleSheet(f"font-weight: 600; font-size: 14px; color: {c('accent_text')};")
         totp_layout.addWidget(totp_title)
 
         code_row = QHBoxLayout()
@@ -140,7 +141,7 @@ class TOTPWidget(QObject):
 
         self._code_label = QLabel(state["code"])
         self._code_label.setStyleSheet(
-            f"font-size: 28px; font-weight: bold; letter-spacing: 6px; "
+            f"font-size: 28px; font-weight: 600; letter-spacing: 6px; "
             f"color: {c('accent_text')}; font-family: {FONT_FAMILY_MONOSPACE};"
         )
         code_row.addWidget(self._code_label)
@@ -152,8 +153,8 @@ class TOTPWidget(QObject):
         self._bar.setFixedHeight(6)
         self._bar.setTextVisible(False)
         self._bar.setStyleSheet(f"""
-            QProgressBar {{ background: {c("border_light")}; border: none; border-radius: 3px; }}
-            QProgressBar::chunk {{ background: {c("accent")}; border-radius: 3px; }}
+            QProgressBar {{ background: {c("border_light")}; border: none; border-radius: {RADIUS_TINY}px; }}
+            QProgressBar::chunk {{ background: {c("accent")}; border-radius: {RADIUS_TINY}px; }}
         """)
         code_row.addWidget(self._bar, 1)
 

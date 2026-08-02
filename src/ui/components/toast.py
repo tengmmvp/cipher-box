@@ -45,17 +45,15 @@ from ..resources.icons import (
     icon_pixmap,
     set_icon,
 )
+from ..resources.radius import RADIUS_CARD, RADIUS_PILL
 from ..resources.theme_colors import c
-
-_TOAST_SHADOW_WIDTH = TOAST_WIDTH + 4
 
 
 class ToastWidget(QFrame):
     """单个 Toast 通知卡片。
 
-    使用 QGraphicsOpacityEffect 实现淡入淡出，因为子控件无法使用 windowOpacity。
-    阴影通过在 ToastWidget 外层叠放一个阴影 QFrame 实现，使透明度效果与
-    阴影效果分别作用于不同的 widget，互不冲突。
+    使用 QGraphicsOpacityEffect 实现淡入淡出（子控件无法使用 windowOpacity）。
+    Apple 风格去阴影：卡片以 hairline 边框承载边界，左侧彩色竖条标识类型。
     """
 
     closed = pyqtSignal(object)  # 通知 ToastManager 移除自身
@@ -95,7 +93,6 @@ class ToastWidget(QFrame):
         self._opacity_effect = QGraphicsOpacityEffect(self)
         self._opacity_effect.setOpacity(0.0)
         self.setGraphicsEffect(self._opacity_effect)
-        self._shadow_frame: QFrame | None = None  # 阴影层，由 ToastManager 设置
         self._action_btn: QPushButton | None = None  # 可选操作按钮，主题切换时刷新
         self._fade_in_anim: QPropertyAnimation | None = None
         self._fade_out_anim: QPropertyAnimation | None = None
@@ -184,7 +181,7 @@ class ToastWidget(QFrame):
             ToastWidget {{
                 background-color: {bg_color};
                 border: 1px solid {border_color};
-                border-radius: 8px;
+                border-radius: {RADIUS_CARD}px;
                 border-left: none;
             }}
         """)
@@ -192,15 +189,15 @@ class ToastWidget(QFrame):
             QFrame {{
                 background-color: {border_color};
                 border: none;
-                border-top-left-radius: 8px;
-                border-bottom-left-radius: 8px;
+                border-top-left-radius: {RADIUS_CARD}px;
+                border-bottom-left-radius: {RADIUS_CARD}px;
             }}
         """)
 
     def _msg_label_style(self) -> str:
         """消息文本样式，构造与主题刷新共用。"""
         return (
-            f"font-size: 13px; color: {c('text_primary')}; background: transparent; border: none;"
+            f"font-size: 14px; color: {c('text_primary')}; background: transparent; border: none;"
         )
 
     def _action_btn_style(self) -> str:
@@ -211,9 +208,9 @@ class ToastWidget(QFrame):
                 background: transparent;
                 color: {c("accent")};
                 font-size: 12px;
-                font-weight: bold;
+                font-weight: 600;
                 padding: 2px 4px;
-                border-radius: 3px;
+                border-radius: {RADIUS_PILL}px;
             }}
             QPushButton:hover {{
                 background: {c("accent_light")};
@@ -303,7 +300,7 @@ class ToastManager:
     """管理多个 Toast 的位置堆叠。
 
     每个 parent 窗口对应一个 ToastManager 实例。Toast 以子控件形式定位在
-    parent 的右下角，从下向上堆叠，同时为每个 Toast 创建一层独立的阴影包装。
+    parent 的右下角，从下向上堆叠。
     """
 
     # 普通字典：Manager 持 ``self._parent = parent`` 强引用，会击穿 WeakKeyDictionary
@@ -328,26 +325,8 @@ class ToastManager:
 
     def add_toast(self, toast: ToastWidget) -> None:
         """添加一个 Toast 并更新所有位置。"""
-        # 阴影效果：QGraphicsDropShadowEffect 无法叠加在 QGraphicsOpacityEffect 上，
-        # 因此使用同位的 QFrame 作为阴影层，详见下方 shadow_frame。
-        shadow_color = c("toast_shadow")
-
         toast.closed.connect(self._remove_toast)
         self._toasts.append(toast)
-
-        # 创建一个同位的阴影 QFrame
-        shadow_frame = QFrame(self._parent)
-        shadow_frame.setFixedWidth(_TOAST_SHADOW_WIDTH)
-        shadow_frame.setStyleSheet(f"""
-            QFrame {{
-                background-color: {shadow_color};
-                border: none;
-                border-radius: 10px;
-            }}
-        """)
-        shadow_frame.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        shadow_frame.lower()
-        toast._shadow_frame = shadow_frame
 
         self._reposition_all()
         toast.show_toast()
@@ -376,28 +355,15 @@ class ToastManager:
             mgr.refresh_active_themes()
 
     def refresh_active_themes(self) -> None:
-        """重新烘焙所有活跃 Toast 的配色并重定位（阴影颜色随主题变化）。"""
+        """重新烘焙所有活跃 Toast 的配色并重定位。"""
         for toast in list(self._toasts):
             toast.refresh_theme()
-            shadow = getattr(toast, "_shadow_frame", None)
-            if shadow is not None:
-                shadow.setStyleSheet(f"""
-                    QFrame {{
-                        background-color: {c("toast_shadow")};
-                        border: none;
-                        border-radius: 10px;
-                    }}
-                """)
         self._reposition_all()
 
     def _remove_toast(self, toast: ToastWidget) -> None:
         """移除一个 Toast 并更新所有位置。"""
         if toast in self._toasts:
             self._toasts.remove(toast)
-        # 移除阴影
-        if toast._shadow_frame:
-            toast._shadow_frame.hide()
-            toast._shadow_frame.deleteLater()
         toast.deleteLater()
         self._reposition_all()
 
@@ -428,13 +394,6 @@ class ToastManager:
                 toast_height = 60
             y -= toast_height
             toast.move(x, y)
-            # 同步阴影位置，向右下偏移 2px
-            if toast._shadow_frame:
-                toast._shadow_frame.setFixedHeight(toast_height + 4)
-                toast._shadow_frame.move(x - 2, y + 2)
-                toast._shadow_frame.show()
-                toast._shadow_frame.lower()
-                toast.raise_()
             y -= self._spacing
 
 

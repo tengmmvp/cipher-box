@@ -1,9 +1,10 @@
-"""QSS 样式表 — 颜色占位符模板与主题渲染。
+"""QSS 样式表 — 颜色/圆角占位符模板与主题渲染。
 
-``STYLE_TEMPLATE`` 以 ``{color_key}`` 占位符引用 ``theme_colors`` 的颜色 token，
-同一份模板可渲染浅色/深色两套样式表，避免双主题样式重复维护。``render_style`` 为
-纯渲染（不触碰全局活跃主题）；``get_style`` 同样纯渲染，激活主题由调用方经
-``set_theme`` 显式完成（ARCH-009），保证运行时 ``c()`` 配色与样式表一致。
+``STYLE_TEMPLATE`` 以 ``{color_key}`` / ``{radius_*}`` 占位符引用 ``theme_colors`` 的
+颜色 token 与 ``radius`` 的圆角档位，同一份模板可渲染浅色/深色两套样式表，避免双主题
+样式重复维护。``render_style`` 为纯渲染（不触碰全局活跃主题）；``get_style`` 同样纯
+渲染，激活主题由调用方经 ``set_theme`` 显式完成（ARCH-009），保证运行时 ``c()`` 配色
+与样式表一致。
 """
 
 STYLE_TEMPLATE = """
@@ -12,7 +13,7 @@ QMainWindow, QDialog {{
 }}
 QWidget {{
     font-family: {font_family};
-    font-size: 13px;
+    font-size: 14px;
     color: {text_primary};
 }}
 QScrollArea, QScrollArea > QWidget > QWidget {{
@@ -21,7 +22,7 @@ QScrollArea, QScrollArea > QWidget > QWidget {{
 }}
 QLineEdit, QTextEdit {{
     border: 1px solid {border};
-    border-radius: 8px;
+    border-radius: {radius_card}px;
     padding: 7px 11px;
     background: {bg_input};
     color: {text_primary};
@@ -33,7 +34,7 @@ QLineEdit:focus, QTextEdit:focus {{
 }}
 QPushButton {{
     border: 1px solid {border};
-    border-radius: 8px;
+    border-radius: {radius_card}px;
     padding: 6px 16px;
     background: {btn_bg};
     color: {text_primary};
@@ -53,7 +54,9 @@ QPushButton#primaryBtn {{
     background: {accent};
     color: {text_on_accent};
     border: none;
-    font-weight: bold;
+    border-radius: {radius_pill}px;
+    padding: 8px 20px;
+    font-weight: 600;
 }}
 QPushButton#primaryBtn:hover {{
     background: {accent_hover};
@@ -68,11 +71,16 @@ QPushButton#iconBtn {{
 }}
 QPushButton#iconBtn:hover {{
     background: {icon_btn_hover};
-    border-radius: 4px;
+    border-radius: {radius_tiny}px;
+}}
+QDialogButtonBox QPushButton {{
+    border-radius: {radius_pill}px;
+    padding: 6px 18px;
+    min-width: 72px;
 }}
 QComboBox {{
     border: 1px solid {border};
-    border-radius: 8px;
+    border-radius: {radius_card}px;
     padding: 6px 10px;
     background: {bg_input};
     color: {text_primary};
@@ -92,13 +100,13 @@ QComboBox::drop-down {{
 }}
 QListWidget, QTreeWidget {{
     border: none;
-    border-radius: 8px;
+    border-radius: {radius_card}px;
     background: {bg_primary};
     outline: none;
 }}
 QListView#entryList {{
     border: none;
-    border-radius: 8px;
+    border-radius: {radius_card}px;
     background: {bg_primary};
     outline: none;
 }}
@@ -115,15 +123,15 @@ QListWidget::item:hover, QTreeWidget::item:hover {{
 }}
 QTabWidget::pane {{
     border: 1px solid {border_light};
-    border-radius: 8px;
+    border-radius: {radius_card}px;
     background: {bg_primary};
 }}
 QTabBar::tab {{
     padding: 8px 20px;
     border: 1px solid {border_light};
     border-bottom: none;
-    border-top-left-radius: 4px;
-    border-top-right-radius: 4px;
+    border-top-left-radius: {radius_tiny}px;
+    border-top-right-radius: {radius_tiny}px;
     background: {btn_bg};
     color: {text_secondary};
     margin-right: 2px;
@@ -135,10 +143,10 @@ QTabBar::tab:selected {{
 }}
 QGroupBox {{
     border: 1px solid {border_light};
-    border-radius: 10px;
+    border-radius: {radius_card}px;
     margin-top: 12px;
     padding-top: 16px;
-    font-weight: bold;
+    font-weight: 600;
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
@@ -152,7 +160,7 @@ QScrollBar:vertical {{
 }}
 QScrollBar::handle:vertical {{
     background: {scrollbar_handle};
-    border-radius: 4px;
+    border-radius: {radius_tiny}px;
     min-height: 30px;
 }}
 QScrollBar::handle:vertical:hover {{
@@ -168,7 +176,7 @@ QScrollBar:horizontal {{
 }}
 QScrollBar::handle:horizontal {{
     background: {scrollbar_handle};
-    border-radius: 4px;
+    border-radius: {radius_tiny}px;
     min-width: 30px;
 }}
 QScrollBar::handle:horizontal:hover {{
@@ -199,19 +207,19 @@ QCheckBox::indicator {{
 }}
 QSpinBox {{
     border: 1px solid {border};
-    border-radius: 8px;
+    border-radius: {radius_card}px;
     padding: 4px 8px;
     min-height: 24px;
     background: {bg_input};
     color: {text_primary};
 }}
 QLabel#sectionLabel {{
-    font-size: 14px;
-    font-weight: bold;
+    font-size: 15px;
+    font-weight: 600;
     color: {accent_text};
 }}
 QLabel#sidebarSectionLabel {{
-    font-weight: bold;
+    font-weight: 600;
     color: {text_secondary};
     font-size: 12px;
     margin-top: 4px;
@@ -222,12 +230,12 @@ QLabel#sidebarSeparator {{
 }}
 QLabel#sidebarStatsLabel {{
     color: {text_secondary};
-    font-size: 11px;
+    font-size: 12px;
     margin-top: 4px;
 }}
 QLabel#sidebarListTitle {{
-    font-weight: bold;
-    font-size: 14px;
+    font-weight: 600;
+    font-size: 15px;
     color: {text_primary};
 }}
 QLabel#sidebarCountLabel {{
@@ -236,11 +244,11 @@ QLabel#sidebarCountLabel {{
 }}
 QLabel#sidebarBrandTitle {{
     font-size: 15px;
-    font-weight: 700;
+    font-weight: 600;
     color: {text_primary};
 }}
 QLabel#sidebarBrandSubtitle {{
-    font-size: 10px;
+    font-size: 11px;
     color: {text_muted};
 }}
 QLabel#warningText {{
@@ -254,7 +262,7 @@ QMenuBar {{
 }}
 QMenuBar::item {{
     padding: 4px 12px;
-    border-radius: 4px;
+    border-radius: {radius_tiny}px;
 }}
 QMenuBar::item:selected {{
     background: {accent_light};
@@ -263,7 +271,7 @@ QMenuBar::item:selected {{
 QMenu {{
     background: {menu_bg};
     border: 1px solid {border};
-    border-radius: 10px;
+    border-radius: {radius_card}px;
     padding: 4px 0px;
 }}
 QMenu::item {{
@@ -271,7 +279,8 @@ QMenu::item {{
 }}
 QMenu::item:selected {{
     background: {menu_item_hover};
-    border-radius: 4px;
+    color: {text_on_accent};
+    border-radius: {radius_tiny}px;
     margin: 0 4px;
     padding: 6px 24px 6px 16px;
 }}
@@ -289,7 +298,7 @@ QStatusBar {{
 }}
 QProgressBar {{
     border: 1px solid {border};
-    border-radius: 6px;
+    border-radius: {radius_small}px;
     background: {progress_bg};
     text-align: center;
     color: {text_primary};
@@ -297,7 +306,7 @@ QProgressBar {{
 }}
 QProgressBar::chunk {{
     background: {progress_fill};
-    border-radius: 3px;
+    border-radius: {radius_tiny}px;
 }}
 QRadioButton::indicator {{
     width: 16px;
@@ -314,14 +323,14 @@ QToolTip {{
     background: {tooltip_bg};
     color: {tooltip_text};
     border: 1px solid {tooltip_border};
-    border-radius: 4px;
+    border-radius: {radius_tiny}px;
     padding: 4px 8px;
     font-size: 12px;
 }}
 QFrame#loginCard {{
     background: {bg_card};
     border: 1px solid {border_light};
-    border-radius: 18px;
+    border-radius: {radius_card}px;
 }}
 QWidget#sidebar {{
     background: {sidebar_bg};
@@ -331,8 +340,8 @@ QWidget#listPane, QWidget#detailPanel {{
     background: {bg_primary};
 }}
 QLabel#detailTitle {{
-    font-size: 16px;
-    font-weight: bold;
+    font-size: 17px;
+    font-weight: 600;
     color: {text_primary};
 }}
 QFrame#detailDivider {{
@@ -341,10 +350,10 @@ QFrame#detailDivider {{
 }}
 QLabel#detailEmpty {{
     color: {text_muted};
-    font-size: 14px;
+    font-size: 15px;
 }}
 QLabel#fieldLabel {{
-    font-weight: bold;
+    font-weight: 600;
     color: {text_secondary};
 }}
 QLabel#fieldValue {{
@@ -352,12 +361,12 @@ QLabel#fieldValue {{
 }}
 QLabel#secretValue {{
     font-family: {font_mono};
-    font-size: 13px;
+    font-size: 14px;
     color: {text_primary};
 }}
 QLabel#notesValue {{
     color: {text_primary};
-    font-size: 13px;
+    font-size: 14px;
 }}
 QLabel#metaLabel {{
     color: {text_muted};
@@ -367,28 +376,28 @@ QLabel#detailWarning {{
     background: {danger_light};
     color: {danger};
     border: 1px solid {danger};
-    border-radius: 6px;
+    border-radius: {radius_small}px;
     padding: 10px;
 }}
 QLabel#tag {{
     background: {tag_bg};
     color: {tag_text};
     border: 1px solid {tag_border};
-    border-radius: 10px;
+    border-radius: {radius_tag}px;
     font-size: 11px;
     padding: 2px 8px;
 }}
 QLabel#typeTag {{
     background: {accent_light};
     color: {accent_text};
-    border-radius: 10px;
+    border-radius: {radius_tag}px;
     font-size: 11px;
     padding: 2px 8px;
 }}
 QFrame#statCard {{
     background: {bg_card};
     border: 1px solid {border_light};
-    border-radius: 8px;
+    border-radius: {radius_card}px;
     padding: 12px;
 }}
 QLabel#statCardTitle {{
@@ -409,25 +418,25 @@ QPushButton#statActionBtn:hover {{
 QFrame#dupGroup {{
     background: {bg_card};
     border: 1px solid {border_light};
-    border-radius: 6px;
+    border-radius: {radius_small}px;
     padding: 8px;
 }}
 QLabel#dupGroupLabel {{
-    font-weight: bold;
-    font-size: 13px;
+    font-weight: 600;
+    font-size: 14px;
     color: {warning_orange};
 }}
 QWidget#secEntryRow {{
     background: {bg_card};
     border: 1px solid {border_light};
-    border-radius: 6px;
+    border-radius: {radius_small}px;
 }}
 QWidget#secEntryRow:hover {{
     background: {bg_card_hover};
 }}
 QLabel#secRowTitle {{
-    font-size: 13px;
-    font-weight: bold;
+    font-size: 14px;
+    font-weight: 600;
     color: {text_primary};
 }}
 QLabel#secRowSub {{
@@ -438,7 +447,7 @@ QPushButton#secFixBtn {{
     background-color: {accent};
     color: {text_on_accent};
     border: none;
-    border-radius: 4px;
+    border-radius: {radius_tiny}px;
     font-size: 12px;
 }}
 QPushButton#secFixBtn:hover {{
@@ -446,12 +455,12 @@ QPushButton#secFixBtn:hover {{
 }}
 QLabel#secEmptyHint {{
     color: {text_muted};
-    font-size: 14px;
+    font-size: 15px;
     padding: 32px;
 }}
 QLabel#secStatusHint {{
     color: {text_muted};
-    font-size: 14px;
+    font-size: 15px;
     padding: 16px;
 }}
 QLabel#formMessage {{
@@ -489,12 +498,18 @@ def render_style(theme: str) -> str:
     调用方自行决定是否经 ``set_theme`` 激活主题（如仅预览样式表时）。
     """
     from .constants import FONT_FAMILY_CSS, FONT_FAMILY_MONOSPACE
+    from .radius import RADIUS_CARD, RADIUS_PILL, RADIUS_SMALL, RADIUS_TAG, RADIUS_TINY
     from .theme_colors import get_colors
 
     colors = get_colors(theme)
     return STYLE_TEMPLATE.format(
         font_family=FONT_FAMILY_CSS,
         font_mono=FONT_FAMILY_MONOSPACE,
+        radius_card=RADIUS_CARD,
+        radius_small=RADIUS_SMALL,
+        radius_tiny=RADIUS_TINY,
+        radius_pill=RADIUS_PILL,
+        radius_tag=RADIUS_TAG,
         **colors,
     )
 

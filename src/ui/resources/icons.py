@@ -249,7 +249,7 @@ def draw_logo_pixmap(
     p.setPen(Qt.PenStyle.NoPen)
     p.drawRoundedRect(margin, margin, rect_size, rect_size, radius, radius)
     p.setPen(QColor(text_color))
-    p.setFont(QFont(FONT_FAMILY_PRIMARY, font_size, QFont.Weight.Bold))
+    p.setFont(QFont(FONT_FAMILY_PRIMARY, font_size, QFont.Weight.DemiBold))
     p.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, text)
     p.end()
     return pixmap

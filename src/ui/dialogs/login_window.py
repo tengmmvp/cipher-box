@@ -134,7 +134,7 @@ class LoginWindow(WorkerBackedDialog):
     def _build_password_row(self, layout: QVBoxLayout) -> None:
         """构建主密码输入行。"""
         pwd_label = QLabel("主密码：")
-        pwd_label.setStyleSheet("font-weight: bold;")
+        pwd_label.setStyleSheet("font-weight: 600;")
         layout.addWidget(pwd_label)
 
         pwd_layout = QHBoxLayout()
@@ -160,7 +160,7 @@ class LoginWindow(WorkerBackedDialog):
         confirm_layout.setSpacing(6)
 
         confirm_label = QLabel("确认密码：")
-        confirm_label.setStyleSheet("font-weight: bold;")
+        confirm_label.setStyleSheet("font-weight: 600;")
         confirm_layout.addWidget(confirm_label)
 
         confirm_pwd_layout = QHBoxLayout()

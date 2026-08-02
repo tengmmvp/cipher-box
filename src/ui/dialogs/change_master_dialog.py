@@ -94,7 +94,7 @@ class ChangeMasterDialog(WorkerBackedDialog):
 
         # 标题
         title = QLabel("修改主密码")
-        title.setStyleSheet("font-size: 16px; font-weight: bold;")
+        title.setStyleSheet("font-size: 17px; font-weight: 600;")
         layout.addWidget(title)
 
         info = QLabel("修改主密码后，所有数据将使用新密码重新加密。\n请确保牢记新密码。")

@@ -59,6 +59,7 @@ from ..resources.icons import (
     STAR_OUTLINE,
     set_icon,
 )
+from ..resources.radius import RADIUS_TINY
 from ..resources.theme_colors import c, get_strength_color
 from .custom_fields_renderer import CustomFieldsRenderer
 from .password_history_widget import PasswordHistoryWidget
@@ -415,13 +416,13 @@ class DetailPanel(QWidget):
         bar.setFixedHeight(8)
         bar.setTextVisible(False)
         bar.setStyleSheet(f"""
-            QProgressBar {{ background: {c("progress_bg")}; border: none; border-radius: 4px; }}
-            QProgressBar::chunk {{ background: {strength_color}; border-radius: 4px; }}
+            QProgressBar {{ background: {c("progress_bg")}; border: none; border-radius: {RADIUS_TINY}px; }}
+            QProgressBar::chunk {{ background: {strength_color}; border-radius: {RADIUS_TINY}px; }}
         """)
         strength_row.addWidget(bar, 1)
 
         strength_text = QLabel(f"{_STRENGTH_LABELS.get(score, '未知')} ({score}/4)")
-        strength_text.setStyleSheet(f"color: {strength_color}; font-weight: bold; font-size: 12px;")
+        strength_text.setStyleSheet(f"color: {strength_color}; font-weight: 600; font-size: 12px;")
         strength_row.addWidget(strength_text)
 
         self._content_layout.addLayout(strength_row)

@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
 from ...models import ENTRY_TYPE_LOGIN, ENTRY_TYPES, Entry
 from ..resources.constants import FONT_FAMILY_FALLBACKS, FONT_FAMILY_PRIMARY
+from ..resources.radius import RADIUS_CARD, RADIUS_TINY
 from ..resources.theme_colors import c, get_strength_color
 
 FAVORITE_MARKER = "★ "
@@ -96,7 +97,7 @@ class EntryItemDelegate(QStyledItemDelegate):
     # 布局常量，单位为像素
     CARD_PADDING_H = 4
     CARD_PADDING_V = 2
-    CARD_RADIUS = 7
+    CARD_RADIUS = RADIUS_CARD
     ACCENT_BAR_WIDTH = 3  # 选中时左侧高亮条宽度
     ICON_SIZE = 28
     ICON_OFFSET_X = 10
@@ -213,7 +214,7 @@ class EntryItemDelegate(QStyledItemDelegate):
             title = entry.title or "(无标题)"
             if entry.is_favorite:
                 title = f"{FAVORITE_MARKER}{title}"
-            painter.setFont(get_font(FONT_FAMILY_PRIMARY, 10, QFont.Weight.DemiBold))
+            painter.setFont(get_font(FONT_FAMILY_PRIMARY, 11, QFont.Weight.DemiBold))
             painter.setPen(QColor(get_color("text_primary")))
             title_text = painter.fontMetrics().elidedText(
                 title, Qt.TextElideMode.ElideRight, int(text_width)
@@ -234,7 +235,7 @@ class EntryItemDelegate(QStyledItemDelegate):
                 netloc = entry.url.split("://", 1)[-1].split("/", 1)[0].split("@")[-1]
                 subtitle_parts.append(netloc)
             subtitle = " · ".join(subtitle_parts) if subtitle_parts else "无额外信息"
-            painter.setFont(get_font(FONT_FAMILY_PRIMARY, 8))
+            painter.setFont(get_font(FONT_FAMILY_PRIMARY, 10))
             painter.setPen(QColor(get_color("text_secondary")))
             subtitle_text = painter.fontMetrics().elidedText(
                 subtitle, Qt.TextElideMode.ElideRight, int(text_width)
@@ -287,7 +288,7 @@ class EntryItemDelegate(QStyledItemDelegate):
                 )
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QColor(get_color("danger_light")))
-                painter.drawRoundedRect(badge, 4, 4)
+                painter.drawRoundedRect(badge, RADIUS_TINY, RADIUS_TINY)
                 painter.setPen(QColor(get_color("danger")))
                 painter.setFont(get_font(FONT_FAMILY_PRIMARY, 7))
                 painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, "已删除")

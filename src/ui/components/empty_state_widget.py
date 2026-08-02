@@ -48,7 +48,7 @@ class EmptyStateWidget(QWidget):
         # 主标题
         title_label = QLabel(title)
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_label.setStyleSheet(f"font-size: 14px; color: {c('text_secondary')};")
+        title_label.setStyleSheet(f"font-size: 15px; color: {c('text_secondary')};")
         layout.addWidget(title_label)
 
         # 副标题

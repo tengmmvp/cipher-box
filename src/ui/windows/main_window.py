@@ -424,7 +424,6 @@ class MainWindow(QMainWindow):
         self._add_category_btn.setObjectName("iconBtn")
         self._add_category_btn.setFixedSize(*SIDEBAR_ICON_SIZE_SMALL)
         self._add_category_btn.setToolTip("管理分类")
-        self._add_category_btn.setStyleSheet("font-size: 14px;")
         cat_header.addWidget(self._add_category_btn)
         sidebar_layout.addLayout(cat_header)
 
