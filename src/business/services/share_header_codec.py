@@ -1,9 +1,9 @@
 """CipherBox 限时加密共享包二进制头部编解码、检视与密钥派生。无状态函数。
 
-.cboxshare 格式：magic + 固定头（version/KDF 参数/expire_at/created_at）+ salt + nonce +
-AES-256-GCM 密文（``nonce‖ct‖tag``，与 WebCrypto AES-GCM 字节布局兼容）。头纳入 GCM-AAD
-防篡改（仿 backup_header_codec）。expire_at 为软限制——嵌入元数据供解密器诚实提示，
-无法防恶意接收方（一旦解密即得明文）。
+.cboxshare 格式：magic + 固定头（version/KDF 参数/expire_at/created_at）+ salt + 密文块
+（:meth:`EncryptionEngine.encrypt_bytes` 产出：``CB2`` 前缀 + nonce + ct + tag，与备份格式
+及 WebCrypto AES-GCM 字节布局兼容）。头纳入 GCM-AAD 防篡改（仿 backup_header_codec）。
+expire_at 为软限制——嵌入元数据供解密器诚实提示，无法防恶意接收方（一旦解密即得明文）。
 """
 
 import struct

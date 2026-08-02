@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 SECURE_FILES_DEBOUNCE_SECONDS = 1.0
 
 
-# 加密列密文的格式自检字符集：版本前缀后为 base64 字符。
+# 加密列密文的格式自检字符集：格式前缀后为 base64 字符。
 _B64_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
 
 

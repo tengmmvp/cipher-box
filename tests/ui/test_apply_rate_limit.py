@@ -21,7 +21,7 @@ class TestApplyRateLimit:
         assert apply_rate_limit(2) == 0
 
     def test_first_threshold(self):
-        # (3, 10) → 3 次失败锁定 10 秒
+        """达首档阈值（3 次失败）锁定 10 秒。"""
         assert apply_rate_limit(3) == 10
 
     def test_between_thresholds(self):
@@ -29,19 +29,19 @@ class TestApplyRateLimit:
         assert apply_rate_limit(4) == 10
 
     def test_second_threshold(self):
-        # (5, 30)
+        """达第二档阈值（5 次失败）锁定 30 秒。"""
         assert apply_rate_limit(5) == 30
 
     def test_third_threshold(self):
-        # (8, 60)
+        """达第三档阈值（8 次失败）锁定 60 秒。"""
         assert apply_rate_limit(8) == 60
 
     def test_threshold_ten(self):
-        # (10, 120)
+        """达第四档阈值（10 次失败）锁定 120 秒。"""
         assert apply_rate_limit(10) == 120
 
     def test_threshold_fifteen(self):
-        # (15, 600) — 累进锁定：持续失败封顶至 10 分钟，提高在线暴力破解成本
+        """达最高档阈值（15 次失败）锁定 600 秒（封顶 10 分钟，提高在线暴力破解成本）。"""
         assert apply_rate_limit(15) == 600
 
     def test_beyond_max_threshold(self):

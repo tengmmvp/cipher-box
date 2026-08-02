@@ -34,12 +34,8 @@ def test_share_key_derivation_is_deterministic():
 def test_password_or_salt_change_alters_share_key():
     """密码或盐变化时 share 密钥改变（无跨凭据碰撞）。"""
     share_a = MasterKeyManager.derive_share_key(_PASSWORD, _SALT, _TEST_PARAMS)
-    share_other_pwd = MasterKeyManager.derive_share_key(
-        "other_password_67890", _SALT, _TEST_PARAMS
-    )
-    share_other_salt = MasterKeyManager.derive_share_key(
-        _PASSWORD, b"\xff" * 32, _TEST_PARAMS
-    )
+    share_other_pwd = MasterKeyManager.derive_share_key("other_password_67890", _SALT, _TEST_PARAMS)
+    share_other_salt = MasterKeyManager.derive_share_key(_PASSWORD, b"\xff" * 32, _TEST_PARAMS)
     assert share_a != share_other_pwd
     assert share_a != share_other_salt
 

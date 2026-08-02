@@ -119,7 +119,7 @@ class DetailPanel(QWidget):
         # 非主密码敏感字段与自定义字段的自动掩码定时器，持久且可取消，
         # 便于 `_clear_content` 统一停止并清空（历史密码定时器由 `PasswordHistoryWidget` 自管）。
         self._field_hide_timers: list[QTimer] = []
-        # 复制反馈定时器，可取消，避免控件销毁后回调访问已删对象；上限 20 防泄漏。
+        # 复制反馈定时器，可取消，避免控件销毁后回调访问已删对象；超上限 FIFO 回收防泄漏。
         self._copy_feedback_timers: OrderedDict[QTimer, QPushButton] = OrderedDict()
 
         # ---- 子组件 ----
@@ -360,6 +360,7 @@ class DetailPanel(QWidget):
             self._history_widget.build_stub(entry.id, self._entry_mgr, self._content_layout)
 
     def _render_notes(self, entry: Entry) -> None:
+        """渲染备注区，无备注时跳过。"""
         if not entry.notes:
             return
         notes_group = QGroupBox("备注")
@@ -371,6 +372,7 @@ class DetailPanel(QWidget):
         self._content_layout.addWidget(notes_group)
 
     def _render_custom_fields(self, entry: Entry) -> None:
+        """渲染自定义字段区，无字段时跳过；返回的掩码定时器交由面板统一持有。"""
         if not entry.custom_fields:
             return
         cf_timers = self._fields_renderer.render(entry, self._content_layout, self)
@@ -400,6 +402,7 @@ class DetailPanel(QWidget):
         return header_info
 
     def _build_strength_bar(self, entry: Entry) -> None:
+        """构建密码强度条：进度条 + 分值文本，颜色按强度区间映射。"""
         score = entry.password_strength
         strength_color = get_strength_color(score)
 

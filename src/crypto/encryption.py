@@ -38,6 +38,8 @@ class EncryptionEngine:
     NONCE_SIZE = 12  # GCM 推荐 nonce 长度
     TAG_SIZE = 16  # GCM 认证标签长度，128 位
     KEY_SIZE = 32  # AES-256 密钥长度
+    # 密文格式标识，写入 vault_meta.ciphertext_format，解锁时由 vault_lifecycle 校验
+    # （不一致即拒绝打开），用于检测密文格式升级后的库与代码不匹配。
     FORMAT_ID = "aes-256-gcm-aad"
     # 前缀取自共享层 models.CIPHERTEXT_PREFIX（单一事实源），数据层密文自检与日志脱敏共用。
     TEXT_PREFIX = CIPHERTEXT_PREFIX

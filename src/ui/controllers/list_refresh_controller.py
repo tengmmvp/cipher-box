@@ -2,8 +2,8 @@
 
 普通类（非 QObject）：``__init__`` 注入 manager 与跨 controller 回调
 （``ListRefreshDeps``），``setup(parent, view)`` 接收 QObject 父与冻结
-dataclass view-handle（``ListRefreshView``），创建 3 个防抖/状态定时器、连接 8 个
-控件信号、初始化填充列表。
+dataclass view-handle（``ListRefreshView``），创建 3 个防抖/状态定时器、连接 5 路
+控件信号（搜索/标签/筛选/分类/排序）、初始化填充列表。
 
 职责收敛为「事件->刷新策略」编排 + 渲染：异步刷新的 worker 池与 generation 守卫
 （entry/tag worker、过期结果丢弃、滚动恢复）下沉至 ``EntryRefreshCoordinator``；
@@ -151,7 +151,10 @@ class ListRefreshController:
         self._search_timer: QTimer | None = None
 
     def setup(self, parent: QMainWindow, view: ListRefreshView) -> None:
-        """创建协调器、3 定时器、连接 8 个控件信号并初始化填充列表。须在控件创建后调用。"""
+        """创建协调器与 3 个防抖/状态定时器，连接 5 路控件信号（搜索/标签/筛选/分类/排序）并初始化填充列表。
+
+        须在控件创建后调用。
+        """
         self._parent = parent
         self._view = view
 

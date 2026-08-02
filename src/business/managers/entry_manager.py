@@ -1222,7 +1222,8 @@ class EntryManager:
         """切换收藏状态，返回新的收藏状态；条目不存在时返回 None。
 
         在单个事务内完成读-改-写，避免 TOCTOU 竞态。
-        update_entry 会自动重签 metadata_mac，保证元数据完整性。
+        ``db.update_entry`` 写入时由 ``MetadataSigner`` 自动重签 metadata_mac，
+        保证元数据完整性。
         """
         with self._vault.epoch_guarded_transaction(operation="切换收藏"):
             raw = self._vault.db.get_entry(entry_id)

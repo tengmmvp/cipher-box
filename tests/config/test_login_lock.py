@@ -9,9 +9,11 @@ class TestLoginLockPersistence:
     """验证失败次数和锁定截止时间可由新实例恢复。"""
 
     def test_lock_state_persists_across_restart(self, tmp_path):
-        # 锁定到期基于单调时钟：跨进程重启后仍处于锁定窗口，且 check() 报锁定。
-        # 单调时钟在进程间不连续，故持久化「剩余秒数」而非绝对时间戳，
-        # 加载时基于当前 monotonic 重算到期点，攻击者回拨系统时钟无法绕过。
+        """锁定状态跨进程重启可恢复，且基于单调时钟抵抗系统时钟回拨。
+
+        持久化「剩余秒数」而非绝对时间戳，重启加载时基于当前 monotonic 重算到期
+        点——单调时钟在进程间不连续但不可回拨，攻击者回拨系统时钟无法提前解锁。
+        """
         lock_file = tmp_path / "login_lock.json"
         limiter = RateLimiter(lock_file)
         for _ in range(3):
@@ -22,6 +24,7 @@ class TestLoginLockPersistence:
         assert restarted.check() is not None
 
     def test_expired_lock_is_recognized(self, tmp_path):
+        """锁定到期后 check() 返回 None 允许重试。"""
         lock_file = tmp_path / "login_lock.json"
         limiter = RateLimiter(lock_file)
         limiter._fail_count = 5
@@ -36,6 +39,7 @@ class TestLoginLockPersistence:
         assert restarted._fail_count == 5
 
     def test_lock_state_survives_simulated_restart(self, tmp_path):
+        """未触发锁定的失败计数经重启后保留（fail_count 持久化的最小情形）。"""
         lock_file = tmp_path / "login_lock.json"
         limiter = RateLimiter(lock_file)
         limiter.record_failure()

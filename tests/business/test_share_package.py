@@ -211,9 +211,7 @@ class TestCreateSharePackage:
         assert "decrypter" in decrypter_path.read_text(encoding="utf-8")
 
     def test_cancel_returns_none(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setattr(
-            share_package, "_render_decrypter_html", lambda: "<html></html>"
-        )
+        monkeypatch.setattr(share_package, "_render_decrypter_html", lambda: "<html></html>")
         result = create_share_package(
             [_make_entry()],
             "sharepass",

@@ -61,6 +61,11 @@ class TestConfigIntegrity:
         assert config._config_path.exists()
 
     def test_each_install_uses_distinct_integrity_key(self, tmp_path):
+        """不同安装目录生成独立的 integrity key 与签名，防止跨安装伪造配置签名。
+
+        integrity key 每安装随机生成（非硬编码），使一处安装的签名密钥无法用于伪造
+        另一处安装的 config 签名——守护 config 完整性的安全前提。
+        """
         first = make_test_config(tmp_path / "first")
         second = make_test_config(tmp_path / "second")
         first.save()

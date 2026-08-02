@@ -8,6 +8,10 @@ decrypter_template.html，生成接收方零安装、零联网的自包含浏览
 hash-wasm（MIT, (c) Dani Biro）的 argon2 实现把 WASM 以 base64 内嵌 UMD bundle，故
 无独立 .wasm 文件——内嵌 ``hash-wasm-argon2.js`` 即含运行所需全部代码，浏览器经
 ``hashwasm.argon2id({...})`` 调用（全局名 ``hashwasm``）。
+
+asmcrypto.js（MIT, (c) Ágoston Pör）选用理据：解密器在 ``file://`` 协议下打开时浏览器
+禁用 ``crypto.subtle``（WebCrypto 要求安全上下文），故以 asmcrypto 的纯 JS AES-256-GCM
+实现替代 WebCrypto，使 ``decrypt.html`` 双击即用、无需联网或本地服务。
 """
 
 import logging

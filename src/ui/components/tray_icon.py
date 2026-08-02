@@ -53,6 +53,7 @@ class TrayIcon(QSystemTrayIcon):
         return QIcon(pixmap)
 
     def set_locked(self, locked: bool) -> None:
+        """按锁定状态切换托盘图标与提示文字。"""
         if locked:
             self.setIcon(TrayIcon._create_icon(QColor(c("text_muted")), "LOCK"))
             self.setToolTip("CipherBox（已锁定）")
