@@ -548,7 +548,7 @@ class MainWindow(QMainWindow):
         disconnect_all([(self.lock_requested, self._on_lock_tray)])
         self._tray = TrayIcon(self)
         self._tray.show_window.connect(self._show_from_tray)
-        self._tray.lock_vault.connect(lambda: self.lock_requested.emit())
+        self._tray.lock_vault.connect(self.lock_requested.emit)
         self._tray.quit_app.connect(self._quit_app)
         self._tray.show()
         self.lock_requested.connect(self._on_lock_tray)

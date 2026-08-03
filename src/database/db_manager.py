@@ -25,7 +25,12 @@ from ._decorators import _db_operation, _db_write
 from .category_repository import CategoryRepository
 from .entry_repository import EntryRepository
 from .schema_manager import SchemaManager
-from .types import EntryQuery, ReEncryptedEntry, ReEncryptedHistory
+from .types import (
+    DEFAULT_HISTORY_BATCH_LIMIT,
+    EntryQuery,
+    ReEncryptedEntry,
+    ReEncryptedHistory,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -621,7 +626,7 @@ class DatabaseManager:
         return self._entry_repo.get_all_password_history()
 
     def get_all_password_history_batch(
-        self, after_id: int = 0, limit: int = 200
+        self, after_id: int = 0, limit: int = DEFAULT_HISTORY_BATCH_LIMIT
     ) -> list[PasswordHistory]:
         return self._entry_repo.get_all_password_history_batch(after_id, limit)
 

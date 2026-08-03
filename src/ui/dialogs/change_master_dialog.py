@@ -21,8 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...business.managers.vault_lifecycle import AUTH_FAILED_MESSAGE
-from ...business.managers.vault_manager import VaultManager
+from ...business.managers.vault_manager import AUTH_FAILED_MESSAGE, VaultManager
 from ...business.services.password_service import PasswordService
 from ...business.services.rate_limiter import RateLimiter
 from ..components.widgets import (

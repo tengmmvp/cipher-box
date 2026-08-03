@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from ..models import (
+from ...models import (
     ENTRY_TYPE_CARD,
     ENTRY_TYPE_IDENTITY,
     ENTRY_TYPE_LOGIN,

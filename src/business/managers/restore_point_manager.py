@@ -1,9 +1,9 @@
 """恢复前安全快照（pre_restore_*.cbox）的创建、统计与清理。
 
 独立的 ``RestorePointManager`` 承载恢复点文件的完整生命周期：创建（pre_restore 快照
-备份）、统计、清理，使恢复点成为单一事实源（ARCH-006）。备份加密管线经
-:meth:`RestorePointManager.bind_backup_creator` 由 :class:`BackupRestoreManager` 延迟
-注入（避免构造期循环依赖），复用同一加密格式。
+备份）、统计、清理，使恢复点成为单一事实源（ARCH-006）。备份加密管线由
+:class:`BackupRestoreManager` 在持锁调用 :meth:`RestorePointManager.create` 时作为必传
+``creator`` 参数显式传入，复用同一加密格式。
 """
 
 from __future__ import annotations
@@ -41,27 +41,18 @@ class RestorePointManager:
 
     def __init__(self, vault: VaultManager) -> None:
         self._vault = vault
-        # 备份加密管线由 BackupRestoreManager 延迟注入（避免构造期循环依赖）。
-        self._backup_creator: _RestorePointCreator | None = None
 
-    def bind_backup_creator(self, creator: _RestorePointCreator) -> None:
-        """注入恢复点创建所需的备份加密管线。
-
-        ``BackupRestoreManager`` 构造本管理器后立即调用，绑定其持锁全流程备份入口
-        （``_create_backup_locked`` 的薄包装）作为恢复点加密管线。延迟绑定避免
-        ``BackupRestoreManager`` ↔ ``RestorePointManager`` 构造期循环依赖。
-        """
-        self._backup_creator = creator
-
-    def create(self) -> Path | None:
+    def create(self, creator: _RestorePointCreator) -> Path | None:
         """创建恢复前安全快照，返回快照路径用于失败时清理；创建失败返回 None。
+
+        ``creator`` 为恢复点加密管线（``BackupRestoreManager._create_backup_locked`` 的薄包装），
+        由调用方在持锁上下文显式传入——恢复点复用正式备份的加密格式，creator 始终指向
+        唯一调用方的持锁备份入口，故作为必传参数而非延迟绑定状态（消除可变字段与
+        ``RuntimeError`` 失败模式）。
 
         调用方须已持有 ``vault_write_lock``（恢复点创建复用持锁备份管线，避免经
         ``create_backup`` 再次获取 RLock 的嵌套重入）。
         """
-        creator = self._backup_creator
-        if creator is None:
-            raise RuntimeError("恢复点备份管线未绑定（bind_backup_creator 未调用）")
         directory = self._vault.data_dir / BACKUPS_DIR_NAME
         # 恢复点是恢复失败回滚的安全网，优先于权限严格性：data_dir 已由 config
         # 以 strict 创建，backups 子目录继承收紧后的父权限；宁可保留安全网也

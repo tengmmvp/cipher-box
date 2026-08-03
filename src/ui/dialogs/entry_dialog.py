@@ -30,16 +30,16 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...business.entry_type_schema import (
-    ENTRY_TYPE_SCHEMAS,
-    SpecialFieldSpec,
-    all_special_fields_by_storage,
-    get_schema,
-)
 from ...business.services.card_validation import (
     validate_card_cvv,
     validate_card_expiry,
     validate_card_number,
+)
+from ...business.services.entry_type_schema import (
+    ENTRY_TYPE_SCHEMAS,
+    SpecialFieldSpec,
+    all_special_fields_by_storage,
+    get_schema,
 )
 from ...business.services.password_service import PasswordService
 from ...config import (

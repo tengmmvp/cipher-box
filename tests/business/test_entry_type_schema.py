@@ -5,7 +5,7 @@ models.SPECIAL_FIELD_* 常量（防手写字符串漂移导致导入路径与 UI
 不一致的 storage_name，使导入的卡片/身份/服务器条目在编辑对话框无法回填）。
 """
 
-from src.business.entry_type_schema import (
+from src.business.services.entry_type_schema import (
     ENTRY_TYPE_SCHEMAS,
     all_special_fields_by_storage,
     get_schema,

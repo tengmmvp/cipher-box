@@ -21,6 +21,12 @@ if TYPE_CHECKING:
     from ..models import Category, PasswordHistory, RawEntry
 
 
+# 密码历史分页默认批量（QL-007 单一事实源）：控制改密重加密内存峰值。
+# entry_repository / db_manager / re_encryption 的 get_all_password_history_batch
+# 默认 limit 均引用此常量，消除魔法数 200 跨文件漂移。
+DEFAULT_HISTORY_BATCH_LIMIT: int = 200
+
+
 class VerifyMode(Enum):
     """读取条目时的元数据完整性（HMAC）校验模式。
 
@@ -163,7 +169,7 @@ class EntryStore(Protocol):
     def get_all_password_history_batch(
         self,
         after_id: int = 0,
-        limit: int = 200,
+        limit: int = DEFAULT_HISTORY_BATCH_LIMIT,
     ) -> list[PasswordHistory]: ...
 
     def get_password_history_count(self, entry_id: int) -> int: ...

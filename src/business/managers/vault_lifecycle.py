@@ -45,13 +45,9 @@ from ..services.vault_meta_keys import (
     VAULT_META_ALL_KEYS,
 )
 from ..services.vault_meta_store import VaultMetaStore
-from .vault_manager import VaultManager
+from .vault_manager import AUTH_FAILED_MESSAGE, VaultManager
 
 logger = logging.getLogger(__name__)
-
-# 改密时旧主密码验证失败的错误消息。供 change_master_dialog 判定是否计入速率
-# 限制——以常量而非硬编码字面量比较，使文案变更不需同步改 dialog（单一事实源）。
-AUTH_FAILED_MESSAGE = "当前主密码错误"
 
 
 # unlock 单次批量读取的 vault_meta 键（单一事实源见 vault_meta_keys）。

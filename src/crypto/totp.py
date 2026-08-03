@@ -218,14 +218,20 @@ class TOTPGenerator:
         return code
 
     @staticmethod
-    def get_remaining_seconds(period: int = DEFAULT_PERIOD, secret: str = "") -> int:
-        """获取当前时间步长剩余秒数。"""
+    def get_remaining_seconds(
+        period: int = DEFAULT_PERIOD, secret: str = "", *, now: float | None = None
+    ) -> int:
+        """获取当前时间步长剩余秒数。
+
+        ``now`` 为可注入时钟（Unix 秒），与 :meth:`_compute_totp` 对称，供倒计时边界
+        测试精确控制时间步；生产路径不传，保持实时取值。
+        """
         if secret:
             period = TOTPGenerator._extract_period(secret, period)
         # 防御 period<=0 导致取模除零或负倒计时，与 _extract_period 的正数校验对齐。
         if period <= 0:
             period = TOTPGenerator.DEFAULT_PERIOD
-        return period - (int(time.time()) % period)
+        return period - (int(time.time() if now is None else now) % period)
 
     @staticmethod
     def get_period(secret: str) -> int:

@@ -429,7 +429,7 @@ class EntryActionsController:
     def edit_entry(self, entry_id: int) -> None:
         """打开编辑对话框；完整性异常条目禁止编辑以防覆盖原始密文。
 
-        仪表盘修复回调（exec 返回后同步调用，M14）可能在锁定后触发，
+        仪表盘修复回调（exec 返回后同步调用）可能在锁定后触发，
         ``@require_unlocked`` 守卫避免锁定态访问已清零密钥导致崩溃。
         """
         entry = self._entry_mgr.get_entry(entry_id)

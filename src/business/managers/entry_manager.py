@@ -142,7 +142,7 @@ class EntryManager:
     def _key(self) -> bytes:
         return require_vault_key(self._vault)
 
-    def _build_encrypted_entry(
+    def build_encrypted_entry(
         self,
         entry: Entry,
         crypto_id: str,
@@ -153,7 +153,7 @@ class EntryManager:
         password_override: str | None = None,
         entry_id: int | None = None,
     ) -> RawEntry:
-        """构建加密 RawEntry，add_entry 与 update_entry 共用，避免加密字段遗漏。
+        """构建加密 RawEntry，作为公开加密原语供单条 CRUD 与批量导入写入共用，避免加密字段遗漏。
 
         password_override: 若提供，视为已加密的密文直接赋值，不再重复加密。
         """
@@ -216,14 +216,19 @@ class EntryManager:
         """外部调用：锁定或改密后显式清空明文缓存。委托 cache。"""
         self._cache.invalidate_all()
 
-    def notify_batch_change(self, password_changed: bool = True) -> None:
+    def notify_batch_change(
+        self, password_changed: bool = True, *, clear_summaries: bool = True
+    ) -> None:
         """批量变更后的统一通知入口，供导入等批量操作在全部完成后触发一次。
 
         与单条 ``change_bus.notify`` 一致地失效缓存并通知回调，但作为公共 API
-        暴露，避免跨管理器（如 ImportExportManager）直接访问底层通知机制，
-        使内部缓存失效机制不致成为跨模块契约的一部分。
+        暴露，避免跨管理器（如 ImportExportManager / entry_batch_writer）直接访问
+        底层通知机制，使内部缓存失效机制不致成为跨模块契约的一部分。
+
+        ``clear_summaries=False`` 供导入新增条目路径保留既有摘要缓存（新条目不改变
+        既有条目摘要），避免无谓全量重解密。
         """
-        self._change_bus.notify(password_changed)
+        self._change_bus.notify(password_changed, clear_summaries=clear_summaries)
 
     def _encrypt_custom_fields(
         self,
@@ -631,7 +636,7 @@ class EntryManager:
         crypto_id = entry.crypto_id or uuid.uuid4().hex
 
         now = utc_now_iso()
-        enc_entry = self._build_encrypted_entry(
+        enc_entry = self.build_encrypted_entry(
             entry,
             crypto_id,
             now,
@@ -689,12 +694,12 @@ class EntryManager:
         # 下次 TotpService.get_state / generate_cached 重新解密。
         self._cache.pop_totp(entry.id)
 
-        new_pwd_enc, password_changed = self._prepare_password_update(
+        new_pwd_enc, password_changed = self.prepare_password_update(
             entry,
             raw,
             preloaded_old_password,
         )
-        password_changed_at = self._resolve_password_changed_at(
+        password_changed_at = self.resolve_password_changed_at(
             entry,
             raw,
             password_changed,
@@ -705,7 +710,7 @@ class EntryManager:
         entry = replace(entry, password_strength=strength.score)
 
         now = utc_now_iso()
-        enc_entry = self._build_encrypted_entry(
+        enc_entry = self.build_encrypted_entry(
             entry,
             raw.crypto_id,
             now,
@@ -734,7 +739,7 @@ class EntryManager:
         if notify:
             self._notify_entry_updated(raw, entry, password_changed)
 
-    def _prepare_password_update(
+    def prepare_password_update(
         self,
         entry: Entry,
         raw: RawEntry,
@@ -773,7 +778,7 @@ class EntryManager:
         del old_password  # 尽快释放明文引用
         return new_pwd_enc, password_changed
 
-    def _resolve_password_changed_at(
+    def resolve_password_changed_at(
         self,
         entry: Entry,
         raw: RawEntry,
@@ -975,7 +980,8 @@ class EntryManager:
                 if search:
                     # 搜索：一次取完整 SearchMetadata，摘要与小写匹配共用，省第二次缓存查询（PERF-016）。
                     meta = self._cache.cached_search_metadata_full(raw, key=key)
-                    summary = self._decrypt_summary(raw, skip_epoch_check=True, key=key, meta=meta)
+                    # 匹配检查前移到摘要构建之前（PERF-018）：仅命中条目才走完整 _decrypt_summary，
+                    # 省去未命中条目的 Entry 构造 + 分类名/failed_fields 缓存查询（meta 已含匹配所需小写形式）。
                     if not matches_search_lower(
                         (
                             meta.title_lower,
@@ -986,7 +992,7 @@ class EntryManager:
                         search,
                     ):
                         continue
-                    summaries.append(summary)
+                    summaries.append(self._decrypt_summary(raw, skip_epoch_check=True, key=key, meta=meta))
                 else:
                     summaries.append(self._decrypt_summary(raw, skip_epoch_check=True, key=key))
         except VaultKeyEpochMismatchError:

@@ -15,7 +15,14 @@ from ..exceptions import DatabaseError, TransactionError, VaultIntegrityError, V
 from ..models import MAX_PASSWORD_HISTORY, PasswordHistory, RawEntry
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation, _db_write
-from .types import ConnectionProvider, EntryQuery, ReEncryptedEntry, ReEncryptedHistory, VerifyMode
+from .types import (
+    DEFAULT_HISTORY_BATCH_LIMIT,
+    ConnectionProvider,
+    EntryQuery,
+    ReEncryptedEntry,
+    ReEncryptedHistory,
+    VerifyMode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +95,7 @@ for _col, _getter in _ENTRY_COLUMN_GETTERS.items():
 del _PROBE_ENTRY
 
 
-def _entry_column_values(entry: RawEntry, columns: Sequence[str]) -> tuple[Any, ...]:
+def _entry_column_values(entry: RawEntry, columns: Sequence[str]) -> tuple[object, ...]:
     """按给定列序从 entry 取值生成参数元组，供 INSERT/UPDATE 位置绑定。
 
     取值经 _ENTRY_COLUMN_GETTERS，与 SQL 列序由同一映射驱动，消除手写元组错位。
@@ -170,9 +177,8 @@ _TRUNCATE_PASSWORD_HISTORY_SQL = (
 
 # ID 分批阈值：SQLite 默认限制 999 个主机变量，取 500 留余量。
 _ID_BATCH_SIZE = 500
-# 密码历史重加密分页批量：与 re_encryption._RE_ENCRYPT_BATCH_SIZE 对齐，控制改密
-# 重加密内存峰值（QL-007，消除魔法数 200）。
-_DEFAULT_HISTORY_BATCH_LIMIT = 200
+# 密码历史分页批量别名：引用 types.DEFAULT_HISTORY_BATCH_LIMIT 单一事实源（QL-007）。
+_DEFAULT_HISTORY_BATCH_LIMIT = DEFAULT_HISTORY_BATCH_LIMIT
 
 
 def _classify_entry_integrity_error(prefix: str, exc: sqlite3.IntegrityError) -> DatabaseError:
@@ -245,7 +251,7 @@ class EntryRepository:
     # ==================== 条目 ====================
 
     @staticmethod
-    def _entry_insert_params(entry: RawEntry) -> tuple[Any, ...]:
+    def _entry_insert_params(entry: RawEntry) -> tuple[object, ...]:
         """构造 INSERT 参数元组，列序与 _ENTRY_COLUMNS 一致。
 
         供 add_entry 与 add_entries_batch 共用，取值经 _ENTRY_COLUMN_GETTERS 驱动。
@@ -253,7 +259,7 @@ class EntryRepository:
         return _entry_column_values(entry, _ENTRY_COLUMNS)
 
     @staticmethod
-    def _entry_update_params(entry: RawEntry) -> tuple[Any, ...]:
+    def _entry_update_params(entry: RawEntry) -> tuple[object, ...]:
         """构造 UPDATE SET 参数元组（不含 WHERE id），列序与 _UPDATE_ENTRY_COLUMNS 一致。
 
         与 _entry_insert_params 对称：UPDATE 不写 is_deleted/deleted_at/created_at，
@@ -538,14 +544,14 @@ class EntryRepository:
     @_db_operation
     def _bulk_read_entry_state(
         self, entry_ids: list[int]
-    ) -> dict[int, tuple[Any, Any, Any]]:
+    ) -> dict[int, tuple[int, str | None, str]]:
         """批量读取条目的 (is_deleted, deleted_at, created_at)，供批量签名对齐。
 
         分批 IN 查询（_ID_BATCH_SIZE）规避 SQLite 999 主机变量限制。
         """
         if not entry_ids:
             return {}
-        result: dict[int, tuple[Any, Any, Any]] = {}
+        result: dict[int, tuple[int, str | None, str]] = {}
         for i in range(0, len(entry_ids), _ID_BATCH_SIZE):
             chunk = entry_ids[i : i + _ID_BATCH_SIZE]
             placeholders = ",".join("?" for _ in chunk)

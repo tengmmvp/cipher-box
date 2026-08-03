@@ -7,9 +7,13 @@
 from datetime import datetime, timezone
 
 
-def utc_now_iso() -> str:
-    """返回当前 UTC 时间的 ISO 8601 字符串，全项目统一时间戳格式。"""
-    return datetime.now(timezone.utc).isoformat()
+def utc_now_iso(now: datetime | None = None) -> str:
+    """返回当前 UTC 时间的 ISO 8601 字符串，全项目统一时间戳格式。
+
+    ``now`` 为可注入时钟（aware datetime），供时序相关测试精确控制时间戳；
+    生产路径不传，保持实时取值。
+    """
+    return (now if now is not None else datetime.now(timezone.utc)).isoformat()
 
 
 def format_datetime(iso_str: str) -> str:

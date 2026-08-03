@@ -155,7 +155,9 @@ class CipherBoxApp:
         from .ui.resources.theme_colors import set_theme
 
         set_theme(theme)
-        self._app.setStyleSheet(get_style(theme))  # type: ignore[attr-defined]
+        # 双重抑制：self._app 推断为 QCoreApplication 基类，mypy 与 pyright 均无法识别
+        # QApplication.setStyleSheet（main_window 经 isinstance 收窄仅需 pyright 抑制）。
+        self._app.setStyleSheet(get_style(theme))  # type: ignore[attr-defined]  # pyright: ignore[reportAttributeAccessIssue]
 
         # 设置应用属性
         self._app.setApplicationName("CipherBox")

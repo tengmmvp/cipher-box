@@ -2,7 +2,7 @@
 
 从 EntryManager 下沉的导入专用批量写入路径：新条目批量加密/写入、覆盖条目批量
 预处理（验证+加密）/写入。仅服务 ImportExportManager，经 ``entry_mgr`` 参数注入
-EntryManager 的加密/落库原语（包内协作，调其 ``_build_encrypted_entry`` 等私有），
+EntryManager 的加密/落库原语（``build_encrypted_entry`` 等公开协作 API），
 使 EntryManager 聚焦单条 CRUD 与视图解密。
 
 两阶段（MAINT-004）：CPU 密集的加密移出 db_lock（调用方先取 pre_epoch 快照→锁外
@@ -33,7 +33,7 @@ class BatchUpdateItem(NamedTuple):
 
     old_password 为 None 表示未预解密，由 :func:`prepare_overwrite_updates` 在
     prepared 阶段逐条解密（PERF-006：不批量预解密致全部旧密码同刻驻留）；解密后经
-    EntryManager._prepare_password_update 比对即 del，收敛明文驻留面。
+    EntryManager.prepare_password_update 比对即 del，收敛明文驻留面。
     """
 
     entry: Entry
@@ -74,7 +74,7 @@ def encrypt_new_entries(
         )
         crypto_id = entry.crypto_id or uuid.uuid4().hex
         enc_entries.append(
-            entry_mgr._build_encrypted_entry(
+            entry_mgr.build_encrypted_entry(
                 entry,
                 crypto_id,
                 now,
@@ -100,12 +100,12 @@ def write_new_entries(
     """
     if not enc_entries:
         if notify:
-            entry_mgr._change_bus.notify(clear_summaries=False)
+            entry_mgr.notify_batch_change(clear_summaries=False)
         return
-    entry_mgr._vault.db.add_entries_batch(enc_entries, preserve_metadata=preserve)
+    entry_mgr.db.add_entries_batch(enc_entries, preserve_metadata=preserve)
     if notify:
         # 与 add_entry 一致：新条目不改变既有摘要，clear_summaries=False 保留缓存。
-        entry_mgr._change_bus.notify(clear_summaries=False)
+        entry_mgr.notify_batch_change(clear_summaries=False)
 
 
 def prepare_overwrite_updates(
@@ -137,13 +137,13 @@ def prepare_overwrite_updates(
             if entry.id is None:
                 raise EntryError("覆盖条目缺少 id")
             # 失效该条目的 TOTP secret 缓存，下次 TotpService 重新解密。
-            entry_mgr._cache.pop_totp(entry.id)
-            new_pwd_enc, password_changed = entry_mgr._prepare_password_update(
+            entry_mgr.totp.evict(entry.id)
+            new_pwd_enc, password_changed = entry_mgr.prepare_password_update(
                 entry,
                 raw,
                 old_password,
             )
-            password_changed_at = entry_mgr._resolve_password_changed_at(
+            password_changed_at = entry_mgr.resolve_password_changed_at(
                 entry,
                 raw,
                 password_changed,
@@ -153,7 +153,7 @@ def prepare_overwrite_updates(
                 entry,
                 password_strength=PasswordGenerator.check_strength(entry.password).score,
             )
-            enc_entry = entry_mgr._build_encrypted_entry(
+            enc_entry = entry_mgr.build_encrypted_entry(
                 entry,
                 raw.crypto_id,
                 now,

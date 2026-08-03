@@ -680,7 +680,7 @@ class ImportExportManager:
         if not overwrite_plans:
             return [], 0
         # old_password 留 None（PERF-006）：不在批量收集阶段预解密全部旧密码（同刻驻留），
-        # 由 prepare_overwrite_updates 的 prepared 阶段逐条解密、_prepare_password_update
+        # 由 prepare_overwrite_updates 的 prepared 阶段逐条解密、prepare_password_update
         # 比对即 del 清零。
         batch_items: list[BatchUpdateItem] = [
             BatchUpdateItem(plan.entry, plan.raw, None) for plan in overwrite_plans
@@ -695,7 +695,7 @@ class ImportExportManager:
         # 取原 source idx 记日志，不打印标题（可能含敏感信息）。
         for batch_idx, failure_exc in batch_failures:
             plan = overwrite_plans[batch_idx]
-            # old_password 解密容错回退 ''（PERF-006，在 _prepare_password_update 内），不抛
+            # old_password 解密容错回退 ''（PERF-006，在 prepare_password_update 内），不抛
             # DecryptionError；failures 主要含 EntryError/EntryIntegrityError。保留 ERROR/WARNING
             # 区分仅为语义清晰。
             if isinstance(failure_exc, DecryptionError):

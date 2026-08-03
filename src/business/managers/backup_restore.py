@@ -58,11 +58,13 @@ from ..services.backup.header_codec import (
     enforce_kdf_ceiling,
     enforce_kdf_floor,
     header_aad,
+    inspect_backup as _inspect_backup,
     read_backup_header,
     write_backup_header,
     zero_backup_key_if_owned,
 )
 from ..services.backup.paths import (
+    BACKUP_EXT,
     BACKUPS_DIR_NAME,
     SNAPSHOT_PREFIX,
     build_backup_filename,
@@ -98,6 +100,9 @@ class _DecryptedPayload:
 class BackupRestoreManager:
     """创建可移植的加密备份并以事务方式恢复。"""
 
+    # 备份文件扩展名（供 UI 文件过滤器/默认名经 manager 取用，不穿透 backup/paths）。
+    BACKUP_EXT: str = BACKUP_EXT
+
     def __init__(
         self,
         vault_manager: "VaultManager",
@@ -110,13 +115,8 @@ class BackupRestoreManager:
         # 恢复点子服务经组合根显式注入（提升为一等依赖）；未注入时内部构造供测试简便。
         self._restore_points = restore_point_mgr or RestorePointManager(vault_manager)
         # ARCH-006：恢复点创建/统计/清理统一由 RestorePointManager 承载。备份加密管线
-        # （持锁全流程入口）延迟绑定，避免 BackupRestoreManager ↔ RestorePointManager
-        # 构造期循环依赖；恢复点复用与正式备份同一加密格式。
-        self._restore_points.bind_backup_creator(
-            lambda path: self._create_backup_locked(
-                path, backup_password=None, use_snapshot_key=True, cancel_check=None
-            )
-        )
+        # （持锁 _create_backup_locked 薄包装）由本类在调用 create 时作为 creator 参数显式
+        # 传入；恢复点复用与正式备份同一加密格式。
 
     @property
     def _key(self) -> bytes:
@@ -126,6 +126,14 @@ class BackupRestoreManager:
     def restore_points(self) -> RestorePointManager:
         """恢复点统计/清理管理器，供 UI 与清理路径访问。"""
         return self._restore_points
+
+    @staticmethod
+    def inspect_backup(filepath: str) -> dict[str, Any]:
+        """读取备份头判定是否需要密码等，不解密内容。
+
+        供 UI 恢复对话框探测备份属性，不直接依赖 backup/header_codec 内部模块。
+        """
+        return _inspect_backup(filepath)
 
     def create_backup(
         self,
@@ -148,7 +156,7 @@ class BackupRestoreManager:
         （轮换主密钥 + 重加密 DB）不会令 finalize 用新密钥解密旧密文而失败。
 
         ``_create_backup_locked`` 保留为持锁全流程入口，供 :meth:`RestorePointManager.create`
-        经 ``bind_backup_creator`` 绑定的链路在已持锁上下文复用（恢复点快照体积小，无需 A4 优化）。
+        经 ``creator`` 参数在已持锁上下文复用（恢复点快照体积小，无需 A4 优化）。
         """
         try:
             filepath = str(validate_file_path(filepath))
@@ -185,10 +193,9 @@ class BackupRestoreManager:
     ) -> tuple[bool, str]:
         """备份全流程；调用方须已持有 ``vault_write_lock``。
 
-        持锁顺序执行 prepare + finalize，供 :class:`RestorePointManager` 经
-        ``bind_backup_creator`` 注入的薄包装在已持锁上下文复用以创建恢复点。亦为测试
-        monkeypatch 拦截恢复点创建的桩点（见
-        test_restore_point_cleaned_on_creation_exception）。
+        持锁顺序执行 prepare + finalize，供 :class:`RestorePointManager.create` 经
+        ``creator`` 参数在已持锁上下文复用以创建恢复点。亦为测试 monkeypatch 拦截恢复点
+        创建的桩点（见 test_restore_point_cleaned_on_creation_exception）。
         """
         prepared = self._prepare_backup_locked(filepath, backup_password, use_snapshot_key)
         return self._finalize_backup(prepared, cancel_check)
@@ -490,8 +497,13 @@ class BackupRestoreManager:
         plaintext = payload.plaintext
         data = payload.data
         # 创建恢复点（注册到 _restore_points 单一事实源，路径经其管理）；失败时保留
-        # 作安全网（见 docstring），不在此删除。
-        self._restore_points.create()
+        # 作安全网（见 docstring），不在此删除。creator 显式传入持锁备份入口（snapshot_key
+        # 加密恢复前明文），消除延迟绑定的可变状态。
+        self._restore_points.create(
+            lambda path: self._create_backup_locked(
+                path, backup_password=None, use_snapshot_key=True, cancel_check=None
+            )
+        )
         try:
             new_epoch, new_snapshot_key = self._restore_data(data)
         finally:

@@ -11,7 +11,13 @@ from dataclasses import replace
 from threading import Event
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from ...database.types import EntryQuery, ReEncryptedEntry, ReEncryptedHistory, VerifyMode
+from ...database.types import (
+    DEFAULT_HISTORY_BATCH_LIMIT,
+    EntryQuery,
+    ReEncryptedEntry,
+    ReEncryptedHistory,
+    VerifyMode,
+)
 from ...exceptions import DecryptionError, VaultError
 from ...models import Category, PasswordHistory, RawEntry
 from ...utils.memory import secure_zero_buffer
@@ -42,7 +48,7 @@ class ReEncryptionDB(Protocol):
     def get_all_password_history_batch(
         self,
         after_id: int = 0,
-        limit: int = 200,
+        limit: int = DEFAULT_HISTORY_BATCH_LIMIT,
     ) -> list[PasswordHistory]: ...
 
     def update_password_history_batch(self, rows: list[ReEncryptedHistory]) -> None: ...

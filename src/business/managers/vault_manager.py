@@ -31,6 +31,12 @@ from ..services.vault_meta_store import VaultMetaStore
 
 logger = logging.getLogger(__name__)
 
+# 改密时旧主密码验证失败的错误消息（跨层契约常量）。供 change_master_dialog 判定
+# 是否计入速率限制——以常量而非硬编码字面量比较，使文案变更不需同步改 dialog。
+# 定义于本 facade 使 UI 经 VaultManager 取用，不穿透到 vault_lifecycle 编排器模块
+# （LifecyclePort 抽象保持 vault ↔ lifecycle 解耦）。
+AUTH_FAILED_MESSAGE = "当前主密码错误"
+
 
 class LifecyclePort(Protocol):
     """保险库生命周期编排协议（初始化/解锁/锁定/改密/关闭）。

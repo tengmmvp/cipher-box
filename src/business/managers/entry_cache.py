@@ -442,7 +442,7 @@ class EntryCacheManager:
         # 回退空串）；命中摘要缓存时 tags 已由列表 worker 以 LENIENT 验签。故标签聚合
         # 正确性不依赖元数据 HMAC。
         try:
-            # 读路径 epoch 守卫（SEC-TAGS-001，对称 resolve_totp_secret 的 ARCH-005）：
+            # 读路径 epoch 守卫（SEC-020，对称 resolve_totp_secret 的 ARCH-005）：
             # 改密 commit 与本聚合读的微秒窗口内裸读会用旧密钥解密新密文致 GCM 认证
             # 失败、tags 回退空串丢失。持 db_lock 期间校验内存与库内 epoch 一致。
             with self._vault.epoch_guarded_read():

@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...business.entry_type_schema import all_special_fields_by_storage
+from ...business.services.entry_type_schema import all_special_fields_by_storage
 from ...utils.memory import mark_secret_discarded
 from ..resources.constants import BTN_COPY, FONT_FAMILY_MONOSPACE
 from ..resources.icons import COPY, set_icon

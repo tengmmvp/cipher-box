@@ -135,14 +135,11 @@ class TestBackupDialogWiring:
         from src.ui.dialogs.backup_dialog import BackupDialog
 
         monkeypatch.setattr(
-            "src.ui.dialogs.backup_dialog.inspect_backup",
-            lambda p: {"password_required": True},
-        )
-        monkeypatch.setattr(
             "src.ui.dialogs.backup_dialog.QInputDialog.getText",
             lambda *a, **k: ("RestorePwd!2026", True),
         )
         mgr = MagicMock()
+        mgr.inspect_backup.return_value = {"password_required": True}
         mgr.restore_backup.return_value = (True, "")
         dlg = BackupDialog(mgr)
         dlg._do_restore("/tmp/backup.cbox")

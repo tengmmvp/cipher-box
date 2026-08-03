@@ -28,8 +28,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...business.services.backup.header_codec import inspect_backup
-from ...business.services.backup.paths import BACKUP_EXT
 from ...business.services.password_service import PasswordService
 from ...config import CFG_BACKUP_DIRECTORY
 from ...exceptions import BackupError
@@ -206,10 +204,10 @@ class BackupDialog(WorkerBackedDialog):
 
     def _browse(self) -> None:
         is_backup = self._btn_group.checkedId() == 0
-        backup_filter = f"CipherBox 备份 (*{BACKUP_EXT})"
+        backup_filter = f"CipherBox 备份 (*{self._backup.BACKUP_EXT})"
         if is_backup:
             initial_dir = self._config.get(CFG_BACKUP_DIRECTORY, "") if self._config else ""
-            default_name = f"cipherbox_backup{BACKUP_EXT}"
+            default_name = f"cipherbox_backup{self._backup.BACKUP_EXT}"
             initial_path = str(Path(initial_dir) / default_name) if initial_dir else default_name
             path, _ = QFileDialog.getSaveFileName(
                 self,
@@ -336,7 +334,7 @@ class BackupDialog(WorkerBackedDialog):
             return
 
         try:
-            info = inspect_backup(path)
+            info = self._backup.inspect_backup(path)
         except (OSError, BackupError) as exc:
             # 不含裸 `ValueError`：`PayloadTooLargeError` 等领域异常是 `BackupError` 子类，
             # 裸 `ValueError` 会先于 `BackupError` 吞掉它们（多重继承陷阱）。

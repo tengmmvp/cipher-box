@@ -4,6 +4,8 @@
 使用 .json.tmp 中间文件再 os.replace 的落盘行为。
 """
 
+import sys
+
 import pytest
 
 from tests.helpers import make_test_config
@@ -192,3 +194,26 @@ class TestKeyringIntegrityKey:
         # 密钥经 keyring 存储，未落明文文件
         assert ("CipherBox", "config-integrity-key") in store
         assert not cfg._integrity_key_path.exists()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="DPAPI 迁移仅 Windows")
+    def test_plaintext_integrity_key_migrated_to_dpapi(self, tmp_path):
+        """pre-SEC-003 明文 config.key 首次加载时迁移到 DPAPI 封装（SEC-021）。
+
+        守护升级路径：既有明文密钥不原样保留（窃取可离线重算签名），而是重新经
+        DPAPI 封装原子覆盖写回，值不变但存储形态升级。
+        """
+        from src.utils.file_security import unprotect_with_dpapi
+
+        cfg = make_test_config(tmp_path)  # 初始化生成 DPAPI 封装密钥
+        key_path = cfg._integrity_key_path
+        plaintext_key = b"\x33" * 32
+        # 模拟 pre-SEC-003 明文 config.key（覆盖为明文）
+        key_path.write_bytes(plaintext_key)
+        # 重新加载触发迁移
+        cfg2 = make_test_config(tmp_path)
+        # 加载返回原明文密钥值（签名连续性）
+        assert cfg2._integrity_key == plaintext_key
+        # 文件已重新封装为 DPAPI（不再是原明文，可经 DPAPI 解封还原）
+        blob = key_path.read_bytes()
+        assert blob != plaintext_key
+        assert unprotect_with_dpapi(blob) == plaintext_key

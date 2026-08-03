@@ -182,7 +182,9 @@ class SecurityAnalyzer:
             key if key is not None else self._key, password.encode("utf-8"), "sha256"
         )
 
-    def _refilter_cache(self, cache: SecurityReport, days: int) -> SecurityReport:
+    def _refilter_cache(
+        self, cache: SecurityReport, days: int, *, now: datetime | None = None
+    ) -> SecurityReport:
         """从缓存按 days 重新过滤过期条目，返回独立副本。
 
         须持 _cache_lock 调用。``dict()`` 浅拷贝使 days-specific 的 old_entries 只
@@ -192,7 +194,7 @@ class SecurityAnalyzer:
         # dict(TypedDict) 退化为 dict[str, object]，cast 标注此复制边界。
         cache = cast("SecurityReport", dict(cache))
         if days != self._analysis_cache_days:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            cutoff = (now if now is not None else datetime.now(timezone.utc)) - timedelta(days=days)
             new_old_entries = [
                 s
                 for s, dt in cache.get("_summaries_with_dates", [])
@@ -227,6 +229,7 @@ class SecurityAnalyzer:
         days: int = DEFAULT_ANALYSIS_DAYS,
         *,
         cancel_check: Callable[[], bool] | None = None,
+        now: datetime | None = None,
     ) -> SecurityReport:
         """带缓存的安全分析，基础分析不依赖 days。
 
@@ -243,9 +246,9 @@ class SecurityAnalyzer:
                 and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds
                 and cached.get("_key_epoch") == current_epoch
             ):
-                return self._refilter_cache(cached, days)
+                return self._refilter_cache(cached, days, now=now)
         try:
-            result = self.full_analysis(days, cancel_check=cancel_check)
+            result = self.full_analysis(days, cancel_check=cancel_check, now=now)
         except VaultLockedError:
             # 分析期间保险库被锁定（并发改密/自动锁），密钥不可用无法完成解密。
             # 返回空报告且不缓存，避免后台线程崩溃；下次解锁后重新计算填充。
@@ -269,15 +272,17 @@ class SecurityAnalyzer:
                 and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds
                 and cached.get("_key_epoch") == current_epoch
             ):
-                return self._refilter_cache(cached, days)
+                return self._refilter_cache(cached, days, now=now)
             result["_key_epoch"] = current_epoch
             self._analysis_cache = result
             self._analysis_cache_time = time.monotonic()
             self._analysis_cache_days = days
             # 出口复制：与 hit 路径一致，防调用方修改污染缓存。
-            return self._refilter_cache(result, days)
+            return self._refilter_cache(result, days, now=now)
 
-    def get_cached_report(self, days: int = DEFAULT_ANALYSIS_DAYS) -> SecurityReport | None:
+    def get_cached_report(
+        self, days: int = DEFAULT_ANALYSIS_DAYS, *, now: datetime | None = None
+    ) -> SecurityReport | None:
         """返回仍有效的缓存报告，无缓存或已过期返回 None。days 变化仅重过滤过期条目。
 
         除 TTL 外校验 key_epoch（SEC-002）：改密轮换密钥后，旧 epoch 派生的报告即便在
@@ -290,10 +295,12 @@ class SecurityAnalyzer:
                 and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds
                 and cached.get("_key_epoch") == self._vault.key_epoch
             ):
-                return self._refilter_cache(cached, days)
+                return self._refilter_cache(cached, days, now=now)
         return None
 
-    def get_cached_counts(self, days: int = DEFAULT_ANALYSIS_DAYS) -> SecurityCounts | None:
+    def get_cached_counts(
+        self, days: int = DEFAULT_ANALYSIS_DAYS, *, now: datetime | None = None
+    ) -> SecurityCounts | None:
         """返回缓存计数（total/weak/duplicate/old），无缓存或过期返回 None。
 
         仅读计数消费者（状态栏刷新、空态「分析中」判定）用此轻量入口，跳过
@@ -313,7 +320,7 @@ class SecurityAnalyzer:
             if days == self._analysis_cache_days:
                 old = cached.get("old", 0)
             else:
-                cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+                cutoff = (now if now is not None else datetime.now(timezone.utc)) - timedelta(days=days)
                 old = sum(
                     1
                     for _s, dt in cached.get("_summaries_with_dates", [])
@@ -331,9 +338,10 @@ class SecurityAnalyzer:
         days: int = DEFAULT_ANALYSIS_DAYS,
         *,
         cancel_check: Callable[[], bool] | None = None,
+        now: datetime | None = None,
     ) -> SecurityReport:
         """返回缓存报告，若无效则重新计算并缓存。"""
-        return self._cached_analysis(days, cancel_check=cancel_check)
+        return self._cached_analysis(days, cancel_check=cancel_check, now=now)
 
     def invalidate_cache(
         self,
@@ -384,6 +392,7 @@ class SecurityAnalyzer:
         days: int = DEFAULT_ANALYSIS_DAYS,
         *,
         cancel_check: Callable[[], bool] | None = None,
+        now: datetime | None = None,
     ) -> SecurityReport:
         """一次性完成所有安全分析（弱/重复/过期），避免重复解密。结果由 _cached_analysis 缓存。
 
@@ -406,7 +415,7 @@ class SecurityAnalyzer:
             total = len(entries)
             weak_entries = []
             password_map: dict[bytes, list[Entry]] = {}
-            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            cutoff = (now if now is not None else datetime.now(timezone.utc)) - timedelta(days=days)
             # 保存所有条目的 summary + changed_at_utc，供缓存后不同 days 重新过滤
             _summaries_with_dates: list[tuple[Entry, datetime | None]] = []
 

@@ -82,7 +82,7 @@ ENTRY_TYPES = MappingProxyType(
 )
 
 # 专用字段 storage_name（带 ``_`` 前缀命名空间，与用户自定义字段隔离）。
-# business.entry_type_schema 的 EntryTypeSchema 注册表（驱动 UI 表单构建/回填）与
+# business.services.entry_type_schema 的 EntryTypeSchema 注册表（驱动 UI 表单构建/回填）与
 # Bitwarden 导入策略共用此单一事实源，防止字段重命名时导入路径写出与 UI schema 不一致
 # 的 storage_name，导致导入的卡片/身份/服务器条目在编辑对话框无法按 storage_name
 # 精确匹配回填。

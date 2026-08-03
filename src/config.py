@@ -359,9 +359,13 @@ class ConfigManager:
             logger.warning("读取配置签名密钥失败，将生成新密钥", exc_info=True)
             return None
         key = unprotect_with_dpapi(blob)
-        if key is None:
-            # 非 DPAPI 封装：当作明文密钥（开发期旧格式），长度校验
-            key = blob if len(blob) == _CONFIG_KEY_SIZE else None
+        if key is None and len(blob) == _CONFIG_KEY_SIZE:
+            # 非 DPAPI 封装但长度合法：pre-SEC-003 明文密钥。重新经 DPAPI 封装原子覆盖
+            # 写回，完成一次性升级迁移（SEC-021）——消除明文密钥原样保留的泄漏面（窃取
+            # 明文 config.key 可离线重算签名伪造安全配置）。
+            key = blob
+            self._store_dpapi_integrity_key(key)
+            logger.info("已将明文配置签名密钥迁移到 DPAPI 封装")
         if key is not None and len(key) == _CONFIG_KEY_SIZE:
             # strict=False：启动路径，权限加固失败降级而非崩溃。
             secure_file(self._integrity_key_path, strict=False)

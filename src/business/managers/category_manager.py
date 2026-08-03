@@ -38,13 +38,28 @@ class CategoryManager:
         self._vault = vault
         self._cache = cache
         self._change_bus = change_bus
+        # 会话级分类缓存（epoch 守卫）：分类数据变更频率低，缓存命中时跳过全量 DB
+        # SELECT + HMAC 验签。分类 CRUD 后主动失效；改密/锁定经 epoch 守卫失效。
+        self._categories_cache: list[Category] | None = None
+        self._categories_cache_epoch: str | None = None
 
     @property
     def _key(self) -> bytes:
         return require_vault_key(self._vault)
 
     def get_categories(self) -> list[Category]:
-        """获取全部分类，分类名经缓存解密，按 sort_order 与名称排序。"""
+        """获取全部分类，分类名经缓存解密，按 sort_order 与名称排序。
+
+        会话级缓存（epoch 守卫）：缓存命中时跳过全量 DB SELECT + HMAC 验签。分类
+        CRUD 后主动失效；改密/锁定经 epoch 守卫失效。返回浅拷贝避免调用方修改污染
+        缓存（Category 为 frozen dataclass，浅拷贝足够）。
+        """
+        current_epoch = self._vault.key_epoch
+        if (
+            self._categories_cache is not None
+            and self._categories_cache_epoch == current_epoch
+        ):
+            return list(self._categories_cache)
         categories = self._vault.db.get_categories()
         decrypted: list[Category] = []
         for category in categories:
@@ -54,7 +69,15 @@ class CategoryManager:
                     name=self._cache.decrypt_category_name(category.id, category.name),
                 )
             decrypted.append(category)
-        return sorted(decrypted, key=lambda item: (item.sort_order, item.name.casefold()))
+        result = sorted(decrypted, key=lambda item: (item.sort_order, item.name.casefold()))
+        self._categories_cache = result
+        self._categories_cache_epoch = current_epoch
+        return list(result)
+
+    def _invalidate_categories_cache(self) -> None:
+        """分类 CRUD 后失效会话缓存，下次 get_categories 重读 DB。"""
+        self._categories_cache = None
+        self._categories_cache_epoch = None
 
     def get_category(self, category_id: int) -> Category | None:
         """获取指定分类，分类名经缓存解密。"""
@@ -121,7 +144,9 @@ class CategoryManager:
             result = self._insert_category_two_phase(category)
         category = replace(category, id=result, name=plaintext_name)
         # 分类变更不改条目摘要内容（title/url/tags 不变），保留搜索摘要缓存；
-        # 仅失效分类名缓存并通知回调刷新侧边栏分类列表。
+        # 仅失效分类名缓存并通知回调刷新侧边栏分类列表。先失效会话分类缓存，
+        # 使 notify 触发的回调读到含新分类的列表。
+        self._invalidate_categories_cache()
         if notify:
             self._change_bus.notify(
                 password_changed=False,
@@ -160,6 +185,7 @@ class CategoryManager:
                     new_ids.append(0)
                     continue
                 new_ids.append(self._insert_category_two_phase(category))
+        self._invalidate_categories_cache()
         if notify:
             self._change_bus.notify(
                 password_changed=False,
@@ -189,7 +215,9 @@ class CategoryManager:
             created_at=category.created_at,
         )
         self._vault.db.update_category(stored)
-        # 分类名/icon 变更不影响条目摘要内容，仅失效分类名缓存。
+        # 分类名/icon 变更不影响条目摘要内容，仅失效分类名缓存。先失效会话分类缓存
+        # 使 notify 回调读到更新后的分类。
+        self._invalidate_categories_cache()
         self._change_bus.notify(
             password_changed=False,
             tags_changed=False,
@@ -202,7 +230,9 @@ class CategoryManager:
         """删除分类，关联条目 category_id 置 NULL，失效分类名缓存。"""
         self._vault.db.delete_category(category_id)
         # 删除分类后关联条目 category_id 置 NULL，分类名缓存需失效；条目摘要
-        # 内容（title/url/tags）不变，保留搜索摘要缓存避免全量重解密。
+        # 内容（title/url/tags）不变，保留搜索摘要缓存避免全量重解密。先失效会话
+        # 分类缓存使 notify 回调读到删除后的列表。
+        self._invalidate_categories_cache()
         self._change_bus.notify(
             password_changed=False,
             tags_changed=False,

@@ -7,7 +7,6 @@ import logging
 import sqlite3
 import threading
 from dataclasses import replace
-from typing import Any
 
 from ..exceptions import DatabaseError, TransactionError, VaultIntegrityError, VaultLockedError
 from ..models import Category
@@ -151,7 +150,7 @@ class CategoryRepository:
         return cursor.lastrowid or 0
 
     @staticmethod
-    def _category_update_tuple(category: Category) -> tuple[Any, ...]:
+    def _category_update_tuple(category: Category) -> tuple[str, str, str, int, str, int | None]:
         """构造 UPDATE categories 的参数元组，供单条与批量写入复用以消除列序重复。"""
         return (
             category.name,
