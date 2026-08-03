@@ -42,7 +42,7 @@ CipherBox 尚未发布正式版本（`__version__ = "0.1.0.dev0"` 为开发阶�
 - 零 TODO/FIXME 残留；ruff + mypy/pyright 全量通过；docstring 覆盖全部非 `__init__` 模块。
 - 字段集与加密字段集「单一事实源 + 加载期断言 + 字段一致性测试」三重守护。
 - 配置完整性（HMAC + Windows DPAPI 封装签名密钥 + 原子写入）。
-- CI：三 OS × 两 Python 版本矩阵，分层覆盖率门槛，pip-audit 漏洞扫描。
+- CI：三 OS × 三 Python 版本矩阵，分层覆盖率门槛，pip-audit 漏洞扫描。
 
 ### CI
 - 依赖管理迁移至 uv（`uv.lock` 锁定完整传递闭包，CI 用 `uv sync --locked` 验证）。

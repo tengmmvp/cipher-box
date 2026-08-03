@@ -5,9 +5,9 @@ from collections.abc import Set
 from datetime import datetime
 from typing import Any
 
-from ...crypto.password_generator import MAX_STRENGTH_SCORE
-from ...exceptions import BackupError, PayloadTooLargeError
-from ...models import (
+from ....crypto.password_generator import MAX_STRENGTH_SCORE
+from ....exceptions import BackupError, PayloadTooLargeError
+from ....models import (
     ENTRY_TYPES,
     MAX_CUSTOM_FIELD_NAME,
     MAX_CUSTOM_FIELD_VALUE,
@@ -25,8 +25,8 @@ from ...models import (
     CustomField,
     is_real_int,
 )
-from .backup_header_codec import BACKUP_FORMAT, BACKUP_VERSION
-from .crypto_utils import STRING_ENCRYPTED_FIELDS
+from ..crypto_utils import STRING_ENCRYPTED_FIELDS
+from .header_codec import BACKUP_FORMAT, BACKUP_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ if {"text", "password", "url", "email"} != CustomField._VALID_FIELD_TYPES:
     raise RuntimeError("备份自定义字段类型集与 CustomField._VALID_FIELD_TYPES 不一致")
 
 # 备份载荷各 TypedDict 的必备键集。提为模块级常量供 validate_* 复用；
-# backup_payload 启动期断言 Portable*.__annotations__ 与此一致，消除双重维护漂移。
+# payload 启动期断言 Portable*.__annotations__ 与此一致，消除双重维护漂移。
 REQUIRED_CATEGORY_KEYS = frozenset(
     {
         "id",

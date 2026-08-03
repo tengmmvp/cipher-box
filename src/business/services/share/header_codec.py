@@ -2,7 +2,7 @@
 
 .cboxshare 格式：magic + 固定头（version/KDF 参数/expire_at/created_at）+ salt + 密文块
 （:meth:`EncryptionEngine.encrypt_bytes` 产出：``CB2`` 前缀 + nonce + ct + tag，与备份格式
-及 WebCrypto AES-GCM 字节布局兼容）。头纳入 GCM-AAD 防篡改（仿 backup_header_codec）。
+及 WebCrypto AES-GCM 字节布局兼容）。头纳入 GCM-AAD 防篡改（仿 backup/header_codec）。
 expire_at 为软限制——嵌入元数据供解密器诚实提示，无法防恶意接收方（一旦解密即得明文）。
 
 版本升级为破坏性：``SHARE_VERSION`` 一旦 bump，旧 ``decrypt.html`` 拒绝新 ``.cboxshare``、
@@ -13,9 +13,9 @@ import struct
 from pathlib import Path
 from typing import IO, Any
 
-from ...crypto.master_key import KdfParams, MasterKeyManager
-from ...exceptions import PayloadTooLargeError, ShareError
-from ...utils.file_security import validate_file_path
+from ....crypto.master_key import KdfParams, MasterKeyManager
+from ....exceptions import PayloadTooLargeError, ShareError
+from ....utils.file_security import validate_file_path
 
 SHARE_MAGIC = b"CipherBoxShare\x00"
 SHARE_FORMAT = "CipherBoxShare"

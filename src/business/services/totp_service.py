@@ -97,7 +97,7 @@ class TotpService:
         """获取指定条目的 TOTP 完整状态（验证码、倒计时、周期）。
 
         preloaded_secret：调用方已解密的 totp_secret 明文（如详情面板经 get_entry
-        解密得到），传入则直接用并预热缓存，跳过重复解密（P3）。为空时走
+        解密得到），传入则直接用并预热缓存，跳过重复解密。为空时走
         resolve_totp_secret 单一解密路径。
 
         Returns:

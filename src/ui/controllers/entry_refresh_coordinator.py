@@ -11,10 +11,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from PyQt6.QtWidgets import QMainWindow
 
+from ...models import Entry
 from ..components.workers import BackgroundWorker, wait_worker_shutdown
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ class ScrollRestore:
 
 # entry 异步 fetcher 工厂：接受 cancel_check，返回（条目列表，标题）。
 # cancel_check 由 coordinator 注入（worker.cancel_check），使长循环可协作取消。
-EntryFetchFactory = Callable[[Callable[[], bool]], tuple[list[Any], str]]
+EntryFetchFactory = Callable[[Callable[[], bool]], tuple[list[Entry], str]]
 # tag 异步 fetcher：直接返回标签列表，无 cancel_check（标签查询无长循环）。
 TagFetchFn = Callable[[], list[tuple[str, int]]]
 
@@ -48,7 +49,7 @@ class CoordinatorDeps:
 
     is_locked: Callable[[], bool]
     is_entry_stale: Callable[[str, int | None, str], bool]
-    apply_entries: Callable[[list[Any], str, ScrollRestore], None]
+    apply_entries: Callable[[list[Entry], str, ScrollRestore], None]
     apply_tags: Callable[[list[tuple[str, int]]], None]
     show_loading: Callable[[str], None]
 
@@ -118,7 +119,7 @@ class EntryRefreshCoordinator:
         generation = self._entry_refresh_generation
         deps = self._deps
 
-        def _fetch() -> tuple[list[Any], str]:
+        def _fetch() -> tuple[list[Entry], str]:
             # worker 是下方赋值的自由变量，闭包延迟绑定（_fetch 在 worker.run 时执行，
             # worker 已赋值）。cancel_check 直接用 BackgroundWorker 提供的绑定方法。
             return build_fetch(worker.cancel_check)
@@ -141,7 +142,7 @@ class EntryRefreshCoordinator:
             ):
                 _release()
                 return
-            entries, title = result
+            entries, title = cast(tuple[list[Entry], str], result)
             _release()
             deps.apply_entries(entries, title, scroll_restore)
 

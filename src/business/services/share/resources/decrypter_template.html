@@ -71,7 +71,7 @@ footer{margin-top:24px;color:#86868b;font-size:12px;text-align:center}
 (function () {
   "use strict";
 
-  // 头部布局常量（须与 Python share_header_codec 保持一致）。
+  // 头部布局常量（须与 Python share.header_codec 保持一致）。
   var MAGIC = "CipherBoxShare\u0000";   // 15 字节：14 字符 + NUL
   var MAGIC_LEN = 15;
   var STRUCT_SIZE = 29;                  // B + I + I + I + Q + Q
@@ -80,7 +80,7 @@ footer{margin-top:24px;color:#86868b;font-size:12px;text-align:center}
   var CB2_LEN = 3;                       // encrypt_bytes 的 "CB2" 前缀
   var NONCE_SIZE = 12;
   var KEY_SIZE = 32;
-  var SHARE_AAD = "CipherBox:share";  // GCM-AAD 域前缀，须与 Python share_header_codec.SHARE_AAD 一致
+  var SHARE_AAD = "CipherBox:share";  // GCM-AAD 域前缀，须与 Python share.header_codec.SHARE_AAD 一致
   var HKDF_INFO = "cipherbox:share-key";
 
   var fileBytes = null;
@@ -251,7 +251,7 @@ footer{margin-top:24px;color:#86868b;font-size:12px;text-align:center}
     if ("totp_secret" in e && e.totp_secret) h += field("TOTP", e.totp_secret, true);
     if (e.tags) h += field("标签", e.tags, false);
     if (e.notes) h += '<div class="field"><span class="label">备注</span><pre class="value">' + esc(e.notes) + "</pre></div>";
-    if (e.custom_fields && e.custom_fields.length) {
+    if (Array.isArray(e.custom_fields) && e.custom_fields.length) {
       e.custom_fields.forEach(function (cf) {
         h += field(cf.name, cf.value, cf.field_type === "password");
       });
@@ -265,9 +265,8 @@ footer{margin-top:24px;color:#86868b;font-size:12px;text-align:center}
     var h = '<div class="field"><span class="label">' + esc(label) + "</span>";
     if (secret) {
       h += '<span class="value secret" data-reveal="' + esc(value) + '">●●●●●●</span>';
-    } else if (url && /^(https?:|\/\/)/i.test(url)) {
-      // 仅 http(s) 与协议相对 URL 渲染为可点击链接，拦截 javascript:/data:/file: 等
-      // scheme 经单击触发脚本执行（与主 App detail_panel._build_url_label 一致）。
+    } else if (url && /^https?:/i.test(url)) {
+      // 仅 http(s) 渲染为可点击链接；拦截 javascript:/data:/file: 等危险 scheme，避免链接单击触发脚本执行（与主 App detail_panel._build_url_label 一致）。
       h += '<a class="value" href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(value) + "</a>";
     } else {
       h += '<span class="value">' + esc(value) + "</span>";

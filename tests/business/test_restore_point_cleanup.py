@@ -1,6 +1,6 @@
 """恢复点清理与 purge 失败反馈测试。
 
-验证 ``VaultManager.purge_restore_points`` 与 ``RestorePointManager.clear_all``
+验证 ``backup_purge.purge_restore_points`` 与 ``RestorePointManager.clear_all``
 删除残留的 ``pre_restore_*.cbox`` 恢复点以收缩明文泄漏面，并守护改密成功后
 purge 失败的用户可见反馈。恢复点为恢复操作前的临时全量明文快照，恢复成功后
 应删除；因文件占用 purge 失败的残留在应用启动时重试清理。
@@ -9,6 +9,7 @@ purge 失败的用户可见反馈。恢复点为恢复操作前的临时全量�
 from pathlib import Path
 
 from src.business.managers.restore_point_manager import RestorePointManager
+from src.business.services.backup.purge import purge_restore_points
 from tests.helpers import make_vault
 
 
@@ -26,7 +27,7 @@ class TestRestorePointCleanup:
             restore_point.write_bytes(b"fake restore point payload")
             assert restore_point.exists()
 
-            failed = vault.purge_restore_points()
+            failed = purge_restore_points(vault.config)
 
             assert failed == []
             assert not restore_point.exists()
@@ -48,7 +49,7 @@ class TestRestorePointCleanup:
             restore_point.write_bytes(b"restore point")
             snapshot.write_bytes(b"auto snapshot")
 
-            vault.purge_restore_points()
+            purge_restore_points(vault.config)
 
             assert not restore_point.exists()
             assert snapshot.exists()  # 自动快照不受影响
@@ -60,7 +61,7 @@ class TestRestorePointCleanup:
         vault = make_vault(vault_config)
         vault.initialize("test_password_12345")
         try:
-            failed = vault.purge_restore_points()
+            failed = purge_restore_points(vault.config)
             assert failed == []
         finally:
             vault.close()
@@ -159,7 +160,10 @@ def test_change_master_password_reports_purge_failure(vault, monkeypatch):
     stale.write_bytes(b"stale snapshot encrypted with old snapshot_key")
 
     # mock purge_snapshot_backups 报告失败（模拟文件被外部进程占用未删净）
-    monkeypatch.setattr(vault, "purge_snapshot_backups", lambda: [stale])
+    monkeypatch.setattr(
+        "src.business.managers.vault_lifecycle.purge_snapshot_backups",
+        lambda config: [stale],
+    )
 
     success, msg = vault.change_master_password("TestPassword123!", "NewPassword456!")
 

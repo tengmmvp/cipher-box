@@ -327,7 +327,7 @@ class ImportExportDialog(WorkerBackedDialog):
         self._worker = worker
         worker.finished.connect(self._on_export_done)
         worker.error.connect(self._on_export_error)
-        # cancelled 监听（M8）：export 可取消，worker 取消时 emit cancelled 而非 finished
+        # cancelled 监听：export 可取消，worker 取消时 emit cancelled 而非 finished
         # （见 workers.run 逻辑），_on_export_done 不会触发；原在 finished 回调内检查
         # is_cancelled 是永不命中的死代码。改由 cancelled 信号驱动 _on_export_cancelled。
         worker.cancelled.connect(self._on_export_cancelled)
@@ -356,7 +356,7 @@ class ImportExportDialog(WorkerBackedDialog):
         set_label_severity(self._status_label, "success")
 
     def _on_export_cancelled(self) -> None:
-        """导出取消的 UI 处理（M8）：worker emit cancelled 而非 finished 时触发。"""
+        """导出取消的 UI 处理：worker emit cancelled 而非 finished 时触发。"""
         if not finalize_worker_if_current(self):
             return
         self._set_busy(False)

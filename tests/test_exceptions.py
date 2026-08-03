@@ -32,7 +32,7 @@ class TestExceptionHierarchy:
 
     @pytest.mark.parametrize("exc_cls", _DOMAIN_ERRORS)
     def test_all_domain_errors_are_cipherbox_errors(self, exc_cls):
-        """每个领域异常均派生自 CipherBoxError,统一为可捕获的项目异常基类。"""
+        """每个领域异常均派生自 CipherBoxError，统一为可捕获的项目异常基类。"""
         assert issubclass(exc_cls, CipherBoxError)
 
 

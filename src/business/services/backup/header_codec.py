@@ -5,14 +5,14 @@ import struct
 from pathlib import Path
 from typing import IO, Any
 
-from ...crypto.master_key import DEFAULT_KDF_PARAMS, KdfParams, MasterKeyManager
-from ...exceptions import BackupError, PayloadTooLargeError
-from ...utils.file_security import validate_file_path
-from ...utils.memory import secure_zero_buffer
+from ....crypto.master_key import DEFAULT_KDF_PARAMS, KdfParams, MasterKeyManager
+from ....exceptions import BackupError, PayloadTooLargeError
+from ....utils.file_security import validate_file_path
+from ....utils.memory import secure_zero_buffer
 
 BACKUP_MAGIC = b"CipherBoxBackup\x00"
 BACKUP_FORMAT = "CipherBoxBackup"
-# 备份数据格式版本号（写入 JSON 顶层 version，恢复时由 backup_validator 校验）。
+# 备份数据格式版本号（写入 JSON 顶层 version，恢复时由 validator 校验）。
 # 与 BACKUP_FORMAT 同属备份格式标识单一事实源，升级格式时同步 bump。
 BACKUP_VERSION = 1
 BACKUP_AAD = b"CipherBox:backup"

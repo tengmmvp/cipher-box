@@ -13,9 +13,9 @@ import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Protocol
 
-from ...config import CFG_BACKUP_DIRECTORY, ConfigManager
+from ...config import ConfigManager
 from ...crypto.encryption import EncryptionEngine
 from ...crypto.master_key import KdfParams
 from ...database.db_manager import DatabaseManager
@@ -25,17 +25,39 @@ from ...exceptions import (
     VaultKeyEpochMismatchError,
     VaultLockedError,
 )
-from ...utils.file_security import validate_file_path
-from ...utils.purge_files import secure_purge
-from ..services.backup_paths import BACKUPS_DIR_NAME, PRE_RESTORE_GLOB, SNAPSHOT_GLOB
 from ..services.key_manager import KeyManager
 from ..services.metadata_signer import MetadataSigner
 from ..services.vault_meta_store import VaultMetaStore
 
-if TYPE_CHECKING:
-    from .vault_lifecycle import VaultLifecycleOrchestrator
-
 logger = logging.getLogger(__name__)
+
+
+class LifecyclePort(Protocol):
+    """保险库生命周期编排协议（初始化/解锁/锁定/改密/关闭）。
+
+    VaultManager 经此协议委托生命周期流程，不再 ``TYPE_CHECKING`` 依赖具体
+    :class:`VaultLifecycleOrchestrator` 类型（镜像 :class:`VaultDataStore` 切片模式）：
+    消除 vault → lifecycle 的类型依赖，使 vault 仅持有协议接口、编排器为运行时注入的
+    实现方，便于测试替身与解耦。``VaultLifecycleOrchestrator`` 结构化满足本协议。
+    """
+
+    def initialize(
+        self,
+        master_password: str,
+        params: KdfParams | None = None,
+    ) -> tuple[bool, str]: ...
+
+    def unlock(self, master_password: str) -> tuple[bool, str]: ...
+
+    def lock(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    def change_master_password(
+        self,
+        old_password: str,
+        new_password: str,
+    ) -> tuple[bool, str]: ...
 
 
 class VaultManager:
@@ -69,8 +91,8 @@ class VaultManager:
         self._on_epoch_rotated_callbacks: list[Callable[[], None]] = []
         self._cancel_event = threading.Event()  # close()/lock() 时设置，通知长操作提前终止
         # 生命周期编排器，经 attach_lifecycle 由组合根注入（创建 orchestrator 后立即
-        # 调用）。initialize/unlock/lock/change_master_password/close 委托给它。
-        self._lifecycle: VaultLifecycleOrchestrator | None = None
+        # 调用）。以 LifecyclePort 协议持有，不依赖具体编排器类型。生命周期方法委托给它。
+        self._lifecycle: LifecyclePort | None = None
 
     # ---- 密钥材料（KeyManager 代理）----
     # 密钥材料由 KeyManager 集中持有与清零，此处经 property 代理保持内部访问接口。
@@ -155,24 +177,14 @@ class VaultManager:
         return self._config.data_dir
 
     @property
-    def backup_directories(self) -> list[Path]:
-        """备份相关目录列表：默认目录 + 用户自定义 backup_directory（若配置）。
+    def config(self) -> ConfigManager:
+        """配置管理器，供备份清理等纯函数取 data_dir / backup_directory。
 
-        作为 purge/清理路径的目录单一事实源，避免漏扫自定义目录导致含明文的
-        恢复点/快照残留。用户配置的 ``backup_directory`` 经
-        ``validate_file_path(check_ancestors=True)`` 复核（与 :meth:`maybe_auto_backup`
-        写入侧对齐），收缩符号链接重定向威胁；非法路径跳过并告警，避免 purge 误删
-        重定向位置文件（SEC-004）。
+        ConfigManager 不持有主密钥/加密密钥（仅配置项与 config.json 完整性签名密钥），
+        暴露给业务层 manager 调用备份清理纯函数不扩大密钥攻击面。备份域逻辑已下沉至
+        :mod:`src.business.services.backup.purge`，本类不再承担该职责。
         """
-        directories = [self.data_dir / BACKUPS_DIR_NAME]
-        custom = self._config.get(CFG_BACKUP_DIRECTORY, "")
-        if custom:
-            try:
-                validated = validate_file_path(custom, check_ancestors=True)
-                directories.append(Path(str(validated)))
-            except ValueError:
-                logger.warning("自定义备份目录路径无效，已跳过清理：%s", custom)
-        return directories
+        return self._config
 
     @property
     def is_initialized(self) -> bool:
@@ -429,26 +441,6 @@ class VaultManager:
         """
         self._key_mgr.update_snapshot_key(snapshot_key)
 
-    # ---- 备份清理 ----
-    def purge_snapshot_backups(self) -> list[Path]:
-        """删除所有 snapshot_key 加密的快照与恢复前安全快照，返回未能删除的文件。
-
-        改密/恢复时 snapshot_key 随主密钥轮换，旧 snapshot_key 加密的文件无法用新密钥
-        解密且含历史明文，清理以收缩泄漏面。覆盖默认与自定义备份目录。
-        """
-        return secure_purge(
-            self.backup_directories,
-            [PRE_RESTORE_GLOB, SNAPSHOT_GLOB],
-        )
-
-    def purge_restore_points(self) -> list[Path]:
-        """删除所有恢复前安全快照（pre_restore_*.cbox），返回未能删除的文件。
-
-        恢复点为恢复前的临时全量明文快照，恢复成功后应删除；启动时重试清理之前 purge
-        失败的残留。仅清理 pre_restore_*（一次性恢复点），不动 cipherbox_snapshot_*。
-        """
-        return secure_purge(self.backup_directories, [PRE_RESTORE_GLOB])
-
     # ---- 取消信号 ----
     def request_cancel(self) -> None:
         """请求中止进行中的重加密（改密取消或关闭应用时调用）。
@@ -473,14 +465,14 @@ class VaultManager:
     # ---- 生命周期门面委托 ----
     # 薄委托使调用方（app/login/dialog/test）无需感知 orchestrator。orchestrator 经
     # attach_lifecycle 由组合根紧接 VaultManager 构造之后注入，故委托时必已就位。
-    def attach_lifecycle(self, lifecycle: VaultLifecycleOrchestrator) -> None:
+    def attach_lifecycle(self, lifecycle: LifecyclePort) -> None:
         """注入生命周期编排器，使本类的生命周期方法委托给它。
 
         须在组合根创建 orchestrator 后、任何生命周期调用前调用一次。
         """
         self._lifecycle = lifecycle
 
-    def _require_lifecycle(self) -> VaultLifecycleOrchestrator:
+    def _require_lifecycle(self) -> LifecyclePort:
         """获取已注入的生命周期编排器，未注入时抛 RuntimeError。
 
         用显式 ``raise`` 而非 ``assert``：``python -O`` 会剔除 assert，导致未注入时

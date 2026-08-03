@@ -14,6 +14,7 @@ dependencies = [
   "cryptography>=48.0.1,<50",
   "argon2-cffi>=25.1.0,<27",
   "QtAwesome>=1.3.0",
+  "keyring>=25.7.0",
 ]
 
 [project.optional-dependencies]
@@ -35,7 +36,7 @@ include = ["src*"]
 # packages.find 仅收集 .py 模块，非 Python 资源须显式声明，否则 importlib.resources
 # 在安装/打包后读不到（开发期源码树可读是巧合，sdist/wheel 会遗漏）。
 [tool.setuptools.package-data]
-"src.business.services.share_resources" = ["*"]
+"src.business.services.share.resources" = ["*"]
 "src.ui.resources.fonts" = ["*.ttf", "LICENSE.txt"]
 
 [tool.setuptools.dynamic]

@@ -545,14 +545,14 @@ class SecurityDashboard(WorkerBackedDialog):
 
     @property
     def pending_fix_id(self) -> int | None:
-        """:meth:`_request_fix` 记录的待修复条目 id，供调用方 ``exec`` 返回后读取（M14）。"""
+        """:meth:`_request_fix` 记录的待修复条目 id，供调用方 ``exec`` 返回后读取。"""
         return self._pending_fix_id
 
     def _request_fix(self, entry_id: int) -> None:
         # 记录待修复条目并 `accept` 退出仪表盘模态循环；`edit_entry` 由 `menu_controller`
         # 在 `exec()` 返回后同步调用（单层模态，无嵌套）。原实现经 `singleShot`(0) 延迟
         # emit `fix_requested`，但 dialog 随即 `deleteLater`，`singleShot` 触发时 dialog 可能
-        # 已销毁致访问 `self.fix_requested` 崩溃（M14）；`pending_fix_id` 在 `exec` 返回后、
+        # 已销毁致访问 `self.fix_requested` 崩溃；`pending_fix_id` 在 `exec` 返回后、
         # `deleteLater` 前由调用方读取，避免竞态。
         self._pending_fix_id = entry_id
         self.accept()

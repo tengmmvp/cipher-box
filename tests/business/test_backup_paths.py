@@ -9,7 +9,7 @@ glob 匹配失败，导致含恢复前全部条目明文的 ``pre_restore_*`` �
 import fnmatch
 import re
 
-from src.business.services.backup_paths import (
+from src.business.services.backup.paths import (
     BACKUP_EXT,
     PRE_RESTORE_GLOB,
     PRE_RESTORE_PREFIX,

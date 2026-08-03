@@ -25,8 +25,10 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
 各模块 docstring 与 `CLAUDE.md`）：
 
 - **`managers/`（有状态编排，持有 vault/密钥/缓存引用）**
-  - `VaultManager`：安全边界核心，持有主密钥与数据库连接，生命周期贯穿登录→主窗口→
-    锁定；改密/恢复在其 `vault_write_lock` 下串行化。
+  - `VaultManager`：安全边界核心，收窄为密钥/db/写守卫——持有主密钥与数据库连接，
+    改密/恢复在其 `vault_write_lock` 下串行化；经薄委托调用 `VaultLifecycleOrchestrator`。
+  - `VaultLifecycleOrchestrator`：保险库生命周期编排（初始化/解锁/锁定/改密/关闭），
+    使调用方（app/login/dialog/test）无需感知编排层。
   - `EntryManager`：条目 CRUD，透明加解密；经 property 暴露子服务 `categories`
     （`CategoryManager`）/ `totp`（`TotpService`）/ `password_history`
     （`PasswordHistoryService`）。
@@ -39,12 +41,31 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
     暴露 `RestorePointManager`（恢复点统计/清理）。
 - **`services/`（无状态业务服务：加解密、校验、分析等，密钥经 vault 引用现取）**
   - 加解密与字段：`crypto_utils`（`SENSITIVE_ENCRYPTED_FIELDS` 单一事实源、统一加解密
-    入口）、`entry_validation`、`password_service`、`card_validation`。
-  - 条目子域：`totp_service`、`password_history_service`。
+    入口）、`entry_validation`、`password_service`、`card_validation`（二者切断 UI→Crypto
+    跨层依赖的业务门面）、`url_hygiene`（URL scheme 卫生清洗纯函数，导入与共享包共用）。
+  - 条目子域：`totp_service`、`password_history_service`、`entry_batch_writer`（导入
+    批量写入加密/落库编排，从 EntryManager 下沉，经 entry_mgr 参数注入加密原语）。
   - 完整性与重加密：`metadata_signer`（HMAC 签名）、`re_encryption`（改密全量重加密）、
     `security_analyzer`（弱密码/重复/过期分析）、`key_manager`（主密钥/快照密钥集中
     持有与清零）。
-  - 备份无状态模块：`backup_header_codec`、`backup_validator`、`backup_paths`。
+  - `vault_meta` 与引导：`vault_meta_store`（`vault_meta` 键值持久化，供生命周期流程读写
+    salt/verify/kdf 参数/snapshot_key/mac 等）、`vault_meta_keys`（`vault_meta` 键名常量
+    单一事实源，供 vault_lifecycle/metadata_signer/backup_restore 派生）、
+    `database_bootstrap`（初始数据库引导/默认分类注入）。
+  - 备份无状态子包 `backup/`：`header_codec`（二进制头编解码/检视）、`validator`
+    （恢复前载荷校验）、`paths`（备份文件命名约定）、`payload`（Portable
+    系列 TypedDict 与 PreparedBackup 载荷类型）、`collector`（可移植数据采集 +
+    载荷大小校验）、`rebuilder`（恢复重建纯变换：载荷→加密行逐表回写）、
+    `auto_backup_policy`（自动备份间隔判定/retention 清理纯策略）、`purge`
+    （备份目录策略与 snapshot/恢复点文件清理，下沉自 VaultManager）。
+  - 限时加密共享子包 `share/`：`header_codec`（.cboxshare 二进制头编解码/密钥派生，头纳入
+    GCM-AAD 防篡改）、`package`（AES-256-GCM 加密打包并随包写出 `decrypt.html`
+    自包含浏览器解密器）、`paths`（共享包文件命名约定）、`renderer`
+    （解密器 HTML 渲染，内嵌 hash-wasm/asmcrypto 替代 file:// 下不可用的 WebCrypto）、
+    `resources/`（非 Python 资源包：hash-wasm-argon2.js + asmcrypto.js +
+    decrypter_template.html，经 importlib.resources 读取）。
+  - 配置与文案：`rate_limiter`（敏感操作速率限制，递增退避 + 哨兵文件见证抵抗「删状态
+    归零」绕过）、`error_messages`（领域异常→用户文案翻译，`to_user_message`）。
 
 拆分原则：跨管理器协作走显式依赖注入（构造函数传入），不使用函数内延迟 import 规避
 循环依赖；UI→business.services 纯函数模块是合法分层方向，无需经 manager 门面转发。

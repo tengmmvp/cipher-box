@@ -89,7 +89,7 @@ def test_create_and_restore_non_password_backup(vault_and_key):
     assert success, f"备份创建失败: {msg}"
     assert backup_path.exists()
 
-    from src.business.services.backup_header_codec import inspect_backup
+    from src.business.services.backup.header_codec import inspect_backup
 
     info = inspect_backup(str(backup_path))
     assert info is not None

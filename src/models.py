@@ -38,7 +38,7 @@ MAX_CUSTOM_FIELD_VALUE = 65536
 MAX_CATEGORY_NAME = 256
 MAX_PASSWORD_HISTORY = 10
 
-# 导入/备份共享的条目数与单条目载荷上限，供 import_export 与 backup_validator 复用，
+# 导入/备份共享的条目数与单条目载荷上限，供 import_export 与 backup/validator 复用，
 # 避免两处独立声明漂移产生「能导入却无法备份」的边界。
 MAX_ENTRIES_LIMIT = 50_000
 MAX_ENTRY_PAYLOAD_SIZE = 2 * 1024 * 1024
@@ -121,7 +121,7 @@ class CustomField:
         }
 
     @classmethod
-    def from_dict(cls, d: dict, *, strict: bool = False) -> "CustomField":
+    def from_dict(cls, d: dict[str, Any], *, strict: bool = False) -> "CustomField":
         """从字典创建 CustomField。
 
         Args:
@@ -409,7 +409,7 @@ class Entry:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Entry":
+    def from_dict(cls, d: dict[str, Any]) -> "Entry":
         """从字典创建，供导入流程使用。
 
         仅恢复用户可见字段；数据库元数据如 id、crypto_id、时间戳、is_deleted 等

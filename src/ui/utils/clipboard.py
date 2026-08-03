@@ -3,11 +3,11 @@
 复制密码后启动 singleShot 定时器，到时仅当剪贴板内容仍为本会话写入值（HMAC 常数时间
 比对）才清空，避免误清用户后续复制的其它内容。关键设计：
 
-- ``SEC-CLIP-001``：Windows 下经 ctypes 在单次 ``OpenClipboard`` 周期原子写入
+- ``SEC-016``：Windows 下经 ctypes 在单次 ``OpenClipboard`` 周期原子写入
   CF_UNICODETEXT 与 Win+V 历史/云剪贴板排除标记，消除文本与标记分两次写入（剪贴板
   序号 N 与 N+1）致密码在标记就位前被快照进历史的时序窗口；非 Windows 或失败回退
   Qt ``setText``。
-- ``SEC-CLIP-002``：``text()`` / ``clear()`` / ``setText()`` 在剪贴板被其他进程占用
+- ``SEC-017``：``text()`` / ``clear()`` / ``setText()`` 在剪贴板被其他进程占用
   （X11/远程会话/Windows 抢占）时可能抛 ``RuntimeError``，全程吞异常降级，不阻断 UI
   或锁定/隐藏到托盘等关键清理流程。
 - fail-safe：读取失败即无法判定内容是否仍是密码，按安全优先强制清空（宁可误清不留密码），
@@ -37,7 +37,7 @@ _CLIPBOARD_HMAC_KEY: bytes = os.urandom(32)
 
 logger = logging.getLogger(__name__)
 
-# Windows 剪贴板原子写入（SEC-CLIP-001）：单次 OpenClipboard 周期内同时写 CF_UNICODETEXT
+# Windows 剪贴板原子写入（SEC-016）：单次 OpenClipboard 周期内同时写 CF_UNICODETEXT
 # 与 ExcludeClipboardContentFromMonitorProcessing 标记，使 Win+V 历史/云剪贴板不捕获密码，
 # 并消除文本与标记分两次写入（剪贴板序号 N 与 N+1）的时序窗口。Qt 不暴露该 Win32 能力，
 # 故经 ctypes 调用 user32/kernel32。仅 Windows 加载，其余平台返回 False 回退 Qt setText。
@@ -74,7 +74,7 @@ if sys.platform == "win32":
     _GMEM_MOVEABLE = 0x2000
 
     def _set_clipboard_data(fmt: int, data: bytes) -> bool:
-        """分配全局内存、拷贝 data、SetClipboardData（SEC-CLIP-001 辅助）。
+        """分配全局内存、拷贝 data、SetClipboardData（SEC-016 辅助）。
 
         成功后 hmem 所有权转交剪贴板系统（不可 GlobalFree）；失败则自行释放防泄漏。
         """
@@ -96,7 +96,7 @@ if sys.platform == "win32":
         return False
 
     def _copy_with_history_exclusion(text: str) -> bool:
-        """单次 OpenClipboard 周期原子写 CF_UNICODETEXT + Win+V 历史排除标记（SEC-CLIP-001）。
+        """单次 OpenClipboard 周期原子写 CF_UNICODETEXT + Win+V 历史排除标记（SEC-016）。
 
         文本与排除标记在同一次打开/清空/写入/关闭周期内提交，剪贴板序号只递增一次，
         监视器处理时两格式同时在场——消除 setText 与排除标记分两次写入（序号 N 与 N+1）
@@ -172,10 +172,10 @@ class ClipboardManager(QObject):
             return
         clipboard = QApplication.clipboard()
         if clipboard:
-            # SEC-CLIP-001：Windows 下单次 OpenClipboard 原子写文本 + Win+V 历史排除标记，
+            # SEC-016：Windows 下单次 OpenClipboard 原子写文本 + Win+V 历史排除标记，
             # 消除 setText 与排除标记分两次写入的时序窗口；非 Windows 或失败回退 Qt setText。
             if not _copy_with_history_exclusion(text):
-                # setText 容错（SEC-CLIP-002）：与 _clear_clipboard 的 text() 读取容错对称——
+                # setText 容错（SEC-017）：与 _clear_clipboard 的 text() 读取容错对称——
                 # H1 已使读取失败降级，写入失败同样须降级，否则 Windows 下剪贴板被占用时
                 # 复制操作直接崩 UI。写入失败则无内容可清，直接返回不设 hash/不定时。
                 try:

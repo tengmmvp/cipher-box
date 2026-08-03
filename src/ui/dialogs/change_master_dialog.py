@@ -232,7 +232,7 @@ class ChangeMasterDialog(WorkerBackedDialog):
         self._worker.error.connect(self._on_change_error)
         self._worker.start()
         # old/new 已作为 `lambda` 闭包值捕获，清控件不影响 `worker`；启动即清空，缩短
-        # 明文在控件的驻留窗口，对齐 `login_window` SEC-LOGIN-001 纪律。
+        # 明文在控件的驻留窗口，对齐 `login_window` SEC-018 纪律。
         self._clear_password_inputs()
 
     def _on_change_done(self, result: tuple[bool, str]) -> None:

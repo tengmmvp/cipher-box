@@ -4,7 +4,7 @@
 扩展名常量时仅靠 create_share_package 慢路径捕获。
 """
 
-from src.business.services.share_paths import (
+from src.business.services.share.paths import (
     DECRYPTER_EXT,
     SHARE_EXT,
     build_share_filenames,

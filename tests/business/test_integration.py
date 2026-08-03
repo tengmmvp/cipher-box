@@ -40,7 +40,7 @@ def entry_mgr_env():
 
 
 def test_add_and_retrieve_entry(entry_mgr_env):
-    """添加条目→解密获取→验证所有字段。"""
+    """加密往返：条目经加密落库再解密，全部字段（含自定义字段与 TOTP secret）完整还原。"""
     entry_mgr, _vault, _tmp_dir = entry_mgr_env
     entry = Entry(
         title="测试网站",
@@ -84,7 +84,7 @@ def test_add_and_retrieve_entry(entry_mgr_env):
 
 
 def test_update_preserves_password_history(entry_mgr_env):
-    """更新密码→密码历史记录归档→验证旧密码可查。"""
+    """更新密码时旧密码自动归档至历史，经解密可查且当前密码更新为新值。"""
     entry_mgr, _vault, _tmp_dir = entry_mgr_env
     # 1. 添加条目
     entry = Entry(
@@ -231,7 +231,7 @@ def vault_lifecycle_env():
 
 
 def test_initialize_and_unlock(vault_lifecycle_env):
-    """初始化→锁定→解锁→验证数据可读。"""
+    """锁定清零密钥后，凭主密码重新解锁数据可读，错误密码解锁失败。"""
     config, _tmp_dir = vault_lifecycle_env
     master_pwd = "test_password_123"
 
@@ -343,7 +343,7 @@ def backup_restore_env():
 
 
 def test_backup_and_restore_preserves_all_fields(backup_restore_env):
-    """备份→恢复→验证 entry_type/totp/password_history 完整。"""
+    """备份后清空再恢复，entry_type/totp/password_history 全部完整还原。"""
     entry_mgr, backup_mgr, _vault, tmp_dir = backup_restore_env
     # 1. 初始化并添加条目，包含 entry_type 与 totp_secret
     entry_id = entry_mgr.add_entry(

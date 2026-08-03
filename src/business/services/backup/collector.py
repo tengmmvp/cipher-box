@@ -15,17 +15,17 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from ...exceptions import BackupError, DecryptionError, PayloadTooLargeError
-from ...models import PasswordHistory, RawEntry
-from ...utils.format import utc_now_iso
-from .backup_header_codec import BACKUP_FORMAT, BACKUP_VERSION, MAX_BACKUP_PAYLOAD_SIZE
-from .backup_payload import (
+from ....exceptions import BackupError, DecryptionError, PayloadTooLargeError
+from ....models import PasswordHistory, RawEntry
+from ....utils.format import utc_now_iso
+from ..crypto_utils import decrypt_entry_to_portable_dict, decrypt_field
+from .header_codec import BACKUP_FORMAT, BACKUP_VERSION, MAX_BACKUP_PAYLOAD_SIZE
+from .payload import (
     CATEGORY_OVERHEAD_BYTES,
     ENTRY_OVERHEAD_BYTES,
     HISTORY_OVERHEAD_BYTES,
 )
-from .backup_validator import MAX_BACKUP_ENTRIES, MAX_HISTORY_PER_ENTRY
-from .crypto_utils import decrypt_entry_to_portable_dict, decrypt_field
+from .validator import MAX_BACKUP_ENTRIES, MAX_HISTORY_PER_ENTRY
 
 logger = logging.getLogger(__name__)
 

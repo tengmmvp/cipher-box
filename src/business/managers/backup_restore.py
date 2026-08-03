@@ -1,9 +1,9 @@
 """CipherBox 固定格式的加密备份与恢复。
 
 模块拆分后仅承载备份创建/恢复的核心编排逻辑：
-- 头部编解码、检视、密钥派生 → :mod:`..services.backup_header_codec`
-- 恢复前数据校验 → :mod:`..services.backup_validator`
-- 命名常量 → :mod:`..services.backup_paths`
+- 头部编解码、检视、密钥派生 → :mod:`..services.backup.header_codec`
+- 恢复前数据校验 → :mod:`..services.backup.validator`
+- 命名常量 → :mod:`..services.backup.paths`
 - 恢复点统计/清理 → :class:`.restore_point_manager.RestorePointManager`
 """
 
@@ -44,12 +44,12 @@ from ...utils.file_security import (
 )
 from ...utils.format import utc_now_iso
 from ...utils.memory import secure_zero_buffer
-from ..services.auto_backup_policy import (
+from ..services.backup.auto_backup_policy import (
     is_auto_backup_due,
     purge_expired_auto_backups,
 )
-from ..services.backup_collector import collect_portable_data
-from ..services.backup_header_codec import (
+from ..services.backup.collector import collect_portable_data
+from ..services.backup.header_codec import (
     BACKUP_SALT_SIZE,
     MAX_BACKUP_FILE_SIZE,
     MAX_BACKUP_PAYLOAD_SIZE,
@@ -62,18 +62,19 @@ from ..services.backup_header_codec import (
     write_backup_header,
     zero_backup_key_if_owned,
 )
-from ..services.backup_paths import (
+from ..services.backup.paths import (
     BACKUPS_DIR_NAME,
     SNAPSHOT_PREFIX,
     build_backup_filename,
 )
-from ..services.backup_payload import PortableBackup, PreparedBackup
-from ..services.backup_rebuilder import (
+from ..services.backup.payload import PortableBackup, PreparedBackup
+from ..services.backup.purge import purge_snapshot_backups
+from ..services.backup.rebuilder import (
     restore_categories,
     restore_entries,
     restore_history,
 )
-from ..services.backup_validator import (
+from ..services.backup.validator import (
     MAX_BACKUP_ENTRIES,
     validate_restore_data,
 )
@@ -101,11 +102,13 @@ class BackupRestoreManager:
         self,
         vault_manager: "VaultManager",
         entry_manager: "EntryManager",
+        restore_point_mgr: RestorePointManager | None = None,
     ) -> None:
         self._vault = vault_manager
         # 复用调用方持有的 EntryManager 单例，共享分类名缓存，避免重复解密与双份明文驻留。
         self._entry_mgr = entry_manager
-        self._restore_points = RestorePointManager(vault_manager)
+        # 恢复点子服务经组合根显式注入（提升为一等依赖）；未注入时内部构造供测试简便。
+        self._restore_points = restore_point_mgr or RestorePointManager(vault_manager)
         # ARCH-006：恢复点创建/统计/清理统一由 RestorePointManager 承载。备份加密管线
         # （持锁全流程入口）延迟绑定，避免 BackupRestoreManager ↔ RestorePointManager
         # 构造期循环依赖；恢复点复用与正式备份同一加密格式。
@@ -527,7 +530,7 @@ class BackupRestoreManager:
 
     def _assemble_restore_result(self, checkpoint_ok: bool) -> tuple[bool, str]:
         """锁外清理旧 snapshot_key 加密的快照与恢复点，拼装降级警告。"""
-        failed_purges = self._vault.purge_snapshot_backups()
+        failed_purges = purge_snapshot_backups(self._vault.config)
         warnings: list[str] = []
         if not checkpoint_ok:
             warnings.append(
@@ -588,7 +591,7 @@ class BackupRestoreManager:
             with self._vault.epoch_guarded_transaction(operation="恢复"):
                 db.clear_vault_data()
                 category_map = restore_categories(
-                    # ARCH-002：注入批量写回调，解耦 backup_rebuilder 与 EntryManager。
+                    # ARCH-002：注入批量写回调，解耦 backup/rebuilder 与 EntryManager。
                     lambda cats: self._entry_mgr.categories.add_categories_batch(
                         cats,
                         notify=False,

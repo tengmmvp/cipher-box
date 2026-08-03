@@ -335,15 +335,26 @@ class SecurityAnalyzer:
         """返回缓存报告，若无效则重新计算并缓存。"""
         return self._cached_analysis(days, cancel_check=cancel_check)
 
-    def invalidate_cache(self, password_changed: bool = True) -> None:
+    def invalidate_cache(
+        self,
+        password_changed: bool = True,
+        metadata_changed: bool = True,
+    ) -> None:
         """清除分析缓存，下次访问时重新计算。
 
-        无条件失效（M12）：安全报告含 Entry 元数据（title/username 等），任何字段
-        变更都可能令缓存的 weak_entries/duplicate_groups 元数据陈旧，故不再据
-        password_changed 跳过——原优化「非密码字段不失效」会保留陈旧元数据。参数仅为
-        匹配 EntryChangeBus 回调签名 ``Callable[[bool], None]`` 保留，不影响行为。
+        仅当安全相关维度变更时失效，避免纯旁路变更（如 ``is_favorite`` 切换、分类
+        调整）触发整库重解密：
+
+        - ``password_changed``：密码变更 → 弱密码/重复/过期判定均可能变。
+        - ``metadata_changed``：title/username 等报告展示元数据变更 → 缓存的
+          weak_entries/duplicate_groups 元数据陈旧。
+
+        两者皆 False 时直接返回（PERF：旁路变更不影响任何安全分析输入）。回调签名
+        经 :meth:`EntryChangeBus.notify` 以位置参数 ``(password_changed, metadata_changed)``
+        传入。
         """
-        del password_changed  # 不再据密码变更区分（M12）；保留参数仅为匹配回调签名
+        if not (password_changed or metadata_changed):
+            return
         with self._cache_lock:
             self._analysis_cache = None
             self._analysis_cache_time = 0

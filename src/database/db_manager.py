@@ -570,6 +570,9 @@ class DatabaseManager:
             preserve_updated_at=preserve_updated_at,
         )
 
+    def update_overwrite_batch(self, entries: list[RawEntry]) -> None:
+        return self._entry_repo.update_overwrite_batch(entries)
+
     def update_entries_batch(self, rows: list[ReEncryptedEntry]) -> None:
         return self._entry_repo.update_entries_batch(rows)
 

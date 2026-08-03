@@ -1,5 +1,6 @@
 """配置管理模块 — 管理 CipherBox 应用的所有配置项。"""
 
+import base64
 import copy
 import hashlib
 import hmac
@@ -24,6 +25,9 @@ from .utils.file_security import (
 
 _CONFIG_SIG_PREFIX = "#__sig__:"
 _CONFIG_KEY_SIZE = 32
+# keyring 服务与账户名（非 Windows 平台经系统密钥链存储配置签名密钥，SEC-003）
+_KEYRING_SERVICE = "CipherBox"
+_KEYRING_KEY_NAME = "config-integrity-key"
 
 logger = logging.getLogger(__name__)
 
@@ -304,47 +308,132 @@ class ConfigManager:
     def _load_or_create_integrity_key(self) -> bytes:
         """加载安装级配置签名密钥；缺失/损坏时原子生成新密钥。
 
-        Windows 下经 DPAPI（当前用户凭据）封装存储，使 config.key 被读取也无法在别处
-        解密重算签名，收缩篡改配置绕过完整性校验的攻击面。非 Windows 回退明文 0600 存储
-        （SEC-003 威胁边界：明文可读意味着本地有读权限者可重算签名伪造安全配置，如把
-        auto_lock 改 0；彻底修复需引入系统密钥链 keyring，权衡其跨平台失败模式与 CI 复杂度
-        后暂维持现状，以 Windows DPAPI 为主平台防护）。绝不阻断启动。
+        平台安全存储优先（收缩 SEC-003 篡改攻击面，使 config.key 被读取也无法在别处
+        解密重算签名）：
+
+        - **Windows**：DPAPI（当前用户凭据）封装存于 config.key。
+        - **macOS / Linux**：经 keyring 存入系统密钥链（Keychain / Secret Service）。
+
+        keyring 不可用（headless Linux / CI 无 Secret Service、keyring 未安装或后端失败）
+        时回退明文 0600 config.key 并记 ERROR，使安全降级可见。绝不阻断启动。
         """
         # strict=False：启动路径绝不阻断。Windows SID 解析失败（EDR/企业策略禁用
         # whoami）时 _restrict_windows_acl 会抛 OSError 致启动崩溃，违背本方法
         # 「绝不阻断启动」契约。权限加固失败降级（warning）而非阻断启动。
         secure_directory(self._data_dir, strict=False)
-        if self._integrity_key_path.exists():
-            try:
-                blob = self._integrity_key_path.read_bytes()
-            except (FileNotFoundError, OSError):
-                # exists() 与 read_bytes() 间 TOCTOU 或瞬时 IO 错误：与损坏分支一致 fall-through，绝不阻断启动。
-                logger.warning("读取配置签名密钥失败，将生成新密钥", exc_info=True)
-                blob = None
-            if blob is not None:
-                key = unprotect_with_dpapi(blob)
-                if key is None:
-                    # 非 DPAPI 封装：当作明文密钥（旧格式或非 Windows），长度校验
-                    key = blob if len(blob) == _CONFIG_KEY_SIZE else None
-                if key is not None and len(key) == _CONFIG_KEY_SIZE:
-                    # strict=False：启动路径同上，权限加固失败降级而非崩溃。
-                    secure_file(self._integrity_key_path, strict=False)
-                    return key
-                logger.warning("配置签名密钥损坏，将生成新密钥")
-
+        key = self._load_secure_integrity_key()
+        if key is not None and len(key) == _CONFIG_KEY_SIZE:
+            return key
         key = os.urandom(_CONFIG_KEY_SIZE)
-        # 优先 DPAPI 封装；失败回退明文（不阻断启动）
+        if not self._store_secure_integrity_key(key):
+            # keyring/DPAPI 均不可用：回退明文 0600。本地有读权限者可重算签名伪造
+            # 安全配置（SEC-003）。_write_integrity_key_file 经 atomic_write 创建即 0600，
+            # 消除世界可读窗口（SEC-015）。ERROR 使降级可见，提示启用系统密钥链。
+            self._write_integrity_key_file(key)
+            logger.error(
+                "配置签名密钥回退明文存储（平台安全存储不可用）：本地读权限者可重算"
+                "签名篡改安全配置，建议启用系统密钥链（SEC-003）"
+            )
+        return key
+
+    def _load_secure_integrity_key(self) -> bytes | None:
+        """从平台安全存储读取签名密钥，损坏或缺失返回 None。"""
+        if sys.platform == "win32":
+            return self._load_dpapi_integrity_key()
+        return self._load_keyring_integrity_key()
+
+    def _store_secure_integrity_key(self, key: bytes) -> bool:
+        """存入平台安全存储，成功返回 True。Windows DPAPI（文件存储）总成功。"""
+        if sys.platform == "win32":
+            return self._store_dpapi_integrity_key(key)
+        return self._store_keyring_integrity_key(key)
+
+    # ---- Windows DPAPI 文件存储 ----
+    def _load_dpapi_integrity_key(self) -> bytes | None:
+        if not self._integrity_key_path.exists():
+            return None
+        try:
+            blob = self._integrity_key_path.read_bytes()
+        except (FileNotFoundError, OSError):
+            # exists() 与 read_bytes() 间 TOCTOU 或瞬时 IO 错误：与损坏分支一致 fall-through。
+            logger.warning("读取配置签名密钥失败，将生成新密钥", exc_info=True)
+            return None
+        key = unprotect_with_dpapi(blob)
+        if key is None:
+            # 非 DPAPI 封装：当作明文密钥（开发期旧格式），长度校验
+            key = blob if len(blob) == _CONFIG_KEY_SIZE else None
+        if key is not None and len(key) == _CONFIG_KEY_SIZE:
+            # strict=False：启动路径，权限加固失败降级而非崩溃。
+            secure_file(self._integrity_key_path, strict=False)
+            return key
+        logger.warning("配置签名密钥损坏，将生成新密钥")
+        return None
+
+    def _store_dpapi_integrity_key(self, key: bytes) -> bool:
         stored = protect_with_dpapi(key)
         if stored is None:
-            stored = key
+            stored = key  # DPAPI 调用失败回退明文（不阻断）
+        self._write_integrity_key_file(stored)
+        return True
 
-        # 经 atomic_write 落地即 0600，消除「写明文密钥 → 关闭 → secure_file 收紧」间的世界可读窗口（SEC-015）。
+    # ---- 非 Windows keyring 存储（Keychain / Secret Service）----
+    def _load_keyring_integrity_key(self) -> bytes | None:
+        try:
+            import keyring
+        except ImportError:
+            logger.error("keyring 未安装，配置签名密钥回退明文（SEC-003）")
+            return self._load_plaintext_integrity_key()
+        try:
+            value = keyring.get_password(_KEYRING_SERVICE, _KEYRING_KEY_NAME)
+        except Exception:
+            # 后端不可用（headless Linux 无 Secret Service 等）：回退明文。
+            logger.error("keyring 读取失败，回退明文存储（SEC-003）", exc_info=True)
+            return self._load_plaintext_integrity_key()
+        if value:
+            try:
+                return base64.b64decode(value, validate=True)
+            except ValueError:
+                # binascii.Error IS-A ValueError
+                logger.warning("keyring 中配置签名密钥损坏，将生成新密钥")
+                return None
+        # keyring 无记录：检查遗留明文 config.key（开发期迁移）
+        return self._load_plaintext_integrity_key()
+
+    def _store_keyring_integrity_key(self, key: bytes) -> bool:
+        try:
+            import keyring
+            keyring.set_password(
+                _KEYRING_SERVICE,
+                _KEYRING_KEY_NAME,
+                base64.b64encode(key).decode("ascii"),
+            )
+            return True
+        except Exception:
+            # 后端不可用或写入失败：调用方回退明文 0600。
+            logger.warning("keyring 存储失败，将回退明文 0600（SEC-003）", exc_info=True)
+            return False
+
+    # ---- 明文回退（平台安全存储不可用时）----
+    def _load_plaintext_integrity_key(self) -> bytes | None:
+        if not self._integrity_key_path.exists():
+            return None
+        try:
+            blob = self._integrity_key_path.read_bytes()
+        except (FileNotFoundError, OSError):
+            return None
+        if len(blob) == _CONFIG_KEY_SIZE:
+            secure_file(self._integrity_key_path, strict=False)
+            return blob
+        return None
+
+    def _write_integrity_key_file(self, data: bytes) -> None:
+        """经 atomic_write 落地即 0600 写入密钥文件（消除世界可读窗口，SEC-015）。"""
+
         def _write_key(f: Any) -> bool:
-            f.write(stored)
+            f.write(data)
             return True
 
         atomic_write(self._integrity_key_path, _write_key, mode="wb")
-        return key
 
     @property
     def data_dir(self) -> Path:

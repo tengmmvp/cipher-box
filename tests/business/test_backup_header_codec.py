@@ -8,8 +8,8 @@ import io
 
 import pytest
 
-from src.business.services import backup_header_codec
-from src.business.services.backup_header_codec import (
+from src.business.services.backup import header_codec as backup_header_codec
+from src.business.services.backup.header_codec import (
     BACKUP_AAD,
     BACKUP_FORMAT,
     BACKUP_HEADER_STRUCT,

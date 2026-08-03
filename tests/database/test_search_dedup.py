@@ -36,13 +36,13 @@ class TestMatchesSearch:
         assert matches_search(e, "important") is True
 
     def test_case_insensitive(self):
-        """大小写不敏感:小写/大写关键字均命中同一字段。"""
+        """大小写不敏感：小写/大写关键字均命中同一字段。"""
         e = self._make_entry(title="MyBank")
         assert matches_search(e, "mybank") is True
         assert matches_search(e, "MYBANK") is True
 
     def test_no_match(self):
-        """关键字不在任一可搜索字段中,返回 False。"""
+        """关键字不在任一可搜索字段中，返回 False。"""
         e = self._make_entry(title="Hello", username="world", url="http://test.com", tags="demo")
         assert matches_search(e, "xyz123") is False
 

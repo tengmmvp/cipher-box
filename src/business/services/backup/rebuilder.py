@@ -8,13 +8,13 @@ key_epoch/snapshot_key 轮换编排；本模块仅做载荷→加密行的逐表
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
-from ...models import Category, RawEntry
-from ...utils.format import utc_now_iso
-from .backup_payload import PortableBackup
-from .crypto_utils import build_encrypted_entry_fields, encrypt_field
+from ....models import Category, RawEntry
+from ....utils.format import utc_now_iso
+from ..crypto_utils import build_encrypted_entry_fields, encrypt_field
+from .payload import PortableBackup
 
 if TYPE_CHECKING:
-    from ...database.types import VaultDataStore
+    from ....database.types import VaultDataStore
 
 
 def restore_categories(

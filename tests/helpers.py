@@ -1,5 +1,6 @@
 """共享测试辅助函数。"""
 
+from src.business.managers.category_manager import CategoryManager
 from src.business.managers.entry_cache import EntryCacheManager
 from src.business.managers.entry_change_bus import EntryChangeBus
 from src.business.managers.entry_manager import EntryManager
@@ -31,4 +32,6 @@ def make_entry_manager(vault: VaultManager) -> EntryManager:
     避免各测试文件复制三行装配。
     """
     cache = EntryCacheManager(vault)
-    return EntryManager(vault, cache, EntryChangeBus(cache))
+    change_bus = EntryChangeBus(cache)
+    category_mgr = CategoryManager(vault, cache, change_bus)
+    return EntryManager(vault, cache, change_bus, category_mgr)

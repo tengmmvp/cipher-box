@@ -12,8 +12,8 @@ import json
 
 import pytest
 
-from src.business.services import share_package
-from src.business.services.share_header_codec import (
+from src.business.services.share import package as share_package
+from src.business.services.share.header_codec import (
     EXPIRE_NEVER,
     SHARE_HEADER_STRUCT,
     SHARE_MAGIC,
@@ -21,7 +21,7 @@ from src.business.services.share_header_codec import (
     header_aad,
     read_share_header,
 )
-from src.business.services.share_package import (
+from src.business.services.share.package import (
     build_share_payload,
     create_share_package,
 )

@@ -136,7 +136,7 @@ class TestSecureDirectory:
         assert result == target
 
     def test_creates_nested_directory(self, tmp_path):
-        """parents=True 行为:中间目录不存在时连同祖先一并创建。"""
+        """parents=True 行为：中间目录不存在时连同祖先一并创建。"""
         target = tmp_path / "a" / "b" / "c"
         secure_directory(target)
         assert target.is_dir()

@@ -22,7 +22,7 @@ class TestEntryChangeBusNotifyOrder:
         call_order: list[str] = []
 
         cache.apply_change.side_effect = lambda **kw: call_order.append("cache")
-        bus.register(lambda pw: call_order.append("callback"))
+        bus.register(lambda pw, md: call_order.append("callback"))
 
         bus.notify(password_changed=True)
         assert call_order == ["cache", "callback"]
@@ -49,24 +49,24 @@ class TestEntryChangeBusNotifyOrder:
 class TestEntryChangeBusCallbacks:
     """回调注册与执行。"""
 
-    def test_callback_receives_password_changed(self):
-        """回调应收到 password_changed 布尔参数。"""
+    def test_callback_receives_change_flags(self):
+        """回调应收到 (password_changed, metadata_changed) 两个布尔参数。"""
         cache = MagicMock()
         bus = EntryChangeBus(cache)
-        received: list[bool] = []
-        bus.register(lambda pw: received.append(pw))
-        bus.notify(password_changed=True)
-        bus.notify(password_changed=False)
-        assert received == [True, False]
+        received: list[tuple[bool, bool]] = []
+        bus.register(lambda pw, md: received.append((pw, md)))
+        bus.notify(password_changed=True)  # metadata_changed 默认 True
+        bus.notify(password_changed=False, metadata_changed=False)
+        assert received == [(True, True), (False, False)]
 
     def test_multiple_callbacks_all_invoked(self):
         """注册多个回调，每个都应被调用。"""
         cache = MagicMock()
         bus = EntryChangeBus(cache)
         calls: list[str] = []
-        bus.register(lambda pw: calls.append("first"))
-        bus.register(lambda pw: calls.append("second"))
-        bus.register(lambda pw: calls.append("third"))
+        bus.register(lambda pw, md: calls.append("first"))
+        bus.register(lambda pw, md: calls.append("second"))
+        bus.register(lambda pw, md: calls.append("third"))
         bus.notify(password_changed=True)
         assert calls == ["first", "second", "third"]
 
@@ -75,12 +75,12 @@ class TestEntryChangeBusCallbacks:
         cache = MagicMock()
         bus = EntryChangeBus(cache)
 
-        def boom(pw):
+        def boom(pw, md):
             raise RuntimeError("callback exploded")
 
         second_called: list[bool] = []
         bus.register(boom)
-        bus.register(lambda pw: second_called.append(True))
+        bus.register(lambda pw, md: second_called.append(True))
 
         bus.notify(password_changed=True)
         assert second_called == [True]
@@ -89,7 +89,7 @@ class TestEntryChangeBusCallbacks:
         """回调异常被吞掉，notify 本身不抛。"""
         cache = MagicMock()
         bus = EntryChangeBus(cache)
-        bus.register(lambda pw: (_ for _ in ()).throw(ValueError("x")))
+        bus.register(lambda pw, md: (_ for _ in ()).throw(ValueError("x")))
         bus.notify(password_changed=True)
 
 

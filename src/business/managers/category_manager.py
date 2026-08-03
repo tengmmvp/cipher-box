@@ -128,6 +128,7 @@ class CategoryManager:
                 tags_changed=False,
                 category_changed=True,
                 clear_summaries=False,
+                metadata_changed=False,  # 分类不进入安全报告判定，跳过安全缓存失效
             )
         return result
 
@@ -165,6 +166,7 @@ class CategoryManager:
                 tags_changed=False,
                 category_changed=True,
                 clear_summaries=False,
+                metadata_changed=False,  # 分类不进入安全报告判定，跳过安全缓存失效
             )
         return new_ids
 
@@ -193,6 +195,7 @@ class CategoryManager:
             tags_changed=False,
             category_changed=True,
             clear_summaries=False,
+            metadata_changed=False,  # 分类不进入安全报告判定，跳过安全缓存失效
         )
 
     def delete_category(self, category_id: int) -> None:
@@ -205,4 +208,5 @@ class CategoryManager:
             tags_changed=False,
             category_changed=True,
             clear_summaries=False,
+            metadata_changed=False,  # 分类不进入安全报告判定，跳过安全缓存失效
         )

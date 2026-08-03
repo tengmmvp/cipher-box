@@ -497,6 +497,68 @@ class EntryRepository:
         self._auto_commit()
 
     @_db_write
+    def update_overwrite_batch(self, entries: list[RawEntry]) -> None:
+        """批量更新覆盖导入的条目（PERF：executemany 替代逐条 UPDATE）。
+
+        与 :meth:`update_entry` 对称的签名对齐：批量重读各条目的
+        ``is_deleted/deleted_at/created_at``（UPDATE 不写这三列，签名载荷含它们须用
+        DB 现值），重签 ``metadata_mac`` 后 executemany 写入。任一条目不存在则抛
+        ``DatabaseError``（与单条 ``update_entry`` 的存在性校验一致）。
+
+        单事务全有或全无：调用方在外层 ``epoch_guarded_transaction`` 内调用，任一条目
+        写失败由外层事务统一回滚，避免逐条提交留下的部分成功不一致状态。
+        """
+        if not entries:
+            return
+        for entry in entries:
+            self._assert_entry_encrypted_fields(entry)
+        current_map = self._bulk_read_entry_state(
+            [e.id for e in entries if e.id is not None]
+        )
+        signed: list[RawEntry] = []
+        for entry in entries:
+            if entry.id is None or entry.id not in current_map:
+                raise DatabaseError(f"条目 {entry.id} 不存在，无法更新")
+            is_deleted, deleted_at, created_at = current_map[entry.id]
+            aligned = replace(
+                entry,
+                is_deleted=bool(is_deleted),
+                deleted_at=deleted_at if deleted_at is not None else "",
+                created_at=created_at,
+            )
+            aligned = replace(aligned, metadata_mac=self._sign_entry(aligned))
+            signed.append(aligned)
+        rows = [(*self._entry_update_params(e), e.id) for e in signed]
+        try:
+            self._conn.executemany(_UPDATE_ENTRY_SQL, rows)
+        except sqlite3.IntegrityError as exc:
+            raise _classify_entry_integrity_error("条目批量更新", exc) from exc
+        self._auto_commit()
+
+    @_db_operation
+    def _bulk_read_entry_state(
+        self, entry_ids: list[int]
+    ) -> dict[int, tuple[Any, Any, Any]]:
+        """批量读取条目的 (is_deleted, deleted_at, created_at)，供批量签名对齐。
+
+        分批 IN 查询（_ID_BATCH_SIZE）规避 SQLite 999 主机变量限制。
+        """
+        if not entry_ids:
+            return {}
+        result: dict[int, tuple[Any, Any, Any]] = {}
+        for i in range(0, len(entry_ids), _ID_BATCH_SIZE):
+            chunk = entry_ids[i : i + _ID_BATCH_SIZE]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._conn.execute(
+                f"SELECT id, is_deleted, deleted_at, created_at FROM entries "  # nosec B608 - 参数绑定
+                f"WHERE id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                result[row[0]] = (row[1], row[2], row[3])
+        return result
+
+    @_db_write
     def soft_delete_entry(self, entry_id: int) -> bool:
         """软删除条目。返回是否实际执行（条目存在）。"""
         now = utc_now_iso()

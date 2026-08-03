@@ -42,12 +42,7 @@ from ..resources.icons import (
 )
 
 if TYPE_CHECKING:
-    from ...business.managers.backup_restore import BackupRestoreManager
-    from ...business.managers.entry_manager import EntryManager
-    from ...business.managers.import_export import ImportExportManager
-    from ...business.managers.vault_manager import VaultManager
-    from ...business.services.security_analyzer import SecurityAnalyzer
-    from ...config import ConfigManager
+    from ...business.composition import BusinessContext
     from ..components.detail_panel import DetailPanel
     from ..utils.clipboard import ClipboardManager
     from .auto_backup_controller import AutoBackupController
@@ -93,18 +88,14 @@ class MenuSlots:
 
 @dataclass(frozen=True)
 class MenuDeps:
-    """MenuController 依赖的 manager / controller / 控件引用（装配期注入）。
+    """MenuController 依赖（装配期注入）。
 
-    聚合 9 个依赖为单一参数，对齐既有 ``ListRefreshView`` / ``EntryActionsDeps``
-    范式，收敛 MenuController.__init__ 的 10 参签名。frozen 防装配后意外突变。
+    业务 manager 经 ``ctx``（BusinessContext）聚合注入，收窄依赖面（避免展开 6 个
+    manager 字段）；clipboard/detail_panel/auto_backup 为 UI 控件/controller，不经 ctx。
+    frozen 防装配后意外突变。
     """
 
-    config: ConfigManager
-    vault: VaultManager
-    entry_mgr: EntryManager
-    security: SecurityAnalyzer
-    import_export: ImportExportManager
-    backup: BackupRestoreManager
+    ctx: BusinessContext
     clipboard: ClipboardManager
     detail_panel: DetailPanel
     auto_backup: AutoBackupController
@@ -121,12 +112,13 @@ class MenuController:
     _search_edit: QLineEdit
 
     def __init__(self, deps: MenuDeps, slots: MenuSlots) -> None:
-        self._config = deps.config
-        self._vault = deps.vault
-        self._entry_mgr = deps.entry_mgr
-        self._security = deps.security
-        self._import_export = deps.import_export
-        self._backup = deps.backup
+        ctx = deps.ctx
+        self._config = ctx.config
+        self._vault = ctx.vault
+        self._entry_mgr = ctx.entry_mgr
+        self._security = ctx.security
+        self._import_export = ctx.import_export
+        self._backup = ctx.backup
         self._clipboard = deps.clipboard
         self._detail_panel = deps.detail_panel
         self._auto_backup = deps.auto_backup
@@ -333,7 +325,7 @@ class MenuController:
         dialog.deleteLater()
 
     def show_security_dashboard(self) -> None:
-        """打开安全仪表盘；exec 返回后同步处理 pending 修复条目（M14）。
+        """打开安全仪表盘；exec 返回后同步处理 pending 修复条目。
 
         替代原 ``singleShot(0)`` 延迟 emit——dialog 随即 ``deleteLater``，延迟回调
         访问已销毁 dialog 的信号会崩溃，故同步打开编辑对话框为单层模态。

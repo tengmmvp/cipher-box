@@ -11,10 +11,12 @@ from dataclasses import dataclass
 
 from ..config import ConfigManager
 from .managers.backup_restore import BackupRestoreManager
+from .managers.category_manager import CategoryManager
 from .managers.entry_cache import EntryCacheManager
 from .managers.entry_change_bus import EntryChangeBus
 from .managers.entry_manager import EntryManager
 from .managers.import_export import ImportExportManager
+from .managers.restore_point_manager import RestorePointManager
 from .managers.vault_lifecycle import VaultLifecycleOrchestrator
 from .managers.vault_manager import VaultManager
 from .services.database_bootstrap import DatabaseBootstrap
@@ -71,10 +73,14 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
     """
     cache = EntryCacheManager(vault)
     change_bus = EntryChangeBus(cache)
-    entry_mgr = EntryManager(vault, cache, change_bus)
+    # CategoryManager / RestorePointManager 提升为一等依赖，由组合根显式创建并注入
+    # （ARCH：保持替换间隙一致，便于测试替身与重配置）。
+    category_mgr = CategoryManager(vault, cache, change_bus)
+    entry_mgr = EntryManager(vault, cache, change_bus, category_mgr)
     security = SecurityAnalyzer(vault, cache)
     import_export = ImportExportManager(entry_mgr)
-    backup = BackupRestoreManager(vault, entry_mgr)
+    restore_points = RestorePointManager(vault)
+    backup = BackupRestoreManager(vault, entry_mgr, restore_points)
     # 锁定与密钥版本轮换（备份恢复）是两类语义不同的事件（ARCH-003 拆为独立通道），
     # 但都要求失效全部明文/派生缓存：锁定清明文摘要/分类名/TOTP/标签缓存收缩内存泄漏面；
     # 恢复整体替换数据，按 crypto_id 索引的明文缓存须失效防命中旧明文，安全分析缓存亦

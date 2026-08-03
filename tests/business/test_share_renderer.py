@@ -6,8 +6,8 @@
 致用户首次创建共享包时才暴雷。
 """
 
-from src.business.services.share_header_codec import SHARE_VERSION
-from src.business.services.share_renderer import render_decrypter
+from src.business.services.share.header_codec import SHARE_VERSION
+from src.business.services.share.renderer import render_decrypter
 
 
 def test_render_decrypter_replaces_all_placeholders():

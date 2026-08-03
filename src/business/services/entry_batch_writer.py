@@ -174,30 +174,38 @@ def write_overwrite_updates(
     prepared: list[PreparedUpdate],
     pre_epoch: str | None,
 ) -> int:
-    """锁内逐条 SAVEPOINT 写入已加密覆盖项（MAINT-004），复查 ``pre_epoch``。
+    """锁内批量写入已加密覆盖项（PERF：executemany 替代逐条 SAVEPOINT，MAINT-004）。
 
-    须在 ``epoch_guarded_transaction(pre_epoch=...)`` 内调用。``pre_epoch`` 由调用方
-    在锁外加密前快照并传入，与本函数逐条复查共用同一快照——纵深防御「写入期间改密」，
-    不匹配或写失败照原语义向上传播中止导入。
+    须在 ``epoch_guarded_transaction(pre_epoch=...)`` 内调用。复查 ``pre_epoch`` 一次
+    （db_lock 已串行化改密，批量写期间无并发改密），随后批量 UPDATE 条目 + 按条目分组
+    批量写密码历史（每组一次 INSERT + 单次截断）。
+
+    单事务全有或全无：任一写入失败由外层 ``epoch_guarded_transaction`` 统一回滚，避免
+    逐条 SAVEPOINT 提交留下的部分成功不一致状态（导入可整体重试）。``pre_epoch`` 由
+    调用方在锁外加密前快照并传入——纵深防御「写入期间改密」，不匹配则中止导入。
     """
-    count = 0
+    if not prepared:
+        return 0
+    if entry_mgr.key_epoch != pre_epoch:
+        raise VaultKeyEpochMismatchError(
+            "更新期间检测到密钥变更（改密/锁定），已中止以防写入旧密钥密文"
+        )
+    entry_mgr.db.update_overwrite_batch([item.enc_entry for item in prepared])
+    # 批量密码历史：按 entry_id 分组，每组一次 add_password_history_batch（INSERT + 单次
+    # 截断），changed_at 用与条目一致的 password_changed_at 避免微秒级时序倒置。
+    history_by_entry: dict[int, list[tuple[str, str]]] = {}
     for item in prepared:
-        with entry_mgr.db.transaction():
-            if entry_mgr.key_epoch != pre_epoch:
-                raise VaultKeyEpochMismatchError(
-                    "更新期间检测到密钥变更（改密/锁定），已中止以防写入旧密钥密文"
-                )
-            if item.raw.password and item.password_changed and item.enc_entry.id is not None:
-                # 用与条目一致的 password_changed_at 作为历史 changed_at，
-                # 避免两次独立 utc_now_iso() 产生的微秒级时序倒置。
-                entry_mgr.db.add_password_history(
-                    item.enc_entry.id,
-                    item.raw.password,
-                    changed_at=item.password_changed_at,
-                )
-            entry_mgr.db.update_entry(item.enc_entry, preserve_updated_at=True)
-        count += 1
-    return count
+        if (
+            item.raw.password
+            and item.password_changed
+            and item.enc_entry.id is not None
+        ):
+            history_by_entry.setdefault(item.enc_entry.id, []).append(
+                (item.raw.password, item.password_changed_at)
+            )
+    for entry_id, items in history_by_entry.items():
+        entry_mgr.db.add_password_history_batch(entry_id, items)
+    return len(prepared)
 
 
 __all__ = [

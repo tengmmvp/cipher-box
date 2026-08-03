@@ -21,7 +21,7 @@ import pytest
 
 from src.business.managers.backup_restore import BackupRestoreManager
 from src.business.managers.import_export import ImportExportManager
-from src.business.services.backup_header_codec import (
+from src.business.services.backup.header_codec import (
     BACKUP_HEADER_SIZE,
     BACKUP_SALT_SIZE,
 )
@@ -190,7 +190,7 @@ class TestChangePasswordRollbackConsistency:
     def test_change_password_reports_purge_failure(self):
         """改密成功但旧快照清理失败时返回 True 并附带 warning 提示手动清理。"""
         with patch(
-            "src.business.managers.vault_manager.VaultManager.purge_snapshot_backups",
+            "src.business.managers.vault_lifecycle.purge_snapshot_backups",
             return_value=[Path(self._tmp_dir) / "occupied.cbox"],
         ):
             ok, msg = self._vault.change_master_password(self._master_pwd, "PurgeFailure!2026")
@@ -320,7 +320,7 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
             ensure_ascii=False,
         ).encode("utf-8")
         snapshot_key = self._vault.snapshot_key
-        from src.business.services.backup_header_codec import (
+        from src.business.services.backup.header_codec import (
             BACKUP_AAD,
             BackupFlag,
             write_backup_header,

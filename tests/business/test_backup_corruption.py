@@ -13,7 +13,7 @@ import pytest
 
 from src.business.managers.backup_restore import BackupRestoreManager
 from src.business.managers.restore_point_manager import RestorePointManager
-from src.business.services.backup_header_codec import (
+from src.business.services.backup.header_codec import (
     BACKUP_MAGIC,
     BACKUP_SALT_SIZE,
     inspect_backup,
@@ -264,7 +264,7 @@ class TestBackupSizeLimits:
         """过大的备份文件应被拒绝。"""
         # 缩容上限到 1KB，避免每次写真实 64MB+1（CI 6 job ≈ 384MB I/O），与
         # test_rejects_oversized_backup_payload 的 monkeypatch 缩容模式一致。
-        import src.business.services.backup_header_codec as codec
+        import src.business.services.backup.header_codec as codec
 
         monkeypatch.setattr(codec, "MAX_BACKUP_FILE_SIZE", 1024)
         path = tmp_path / "huge.cbox"

@@ -23,7 +23,7 @@ AMBIGUOUS_CHARS = "Il1O0o"
 # 越界仅 warning + clamp，兼容 UI 滑块等调用方。
 PASSWORD_LENGTH_MIN = 4
 PASSWORD_LENGTH_MAX = 128
-# 强度评分上限，backup_validator 与本模块复用，避免 4 字面量漂移。
+# 强度评分上限，backup/validator 与本模块复用，避免 4 字面量漂移。
 MAX_STRENGTH_SCORE = 4
 # 重复字符比例低于此阈值扣分（unique_chars / len），0.4 即 10 字符密码唯一字符少于 4。
 WEAK_UNIQUE_RATIO = 0.4
@@ -79,7 +79,6 @@ def _has_keyboard_runway(pwd_lower: str) -> bool:
     return False
 
 
-# 字符组成检测正则，预编译
 _RE_UPPER = re.compile(r"[A-Z]")
 _RE_LOWER = re.compile(r"[a-z]")
 _RE_DIGIT = re.compile(r"\d")

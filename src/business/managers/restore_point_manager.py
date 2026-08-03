@@ -16,12 +16,13 @@ from typing import TYPE_CHECKING
 from ...exceptions import BackupError
 from ...utils.file_security import secure_delete_file, secure_directory
 from ...utils.purge_files import count_files, secure_purge
-from ..services.backup_paths import (
+from ..services.backup.paths import (
     BACKUPS_DIR_NAME,
     PRE_RESTORE_GLOB,
     PRE_RESTORE_PREFIX,
     build_backup_filename,
 )
+from ..services.backup.purge import backup_directories
 
 if TYPE_CHECKING:
     from .vault_manager import VaultManager
@@ -109,7 +110,7 @@ class RestorePointManager:
 
     def count(self) -> int:
         """统计恢复前安全快照数量（覆盖默认与自定义备份目录），供 UI 决策。"""
-        return count_files(self._vault.backup_directories, [PRE_RESTORE_GLOB])
+        return count_files(backup_directories(self._vault.config), [PRE_RESTORE_GLOB])
 
     def clear_all(self) -> int:
         """删除所有恢复前安全快照 pre_restore_*.cbox，返回删除数量。
@@ -122,7 +123,7 @@ class RestorePointManager:
             count_files + secure_purge 各 glob 一遍同目录同模式（PERF-007），但恢复点文件
             稀少（通常个位数），双重遍历开销可忽略，保持复用 purge 统一删除逻辑。
         """
-        directories = self._vault.backup_directories
+        directories = backup_directories(self._vault.config)
         total = count_files(directories, [PRE_RESTORE_GLOB])
         failed = secure_purge(directories, [PRE_RESTORE_GLOB])
         if failed:

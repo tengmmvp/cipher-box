@@ -2,7 +2,7 @@
 
 纯数据契约层，零 manager/db 依赖：
 
-- ``Portable*`` TypedDict 描述备份载荷（与 :mod:`.backup_validator` 的
+- ``Portable*`` TypedDict 描述备份载荷（与 :mod:`.validator` 的
   ``REQUIRED_*_KEYS`` 经启动期断言一致，漏改校验键集时模块加载即失败）；
 - :class:`PreparedBackup` 为「锁内 prepare → 锁外 finalize」拆分的中间产物；
 - 开销常量为 payload 字节估算的单一事实源。
@@ -10,9 +10,9 @@
 
 from typing import Any, NamedTuple, TypedDict
 
-from ...models import PasswordHistory, RawEntry
-from .backup_header_codec import BackupFlag
-from .backup_validator import (
+from ....models import PasswordHistory, RawEntry
+from .header_codec import BackupFlag
+from .validator import (
     REQUIRED_CATEGORY_KEYS,
     REQUIRED_ENTRY_KEYS,
     REQUIRED_HISTORY_KEYS,
@@ -86,12 +86,12 @@ _PORTABLE_KEY_ASSERTS = (
 for _actual, _expected, _name in _PORTABLE_KEY_ASSERTS:
     if _actual != _expected:
         raise RuntimeError(
-            f"{_name} 字段集与 backup_validator 校验键集不一致："
+            f"{_name} 字段集与 validator 校验键集不一致："
             f"{sorted(_actual)} != {sorted(_expected)}"
         )
 
 
-# payload 字节估算的固定开销常量（供 backup_collector 复用，避免魔术数漂移）。
+# payload 字节估算的固定开销常量（供 collector 复用，避免魔术数漂移）。
 CATEGORY_OVERHEAD_BYTES = 128
 ENTRY_OVERHEAD_BYTES = 512
 HISTORY_OVERHEAD_BYTES = 64

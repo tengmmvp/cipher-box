@@ -405,7 +405,7 @@ class ListRefreshController:
         search: str | None = None,
         cancel_check: Callable[[], bool] | None = None,
         use_current_state: bool = True,
-    ) -> tuple[list, str]:
+    ) -> tuple[list[Entry], str]:
         """按过滤器键获取数据，参数绑定基于当前 UI 状态。
 
         过滤器→方法的映射复用 EntryListController.get_fetcher。各 fetcher 所需的当前
@@ -482,7 +482,7 @@ class ListRefreshController:
     def _build_entry_fetch(
         self,
         filter_key: str,
-    ) -> Callable[[Callable[[], bool]], tuple[list, str]]:
+    ) -> Callable[[Callable[[], bool]], tuple[list[Entry], str]]:
         """构造异步 fetcher 工厂：冻结当前 filter/category/search，注入 cancel_check。
 
         闭包捕获赋值时的 ``_current_*`` 快照（非运行时读取）——worker 在后台线程执行
@@ -491,7 +491,7 @@ class ListRefreshController:
         category_id = self._current_category_id
         search = self._current_search
 
-        def fetch(cancel_check: Callable[[], bool]) -> tuple[list, str]:
+        def fetch(cancel_check: Callable[[], bool]) -> tuple[list[Entry], str]:
             return self._fetch_for_filter(
                 filter_key,
                 category_id=category_id,

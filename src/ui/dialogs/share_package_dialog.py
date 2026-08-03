@@ -31,7 +31,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ...business.services.password_service import PasswordService
-from ...business.services.share_package import EXPIRE_NEVER, create_share_package
+from ...business.services.share.package import EXPIRE_NEVER, create_share_package
 from ...models import Entry
 from ..components.widgets import (
     WorkerBackedDialog,
@@ -284,11 +284,12 @@ class SharePackageDialog(WorkerBackedDialog):
         worker.start()
         del password
 
-    def _compute_expire_at(self) -> int:
+    def _compute_expire_at(self, *, now: int | None = None) -> int:
         _name, offset = _EXPIRY_OPTIONS[self._expiry_combo.currentIndex()]
         if offset == 0:
             return EXPIRE_NEVER
-        return int(time.time()) + offset
+        current = now if now is not None else int(time.time())
+        return current + offset
 
     def _on_done(self, result: object) -> None:
         if not finalize_worker_if_current(self):

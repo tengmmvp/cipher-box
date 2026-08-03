@@ -19,7 +19,7 @@ from src.models import MAX_PASSWORD_HISTORY, Category, RawEntry
 
 
 def _make_entry(**kwargs) -> RawEntry:
-    """构造测试用 RawEntry,对可选字段填合法默认值,调用方经 kwargs 覆盖关注字段。"""
+    """构造测试用 RawEntry，对可选字段填合法默认值，调用方经 kwargs 覆盖关注字段。"""
     kwargs.setdefault("password", "x")
     kwargs.setdefault("notes", "")
     kwargs.setdefault("custom_fields", "")

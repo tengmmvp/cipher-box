@@ -32,6 +32,7 @@ from ...exceptions import (
     VaultLockedError,
 )
 from ...utils.memory import secure_zero_buffer
+from ..services.backup.purge import purge_snapshot_backups
 from ..services.crypto_utils import encrypt_plaintext_category_names
 from ..services.error_messages import to_user_message
 from ..services.metadata_signer import MetadataSigner
@@ -473,7 +474,7 @@ class VaultLifecycleOrchestrator:
         EncryptionEngine.clear_cache()  # 旧密钥 cipher 已失效，确保后续用新密钥
         logger.info("重加密完成 (%.1fms)", (time.monotonic() - t0) * 1000)
         # 清理旧 snapshot_key 加密的全部快照与恢复点，收缩泄漏面。
-        failed_purges = self._vault.purge_snapshot_backups()
+        failed_purges = purge_snapshot_backups(self._vault.config)
         if failed_purges:
             logger.warning(
                 "改密后未能删除 %d 个旧快照/恢复点（可能被占用或目录只读），"

@@ -49,12 +49,7 @@ def _make_controller() -> tuple[MenuController, dict[str, list[tuple]]]:
     """构造注入全 MagicMock 依赖的 MenuController，返回 (controller, calls)。"""
     slots, calls = _make_slots()
     deps = MenuDeps(
-        config=MagicMock(),
-        vault=MagicMock(),
-        entry_mgr=MagicMock(),
-        security=MagicMock(),
-        import_export=MagicMock(),
-        backup=MagicMock(),
+        ctx=MagicMock(),
         clipboard=MagicMock(),
         detail_panel=MagicMock(),
         auto_backup=MagicMock(),

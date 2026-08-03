@@ -8,8 +8,8 @@ import io
 
 import pytest
 
-from src.business.services import share_header_codec
-from src.business.services.share_header_codec import (
+from src.business.services.share import header_codec as share_header_codec
+from src.business.services.share.header_codec import (
     EXPIRE_NEVER,
     SHARE_AAD,
     SHARE_FORMAT,

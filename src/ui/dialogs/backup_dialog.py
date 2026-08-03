@@ -28,8 +28,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...business.services.backup_header_codec import inspect_backup
-from ...business.services.backup_paths import BACKUP_EXT
+from ...business.services.backup.header_codec import inspect_backup
+from ...business.services.backup.paths import BACKUP_EXT
 from ...business.services.password_service import PasswordService
 from ...config import CFG_BACKUP_DIRECTORY
 from ...exceptions import BackupError

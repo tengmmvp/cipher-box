@@ -1,8 +1,8 @@
 """条目管理器，负责密码条目的加密 CRUD 操作。
 
-直接依赖 crypto_utils 的加解密原语（crypto_utils 同属 Business 层服务，非跨层依赖）；分类/TOTP/
-密码历史/校验/变更通知等职责拆至子服务与独立模块，本类聚焦条目 CRUD、视图
-解密与搜索匹配，经 property 暴露分类/TOTP/历史子服务。
+直接依赖 crypto_utils 的加解密原语（crypto_utils 同属 Business 层服务，非跨层依赖）；
+分类/TOTP/密码历史/校验/变更通知等职责拆至子服务与独立模块，本类聚焦条目 CRUD、
+视图解密与搜索匹配，经 property 暴露分类/TOTP/历史子服务。
 """
 
 import hmac
@@ -69,14 +69,18 @@ class EntryManager:
         vault_manager: "VaultManager",
         cache: EntryCacheManager,
         change_bus: EntryChangeBus,
+        category_mgr: CategoryManager | None = None,
     ):
         self._vault = vault_manager
         # 明文缓存（搜索摘要/分类名/TOTP/标签）与失效委托 EntryCacheManager。
         self._cache = cache
         # 条目变更通知管线：先失效缓存，再在锁外跑注册回调。
         self._change_bus = change_bus
-        # 子服务：分类 / TOTP / 密码历史（经 property 暴露）
-        self._category_mgr = CategoryManager(vault_manager, cache, change_bus)
+        # 分类子服务经组合根显式注入（提升为一等依赖，可替换/可测）；未注入时内部
+        # 构造供测试简便。TOTP/密码历史为无状态子服务，保持内部构造。
+        self._category_mgr = category_mgr or CategoryManager(
+            vault_manager, cache, change_bus
+        )
         self._totp_svc = TotpService(vault_manager, cache)
         self._history_svc = PasswordHistoryService(vault_manager)
 
@@ -95,8 +99,12 @@ class EntryManager:
         """密码历史子服务（读取、计数、解密展示）。"""
         return self._history_svc
 
-    def register_on_change(self, callback: Callable[[bool], None]) -> None:
-        """注册条目变更时自动调用的回调，用于缓存失效等。委托 change_bus。"""
+    def register_on_change(self, callback: Callable[[bool, bool], None]) -> None:
+        """注册条目变更时自动调用的回调，用于缓存失效等。委托 change_bus。
+
+        回调签名 ``(password_changed, metadata_changed)``，语义见
+        :meth:`EntryChangeBus.notify`。
+        """
         self._change_bus.register(callback)
 
     @property
@@ -1066,13 +1074,15 @@ class EntryManager:
             raw = replace(raw, is_favorite=not raw.is_favorite)
             self._vault.db.update_entry(raw)
             result = raw.is_favorite
-        # 收藏切换不影响密码相关分析维度，传 False 避免 SecurityAnalyzer 缓存
-        # 无谓失效触发整库重算。is_favorite 不在摘要/标签/分类名缓存中，三者
-        # 均无需失效；列表排序变化由回调触发 SQL 重查，复用摘要缓存避免重解密。
+        # 收藏切换是纯旁路变更：is_favorite 不进入安全报告（weak/duplicate/old）的
+        # 判定或展示，也不在摘要/标签/分类名缓存中。password_changed=metadata_changed=
+        # False 使 SecurityAnalyzer 跳过无谓的整库重解密，其余三者缓存亦无需失效；
+        # 列表排序变化由回调触发 SQL 重查，复用摘要缓存避免重解密。
         self._change_bus.notify(
             password_changed=False,
             clear_summaries=False,
             tags_changed=False,
+            metadata_changed=False,
         )
         return result
 

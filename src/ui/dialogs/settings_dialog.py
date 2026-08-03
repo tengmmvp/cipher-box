@@ -355,7 +355,7 @@ class SettingsDialog(QDialog):
 
     def _get_widget_value(
         self, widget: QComboBox | QCheckBox | QSpinBox, accessor_type: str
-    ) -> Any:
+    ) -> str | bool | int | None:
         if accessor_type == "combo" and isinstance(widget, QComboBox):
             return THEME_LIGHT if widget.currentIndex() == 0 else THEME_DARK
         if accessor_type == "check" and isinstance(widget, QCheckBox):

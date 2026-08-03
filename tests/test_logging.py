@@ -10,7 +10,7 @@ from src.logging_config import RedactingFormatter, SensitiveDataFilter
 
 
 def _make_record(msg, args=None):
-    """构造 INFO 级 LogRecord 桩,供 SensitiveDataFilter.filter 喂入测试。"""
+    """构造 INFO 级 LogRecord 桩，供 SensitiveDataFilter.filter 喂入测试。"""
     return logging.LogRecord(
         "test",
         logging.INFO,
@@ -34,7 +34,7 @@ class TestSensitiveDataFilter:
         assert "[REDACTED]" in message
 
     def test_redacts_cb2_ciphertext(self):
-        """``cb2:`` 前缀的密文标记整段打码,避免密文落日志被截获后离线推敲。"""
+        """``cb2:`` 前缀的密文标记整段打码，避免密文落日志被截获后离线推敲。"""
         ciphertext = "cb2:ABCDEFGHabcdefgh0123456789+/=="
         record = _make_record(f"decrypt failed: {ciphertext}")
         SensitiveDataFilter().filter(record)

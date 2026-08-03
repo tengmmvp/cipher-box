@@ -8,9 +8,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
-from ...config import CFG_AUTO_BACKUP_INTERVAL_HOURS, CFG_LAST_AUTO_BACKUP_AT, DEFAULT_CONFIG
-from ...utils.purge_files import secure_purge
-from .backup_paths import SNAPSHOT_GLOB
+from ....config import CFG_AUTO_BACKUP_INTERVAL_HOURS, CFG_LAST_AUTO_BACKUP_AT, DEFAULT_CONFIG
+from ....utils.purge_files import secure_purge
+from .paths import SNAPSHOT_GLOB
 
 logger = logging.getLogger(__name__)
 

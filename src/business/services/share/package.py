@@ -21,15 +21,16 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import IO, Any
 
-from ...crypto.encryption import EncryptionEngine
-from ...crypto.master_key import DEFAULT_KDF_PARAMS
-from ...exceptions import PayloadTooLargeError, ShareError
-from ...models import Entry
-from ...utils.file_security import atomic_write, validate_file_path
-from ...utils.format import utc_now_iso
-from ...utils.memory import secure_zero_buffer
-from .password_service import PasswordService
-from .share_header_codec import (
+from ....crypto.encryption import EncryptionEngine
+from ....crypto.master_key import DEFAULT_KDF_PARAMS
+from ....exceptions import PayloadTooLargeError, ShareError
+from ....models import Entry
+from ....utils.file_security import atomic_write, validate_file_path
+from ....utils.format import utc_now_iso
+from ....utils.memory import secure_zero_buffer
+from ..password_service import PasswordService
+from ..url_hygiene import sanitize_url_scheme
+from .header_codec import (
     EXPIRE_NEVER,
     MAX_SHARE_PAYLOAD_SIZE,
     SHARE_FORMAT,
@@ -39,9 +40,8 @@ from .share_header_codec import (
     header_aad,
     write_share_header,
 )
-from .share_paths import build_share_filenames
-from .share_renderer import render_decrypter
-from .url_hygiene import sanitize_url_scheme
+from .paths import build_share_filenames
+from .renderer import render_decrypter
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +126,7 @@ def _gen_salt() -> bytes:
 def _render_decrypter_html() -> str:
     """渲染解密器 HTML。
 
-    顶层导入 share_renderer：两者无循环依赖（share_renderer 仅依赖 share_header_codec 的
+    顶层导入 renderer：两者无循环依赖（renderer 仅依赖 header_codec 的
     SHARE_VERSION，不反向引用本模块），且资源读取发生在 ``render_decrypter()`` 调用内而非
     模块加载期。保留为独立函数便于测试 monkeypatch 注入桩 HTML，避免触达真实资源。
     """
@@ -141,6 +141,7 @@ def create_share_package(
     expire_at: int,
     output_dir: str | Path,
     cancel_check: Callable[[], bool] | None = None,
+    now: int | None = None,
 ) -> tuple[Path, Path] | None:
     """创建限时加密共享包：写出 ``.cboxshare`` + ``decrypt.html`` 两文件。
 
@@ -151,6 +152,7 @@ def create_share_package(
         expire_at: 过期 Unix 秒（UTC）；``EXPIRE_NEVER``（0）表示永不过期。
         output_dir: 输出目录，两文件同名干、不同扩展名配对写入。
         cancel_check: 可选取消回调，返回 True 时中止并返回 None（不产出残缺文件）。
+        now: 注入的当前 Unix 秒（UTC），供测试控制时间；默认 ``None`` 用 ``int(time.time())``。
 
     Returns:
         成功返回 ``(share_path, decrypter_path)``；取消返回 None。密码强度不达标抛
@@ -165,7 +167,7 @@ def create_share_package(
     # include_secrets=True 时共享包含明文密码/TOTP，防目录被替换致明文重定向到攻击者位置。
     out = Path(str(validate_file_path(str(output_dir), check_ancestors=True)))
 
-    created_at = int(time.time())
+    created_at = now if now is not None else int(time.time())
     try:
         blob = _build_share_blob(
             entries,

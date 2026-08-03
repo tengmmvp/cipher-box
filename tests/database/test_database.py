@@ -38,7 +38,7 @@ def db(tmp_path):
 
 
 def test_init_tables(db):
-    """init_tables 注入默认分类,至少含「未分类」占位项。"""
+    """init_tables 注入默认分类，至少含「未分类」占位项。"""
     categories = db.get_categories()
     assert len(categories) > 0
     names = [c.name for c in categories]
@@ -46,7 +46,7 @@ def test_init_tables(db):
 
 
 def test_meta_operations(db):
-    """vault_meta 键值读写往返正确,缺失键返回 None。"""
+    """vault_meta 键值读写往返正确，缺失键返回 None。"""
     db.set_meta("test_key", "test_value")
     value = db.get_meta("test_key")
     assert value == "test_value"
@@ -56,7 +56,7 @@ def test_meta_operations(db):
 
 
 def test_add_get_category(db):
-    """分类写入后可按 id 读回,全部属性（名称/图标/颜色）保持一致。"""
+    """分类写入后可按 id 读回，全部属性（名称/图标/颜色）保持一致。"""
     cat = Category(name="测试分类", icon_char="🧪", color="#FF0000")
     cat_id = db.add_category(cat)
     assert cat_id > 0
@@ -86,7 +86,7 @@ def test_update_category_rejects_duplicate_name(db):
 
 
 def test_add_get_entry(db):
-    """条目写入后按 id 读回,各字段（含 favorite/strength 等扩展字段）保持一致。"""
+    """条目写入后按 id 读回，各字段（含 favorite/strength 等扩展字段）保持一致。"""
     entry = _make_entry(
         title="测试条目",
         username="enc_user",
@@ -109,7 +109,7 @@ def test_add_get_entry(db):
 
 
 def test_soft_delete_restore(db):
-    """软删除→回收站隔离→恢复 全流程:删除态可读、默认列表排除、恢复后还原。"""
+    """软删除→回收站隔离→恢复 全流程：删除态可读、默认列表排除、恢复后还原。"""
     entry = _make_entry(title="待删除")
     entry_id = db.add_entry(entry)
 
@@ -222,7 +222,7 @@ def test_get_entries_filter_branches(db):
 
 
 def test_entry_to_dict():
-    """to_dict 含 password 时输出密码字段,exclude 时不输出。"""
+    """to_dict 含 password 时输出密码字段，exclude 时不输出。"""
     entry = Entry(
         title="Test",
         username="user",
@@ -242,7 +242,7 @@ def test_entry_to_dict():
 
 
 def test_entry_from_dict():
-    """from_dict 解析 dict 构造 Entry,custom_fields 子结构正确还原。"""
+    """from_dict 解析 dict 构造 Entry，custom_fields 子结构正确还原。"""
     d = {
         "title": "Test",
         "username": "user",
@@ -257,7 +257,7 @@ def test_entry_from_dict():
 
 
 def test_entry_tag_list():
-    """get_tag_list 按逗号拆分并去除空白,空串返回空列表。"""
+    """get_tag_list 按逗号拆分并去除空白，空串返回空列表。"""
     entry = Entry(tags="a, b, c")
     assert entry.get_tag_list() == ["a", "b", "c"]
 

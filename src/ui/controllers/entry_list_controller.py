@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from ...business.services.crypto_utils import matches_search, matches_tag
 from ...config import CFG_OLD_PASSWORD_WARNING_DAYS
@@ -55,7 +55,7 @@ class EntryListController:
         """
         field, order = self.get_sort_config(sort_index)
 
-        def sort_key(e: Entry) -> Any:
+        def sort_key(e: Entry) -> str | int:
             if field == "title":
                 return (e.title or "").lower()
             elif field == "password_strength":

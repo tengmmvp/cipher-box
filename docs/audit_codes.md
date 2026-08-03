@@ -98,7 +98,7 @@ message 中的旧编号引用。
 | `QL-016` | — | 1 | config 用 ``_KEY_VALIDATORS`` 分发表 + 校验辅助函数替代长 if-elif，降 ``_is_valid`` 圈复杂度（radon E→A）。 |
 | `QL-017` | — | 2 | share_renderer/font_loader 用显式 ``if`` 检查替代 ``assert`` 收窄 pyright 推断（S101，避免 python -O 剥离致收窄失效）。 |
 
-### SEC — 安全（15 项）
+### SEC — 安全（18 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
@@ -116,4 +116,7 @@ message 中的旧编号引用。
 | `SEC-012` | `SEC-013` | 1 | # 与 entry_repository._row_to_entry 一致向上传播（SEC-012），让调用方 |
 | `SEC-013` | `SEC-014` | 5 | old_password 不在计划中收集（SEC-013）：延迟到 :meth:`_prepare_overwrite_batch` 写入前 |
 | `SEC-014` | `SEC-1` | 5 | 避免 purge 经恶意链接把覆写重定向到任意目标（SEC-014，与 :func:`validate_file_path` 同源）。 |
-| `SEC-015` | `SEC-2` | 9 | # 经 atomic_write 落地即 0600，消除「写明文密钥 → 关闭 → secure_file 收紧」间的世界可读窗口（SEC- |
+| `SEC-015` | `SEC-2` | 9 | # 经 atomic_write 落地即 0600，消除「写明文密钥 → 关闭 → secure_file 收紧」间的世界可读窗口（SEC-015）。 |
+| `SEC-016` | `SEC-CLIP-001` | 6 | # Windows 剪贴板原子写入（SEC-016）：单次 OpenClipboard 周期同时写 CF_UNICODETEXT 与 Win+V 历史排除标记，消除分两次写入的时序窗口。 |
+| `SEC-017` | `SEC-CLIP-002` | 2 | # setText 容错（SEC-017）：text()/clear()/setText() 在剪贴板被占用时吞 RuntimeError 降级，不阻断 UI/锁定/托盘清理。 |
+| `SEC-018` | `SEC-LOGIN-001` | 2 | # SEC-018：``password`` 已作为闭包传入 worker，KDF 派生期间（后台线程耗时）避免控件明文驻留。 |

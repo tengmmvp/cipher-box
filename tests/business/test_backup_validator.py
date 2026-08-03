@@ -7,8 +7,8 @@ require_keys / require_text 各级子校验的合法通过与各类非法拒绝�
 
 import pytest
 
-from src.business.services.backup_header_codec import BACKUP_FORMAT
-from src.business.services.backup_validator import (
+from src.business.services.backup.header_codec import BACKUP_FORMAT
+from src.business.services.backup.validator import (
     MAX_BACKUP_ENTRIES,
     MAX_CUSTOM_FIELDS_PER_ENTRY,  # noqa: F401  仅用于断言一致性
     MAX_ENTRY_JSON_SIZE,
@@ -299,7 +299,7 @@ class TestValidateEntryFields:
         """单字段超过其精确长度上限（notes > MAX_FIELD_NOTES）时，应由 require_text 抛
         PayloadTooLargeError（SEC-006：字段精确上限取代统一 1MB）。"""
         entry = _valid_entry()
-        from src.business.services.backup_validator import _BACKUP_FIELD_LIMITS
+        from src.business.services.backup.validator import _BACKUP_FIELD_LIMITS
 
         entry["notes"] = "x" * (_BACKUP_FIELD_LIMITS["notes"] + 10)
         with pytest.raises(PayloadTooLargeError):
@@ -467,7 +467,7 @@ class TestEncryptedFieldsSingleSource:
         若未来把新字段加入 SENSITIVE_ENCRYPTED_FIELDS，此处自动新增用例；若校验侧
         漏跟该字段，对应用例会因未抛 PayloadTooLargeError 而失败。
         """
-        from src.business.services.backup_validator import _BACKUP_FIELD_LIMITS
+        from src.business.services.backup.validator import _BACKUP_FIELD_LIMITS
 
         entry = _valid_entry()
         entry[field] = "x" * (_BACKUP_FIELD_LIMITS[field] + 1)
@@ -480,6 +480,6 @@ class TestEncryptedFieldsSingleSource:
         缺失会使 require_text(item[field]) 因键不存在而 KeyError（而非静默跳过），
         模块加载期断言已强制此关系，此处冗余守护以在字段集演进时即时发现。
         """
-        from src.business.services.backup_validator import REQUIRED_ENTRY_KEYS
+        from src.business.services.backup.validator import REQUIRED_ENTRY_KEYS
 
         assert set(STRING_ENCRYPTED_FIELDS) <= REQUIRED_ENTRY_KEYS

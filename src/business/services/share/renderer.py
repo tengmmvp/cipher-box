@@ -17,8 +17,8 @@ asmcrypto.js（MIT, (c) Ágoston Pör）选用理据：解密器在 ``file://`` 
 import logging
 from importlib.resources import files
 
-from ...exceptions import ShareError
-from .share_header_codec import SHARE_VERSION
+from ....exceptions import ShareError
+from .header_codec import SHARE_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -26,14 +26,14 @@ logger = logging.getLogger(__name__)
 def _read_resource_text(name: str) -> str:
     """读取资源文本，缺失时抛 ShareError。
 
-    用 ``files(__package__) / "share_resources"`` 相对定位资源包：随本模块位置自动跟随，
+    用 ``files(__package__) / "resources"`` 相对定位资源包：随本模块位置自动跟随，
     对包重命名健壮（绝对包名字符串会在重命名后运行期才暴雷）。资源经 pyproject package-data
     分发（packages.find 仅收集 .py，非 Python 资源须显式声明）。
     """
     if __package__ is None:  # 包内模块恒非 None；显式 if 替代 assert 收窄 pyright 推断（QL-017）
         raise ShareError(f"解密器资源缺失：{name}")
     try:
-        return (files(__package__) / "share_resources" / name).read_text(encoding="utf-8")
+        return (files(__package__) / "resources" / name).read_text(encoding="utf-8")
     except (FileNotFoundError, ModuleNotFoundError) as exc:
         raise ShareError(f"解密器资源缺失：{name}") from exc
 

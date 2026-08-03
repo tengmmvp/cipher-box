@@ -40,3 +40,36 @@ def test_change_callback_invalidates_security_cache(tmp_path):
     # add_entry → change_bus.notify → security.invalidate_cache（经注册回调）
     ctx.entry_mgr.add_entry(Entry(title="t2", username="u2", password="pw789012"))
     assert ctx.security._analysis_cache is None
+
+
+def test_toggle_favorite_preserves_security_cache(tmp_path):
+    """收藏切换不触发安全分析整库重算（守护 metadata_changed=False 失效粒度）。
+
+    is_favorite 不进入 weak/duplicate/old 的判定或展示，toggle_favorite 经
+    change_bus.notify(password_changed=False, metadata_changed=False) 通知，
+    SecurityAnalyzer.invalidate_cache 据此跳过失效——避免大库下每次收藏切换
+    触发整库重解密（PERF 回归守护）。
+    """
+    ctx, vault = _make_ctx(str(tmp_path))
+    entry_id = ctx.entry_mgr.add_entry(Entry(title="t", username="u", password="pw123456"))
+    ctx.security._cached_analysis()  # 填充安全分析缓存
+    assert ctx.security._analysis_cache is not None
+
+    ctx.entry_mgr.toggle_favorite(entry_id)  # 纯旁路变更
+
+    # 缓存保留：invalidate_cache(False, False) 直接返回，未触发重算
+    assert ctx.security._analysis_cache is not None
+
+
+def test_category_change_preserves_security_cache(tmp_path):
+    """分类调整不触发安全分析重算（分类不进入安全报告判定）。"""
+    from src.models import Category
+
+    ctx, vault = _make_ctx(str(tmp_path))
+    ctx.entry_mgr.add_entry(Entry(title="t", username="u", password="pw123456"))
+    ctx.security._cached_analysis()
+    assert ctx.security._analysis_cache is not None
+
+    ctx.entry_mgr.categories.add_category(Category(name="TestCat_unique_42"))
+
+    assert ctx.security._analysis_cache is not None

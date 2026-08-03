@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 from . import __version__
 from .business.composition import build_business_context, build_vault
+from .business.services.backup.purge import purge_restore_points
 from .config import CFG_THEME, DEFAULT_THEME, ConfigManager
 from .logging_config import configure_logging
 from .ui.dialogs.login_window import LoginWindow
@@ -62,7 +63,7 @@ class CipherBoxApp:
         # 重试清理之前 purge 失败的恢复点（pre_restore_*.cbox，含恢复前全部明文）。
         # 恢复成功后应删除，之前因文件占用未删净的残留在此重试（重启后占用已释放）。
         try:
-            self._vault.purge_restore_points()
+            purge_restore_points(self._config)
         except Exception:
             logger.warning("启动清理恢复点失败", exc_info=True)
         self._main_window: MainWindow | None = None

@@ -118,6 +118,8 @@ class MainWindow(QMainWindow):
 
     def __init__(self, ctx: BusinessContext) -> None:
         super().__init__()
+        # 保留 ctx 引用供 MenuController 等控制器聚合注入业务 manager。
+        self._ctx = ctx
         self._config = ctx.config
         self._vault = ctx.vault
         self._entry_mgr = ctx.entry_mgr
@@ -178,12 +180,7 @@ class MainWindow(QMainWindow):
         """
         self._menu = MenuController(
             MenuDeps(
-                config=self._config,
-                vault=self._vault,
-                entry_mgr=self._entry_mgr,
-                security=self._security,
-                import_export=self._import_export,
-                backup=self._backup,
+                ctx=self._ctx,
                 clipboard=self._clipboard,
                 detail_panel=self._detail_panel,
                 auto_backup=self._auto_backup,
@@ -386,7 +383,7 @@ class MainWindow(QMainWindow):
         self._search_edit = QLineEdit()
         self._search_edit.setPlaceholderText("搜索标题、账号或标签")
         self._search_edit.setClearButtonEnabled(True)
-        # 存引用供主题切换刷新（M13）：addAction 返回的 QAction 图标颜色烘焙到 QIcon，
+        # 存引用供主题切换刷新：addAction 返回的 QAction 图标颜色烘焙到 QIcon，
         # setStyleSheet 全局刷新不重建已烘焙图标，须在 _apply_theme 显式 setIcon。
         # addAction stub 标注 QAction | None，构造期正常返回 QAction，None 分支由主题
         # 刷新处的 is not None 守卫兜底。
@@ -687,7 +684,7 @@ class MainWindow(QMainWindow):
             self._menu.update_menu_icons()
             self._brand_icon.setPixmap(icon_pixmap(SHIELD, "accent", 24))
             # _add_entry_btn 与搜索框 leading action 的图标颜色烘焙到 QIcon，
-            # setStyleSheet 全局刷新不重建已烘焙图标，须显式重设（M13）。
+            # setStyleSheet 全局刷新不重建已烘焙图标，须显式重设。
             set_icon_with_text(self._add_entry_btn, "新增条目", PLUS, "text_on_accent")
             if self._search_action is not None:
                 self._search_action.setIcon(icon(SEARCH))

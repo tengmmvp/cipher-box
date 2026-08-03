@@ -69,7 +69,7 @@ class TOTPWidget(QObject):
             entry_id: 条目 ID
             entry_manager: EntryManager 实例，用于获取 TOTP 状态
             content_layout: TOTP 区域加入的目标布局（DetailPanel._content_layout）
-            secret: 调用方已解密的 totp_secret 明文（可选，P3：避免 get_state 二次解密）
+            secret: 调用方已解密的 totp_secret 明文（可选，避免 get_state 二次解密）
         """
         self._entry_mgr = entry_manager
         self._content_layout = content_layout
