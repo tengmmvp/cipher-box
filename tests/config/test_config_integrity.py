@@ -191,8 +191,8 @@ class TestKeyringIntegrityKey:
 
         cfg = make_test_config(tmp_path)
         assert len(cfg._integrity_key) == 32
-        # 密钥经 keyring 存储，未落明文文件
-        assert ("CipherBox", "config-integrity-key") in store
+        # 密钥经 keyring 存储，未落明文文件；条目名按安装目录派生（多安装互不共享）
+        assert ("CipherBox", cfg._keyring_entry_name()) in store
         assert not cfg._integrity_key_path.exists()
 
     @pytest.mark.skipif(sys.platform != "win32", reason="DPAPI 迁移仅 Windows")

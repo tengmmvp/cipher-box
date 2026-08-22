@@ -232,9 +232,7 @@ class TestKeyEpochRotation:
         epoch_before = fresh_vault.key_epoch
         assert epoch_before is not None
 
-        ok, _ = fresh_vault.change_master_password(
-            _MASTER_PASSWORD, "NewMasterPassword!2026"
-        )
+        ok, _ = fresh_vault.change_master_password(_MASTER_PASSWORD, "NewMasterPassword!2026")
         assert ok
 
         # 内存 epoch 已轮换为新值（不同于改密前）

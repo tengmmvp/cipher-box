@@ -55,10 +55,7 @@ class CategoryManager:
         缓存（Category 为 frozen dataclass，浅拷贝足够）。
         """
         current_epoch = self._vault.key_epoch
-        if (
-            self._categories_cache is not None
-            and self._categories_cache_epoch == current_epoch
-        ):
+        if self._categories_cache is not None and self._categories_cache_epoch == current_epoch:
             return list(self._categories_cache)
         categories = self._vault.db.get_categories()
         decrypted: list[Category] = []

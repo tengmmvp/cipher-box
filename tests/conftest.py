@@ -58,6 +58,28 @@ def _weak_kdf_for_tests(monkeypatch):
     monkeypatch.setattr(vault_lifecycle, "DEFAULT_KDF_PARAMS", _TEST_KDF_PARAMS)
 
 
+@pytest.fixture(autouse=True)
+def _disable_system_keyring(monkeypatch):
+    """测试全局隔离系统密钥链（Keychain / Secret Service）。
+
+    真实后端可用时（macOS CI、桌面 Linux）：测试会往宿主密钥链写入临时条目，且
+    不同安装目录经全局 keyring 条目共享状态、破坏测试隔离（config.key 文件存在
+    性断言等假设后端不可用的行为）。禁用后统一走「后端不可用回退明文文件」路径
+    （与 headless Linux CI 一致）。keyring 存取往返的专测自行 monkeypatch 覆盖
+    本设置，不受影响。
+    """
+    try:
+        import keyring
+    except ImportError:
+        return
+
+    def _unavailable(*args, **kwargs):
+        raise RuntimeError("system keyring disabled in tests")
+
+    monkeypatch.setattr(keyring, "get_password", _unavailable)
+    monkeypatch.setattr(keyring, "set_password", _unavailable)
+
+
 @pytest.fixture
 def vault(vault_config):
     """已初始化的 VaultManager 实例（经 build_vault 完整装配 db+signer+生命周期）。"""

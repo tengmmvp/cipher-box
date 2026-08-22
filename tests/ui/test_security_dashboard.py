@@ -54,9 +54,7 @@ def patched_worker(monkeypatch):
         worker.cancel_check.return_value = False
         return worker
 
-    monkeypatch.setattr(
-        "src.ui.dialogs.security_dashboard.BackgroundWorker", _fake_worker
-    )
+    monkeypatch.setattr("src.ui.dialogs.security_dashboard.BackgroundWorker", _fake_worker)
     return cap
 
 
@@ -135,9 +133,7 @@ class TestSecurityDashboardRendering:
         ]
         assert badges == ["强度 1", "强度 0"]
 
-    def test_duplicate_tab_populates_groups(
-        self, qapp, tmp_path, patched_worker, monkeypatch
-    ):
+    def test_duplicate_tab_populates_groups(self, qapp, tmp_path, patched_worker, monkeypatch):
         """重复密码 tab 按组展示，每组标注被共用的条目数并列出成员。"""
         dlg, _, _ = _make_dialog(tmp_path)
         group = [

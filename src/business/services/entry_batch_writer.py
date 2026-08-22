@@ -195,11 +195,7 @@ def write_overwrite_updates(
     # 截断），changed_at 用与条目一致的 password_changed_at 避免微秒级时序倒置。
     history_by_entry: dict[int, list[tuple[str, str]]] = {}
     for item in prepared:
-        if (
-            item.raw.password
-            and item.password_changed
-            and item.enc_entry.id is not None
-        ):
+        if item.raw.password and item.password_changed and item.enc_entry.id is not None:
             history_by_entry.setdefault(item.enc_entry.id, []).append(
                 (item.raw.password, item.password_changed_at)
             )

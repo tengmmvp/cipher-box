@@ -99,9 +99,7 @@ def test_restore_entries_encrypts_and_maps(tmp_path):
     vault.initialize("test_password_12345")
     try:
         key = vault.key
-        backup = _backup(
-            entries=[_entry(1, "a" * 32, 1), _entry(2, "b" * 32, None)]
-        )
+        backup = _backup(entries=[_entry(1, "a" * 32, 1), _entry(2, "b" * 32, None)])
         db = MagicMock()
         db.add_entries_batch.return_value = {"a" * 32: 100, "b" * 32: 200}
 

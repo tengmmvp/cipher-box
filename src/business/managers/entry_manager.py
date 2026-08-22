@@ -78,9 +78,7 @@ class EntryManager:
         self._change_bus = change_bus
         # 分类子服务经组合根显式注入（提升为一等依赖，可替换/可测）；未注入时内部
         # 构造供测试简便。TOTP/密码历史为无状态子服务，保持内部构造。
-        self._category_mgr = category_mgr or CategoryManager(
-            vault_manager, cache, change_bus
-        )
+        self._category_mgr = category_mgr or CategoryManager(vault_manager, cache, change_bus)
         self._totp_svc = TotpService(vault_manager, cache)
         self._history_svc = PasswordHistoryService(vault_manager)
 
@@ -992,7 +990,9 @@ class EntryManager:
                         search,
                     ):
                         continue
-                    summaries.append(self._decrypt_summary(raw, skip_epoch_check=True, key=key, meta=meta))
+                    summaries.append(
+                        self._decrypt_summary(raw, skip_epoch_check=True, key=key, meta=meta)
+                    )
                 else:
                     summaries.append(self._decrypt_summary(raw, skip_epoch_check=True, key=key))
         except VaultKeyEpochMismatchError:

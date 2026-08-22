@@ -86,8 +86,7 @@ _PORTABLE_KEY_ASSERTS = (
 for _actual, _expected, _name in _PORTABLE_KEY_ASSERTS:
     if _actual != _expected:
         raise RuntimeError(
-            f"{_name} 字段集与 validator 校验键集不一致："
-            f"{sorted(_actual)} != {sorted(_expected)}"
+            f"{_name} 字段集与 validator 校验键集不一致：{sorted(_actual)} != {sorted(_expected)}"
         )
 
 

@@ -25,9 +25,10 @@ from .utils.file_security import (
 
 _CONFIG_SIG_PREFIX = "#__sig__:"
 _CONFIG_KEY_SIZE = 32
-# keyring 服务与账户名（非 Windows 平台经系统密钥链存储配置签名密钥，SEC-003）
+# keyring 服务名与条目名前缀（非 Windows 平台经系统密钥链存储配置签名密钥，SEC-003）。
+# 条目名按安装目录派生（见 _keyring_entry_name），不同安装互不共享密钥。
 _KEYRING_SERVICE = "CipherBox"
-_KEYRING_KEY_NAME = "config-integrity-key"
+_KEYRING_KEY_PREFIX = "config-integrity-key"
 
 logger = logging.getLogger(__name__)
 
@@ -381,6 +382,18 @@ class ConfigManager:
         return True
 
     # ---- 非 Windows keyring 存储（Keychain / Secret Service）----
+
+    def _keyring_entry_name(self) -> str:
+        """按安装目录派生 keyring 条目名，使不同安装互不共享签名密钥。
+
+        条目名若全局固定，同一用户下多个安装（不同 data_dir）会读写同一条
+        Keychain / Secret Service 记录——一处安装的签名密钥可用于伪造另一处
+        安装的 config 签名，破坏「每安装独立密钥」前提。以 data_dir 解析后
+        路径的哈希作后缀区分；未发布项目，旧固定条目不做迁移。
+        """
+        digest = hashlib.sha256(str(self._data_dir.resolve()).encode("utf-8")).hexdigest()[:16]
+        return f"{_KEYRING_KEY_PREFIX}:{digest}"
+
     def _load_keyring_integrity_key(self) -> bytes | None:
         try:
             import keyring
@@ -388,7 +401,7 @@ class ConfigManager:
             logger.error("keyring 未安装，配置签名密钥回退明文（SEC-003）")
             return self._load_plaintext_integrity_key()
         try:
-            value = keyring.get_password(_KEYRING_SERVICE, _KEYRING_KEY_NAME)
+            value = keyring.get_password(_KEYRING_SERVICE, self._keyring_entry_name())
         except Exception:
             # 后端不可用（headless Linux 无 Secret Service 等）：回退明文。
             logger.error("keyring 读取失败，回退明文存储（SEC-003）", exc_info=True)
@@ -406,9 +419,10 @@ class ConfigManager:
     def _store_keyring_integrity_key(self, key: bytes) -> bool:
         try:
             import keyring
+
             keyring.set_password(
                 _KEYRING_SERVICE,
-                _KEYRING_KEY_NAME,
+                self._keyring_entry_name(),
                 base64.b64encode(key).decode("ascii"),
             )
             return True

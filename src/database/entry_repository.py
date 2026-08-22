@@ -518,9 +518,7 @@ class EntryRepository:
             return
         for entry in entries:
             self._assert_entry_encrypted_fields(entry)
-        current_map = self._bulk_read_entry_state(
-            [e.id for e in entries if e.id is not None]
-        )
+        current_map = self._bulk_read_entry_state([e.id for e in entries if e.id is not None])
         signed: list[RawEntry] = []
         for entry in entries:
             if entry.id is None or entry.id not in current_map:

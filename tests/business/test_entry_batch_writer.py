@@ -74,9 +74,7 @@ class TestPrepareOverwriteUpdates:
         entry_id = entry_mgr.add_entry(make_entry(title="A", password="OldPass1!"))
         raw = entry_mgr.db.get_entry(entry_id)
         assert raw is not None
-        new_entry = dataclasses.replace(
-            make_entry(title="A", password="NewPass2!"), id=entry_id
-        )
+        new_entry = dataclasses.replace(make_entry(title="A", password="NewPass2!"), id=entry_id)
         item = BatchUpdateItem(entry=new_entry, raw=raw, old_password="OldPass1!")
         prepared, failures = prepare_overwrite_updates(entry_mgr, [item])
         assert failures == []
@@ -86,9 +84,7 @@ class TestPrepareOverwriteUpdates:
     def test_password_unchanged(self, entry_mgr, make_entry):
         entry_id = entry_mgr.add_entry(make_entry(title="A", password="Same1!@#"))
         raw = entry_mgr.db.get_entry(entry_id)
-        new_entry = dataclasses.replace(
-            make_entry(title="A", password="Same1!@#"), id=entry_id
-        )
+        new_entry = dataclasses.replace(make_entry(title="A", password="Same1!@#"), id=entry_id)
         item = BatchUpdateItem(entry=new_entry, raw=raw, old_password="Same1!@#")
         prepared, failures = prepare_overwrite_updates(entry_mgr, [item])
         assert failures == []
@@ -128,9 +124,7 @@ class TestWriteOverwriteUpdates:
     def test_epoch_mismatch_raises(self, entry_mgr, make_entry):
         entry_id = entry_mgr.add_entry(make_entry(title="A", password="P1!@#"))
         raw = entry_mgr.db.get_entry(entry_id)
-        new_entry = dataclasses.replace(
-            make_entry(title="A", password="P2!@#"), id=entry_id
-        )
+        new_entry = dataclasses.replace(make_entry(title="A", password="P2!@#"), id=entry_id)
         item = BatchUpdateItem(entry=new_entry, raw=raw, old_password="P1!@#")
         prepared, _ = prepare_overwrite_updates(entry_mgr, [item])
         with pytest.raises(VaultKeyEpochMismatchError):
@@ -139,9 +133,7 @@ class TestWriteOverwriteUpdates:
     def test_writes_update_and_archives_history(self, entry_mgr, make_entry):
         entry_id = entry_mgr.add_entry(make_entry(title="A", password="OldPass1!"))
         raw = entry_mgr.db.get_entry(entry_id)
-        new_entry = dataclasses.replace(
-            make_entry(title="A", password="NewPass2!"), id=entry_id
-        )
+        new_entry = dataclasses.replace(make_entry(title="A", password="NewPass2!"), id=entry_id)
         item = BatchUpdateItem(entry=new_entry, raw=raw, old_password="OldPass1!")
         prepared, _ = prepare_overwrite_updates(entry_mgr, [item])
         pre_epoch = entry_mgr.key_epoch
