@@ -9,9 +9,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 三平台 × Python 支持区间（3.10 最低 / 3.13 最高）边界 + 中间档 3.12 覆盖
+        # 三平台 × Python 支持区间（3.12 最低 / 3.13 最高）边界覆盖
         os: [windows-latest, ubuntu-latest, macos-latest]
-        python-version: ["3.10", "3.12", "3.13"]
+        python-version: ["3.12", "3.13"]
     runs-on: ${{ matrix.os }}
     env:
       # CI 无显示器：用 Qt offscreen 平台插件，避免 PyQt6 因找不到显示后端初始化失败
@@ -34,7 +34,7 @@ jobs:
           enable-cache: true
       - name: Install dependencies
         run: uv sync --locked --extra dev
-      # lint / 类型检查与 pip-audit 仅在最高档 3.13 跑一次，避免在 3.10/3.12 重复
+      # lint / 类型检查与 pip-audit 仅在最高档 3.13 跑一次，避免在 3.12 重复
       - name: Ruff check
         if: matrix.python-version == '3.13'
         run: uv run ruff check src tests

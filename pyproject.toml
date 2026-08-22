@@ -7,7 +7,7 @@ name = "cipher-box"
 dynamic = ["version"]
 description = "Local-first encrypted password manager built with PyQt6"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 dependencies = [
   "PyQt6>=6.6.0,<6.10",
@@ -63,7 +63,7 @@ exclude_lines = [
 ]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 line-length = 100
 
 [tool.ruff.lint]
@@ -74,6 +74,9 @@ line-length = 100
 # UP：pyupgrade，推动 PEP 604（X | None）、内置泛型等现代化语法（多可自动修复）
 # B：flake8-bugbear，捕获可变默认参数、裸 except、assert 用于运行期校验等真问题
 select = ["E9", "F401", "F63", "F7", "F82", "F811", "W292", "I", "UP", "B"]
+# UP046/UP047：PEP 695 泛型语法（class Foo[T] / def f[T]()）为纯风格转换，
+# 会改动既有 TypeVar 函数/类的签名形态且无运行收益，保持现行 TypeVar 风格。
+ignore = ["UP046", "UP047"]
 
 [tool.ruff.lint.per-file-ignores]
 # Qt Model 子类的 rowCount/columnCount/index 等重写方法以 QModelIndex() 作默认
@@ -101,7 +104,7 @@ select = ["E9", "F401", "F63", "F7", "F82", "F811", "W292", "I", "UP", "B"]
 combine-as-imports = true
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 ignore_missing_imports = true
 check_untyped_defs = true
 warn_unused_ignores = true

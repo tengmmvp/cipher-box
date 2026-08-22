@@ -5,7 +5,7 @@
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 BACKUPS_DIR_NAME = "backups"
 BACKUP_EXT = ".cbox"
@@ -23,6 +23,6 @@ def build_backup_filename(prefix: str) -> str:
 
     统一两类备份命名格式避免漂移；时间戳精确到微秒，uuid 取 8 位保证唯一性。
     """
-    stamp = datetime.now(timezone.utc).strftime(_BACKUP_NAME_TS_FORMAT)
+    stamp = datetime.now(UTC).strftime(_BACKUP_NAME_TS_FORMAT)
     suffix = uuid.uuid4().hex[:8]
     return f"{prefix}{stamp}_{suffix}{BACKUP_EXT}"

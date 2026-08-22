@@ -3,7 +3,7 @@
 import enum
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ....exceptions import EntryError, ImportFormatError
@@ -81,8 +81,8 @@ def _parse_bitwarden_date(value: Any) -> str:
     except ValueError:
         return ""
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).isoformat()
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).isoformat()
 
 
 class BitwardenItemType(enum.IntEnum):

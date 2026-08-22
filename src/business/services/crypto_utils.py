@@ -11,11 +11,9 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict, Unpack
 
 if TYPE_CHECKING:
-    from typing_extensions import Unpack
-
     from ...database.db_manager import DatabaseManager
     from ..managers.vault_manager import VaultManager
 

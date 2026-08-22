@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-CipherBox（密匣）是一个本地优先的加密密码管理器，使用 Python 3.10+ 和 PyQt6 构建。所有敏感数据通过 AES-256-GCM 加密存储在本地 SQLite 数据库中，无任何网络通信。UI 语言为简体中文。
+CipherBox（密匣）是一个本地优先的加密密码管理器，使用 Python 3.12+ 和 PyQt6 构建。所有敏感数据通过 AES-256-GCM 加密存储在本地 SQLite 数据库中，无任何网络通信。UI 语言为简体中文。
 
 ## 常用命令
 

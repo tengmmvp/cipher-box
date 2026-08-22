@@ -4,7 +4,7 @@
 ``format_datetime`` 将其转换为本地时区的可读形式供 UI 展示。属零上层依赖共享层。
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 def utc_now_iso(now: datetime | None = None) -> str:
@@ -13,7 +13,7 @@ def utc_now_iso(now: datetime | None = None) -> str:
     ``now`` 为可注入时钟（aware datetime），供时序相关测试精确控制时间戳；
     生产路径不传，保持实时取值。
     """
-    return (now if now is not None else datetime.now(timezone.utc)).isoformat()
+    return (now if now is not None else datetime.now(UTC)).isoformat()
 
 
 def format_datetime(iso_str: str) -> str:
@@ -29,7 +29,7 @@ def format_datetime(iso_str: str) -> str:
         normalized = iso_str[:-1] + "+00:00" if iso_str.endswith("Z") else iso_str
         dt = datetime.fromisoformat(normalized)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         dt = dt.astimezone()
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     except (ValueError, TypeError, AttributeError):

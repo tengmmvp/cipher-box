@@ -7,6 +7,8 @@
   LENIENT 标记 ``integrity_error``，为列表路径的性能/语义权衡提供类型化开关。
 """
 
+from datetime import UTC
+
 from src.business.services import key_manager as key_manager_module
 from src.business.services.key_manager import KeyManager
 from src.business.services.security_analyzer import DEFAULT_ANALYSIS_DAYS
@@ -158,9 +160,9 @@ class TestGetCachedCounts:
 
     def test_old_recounted_when_days_differs(self):
         """days 与缓存 days 不同时按 days 重算 old 计数，不深拷贝 Entry。"""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         cache = {
             "total": 5,
             "weak_count": 0,

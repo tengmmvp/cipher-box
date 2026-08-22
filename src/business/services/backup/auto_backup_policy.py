@@ -4,7 +4,7 @@
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -45,7 +45,7 @@ def is_auto_backup_due(
     last_text = config.get(CFG_LAST_AUTO_BACKUP_AT, "")
     if not last_text:
         return True
-    current = now or datetime.now(timezone.utc)
+    current = now or datetime.now(UTC)
     try:
         elapsed = current - datetime.fromisoformat(last_text)
     except (ValueError, TypeError):

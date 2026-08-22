@@ -10,7 +10,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
 
 if TYPE_CHECKING:
@@ -194,7 +194,7 @@ class SecurityAnalyzer:
         # dict(TypedDict) 退化为 dict[str, object]，cast 标注此复制边界。
         cache = cast("SecurityReport", dict(cache))
         if days != self._analysis_cache_days:
-            cutoff = (now if now is not None else datetime.now(timezone.utc)) - timedelta(days=days)
+            cutoff = (now if now is not None else datetime.now(UTC)) - timedelta(days=days)
             new_old_entries = [
                 s
                 for s, dt in cache.get("_summaries_with_dates", [])
@@ -320,7 +320,7 @@ class SecurityAnalyzer:
             if days == self._analysis_cache_days:
                 old = cached.get("old", 0)
             else:
-                cutoff = (now if now is not None else datetime.now(timezone.utc)) - timedelta(days=days)
+                cutoff = (now if now is not None else datetime.now(UTC)) - timedelta(days=days)
                 old = sum(
                     1
                     for _s, dt in cached.get("_summaries_with_dates", [])
@@ -381,8 +381,8 @@ class SecurityAnalyzer:
         try:
             changed_utc = datetime.fromisoformat(changed_at_str)
             if changed_utc.tzinfo is None:
-                return changed_utc.replace(tzinfo=timezone.utc)
-            return changed_utc.astimezone(timezone.utc)
+                return changed_utc.replace(tzinfo=UTC)
+            return changed_utc.astimezone(UTC)
         except (ValueError, TypeError):
             logger.debug("条目 %s 日期解析失败: %s", raw.id, changed_at_str)
             return None
@@ -415,7 +415,7 @@ class SecurityAnalyzer:
             total = len(entries)
             weak_entries = []
             password_map: dict[bytes, list[Entry]] = {}
-            cutoff = (now if now is not None else datetime.now(timezone.utc)) - timedelta(days=days)
+            cutoff = (now if now is not None else datetime.now(UTC)) - timedelta(days=days)
             # 保存所有条目的 summary + changed_at_utc，供缓存后不同 days 重新过滤
             _summaries_with_dates: list[tuple[Entry, datetime | None]] = []
 

@@ -5,7 +5,7 @@
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 SHARE_EXT = ".cboxshare"
 DECRYPTER_EXT = ".html"
@@ -20,7 +20,7 @@ def build_share_filenames(prefix: str = "cipherbox_share_") -> tuple[str, str]:
     返回 ``(share_filename, decrypter_filename)``，两者共用时间戳+随机干、不同扩展名，
     便于发送方一次生成、接收方配对识别。
     """
-    stamp = datetime.now(timezone.utc).strftime(_SHARE_NAME_TS_FORMAT)
+    stamp = datetime.now(UTC).strftime(_SHARE_NAME_TS_FORMAT)
     suffix = uuid.uuid4().hex[:8]
     base = f"{prefix}{stamp}_{suffix}"
     return f"{base}{SHARE_EXT}", f"{base}{DECRYPTER_EXT}"
