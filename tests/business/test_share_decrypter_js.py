@@ -203,9 +203,7 @@ def _run_decrypter(tmp_path, decrypter_path, share_path, password: str) -> dict:
         timeout=180,
         check=False,
     )
-    assert proc.returncode == 0, (
-        "node 驱动自身故障: " + proc.stderr.decode("utf-8", "replace")
-    )
+    assert proc.returncode == 0, "node 驱动自身故障: " + proc.stderr.decode("utf-8", "replace")
     return json.loads(proc.stdout.decode("utf-8"))
 
 
@@ -234,9 +232,7 @@ class TestDecrypterJsRoundTrip:
             assert expected in html, f"解密明文应包含 {expected!r}"
         assert result["fileInfo"].startswith("已加载：")
 
-    def test_wrong_password_fails_without_leaking_plaintext(
-        self, share_package, tmp_path
-    ):
+    def test_wrong_password_fails_without_leaking_plaintext(self, share_package, tmp_path):
         """错误密码：认证失败归一为固定错误文案，不向 DOM 泄漏任何明文。"""
         share_path, decrypter_path = share_package
         result = _run_decrypter(tmp_path, decrypter_path, share_path, "Wrong-Pwd-2026#z")

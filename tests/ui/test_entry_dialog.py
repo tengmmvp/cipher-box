@@ -233,9 +233,7 @@ class TestCollectEntryPasswordGating:
         from src.models import Entry
         from src.ui.dialogs.entry_dialog import EntryDialog
 
-        entry = Entry(
-            id=7, title="既有卡片", password="KeepMe!123456", entry_type="card"
-        )
+        entry = Entry(id=7, title="既有卡片", password="KeepMe!123456", entry_type="card")
         dlg = EntryDialog(MagicMock(), [], entry=entry)
         dlg._on_save()
         dlg._entry_mgr.update_entry.assert_called_once()

@@ -167,9 +167,7 @@ class TestUpdateEntry:
 
     def test_non_ascii_password_unchanged_edit_succeeds(self, entry_mgr, make_entry):
         """非 ASCII 密码「未变」分支：仅改标题可正常保存，不归档历史。"""
-        entry_id = entry_mgr.add_entry(
-            make_entry(password=self._UNICODE_PWD, title="原标题")
-        )
+        entry_id = entry_mgr.add_entry(make_entry(password=self._UNICODE_PWD, title="原标题"))
         entry = entry_mgr.get_entry(entry_id)
         entry = dataclasses.replace(entry, title="新标题")
         entry_mgr.update_entry(entry)  # 旧实现在此抛 TypeError
@@ -299,9 +297,7 @@ class TestViewDecryptionDelegation:
 
     def test_public_decrypt_apis_match_view_decryptor(self, entry_mgr, make_entry):
         """decrypt_entry / decrypt_entry_for_export 与解密器直调结果逐字段一致。"""
-        entry_id = entry_mgr.add_entry(
-            make_entry(notes="n1", totp_secret="JBSWY3DPEHPK3PXP")
-        )
+        entry_id = entry_mgr.add_entry(make_entry(notes="n1", totp_secret="JBSWY3DPEHPK3PXP"))
         raw = entry_mgr.db.get_entry(entry_id)
         assert raw is not None
 

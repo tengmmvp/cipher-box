@@ -182,9 +182,7 @@ class TestImportSummaryCacheRetention:
         from src.business.managers import entry_cache as ec_module
 
         mgr = ImportExportManager(entry_mgr)
-        keep_id = entry_mgr.add_entry(
-            Entry(title="Existing", username="u", password="OldPass!1")
-        )
+        keep_id = entry_mgr.add_entry(Entry(title="Existing", username="u", password="OldPass!1"))
         entry_mgr.get_entry_summaries()  # 预热摘要/分类名缓存
         keep_cid = entry_mgr.db.get_entry(keep_id).crypto_id
         cache = entry_mgr._cache  # noqa: SLF001 测试取内部缓存断言失效粒度
@@ -222,14 +220,10 @@ class TestImportSummaryCacheRetention:
         # 既有条目的 4 个摘要字段零解密（缓存命中）；新条目按需解密属预期
         assert all(cid != keep_cid for cid, _field in decrypt_calls)
 
-    def test_overwrite_import_invalidates_only_overwritten_summaries(
-        self, entry_mgr, tmp_path
-    ):
+    def test_overwrite_import_invalidates_only_overwritten_summaries(self, entry_mgr, tmp_path):
         """含覆盖导入后被覆盖条目摘要精确失效，未覆盖条目摘要保留。"""
         mgr = ImportExportManager(entry_mgr)
-        keep_id = entry_mgr.add_entry(
-            Entry(title="Keep", username="k", password="KeepPass!1")
-        )
+        keep_id = entry_mgr.add_entry(Entry(title="Keep", username="k", password="KeepPass!1"))
         target_id = entry_mgr.add_entry(
             Entry(title="Target", username="t", password="OldPass!1", tags="")
         )
@@ -248,8 +242,12 @@ class TestImportSummaryCacheRetention:
                     "secrets_included": True,
                     "entries": [
                         # 同 (title, username) 命中覆盖；改 tags 供摘要可观测
-                        {"title": "Target", "username": "t", "password": "NewPass!2",
-                         "tags": "fresh-tag"},
+                        {
+                            "title": "Target",
+                            "username": "t",
+                            "password": "NewPass!2",
+                            "tags": "fresh-tag",
+                        },
                     ],
                 }
             ),

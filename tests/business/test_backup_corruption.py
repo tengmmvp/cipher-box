@@ -308,9 +308,7 @@ class TestRestorePlaintextRelease:
                 captured.append(result)
             return result
 
-        monkeypatch.setattr(
-            self._backup_mgr, "_decrypt_and_validate_payload_locked", _spy
-        )
+        monkeypatch.setattr(self._backup_mgr, "_decrypt_and_validate_payload_locked", _spy)
         return captured
 
     def test_success_path_clears_payload_fields(self, tmp_path, monkeypatch):
@@ -339,9 +337,7 @@ class TestRestorePlaintextRelease:
         assert captured[0].plaintext == b""
         assert captured[0].data == {}
 
-    def test_restore_point_creation_failure_clears_payload_fields(
-        self, tmp_path, monkeypatch
-    ):
+    def test_restore_point_creation_failure_clears_payload_fields(self, tmp_path, monkeypatch):
         """恢复点创建（重建前的阶段）抛异常时同样触发明文释放。"""
         path = self._create_snapshot_backup(str(tmp_path / "release_rp.cbox"))
         captured = self._capture_payload(monkeypatch)

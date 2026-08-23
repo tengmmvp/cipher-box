@@ -176,9 +176,7 @@ class TestSearchPathReverify:
     def test_search_ciphertext_corruption_marks_integrity(self):
         """搜索命中行的密文损坏（GCM 失败）仍计入完整性警示。"""
         # 按 username 定位目标行（updated_at 同刻创建时 get_entries()[0] 顺序不定）
-        entry_id = next(
-            e.id for e in self._entry_mgr.get_entries() if e.username == "alice"
-        )
+        entry_id = next(e.id for e in self._entry_mgr.get_entries() if e.username == "alice")
         assert entry_id is not None
         conn = self._vault.db._conn
         assert conn is not None

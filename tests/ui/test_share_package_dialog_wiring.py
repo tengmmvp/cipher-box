@@ -115,9 +115,7 @@ class TestExpiryPresetWiring:
     """有效期预设→create_share_package 的 expire_at 秒数映射。"""
 
     @pytest.mark.parametrize("index,label,offset", _TTL_CASES, ids=[c[1] for c in _TTL_CASES])
-    def test_ttl_preset_maps_to_expire_at_seconds(
-        self, qapp, patched_wiring, index, label, offset
-    ):
+    def test_ttl_preset_maps_to_expire_at_seconds(self, qapp, patched_wiring, index, label, offset):
         """各 TTL 预设的相对秒数正确下传：offset 秒映射为「当前时间+offset」，
         「永不」精确映射为 ``EXPIRE_NEVER``（0），其余用执行前后时间夹逼容忍时钟抖动。"""
         dlg = _make_dialog(qapp)

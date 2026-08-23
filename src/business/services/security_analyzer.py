@@ -234,8 +234,7 @@ class SecurityAnalyzer:
         # 经副本引用就地变异桶成员污染增量更新基准。
         if "_fingerprint_map" in cache:
             cache["_fingerprint_map"] = {
-                fingerprint: list(group)
-                for fingerprint, group in cache["_fingerprint_map"].items()
+                fingerprint: list(group) for fingerprint, group in cache["_fingerprint_map"].items()
             }
         return cache
 
@@ -461,9 +460,7 @@ class SecurityAnalyzer:
             e for e in cached.get("weak_entries", []) if e.crypto_id != crypto_id
         ]
         summaries = [
-            (s, dt)
-            for s, dt in cached.get("_summaries_with_dates", [])
-            if s.crypto_id != crypto_id
+            (s, dt) for s, dt in cached.get("_summaries_with_dates", []) if s.crypto_id != crypto_id
         ]
         fp_map: dict[bytes, list[Entry]] = {}
         for fingerprint, group in cached.get("_fingerprint_map", {}).items():

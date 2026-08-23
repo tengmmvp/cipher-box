@@ -78,9 +78,7 @@ class TestExportNormalPath:
         # 导出路径正常条目不标记完整性错误
         assert exported.integrity_error is False
 
-    def test_export_without_secrets_leaves_password_and_totp_empty(
-        self, entry_mgr, make_entry
-    ):
+    def test_export_without_secrets_leaves_password_and_totp_empty(self, entry_mgr, make_entry):
         """include_secrets=False 时 password/totp_secret 为空，其余字段正常解密。"""
         entry_mgr.add_entry(
             make_entry(
@@ -176,9 +174,7 @@ class TestExportRejectsCorruptedData:
 
     def test_corrupted_custom_fields_rejects_export(self, entry_mgr, make_entry):
         """custom_fields 密文损坏 → 拒绝导出（无论 include_secrets）。"""
-        entry_id = entry_mgr.add_entry(
-            make_entry(custom_fields=[CustomField(name="k", value="v")])
-        )
+        entry_id = entry_mgr.add_entry(make_entry(custom_fields=[CustomField(name="k", value="v")]))
 
         _corrupt_field(entry_mgr, entry_id, "custom_fields")
 
@@ -216,9 +212,7 @@ class TestExportSkipsSecretDecryption:
 
     def test_corrupted_totp_still_exports_without_secrets(self, entry_mgr, make_entry):
         """损坏的 totp_secret 密文不阻断不含密码导出——证明该分支未解密 totp。"""
-        entry_id = entry_mgr.add_entry(
-            make_entry(title="TOTP损坏", totp_secret="JBSWY3DPEHPK3PXP")
-        )
+        entry_id = entry_mgr.add_entry(make_entry(title="TOTP损坏", totp_secret="JBSWY3DPEHPK3PXP"))
         _corrupt_field(entry_mgr, entry_id, "totp_secret")
 
         entries = entry_mgr.get_entries_for_export(include_secrets=False)
@@ -232,9 +226,7 @@ class TestDecryptEntryForExport:
 
     def test_decrypt_entry_for_export_roundtrip(self, entry_mgr, make_entry):
         """对库内 raw 条目直接解密导出，往返一致。"""
-        entry_id = entry_mgr.add_entry(
-            make_entry(title="直解", password="Direct-123!")
-        )
+        entry_id = entry_mgr.add_entry(make_entry(title="直解", password="Direct-123!"))
         raw = entry_mgr.db.get_entry(entry_id)
         assert raw is not None
 

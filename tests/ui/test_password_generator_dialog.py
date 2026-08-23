@@ -53,9 +53,7 @@ def _make_dialog(qapp, clipboard=None):
 def _mock_generate(monkeypatch, return_value: str = "Mocked-Gen-9xA") -> MagicMock:
     """替换 PasswordService.generate 为 MagicMock 并返回之。"""
     gen = MagicMock(return_value=return_value)
-    monkeypatch.setattr(
-        "src.ui.dialogs.password_generator_dialog.PasswordService.generate", gen
-    )
+    monkeypatch.setattr("src.ui.dialogs.password_generator_dialog.PasswordService.generate", gen)
     return gen
 
 

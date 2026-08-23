@@ -418,9 +418,8 @@ def _is_stale_temp_name(name: str, target_name: str) -> bool:
     if not (name.startswith(prefix) and name.endswith(suffix)):
         return False
     middle = name[len(prefix) : -len(suffix)]
-    return (
-        len(middle) == _TEMP_RANDOM_BYTES * 2
-        and all(char in "0123456789abcdefABCDEF" for char in middle)
+    return len(middle) == _TEMP_RANDOM_BYTES * 2 and all(
+        char in "0123456789abcdefABCDEF" for char in middle
     )
 
 
@@ -458,9 +457,7 @@ def _create_exclusive_temp(
     ``_TEMP_CREATE_ATTEMPTS`` 次；耗尽抛 OSError 中止写入——安全优先于可用性。
     """
     for _ in range(_TEMP_CREATE_ATTEMPTS):
-        candidate = target.with_name(
-            f"{target.name}.{os.urandom(_TEMP_RANDOM_BYTES).hex()}.tmp"
-        )
+        candidate = target.with_name(f"{target.name}.{os.urandom(_TEMP_RANDOM_BYTES).hex()}.tmp")
         try:
             return candidate, open(candidate, mode, **open_kwargs)
         except FileExistsError:

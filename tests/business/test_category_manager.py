@@ -182,9 +182,7 @@ class TestCategoryManagerUpdateDuplicate:
         entry_mgr.categories.update_category(
             Category(id=cat_id, name=name, icon_char="[DIR]", color="#fff"),
         )  # 不抛即通过
-        assert any(
-            c.name == name for c in entry_mgr.categories.get_categories()
-        )
+        assert any(c.name == name for c in entry_mgr.categories.get_categories())
 
     def test_after_rename_original_name_reusable(self, entry_mgr):
         """改名让出原名后，原名可再新建分类（闭环一致性）。"""
@@ -207,9 +205,7 @@ class TestCategoryManagerUpdateDuplicate:
             entry_mgr.categories.update_category(
                 Category(id=id_a, name=name_b, icon_char="[DIR]", color="#fff"),
             )
-        assert any(
-            c.name == name_a for c in entry_mgr.categories.get_categories()
-        )
+        assert any(c.name == name_a for c in entry_mgr.categories.get_categories())
 
 
 class TestCategoryManagerDelete:

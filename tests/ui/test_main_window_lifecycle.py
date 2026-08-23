@@ -172,9 +172,7 @@ class TestSecureHideToTray:
         mw._list_refresh.shutdown.side_effect = _record(order, "list_shutdown")
         mw._entry_actions = MagicMock()
         mw._entry_actions.stop_timers.side_effect = _record(order, "entry_stop_timers")
-        mw._entry_actions.cancel_pending_selection.side_effect = _record(
-            order, "cancel_pending"
-        )
+        mw._entry_actions.cancel_pending_selection.side_effect = _record(order, "cancel_pending")
         mw._auto_backup = MagicMock()
         mw._auto_backup.shutdown.side_effect = _record(order, "auto_backup_shutdown")
         toast_mgr = MagicMock()

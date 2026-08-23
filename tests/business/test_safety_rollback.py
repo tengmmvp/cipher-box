@@ -487,9 +487,7 @@ def test_restore_rotates_snapshot_key(tmp_path):
     source.initialize("SourceMaster!2026")
     make_entry_manager(source).add_entry(Entry(title="Incoming", password="IncomingSecret!2026"))
     portable = str(Path(source_dir) / "portable.cbox")
-    assert make_backup_manager(source).create_backup(
-        portable, "PortableBackup!2026"
-    )[0]
+    assert make_backup_manager(source).create_backup(portable, "PortableBackup!2026")[0]
 
     target = make_vault(make_test_config(target_dir))
     target.initialize("TargetMaster!2026")

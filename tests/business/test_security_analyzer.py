@@ -136,9 +136,7 @@ class TestIncrementalCacheInvalidation:
     def test_title_edit_keeps_analysis_cache(self, ctx_vault, monkeypatch):
         """纯元数据编辑（改标题）后报告缓存命中：不重算，展示标题已刷新。"""
         ctx, _vault = ctx_vault
-        entry_id = ctx.entry_mgr.add_entry(
-            Entry(title="旧标题", username="u", password="weak")
-        )
+        entry_id = ctx.entry_mgr.add_entry(Entry(title="旧标题", username="u", password="weak"))
         report = ctx.security.get_or_compute_report()
         assert report["weak_count"] == 1
         assert report["weak_entries"][0].title == "旧标题"
@@ -153,9 +151,7 @@ class TestIncrementalCacheInvalidation:
         assert refreshed["weak_count"] == 1
         assert refreshed["weak_entries"][0].title == "新标题"
 
-    def test_password_change_flips_duplicate_state_incrementally(
-        self, ctx_vault, monkeypatch
-    ):
+    def test_password_change_flips_duplicate_state_incrementally(self, ctx_vault, monkeypatch):
         """改单条密码：同旧指纹条目的重复状态正确翻转，其余结果复用不重算。"""
         ctx, _vault = ctx_vault
         shared = "SharedPass!2026"
@@ -192,9 +188,7 @@ class TestIncrementalCacheInvalidation:
     def test_add_and_delete_still_fully_invalidate(self, ctx_vault):
         """增删条目不携带 crypto_id（全量语义），缓存整体失效下次重算。"""
         ctx, _vault = ctx_vault
-        entry_id = ctx.entry_mgr.add_entry(
-            Entry(title="t", username="u", password="pw123456")
-        )
+        entry_id = ctx.entry_mgr.add_entry(Entry(title="t", username="u", password="pw123456"))
         ctx.security.get_or_compute_report()
         assert ctx.security._analysis_cache is not None
 

@@ -175,9 +175,7 @@ _SELECT_ENTRY_ANALYSIS_SCAN_SQL = (
 )
 
 # 标签聚合窄投影（PERF-020）：仅需 (crypto_id, tags_enc) 两列，不 JOIN 分类表。
-_SELECT_ENTRY_TAGS_PROJECTION_SQL = (
-    "SELECT crypto_id, tags_enc FROM entries WHERE is_deleted = 0"
-)
+_SELECT_ENTRY_TAGS_PROJECTION_SQL = "SELECT crypto_id, tags_enc FROM entries WHERE is_deleted = 0"
 
 # 密码历史 JOIN 条目 crypto_id 的基础查询，供 get_password_history /
 # get_all_password_history / get_all_password_history_batch 复用。

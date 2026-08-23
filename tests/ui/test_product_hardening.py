@@ -752,9 +752,7 @@ def test_pre_restore_snapshot_purged_on_master_password_change():
             Entry(title="Incoming", password="IncomingSecret!2026")
         )
         portable = str(Path(source_root) / "portable.cbox")
-        success, error = make_backup_manager(source).create_backup(
-            portable, "PortableBackup!2026"
-        )
+        success, error = make_backup_manager(source).create_backup(portable, "PortableBackup!2026")
         assert success, error
 
         target = make_vault(_config(target_root))

@@ -99,9 +99,7 @@ class EntryManager:
         """密码历史子服务（读取、计数、解密展示）。"""
         return self._history_svc
 
-    def register_on_change(
-        self, callback: Callable[[bool, bool, str | None], None]
-    ) -> None:
+    def register_on_change(self, callback: Callable[[bool, bool, str | None], None]) -> None:
         """注册条目变更时自动调用的回调，用于缓存失效等。委托 change_bus。
 
         回调签名 ``(password_changed, metadata_changed, crypto_id)``，语义见
@@ -698,9 +696,7 @@ class EntryManager:
                     if cancel_check and cancel_check():
                         break
                     summaries.append(
-                        self._view_decryptor.decrypt_summary(
-                            raw, skip_epoch_check=True, key=key
-                        )
+                        self._view_decryptor.decrypt_summary(raw, skip_epoch_check=True, key=key)
                     )
         except VaultKeyEpochMismatchError:
             return []
@@ -721,11 +717,7 @@ class EntryManager:
         标记而非抛异常（保持列表路径的 LENIENT 语义）。epoch 复查沿读守卫——改密
         窗口内抛 VaultKeyEpochMismatchError 由调用方统一返回空列表触发刷新。
         """
-        ids = [
-            raw.id
-            for raw, _meta in matched[:MAX_SEARCH_VERIFY_ROW_LIMIT]
-            if raw.id is not None
-        ]
+        ids = [raw.id for raw, _meta in matched[:MAX_SEARCH_VERIFY_ROW_LIMIT] if raw.id is not None]
         if not ids:
             return {}
         with self._vault.epoch_guarded_read():

@@ -127,9 +127,7 @@ class TestNewMode:
         dlg._name_edit.setText("工作账号")
         assert dlg._name_edit.text() == "工作账号"
 
-    def test_overlong_name_rejected_by_manager_surfaces_critical(
-        self, qapp, patched_msgbox
-    ):
+    def test_overlong_name_rejected_by_manager_surfaces_critical(self, qapp, patched_msgbox):
         """超长名输入先被 maxLength 截断（QL-031）；manager 侧 EntryError（查重等
         等价拒绝路径）仍呈现 critical 且不发 saved，不回退为静默成功。"""
         mgr = MagicMock()

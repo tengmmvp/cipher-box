@@ -42,9 +42,7 @@ def patched_modals(monkeypatch):
         cap.setdefault("runs", []).append(run)
         return MagicMock()
 
-    monkeypatch.setattr(
-        "src.ui.dialogs.share_package_dialog.BackgroundWorker", _fake_worker
-    )
+    monkeypatch.setattr("src.ui.dialogs.share_package_dialog.BackgroundWorker", _fake_worker)
     return cap
 
 
@@ -94,9 +92,7 @@ class TestSharePasswordPrevalidation:
     ):
         """合法强密码放行：无 warning，worker 启动且密码原样传给业务层。"""
         business = MagicMock(return_value=(Path("a.cboxshare"), Path("decrypt.html")))
-        monkeypatch.setattr(
-            "src.ui.dialogs.share_package_dialog.create_share_package", business
-        )
+        monkeypatch.setattr("src.ui.dialogs.share_package_dialog.create_share_package", business)
         dlg = _make_dialog()
         _fill_password(dlg, "Xk7$mQ2#wE9&bT4@yU1!")
         dlg._execute()
