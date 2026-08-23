@@ -1,7 +1,7 @@
 """entry_batch_writer 单元测试 — 导入批量写入的加密与落库编排。
 
 覆盖 encrypt_new_entries / write_new_entries / prepare_overwrite_updates /
-write_overwrite_updates 四个公开函数：加密密文构建、空批次 notify、密码变更检测、
+write_overwrite_updates 四个公开函数：加密密文构建、空批次静默、密码变更检测、
 覆盖缺 id 失败收集、preserve_password_changed_at 透传、epoch 守卫与密码历史归档。
 补足该核心安全路径的独立回归网（此前仅端到端 + mock 覆盖，与同轮 collector/rebuilder
 不对称）。
@@ -50,20 +50,16 @@ class TestEncryptNewEntries:
 
 
 class TestWriteNewEntries:
-    """write_new_entries：事务内裸写入 + 空批次 notify。"""
+    """write_new_entries：事务内裸写入 + 空批次静默 no-op（通知由调用方统一发）。"""
 
     def test_writes_entries(self, entry_mgr, make_entry):
         enc, _ = encrypt_new_entries(entry_mgr, [make_entry(title="New", password="P1!@#")])
         write_new_entries(entry_mgr, enc, preserve=False)
         assert entry_mgr.db.get_entry_count() == 1
 
-    def test_empty_batch_with_notify_noop(self, entry_mgr):
-        # 空列表 + notify=True 仅触发通知，不写入、不抛错
-        write_new_entries(entry_mgr, [], preserve=False, notify=True)
-        assert entry_mgr.db.get_entry_count() == 0
-
-    def test_empty_batch_without_notify_silent(self, entry_mgr):
-        write_new_entries(entry_mgr, [], preserve=False, notify=False)
+    def test_empty_batch_noop_without_notify(self, entry_mgr):
+        # 空列表不写入、不通知、不抛错（PERF-022 移除 notify 参数后的唯一语义）
+        write_new_entries(entry_mgr, [], preserve=False)
         assert entry_mgr.db.get_entry_count() == 0
 
 

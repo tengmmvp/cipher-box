@@ -54,11 +54,11 @@ class TestConfigIntegrity:
         assert config2.check_integrity() is False
 
     def test_atomic_write_uses_tmp(self, config):
-        """save() 使用 .json.tmp 中间文件再 os.replace。"""
+        """save() 使用随机后缀 .tmp 中间文件再 os.replace，完成后不残留。"""
         config.save()
-        # .tmp 文件不应残留
-        tmp_file = config._config_path.with_suffix(".json.tmp")
-        assert not tmp_file.exists()
+        # 任意随机后缀的 .tmp 中间文件均不应残留（SEC-028 后临时名非固定）
+        assert not list(config._config_path.parent.glob("config.json.*.tmp"))
+        assert not (config._config_path.parent / "config.json.tmp").exists()
         # 目标文件存在
         assert config._config_path.exists()
 
@@ -127,23 +127,32 @@ class TestKeyringIntegrityKey:
 
     守护 macOS/Linux 下签名密钥经系统密钥链（Keychain / Secret Service）存取，
     替代明文 config.key，收缩本地读权限者重算签名伪造安全配置的攻击面。
+    密钥链自 config.py 下沉至 ConfigKeyStore（MAINT-020），单测直接构造存储实例；
+    端到端用例仍经 ConfigManager 组合验证接线。
     """
 
-    def test_store_and_load_via_keyring(self, config, monkeypatch):
+    @pytest.fixture
+    def store(self, tmp_path):
+        """构造指向临时目录的 ConfigKeyStore。"""
+        from src.config_key_store import ConfigKeyStore
+
+        return ConfigKeyStore(tmp_path / "config.key", tmp_path)
+
+    def test_store_and_load_via_keyring(self, store, monkeypatch):
         """keyring 存储/读取往返：密钥经 base64 存取原样还原。"""
         import keyring as keyring_mod
 
-        store: dict[tuple[str, str], str] = {}
+        keyring_store: dict[tuple[str, str], str] = {}
         monkeypatch.setattr(
-            keyring_mod, "set_password", lambda s, u, p: store.__setitem__((s, u), p)
+            keyring_mod, "set_password", lambda s, u, p: keyring_store.__setitem__((s, u), p)
         )
-        monkeypatch.setattr(keyring_mod, "get_password", lambda s, u: store.get((s, u)))
+        monkeypatch.setattr(keyring_mod, "get_password", lambda s, u: keyring_store.get((s, u)))
 
         key = b"\x11" * 32
-        assert config._store_keyring_integrity_key(key) is True
-        assert config._load_keyring_integrity_key() == key
+        assert store._store_keyring_integrity_key(key) is True
+        assert store._load_keyring_integrity_key() == key
 
-    def test_store_failure_returns_false(self, config, monkeypatch):
+    def test_store_failure_returns_false(self, store, monkeypatch):
         """keyring.set_password 抛异常时返回 False，调用方据此回退明文 0600。"""
         import keyring as keyring_mod
 
@@ -151,29 +160,29 @@ class TestKeyringIntegrityKey:
             raise OSError("Secret Service 不可用")
 
         monkeypatch.setattr(keyring_mod, "set_password", boom)
-        assert config._store_keyring_integrity_key(b"\x00" * 32) is False
+        assert store._store_keyring_integrity_key(b"\x00" * 32) is False
 
-    def test_load_backend_unavailable_falls_back_plaintext(self, config, monkeypatch):
+    def test_load_backend_unavailable_falls_back_plaintext(self, store, monkeypatch):
         """keyring.get_password 抛异常时回退读明文 config.key。"""
         import keyring as keyring_mod
 
-        config._write_integrity_key_file(b"\x22" * 32)  # 遗留明文
+        store._write_integrity_key_file(b"\x22" * 32)  # 遗留明文
 
         def boom(*args, **kwargs):
             raise OSError("后端不可用")
 
         monkeypatch.setattr(keyring_mod, "get_password", boom)
-        assert config._load_keyring_integrity_key() == b"\x22" * 32
+        assert store._load_keyring_integrity_key() == b"\x22" * 32
 
-    def test_load_corrupt_keyring_value_returns_none(self, config, monkeypatch):
+    def test_load_corrupt_keyring_value_returns_none(self, store, monkeypatch):
         """keyring 中存值非法 base64 时返回 None，触发上层重新生成密钥。"""
         import keyring as keyring_mod
 
         monkeypatch.setattr(keyring_mod, "get_password", lambda *a: "!!!not base64!!!")
-        assert config._load_keyring_integrity_key() is None
+        assert store._load_keyring_integrity_key() is None
 
     def test_load_or_create_uses_keyring_on_non_windows(self, tmp_path, monkeypatch):
-        """端到端：非 Windows 平台 _load_or_create 优先用 keyring，不落明文文件。
+        """端到端：非 Windows 平台 load_or_create 优先用 keyring，不落明文文件。
 
         守护 SEC-003 核心收益——keyring 可用时签名密钥不写明文 config.key，
         使本地读权限者无法获取原始密钥重算签名。
@@ -183,16 +192,16 @@ class TestKeyringIntegrityKey:
         import keyring as keyring_mod
 
         monkeypatch.setattr(sys, "platform", "linux")
-        store: dict[tuple[str, str], str] = {}
+        keyring_store: dict[tuple[str, str], str] = {}
         monkeypatch.setattr(
-            keyring_mod, "set_password", lambda s, u, p: store.__setitem__((s, u), p)
+            keyring_mod, "set_password", lambda s, u, p: keyring_store.__setitem__((s, u), p)
         )
-        monkeypatch.setattr(keyring_mod, "get_password", lambda s, u: store.get((s, u)))
+        monkeypatch.setattr(keyring_mod, "get_password", lambda s, u: keyring_store.get((s, u)))
 
         cfg = make_test_config(tmp_path)
         assert len(cfg._integrity_key) == 32
         # 密钥经 keyring 存储，未落明文文件；条目名按安装目录派生（多安装互不共享）
-        assert ("CipherBox", cfg._keyring_entry_name()) in store
+        assert ("CipherBox", cfg._key_store._keyring_entry_name()) in keyring_store
         assert not cfg._integrity_key_path.exists()
 
     @pytest.mark.skipif(sys.platform != "win32", reason="DPAPI 迁移仅 Windows")

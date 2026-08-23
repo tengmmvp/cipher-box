@@ -89,6 +89,10 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
     vault.register_on_lock(security.invalidate_cache)
     vault.register_on_epoch_rotated(entry_mgr.invalidate_caches)
     vault.register_on_epoch_rotated(security.invalidate_cache)
+    # 条目变更回调携带 (password_changed, metadata_changed, crypto_id)：单条更新经
+    # crypto_id 触发 SecurityAnalyzer 的单条增量失效（PERF-021，避免每次保存触发
+    # 整库密码解密+HMAC 重算）；增删/批量（crypto_id=None）与上方锁定/轮换通道的
+    # 零参调用保持全量失效。
     entry_mgr.register_on_change(security.invalidate_cache)
     return BusinessContext(
         config=config,

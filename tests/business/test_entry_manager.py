@@ -6,6 +6,7 @@
 2. update_entry：字段更新读回一致、密码变更归档历史、密码不变不归档。
 3. toggle_favorite：仅切换收藏，不改密码/不产生历史。
 4. delete_entry（软删除）/ restore_entry / permanent_delete_entry：回收站语义正确。
+5. 视图解密下沉（MAINT-021）：公开解密 API 薄委托 EntryViewDecryptor、共用缓存实例。
 
 依赖 conftest 的 ``entry_mgr`` fixture（经 ``vault`` fixture 装配真实 vault 并在
 teardown ``v.close()`` 释放 Windows 文件锁；fixture teardown 比逐测试 try/finally
@@ -160,6 +161,40 @@ class TestUpdateEntry:
         assert entry_mgr.password_history.get_count(entry_id) == 3
         assert entry_mgr.get_entry(entry_id).password == "Pass4-ddd!"
 
+    # 非 ASCII 密码回归（QL-019）：compare_digest 对 str 仅接受 ASCII，密码含
+    # 中文/重音/emoji 时旧实现抛 TypeError，该条目永远无法编辑、覆盖导入整体中止。
+    _UNICODE_PWD = "密码·Pässword·🔐123"
+
+    def test_non_ascii_password_unchanged_edit_succeeds(self, entry_mgr, make_entry):
+        """非 ASCII 密码「未变」分支：仅改标题可正常保存，不归档历史。"""
+        entry_id = entry_mgr.add_entry(
+            make_entry(password=self._UNICODE_PWD, title="原标题")
+        )
+        entry = entry_mgr.get_entry(entry_id)
+        entry = dataclasses.replace(entry, title="新标题")
+        entry_mgr.update_entry(entry)  # 旧实现在此抛 TypeError
+
+        read = entry_mgr.get_entry(entry_id)
+        assert read.title == "新标题"
+        assert read.password == self._UNICODE_PWD
+        assert entry_mgr.password_history.get_count(entry_id) == 0
+
+    def test_non_ascii_password_change_archives_history(self, entry_mgr, make_entry):
+        """非 ASCII 密码「已变」分支：判定为变更，归档历史并读回新密码。"""
+        entry_id = entry_mgr.add_entry(make_entry(password=self._UNICODE_PWD))
+        entry = entry_mgr.get_entry(entry_id)
+        new_pwd = "新密码·NëwPass·🔐456"
+        entry = dataclasses.replace(entry, password=new_pwd)
+        entry_mgr.update_entry(entry)
+
+        assert entry_mgr.password_history.get_count(entry_id) == 1
+        read = entry_mgr.get_entry(entry_id)
+        assert read.password == new_pwd
+        # 归档的旧密码历史可解密回原非 ASCII 明文
+        history = entry_mgr.password_history.get(entry_id)
+        decrypted = entry_mgr.password_history.decrypt(history)
+        assert decrypted[0]["password"] == self._UNICODE_PWD
+
 
 class TestToggleFavorite:
     """toggle_favorite：仅切换收藏，不影响密码与历史。"""
@@ -257,3 +292,33 @@ class TestDeleteRestorePermanent:
         """对不存在的条目软删除/恢复返回 False，不抛异常。"""
         assert entry_mgr.delete_entry(999999) is False
         assert entry_mgr.restore_entry(999999) is False
+
+
+class TestViewDecryptionDelegation:
+    """视图解密下沉（MAINT-021）：公开 API 薄委托 EntryViewDecryptor 的接线守护。"""
+
+    def test_public_decrypt_apis_match_view_decryptor(self, entry_mgr, make_entry):
+        """decrypt_entry / decrypt_entry_for_export 与解密器直调结果逐字段一致。"""
+        entry_id = entry_mgr.add_entry(
+            make_entry(notes="n1", totp_secret="JBSWY3DPEHPK3PXP")
+        )
+        raw = entry_mgr.db.get_entry(entry_id)
+        assert raw is not None
+
+        detail = entry_mgr.decrypt_entry(raw)
+        direct = entry_mgr._view_decryptor.decrypt_entry(raw)  # noqa: SLF001
+        assert detail == direct
+
+        exported = entry_mgr.decrypt_entry_for_export(raw, include_secrets=True)
+        direct_export = entry_mgr._view_decryptor.decrypt_entry_for_export(
+            raw, include_secrets=True
+        )  # noqa: SLF001
+        assert exported == direct_export
+        assert exported.notes == "n1"
+        assert exported.totp_secret == "JBSWY3DPEHPK3PXP"
+
+    def test_view_decryptor_shares_cache_instance(self, entry_mgr):
+        """解密器与 EntryManager 共用同一 EntryCacheManager（详情路径复用摘要缓存的前提）。"""
+        assert (
+            entry_mgr._view_decryptor._cache is entry_mgr._cache  # noqa: SLF001
+        )

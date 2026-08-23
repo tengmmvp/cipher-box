@@ -1,11 +1,16 @@
 """共享测试辅助函数。"""
 
+from typing import TYPE_CHECKING
+
 from src.business.managers.category_manager import CategoryManager
 from src.business.managers.entry_cache import EntryCacheManager
 from src.business.managers.entry_change_bus import EntryChangeBus
 from src.business.managers.entry_manager import EntryManager
 from src.business.managers.vault_manager import VaultManager
 from src.config import ConfigManager
+
+if TYPE_CHECKING:
+    from src.business.managers.backup_restore import BackupRestoreManager
 
 
 def make_test_config(data_dir) -> ConfigManager:
@@ -28,10 +33,28 @@ def make_vault(config: ConfigManager, *, test_mode: bool = True) -> VaultManager
 def make_entry_manager(vault: VaultManager) -> EntryManager:
     """构造 EntryManager 测试实例，绑定独立的缓存与变更总线。
 
-    EntryManager 需 (vault, cache, change_bus) 三参；集中此工厂
-    避免各测试文件复制三行装配。
+    EntryManager 需 (vault, cache, change_bus, category_mgr) 四参（MAINT-015：
+    category_mgr 必传注入）；集中此工厂避免各测试文件复制装配步骤。
     """
     cache = EntryCacheManager(vault)
     change_bus = EntryChangeBus(cache)
     category_mgr = CategoryManager(vault, cache, change_bus)
     return EntryManager(vault, cache, change_bus, category_mgr)
+
+
+def make_backup_manager(
+    vault: VaultManager, entry_mgr: EntryManager | None = None
+) -> "BackupRestoreManager":
+    """构造 BackupRestoreManager 测试实例（restore_point_mgr 必传注入，MAINT-015）。
+
+    与 make_entry_manager 对称的工厂：restore_point_mgr 不再有兜底内部构造，
+    集中在此装配避免各测试复制。
+    """
+    from src.business.managers.backup_restore import BackupRestoreManager
+    from src.business.managers.restore_point_manager import RestorePointManager
+
+    return BackupRestoreManager(
+        vault,
+        entry_mgr if entry_mgr is not None else make_entry_manager(vault),
+        RestorePointManager(vault),
+    )

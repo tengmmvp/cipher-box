@@ -1,13 +1,17 @@
 """敏感操作速率限制策略，零 PyQt 依赖的业务层安全模块。
 
 封装失败计数、锁定时间戳、过期重置等状态管理，采用递增退避策略。
-经哨兵文件 + 签名 config 见证抵抗「删除状态文件即归零计数」绕过，
-持久化剩余秒数（单调时钟）抵抗系统时钟回拨。供 UI 登录/改密对话框
-及业务层调用方复用。
+经哨兵文件 + 签名 config 见证抵抗「删除状态文件即归零计数」绕过；状态文件
+本体经 HMAC-SHA256 签名（SEC-029，与 config.json 同一安装级密钥体系），抵抗
+「改写为格式合法内容」的篡改（归零计数绕过退避阶梯 / 伪造超大剩余秒数制造
+长期锁定）；持久化剩余秒数（单调时钟）抵抗系统时钟回拨。供 UI 登录/改密
+对话框及业务层调用方复用。
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import time
@@ -19,6 +23,23 @@ from ...utils.file_security import atomic_write, secure_file
 
 if TYPE_CHECKING:
     from ...config import ConfigManager
+
+# 状态文件签名行前缀：与 config.json 的 ``#__sig__:<hex>`` 同款格式（SEC-029），
+# 复用同一心智模型与末行分离逻辑。
+_STATE_SIG_PREFIX = "#__sig__:"
+
+
+def _split_state_signature(raw_text: str) -> tuple[str, str]:
+    """分离状态文件末尾签名行，返回 (JSON 文本, 签名 hex)；无签名行返回 (原文, "")。
+
+    按 splitlines 取末行判断（比 rsplit('\\n',1) 鲁棒——后者按最后一个换行盲切，
+    JSON 体内若含签名前缀开头的行会误切），与 ConfigManager.load 的分离逻辑一致。
+    """
+    text = raw_text.rstrip()
+    lines = text.splitlines()
+    if len(lines) >= 2 and lines[-1].startswith(_STATE_SIG_PREFIX):
+        return text[: -(len(lines[-1]) + 1)], lines[-1][len(_STATE_SIG_PREFIX) :]
+    return raw_text, ""
 
 
 def apply_rate_limit(fail_count: int) -> int:
@@ -62,7 +83,31 @@ class RateLimiter:
         self._lock_until: float = 0.0
         self._state_path = Path(state_path) if state_path is not None else None
         self._config = config
+        # 签名密钥构造期一次性解析缓存（SEC-029）：登录路径每次 check/record 都可能
+        # 读写状态文件，签名/验签必须轻量（HMAC-SHA256，刻意不引入 Argon2 等耗时派生）。
+        self._signing_key: bytes | None = self._resolve_signing_key()
         self._load_state()
+
+    def _resolve_signing_key(self) -> bytes | None:
+        """解析状态文件 HMAC 签名密钥（与 config.json 同一安装级密钥体系，SEC-029）。
+
+        经注入的 ConfigManager 取 ``integrity_key``（ConfigKeyStore 加载的安装级
+        密钥，MAINT-020），不直接感知密钥链。无 config（调用方未注入）或取密钥
+        异常时退化为无签名旧格式——内存限流与哨兵删除检测仍生效，仅状态文件
+        防篡改降级（与哨兵 config 见证的降级语义一致）。
+        """
+        if self._config is None:
+            return None
+        try:
+            key = self._config.integrity_key
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "限流状态签名密钥获取失败，状态文件防篡改降级", exc_info=True
+            )
+            return None
+        if isinstance(key, (bytes, bytearray)) and len(key) > 0:
+            return bytes(key)
+        return None
 
     @property
     def _sentinel_path(self) -> Path | None:
@@ -161,7 +206,7 @@ class RateLimiter:
         self._save_state()
 
     def _load_state(self) -> None:
-        """加载持久化的限流状态；文件缺失或损坏时降级最高阶梯锁定以抵抗绕过。"""
+        """加载持久化的限流状态；文件缺失/损坏/签名失败时降级最高阶梯锁定以抵抗绕过。"""
         if self._state_path is None:
             return
         if not self._state_path.exists():
@@ -187,7 +232,39 @@ class RateLimiter:
                 self._apply_max_lockdown()
             return
         try:
-            data = json.loads(self._state_path.read_text(encoding="utf-8"))
+            raw_text = self._state_path.read_text(encoding="utf-8")
+        except OSError:
+            logging.getLogger(__name__).warning(
+                "限流状态文件读取失败，按损坏降级最高阶梯锁定", exc_info=True
+            )
+            self._apply_max_lockdown()
+            return
+        json_text, stored_sig = _split_state_signature(raw_text)
+        if self._signing_key is not None:
+            expected_sig = hmac.new(
+                self._signing_key,
+                json_text.encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+            sig_ok = (
+                bool(stored_sig)
+                and stored_sig.isascii()  # compare_digest 对非 ASCII str 抛 TypeError
+                and hmac.compare_digest(stored_sig, expected_sig)
+            )
+            if not sig_ok:
+                # 状态文件被篡改（SEC-029）：哨兵/见证只防「删除」，不防「改写为格式
+                # 合法内容」——改写 {"fail_count":0,...} 即归零计数绕过退避阶梯，伪造
+                # 超大 remaining_seconds 可制造长期锁定。签名缺失与失配同等对待（剥离
+                # 签名行是主动抹除篡改痕迹，比失配更可疑，与 config.json 完整性语义
+                # 一致），按保守锁定处理，并经 _apply_max_lockdown 内的 _save_state
+                # 以合法签名重建状态文件（自愈，后续加载不再重复触发本分支）。
+                logging.getLogger(__name__).warning(
+                    "限流状态文件签名校验失败，判定为被篡改，降级最高阶梯锁定"
+                )
+                self._apply_max_lockdown()
+                return
+        try:
+            data = json.loads(json_text)
             fail_count = data.get("fail_count", 0)
             remaining_seconds = data.get("remaining_seconds", 0)
             if type(fail_count) is not int or fail_count < 0:
@@ -206,7 +283,7 @@ class RateLimiter:
             self._apply_max_lockdown()
 
     def _save_state(self) -> None:
-        """持久化失败计数与剩余锁定秒数，经原子写入落地并补建哨兵。"""
+        """持久化失败计数与剩余锁定秒数（含 HMAC 签名行），经原子写入落地并补建哨兵。"""
         if self._state_path is None:
             return
         # 持久化「剩余锁定秒数」而非绝对时间戳：单调时钟在进程间不连续，
@@ -221,6 +298,15 @@ class RateLimiter:
                 "remaining_seconds": remaining_seconds,
             }
         )
+        if self._signing_key is not None:
+            # 状态文件签名（SEC-029）：与 config.json 同一安装级密钥 + 同款末行签名
+            # 格式，使 _load_state 可检测任何改写（含格式合法的归零/伪造锁定）。
+            sig = hmac.new(
+                self._signing_key,
+                payload.encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+            payload = f"{payload}\n{_STATE_SIG_PREFIX}{sig}"
 
         def _write_state(f: Any) -> bool:
             f.write(payload)

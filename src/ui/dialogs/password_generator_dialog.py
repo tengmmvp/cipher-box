@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypeVar
 
+from PyQt6 import sip
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -227,15 +228,29 @@ class PasswordGeneratorDialog(QDialog):
             # 剪贴板管理器不可用：避免绕过自动清除机制直接写入系统剪贴板；给按钮临时
             # 文案反馈，避免用户误以为复制成功。复用反馈定时器复位为「复制」。
             set_icon_with_text(self._copy_btn, "剪贴板不可用", COPY)
-        # 复用单个 QTimer（首次创建并连接，后续仅 restart），避免连续点击累积未释放的 QTimer
+        # 复用单个 QTimer（首次创建并连接，后续仅 restart），避免连续点击累积未释放的 QTimer。
+        # 定时器必须以对话框为 parent（QL-032）：对话框 C++ 对象销毁时连带停止其待触发的
+        # timeout，回调才不可能在对话框/按钮析构后进入。无 parent 的 QTimer 归 Python 所有，
+        # 可能在对话框销毁后仍存活并触发回调，访问已 deleteLater 的按钮导致 Windows C 层
+        # access violation（无法 try/except，进程直接崩溃）。
         if self._copy_feedback_timer is None:
             self._copy_feedback_timer = QTimer(self)
             self._copy_feedback_timer.setSingleShot(True)
             self._copy_feedback_timer.setInterval(MS_FEEDBACK)
-            self._copy_feedback_timer.timeout.connect(
-                lambda: set_icon_with_text(self._copy_btn, "复制", COPY),
-            )
+            self._copy_feedback_timer.timeout.connect(self._restore_copy_label)
         self._copy_feedback_timer.start()
+
+    def _restore_copy_label(self) -> None:
+        """反馈定时器回调：把复制按钮文案复位为「复制」。
+
+        回调触发时 ``_copy_btn`` 可能已 ``deleteLater`` 而 C++ 对象已释放，对已删
+        控件调 ``set_icon_with_text`` 会触发 Windows C 层 access violation，与
+        detail_panel._restore 同款 ``sip.isdeleted`` 守卫静默跳过（QL-032）。
+        """
+        btn = self._copy_btn
+        if sip.isdeleted(btn):
+            return
+        set_icon_with_text(btn, "复制", COPY)
 
     def _use_password(self) -> None:
         password = self._password_display.text()
@@ -248,7 +263,11 @@ class PasswordGeneratorDialog(QDialog):
         """关闭前清除生成的密码，减少明文在内存中的驻留时间。"""
         self._password_display.clear()
         if self._copy_feedback_timer is not None:
+            # stop 后随即 deleteLater（QL-032）：仅置 None 会把已停止但仍连接复位回调的
+            # 定时器孤儿化挂在对话框上——违背「复用单个 QTimer」意图（下次复制重新 new，
+            # 旧对象滞留到对话框析构），也让捕获 self 的回调多活一段无意义的时间。
             self._copy_feedback_timer.stop()
+            self._copy_feedback_timer.deleteLater()
             self._copy_feedback_timer = None
 
     def reject(self) -> None:

@@ -545,6 +545,7 @@ class TestAtomicWritePermissions:
         """write_cb 返回 False 取消写入：返回 False、target 未创建、temp 已清理。
 
         import_export 取消导出经 atomic_write 返回值透传，该路径需守护（覆盖缺口）。
+        临时文件名带随机后缀（SEC-028），断言经 glob 覆盖任意后缀形态。
         """
         from src.utils.file_security import atomic_write
 
@@ -552,5 +553,101 @@ class TestAtomicWritePermissions:
         result = atomic_write(target, lambda f: False, mode="wb")
         assert result is False
         assert not target.exists()
-        # temp（target.name + .tmp）已清理，不残留
-        assert not (tmp_path / "cancelled.json.tmp").exists()
+        # 任意随机后缀的 temp 均已清理，不残留
+        assert not list(tmp_path.glob("cancelled.json.*.tmp"))
+
+
+class TestAtomicWriteExclusiveTemp:
+    """atomic_write 临时文件独占创建（SEC-028）：随机后缀 + O_EXCL 关闭符号链接竞态。
+
+    固定名 ``<name>.tmp`` + 先 unlink 再 open 存在竞态窗口：多用户可写目录中攻击者
+    抢先在可预测路径植入符号链接即可重定向写入目标。守护两条不变量：
+    1. 临时文件名不可预测（随机后缀）；
+    2. 已存在的临时路径绝不被覆写/跟随（O_EXCL），碰撞换名重试后完成原子替换。
+    """
+
+    def test_temp_name_has_random_suffix(self, tmp_path):
+        """临时文件名含随机 hex 后缀：两次写入不产生相同临时名（不可预测性）。"""
+        from src.utils.file_security import atomic_write
+
+        target = tmp_path / "predictable.csv"
+        seen = []
+
+        def _capture_name(f):
+            # write_cb 收到的已打开文件即临时文件，f.name 即其路径
+            seen.append(Path(f.name).name)
+            f.write(b"x")
+            return True
+
+        atomic_write(target, _capture_name, mode="wb")
+        atomic_write(target, _capture_name, mode="wb")
+        assert len(seen) == 2
+        assert seen[0] != seen[1], "两次写入的临时文件名应不同（随机后缀）"
+        for name in seen:
+            # 形如 predictable.csv.<12位hex>.tmp
+            assert name.startswith("predictable.csv.")
+            assert name.endswith(".tmp")
+            middle = name[len("predictable.csv.") : -len(".tmp")]
+            assert len(middle) == 12 and all(c in "0123456789abcdef" for c in middle)
+
+    def test_existing_temp_not_overwritten_and_retries(self, tmp_path, monkeypatch):
+        """预占第一个随机名的路径：O_EXCL 拒绝覆写既有文件，换名重试后写入成功。
+
+        模拟攻击者在「清理扫描 → open」间隙植入文件/符号链接（预占路径会被
+        _purge_stale_temp_files 先行清理，故本用例禁用清理以隔离 O_EXCL/重试机制，
+        清理行为另有用例守护）：既有文件内容保持原样（未被覆写），atomic_write
+        仍经新随机名完成原子替换。
+        """
+        from src.utils import file_security
+        from src.utils.file_security import atomic_write
+
+        monkeypatch.setattr(file_security, "_purge_stale_temp_files", lambda _target: None)
+        # 固定随机序列：第一个名字被预占，第二个名字可用
+        rand_values = iter([b"\xaa" * 6, b"\xbb" * 6])
+        monkeypatch.setattr(file_security.os, "urandom", lambda n: next(rand_values))
+        predicted = tmp_path / f"data.json.{(b'\xaa' * 6).hex()}.tmp"
+        predicted.write_bytes(b"sentinel-must-survive")
+
+        target = tmp_path / "data.json"
+        ok = atomic_write(target, lambda f: (f.write(b"payload"), True)[1], mode="wb")
+        assert ok is True
+        assert target.read_bytes() == b"payload"
+        # 预占文件未被覆写（O_EXCL 生效）；重试的新随机名 temp 已被 replace 消费
+        assert predicted.read_bytes() == b"sentinel-must-survive"
+        assert not (tmp_path / f"data.json.{(b'\xbb' * 6).hex()}.tmp").exists()
+
+    def test_open_file_restricted_refuses_existing_path(self, tmp_path):
+        """opener 叠加 O_EXCL：对已存在路径打开直接 FileExistsError，不覆写。"""
+        from src.utils.file_security import _open_file_restricted
+
+        existing = tmp_path / "occupied.tmp"
+        existing.write_bytes(b"keep")
+        with pytest.raises(FileExistsError):
+            open(existing, "wb", opener=_open_file_restricted)
+        assert existing.read_bytes() == b"keep"
+
+    def test_stale_legacy_temp_cleaned_on_write(self, tmp_path):
+        """硬崩溃残留的旧版固定名 tmp 在下次写入时被清理（随机名的副作用补偿）。"""
+        from src.utils.file_security import atomic_write
+
+        target = tmp_path / "config.json"
+        legacy = tmp_path / "config.json.tmp"
+        legacy.write_bytes(b"stale-plaintext-leftover")
+        unrelated = tmp_path / "config.json.old.tmp"  # 无关同名前缀文件，不得误删
+        unrelated.write_bytes(b"keep-me")
+
+        ok = atomic_write(target, lambda f: (f.write(b"new"), True)[1], mode="wb")
+        assert ok is True
+        assert not legacy.exists(), "旧版固定名残留应被清理"
+        assert unrelated.exists(), "非 hex 后缀的同前缀文件不应被误删"
+
+    def test_stale_random_temp_cleaned_on_write(self, tmp_path):
+        """随机名形态的崩溃残留同样在下次写入时被清理。"""
+        from src.utils.file_security import atomic_write
+
+        target = tmp_path / "config.json"
+        stale = tmp_path / "config.json.deadbeef1234.tmp"
+        stale.write_bytes(b"stale")
+        ok = atomic_write(target, lambda f: (f.write(b"new"), True)[1], mode="wb")
+        assert ok is True
+        assert not stale.exists()

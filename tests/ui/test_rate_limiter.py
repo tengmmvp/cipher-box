@@ -168,3 +168,106 @@ class TestRateLimiterConfigWitness:
         rl = RateLimiter(state)
         assert rl._fail_count == 0
         assert rl.check() is None
+
+
+class TestRateLimiterStateSignature:
+    """状态文件 HMAC 完整性签名（SEC-029）：改写为格式合法内容不再绕过退避。
+
+    哨兵/见证只防「删除」不防「改写」——改写 {"fail_count":0} 即归零计数、伪造超大
+    remaining_seconds 可制造长期锁定。签名密钥与 config.json 同一安装级密钥
+    （ConfigManager.integrity_key，经 ConfigKeyStore 加载）。
+    """
+
+    def _make(self, tmp_path, *, with_config: bool = True):
+        """构造 (RateLimiter, 状态路径)；with_config 控制是否注入签名密钥。"""
+        from tests.helpers import make_test_config
+
+        config = make_test_config(tmp_path) if with_config else None
+        state = tmp_path / "login_rate_limit.json"
+        return RateLimiter(state, config), state
+
+    def test_save_writes_signature_line(self, tmp_path):
+        """持久化的状态文件含末行签名（#__sig__: 格式与 config.json 一致）。"""
+        rl, state = self._make(tmp_path)
+        rl.record_success()
+        raw = state.read_text(encoding="utf-8")
+        assert "#__sig__:" in raw
+        assert '"fail_count": 0' in raw
+
+    def test_signed_state_roundtrip(self, tmp_path):
+        """合法签名状态正常跨实例加载，计数保留。"""
+        from tests.helpers import make_test_config
+
+        rl, state = self._make(tmp_path)
+        for _ in range(RATE_LIMITS[0][0]):
+            rl.record_failure()
+        reloaded = RateLimiter(state, make_test_config(tmp_path))
+        assert reloaded._fail_count == RATE_LIMITS[0][0]
+
+    def test_tampered_zeroed_state_triggers_lockdown(self, tmp_path):
+        """篡改为格式合法的归零状态 → 判定被篡改，降级最高阶梯而非归零计数。"""
+        from tests.helpers import make_test_config
+
+        rl, state = self._make(tmp_path)
+        for _ in range(RATE_LIMITS[0][0]):
+            rl.record_failure()
+        assert rl.check() is not None  # 已锁定
+        # 攻击者改写为格式合法的零计数（无签名行）
+        state.write_text('{"fail_count": 0, "remaining_seconds": 0.0}', encoding="utf-8")
+        reloaded = RateLimiter(state, make_test_config(tmp_path))
+        assert reloaded._fail_count == RATE_LIMITS[-1][0]
+        assert reloaded._lock_until > 0
+        assert reloaded.check() is not None  # 仍处于锁定
+
+    def test_signature_stripped_triggers_lockdown(self, tmp_path):
+        """剥离签名行（保留原 JSON 内容）与改写同等对待：剥离是主动抹除篡改痕迹。"""
+        from tests.helpers import make_test_config
+
+        rl, state = self._make(tmp_path)
+        rl.record_failure()
+        raw = state.read_text(encoding="utf-8")
+        json_part = raw.rsplit("\n", 1)[0]
+        state.write_text(json_part, encoding="utf-8")
+        reloaded = RateLimiter(state, make_test_config(tmp_path))
+        assert reloaded._fail_count == RATE_LIMITS[-1][0]
+        assert reloaded.check() is not None
+
+    def test_forged_signature_triggers_lockdown(self, tmp_path):
+        """伪造签名行（内容改写但签名沿用旧值）→ 失配 → 降级最高阶梯。"""
+        from tests.helpers import make_test_config
+
+        rl, state = self._make(tmp_path)
+        rl.record_failure()
+        raw = state.read_text(encoding="utf-8")
+        json_part, old_sig_line = raw.rsplit("\n", 1)
+        # 改写内容为超大剩余锁定（伪造长期锁定 DoS），签名行沿用旧值
+        forged = '{"fail_count": 3, "remaining_seconds": 99999999.0}'
+        state.write_text(f"{forged}\n{old_sig_line}", encoding="utf-8")
+        reloaded = RateLimiter(state, make_test_config(tmp_path))
+        # 不采信伪造的长期锁定：降级为最高阶梯（锁定时长以 RATE_LIMITS[-1] 为准）
+        assert reloaded._fail_count == RATE_LIMITS[-1][0]
+        assert reloaded._lock_until - time.monotonic() <= RATE_LIMITS[-1][1] + 1
+
+    def test_lockdown_rebuilds_signed_state(self, tmp_path):
+        """篡改触发的保守锁定会以合法签名重建状态文件（自愈，不重复触发判定）。"""
+        from tests.helpers import make_test_config
+
+        rl, state = self._make(tmp_path)
+        rl.record_failure()
+        state.write_text('{"fail_count": 0, "remaining_seconds": 0.0}', encoding="utf-8")
+        tampered = RateLimiter(state, make_test_config(tmp_path))
+        assert tampered._fail_count == RATE_LIMITS[-1][0]
+        # 重建后的状态文件带合法签名：再次加载不再走篡改分支，计数为降级值
+        assert "#__sig__:" in state.read_text(encoding="utf-8")
+        healed = RateLimiter(state, make_test_config(tmp_path))
+        assert healed._fail_count == RATE_LIMITS[-1][0]
+        assert healed.check() is not None
+
+    def test_unsigned_mode_without_config_preserved(self, tmp_path):
+        """无 config（签名密钥不可用）：退化为无签名旧格式，行为不回退。"""
+        rl, state = self._make(tmp_path, with_config=False)
+        rl.record_failure()
+        assert "#__sig__:" not in state.read_text(encoding="utf-8")
+        reloaded = RateLimiter(state)
+        assert reloaded._fail_count == 1  # 未被误判为篡改
+        assert reloaded.check() is None

@@ -383,8 +383,89 @@ def secure_delete_file(path: Path) -> None:
 
 
 def _open_file_restricted(name: str, flags: int) -> int:
-    """``open()`` 的 opener 回调：以 0600 创建文件，供 :func:`atomic_write` 消除明文临时文件在 ``secure_file`` 收紧前的世界可读窗口（SEC-015）。"""
-    return os.open(name, flags, 0o600)
+    """``open()`` 的 opener 回调：以 0600 **独占**创建文件，供 :func:`atomic_write`。
+
+    消除明文临时文件在 ``secure_file`` 收紧前的世界可读窗口（SEC-015）；叠加 O_EXCL
+    （Windows/POSIX 均支持）使已存在路径（含预植符号链接）直接创建失败而非被跟随/
+    覆写，关闭「unlink → open」间隙中植入符号链接重定向写入的竞态（SEC-028）；POSIX
+    再叠加 O_NOFOLLOW（Windows 无此标志）拒绝链接本身。
+    """
+    exclusive_flags = flags | os.O_EXCL
+    if not IS_WINDOWS:
+        exclusive_flags |= getattr(os, "O_NOFOLLOW", 0)
+    return os.open(name, exclusive_flags, 0o600)
+
+
+# 临时文件随机后缀字节数与独占创建重试上限（SEC-028）：随机名 + O_EXCL 使攻击者
+# 既无法预知也无法抢占临时文件路径；名字碰撞（含针对性抢占）时换新随机名重试，
+# 耗尽视为异常环境，上抛而非降级为可预测名（降级会重新打开本要关闭的竞态窗口）。
+_TEMP_RANDOM_BYTES = 6
+_TEMP_CREATE_ATTEMPTS = 5
+
+
+def _is_stale_temp_name(name: str, target_name: str) -> bool:
+    """判断目录项是否为 ``target_name`` 对应 atomic_write 的残留临时文件。
+
+    覆盖两种形态：旧版固定名 ``<target>.tmp`` 与新版随机名 ``<target>.<hex12>.tmp``
+    （hex 严格校验，避免误删 ``<target>.old.tmp`` 等无关同名前缀文件）。经字符匹配
+    而非 glob：文件名可含 ``[``/``*`` 等 glob 元字符，glob 语义会漏判或误判。
+    """
+    suffix = ".tmp"
+    legacy = target_name + suffix
+    if name == legacy:
+        return True
+    prefix = target_name + "."
+    if not (name.startswith(prefix) and name.endswith(suffix)):
+        return False
+    middle = name[len(prefix) : -len(suffix)]
+    return (
+        len(middle) == _TEMP_RANDOM_BYTES * 2
+        and all(char in "0123456789abcdefABCDEF" for char in middle)
+    )
+
+
+def _purge_stale_temp_files(target: Path) -> None:
+    """清理同目标残留的临时文件（上次进程硬崩溃遗留），尽力而为不阻断本次写入。
+
+    旧实现临时文件名固定为 ``<name>.tmp``，下次同路径写入会先 unlink 再覆盖，天然
+    完成清理；随机后缀（SEC-028）后不再有该副作用，须显式清理，避免含明文的临时
+    文件（落地即 0600）长期驻留。仅 unlink 不覆写（与旧实现清理强度一致）；并发
+    写入者的在途临时文件被误删时，POSIX 已打开句柄不受影响，Windows 因共享冲突
+    unlink 失败被吞掉，均不破坏其最终 os.replace 的原子性。
+    """
+    try:
+        entries = list(target.parent.iterdir())
+    except OSError:
+        logger.debug("扫描残留临时文件失败: %s", target.parent, exc_info=True)
+        return
+    for stale in entries:
+        if not _is_stale_temp_name(stale.name, target.name):
+            continue
+        try:
+            stale.unlink()
+        except OSError:
+            logger.debug("清理残留临时文件失败: %s", stale, exc_info=True)
+
+
+def _create_exclusive_temp(
+    target: Path,
+    mode: str,
+    open_kwargs: dict,
+) -> tuple[Path, Any]:
+    """创建带随机后缀、O_EXCL 独占的临时文件，返回 (路径, 已打开文件对象)。
+
+    FileExistsError（随机名碰撞或路径被预植符号链接/文件）换新随机名重试至多
+    ``_TEMP_CREATE_ATTEMPTS`` 次；耗尽抛 OSError 中止写入——安全优先于可用性。
+    """
+    for _ in range(_TEMP_CREATE_ATTEMPTS):
+        candidate = target.with_name(
+            f"{target.name}.{os.urandom(_TEMP_RANDOM_BYTES).hex()}.tmp"
+        )
+        try:
+            return candidate, open(candidate, mode, **open_kwargs)
+        except FileExistsError:
+            logger.debug("临时文件独占创建碰撞，换随机名重试: %s", candidate)
+    raise OSError(f"临时文件独占创建失败（重试耗尽）：{target}")
 
 
 def atomic_write(
@@ -398,22 +479,24 @@ def atomic_write(
     """原子写入文件：写临时文件 → fsync → secure_file → os.replace → secure_file。
 
     write_cb 接收已打开文件对象，返回 True 完成替换，False 取消（删临时文件不替换）。
-    异常时删临时文件并重新抛出。临时文件落地即 0600（经 ``_open_file_restricted`` opener），
-    消除「写明文 → 关闭 → secure_file 收紧」间的世界可读窗口（SEC-015）。Windows 忽略 POSIX
-    mode 位，靠继承已收紧的父目录 ACL。
+    异常时删临时文件并重新抛出。临时文件名带随机后缀并以 O_EXCL 独占创建（SEC-028）：
+    固定名 ``<name>.tmp`` + 先 unlink 再 open 在多用户可写目录（如导出明文 CSV/备份的
+    目标目录）存在竞态窗口——攻击者抢先在可预测路径植入符号链接即可把写入重定向到
+    任意目标；随机名不可预测，O_EXCL 保证「已存在即失败」（含符号链接，POSIX 叠加
+    O_NOFOLLOW），失败换新随机名小次数重试。临时文件落地即 0600（经
+    ``_open_file_restricted`` opener），消除「写明文 → 关闭 → secure_file 收紧」间的
+    世界可读窗口（SEC-015）。Windows 忽略 POSIX mode 位，靠继承已收紧的父目录 ACL。
     """
     target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(target.name + ".tmp")
-    # 清理上次进程硬崩溃（SIGKILL/断电，无法触发下方 except BaseException）残留的
-    # .tmp（落地即 0600，但可能含明文配置），避免长期驻留至下次同路径写入才覆盖。
-    temp.unlink(missing_ok=True)
+    _purge_stale_temp_files(target)
     open_kwargs: dict = {"opener": _open_file_restricted}
     if encoding is not None:
         open_kwargs["encoding"] = encoding
     if newline is not None:
         open_kwargs["newline"] = newline
+    temp, f = _create_exclusive_temp(target, mode, open_kwargs)
     try:
-        with open(temp, mode, **open_kwargs) as f:
+        with f:
             completed = write_cb(f)
             if completed:
                 f.flush()

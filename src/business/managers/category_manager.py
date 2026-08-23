@@ -194,24 +194,39 @@ class CategoryManager:
         return new_ids
 
     def update_category(self, category: Category) -> None:
-        """更新分类，重加密分类名并失效分类名缓存（条目摘要内容不变）。"""
+        """更新分类，重加密分类名并失效分类名缓存（条目摘要内容不变）。
+
+        改名前按 :meth:`add_category` 同款 casefold 明文查重（QL-023）：分类名密文含
+        随机 nonce，相同明文永不产生相同密文，仓库层查重永不命中；缺此守卫时侧边栏
+        可并存同名分类，且与导入路径按折叠名坍缩、add_category 拒绝新建同名自相
+        矛盾。查重与写入同事务（防并发 add/update 的 TOCTOU），比对时排除自身 id
+        （改回自身当前名合法）。
+        """
         if category.id is None:
             raise EntryError("分类 ID 不能为空")
         plaintext_name = category.name.strip()
-        stored = Category(
-            id=category.id,
-            name=encrypt_field(
-                plaintext_name,
-                self._key,
-                category_crypto_id(category.id),
-                "category_name",
-            ),
-            icon_char=category.icon_char,
-            color=category.color,
-            sort_order=category.sort_order,
-            created_at=category.created_at,
-        )
-        self._vault.db.update_category(stored)
+        with self._vault.db.transaction():
+            existing_names = {
+                existing.name.casefold()
+                for existing in self.get_categories()
+                if existing.id != category.id
+            }
+            if plaintext_name.casefold() in existing_names:
+                raise EntryError("分类名称已存在")
+            stored = Category(
+                id=category.id,
+                name=encrypt_field(
+                    plaintext_name,
+                    self._key,
+                    category_crypto_id(category.id),
+                    "category_name",
+                ),
+                icon_char=category.icon_char,
+                color=category.color,
+                sort_order=category.sort_order,
+                created_at=category.created_at,
+            )
+            self._vault.db.update_category(stored)
         # 分类名/icon 变更不影响条目摘要内容，仅失效分类名缓存。先失效会话分类缓存
         # 使 notify 回调读到更新后的分类。
         self._invalidate_categories_cache()

@@ -509,15 +509,23 @@ class ImportExportManager:
         # （改密 _re_encrypt_all 同样经该锁串行），不会与导入并发写库。pre_epoch 复查是
         # 纵深防御——加密已移出 db_lock（MAINT-004），复查确保「加密后→写入前」未发生改密。
         with self._entry_mgr.epoch_guarded_transaction(operation="导入", pre_epoch=pre_epoch):
-            write_new_entries(self._entry_mgr, enc_new, preserve=preserve, notify=False)
+            write_new_entries(self._entry_mgr, enc_new, preserve=preserve)
             overwrite_count = write_overwrite_updates(
                 self._entry_mgr,
                 overwrite_prepared,
                 pre_epoch,
             )
 
-        # 批量导入统一通知一次（写入已传 notify=False 避免逐条回调）
-        self._entry_mgr.notify_batch_change()
+        # 批量导入统一通知一次（写入已传 notify=False 避免逐条回调）。
+        # 摘要缓存保留（PERF-022）：纯新增不改变既有条目摘要，clear_summaries=False
+        # 免全量重解密（与 add_entry / write_new_entries 的声明语义对齐）；含覆盖时对
+        # 被覆盖条目按 crypto_id 精细 pop（同单条 update_entry 的失效粒度），先失效
+        # 后通知以兑现 change_bus「先失效缓存、后跑回调」的顺序约束。
+        if overwrite_count:
+            self._entry_mgr.invalidate_entry_summaries(
+                {item.raw.crypto_id for item in overwrite_prepared}
+            )
+        self._entry_mgr.notify_batch_change(clear_summaries=False)
 
         skipped = classify_skipped + new_skipped + overwrite_skipped
         count = len(enc_new) + overwrite_count

@@ -159,6 +159,40 @@ def decrypt_field(
         return ""
 
 
+def decrypt_string_fields_strict(
+    raw_entry: RawEntry,
+    key: bytes | bytearray,
+    *,
+    include_secrets: bool = False,
+) -> dict[str, str]:
+    """严格解密条目的全部字符串型加密字段，返回 ``{字段名: 明文}``（QL-018）。
+
+    基于 :data:`STRING_ENCRYPTED_FIELDS` 单一事实源循环（custom_fields 为 JSON
+    结构非纯字符串，由各消费方单独处理），password/totp_secret 受 ``include_secrets``
+    门控：False 时输出空串且**不解密**，保持「默认不让密码进入内存」的安全默认。
+    任一字段解密失败抛 :class:`DecryptionError`（strict），调用方按各自语义包装。
+
+    供导出路径的两条同构解密链路消费（EntryViewDecryptor.decrypt_entry_for_export 组装 Entry
+    与本模块 decrypt_entry_to_portable_dict 组装 portable dict），消除手工逐字段
+    枚举——新增加密字段只需加入 SENSITIVE_ENCRYPTED_FIELDS，两条路径自动跟随，
+    不会静默漏解密。
+    """
+    return {
+        field: (
+            decrypt_field(
+                getattr(raw_entry, field),
+                key,
+                raw_entry.crypto_id,
+                field,
+                strict=True,
+            )
+            if include_secrets or field not in ("password", "totp_secret")
+            else ""
+        )
+        for field in STRING_ENCRYPTED_FIELDS
+    }
+
+
 def matches_search(entry: Entry | RawEntry, query: str) -> bool:
     """检查条目是否匹配搜索关键词（大小写不敏感，搜 title/username/url/tags）。
 
@@ -260,6 +294,9 @@ def decrypt_entry_to_portable_dict(
 ) -> dict[str, Any]:
     """将原始 Entry 解密为明文字典，任一字段损坏抛异常。供备份/导出等整条解密场景。
 
+    字符串型加密字段经 :func:`decrypt_string_fields_strict` 统一解密（QL-018 单一
+    事实源），本函数仅组装 portable dict 并单独处理 custom_fields 的 JSON 反序列化。
+
     Args:
         raw_entry: 数据库层原始 Entry，加密字段为密文字符串。
         key: AES-256 密钥。
@@ -274,6 +311,7 @@ def decrypt_entry_to_portable_dict(
     # 全部加密字段统一 strict=True：任一字段损坏即抛 DecryptionError。实际触发极少，
     # 因 metadata_mac 已绑定全部加密字段密文（title/url/tags 直接入签，余者经 _enc_hash），
     # 损坏会先触发完整性失败。
+    fields = decrypt_string_fields_strict(raw_entry, key, include_secrets=include_secrets)
     custom_json = decrypt_field(
         raw_entry.custom_fields_db_value,
         key,
@@ -285,65 +323,9 @@ def decrypt_entry_to_portable_dict(
     return {
         "id": raw_entry.id,
         "crypto_id": raw_entry.crypto_id,
-        "title": decrypt_field(
-            raw_entry.title,
-            key,
-            raw_entry.crypto_id,
-            "title",
-            strict=True,
-        ),
-        "username": decrypt_field(
-            raw_entry.username,
-            key,
-            raw_entry.crypto_id,
-            "username",
-            strict=True,
-        ),
-        "password": (
-            decrypt_field(
-                raw_entry.password,
-                key,
-                raw_entry.crypto_id,
-                "password",
-                strict=True,
-            )
-            if include_secrets
-            else ""
-        ),
-        "url": decrypt_field(
-            raw_entry.url,
-            key,
-            raw_entry.crypto_id,
-            "url",
-            strict=True,
-        ),
-        "category_id": raw_entry.category_id,
-        "tags": decrypt_field(
-            raw_entry.tags,
-            key,
-            raw_entry.crypto_id,
-            "tags",
-            strict=True,
-        ),
-        "notes": decrypt_field(
-            raw_entry.notes,
-            key,
-            raw_entry.crypto_id,
-            "notes",
-            strict=True,
-        ),
+        **fields,
         "custom_fields": custom_fields,
-        "totp_secret": (
-            decrypt_field(
-                raw_entry.totp_secret,
-                key,
-                raw_entry.crypto_id,
-                "totp_secret",
-                strict=True,
-            )
-            if include_secrets
-            else ""
-        ),
+        "category_id": raw_entry.category_id,
         "password_strength": raw_entry.password_strength,
         "entry_type": raw_entry.entry_type,
         "is_favorite": raw_entry.is_favorite,

@@ -15,7 +15,6 @@ from unittest.mock import PropertyMock, patch
 
 import pytest
 
-from src.business.managers.backup_restore import BackupRestoreManager
 from src.business.managers.entry_cache import EntryCacheManager
 from src.business.managers.import_export import ImportExportManager
 from src.business.services.security_analyzer import SecurityAnalyzer
@@ -23,7 +22,7 @@ from src.crypto.encryption import EncryptionEngine
 from src.database.db_manager import DatabaseManager
 from src.exceptions import DatabaseError, VaultLockedError
 from src.models import Category, CustomField, Entry, RawEntry
-from tests.helpers import make_entry_manager, make_test_config, make_vault
+from tests.helpers import make_backup_manager, make_entry_manager, make_test_config, make_vault
 
 
 @pytest.fixture()
@@ -336,7 +335,7 @@ def backup_restore_env():
     vault = make_vault(config)
     vault.initialize("test_password_123")
     entry_mgr = make_entry_manager(vault)
-    backup_mgr = BackupRestoreManager(vault, entry_mgr)
+    backup_mgr = make_backup_manager(vault, entry_mgr)
     yield entry_mgr, backup_mgr, vault, tmp_dir
     vault.close()
     shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -723,7 +722,7 @@ def test_backup_with_locked_vault():
     config = make_test_config(tmp_dir)
     vault = make_vault(config)
     vault.initialize("test_password_123")
-    backup_mgr = BackupRestoreManager(vault, make_entry_manager(vault))
+    backup_mgr = make_backup_manager(vault)
 
     # 锁定保险库
     vault.lock()

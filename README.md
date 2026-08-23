@@ -95,7 +95,7 @@ uv run python main.py
 | 包名 | 用途 |
 |------|------|
 | `PyQt6 >= 6.6.0` | 桌面端 UI 框架 |
-| `cryptography >= 48.0.1` | AES-256-GCM 加密 |
+| `cryptography >= 50.0.0` | AES-256-GCM 加密 |
 | `argon2-cffi >= 25.1.0` | Argon2id 密钥派生 |
 | `QtAwesome >= 1.3.0` | 统一矢量图标系统 |
 

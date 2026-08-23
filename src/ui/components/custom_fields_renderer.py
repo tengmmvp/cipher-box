@@ -92,13 +92,14 @@ class CustomFieldsRenderer:
             需要外部管理的 QTimer 列表，即字段自动掩码定时器。
         """
         timers: list[QTimer] = []
-        cf_group = QGroupBox("自定义字段")
-        cf_layout = QFormLayout(cf_group)
-        cf_layout.setSpacing(6)
         custom_fields = entry.custom_fields
         if not isinstance(custom_fields, list):
             return timers
         entry.assert_decrypted()
+        # 先收集待渲染行再决定是否挂载分组（QL-030）：值全为空的字段逐行跳过后，
+        # 不应残留只有标题的空「自定义字段」分组；有行时才创建分组并 addWidget。
+        # timers 由行构建过程追加，与是否挂载分组无关，返回语义不变。
+        rows: list[tuple[QLabel, QWidget]] = []
         for cf in custom_fields:
             if not cf.value:
                 continue
@@ -110,8 +111,14 @@ class CustomFieldsRenderer:
                 )
             else:
                 row = self._make_plain_field_row(f"{icon} {label}", cf.value)
-            cf_layout.addRow(*row)
-        layout.addWidget(cf_group)
+            rows.append(row)
+        if rows:
+            cf_group = QGroupBox("自定义字段")
+            cf_layout = QFormLayout(cf_group)
+            cf_layout.setSpacing(6)
+            for row in rows:
+                cf_layout.addRow(*row)
+            layout.addWidget(cf_group)
         return timers
 
     def clear(self) -> None:

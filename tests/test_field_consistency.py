@@ -81,3 +81,68 @@ def test_entry_query_rejects_conflicting_deleted_flags():
     EntryQuery(deleted_only=True)
     EntryQuery(include_deleted=True)
     EntryQuery()
+
+
+def test_strict_decrypt_paths_cover_all_sensitive_fields(vault, entry_mgr, make_entry):
+    """两条严格解密路径产出的字段键集 == SENSITIVE_ENCRYPTED_FIELDS 派生集（QL-018）。
+
+    EntryManager._decrypt_for_export（Entry 组装）与 crypto_utils.
+    decrypt_entry_to_portable_dict（portable dict）是导出/备份的两条同构解密链路，
+    此前各自手工枚举加密字段，新增加密字段会静默漏解密。二者现统一消费
+    decrypt_string_fields_strict（STRING_ENCRYPTED_FIELDS 单一事实源循环）；
+    本测试以「每个加密字段写入可区分明文 → 两条路径必须解出该明文」守护覆盖
+    完备性：字段集漂移（常量加了字段而消费方未跟随）在此立即失败。
+    """
+    from src.business.services.crypto_utils import (
+        SENSITIVE_ENCRYPTED_FIELDS,
+        STRING_ENCRYPTED_FIELDS,
+        decrypt_entry_to_portable_dict,
+        require_vault_key,
+    )
+    from src.models import CustomField
+
+    plaintext = {
+        "title": "t-标题",
+        "username": "u-用户",
+        "password": "p-密码",
+        "url": "https://url-x",
+        "tags": "tag-1",
+        "notes": "n-备注",
+        "totp_secret": "JBSWY3DPEHPK3PXP",
+    }
+    entry_id = entry_mgr.add_entry(
+        make_entry(
+            **plaintext,
+            custom_fields=[CustomField(name="f-字段", value="v-值")],
+        )
+    )
+    raw = entry_mgr.db.get_entry(entry_id)
+    assert raw is not None
+    key = require_vault_key(vault)
+
+    # 路径 1：导出 Entry 组装
+    exported = entry_mgr.decrypt_entry_for_export(raw, include_secrets=True)
+    # 路径 2：备份/恢复 portable dict
+    portable = decrypt_entry_to_portable_dict(raw, key, include_secrets=True)
+
+    # portable dict 的加密字段键集须完整覆盖单一事实源（custom_fields 单独处理）
+    assert set(STRING_ENCRYPTED_FIELDS) <= set(portable.keys())
+    for field, expected in plaintext.items():
+        assert portable[field] == expected, f"portable dict 漏解密 {field}"
+        assert getattr(exported, field) == expected, f"导出 Entry 漏解密 {field}"
+    assert portable["custom_fields"][0]["name"] == "f-字段"
+    assert exported.custom_fields[0].value == "v-值"
+    # SENSITIVE_ENCRYPTED_FIELDS（含 custom_fields）在两条路径各有承载：
+    # Entry 侧为 custom_fields 属性，portable 侧为同名键
+    assert set(SENSITIVE_ENCRYPTED_FIELDS) <= {
+        *STRING_ENCRYPTED_FIELDS,
+        "custom_fields",
+    }
+
+    # include_secrets=False：password/totp_secret 不解密（空串），其余字段仍覆盖
+    exported_no_secrets = entry_mgr.decrypt_entry_for_export(raw, include_secrets=False)
+    portable_no_secrets = decrypt_entry_to_portable_dict(raw, key, include_secrets=False)
+    for result in (exported_no_secrets.password, portable_no_secrets["password"]):
+        assert result == ""
+    assert exported_no_secrets.title == plaintext["title"]
+    assert portable_no_secrets["notes"] == plaintext["notes"]

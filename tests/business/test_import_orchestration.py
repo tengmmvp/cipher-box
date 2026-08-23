@@ -164,3 +164,103 @@ def test_import_rejects_json_non_dict_item(entry_mgr, tmp_path):
 
     with pytest.raises(ImportFormatError, match="不是有效的对象"):
         mgr.import_file(str(path), "json")
+
+
+# ======== 导入后摘要缓存保留（PERF-022）========
+
+
+class TestImportSummaryCacheRetention:
+    """导入写入完成后摘要缓存的失效粒度（PERF-022）。
+
+    旧行为：notify_batch_change() 默认 clear_summaries=True，导入后清空全部摘要
+    缓存，下一次列表刷新全量重解密；与 add_entry / write_new_entries / docstring
+    声明的「导入新增不改变既有条目摘要」矛盾。
+    """
+
+    def test_pure_new_import_preserves_summary_cache(self, entry_mgr, tmp_path, monkeypatch):
+        """纯新增导入后既有条目摘要缓存命中，刷新不重解密既有条目。"""
+        from src.business.managers import entry_cache as ec_module
+
+        mgr = ImportExportManager(entry_mgr)
+        keep_id = entry_mgr.add_entry(
+            Entry(title="Existing", username="u", password="OldPass!1")
+        )
+        entry_mgr.get_entry_summaries()  # 预热摘要/分类名缓存
+        keep_cid = entry_mgr.db.get_entry(keep_id).crypto_id
+        cache = entry_mgr._cache  # noqa: SLF001 测试取内部缓存断言失效粒度
+        assert keep_cid in cache._search_metadata_cache  # noqa: SLF001
+
+        json_path = tmp_path / "new_only.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "app": "CipherBox",
+                    "secrets_included": True,
+                    "entries": [
+                        {"title": "Brand New", "username": "bob", "password": "FreshPass!3"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert mgr.import_file(str(json_path), "json") == 1
+
+        # 既有条目摘要缓存保留（导入新增不触碰它）
+        assert keep_cid in cache._search_metadata_cache  # noqa: SLF001
+
+        # 计数字段解密：温缓存刷新不应重解密既有条目的摘要字段
+        decrypt_calls: list[tuple[str, str]] = []
+        real_decrypt = ec_module._decrypt_field_impl
+
+        def counting_decrypt(encrypted, key, crypto_id, field_name, **kwargs):
+            decrypt_calls.append((crypto_id, field_name))
+            return real_decrypt(encrypted, key, crypto_id, field_name, **kwargs)
+
+        monkeypatch.setattr(ec_module, "_decrypt_field_impl", counting_decrypt)
+        refreshed = entry_mgr.get_entry_summaries()
+        assert {e.title for e in refreshed} == {"Existing", "Brand New"}
+        # 既有条目的 4 个摘要字段零解密（缓存命中）；新条目按需解密属预期
+        assert all(cid != keep_cid for cid, _field in decrypt_calls)
+
+    def test_overwrite_import_invalidates_only_overwritten_summaries(
+        self, entry_mgr, tmp_path
+    ):
+        """含覆盖导入后被覆盖条目摘要精确失效，未覆盖条目摘要保留。"""
+        mgr = ImportExportManager(entry_mgr)
+        keep_id = entry_mgr.add_entry(
+            Entry(title="Keep", username="k", password="KeepPass!1")
+        )
+        target_id = entry_mgr.add_entry(
+            Entry(title="Target", username="t", password="OldPass!1", tags="")
+        )
+        entry_mgr.get_entry_summaries()  # 预热
+        keep_cid = entry_mgr.db.get_entry(keep_id).crypto_id
+        target_cid = entry_mgr.db.get_entry(target_id).crypto_id
+        cache = entry_mgr._cache  # noqa: SLF001
+        assert keep_cid in cache._search_metadata_cache  # noqa: SLF001
+        assert target_cid in cache._search_metadata_cache  # noqa: SLF001
+
+        json_path = tmp_path / "overwrite.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "app": "CipherBox",
+                    "secrets_included": True,
+                    "entries": [
+                        # 同 (title, username) 命中覆盖；改 tags 供摘要可观测
+                        {"title": "Target", "username": "t", "password": "NewPass!2",
+                         "tags": "fresh-tag"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert mgr.import_file(str(json_path), "json", duplicate_action="overwrite") == 1
+
+        # 被覆盖条目摘要缓存已失效（旧摘要不残留），未覆盖条目保留
+        assert target_cid not in cache._search_metadata_cache  # noqa: SLF001
+        assert keep_cid in cache._search_metadata_cache  # noqa: SLF001
+
+        # 刷新后摘要反映覆盖后的数据（tags 已更新）
+        refreshed = {e.title: e for e in entry_mgr.get_entry_summaries()}
+        assert refreshed["Target"].tags == "fresh-tag"

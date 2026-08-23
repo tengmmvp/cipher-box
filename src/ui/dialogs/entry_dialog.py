@@ -693,10 +693,19 @@ class EntryDialog(QDialog):
         """
         schema = get_schema(entry_type)
         visible = schema.visible_fields
-        # 不使用密码的类型（笔记）强制置空，避免保存无意义数据
-        password = self._password_edit.text() if schema.uses_password else ""
         # 仅采集当前类型可见的通用字段，避免类型切换后隐藏控件的残留值被持久化
         # （如 login→card 切换后，旧 username/url 不应隐式带入不可见的新类型字段）。
+        # 密码按模式区分门控（QL-029）：card/identity 的 visible_fields 不含
+        # "password"，新增模式下残留的隐藏密码不应被持久化到表单上看不见、无法
+        # 清除的位置；编辑模式（self._entry 非 None）不按可见性门控——既有
+        # card/identity 条目可合法持有密码（详情面板会显示），须保留隐藏控件回读
+        # 的值。uses_password=False 的类型（笔记）维持强制置空。
+        if not schema.uses_password:
+            password = ""
+        elif self._entry is not None or "password" in visible:
+            password = self._password_edit.text()
+        else:
+            password = ""
         username = self._username_edit.text().strip() if "username" in visible else ""
         url = self._url_edit.text().strip() if "url" in visible else ""
 

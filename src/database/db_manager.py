@@ -30,6 +30,7 @@ from .types import (
     EntryQuery,
     ReEncryptedEntry,
     ReEncryptedHistory,
+    VerifyMode,
 )
 
 logger = logging.getLogger(__name__)
@@ -601,6 +602,22 @@ class DatabaseManager:
 
     def get_entries_by_ids(self, entry_ids: list[int]) -> list[RawEntry]:
         return self._entry_repo.get_entries_by_ids(entry_ids)
+
+    def get_entry_by_crypto_id(
+        self,
+        crypto_id: str,
+        *,
+        verify: VerifyMode = VerifyMode.STRICT,
+    ) -> RawEntry | None:
+        return self._entry_repo.get_entry_by_crypto_id(crypto_id, verify=verify)
+
+    def get_entries_for_analysis(self) -> list[RawEntry]:
+        """窄投影扫描委托（PERF-020，语义见 EntryRepository 同名方法）。"""
+        return self._entry_repo.get_entries_for_analysis()
+
+    def get_entries_tags_projection(self) -> list[tuple[str, str]]:
+        """标签聚合窄投影委托（PERF-020，语义见 EntryRepository 同名方法）。"""
+        return self._entry_repo.get_entries_tags_projection()
 
     # -- 委托透传：Password History --
 

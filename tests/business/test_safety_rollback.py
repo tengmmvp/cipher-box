@@ -19,7 +19,6 @@ from unittest.mock import PropertyMock, patch
 
 import pytest
 
-from src.business.managers.backup_restore import BackupRestoreManager
 from src.business.managers.import_export import ImportExportManager
 from src.business.services.backup.header_codec import (
     BACKUP_HEADER_SIZE,
@@ -27,7 +26,7 @@ from src.business.services.backup.header_codec import (
 )
 from src.exceptions import VaultKeyEpochMismatchError
 from src.models import CustomField, Entry
-from tests.helpers import make_entry_manager, make_test_config, make_vault
+from tests.helpers import make_backup_manager, make_entry_manager, make_test_config, make_vault
 
 
 class TestChangePasswordRollbackConsistency:
@@ -209,7 +208,7 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
         self._master_pwd = "test_password_123"
         self._vault.initialize(self._master_pwd)
         self._entry_mgr = make_entry_manager(self._vault)
-        self._backup_mgr = BackupRestoreManager(self._vault, self._entry_mgr)
+        self._backup_mgr = make_backup_manager(self._vault, self._entry_mgr)
         # 写入两条条目作为恢复失败时“不应被清空”的存量数据
         self._entry_mgr.add_entry(
             Entry(
@@ -488,14 +487,14 @@ def test_restore_rotates_snapshot_key(tmp_path):
     source.initialize("SourceMaster!2026")
     make_entry_manager(source).add_entry(Entry(title="Incoming", password="IncomingSecret!2026"))
     portable = str(Path(source_dir) / "portable.cbox")
-    assert BackupRestoreManager(source, make_entry_manager(source)).create_backup(
+    assert make_backup_manager(source).create_backup(
         portable, "PortableBackup!2026"
     )[0]
 
     target = make_vault(make_test_config(target_dir))
     target.initialize("TargetMaster!2026")
     old_snapshot_key = bytes(target.snapshot_key)
-    backup_mgr = BackupRestoreManager(target, make_entry_manager(target))
+    backup_mgr = make_backup_manager(target)
     assert backup_mgr.restore_backup(portable, "PortableBackup!2026")[0]
 
     # 恢复后 snapshot_key 应轮换为全新值

@@ -91,21 +91,18 @@ def write_new_entries(
     enc_entries: list[RawEntry],
     *,
     preserve: bool,
-    notify: bool = True,
 ) -> None:
     """事务内裸写入已加密条目（MAINT-004），executemany 一次性 INSERT。
 
     写入须受 epoch 守卫保护：导入路径在 ``epoch_guarded_transaction`` 内调用；
-    不含加密，仅 db 写，把 db_lock 持有收敛到 executemany 时长。
+    不含加密，仅 db 写，把 db_lock 持有收敛到 executemany 时长。不做任何通知——
+    通知（含摘要缓存保留语义）由调用方 ImportExportManager 在全部写入完成后经
+    ``notify_batch_change`` 统一发一次（PERF-022 移除已成死分支的 notify 参数：
+    唯一生产调用方始终传 notify=False，逐条/空批次通知路径不再存在）。
     """
     if not enc_entries:
-        if notify:
-            entry_mgr.notify_batch_change(clear_summaries=False)
         return
     entry_mgr.db.add_entries_batch(enc_entries, preserve_metadata=preserve)
-    if notify:
-        # 与 add_entry 一致：新条目不改变既有摘要，clear_summaries=False 保留缓存。
-        entry_mgr.notify_batch_change(clear_summaries=False)
 
 
 def prepare_overwrite_updates(

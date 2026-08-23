@@ -10,12 +10,12 @@
 import logging
 import threading
 from collections import OrderedDict
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
     from ..managers.vault_manager import VaultManager
 
-from ...database.types import EntryQuery, VerifyMode
 from ...exceptions import DecryptionError, VaultKeyEpochMismatchError
 from ...models import MAX_ENTRIES_LIMIT, RawEntry
 from ..services.crypto_utils import (
@@ -144,6 +144,22 @@ class EntryCacheManager:
             if category_changed:
                 self._category_name_cache.clear()
 
+    def pop_search_metadata_batch(self, crypto_ids: Iterable[str]) -> None:
+        """按 crypto_id 批量 pop 搜索摘要缓存（导入覆盖路径，PERF-022）。
+
+        与 :meth:`apply_change` 的单条 pop 语义一致（摘要 + 失败字段集），但一次
+        失效多条且不触发任何回调——导入覆盖的统一通知由调用方经
+        ``notify_batch_change(clear_summaries=False)`` 在失效完成后发出一次，
+        避免逐条 notify 的 N 次回调派发。须在通知发出前调用（与 change_bus
+        「先失效缓存、后跑回调」的顺序约束一致）。version 推进语义同 apply_change
+        （M4：进行中的锁外解密回写据此丢弃结果）。
+        """
+        with self._cache_lock:
+            self._invalidate_version += 1
+            for crypto_id in crypto_ids:
+                self._search_metadata_cache.pop(crypto_id, None)
+                self._search_metadata_failed.pop(crypto_id, None)
+
     def cached_search_metadata(
         self,
         raw_entry: RawEntry,
@@ -158,7 +174,7 @@ class EntryCacheManager:
         （调用方事务内已固定），逐条校验属冗余的 N 次 RLock + epoch 查询。
 
         ``key`` 为 PERF-001 并发修补（M3）：调用方（如 :meth:`EntryManager.get_entry`
-        经 ``_decrypt_for_detail``）在 ``epoch_guarded_read`` with 块内快照的主密钥。
+        经 ``decrypt_entry`` 视图解密）在 ``epoch_guarded_read`` with 块内快照的主密钥。
         不传则用实时 ``self._key``，保持非并发调用方零改动。锁外解密期间若发生改密，
         实时 ``self._key`` 已轮换为新密钥，与本批旧密文不匹配会致 GCM 认证失败、
         错误摘要以新 epoch 写入缓存而持续污染；传 ``key`` 用快照密钥解密旧密文确保
@@ -310,7 +326,7 @@ class EntryCacheManager:
         """解密分类名并缓存（首次解密后缓存）。
 
         ``key`` 语义见 :meth:`cached_search_metadata`（PERF-001 并发修补）：调用方
-        （如 :meth:`EntryManager._decrypt_for_detail` / ``_decrypt_summary``）在
+        （如 :meth:`EntryViewDecryptor.decrypt_entry` / ``decrypt_summary``）在
         ``epoch_guarded_read`` with 块内快照的主密钥。锁外解密期间若发生改密，
         实时 ``self._key`` 已轮换为新密钥与本批旧密文不匹配致 GCM 认证失败、错误
         空分类名以新 epoch 写入缓存持续污染；传 ``key`` 用快照解密旧密文确保正确。
@@ -401,8 +417,13 @@ class EntryCacheManager:
         with self._cache_lock:
             self._totp_secret_cache.clear()
 
-    def _decrypt_tags(self, raw_entry: RawEntry, key: bytes | None = None) -> str:
-        """仅解密 tags 字段供标签聚合。
+    def _decrypt_tags_by_crypto_id(
+        self,
+        crypto_id: str,
+        tags_enc: str,
+        key: bytes | None = None,
+    ) -> str:
+        """仅解密 tags 字段供标签聚合（窄投影版，PERF-020）。
 
         优先复用搜索摘要缓存的 tags（列表 worker 已解密填充于 ``tags`` 字段），命中则
         省去一次 AES-GCM 解密；未命中再走专用单字段解密（冷缓存下省去
@@ -411,14 +432,14 @@ class EntryCacheManager:
         :meth:`_cached_search_metadata_no_check` 的容错一致。
         """
         with self._cache_lock:
-            cached = self._search_metadata_cache.get(raw_entry.crypto_id)
+            cached = self._search_metadata_cache.get(crypto_id)
         if cached is not None:
             return cached.tags
         try:
             return _decrypt_field_impl(
-                raw_entry.tags,
+                tags_enc,
                 key if key is not None else self._key,
-                raw_entry.crypto_id,
+                crypto_id,
                 "tags",
                 strict=True,
             )
@@ -437,10 +458,10 @@ class EntryCacheManager:
         if cached is not None:
             return cached
         tag_count: dict[str, int] = {}
-        # 标签聚合仅需 tags 字段，用 VerifyMode.SKIP 跳过逐行元数据 HMAC 验签（PERF-013）。
-        # 安全性不降：tags_enc 完整性由 _decrypt_tags 的 GCM 认证保护（篡改即解密失败
-        # 回退空串）；命中摘要缓存时 tags 已由列表 worker 以 LENIENT 验签。故标签聚合
-        # 正确性不依赖元数据 HMAC。
+        # 标签聚合仅需 tags 字段（PERF-013 跳过验签 + PERF-020 窄投影只取两列）。
+        # 安全性不降：tags_enc 完整性由 _decrypt_tags_by_crypto_id 的 GCM 认证保护
+        # （篡改即解密失败回退空串）；命中摘要缓存时 tags 已由列表 worker 以 LENIENT
+        # 验签。故标签聚合正确性不依赖元数据 HMAC，也不需要其余列。
         try:
             # 读路径 epoch 守卫（SEC-020，对称 resolve_totp_secret 的 ARCH-005）：
             # 改密 commit 与本聚合读的微秒窗口内裸读会用旧密钥解密新密文致 GCM 认证
@@ -450,10 +471,8 @@ class EntryCacheManager:
                 # 锁外取会在「取快照→进锁」间遭遇改密 activate，此时 epoch 已同为新、
                 # 校验通过，但快照仍是旧密钥，解密新密文致 GCM 失败。
                 vault_key = self._key
-                for raw in self._vault.db.get_entries(
-                    EntryQuery(include_deleted=False, verify=VerifyMode.SKIP)
-                ):
-                    tags_str = self._decrypt_tags(raw, vault_key)
+                for crypto_id, tags_enc in self._vault.db.get_entries_tags_projection():
+                    tags_str = self._decrypt_tags_by_crypto_id(crypto_id, tags_enc, vault_key)
                     for tag in (t.strip() for t in tags_str.split(",") if t.strip()):
                         tag_count[tag] = tag_count.get(tag, 0) + 1
         except VaultKeyEpochMismatchError:

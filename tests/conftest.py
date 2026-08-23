@@ -97,12 +97,9 @@ def vault(vault_config):
 @pytest.fixture
 def entry_mgr(vault):
     """已初始化的 EntryManager 实例。"""
-    from src.business.managers.entry_cache import EntryCacheManager
-    from src.business.managers.entry_change_bus import EntryChangeBus
-    from src.business.managers.entry_manager import EntryManager
+    from tests.helpers import make_entry_manager
 
-    cache = EntryCacheManager(vault)
-    return EntryManager(vault, cache, EntryChangeBus(cache))
+    return make_entry_manager(vault)
 
 
 @pytest.fixture

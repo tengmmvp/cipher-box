@@ -124,6 +124,17 @@ class EntryStore(Protocol):
 
     def get_entries_by_ids(self, entry_ids: list[int]) -> list[RawEntry]: ...
 
+    def get_entry_by_crypto_id(
+        self,
+        crypto_id: str,
+        *,
+        verify: VerifyMode = VerifyMode.STRICT,
+    ) -> RawEntry | None: ...
+
+    def get_entries_for_analysis(self) -> list[RawEntry]: ...
+
+    def get_entries_tags_projection(self) -> list[tuple[str, str]]: ...
+
     def add_entry(self, entry: RawEntry, preserve_metadata: bool = False) -> int: ...
 
     def add_entries_batch(

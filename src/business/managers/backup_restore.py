@@ -91,7 +91,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class _DecryptedPayload:
-    """恢复载荷解密结果（成功路径），供 _restore_current 阶段方法间传递明文与解析数据。"""
+    """恢复载荷解密结果（成功路径），供 _restore_current 阶段方法间传递明文与解析数据。
+
+    有意非 frozen（SEC-027）：:meth:`_rebuild_with_restore_point_locked` 在 finally 中
+    置空字段本身以释放调用方仍持有的明文引用——仅 del 局部别名不足以回收。
+    """
 
     plaintext: bytes
     data: dict[str, Any]
@@ -107,13 +111,14 @@ class BackupRestoreManager:
         self,
         vault_manager: "VaultManager",
         entry_manager: "EntryManager",
-        restore_point_mgr: RestorePointManager | None = None,
+        restore_point_mgr: RestorePointManager,
     ) -> None:
         self._vault = vault_manager
         # 复用调用方持有的 EntryManager 单例，共享分类名缓存，避免重复解密与双份明文驻留。
         self._entry_mgr = entry_manager
-        # 恢复点子服务经组合根显式注入（提升为一等依赖）；未注入时内部构造供测试简便。
-        self._restore_points = restore_point_mgr or RestorePointManager(vault_manager)
+        # 恢复点子服务经组合根/测试工厂显式注入（一等依赖；MAINT-015 移除兜底内部
+        # 构造——可选注入使遗漏装配在运行期才暴露且与组合根实例不一致）。
+        self._restore_points = restore_point_mgr
         # ARCH-006：恢复点创建/统计/清理统一由 RestorePointManager 承载。备份加密管线
         # （持锁 _create_backup_locked 薄包装）由本类在调用 create 时作为 creator 参数显式
         # 传入；恢复点复用与正式备份同一加密格式。
@@ -492,22 +497,30 @@ class BackupRestoreManager:
         事务由 :meth:`_restore_data` 的 ``epoch_guarded_transaction`` 提供；失败时**保留**
         恢复点（含恢复前明文）作安全网——事务回滚本身失败（磁盘满/IO 错误）时它是唯一
         干净全量副本，删除会致灾难性数据丢失。MAX_RESTORE_POINTS 上限覆盖反复尝试占盘。
-        无论成败均释放明文引用。恢复点创建经 :class:`RestorePointManager` 单一事实源（ARCH-006）。
+        无论成败均释放明文引用（SEC-027）。恢复点创建经 :class:`RestorePointManager`
+        单一事实源（ARCH-006）。
         """
         plaintext = payload.plaintext
         data = payload.data
-        # 创建恢复点（注册到 _restore_points 单一事实源，路径经其管理）；失败时保留
-        # 作安全网（见 docstring），不在此删除。creator 显式传入持锁备份入口（snapshot_key
-        # 加密恢复前明文），消除延迟绑定的可变状态。
-        self._restore_points.create(
-            lambda path: self._create_backup_locked(
-                path, backup_password=None, use_snapshot_key=True, cancel_check=None
-            )
-        )
         try:
+            # 创建恢复点（注册到 _restore_points 单一事实源，路径经其管理）；失败时保留
+            # 作安全网（见 docstring），不在此删除。creator 显式传入持锁备份入口（snapshot_key
+            # 加密恢复前明文），消除延迟绑定的可变状态。创建步骤亦纳入 try：其异常路径
+            # 同样须触发 finally 的明文释放，兑现 docstring「无论成败」契约。
+            self._restore_points.create(
+                lambda path: self._create_backup_locked(
+                    path, backup_password=None, use_snapshot_key=True, cancel_check=None
+                )
+            )
             new_epoch, new_snapshot_key = self._restore_data(data)
         finally:
-            # 释放明文引用（成功路径 plaintext/data 必然已赋值）。
+            # 释放明文引用（SEC-027）：调用方 _restore_current 的 payload 引用存活至其
+            # 方法返回，仅 del 局部别名时最多 32MB 的全量明文 JSON（含所有密码）仍被
+            # dataclass 字段钉住，在 WAL 截断、旧快照 purge 等收尾期间持续驻留。先直接
+            # 置空字段本身（_DecryptedPayload 有意非 frozen），再 del 局部别名，使恢复点
+            # 创建与数据重建的任一退出路径都不残留明文引用。
+            payload.plaintext = b""
+            payload.data = {}
             del plaintext
             del data
         return new_epoch, new_snapshot_key

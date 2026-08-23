@@ -11,7 +11,7 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
+from typing import TYPE_CHECKING, NamedTuple, TypedDict, TypeGuard, cast
 
 if TYPE_CHECKING:
     from ..managers.entry_cache import EntryCacheManager
@@ -19,8 +19,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-from ...database.types import EntryQuery, VerifyMode
-from ...exceptions import DecryptionError, EntryIntegrityError, VaultLockedError
+from ...database.types import VerifyMode
+from ...exceptions import (
+    DecryptionError,
+    EntryIntegrityError,
+    VaultKeyEpochMismatchError,
+    VaultLockedError,
+)
 from ...models import Entry, RawEntry
 from .crypto_utils import build_entry_summary, decrypt_field, require_vault_key
 
@@ -60,11 +65,14 @@ class SecurityReport(_SecurityReportBase, total=False):
     """安全分析报告结构（full_analysis / get_cached_report 返回值的类型契约）。
 
     生产者与消费者共享此 TypedDict，键集漂移由类型检查捕获。``_summaries_with_dates``
-    与 ``_key_epoch`` 为缓存分层内部键（total=False 可选）：前者供不同 days 重过滤，
-    后者供 epoch 失效判定（仅缓存层填充 _key_epoch）。
+    ``_fingerprint_map`` 与 ``_key_epoch`` 为缓存分层内部键（total=False 可选）：
+    第一个供不同 days 重过滤，第二个是含单例桶的完整指纹分桶（PERF-021 增量失效
+    据此移动单条条目桶位——duplicate_groups 仅含 >1 的桶，不足以支撑增量更新），
+    第三个供 epoch 失效判定（仅缓存层填充 _key_epoch）。
     """
 
     _summaries_with_dates: list[tuple[Entry, datetime | None]]
+    _fingerprint_map: dict[bytes, list[Entry]]
     _key_epoch: str | None
 
 
@@ -222,6 +230,13 @@ class SecurityAnalyzer:
         # _summaries_with_dates 同样出口复制（元素为元组，浅拷贝列表即可）。
         if "_summaries_with_dates" in cache:
             cache["_summaries_with_dates"] = list(cache["_summaries_with_dates"])
+        # _fingerprint_map 出口复制（PERF-021）：内层列表须与缓存本体隔离，防消费方
+        # 经副本引用就地变异桶成员污染增量更新基准。
+        if "_fingerprint_map" in cache:
+            cache["_fingerprint_map"] = {
+                fingerprint: list(group)
+                for fingerprint, group in cache["_fingerprint_map"].items()
+            }
         return cache
 
     def _cached_analysis(
@@ -290,11 +305,7 @@ class SecurityAnalyzer:
         """
         with self._cache_lock:
             cached = self._analysis_cache
-            if (
-                cached is not None
-                and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds
-                and cached.get("_key_epoch") == self._vault.key_epoch
-            ):
+            if self._cache_valid_locked(cached):
                 return self._refilter_cache(cached, days, now=now)
         return None
 
@@ -311,11 +322,7 @@ class SecurityAnalyzer:
         """
         with self._cache_lock:
             cached = self._analysis_cache
-            if (
-                cached is None
-                or (time.monotonic() - self._analysis_cache_time) >= self._cache_ttl_seconds
-                or cached.get("_key_epoch") != self._vault.key_epoch
-            ):
+            if not self._cache_valid_locked(cached):
                 return None
             if days == self._analysis_cache_days:
                 old = cached.get("old", 0)
@@ -343,10 +350,24 @@ class SecurityAnalyzer:
         """返回缓存报告，若无效则重新计算并缓存。"""
         return self._cached_analysis(days, cancel_check=cancel_check, now=now)
 
+    def _cache_valid_locked(self, cached: SecurityReport | None) -> TypeGuard[SecurityReport]:
+        """缓存有效性判定（TTL + key_epoch，SEC-002），须持 ``_cache_lock`` 调用。
+
+        TypeGuard：返回 True 时调用方分支内 ``cached`` 收窄为非 None，免去逐调用点
+        重复窄化样板。epoch 失配即失效：密码指纹依赖旧主密钥，跨 epoch 的指纹/明文
+        不可比。
+        """
+        return (
+            cached is not None
+            and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds
+            and cached.get("_key_epoch") == self._vault.key_epoch
+        )
+
     def invalidate_cache(
         self,
         password_changed: bool = True,
         metadata_changed: bool = True,
+        crypto_id: str | None = None,
     ) -> None:
         """清除分析缓存，下次访问时重新计算。
 
@@ -356,18 +377,117 @@ class SecurityAnalyzer:
         - ``password_changed``：密码变更 → 弱密码/重复/过期判定均可能变。
         - ``metadata_changed``：title/username 等报告展示元数据变更 → 缓存的
           weak_entries/duplicate_groups 元数据陈旧。
+        - ``crypto_id``：变更涉及的单条条目（PERF-021）。提供且缓存仍有效时走
+          **单条增量更新**——仅重读/重分类该条并重算聚合计数（指纹桶、重复分组、
+          弱/过期名单），其余 N-1 条的密码解密与 HMAC 指纹结果原样复用。纯元数据
+          编辑与改单条密码共用此路径：重分类一条是常数开销，报告内嵌的展示元数据
+          （标题等）亦随之刷新，无需按 password_changed 分支。任何读取失败（锁定/
+          改密窗口/条目缺失）回退全量失效，语义保守。
 
         两者皆 False 时直接返回（PERF：旁路变更不影响任何安全分析输入）。回调签名
-        经 :meth:`EntryChangeBus.notify` 以位置参数 ``(password_changed, metadata_changed)``
-        传入。
+        经 :meth:`EntryChangeBus.notify` 以位置参数 ``(password_changed,
+        metadata_changed, crypto_id)`` 传入；锁定/epoch 轮换通道零参调用经默认
+        True 保持全量失效不变。
         """
         if not (password_changed or metadata_changed):
+            return
+        if crypto_id is not None and self._try_incremental_update(crypto_id):
             return
         with self._cache_lock:
             self._analysis_cache = None
             self._analysis_cache_time = 0
             # 维持「cache 为 None 时 days 必为 0」不变量，避免下次 days 比较基于残留值误判。
             self._analysis_cache_days = 0
+
+    def _try_incremental_update(self, crypto_id: str) -> bool:
+        """单条增量更新缓存报告（PERF-021），成功返回 True。
+
+        步骤：锁外经 ``get_entry_by_crypto_id``（crypto_id UNIQUE 索引，O(1)）重读
+        该条并重分类（复用 full_analysis 的 :meth:`_classify_entry`，含单条密码
+        解密与指纹计算），再持 ``_cache_lock`` 把旧分类从 weak/old/指纹桶/
+        _summaries_with_dates 中移除、插入新分类并重算聚合计数。db 读不持
+        _cache_lock（cache 锁内禁访问数据库的锁序约定）；重分类期间缓存被并发
+        失效则放弃更新（返回 False 交由调用方全量失效）。
+
+        回退全量的情形：缓存缺失/过期/epoch 失配（指纹与密钥绑定，跨 epoch 不可比）、
+        条目已删/不存在（增删路径不携带 crypto_id，到达此处属异常状态）、保险库
+        锁定或改密窗口（无法取密钥）。
+        """
+        with self._cache_lock:
+            if not self._cache_valid_locked(self._analysis_cache):
+                return False
+        try:
+            with self._vault.epoch_guarded_read():
+                # SKIP 验签与 full_analysis 一致（PERF-010）：逐字段解密已含 GCM 认证，
+                # 增量路径同样以解密失败（EntryIntegrityError/跳过语义）吸收损坏。
+                raw = self._vault.db.get_entry_by_crypto_id(crypto_id, verify=VerifyMode.SKIP)
+                # PERF-001 对齐：锁内快照主密钥，锁外重分类用快照。
+                key = self._key
+        except (VaultLockedError, VaultKeyEpochMismatchError):
+            return False
+        if raw is None or raw.is_deleted:
+            return False
+        self._cache.invalidate_if_epoch_changed()
+        try:
+            result = self._classify_entry(raw, key)
+        except (DecryptionError, EntryIntegrityError):
+            # _classify_entry 内部已吸收这两类；此处防御未来透传路径的意外逃逸。
+            return False
+        del key
+        with self._cache_lock:
+            cached = self._analysis_cache
+            if not self._cache_valid_locked(cached):
+                return False
+            self._apply_reclassified_entry(cached, crypto_id, result)
+        return True
+
+    def _apply_reclassified_entry(
+        self,
+        cached: SecurityReport,
+        crypto_id: str,
+        result: _ClassifyResult,
+    ) -> None:
+        """持锁把单条条目的旧分类替换为新分类并重算聚合计数。须持 ``_cache_lock``。
+
+        copy-on-write：指纹桶与各列表一律重建而非就地变异，避免与 _refilter_cache
+        出口复制共享的内层列表被并发消费方观察到中间态。total 不变（单条更新），
+        weak/duplicate/old 从保留条目重算；old 以当前时刻与缓存 days 重过滤（O(n)
+        日期比较，无解密），与 _refilter_cache 的 days 重过滤语义一致。result.summary
+        为 None（条目损坏/无密码损坏）时仅移除不插入，与 full_analysis 的跳过语义
+        一致。
+        """
+        # 1) 移除旧分类
+        cached["weak_entries"] = [
+            e for e in cached.get("weak_entries", []) if e.crypto_id != crypto_id
+        ]
+        summaries = [
+            (s, dt)
+            for s, dt in cached.get("_summaries_with_dates", [])
+            if s.crypto_id != crypto_id
+        ]
+        fp_map: dict[bytes, list[Entry]] = {}
+        for fingerprint, group in cached.get("_fingerprint_map", {}).items():
+            kept = [e for e in group if e.crypto_id != crypto_id]
+            if kept:
+                fp_map[fingerprint] = kept
+        # 2) 插入新分类
+        if result.summary is not None:
+            summaries.append((result.summary, result.changed_utc))
+            if result.is_weak:
+                cached["weak_entries"].append(result.summary)
+            if result.fingerprint is not None:
+                fp_map.setdefault(result.fingerprint, []).append(result.summary)
+        # 3) 重算聚合
+        cached["_summaries_with_dates"] = summaries
+        cached["_fingerprint_map"] = fp_map
+        groups = [list(g) for g in fp_map.values() if len(g) > 1]
+        cached["duplicate_groups"] = groups
+        cached["duplicate_count"] = sum(len(g) - 1 for g in groups)
+        cached["weak_count"] = len(cached["weak_entries"])
+        cutoff = datetime.now(UTC) - timedelta(days=self._analysis_cache_days)
+        old_entries = [s for s, dt in summaries if dt is not None and dt < cutoff]
+        cached["old_entries"] = old_entries
+        cached["old"] = len(old_entries)
 
     def _parse_changed_utc(self, raw: RawEntry) -> datetime | None:
         """解析条目密码变更时间为 UTC datetime，供过期检测。
@@ -408,10 +528,10 @@ class SecurityAnalyzer:
         # 使 lock() 须等分析释放密钥后才能清零，避免后台 Worker 超时后仍持密钥。
         with self._vault.vault_write_lock():
             # PERF-010：逐条解密已含 GCM 认证，_classify_entry 双重判定损坏，
-            # 故跳过 HMAC 验签省去全量重算。
-            entries = self._vault.db.get_entries(
-                EntryQuery(include_deleted=False, verify=VerifyMode.SKIP)
-            )
+            # 故跳过 HMAC 验签省去全量重算。PERF-020：窄投影扫描——分析仅消费摘要
+            # 字段与 password_enc（解密算指纹），notes/custom_fields/totp_secret
+            # 三个大列不进入扫描（宽 SELECT 物化后即弃是温态分析的主导开销之一）。
+            entries = self._vault.db.get_entries_for_analysis()
             total = len(entries)
             weak_entries = []
             password_map: dict[bytes, list[Entry]] = {}
@@ -461,6 +581,9 @@ class SecurityAnalyzer:
             "old_entries": old_entries,
             "old": len(old_entries),
             "_summaries_with_dates": _summaries_with_dates,  # 缓存分层：供不同 days 重过滤
+            # 指纹桶全集（含单例桶，PERF-021）：增量失效据此移动单条条目桶位并重算
+            # 重复分组；duplicate_groups 仅含 >1 的桶，不足以支撑增量更新。
+            "_fingerprint_map": password_map,
         }
 
     def _classify_entry(self, raw: RawEntry, vault_key: bytes) -> _ClassifyResult:

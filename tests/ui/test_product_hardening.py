@@ -18,7 +18,6 @@ from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QLabel, QWidget
 
 from src.business.composition import build_business_context
-from src.business.managers.backup_restore import BackupRestoreManager
 from src.business.managers.import_export import ImportExportManager
 from src.crypto.encryption import EncryptionEngine
 from src.crypto.totp import TOTPGenerator
@@ -28,7 +27,7 @@ from src.ui.dialogs.entry_dialog import EntryDialog
 from src.ui.dialogs.login_window import LoginWindow
 from src.ui.resources.styles import get_style
 from src.ui.windows.main_window import MainWindow
-from tests.helpers import make_entry_manager, make_test_config, make_vault
+from tests.helpers import make_backup_manager, make_entry_manager, make_test_config, make_vault
 
 _APP = QApplication.instance() or QApplication([])
 
@@ -90,14 +89,14 @@ def test_portable_backup_restores_into_different_vault():
         source_manager.update_entry(edited)
         source_manager.delete_entry(entry_id)
         backup_path = str(Path(source_root) / "portable.cbox")
-        success, error = BackupRestoreManager(source, make_entry_manager(source)).create_backup(
+        success, error = make_backup_manager(source).create_backup(
             backup_path, "IndependentBackupPassword!2026"
         )
         assert success, error
 
         target = make_vault(_config(target_root))
         assert target.initialize("DifferentMasterPassword!2026")[0]
-        success, error = BackupRestoreManager(target, make_entry_manager(target)).restore_backup(
+        success, error = make_backup_manager(target).restore_backup(
             backup_path, "IndependentBackupPassword!2026"
         )
         assert success, error
@@ -753,7 +752,7 @@ def test_pre_restore_snapshot_purged_on_master_password_change():
             Entry(title="Incoming", password="IncomingSecret!2026")
         )
         portable = str(Path(source_root) / "portable.cbox")
-        success, error = BackupRestoreManager(source, make_entry_manager(source)).create_backup(
+        success, error = make_backup_manager(source).create_backup(
             portable, "PortableBackup!2026"
         )
         assert success, error
@@ -762,7 +761,7 @@ def test_pre_restore_snapshot_purged_on_master_password_change():
         assert target.initialize("OldTargetMaster!2026")[0]
         target_manager = make_entry_manager(target)
         target_manager.add_entry(Entry(title="Before restore", password="OriginalSecret!2026"))
-        backup_manager = BackupRestoreManager(target, target_manager)
+        backup_manager = make_backup_manager(target, target_manager)
         success, error = backup_manager.restore_backup(portable, "PortableBackup!2026")
         assert success, error
         backup_dir = Path(target_root) / "backups"

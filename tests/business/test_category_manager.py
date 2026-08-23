@@ -146,6 +146,72 @@ class TestCategoryManagerUpdate:
         )
 
 
+class TestCategoryManagerUpdateDuplicate:
+    """update_category 改名明文查重（QL-023）：与其他分类同名（含大小写变体）拒绝。
+
+    分类名密文含随机 nonce，仓库层密文查重永不命中；缺改名侧查重时可产生同名分类，
+    与导入路径按折叠名坍缩、add_category 拒绝新建同名自相矛盾。
+    """
+
+    def test_update_to_existing_name_rejected(self, entry_mgr):
+        """改名与其他分类同名应拒绝。"""
+        name_a = _unique_name("Alpha")
+        name_b = _unique_name("Beta")
+        id_a = entry_mgr.categories.add_category(Category(name=name_a))
+        entry_mgr.categories.add_category(Category(name=name_b))
+        with pytest.raises(ValueError, match="已存在"):
+            entry_mgr.categories.update_category(
+                Category(id=id_a, name=name_b, icon_char="[DIR]", color="#fff"),
+            )
+
+    def test_update_to_existing_name_case_variant_rejected(self, entry_mgr):
+        """大小写变体视为同名（与 add_category 的 casefold 语义一致）。"""
+        base = _unique_name("Case")
+        other = _unique_name("Other")
+        id_other = entry_mgr.categories.add_category(Category(name=other))
+        entry_mgr.categories.add_category(Category(name=base))
+        with pytest.raises(ValueError, match="已存在"):
+            entry_mgr.categories.update_category(
+                Category(id=id_other, name=base.swapcase(), icon_char="[DIR]", color="#fff"),
+            )
+
+    def test_update_to_own_current_name_allowed(self, entry_mgr):
+        """改回自身当前名应放行（查重须排除自身 id，否则自我碰撞误拒）。"""
+        name = _unique_name("Self")
+        cat_id = entry_mgr.categories.add_category(Category(name=name))
+        entry_mgr.categories.update_category(
+            Category(id=cat_id, name=name, icon_char="[DIR]", color="#fff"),
+        )  # 不抛即通过
+        assert any(
+            c.name == name for c in entry_mgr.categories.get_categories()
+        )
+
+    def test_after_rename_original_name_reusable(self, entry_mgr):
+        """改名让出原名后，原名可再新建分类（闭环一致性）。"""
+        name_old = _unique_name("OldName")
+        name_new = _unique_name("NewName")
+        cat_id = entry_mgr.categories.add_category(Category(name=name_old))
+        entry_mgr.categories.update_category(
+            Category(id=cat_id, name=name_new, icon_char="[DIR]", color="#fff"),
+        )
+        rebuilt_id = entry_mgr.categories.add_category(Category(name=name_old))
+        assert isinstance(rebuilt_id, int) and rebuilt_id > 0
+
+    def test_rejected_rename_keeps_original_name(self, entry_mgr):
+        """被拒的改名不得落库（事务内先查重后写入，拒绝时无副作用）。"""
+        name_a = _unique_name("Keep")
+        name_b = _unique_name("Target")
+        id_a = entry_mgr.categories.add_category(Category(name=name_a))
+        entry_mgr.categories.add_category(Category(name=name_b))
+        with pytest.raises(ValueError, match="已存在"):
+            entry_mgr.categories.update_category(
+                Category(id=id_a, name=name_b, icon_char="[DIR]", color="#fff"),
+            )
+        assert any(
+            c.name == name_a for c in entry_mgr.categories.get_categories()
+        )
+
+
 class TestCategoryManagerDelete:
     """delete_category 删除后不再出现在 get_categories。"""
 

@@ -33,7 +33,9 @@ class TestBackupCorruption:
         self._vault = make_vault(vault_config)
         self._vault.initialize("test_password_12345")
         self._entry_mgr = make_entry_manager(self._vault)
-        self._backup_mgr = BackupRestoreManager(self._vault, self._entry_mgr)
+        self._backup_mgr = BackupRestoreManager(
+            self._vault, self._entry_mgr, RestorePointManager(self._vault)
+        )
         self._entry_mgr.add_entry(
             Entry(
                 title="测试条目",
@@ -255,6 +257,104 @@ class TestBackupCorruption:
         success, _error = self._backup_mgr.restore_backup(path, "BackupTest!2026")
         assert not success
         assert cleaned, "恢复点创建异常时应调用 _safe_delete_restore_point 清理"
+
+
+class TestRestorePlaintextRelease:
+    """恢复载荷明文释放契约（SEC-027）：恢复退出后 payload 明文字段被置空。
+
+    仅 del 局部别名时，调用方 _restore_current 持有的 payload 引用仍钉住最多
+    32MB 的全量明文 JSON（含所有密码），在 WAL 截断与旧快照 purge 收尾期间持续
+    驻留；置空 dataclass 字段本身才真正释放。经捕获 _decrypt_and_validate_payload_locked
+    返回的 payload 对象，断言恢复成功 / 数据重建失败 / 恢复点创建异常三条退出
+    路径后字段均为空。
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup_vault(self, tmp_path, vault_config):
+        self._tmp_dir = str(tmp_path)
+        self._vault = make_vault(vault_config)
+        self._vault.initialize("test_password_12345")
+        self._entry_mgr = make_entry_manager(self._vault)
+        self._backup_mgr = BackupRestoreManager(
+            self._vault, self._entry_mgr, RestorePointManager(self._vault)
+        )
+        self._entry_mgr.add_entry(
+            Entry(
+                title="释放契约条目",
+                username="user1",
+                password="pass123",
+                url="https://example.com",
+                notes="备注",
+                entry_type="login",
+            )
+        )
+        yield
+        self._vault.close()
+
+    def _create_snapshot_backup(self, filepath: str) -> str:
+        """创建快照备份（不经 Argon2id 密码派生，加速本组契约测试）。"""
+        success, error = self._backup_mgr.create_backup(filepath, use_snapshot_key=True)
+        assert success, f"创建快照备份失败: {error}"
+        return filepath
+
+    def _capture_payload(self, monkeypatch) -> list:
+        """拦截解密阶段返回的 _DecryptedPayload，供断言恢复后的字段状态。"""
+        captured: list = []
+        real_decrypt = self._backup_mgr._decrypt_and_validate_payload_locked
+
+        def _spy(*args, **kwargs):
+            result = real_decrypt(*args, **kwargs)
+            if not isinstance(result, tuple):  # 成功路径返回 payload，失败路径返回 (False, msg)
+                captured.append(result)
+            return result
+
+        monkeypatch.setattr(
+            self._backup_mgr, "_decrypt_and_validate_payload_locked", _spy
+        )
+        return captured
+
+    def test_success_path_clears_payload_fields(self, tmp_path, monkeypatch):
+        """恢复成功后 payload.plaintext/data 被置空（SEC-027）。"""
+        path = self._create_snapshot_backup(str(tmp_path / "release_ok.cbox"))
+        captured = self._capture_payload(monkeypatch)
+
+        success, error = self._backup_mgr.restore_backup(path)
+        assert success, f"恢复失败: {error}"
+        assert len(captured) == 1
+        assert captured[0].plaintext == b""
+        assert captured[0].data == {}
+
+    def test_restore_failure_clears_payload_fields(self, tmp_path, monkeypatch):
+        """数据重建抛异常时 payload 字段仍被 finally 释放（无论成败契约）。"""
+        path = self._create_snapshot_backup(str(tmp_path / "release_fail.cbox"))
+        captured = self._capture_payload(monkeypatch)
+
+        def _boom(_data):
+            raise RuntimeError("simulated rebuild failure")
+
+        monkeypatch.setattr(self._backup_mgr, "_restore_data", _boom)
+        success, _error = self._backup_mgr.restore_backup(path)
+        assert not success
+        assert len(captured) == 1
+        assert captured[0].plaintext == b""
+        assert captured[0].data == {}
+
+    def test_restore_point_creation_failure_clears_payload_fields(
+        self, tmp_path, monkeypatch
+    ):
+        """恢复点创建（重建前的阶段）抛异常时同样触发明文释放。"""
+        path = self._create_snapshot_backup(str(tmp_path / "release_rp.cbox"))
+        captured = self._capture_payload(monkeypatch)
+
+        def _raise(*_args, **_kwargs):
+            raise OSError("simulated restore point failure")
+
+        monkeypatch.setattr(self._backup_mgr, "_create_backup_locked", _raise)
+        success, _error = self._backup_mgr.restore_backup(path)
+        assert not success
+        assert len(captured) == 1
+        assert captured[0].plaintext == b""
+        assert captured[0].data == {}
 
 
 class TestBackupSizeLimits:

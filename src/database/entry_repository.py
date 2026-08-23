@@ -157,6 +157,28 @@ _SELECT_ENTRY_WITH_CATEGORY_SQL = (
     "FROM entries e LEFT JOIN categories c ON e.category_id = c.id"
 )
 
+# 窄投影扫描 SQL（PERF-020）：标签聚合与安全分析的全表扫描不需要 notes/custom_fields/
+# totp_secret 三个大列，SELECT 排除之以 '' 占位（保持 _row_to_entry 的列完备契约），
+# 避免 sqlite 物化大 BLOB 后即弃的读取开销（温缓存刷新实测中宽列读取与逐行 HMAC
+# 验签同为主导成本）。排除列从 _ENTRY_COLUMNS 派生，新增列自动跟随。
+_ANALYSIS_SCAN_EXCLUDED_COLUMNS = ("notes_enc", "custom_fields_enc", "totp_secret_enc")
+
+_ANALYSIS_SCAN_COLUMN_SQL = ", ".join(
+    f"'' AS {column}" if column in _ANALYSIS_SCAN_EXCLUDED_COLUMNS else f"e.{column}"
+    for column in _ENTRY_COLUMNS
+)
+
+_SELECT_ENTRY_ANALYSIS_SCAN_SQL = (
+    f"SELECT e.id, {_ANALYSIS_SCAN_COLUMN_SQL}, c.name_enc as category_name "  # nosec B608 - 列名硬编码
+    "FROM entries e LEFT JOIN categories c ON e.category_id = c.id "
+    "WHERE e.is_deleted = 0"
+)
+
+# 标签聚合窄投影（PERF-020）：仅需 (crypto_id, tags_enc) 两列，不 JOIN 分类表。
+_SELECT_ENTRY_TAGS_PROJECTION_SQL = (
+    "SELECT crypto_id, tags_enc FROM entries WHERE is_deleted = 0"
+)
+
 # 密码历史 JOIN 条目 crypto_id 的基础查询，供 get_password_history /
 # get_all_password_history / get_all_password_history_batch 复用。
 _SELECT_PASSWORD_HISTORY_SQL = (
@@ -663,6 +685,55 @@ class EntryRepository:
         entries = [self._row_to_entry(row, verify=VerifyMode.LENIENT) for row in fetched_rows]
         by_id = {e.id: e for e in entries}
         return [by_id[i] for i in unique_ids if i in by_id]
+
+    @_db_operation
+    def get_entry_by_crypto_id(
+        self,
+        crypto_id: str,
+        *,
+        verify: VerifyMode = VerifyMode.STRICT,
+    ) -> RawEntry | None:
+        """按 crypto_id 精确读取单条（crypto_id 列 UNIQUE 索引，O(1) 定位）。
+
+        供单条增量缓存更新（如 SecurityAnalyzer 的单条重分类，PERF-021）按变更
+        通知携带的 crypto_id 定位行，免去 numeric id 映射。verify 默认 STRICT 与
+        get_entry 对齐；批量分析侧传 SKIP（与 full_analysis 的 PERF-010 取舍一致）。
+        """
+        row = self._conn.execute(
+            f"{_SELECT_ENTRY_WITH_CATEGORY_SQL} WHERE e.crypto_id = ?",  # nosec B608
+            (crypto_id,),
+        ).fetchone()
+        return self._row_to_entry(row, verify=verify) if row else None
+
+    def get_entries_for_analysis(self) -> list[RawEntry]:
+        """窄投影读取未删除条目供安全分析扫描（PERF-020）。
+
+        列集为 _ENTRY_COLUMNS 减 notes_enc/custom_fields_enc/totp_secret_enc（以 ''
+        占位）：full_analysis 仅消费摘要字段与 password_enc（解密算重复指纹），大列
+        物化后即弃是温态刷新的主导开销之一。不验签（SKIP）与原
+        ``get_entries(EntryQuery(include_deleted=False, verify=SKIP))`` 语义一致：
+        逐字段解密已含 GCM 认证，双重判定损坏属冗余（PERF-010）。
+        """
+        # ARCH-005：手写 with self._lock 绕过 @_db_operation，显式补连接校验。
+        if self._conn is None:
+            raise DatabaseError("数据库未连接")
+        with self._lock:
+            rows = self._conn.execute(_SELECT_ENTRY_ANALYSIS_SCAN_SQL).fetchall()
+        # fetchall 后脱离游标，dataclass 构建不持数据库锁（与 get_entries 一致）。
+        return [self._row_to_entry(r, verify=VerifyMode.SKIP) for r in rows]
+
+    def get_entries_tags_projection(self) -> list[tuple[str, str]]:
+        """窄投影读取未删除条目的 ``(crypto_id, tags_enc)``，供标签聚合（PERF-020）。
+
+        标签聚合仅需 tags 列：SELECT 其余列（尤其三个大列）是纯读取浪费。返回
+        轻量元组而非 RawEntry，调用方（EntryCacheManager.get_all_tags）不依赖
+        行对象的列完备契约。tags 完整性由解密侧 GCM 认证保护（PERF-013 语义不变）。
+        """
+        if self._conn is None:
+            raise DatabaseError("数据库未连接")
+        with self._lock:
+            rows = self._conn.execute(_SELECT_ENTRY_TAGS_PROJECTION_SQL).fetchall()
+        return [(row[0], row[1] or "") for row in rows]
 
     # ==================== 密码历史 ====================
 

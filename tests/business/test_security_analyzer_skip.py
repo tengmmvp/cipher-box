@@ -37,7 +37,7 @@ class TestSecurityAnalyzerSkipCorrupt:
             password_strength=0,
         )
 
-        vault.db.get_entries.return_value = [bad_entry]
+        vault.db.get_entries_for_analysis.return_value = [bad_entry]
 
         analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
 
@@ -68,7 +68,7 @@ class TestSecurityAnalyzerSkipCorrupt:
             password_strength=0,
         )
 
-        vault.db.get_entries.return_value = [corrupt_entry]
+        vault.db.get_entries_for_analysis.return_value = [corrupt_entry]
 
         analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
 
@@ -84,7 +84,7 @@ class TestSecurityAnalyzerSkipCorrupt:
         vault.key = b"\x00" * 32
         vault.is_unlocked = True
 
-        vault.db.get_entries.return_value = []
+        vault.db.get_entries_for_analysis.return_value = []
 
         analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
         result = analyzer.full_analysis(90)
@@ -120,7 +120,7 @@ class TestSecurityAnalyzerSkipCorrupt:
             # naive ISO 字符串，无 +00:00 偏移（模拟旧版或外部导入数据）
             password_changed_at="2020-01-01T00:00:00",
         )
-        vault.db.get_entries.return_value = [entry]
+        vault.db.get_entries_for_analysis.return_value = [entry]
 
         analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
         result = analyzer.full_analysis(90)
@@ -154,7 +154,7 @@ def test_corrupt_category_name_is_skipped_not_raised():
         # 解密失败抛 DecryptionError。
         category_name="cb2:!!!corrupt_category!!!",
     )
-    vault.db.get_entries.return_value = [entry]
+    vault.db.get_entries_for_analysis.return_value = [entry]
 
     analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
     result = analyzer.full_analysis(90)
@@ -174,7 +174,7 @@ def test_cached_analysis_returns_independent_copy():
     vault.key = b"\x00" * 32
     vault.is_unlocked = True
     vault.key_epoch = 1
-    vault.db.get_entries.return_value = []
+    vault.db.get_entries_for_analysis.return_value = []
     vault.db.get_entry_count.return_value = 0
 
     analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
@@ -206,7 +206,7 @@ def test_full_analysis_aborts_on_cancel_request():
         password="",
         custom_fields="",
     )
-    vault.db.get_entries.return_value = [entry]
+    vault.db.get_entries_for_analysis.return_value = [entry]
 
     analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
     with pytest.raises(VaultLockedError):
@@ -221,7 +221,7 @@ def test_full_analysis_proceeds_when_not_cancelled():
     vault.is_unlocked = True
     vault.is_cancel_requested.return_value = False
 
-    vault.db.get_entries.return_value = []
+    vault.db.get_entries_for_analysis.return_value = []
 
     analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
     result = analyzer.full_analysis(90)

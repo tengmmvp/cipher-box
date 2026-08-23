@@ -6,6 +6,8 @@
 小写字段，是前者的批量优化版，匹配语义须完全一致）。
 """
 
+import dataclasses
+
 import pytest
 
 from src.business.services.crypto_utils import matches_search, matches_search_lower
@@ -97,3 +99,109 @@ def test_matches_search_empty_query_always_matches():
     lower = ("any", "u", "https://x", "t")
     assert matches_search(entry, "") is True
     assert matches_search_lower(lower, "") is True
+
+
+# ======== 单条增量缓存失效（PERF-021）========
+
+
+class TestIncrementalCacheInvalidation:
+    """单条条目变更的增量报告更新（PERF-021）。
+
+    change_bus 回调携带 crypto_id 后，SecurityAnalyzer.invalidate_cache 走单条
+    增量路径：仅重读/重分类该条并重算聚合计数，其余条目的解密与 HMAC 指纹结果
+    复用（不再整库重算）。经 build_business_context 以生产连线（change_bus →
+    invalidate_cache）驱动，避免绕过注册路径的假阳性。
+    """
+
+    @pytest.fixture
+    def ctx_vault(self, tmp_path):
+        """组装生产接线的 BusinessContext（change_bus → security 增量失效）。"""
+        from src.business.composition import build_business_context
+        from tests.helpers import make_test_config, make_vault
+
+        config = make_test_config(str(tmp_path))
+        vault = make_vault(config)
+        vault.initialize("TestIncremental!2026")
+        ctx = build_business_context(config, vault)
+        yield ctx, vault
+        vault.close()
+
+    @staticmethod
+    def _forbid_full_analysis():
+        def _raise(*args, **kwargs):
+            raise AssertionError("增量失效后不应触发整库 full_analysis 重算")
+
+        return _raise
+
+    def test_title_edit_keeps_analysis_cache(self, ctx_vault, monkeypatch):
+        """纯元数据编辑（改标题）后报告缓存命中：不重算，展示标题已刷新。"""
+        ctx, _vault = ctx_vault
+        entry_id = ctx.entry_mgr.add_entry(
+            Entry(title="旧标题", username="u", password="weak")
+        )
+        report = ctx.security.get_or_compute_report()
+        assert report["weak_count"] == 1
+        assert report["weak_entries"][0].title == "旧标题"
+
+        # 改标题（密码未变）→ 增量更新；缓存命中路径不得触发整库重算
+        entry = ctx.entry_mgr.get_entry(entry_id)
+        entry = dataclasses.replace(entry, title="新标题")
+        ctx.entry_mgr.update_entry(entry)
+
+        monkeypatch.setattr(ctx.security, "full_analysis", self._forbid_full_analysis())
+        refreshed = ctx.security.get_or_compute_report()
+        assert refreshed["weak_count"] == 1
+        assert refreshed["weak_entries"][0].title == "新标题"
+
+    def test_password_change_flips_duplicate_state_incrementally(
+        self, ctx_vault, monkeypatch
+    ):
+        """改单条密码：同旧指纹条目的重复状态正确翻转，其余结果复用不重算。"""
+        ctx, _vault = ctx_vault
+        shared = "SharedPass!2026"
+        id_a = ctx.entry_mgr.add_entry(Entry(title="A", username="a", password=shared))
+        ctx.entry_mgr.add_entry(Entry(title="B", username="b", password=shared))
+        ctx.entry_mgr.add_entry(Entry(title="C", username="c", password="UniquePass!2026"))
+
+        report = ctx.security.get_or_compute_report()
+        assert report["total"] == 3
+        assert report["duplicate_count"] == 1
+        assert {e.title for g in report["duplicate_groups"] for e in g} == {"A", "B"}
+
+        # A 改为全新唯一密码：A 离开共享指纹桶，B 不再构成重复
+        entry = ctx.entry_mgr.get_entry(id_a)
+        entry = dataclasses.replace(entry, password="FreshSecret!2026")
+        ctx.entry_mgr.update_entry(entry)
+
+        monkeypatch.setattr(ctx.security, "full_analysis", self._forbid_full_analysis())
+        refreshed = ctx.security.get_or_compute_report()
+        assert refreshed["duplicate_count"] == 0
+        assert refreshed["duplicate_groups"] == []
+        assert refreshed["total"] == 3  # 单条更新不改 total
+
+        # 与全量重算结果一致（新鲜实例直接从库计算）
+        from src.business.managers.entry_cache import EntryCacheManager
+        from src.business.services.security_analyzer import SecurityAnalyzer
+
+        fresh = SecurityAnalyzer(ctx.vault, EntryCacheManager(ctx.vault))
+        baseline = fresh.full_analysis()
+        assert baseline["duplicate_count"] == refreshed["duplicate_count"]
+        assert baseline["weak_count"] == refreshed["weak_count"]
+        assert baseline["old"] == refreshed["old"]
+
+    def test_add_and_delete_still_fully_invalidate(self, ctx_vault):
+        """增删条目不携带 crypto_id（全量语义），缓存整体失效下次重算。"""
+        ctx, _vault = ctx_vault
+        entry_id = ctx.entry_mgr.add_entry(
+            Entry(title="t", username="u", password="pw123456")
+        )
+        ctx.security.get_or_compute_report()
+        assert ctx.security._analysis_cache is not None
+
+        ctx.entry_mgr.add_entry(Entry(title="t2", username="u2", password="pw654321"))
+        assert ctx.security._analysis_cache is None
+
+        ctx.security.get_or_compute_report()
+        assert ctx.security._analysis_cache is not None
+        ctx.entry_mgr.delete_entry(entry_id)
+        assert ctx.security._analysis_cache is None

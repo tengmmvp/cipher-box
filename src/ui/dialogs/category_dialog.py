@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...models import Category
+from ...models import MAX_CATEGORY_NAME, Category
 from ..components.widgets import create_cancel_button, setup_dialog_flags
 from ..error_messages import to_user_message
 from ..resources.constants import BTN_DIALOG, DIALOG_CATEGORY_MIN_SIZE
@@ -173,6 +173,13 @@ class CategoryDialog(QDialog):
         # 名称
         self._name_edit = QLineEdit()
         self._name_edit.setPlaceholderText("请输入分类名称")
+        # 名称长度门禁（QL-031）：``MAX_CATEGORY_NAME`` 此前仅在 ``Category.from_dict``
+        # 与导入路径生效，对话框可把超长名直达落库（``add_category``/``update_category``
+        # 均不查长度，编辑路径本就绕过 from_dict）。在输入框层截断使新增/编辑两路径
+        # 共享 models 单一事实源上限。Qt maxLength 按 UTF-16 代码单元计数，业务校验按
+        # 代码点：单元数不超过上限则代码点必不超过上限，截断结果不会被 from_dict
+        # 二次拒绝。
+        self._name_edit.setMaxLength(MAX_CATEGORY_NAME)
         form.addRow("名称 *：", self._name_edit)
 
         # 图标选择

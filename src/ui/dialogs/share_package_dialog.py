@@ -63,7 +63,6 @@ _EXPIRY_OPTIONS: list[tuple[str, int]] = [
     ("30 天", 2592000),
     ("永不", 0),
 ]
-_SHARED_PASSWORD_MIN_LEN = 8
 
 
 def open_share_package_dialog(entry: Entry, parent: QWidget) -> None:
@@ -244,10 +243,13 @@ class SharePackageDialog(WorkerBackedDialog):
 
     def _execute(self) -> None:
         password = self._pwd_edit.text()
-        if len(password) < _SHARED_PASSWORD_MIN_LEN:
-            QMessageBox.warning(
-                self, DLG_TITLE_INFO, f"共享密码至少 {_SHARED_PASSWORD_MIN_LEN} 个字符。"
-            )
+        # 共享密码预校验与业务层 create_share_package 对齐（QL-028）：统一经
+        # PasswordService.validate_master_password（≥15 字符 + 强度检查）预检，
+        # 替代旧的本地 8 字符门禁——8-14 位密码过旧门禁后到 worker 才抛
+        # ShareError，两端口径不一；与 backup_dialog 的预校验范式一致。
+        valid, error = PasswordService.validate_master_password(password, label="共享密码")
+        if not valid:
+            QMessageBox.warning(self, DLG_TITLE_INFO, error)
             return
         confirm = self._confirm_edit.text()
         # encode('utf-8') 必须：共享密码可含非 ASCII，compare_digest 对 str 仅接受 ASCII，

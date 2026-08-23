@@ -183,3 +183,62 @@ class TestOnSaveExceptionBranches:
         assert any("意外错误" in str(arg) for arg in patched_msgbox["critical"][0])
         # 不透传内部异常信息
         assert not any("internal boom" in str(arg) for arg in patched_msgbox["critical"][0])
+
+
+class TestCollectEntryPasswordGating:
+    """_collect_entry 密码门控：新增模式按可见性、编辑模式按回读值（QL-029）。
+
+    card/identity 的 visible_fields 不含 "password"，密码框隐藏；新增模式下
+    残留值不得被隐式持久化（表单上看不见、无法清除）；编辑既有带密码的
+    card/identity 条目时隐藏控件回读的密码须保留（详情面板会显示）。
+    """
+
+    def test_new_card_after_type_switch_drops_residual_password(self, qapp):
+        """新增 login 输密码→切 card 保存：持久化的条目 password 为空。"""
+        dlg = _make_dialog(qapp)
+        dlg._title_edit.setText("我的卡")
+        dlg._password_edit.setText("ResidualSecret!234")
+        _switch_type(dlg, "card")  # 复现切换后密码框隐藏、控件值残留的状态
+        dlg._on_save()
+        dlg._entry_mgr.add_entry.assert_called_once()
+        saved = dlg._entry_mgr.add_entry.call_args.args[0]
+        assert saved.entry_type == "card"
+        assert saved.password == ""
+
+    def test_new_identity_after_type_switch_drops_residual_password(self, qapp):
+        """identity 与 card 同构：visible_fields 不含 password，残留值同样丢弃。"""
+        dlg = _make_dialog(qapp)
+        dlg._title_edit.setText("我的身份")
+        dlg._password_edit.setText("ResidualSecret!234")
+        _switch_type(dlg, "identity")
+        dlg._on_save()
+        saved = dlg._entry_mgr.add_entry.call_args.args[0]
+        assert saved.entry_type == "identity"
+        assert saved.password == ""
+
+    def test_new_login_keeps_visible_password(self, qapp):
+        """login（password 在 visible_fields 中）不受门控影响，密码正常采集。
+
+        守护门控不外溢：避免修复反向破坏常规登录条目的密码保存。
+        """
+        dlg = _make_dialog(qapp)
+        dlg._title_edit.setText("我的账号")
+        dlg._password_edit.setText("VisibleSecret!9")
+        dlg._on_save()
+        saved = dlg._entry_mgr.add_entry.call_args.args[0]
+        assert saved.password == "VisibleSecret!9"
+
+    def test_edit_existing_card_entry_keeps_its_password(self, qapp):
+        """编辑既有带密码的 card 条目：隐藏密码框回读值原样保留并透传 id。"""
+        from src.models import Entry
+        from src.ui.dialogs.entry_dialog import EntryDialog
+
+        entry = Entry(
+            id=7, title="既有卡片", password="KeepMe!123456", entry_type="card"
+        )
+        dlg = EntryDialog(MagicMock(), [], entry=entry)
+        dlg._on_save()
+        dlg._entry_mgr.update_entry.assert_called_once()
+        updated = dlg._entry_mgr.update_entry.call_args.args[0]
+        assert updated.id == 7
+        assert updated.password == "KeepMe!123456"

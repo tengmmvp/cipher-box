@@ -35,7 +35,7 @@ message 中的旧编号引用。
 | `ARCH-010` | `ARCH-024` | 3 | # 只读映射（MappingProxyType 防误写，ARCH-010）：均派生自 _INT_SPECS。 |
 | `ARCH-011` | `ARCH-3` | 1 | # 的值再签，与恢复路径对称，消除手工键集漂移（ARCH-011）。回读须在调用方事务内， |
 
-### MAINT — 维护/可维护性（14 项）
+### MAINT — 维护/可维护性（17 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
@@ -53,8 +53,11 @@ message 中的旧编号引用。
 | `MAINT-012` | `MAINT-2` | 1 | # 平台判定单一常量（MAINT-012）：统一引用，避免 os.name=='nt' 与 sys.platform=='win32' 混用 |
 | `MAINT-013` | `MAINT-3` | 3 | """BackupDialog 接线测试：控件值→业务参数→结果文案（MAINT-013）。 |
 | `MAINT-014` | — | 0 | 审计编号双向引用约定：新编号须在代码注释 ``（XXX-NNN）`` 引用，使 rg 可从代码回溯决策（本轮 PERF-017/QL-015/QL-016/QL-017 已补齐；纯约定/已放弃编号处数=0 豁免）。 |
+| `MAINT-015` | — | 2 | EntryManager/BackupRestoreManager 的子 manager 参数改必传，删除 ``or`` 兜底构造，组合根显式注入契约由约定升级为签名强制。 |
+| `MAINT-020` | — | 4 | config.py 签名密钥平台存储链（DPAPI→keyring→明文回退）下沉 ``src/config_key_store.py``，ConfigManager 组合持有并经 ``integrity_key`` property 供业务层复用。 |
+| `MAINT-021` | — | 6 | EntryManager 视图解密族（detail/export/summary 三视图 + 严格/容错字段解密，约 300 行）下沉 ``services/entry_view_decryption.py``（``EntryViewDecryptor``），EntryManager 公开方法保持薄委托、调用方零改动。 |
 
-### PERF — 性能（18 项）
+### PERF — 性能（22 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
@@ -76,8 +79,12 @@ message 中的旧编号引用。
 | `PERF-016` | — | 2 | 搜索热路径一次取完整 SearchMetadata，摘要构建与小写匹配共用，省第二次缓存查询。 |
 | `PERF-017` | — | 1 | generate_password 先 list comprehension 收必选字符、再 extend 填充剩余，替代逐次 append 循环（PERF401）。 |
 | `PERF-018` | — | 1 | ``get_entry_summaries`` 搜索路径将 ``matches_search_lower`` 匹配检查前移到 ``_decrypt_summary`` 之前，仅命中条目才构建完整摘要，省去未命中条目的 Entry 构造与分类名/failed_fields 缓存查询。 |
+| `PERF-019` | — | 4 | 搜索路径 fetch 改 ``VerifyMode.SKIP``，仅对命中且将渲染的行（上界 1000）经 LENIENT 补验签；未命中行不验签，篡改检测由无搜索词的全量列表刷新覆盖（温态实测：验签+宽列读取反超解密成为主导成本）。 |
+| `PERF-020` | — | 9 | entry_repository 新增窄投影读取（``get_entries_for_analysis``/``get_entries_tags_projection``），标签聚合与安全分析的全表扫描不再物化 notes_enc/custom_fields_enc/totp_secret_enc 大列。 |
+| `PERF-021` | — | 10 | EntryChangeBus 回调透传 ``crypto_id``，SecurityAnalyzer 增量失效：单条编辑仅锁外重读重分类该条（copy-on-write 重建指纹桶），替代每次保存触发整库密码解密 + HMAC 重算。 |
+| `PERF-022` | — | 4 | 导入统一通知改 ``clear_summaries=False``，含覆盖时先对被覆盖 crypto_id 批量 pop 再通知，兑现「导入新增保留既有摘要缓存」的设计声明。 |
 
-### QL — 质量/可读性（17 项）
+### QL — 质量/可读性（25 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
@@ -98,8 +105,16 @@ message 中的旧编号引用。
 | `QL-015` | — | 1 | error_messages 用 ``_FIXED_MESSAGES`` 映射表替代 if-elif 链归一异常文案，降 to_user_message 圈复杂度（radon D→A）。 |
 | `QL-016` | — | 1 | config 用 ``_KEY_VALIDATORS`` 分发表 + 校验辅助函数替代长 if-elif，降 ``_is_valid`` 圈复杂度（radon E→A）。 |
 | `QL-017` | — | 2 | share_renderer/font_loader 用显式 ``if`` 检查替代 ``assert`` 收窄 pyright 推断（S101，避免 python -O 剥离致收窄失效）。 |
+| `QL-018` | — | 4 | 严格解密字段枚举统一：crypto_utils 新增 ``decrypt_string_fields_strict`` 基于 ``STRING_ENCRYPTED_FIELDS`` 单一事实源循环 + password/totp 门控，导出 Entry 与 portable dict 两消费方共用，新增加密字段不再静默漏解密。 |
+| `QL-019` | — | 1 | ``prepare_password_update`` 的 ``hmac.compare_digest`` 两边 ``encode("utf-8")``：str 版仅支持 ASCII，非 ASCII 密码条目编辑/覆盖导入抛 TypeError 永不可保存。 |
+| `QL-023` | — | 1 | ``CategoryManager.update_category`` 补 ``add_category`` 同款事务内 casefold 明文查重（排除自身 id），杜绝同名分类并存与导入折叠歧义。 |
+| `QL-028` | — | 1 | SharePackageDialog 密码预校验改走 ``PasswordService.validate_master_password``，删除本地 8 字符魔数，与业务层 15 字符阈值统一。 |
+| `QL-029` | — | 1 | ``EntryDialog._collect_entry`` 新增模式按 ``visible_fields`` 门控 password 采集，类型切换后隐藏密码框的残留值不再隐式入库。 |
+| `QL-030` | — | 1 | ``custom_fields_renderer.render`` 先收集非空行再挂分组，全空值字段不再渲染空「自定义字段」分组。 |
+| `QL-031` | — | 1 | category_dialog 名称输入框 ``setMaxLength(MAX_CATEGORY_NAME)``，堵住对话框直达落库的超长名（256 上限此前仅在 from_dict/导入路径生效）。 |
+| `QL-032` | — | 3 | 密码生成器复制反馈定时器回调补 ``sip.isdeleted`` 守卫、清理改 ``deleteLater``，消除按钮 C 层释放后回调访问崩溃窗口（镜像 detail_panel 既有加固模式）。 |
 
-### SEC — 安全（21 项）
+### SEC — 安全（24 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
@@ -124,3 +139,6 @@ message 中的旧编号引用。
 | `SEC-019` | `SEC-LOG-001` | 1 | # SEC-019：关键词后可选引号捕获并在替换串回填，覆盖 dict/dataclass repr 的 ``'password': ...`` 形态（repr 中 key 带引号，原 ``\s*[:=]`` 漏匹配）。 |
 | `SEC-020` | `SEC-TAGS-001` | 1 | # 读路径 epoch 守卫（SEC-020，对称 ``resolve_totp_secret`` 的 ARCH-005）：改密 commit 与 tags 聚合读的微秒窗口内裸读会用旧密钥解密新密文致 GCM 失败、tags 回退空串丢失。 |
 | `SEC-021` | — | 1 | Windows ``_load_dpapi_integrity_key`` 检测到 pre-SEC-003 明文 config.key（合法长度但未 DPAPI 封装）时，重新经 DPAPI 封装原子覆盖写回，完成一次性升级迁移，消除明文密钥原样保留的泄漏面。 |
+| `SEC-027` | — | 3 | 恢复流程 finally 直接置空 ``_DecryptedPayload.plaintext/.data`` 字段（``del`` 局部别名不释放调用方持有的引用），明文在 WAL checkpoint/purge 收尾期间不再驻留。 |
+| `SEC-028` | — | 4 | ``atomic_write`` 临时文件名加 urandom 随机后缀 + opener ``O_EXCL``（POSIX 叠加 ``O_NOFOLLOW``），消除可预测名 unlink→open 窗口的 symlink 植入竞态。 |
+| `SEC-029` | — | 6 | RateLimiter 状态文件包 HMAC-SHA256 签名行（复用 config 完整性密钥），验签失败按最高阶梯保守锁定并自愈重写，堵住「改写合法 JSON 归零计数」的绕过。 |

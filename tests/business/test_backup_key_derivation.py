@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from src.crypto.master_key import MasterKeyManager
-from tests.helpers import make_entry_manager, make_test_config, make_vault
+from tests.helpers import make_backup_manager, make_entry_manager, make_test_config, make_vault
 
 
 def _make_config(tmp_dir):
@@ -76,14 +76,13 @@ def test_derive_backup_key_isolated_from_master_key():
 def test_create_and_restore_non_password_backup(vault_and_key):
     """端到端验证：非密码备份的创建和恢复。"""
     vault, _key, tmp_dir = vault_and_key
-    from src.business.managers.backup_restore import BackupRestoreManager
     from src.models import Entry
 
     entry_mgr = make_entry_manager(vault)
     entry = Entry(title="备份测试", username="user", password="secret123")
     entry_id = entry_mgr.add_entry(entry)
 
-    backup_mgr = BackupRestoreManager(vault, entry_mgr)
+    backup_mgr = make_backup_manager(vault, entry_mgr)
     backup_path = Path(tmp_dir) / "test_backup.cbbox"
     success, msg = backup_mgr.create_backup(str(backup_path), use_snapshot_key=True)
     assert success, f"备份创建失败: {msg}"
@@ -107,9 +106,8 @@ def test_create_and_restore_non_password_backup(vault_and_key):
 def test_create_without_password_or_snapshot_rejected(vault_and_key):
     """不指定备份密码且不使用快照密钥时，创建应被拒绝。"""
     vault, _key, tmp_dir = vault_and_key
-    from src.business.managers.backup_restore import BackupRestoreManager
 
-    backup_mgr = BackupRestoreManager(vault, make_entry_manager(vault))
+    backup_mgr = make_backup_manager(vault)
     backup_path = Path(tmp_dir) / "rejected_backup.cbbox"
     success, _ = backup_mgr.create_backup(str(backup_path))
     assert not success
