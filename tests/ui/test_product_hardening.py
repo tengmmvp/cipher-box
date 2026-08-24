@@ -276,7 +276,9 @@ def test_context_bound_ciphertext_rejects_cross_entry_swap():
         assert first_raw is not None
         assert second_raw is not None
         first_raw = dataclasses.replace(first_raw, password=second_raw.password)
-        vault.db.update_entry(first_raw, preserve_updated_at=True)
+        # preserve_updated_at 已退役（ARCH-021）：本测试仅依赖跨条目密文互换触发
+        # AAD 绑定校验失败，不依赖 updated_at 保值。
+        vault.db.update_entry(first_raw)
 
         swapped = manager.get_entry(first_id)
         assert swapped is not None

@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
 from ..resources.constants import BTN_COPY, PWD_MASK
 from ..resources.icons import COPY, EYE, LOCK, set_icon
+from .widgets import create_plain_text_label
 
 _StoreKey = TypeVar("_StoreKey")
 
@@ -64,7 +65,9 @@ def make_secret_field_row(
         name_label_style: 名称标签内联样式；为空则用 objectName ``fieldLabel`` 走 QSS。
         val_label_style: 值标签内联样式；为空则用 objectName ``secretValue`` 走 QSS。
     """
-    name_label = QLabel(f"{label_text}：")
+    # name/val 均可能承载用户数据（自定义字段名 / 揭示的敏感值），PlainText
+    # 保证 `<` 开头的值按字面显示、与复制内容一致（SEC-030）。
+    name_label = create_plain_text_label(f"{label_text}：")
     if name_label_style:
         name_label.setStyleSheet(name_label_style)
     else:
@@ -74,7 +77,7 @@ def make_secret_field_row(
     row_layout = QHBoxLayout(row_widget)
     row_layout.setContentsMargins(0, 0, 0, 0)
 
-    val_label = QLabel(PWD_MASK)
+    val_label = create_plain_text_label(PWD_MASK)
     if val_label_style:
         val_label.setStyleSheet(val_label_style)
     else:

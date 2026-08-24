@@ -19,7 +19,7 @@ message 中的旧编号引用。
 
 ## 映射表（新编号为主序）
 
-### ARCH — 架构（11 项）
+### ARCH — 架构（16 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
@@ -34,8 +34,13 @@ message 中的旧编号引用。
 | `ARCH-009` | `ARCH-019` | 1 | # sqlite 事务 + QThread running 析构崩溃（ARCH-009）。 |
 | `ARCH-010` | `ARCH-024` | 3 | # 只读映射（MappingProxyType 防误写，ARCH-010）：均派生自 _INT_SPECS。 |
 | `ARCH-011` | `ARCH-3` | 1 | # 的值再签，与恢复路径对称，消除手工键集漂移（ARCH-011）。回读须在调用方事务内， |
+| `ARCH-012` | — | 1 | list_refresh_controller 删除 UI 侧重复的锁定缓存失效调用（组合根 register_on_lock 已连线，失效幂等但双源易漂移）。 |
+| `ARCH-021` | — | 2 | update_entry 的 preserve_updated_at 参数退役（协议/委托/实现三层删除）：唯一 True 调用方是测试，恢复路径已改走 update_overwrite_batch。 |
+| `ARCH-031` | — | 4 | CategoryStore 协议补 update_categories_batch，crypto_utils.encrypt_plaintext_category_names 参数解绑具体 DatabaseManager 改标 VaultDataStore，re_encryption 局部协议删除。 |
+| `ARCH-032` | — | 4 | EntryViewDecryptor 的 cache 依赖改最小协议 ViewDecryptCacheProtocol（对齐 TotpService 模式，services 不反向依赖 managers 具体类）。 |
+| `ARCH-033` | — | 1 | 组合根子服务装配规则显式化：有自持状态/独占缓存的组合根显式注入；纯变换/共享缓存无状态的宿主内部构造共用同一 cache 实例。 |
 
-### MAINT — 维护/可维护性（17 项）
+### MAINT — 维护/可维护性（19 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
@@ -56,8 +61,10 @@ message 中的旧编号引用。
 | `MAINT-015` | — | 2 | EntryManager/BackupRestoreManager 的子 manager 参数改必传，删除 ``or`` 兜底构造，组合根显式注入契约由约定升级为签名强制。 |
 | `MAINT-020` | — | 4 | config.py 签名密钥平台存储链（DPAPI→keyring→明文回退）下沉 ``src/config_key_store.py``，ConfigManager 组合持有并经 ``integrity_key`` property 供业务层复用。 |
 | `MAINT-021` | — | 6 | EntryManager 视图解密族（detail/export/summary 三视图 + 严格/容错字段解密，约 300 行）下沉 ``services/entry_view_decryption.py``（``EntryViewDecryptor``），EntryManager 公开方法保持薄委托、调用方零改动。 |
+| `MAINT-041` | — | 0 | 命令统一 ``uv run -m <module>`` 形式（pytest/mypy/pyright/coverage）：trampoline 入口在部分 uv/Windows 组合报 canonicalize 失败；引用位于 ci.yml 与 CLAUDE.md（非 .py，处数按代码口径为 0）。 |
+| `MAINT-071` | — | 6 | entry_repository（844 行全库最大）的密码历史块拆分 ``password_history_repository.py``（7 方法单表访问，镜像 category_repository 模式），DatabaseManager 委托纯搬迁零增减。 |
 
-### PERF — 性能（22 项）
+### PERF — 性能（28 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
@@ -83,8 +90,14 @@ message 中的旧编号引用。
 | `PERF-020` | — | 9 | entry_repository 新增窄投影读取（``get_entries_for_analysis``/``get_entries_tags_projection``），标签聚合与安全分析的全表扫描不再物化 notes_enc/custom_fields_enc/totp_secret_enc 大列。 |
 | `PERF-021` | — | 10 | EntryChangeBus 回调透传 ``crypto_id``，SecurityAnalyzer 增量失效：单条编辑仅锁外重读重分类该条（copy-on-write 重建指纹桶），替代每次保存触发整库密码解密 + HMAC 重算。 |
 | `PERF-022` | — | 4 | 导入统一通知改 ``clear_summaries=False``，含覆盖时先对被覆盖 crypto_id 批量 pop 再通知，兑现「导入新增保留既有摘要缓存」的设计声明。 |
+| `PERF-023` | — | 7 | 安全仪表盘：徽章改 objectName+集中 QSS（消除每行 setStyleSheet）、tab 懒填充（切换才 populate）、单 tab 500 行上限+截断页脚；500 行填充 175ms→120ms。 |
+| `PERF-032` | — | 2 | 搜索补验签改对全部命中行（删除 1000 上界截断）：验签集合与 UI 重排后的渲染集合错位（SQL 序 vs 排序序），全验签成本 ~15.6µs/行可接受。 |
+| `PERF-062` | — | 5 | 分析缓存出口剥离内部键（_fingerprint_map/_summaries_with_dates 无消费方却每次出口深拷贝，50k 库 13ms/次）+ 增量重建改局部 copy-on-write（仅旧/新指纹桶）。 |
+| `PERF-063` | — | 1 | decrypt_summary 六覆盖字段并入单次 copy_entry_fields（原 build_entry_summary+replace 双重 24-kwarg 构造，50k 次省 ~300ms）。 |
+| `PERF-064` | — | 4 | 分类条目计数会话缓存（CategoryManager 持有，epoch 守卫 + change_bus 结构性变更自订阅 + 条目改分类显式失效；50k 库省 24.6ms/次的 UI 线程 GROUP BY）。 |
+| `PERF-065` | — | 11 | 导入进度回调覆盖全阶段加权刻度（parse 5%/sanitize 10%/classify 15%/encrypt 70%/write 100%，每 100 行节流），替代只覆盖 7% 时长的先冲满后冻结。 |
 
-### QL — 质量/可读性（25 项）
+### QL — 质量/可读性（29 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
@@ -113,8 +126,12 @@ message 中的旧编号引用。
 | `QL-030` | — | 1 | ``custom_fields_renderer.render`` 先收集非空行再挂分组，全空值字段不再渲染空「自定义字段」分组。 |
 | `QL-031` | — | 1 | category_dialog 名称输入框 ``setMaxLength(MAX_CATEGORY_NAME)``，堵住对话框直达落库的超长名（256 上限此前仅在 from_dict/导入路径生效）。 |
 | `QL-032` | — | 3 | 密码生成器复制反馈定时器回调补 ``sip.isdeleted`` 守卫、清理改 ``deleteLater``，消除按钮 C 层释放后回调访问崩溃窗口（镜像 detail_panel 既有加固模式）。 |
+| `QL-033` | — | 1 | _collect_entry 的 username/url 补编辑模式豁免（与 password 同款门控）：card/identity/note 编辑既有条目时这两个字段曾被静默清空（QL-029 修复的对称遗漏）。 |
+| `QL-042` | — | 1 | Entry.from_dict 对三个时间戳字段做 fromisoformat 可解析校验（非空时），堵住任意字符串入库破坏「ISO 字符串排序==时间排序」等价性与过期检测。 |
+| `QL-043` | — | 3 | ShareError 归入 error_messages 保留 str 分支（原落 default 丢面向用户的消息）；category_repository 同「分类重名」条件的裸 ValueError 统一改 EntryError。 |
+| `QL-044` | — | 2 | EntryManager 增只读 cache property 消除测试双层私有穿透（_category_mgr._cache）；prepare_password_update 改调 PasswordService.passwords_match 门面。 |
 
-### SEC — 安全（24 项）
+### SEC — 安全（30 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
@@ -142,3 +159,9 @@ message 中的旧编号引用。
 | `SEC-027` | — | 3 | 恢复流程 finally 直接置空 ``_DecryptedPayload.plaintext/.data`` 字段（``del`` 局部别名不释放调用方持有的引用），明文在 WAL checkpoint/purge 收尾期间不再驻留。 |
 | `SEC-028` | — | 4 | ``atomic_write`` 临时文件名加 urandom 随机后缀 + opener ``O_EXCL``（POSIX 叠加 ``O_NOFOLLOW``），消除可预测名 unlink→open 窗口的 symlink 植入竞态。 |
 | `SEC-029` | — | 6 | RateLimiter 状态文件包 HMAC-SHA256 签名行（复用 config 完整性密钥），验签失败按最高阶梯保守锁定并自愈重写，堵住「改写合法 JSON 归零计数」的绕过。 |
+| `SEC-030` | — | 10 | 承载用户/导入数据的 QLabel 统一经 create_plain_text_label 工厂固定 PlainText（默认 AutoText 会被启发式判富文本：伪造信任样式、`<` 开头密码显示被吞、本地 SVG 解析链触达）；URL 标签的 RichText+转义路径保留。 |
+| `SEC-031` | — | 4 | 确认密码常量时间比较统一 PasswordService.passwords_match 门面（utf-8 encode），四处调用点收编，防 QL-019 同型漏 encode 复发。 |
+| `SEC-039` | — | 5 | CSV 含密码导出对 password/totp_secret 列跳过公式前缀转义（与 SEC-008 导入侧「不清洗密钥字段」决策对称）；导入侧 password 列不再 strip。 |
+| `SEC-040` | — | 3 | _try_incremental_update 二次校验改比快照 epoch（原比实时 epoch，跨 epoch 重填会把旧密钥指纹并入新缓存——当前 UI 时序不可达的防御纵深）。 |
+| `SEC-041` | — | 9 | 摘要缓存回写增加写入方世代守卫（data_epoch）：跨恢复的旧 worker 不能把恢复前明文写入重臂后的新 epoch 缓存。 |
+| `SEC-042` | — | 2 | RateLimiter 无签名降级时状态完全不落盘（消除「无签名状态文件」这一下次会话被误判篡改的形态；降级近乎不可达，跨会话计数丢失可接受）。 |

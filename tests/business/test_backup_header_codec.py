@@ -295,9 +295,12 @@ class TestZeroBackupKeyIfOwned:
         """None（派生阶段异常的兜底）应静默跳过。"""
         zero_backup_key_if_owned(BackupFlag.PASSWORD, None)  # 不抛异常
 
-    def test_password_bytes_key_zeroed(self):
-        """bytes 类型 key 在 PASSWORD 路径也应被处理（虽不可变，仍传递给清零函数）。"""
-        # bytes 不可变，secure_zero_buffer 对 bytes 是 no-op，但函数不应抛异常
+    def test_password_bytes_key_accepted(self):
+        """bytes 类型 key 在 PASSWORD 路径被接受且不抛异常。
+
+        bytes 不可变，无法断言原地清零（secure_zero_buffer 对 bytes 是告警 no-op），
+        此处仅守护「误传 bytes 不炸」的容错契约。
+        """
         zero_backup_key_if_owned(BackupFlag.PASSWORD, b"\x03" * 32)
 
 

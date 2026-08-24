@@ -52,6 +52,47 @@ T = TypeVar("T")
 
 MAX_IMPORT_FILE_SIZE = 25 * 1024 * 1024
 
+# CSV 导出中不做公式前缀转义的密钥类列（SEC-039）：与导入侧
+# ``_sanitize_entry_formula_fields``「不清洗 password/totp_secret」（SEC-008）的决策
+# 对称——导出侧转义（前置 ``'``）会静默破坏密钥值：用户从 CSV 复制得到错误秘密，
+# 重导入把带 ``'`` 的值存为密码（往返损坏）。换行替换等保 CSV 结构完整的处理仍保留。
+_CSV_SECRET_COLUMNS = frozenset({"password", "totp_secret"})
+
+# ======== 导入加权总进度刻度（PERF-065）========
+# 50k CSV 端到端实测 8.43s 中加密 3.29s + 写入 2.85s 占 ~73%，而原 progress_callback
+# 只在分类阶段（0.61s，7%）逐条上报——进度条先冲 100% 再长冻。改为加权总进度：
+# 各阶段按实测耗时占比映射到 [0,100]，用户感知与实际剩余时间一致。
+_IMPORT_PROGRESS_TOTAL = 100
+# parse 完成里程碑（文件解析，粗粒度单点上报）。
+_PROGRESS_PARSE_DONE = 5
+# sanitize 完成里程碑（公式注入清洗，粗粒度单点上报）。
+_PROGRESS_SANITIZE_DONE = 10
+# classify 阶段跨度：10 → 15。
+_PROGRESS_CLASSIFY_SPAN = 5
+# encrypt 阶段：15 → 70（耗时主导，行级细粒度）。
+_PROGRESS_ENCRYPT_BASE = 15
+_PROGRESS_ENCRYPT_SPAN = 55
+# write 阶段：70 → 100（次主导，分块细粒度）。
+_PROGRESS_WRITE_BASE = 70
+_PROGRESS_WRITE_SPAN = 30
+
+
+def _phase_progress(base: int, span: int, done: int, total: int) -> int:
+    """把阶段内进度 ``(done/total)`` 映射为加权总进度百分比。
+
+    ``done >= total`` 时取满 ``base + span``；``total <= 0``（空阶段）同样取满，
+    保持进度单调不减。整数下取整使连续上报值单调不降。
+    """
+    if total <= 0 or done >= total:
+        return base + span
+    return base + span * done // total
+
+
+def _emit_milestone(callbacks: "ImportCallbacks", value: int) -> None:
+    """粗粒度阶段里程碑上报（parse/sanitize/终值）：单点 ``(value, 100)``。"""
+    if callbacks.progress_callback is not None:
+        callbacks.progress_callback(value, _IMPORT_PROGRESS_TOTAL)
+
 
 def _sanitize_formula_prefix(value: str) -> str:
     """转义 CSV/表格公式注入危险前缀（= +/-/@/制表符），供入库与导出共享。
@@ -112,8 +153,11 @@ class ImportCallbacks:
     格式特定的合并器（MAINT-007）。
 
     字段含义：
-        progress_callback: ``(current, total)`` 进度回调，total 为待处理条目总数
-            （含重复/跳过项，确保进度能到 100%）。
+        progress_callback: ``(current, total)`` 进度回调，加权总进度语义（PERF-065）：
+            ``total`` 恒为 100，``current`` 为各阶段按实测耗时占比映射的百分比
+            （parse 5 / sanitize 10 / classify 10→15 / encrypt 15→70 / write 70→100），
+            单调不减且终值 100——覆盖加密与写入两个耗时主导阶段，进度条不再先冲
+            100% 再冻结。
         cancel_check: 取消探针，返回真值时中止分类循环（已分类部分随事务提交，
             构成部分导入）。
         overwrite_merger: 覆盖合并器 ``(导入条目, 已有条目) → 合并后条目``，由各
@@ -201,12 +245,17 @@ class ImportExportManager:
         return resolved
 
     @staticmethod
-    def _csv_safe(value: Any) -> str:
-        """防护 CSV 注入：转义危险前缀（复用 :func:`_sanitize_formula_prefix`），替换内部控制字符。"""
+    def _csv_safe(value: Any, *, escape_formula: bool = True) -> str:
+        """防护 CSV 注入：转义危险前缀（复用 :func:`_sanitize_formula_prefix`），替换内部控制字符。
+
+        ``escape_formula=False`` 供密钥类列（password/totp_secret）跳过公式前缀转义
+        （SEC-039，见 :meth:`export_to_csv`）：换行替换仍执行（防 CSV 行断裂），仅跳过
+        会改变密钥值的 ``'`` 前缀转义。
+        """
         text = str(value) if value is not None else ""
         # 替换嵌入的换行符为空格，防止 CSV 行断裂
         text = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
-        return _sanitize_formula_prefix(text)
+        return _sanitize_formula_prefix(text) if escape_formula else text
 
     def _duplicate_plan(
         self,
@@ -397,6 +446,11 @@ class ImportExportManager:
         """导出为 CSV 文件。
 
         导出前经 :func:`validate_file_path` 校验路径（SEC-003），与导入侧对齐。
+
+        公式注入转义仅应用于外流至表格软件的文本列；password/totp_secret 为密钥类
+        列，跳过 ``'`` 前缀转义（SEC-039）——与导入侧 ``_sanitize_entry_formula_fields``
+        「不清洗密钥字段」（SEC-008）的决策对称：任何改变密钥值的清洗（前置 ``'``）都会
+        使用户从 CSV 复制得到错误秘密、重导入静默存入带 ``'`` 的密码（往返损坏）。
         """
         resolved = validate_file_path(filepath, check_ancestors=True)
         fieldnames = [
@@ -437,7 +491,15 @@ class ImportExportManager:
                         row["notes"] += f"\n[自定义字段] {cf_str}"
                 elif cf_str:
                     row["notes"] = f"[自定义字段] {cf_str}"
-                writer.writerow({key: self._csv_safe(value) for key, value in row.items()})
+                # 密钥类列（password/totp_secret）跳过公式前缀转义（SEC-039）：转义破坏
+                # 密钥有效性，与导入侧不清洗密钥字段的决策对称；换行替换等保结构完整的
+                # 处理由 _csv_safe 无差别保留。
+                writer.writerow(
+                    {
+                        key: self._csv_safe(value, escape_formula=key not in _CSV_SECRET_COLUMNS)
+                        for key, value in row.items()
+                    }
+                )
             return True
 
         return atomic_write(
@@ -472,12 +534,14 @@ class ImportExportManager:
             callbacks: 进度/取消/覆盖合并回调（见 :class:`ImportCallbacks`）。
         """
         if not entries:
+            _emit_milestone(callbacks, _IMPORT_PROGRESS_TOTAL)
             return 0
 
         # ---- 锁外：清洗 → 去重 → 分类 → 加密 ----
         # 入库边界统一清洗公式注入前缀（SEC-008）：对受影响文本字段转义危险前缀，
         # 使后续剪贴板/JSON 导出等外流路径无需各自防护。密码/TOTP 不外流至表格，不清洗。
         entries = [_sanitize_entry_formula_fields(e) for e in entries]
+        _emit_milestone(callbacks, _PROGRESS_SANITIZE_DONE)
 
         duplicate_indices, overwrite_map = self._duplicate_plan(
             entries_data, ctx.duplicate_action, ctx.source_label
@@ -497,8 +561,15 @@ class ImportExportManager:
         )
 
         # 锁外加密（MAINT-004）：加密前快照 pre_epoch，供写入事务复查防「加密后改密」。
+        # 加密进度经加权映射上报 15%→70%（PERF-065）。
         pre_epoch = self._entry_mgr.key_epoch
-        enc_new, preserve, new_skipped = self._encrypt_new_batch(new_entries, ctx.source_label)
+        enc_new, preserve, new_skipped = self._encrypt_new_batch(
+            new_entries,
+            ctx.source_label,
+            progress=self._phase_reporter(
+                callbacks, _PROGRESS_ENCRYPT_BASE, _PROGRESS_ENCRYPT_SPAN
+            ),
+        )
         overwrite_prepared, overwrite_skipped = self._prepare_overwrite_batch(
             overwrite_plans,
             ctx.source_label,
@@ -508,13 +579,23 @@ class ImportExportManager:
         # epoch 守卫是冗余防御层：真正的串行化由 db.transaction() 持有的数据库锁保证
         # （改密 _re_encrypt_all 同样经该锁串行），不会与导入并发写库。pre_epoch 复查是
         # 纵深防御——加密已移出 db_lock（MAINT-004），复查确保「加密后→写入前」未发生改密。
+        # 写入进度经分块上报 70%→100%（PERF-065，事务内分块不破坏原子性）。
         with self._entry_mgr.epoch_guarded_transaction(operation="导入", pre_epoch=pre_epoch):
-            write_new_entries(self._entry_mgr, enc_new, preserve=preserve)
+            write_new_entries(
+                self._entry_mgr,
+                enc_new,
+                preserve=preserve,
+                progress=self._phase_reporter(
+                    callbacks, _PROGRESS_WRITE_BASE, _PROGRESS_WRITE_SPAN
+                ),
+            )
             overwrite_count = write_overwrite_updates(
                 self._entry_mgr,
                 overwrite_prepared,
                 pre_epoch,
             )
+
+        _emit_milestone(callbacks, _IMPORT_PROGRESS_TOTAL)
 
         # 批量导入统一通知一次（写入已传 notify=False 避免逐条回调）。
         # 摘要缓存保留（PERF-022）：纯新增不改变既有条目摘要，clear_summaries=False
@@ -565,10 +646,13 @@ class ImportExportManager:
                 # 使 worker.cancel() 真正生效而非空转冻结 UI。
                 break
             # 每条都推进进度（含 duplicate/skip/overwrite）：total 含全部条目，进度应
-            # 到 total，避免 duplicate/skip 跳过 progress_callback 导致进度条永远到
-            # 不了 100%（原 progress 仅在成功处理后调用，被 continue 跳过）。
-            if callbacks.progress_callback:
-                callbacks.progress_callback(i + 1, total)
+            # 覆盖全部行，避免 duplicate/skip 跳过 progress_callback 导致后续阶段进度
+            # 突跳。加权映射到总进度 10%→15%（PERF-065）。
+            if callbacks.progress_callback is not None:
+                callbacks.progress_callback(
+                    _phase_progress(_PROGRESS_SANITIZE_DONE, _PROGRESS_CLASSIFY_SPAN, i + 1, total),
+                    _IMPORT_PROGRESS_TOTAL,
+                )
             if i in duplicate_indices:
                 continue
 
@@ -649,16 +733,22 @@ class ImportExportManager:
         self,
         new_entries: list[Entry],
         source_label: str,
+        *,
+        progress: Callable[[int, int], None] | None = None,
     ) -> tuple[list[RawEntry], bool, int]:
         """锁外加密新条目（MAINT-004），返回 ``(enc_entries, preserve, skipped)``。
 
         加密在 db_lock 外完成（CPU 密集不阻塞 db 读），写入由调用方在 epoch 守卫事务内
         经 :func:`entry_batch_writer.write_new_entries` 执行。数据问题（字段非法/损坏）跳过整批。
+        ``progress`` 透传 :func:`entry_batch_writer.encrypt_new_entries` 供加密阶段
+        进度上报（PERF-065）。
         """
         if not new_entries:
             return [], False, 0
         try:
-            enc_entries, preserve = encrypt_new_entries(self._entry_mgr, new_entries)
+            enc_entries, preserve = encrypt_new_entries(
+                self._entry_mgr, new_entries, progress=progress
+            )
             return enc_entries, preserve, 0
         except (EntryError, EntryIntegrityError) as exc:
             logger.warning(
@@ -726,6 +816,26 @@ class ImportExportManager:
                 )
         return prepared, skipped
 
+    @staticmethod
+    def _phase_reporter(
+        callbacks: ImportCallbacks,
+        base: int,
+        span: int,
+    ) -> Callable[[int, int], None] | None:
+        """构造阶段进度适配器：阶段内 ``(done, total)`` → 加权总进度后经用户回调上报。
+
+        用户未提供 progress_callback 时返回 None（下游跳过上报与写入分块，保持原
+        单次批量路径）。
+        """
+        if callbacks.progress_callback is None:
+            return None
+        user_callback = callbacks.progress_callback
+
+        def _report(done: int, total: int) -> None:
+            user_callback(_phase_progress(base, span, done, total), _IMPORT_PROGRESS_TOTAL)
+
+        return _report
+
     def _categories_by_folded_name(self) -> dict[str, Category]:
         """构造分类名 casefold 映射，供导入按名匹配分类（大小写不敏感）。"""
         return {c.name.casefold(): c for c in self._entry_mgr.categories.get_categories()}
@@ -753,6 +863,10 @@ class ImportExportManager:
             parsed = importer.parse(filepath)
         except (json.JSONDecodeError, RecursionError, csv.Error) as exc:
             raise ImportFormatError(f"文件解析失败，文件可能已损坏：{exc}") from exc
+        # parse 完成里程碑（PERF-065）：解析阶段无行级回调（I/O 密集且通常 <1s），
+        # 单点上报 5% 后进入清洗/分类/加密/写入的细粒度阶段。
+        if progress_callback is not None:
+            progress_callback(_PROGRESS_PARSE_DONE, _IMPORT_PROGRESS_TOTAL)
         categories = self._categories_by_folded_name()
         ctx = ImportContext(
             categories=categories,

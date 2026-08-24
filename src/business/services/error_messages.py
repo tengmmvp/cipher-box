@@ -22,6 +22,7 @@ from ...exceptions import (
     ImportDataError,
     PayloadTooLargeError,
     SchemaError,
+    ShareError,
     VaultIntegrityError,
     VaultKeyEpochMismatchError,
     VaultLockedError,
@@ -70,9 +71,15 @@ def to_user_message(exc: BaseException, *, default: str = "操作失败，请重
         if exc.errno == errno.ENOSPC:
             return "磁盘空间不足。"
         return "文件读写失败，请检查路径和磁盘。"
-    # ImportDataError / 纯 ValueError：str(exc) 本就是面向用户消息，保留（空则兜底）。
+    # ImportDataError / ShareError / 纯 ValueError：str(exc) 本就是面向用户消息，保留
+    # （空则兜底）。ShareError 非 ValueError 子类，不经统一翻译层会落入 default 兜底、
+    # 丢失其面向用户的消息（QL-043）——share/header_codec 等抛出的消息本身面向用户
+    # （如「无效的共享包文件格式」「共享包文件头已损坏」），与 ImportDataError 同款
+    # 保留原文处理。
     if isinstance(exc, ImportDataError):
         return str(exc).strip() or "导入文件格式无效或已损坏。"
+    if isinstance(exc, ShareError):
+        return str(exc).strip() or "共享包操作失败，文件可能已损坏。"
     if isinstance(exc, ValueError):
         return str(exc).strip() or default
     return default

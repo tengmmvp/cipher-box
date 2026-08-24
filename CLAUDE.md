@@ -16,7 +16,7 @@ uv sync
 uv run python main.py
 
 # 运行全部测试
-uv run pytest tests/
+uv run -m pytest tests/
 
 # 运行单个测试文件
 python -m pytest tests/test_crypto.py
@@ -28,6 +28,8 @@ python -m pytest tests/test_crypto.py::TestEncryptionEngine::test_encrypt_decryp
 python -m unittest discover tests/
 ```
 
+注：Python 工具（pytest/mypy/coverage 等）统一用 `uv run -m <module>` 形式（pyright 为 `uv run python -m pyright`）。`uv run <工具名>` 走 `.venv\Scripts` 下的 trampoline 入口（*.exe），在部分 uv/Windows 组合下报 `Failed to canonicalize script path`；`-m` 形式语义等价且本地与 CI 行为一致（MAINT-041）。
+
 ## 架构
 
 分层架构，依赖方向为 UI → Business → Crypto/Data，各层职责清晰：
@@ -36,6 +38,7 @@ python -m unittest discover tests/
 纯密码学原语，无数据库或 UI 依赖。`EncryptionEngine` 提供静态 AES-256-GCM 加解密方法。`MasterKeyManager` 通过 Argon2id（time=3 / 64MB / 并行=4）从主密码派生主材料，再经 HKDF-Expand 按域 info 派生主密钥与备份密钥（显式域分离，替代旧 salt 前缀）。密码验证不存储哈希，而是加密一段已知明文（验证令牌）来确认密码正确性。
 
 ### Data 层 (`src/database/`)
+`password_history_repository.py` 为 password_history 表的单表访问（MAINT-071 自 entry_repository 拆分），模式镜像 category_repository，经 DatabaseManager 委托。
 SQLite WAL 模式，手动事务管理（begin/commit/rollback）。启动时校验固定格式标识（`cipherbox-schema`）与表结构，不匹配则拒绝打开，不做旧格式迁移。加密字段列名以 `_enc` 后缀标记。数据库层只处理加密后的数据，不了解密钥。数据模型（`@dataclass` 的 `Entry` / `Category` / `CustomField` / `PasswordHistory`）定义在顶层共享层 `src/models.py`，供 UI / Business / Database 三层引用。
 
 ### Business 层 (`src/business/`)

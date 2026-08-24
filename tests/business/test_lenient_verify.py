@@ -190,3 +190,26 @@ class TestSearchPathReverify:
         results = self._entry_mgr.get_entry_summaries(search="alice")
         assert len(results) == 1
         assert results[0].integrity_error is True
+
+    def test_search_all_matched_rows_verified_beyond_sql_order_cap(self):
+        """命中 >1000 时全部命中行（含 SQL 序 1000 名之外）均经验签（PERF-032）。
+
+        旧实现对 ``matched`` 按 SQL 序取前 1000 补验签，但 UI 在排序字段重排 + 标签
+        过滤后才截断渲染——SQL 序 1000 名之外的行可能落入渲染窗口而未验签（仿真
+        复现默认排序 67/1000）。修复后对全部命中行验签：本测试构造 1005 条命中并
+        全部篡改（bad_verifier），断言每条渲染结果都带 integrity_error。
+        """
+        for i in range(1005):
+            self._entry_mgr.add_entry(
+                Entry(title=f"site{i:04d}", username="u", password="pass1", entry_type="login")
+            )
+
+        def bad_verifier(entry: RawEntry):
+            raise VaultIntegrityError("元数据签名不匹配")
+
+        self._vault.db._entry_verifier = bad_verifier
+
+        results = self._entry_mgr.get_entry_summaries(search="site")
+        # 全部 1005 条命中且全部经验签带警示（旧实现仅前 1000 条带警示）
+        assert len(results) == 1005
+        assert all(r.integrity_error is True for r in results)

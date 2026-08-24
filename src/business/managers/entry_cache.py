@@ -165,6 +165,7 @@ class EntryCacheManager:
         raw_entry: RawEntry,
         *,
         key: bytes | None = None,
+        data_epoch: str | None = None,
     ) -> tuple[str, str, str, str]:
         """解密并缓存列表/搜索所需的 title、username、url、tags（单条路径）。
 
@@ -180,11 +181,14 @@ class EntryCacheManager:
         错误摘要以新 epoch 写入缓存而持续污染；传 ``key`` 用快照密钥解密旧密文确保
         结果正确。
 
+        ``data_epoch`` 语义见 :meth:`_cached_search_metadata_no_check`（SEC-041 写入方
+        世代守卫）。
+
         返回明文原形 4 元组；小写形式经 :meth:`search_lower_no_check` 取得，
         两者一同缓存以避免 matches_search 每条目实时 .lower()。
         """
         self.invalidate_if_epoch_changed()
-        meta = self._cached_search_metadata_no_check(raw_entry, key=key)
+        meta = self._cached_search_metadata_no_check(raw_entry, key=key, data_epoch=data_epoch)
         return (meta.title, meta.username, meta.url, meta.tags)
 
     def _cached_search_metadata_no_check(
@@ -192,6 +196,7 @@ class EntryCacheManager:
         raw_entry: RawEntry,
         *,
         key: bytes | None = None,
+        data_epoch: str | None = None,
     ) -> SearchMetadata:
         """cached_search_metadata 的无 epoch 校验版本，供批量循环复用。
 
@@ -201,6 +206,15 @@ class EntryCacheManager:
 
         ``key`` 语义见 :meth:`cached_search_metadata`（PERF-001 并发修补）。
 
+        ``data_epoch`` 为写入方世代守卫（SEC-041，对齐 M3/M4 的 key/version 快照
+        风格）：调用方在 ``epoch_guarded_read`` 锁内与 raw/密钥同刻快照的
+        ``vault.key_epoch``。回写要求「当前 ``_cache_epoch`` == 写入方世代」，而非仅
+        比对缓存侧自身采样值——后台 worker 在恢复/改密提交（``invalidate_all`` 置
+        ``_cache_epoch=None``）后被新读路径重臂为新 epoch 时，缓存侧双检的两侧均为
+        新世代会放行回写，旧 raw+旧密钥解密出的**恢复前明文**即被 grafting 进新
+        epoch 缓存（last-writer-wins 持久污染）。不传时退回缓存侧采样，既有调用方
+        行为不变。
+
         调用方须保证循环外已调用 ``invalidate_if_epoch_changed``。
         """
         cid = raw_entry.crypto_id
@@ -209,7 +223,9 @@ class EntryCacheManager:
             if cached is not None:
                 self._search_metadata_cache.move_to_end(cid)
                 return cached
-            entry_epoch = self._cache_epoch
+            # 写入方世代（SEC-041）：优先取调用方锁内快照的 epoch，未提供（既有调用方）
+            # 时退回缓存侧采样，保持原行为。
+            entry_epoch = data_epoch if data_epoch is not None else self._cache_epoch
             entry_version = self._invalidate_version
 
         # PERF-001 并发修补（M3）：用调用方传入的锁内快照密钥，避免锁外解密期间
@@ -250,6 +266,8 @@ class EntryCacheManager:
         with self._cache_lock:
             # epoch 守卫（改密/锁定整体失效）+ version 守卫（M4：单条 apply_change 未改
             # epoch 但已 pop 本条目，须丢弃基于旧密文的解密结果避免回写污染）。
+            # entry_epoch 为写入方世代（SEC-041）：data_epoch 提供时即调用方锁内快照，
+            # 恢复/改密重臂后的新 epoch 缓存不再接收旧世代解密结果（跨世代 grafting）。
             if self._cache_epoch == entry_epoch and self._invalidate_version == entry_version:
                 self._search_metadata_cache[cid] = result
                 self._search_metadata_cache.move_to_end(cid)
@@ -264,6 +282,7 @@ class EntryCacheManager:
         raw_entry: RawEntry,
         *,
         key: bytes | None = None,
+        data_epoch: str | None = None,
     ) -> tuple[str, str, str, str]:
         """供批量分析路径复用的摘要解密（公开入口，无逐条 epoch 校验）。
 
@@ -274,10 +293,11 @@ class EntryCacheManager:
 
         ``key`` 语义见 :meth:`cached_search_metadata`（PERF-001 并发修补）；
         services 层的非并发调用方不传 key，保持实时 ``self._key`` 行为。
+        ``data_epoch`` 语义见 :meth:`_cached_search_metadata_no_check`（SEC-041）。
 
         返回明文原形 4 元组（取自 :class:`SearchMetadata` 前 4 字段）。
         """
-        meta = self._cached_search_metadata_no_check(raw_entry, key=key)
+        meta = self._cached_search_metadata_no_check(raw_entry, key=key, data_epoch=data_epoch)
         return (meta.title, meta.username, meta.url, meta.tags)
 
     def search_lower_no_check(
@@ -285,6 +305,7 @@ class EntryCacheManager:
         raw_entry: RawEntry,
         *,
         key: bytes | None = None,
+        data_epoch: str | None = None,
     ) -> tuple[str, str, str, str]:
         """返回摘要字段的小写形式 (title, username, url, tags)，供搜索匹配复用。
 
@@ -292,9 +313,10 @@ class EntryCacheManager:
         （命中缓存时为纯锁内 dict 查询），跳过 :func:`matches_search` 每条目 4 字段
         实时 ``.lower()``。调用方须在循环外已调用 ``invalidate_if_epoch_changed``。
 
-        ``key`` 语义见 :meth:`cached_search_metadata`（PERF-001 并发修补）。
+        ``key`` 语义见 :meth:`cached_search_metadata`（PERF-001 并发修补）；
+        ``data_epoch`` 语义见 :meth:`_cached_search_metadata_no_check`（SEC-041）。
         """
-        meta = self._cached_search_metadata_no_check(raw_entry, key=key)
+        meta = self._cached_search_metadata_no_check(raw_entry, key=key, data_epoch=data_epoch)
         return (meta.title_lower, meta.username_lower, meta.url_lower, meta.tags_lower)
 
     def cached_search_metadata_full(
@@ -302,14 +324,19 @@ class EntryCacheManager:
         raw_entry: RawEntry,
         *,
         key: bytes | None = None,
+        data_epoch: str | None = None,
     ) -> SearchMetadata:
         """返回完整 :class:`SearchMetadata`（原形 + 小写），供调用方一次取用复用。
 
         搜索热路径经此一次取完整 meta，摘要构建（原形 4 字段）与搜索匹配（小写 4 字段）
         共用，省去分别调 :meth:`search_metadata_for_analysis` 与 :meth:`search_lower_no_check`
         的第二次缓存查询（PERF-016）。调用方须在循环外已调用 ``invalidate_if_epoch_changed``。
+
+        ``key`` 语义见 :meth:`cached_search_metadata`（PERF-001 并发修补）；
+        ``data_epoch`` 语义见 :meth:`_cached_search_metadata_no_check`（SEC-041）——
+        搜索 worker 经 :meth:`EntryManager.get_entry_summaries` 传入锁内快照世代。
         """
-        return self._cached_search_metadata_no_check(raw_entry, key=key)
+        return self._cached_search_metadata_no_check(raw_entry, key=key, data_epoch=data_epoch)
 
     def get_failed_fields(self, crypto_id: str) -> set[str]:
         """取某条目摘要解密失败的字段集（锁内采样，避免与 clear 竞态）。"""

@@ -82,6 +82,37 @@ def create_icon_button(
     return btn
 
 
+def create_plain_text_label(
+    text: str = "",
+    object_name: str = "",
+    *,
+    word_wrap: bool = False,
+) -> QLabel:
+    """构造承载用户/导入数据的 QLabel，强制 PlainText 渲染（SEC-030）。
+
+    QLabel 默认 AutoText，经 ``Qt::mightBeRichText`` 启发式判定后可能走富文本
+    引擎：条目数据（标题/备注/标签/用户名/自定义字段名与值/揭示的密码）以
+    ``<`` 开头时会被当作 markup 吞掉（显示≠复制，`<` 开头密码显示不完整），
+    伪造标签可注入信任样式，``<img src="file://...svg">`` 更触达 Qt SVG 解析链。
+    承载条目数据的标签统一经本工厂创建；唯一豁免是 URL 标签
+    （detail_panel._build_url_label）——其显式 RichText + 转义的白名单链接路径。
+
+    Args:
+        text: 初始文本。
+        object_name: 语义 objectName 供 QSS 选择器命中；空串跳过设置。
+        word_wrap: 是否自动换行。
+    """
+    label = QLabel(text)
+    # TextFormat 是控件属性，创建时固定后续所有 setText 的渲染路径，
+    # 揭示密码/切换文本时无需重复设置。
+    label.setTextFormat(Qt.TextFormat.PlainText)
+    if object_name:
+        label.setObjectName(object_name)
+    if word_wrap:
+        label.setWordWrap(True)
+    return label
+
+
 # ======== 密码显示/隐藏切换按钮 ========
 
 

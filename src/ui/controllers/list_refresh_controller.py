@@ -229,8 +229,11 @@ class ListRefreshController:
         view.tag_combo.blockSignals(True)
         view.tag_combo.clear()
         view.tag_combo.blockSignals(False)
-        self._invalidate_security_cache()
-        self._entry_mgr.invalidate_caches()
+        # 安全分析与条目缓存失效不在此调用（ARCH-012）：组合根
+        # （business/composition.py 的 register_on_lock）已把 security.invalidate_cache
+        # 与 entry_mgr.invalidate_caches 注册为 vault 锁定回调，prepare_for_lock 之后
+        # 的 vault.lock() 必然触发，此处重复调用是双触发。UI 只清自身的
+        # _cached_categories/_cached_tag_names（加密分类名/标签名缓存的持有方是本控制器）。
 
     def refresh_after_unlock(self) -> None:
         """解锁后刷新分类/标签/条目（首次解锁由 host 经 _first_unlock 跳过）。"""

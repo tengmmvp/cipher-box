@@ -23,6 +23,7 @@ from ...utils.memory import mark_secret_discarded
 from ..resources.constants import BTN_COPY, FONT_FAMILY_MONOSPACE, MAX_HISTORY_DISPLAY, PWD_MASK
 from ..resources.icons import COPY, EYE, LOCK, set_icon
 from ..resources.theme_colors import c
+from .widgets import create_plain_text_label
 
 if TYPE_CHECKING:
     from ...business.managers.entry_manager import EntryManager
@@ -146,9 +147,10 @@ class PasswordHistoryWidget(QObject):
             time_label.setStyleSheet(f"color: {c('text_muted')}; font-size: 12px;")
             row.addWidget(time_label)
 
-            # 密码，初始隐藏
+            # 密码，初始隐藏。揭示后的历史密码可能以 `<` 开头，PlainText 保证
+            # 显示与复制一致（SEC-030）。
             pwd_text = record.get("password", "")
-            pwd_label = QLabel(PWD_MASK)
+            pwd_label = create_plain_text_label(PWD_MASK)
             pwd_label.setStyleSheet(
                 f"font-family: {FONT_FAMILY_MONOSPACE}; font-size: 12px; color: {c('text_primary')};"
             )

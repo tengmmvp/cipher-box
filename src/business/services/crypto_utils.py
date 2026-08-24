@@ -14,7 +14,10 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypedDict, Unpack
 
 if TYPE_CHECKING:
-    from ...database.db_manager import DatabaseManager
+    # VaultDataStore（数据库协议切片）替代具体 DatabaseManager：本模块实际只用
+    # transaction/get_categories/update_category（均在协议内），是 services 层与
+    # 数据层解耦的统一协议视图（ARCH-031）。
+    from ...database.types import VaultDataStore
     from ..managers.vault_manager import VaultManager
 
 from ...crypto.encryption import EncryptionEngine
@@ -363,12 +366,14 @@ def build_encrypted_entry_fields(
     }
 
 
-def encrypt_plaintext_category_names(db: DatabaseManager, key: bytes | bytearray) -> None:
+def encrypt_plaintext_category_names(db: VaultDataStore, key: bytes | bytearray) -> None:
     """加密 data 层以明文写入的默认分类名（首次初始化后补加密）。
 
     data 层建表插入默认分类时不持密钥无法加密，故在 business 层补加密，使全部
     category.name 以密文存储，满足改密时 re_encrypt_categories 的解密契约。已加密
-    （cb2: 前缀）的分类跳过，重复调用幂等。
+    （cb2: 前缀）的分类跳过，重复调用幂等。参数为 VaultDataStore 协议而非具体
+    DatabaseManager——本函数仅用 transaction/get_categories/update_category，均为
+    协议成员，消除 services 层对具体数据库管理器的唯一残余绑定（ARCH-031）。
     """
     with db.transaction():
         for category in db.get_categories():

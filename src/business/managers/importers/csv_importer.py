@@ -98,9 +98,13 @@ def _parse_csv_like(
     entries: list[Entry] = []
     entries_data: list[dict[str, str]] = []
     for row in rows:
-        kwargs: dict[str, Any] = {
-            entry_key_map[field]: (row.get(col_map[field], "") or "").strip() for field in col_map
-        }
+        kwargs: dict[str, Any] = {}
+        for field in col_map:
+            value = row.get(col_map[field], "") or ""
+            # password 列不做 strip（SEC-039）：首尾空白可能是密码的一部分，任何改变
+            # 其值的清洗都破坏密钥有效性——与导出侧「密钥类列不转义公式前缀」、导入侧
+            # _sanitize_entry_formula_fields「不清洗密钥字段」为同一决策的三个触点。
+            kwargs[entry_key_map[field]] = value if field == "password" else value.strip()
         # 对长度受限字段做 MAX_FIELD_* 校验，与 Entry.from_dict 一致，
         # 避免 Entry(**kwargs) 绕过 from_dict 的校验逻辑导致超长字段入库。
         for internal_field, max_len in field_limits.items():

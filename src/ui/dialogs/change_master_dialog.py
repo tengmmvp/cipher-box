@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import hmac
 import logging
 from typing import TYPE_CHECKING
 
@@ -199,13 +198,13 @@ class ChangeMasterDialog(WorkerBackedDialog):
         if not valid:
             self._msg_label.setText(error)
             return
-        # 常量时间比较，避免短路 `==` 的时序侧信道泄露公共前缀长度。
-        # `encode('utf-8')` 必须：主密码可含非 ASCII 字符，而 `compare_digest` 对 `str`
-        # 仅接受 ASCII。与 `vault_manager._change_master_password_locked` 保持一致。
-        if not hmac.compare_digest(new.encode("utf-8"), confirm.encode("utf-8")):
+        # 常量时间比较经 PasswordService.passwords_match 统一门面（SEC-031）：
+        # encode('utf-8') 与 compare_digest 的配对不再由各调用点内联维护，防
+        # QL-019 同型 bug（非 ASCII 密码抛 TypeError 被 Qt 槽吞掉、表单静默失败）复发。
+        if not PasswordService.passwords_match(new, confirm):
             self._msg_label.setText("两次输入的新密码不一致")
             return
-        if hmac.compare_digest(old.encode("utf-8"), new.encode("utf-8")):
+        if PasswordService.passwords_match(old, new):
             self._msg_label.setText("新密码不能与旧密码相同")
             return
 

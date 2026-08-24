@@ -283,8 +283,18 @@ class RateLimiter:
             self._apply_max_lockdown()
 
     def _save_state(self) -> None:
-        """持久化失败计数与剩余锁定秒数（含 HMAC 签名行），经原子写入落地并补建哨兵。"""
+        """持久化失败计数与剩余锁定秒数（含 HMAC 签名行），经原子写入落地并补建哨兵。
+
+        SEC-042：签名密钥不可用（``_signing_key is None``，如瞬时 keyring/DPAPI 故障）
+        时**完全不落盘**，仅内存限流——若仍写无签名状态文件，下次会话密钥恢复后会按
+        「签名被剥离」误判为篡改、降级最高阶梯锁定（SEC-029 的保守分支），对合法用户
+        形成误锁。降级路径近乎不可达（密钥仅在构造期解析一次，无 config 的调用方本就
+        不持久化），代价是跨会话计数丢失（可接受）；同时不创建哨兵，使状态文件与
+        哨兵成对缺失，下次会话按首次使用处理，从根上消除「无签名状态文件」形态。
+        """
         if self._state_path is None:
+            return
+        if self._signing_key is None:
             return
         # 持久化「剩余锁定秒数」而非绝对时间戳：单调时钟在进程间不连续，
         # 无法跨会话还原绝对到期点；存剩余秒数后加载时基于当前 monotonic 重算，
@@ -298,15 +308,15 @@ class RateLimiter:
                 "remaining_seconds": remaining_seconds,
             }
         )
-        if self._signing_key is not None:
-            # 状态文件签名（SEC-029）：与 config.json 同一安装级密钥 + 同款末行签名
-            # 格式，使 _load_state 可检测任何改写（含格式合法的归零/伪造锁定）。
-            sig = hmac.new(
-                self._signing_key,
-                payload.encode("utf-8"),
-                hashlib.sha256,
-            ).hexdigest()
-            payload = f"{payload}\n{_STATE_SIG_PREFIX}{sig}"
+        # 状态文件签名（SEC-029）：与 config.json 同一安装级密钥 + 同款末行签名格式，
+        # 使 _load_state 可检测任何改写（含格式合法的归零/伪造锁定）。SEC-042 入口
+        # 守卫保证到达此处必有签名密钥，落盘文件不存在无签名形态。
+        sig = hmac.new(
+            self._signing_key,
+            payload.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        payload = f"{payload}\n{_STATE_SIG_PREFIX}{sig}"
 
         def _write_state(f: Any) -> bool:
             f.write(payload)

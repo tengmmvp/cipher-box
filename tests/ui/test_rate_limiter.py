@@ -75,23 +75,32 @@ class TestRateLimiterSentinel:
     """验证哨兵机制：状态文件被删除即降级最高阶梯锁定。"""
 
     def test_save_creates_sentinel(self, tmp_path):
-        """``record_failure`` 触发 ``_save_state`` 写状态文件时同时落哨兵文件。"""
+        """``record_failure`` 触发 ``_save_state`` 写状态文件时同时落哨兵文件。
+
+        须注入 config 提供签名密钥（SEC-042）：无签名密钥时 _save_state 完全不落盘、
+        不建哨兵（见 tests/business/test_rate_limiter_unsigned_state.py）。
+        """
+        from tests.helpers import make_test_config
+
         state = tmp_path / "rate_limit.json"
-        rl = RateLimiter(state)
+        rl = RateLimiter(state, make_test_config(tmp_path))
         rl.record_failure()  # 触发 _save_state → 创建哨兵
         assert state.exists()
         assert (tmp_path / "rate_limit.json.sentinel").exists()
 
     def test_state_deletion_triggers_lockdown(self, tmp_path):
         """状态文件被删除但哨兵存在 → 判定为恶意删除，降级最高阶梯。"""
+        from tests.helpers import make_test_config
+
         state = tmp_path / "rate_limit.json"
-        rl = RateLimiter(state)
+        config = make_test_config(tmp_path)
+        rl = RateLimiter(state, config)
         rl.record_success()  # 仅写哨兵与零计数状态
         assert (tmp_path / "rate_limit.json.sentinel").exists()
 
         state.unlink()  # 模拟攻击者删除状态文件
 
-        rl_reloaded = RateLimiter(state)
+        rl_reloaded = RateLimiter(state, config)
         assert rl_reloaded._fail_count == RATE_LIMITS[-1][0]
         assert rl_reloaded._lock_until > 0
         assert rl_reloaded.check() is not None  # 仍处于锁定
@@ -263,11 +272,15 @@ class TestRateLimiterStateSignature:
         assert healed._fail_count == RATE_LIMITS[-1][0]
         assert healed.check() is not None
 
-    def test_unsigned_mode_without_config_preserved(self, tmp_path):
-        """无 config（签名密钥不可用）：退化为无签名旧格式，行为不回退。"""
+    def test_unsigned_mode_without_config_does_not_persist(self, tmp_path):
+        """无 config（签名密钥不可用）不再落盘（SEC-042），消除无签名状态文件形态。
+
+        旧行为写无签名状态文件：下次会话密钥恢复后按「签名被剥离」误判为篡改、
+        降级最高阶梯锁定。新契约为仅内存限流——状态文件与哨兵均不创建，跨会话
+        计数丢失可接受（生产调用方 login/change_master 均注入 config，降级近乎
+        不可达；端到端行为另见 tests/business/test_rate_limiter_unsigned_state.py）。
+        """
         rl, state = self._make(tmp_path, with_config=False)
         rl.record_failure()
-        assert "#__sig__:" not in state.read_text(encoding="utf-8")
-        reloaded = RateLimiter(state)
-        assert reloaded._fail_count == 1  # 未被误判为篡改
-        assert reloaded.check() is None
+        assert not state.exists()
+        assert not (tmp_path / "login_rate_limit.json.sentinel").exists()

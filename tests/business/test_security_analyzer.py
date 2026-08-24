@@ -199,3 +199,172 @@ class TestIncrementalCacheInvalidation:
         assert ctx.security._analysis_cache is not None
         ctx.entry_mgr.delete_entry(entry_id)
         assert ctx.security._analysis_cache is None
+
+
+# ======== 出口契约与增量重建局部化（PERF-062）========
+
+
+class TestReportExitContract:
+    """缓存报告出口剥离内部键（PERF-062）+ 增量更新指纹桶局部重建验证。
+
+    出口契约：get_cached_report / get_or_compute_report 返回的报告仅含公开字段
+    （_SecurityReportBase 的键集），不含 ``_fingerprint_map`` /
+    ``_summaries_with_dates`` / ``_key_epoch`` 内部键——这些仅缓存分层内部消费，
+    剥离后出口深拷贝消失、增量更新的桶共享变安全。行为回归：days 重过滤与增量
+    更新语义须与剥离前一致（仍基于内部缓存本体完成）。
+    """
+
+    @pytest.fixture
+    def ctx_vault(self, tmp_path):
+        """组装生产接线的 BusinessContext（change_bus → security 增量失效）。"""
+        from src.business.composition import build_business_context
+        from tests.helpers import make_test_config, make_vault
+
+        config = make_test_config(str(tmp_path))
+        vault = make_vault(config)
+        vault.initialize("TestExitContract!2026")
+        ctx = build_business_context(config, vault)
+        yield ctx, vault
+        vault.close()
+
+    _PUBLIC_KEYS = {
+        "total",
+        "weak_count",
+        "weak_entries",
+        "duplicate_groups",
+        "duplicate_count",
+        "old_entries",
+        "old",
+    }
+
+    def test_exit_report_contains_only_public_keys(self, ctx_vault):
+        """get_or_compute_report 与 get_cached_report 的出口均不含下划线内部键。"""
+        ctx, _vault = ctx_vault
+        ctx.entry_mgr.add_entry(Entry(title="t", username="u", password="Str0ngPass!2026"))
+        report = ctx.security.get_or_compute_report()
+        assert set(report) == self._PUBLIC_KEYS
+        # 缓存命中路径（get_cached_report）同样剥离。
+        cached = ctx.security.get_cached_report()
+        assert cached is not None
+        assert set(cached) == self._PUBLIC_KEYS
+
+    def test_exit_internal_cache_retains_full_keys(self, ctx_vault):
+        """内部缓存本体仍持全键，供 days 重过滤与增量更新使用。"""
+        ctx, _vault = ctx_vault
+        ctx.entry_mgr.add_entry(Entry(title="t", username="u", password="Str0ngPass!2026"))
+        ctx.security.get_or_compute_report()
+        internal = ctx.security._analysis_cache
+        assert internal is not None
+        assert "_fingerprint_map" in internal
+        assert "_summaries_with_dates" in internal
+        assert "_key_epoch" in internal
+
+    def test_days_refilter_still_works_after_stripping(self, ctx_vault):
+        """days 重过滤行为不变：days 变化时按 _summaries_with_dates（内部键）重算 old。"""
+        from datetime import UTC, datetime, timedelta
+
+        ctx, _vault = ctx_vault
+        ctx.entry_mgr.add_entry(
+            Entry(
+                title="old",
+                username="u",
+                password="Str0ngPass!2026",
+                password_changed_at=(datetime.now(UTC) - timedelta(days=200)).isoformat(),
+            )
+        )
+        ctx.security.get_or_compute_report(days=90)
+        # days=365：200 天前未超阈值 → old=0；days=100：超阈值 → old=1。
+        assert ctx.security.get_cached_report(days=365)["old"] == 0
+        assert ctx.security.get_cached_report(days=100)["old"] == 1
+
+    def test_incremental_update_shares_untouched_buckets(self, ctx_vault):
+        """单条增量更新仅重建涉及的指纹桶，其余桶对象身份不变（共享验证）。"""
+        ctx, _vault = ctx_vault
+        shared = "SharedPass!2026"
+        id_c = ctx.entry_mgr.add_entry(Entry(title="C", username="c", password="UniquePass!1"))
+        ctx.entry_mgr.add_entry(Entry(title="A", username="a", password=shared))
+        ctx.entry_mgr.add_entry(Entry(title="B", username="b", password=shared))
+        ctx.security.get_or_compute_report()
+
+        internal = ctx.security._analysis_cache
+        assert internal is not None
+        raw_c = ctx.entry_mgr.db.get_entry(id_c)
+        assert raw_c is not None
+        # 记录各桶的对象身份；「C 所在桶」应被重建，「A/B 所在桶」原样共享。
+        buckets_before = {fp: id(group) for fp, group in internal["_fingerprint_map"].items()}
+        c_fingerprint = next(
+            fp
+            for fp, group in internal["_fingerprint_map"].items()
+            if any(e.crypto_id == raw_c.crypto_id for e in group)
+        )
+
+        # 纯元数据编辑（改标题）→ 增量更新 C 所在桶。
+        entry = ctx.entry_mgr.get_entry(id_c)
+        entry = dataclasses.replace(entry, title="C2")
+        ctx.entry_mgr.update_entry(entry)
+
+        buckets_after = {fp: id(group) for fp, group in internal["_fingerprint_map"].items()}
+        # 未涉及的桶（A/B 指纹）对象身份不变；C 的指纹桶被重建（新 list 对象）。
+        for fp, bucket_id in buckets_before.items():
+            if fp == c_fingerprint:
+                assert buckets_after[fp] != bucket_id
+            else:
+                assert buckets_after[fp] == bucket_id
+        # 行为回归：重复分组仍正确（A/B 互为重复，C 唯一）。
+        refreshed = ctx.security.get_or_compute_report()
+        assert refreshed["duplicate_count"] == 1
+        assert {e.title for g in refreshed["duplicate_groups"] for e in g} == {"A", "B"}
+
+
+class TestIncrementalUpdateEpochSnapshot:
+    """增量更新二次校验比对快照 epoch 而非实时 epoch（SEC-040，防跨 epoch grafting）。"""
+
+    @pytest.fixture
+    def ctx_vault(self, tmp_path):
+        """组装生产接线的 BusinessContext（change_bus → security 增量失效）。"""
+        from src.business.composition import build_business_context
+        from tests.helpers import make_test_config, make_vault
+
+        config = make_test_config(str(tmp_path))
+        vault = make_vault(config)
+        vault.initialize("TestEpochGuard!2026")
+        ctx = build_business_context(config, vault)
+        yield ctx, vault
+        vault.close()
+
+    def test_cross_epoch_refill_aborts_incremental_grafting(self, ctx_vault):
+        """锁外重分类期间 epoch 轮换且缓存被新 epoch 重填时，增量结果不得并入。
+
+        防御纵深（当前 UI 时序不可达）：旧密钥派生的 _ClassifyResult 并入新 epoch
+        缓存会污染重复检测指纹桶。二次校验比对首次校验快照的 epoch——快照失配
+        即放弃本次增量（返回 False 交由调用方全量失效）。按实时 epoch 双检的旧
+        实现会全部通过（实时 epoch 与重填缓存同为新值）并返回 True。
+        """
+        ctx, vault = ctx_vault
+        entry_id = ctx.entry_mgr.add_entry(
+            Entry(title="T", username="u", password="Str0ngPass!2026")
+        )
+        report = ctx.security.get_or_compute_report()
+        assert report["total"] == 1
+        raw = ctx.entry_mgr.db.get_entry(entry_id)
+        assert raw is not None
+        original_epoch = vault.key_epoch
+        original_classify = ctx.security._classify_entry
+
+        def _classify_with_concurrent_rotation(raw_arg, key):
+            # 模拟锁外重分类期间的并发改密/恢复：epoch 轮换 + full_analysis 以新 epoch
+            # 重填缓存（_key_epoch 更新为新世代）。
+            vault.set_epoch("rotated-e2")
+            assert ctx.security._analysis_cache is not None
+            ctx.security._analysis_cache["_key_epoch"] = "rotated-e2"
+            return original_classify(raw_arg, key)
+
+        ctx.security._classify_entry = _classify_with_concurrent_rotation
+        try:
+            assert ctx.security._try_incremental_update(raw.crypto_id) is False
+        finally:
+            ctx.security._classify_entry = original_classify
+            vault.set_epoch(original_epoch)
+        # 缓存仍属新 epoch 重填的世代，未被旧世代结果并入
+        assert ctx.security._analysis_cache is not None
+        assert ctx.security._analysis_cache["_key_epoch"] == "rotated-e2"

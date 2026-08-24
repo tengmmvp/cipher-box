@@ -240,3 +240,99 @@ class TestCollectEntryPasswordGating:
         updated = dlg._entry_mgr.update_entry.call_args.args[0]
         assert updated.id == 7
         assert updated.password == "KeepMe!123456"
+
+
+class TestCollectEntryUsernameUrlGating:
+    """_collect_entry username/url 门控：与 password 同款「编辑模式豁免」（QL-033）。
+
+    card/identity/note 的 visible_fields 不含 username/url，但既有条目可合法持有
+    这些字段（JSON 导入的带 username 的 card；详情面板对任何类型都显示账号/网址
+    行）。编辑保存须保留隐藏控件回读的值；新增模式切类型后残留值仍不得入库。
+    """
+
+    def _edit_and_collect(self, entry) -> object:
+        """构造编辑该条目的对话框并保存，返回提交给 update_entry 的 Entry。"""
+        from src.ui.dialogs.entry_dialog import EntryDialog
+
+        dlg = EntryDialog(MagicMock(), [], entry=entry)
+        dlg._on_save()
+        dlg._entry_mgr.update_entry.assert_called_once()
+        return dlg._entry_mgr.update_entry.call_args.args[0]
+
+    def test_edit_card_with_username_url_keeps_both(self, qapp):
+        """编辑带 username/url 的 card 条目（复现场景）：两字段不被静默清空。"""
+        from src.models import Entry
+
+        entry = Entry(
+            id=11,
+            title="导入的卡片",
+            username="alice@example.com",
+            url="https://pay.example.com",
+            entry_type="card",
+        )
+        updated = self._edit_and_collect(entry)
+        assert updated.username == "alice@example.com"
+        assert updated.url == "https://pay.example.com"
+
+    def test_edit_identity_with_username_url_keeps_both(self, qapp):
+        """编辑带 username/url 的 identity 条目：与 card 同构，字段保留。"""
+        from src.models import Entry
+
+        entry = Entry(
+            id=12,
+            title="身份条目",
+            username="bob",
+            url="https://example.com/bob",
+            entry_type="identity",
+        )
+        updated = self._edit_and_collect(entry)
+        assert updated.username == "bob"
+        assert updated.url == "https://example.com/bob"
+
+    def test_edit_note_with_username_url_keeps_both(self, qapp):
+        """编辑带 username/url 的 note 条目（visible_fields 仅 title）：字段保留。"""
+        from src.models import Entry
+
+        entry = Entry(
+            id=13, title="笔记", username="carol", url="https://example.com", entry_type="note"
+        )
+        updated = self._edit_and_collect(entry)
+        assert updated.username == "carol"
+        assert updated.url == "https://example.com"
+
+    def test_edit_server_without_host_keeps_existing_url(self, qapp):
+        """编辑无 host 的 server 条目：composes_url 组合为空时回读隐藏 url 控件值。
+
+        _load_entry 无条件回填 url；导入的仅有 url 无 _server_host 的服务器条目，
+        编辑保存后 url 不因 host 为空而丢失（组合值非空时仍优先覆盖）。
+        """
+        from src.models import Entry
+
+        entry = Entry(id=14, title="服务器", url="ssh://legacy:22", entry_type="server")
+        updated = self._edit_and_collect(entry)
+        assert updated.url == "ssh://legacy:22"
+
+    def test_new_card_after_type_switch_drops_residual_username_url(self, qapp):
+        """新增 login 填账号网址→切 card 保存：残留的 username/url 不被隐式持久化。"""
+        dlg = _make_dialog(qapp)
+        dlg._title_edit.setText("我的卡")
+        dlg._username_edit.setText("residual@example.com")
+        dlg._url_edit.setText("https://residual.example.com")
+        _switch_type(dlg, "card")
+        dlg._on_save()
+        dlg._entry_mgr.add_entry.assert_called_once()
+        saved = dlg._entry_mgr.add_entry.call_args.args[0]
+        assert saved.entry_type == "card"
+        assert saved.username == ""
+        assert saved.url == ""
+
+    def test_new_server_composes_url_from_host(self, qapp):
+        """新增 server 条目：host 非空时 url 由 protocol://host[:port] 组合而成。"""
+        dlg = _make_dialog(qapp)
+        dlg._title_edit.setText("新服务器")
+        _switch_type(dlg, "server")
+        dlg._special_edits["server_host"].setText("db-01.internal")
+        dlg._special_edits["server_port"].setText("5432")
+        dlg._on_save()
+        saved = dlg._entry_mgr.add_entry.call_args.args[0]
+        assert saved.url == "ssh://db-01.internal:5432"

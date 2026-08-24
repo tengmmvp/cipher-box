@@ -8,7 +8,13 @@ import sqlite3
 import threading
 from dataclasses import replace
 
-from ..exceptions import DatabaseError, TransactionError, VaultIntegrityError, VaultLockedError
+from ..exceptions import (
+    DatabaseError,
+    EntryError,
+    TransactionError,
+    VaultIntegrityError,
+    VaultLockedError,
+)
 from ..models import Category
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation, _db_write
@@ -126,7 +132,9 @@ class CategoryRepository:
         if self._conn.execute(
             "SELECT 1 FROM categories WHERE name_enc=? LIMIT 1", (category.name,)
         ).fetchone():
-            raise ValueError("分类名称已存在（加密名冲突，明文查重见 CategoryManager）")
+            # 同「分类重名」用户可见条件统一抛 EntryError（QL-043，与 CategoryManager
+            # 一致）：EntryError IS ValueError，既有 except ValueError 调用方零行为变化。
+            raise EntryError("分类名称已存在（加密名冲突，明文查重见 CategoryManager）")
         # 回填 created_at 至内存对象：保证两阶段重签与 INSERT 用同一值。否则 DB 层
         # 写真实时间戳而内存对象为空，重签用空 created_at 算 mac 致签名与持久化行错配、
         # 重载后验签永久失败。
@@ -184,7 +192,8 @@ class CategoryRepository:
                 (category.name, category.id),
             ).fetchone()
         ):
-            raise ValueError(f"分类名称「{category.name}」已被其他分类占用")
+            # 同「分类重名」用户可见条件统一抛 EntryError（QL-043）：见 add_category 处注释。
+            raise EntryError(f"分类名称「{category.name}」已被其他分类占用")
         # created_at 创建后不可变（SQL 不写该列）：签名须用 DB 现有值，否则调用方传
         # 空/不一致值会使签名与持久化行错配、重载验签失败（与 add_category 回填对称）。
         existing = self._conn.execute(

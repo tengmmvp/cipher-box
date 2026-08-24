@@ -8,7 +8,6 @@ services/entry_view_decryption 的 EntryViewDecryptor（MAINT-021），公开解
 保持薄委托，调用方零改动。
 """
 
-import hmac
 import json
 import logging
 import uuid
@@ -42,6 +41,7 @@ from ..services.crypto_utils import (
 from ..services.entry_validation import validate_plain_entry
 from ..services.entry_view_decryption import EntryViewDecryptor
 from ..services.password_history_service import PasswordHistoryService
+from ..services.password_service import PasswordService
 from ..services.totp_service import TotpService
 from .category_manager import CategoryManager
 from .entry_cache import EntryCacheManager, SearchMetadata
@@ -51,12 +51,6 @@ logger = logging.getLogger(__name__)
 
 # 「近期更新」视图默认拉取的条目数，供 get_recent_summaries 默认 limit。
 DEFAULT_RECENT_SUMMARIES_LIMIT = 20
-
-# 搜索路径补验签的行数上界（PERF-019）：与 UI 层 MAX_SEARCH_RESULTS_DISPLAY（搜索
-# 结果渲染上限，list_refresh_controller 截断处）对齐——仅将渲染的行需要 LENIENT
-# 验签标记完整性警示。业务层不反向依赖 UI 资源模块（分层方向 UI → Business），
-# 故本地声明同值常量（对齐 QL-005 DEFAULT_ANALYSIS_DAYS 对 config 的解耦写法）。
-MAX_SEARCH_VERIFY_ROW_LIMIT = 1000
 
 
 class EntryManager:
@@ -88,6 +82,16 @@ class EntryManager:
     def categories(self) -> CategoryManager:
         """分类子服务（CRUD、查询、缓存失效）。"""
         return self._category_mgr
+
+    @property
+    def cache(self) -> EntryCacheManager:
+        """明文缓存子服务（只读视图，QL-044）。
+
+        消费方（测试、跨 manager 协作）经此公开入口取摘要/TOTP/标签缓存，不再穿透
+        ``_category_mgr._cache`` 双层私有属性——分类 manager 与缓存无所有权关系，
+        双层穿透在分类装配结构调整时会静默漂移。
+        """
+        return self._cache
 
     @property
     def totp(self) -> TotpService:
@@ -420,7 +424,8 @@ class EntryManager:
 
         必须解密旧密码与明文比较——AES-GCM 用随机 nonce，密文比较不可行；HMAC 指纹
         方案需 schema 变更，当前解密比较是无需迁移的合理选择。常量时间比较
-        （hmac.compare_digest）避免时序侧信道。preloaded_old_password 用于导入覆盖
+        （:meth:`PasswordService.passwords_match`，经 utf-8 编码的
+        ``hmac.compare_digest`）避免时序侧信道。preloaded_old_password 用于导入覆盖
         路径已解密的旧密码，跳过重复解密。
         """
         old_pwd_enc = raw.password
@@ -445,13 +450,11 @@ class EntryManager:
             except DecryptionError:
                 old_password = ""
         new_pwd_enc = self._encrypt_field(entry.password, raw.crypto_id, "password")
-        # 常量时间比较新旧密码，encode('utf-8')：条目密码可含 Unicode（中文/重音/emoji），
-        # hmac.compare_digest 对 str 仅接受 ASCII，非 ASCII 直接比较会抛 TypeError 使
-        # 该条目永远无法编辑、覆盖导入整体中止（QL-019，与 vault_lifecycle 改密路径
-        # 的既有写法对齐）。
-        password_changed = not hmac.compare_digest(
-            old_password.encode("utf-8"), entry.password.encode("utf-8")
-        )
+        # 常量时间比较新旧密码（QL-044 收敛至 PasswordService.passwords_match 单一
+        # 事实源）：内部经 encode('utf-8') 的 hmac.compare_digest——条目密码可含
+        # Unicode（中文/重音/emoji），str 版仅接受 ASCII，非 ASCII 直接比较会抛
+        # TypeError 使该条目永远无法编辑、覆盖导入整体中止（QL-019 语义保持）。
+        password_changed = not PasswordService.passwords_match(old_password, entry.password)
         del old_password  # 尽快释放明文引用
         return new_pwd_enc, password_changed
 
@@ -485,7 +488,13 @@ class EntryManager:
 
         摘要缓存按 crypto_id 单条精细失效（避免标题/URL 编辑触发全量重解密）；
         raw.tags 解密失败时保守视为 tags 已变（仍失效标签缓存）。
+
+        分类归属变化（单条编辑可改 category_id）影响分类条目计数缓存（PERF-064）：
+        bus 的 crypto_id 单条通道无法表达该维度，此处显式失效——纯字段编辑
+        （归属未变）不失效，保住侧边栏刷新的计数缓存命中。
         """
+        if entry.category_id != raw.category_id:
+            self._category_mgr.invalidate_entry_counts_cache()
         try:
             old_tags = (
                 self._decrypt_field(raw.tags, raw.crypto_id, "tags", strict=True)
@@ -642,15 +651,20 @@ class EntryManager:
                         # 搜索路径先 SKIP 拉取（PERF-019）：温缓存下搜索的耗时主导是
                         # 全部行的逐行 HMAC 验签 + e.* 全列物化（摘要解密≈0 时反转为主
                         # 导成本，实测 2000 条目 94-213ms/次）；改 SKIP 拉取后仅对匹配
-                        # 命中且将渲染的行补验签（见 _reverify_search_matches）。
-                        # 安全取舍：未命中/超出渲染上界的行不验签，其篡改检测由无
-                        # 搜索词的全量列表刷新（LENIENT）覆盖——搜索只是列表的过滤
-                        # 视图，篡改行在回到全量视图时仍会被标记。
+                        # 命中的行补验签（见 _reverify_search_matches）。
+                        # 安全取舍：未命中的行不验签，其篡改检测由无搜索词的全量
+                        # 列表刷新（LENIENT）覆盖——搜索只是列表的过滤视图，篡改行
+                        # 在回到全量视图时仍会被标记。
                         verify=VerifyMode.SKIP if search else VerifyMode.LENIENT,
                     )
                 )
                 # PERF-001 并发修补（M3）：锁内快照主密钥，锁外解密用快照（见 get_entries）。
                 key = self._key
+                # SEC-041 写入方世代：与 raw/key 同刻快照 epoch，供摘要缓存回写守卫——
+                # 后台搜索 worker 在恢复提交（invalidate_all → 新读路径重臂新 epoch）后
+                # 未被取消时，其旧 raw+旧密钥的解密结果不得写入新世代缓存（跨世代
+                # grafting 会把恢复前明文持久污染进新缓存）。
+                data_epoch = self._vault.key_epoch
             # 解密移出 db_lock（PERF-001）：with 块内仅读 raw（持锁快速），锁外逐条解密，
             # 释放 db_lock 供 TOTP 定时器读与写入。循环外一次性 invalidate_if_epoch_changed
             # 固定本批缓存 epoch，循环内走无校验路径避免每条目重复加锁取 epoch。
@@ -664,7 +678,10 @@ class EntryManager:
                     if cancel_check and cancel_check():
                         break
                     # 搜索：一次取完整 SearchMetadata，摘要与小写匹配共用，省第二次缓存查询（PERF-016）。
-                    meta = self._cache.cached_search_metadata_full(raw, key=key)
+                    # data_epoch 传锁内快照世代，回写守卫据此拒收跨世代解密结果（SEC-041）。
+                    meta = self._cache.cached_search_metadata_full(
+                        raw, key=key, data_epoch=data_epoch
+                    )
                     # 匹配检查前移到摘要构建之前（PERF-018）：仅命中条目才走完整
                     # decrypt_summary，省去未命中条目的 Entry 构造 + 分类名/failed_fields
                     # 缓存查询（meta 已含匹配所需小写形式）。
@@ -709,15 +726,21 @@ class EntryManager:
         self,
         matched: list[tuple[RawEntry, SearchMetadata]],
     ) -> dict[int, RawEntry]:
-        """对搜索命中的行做 LENIENT 补验签（PERF-019），返回 ``{id: 已验签 raw}``。
+        """对全部搜索命中的行做 LENIENT 补验签（PERF-019/PERF-032），返回 ``{id: 已验签 raw}``。
 
         搜索路径的拉取改用 VerifyMode.SKIP（见 get_entry_summaries 处注释），完整性
-        标记由此处补偿：仅对匹配命中且将渲染的行（受 MAX_SEARCH_VERIFY_ROW_LIMIT
-        上界）经 get_entries_by_ids（LENIENT）重读验签，损坏行带 integrity_error
-        标记而非抛异常（保持列表路径的 LENIENT 语义）。epoch 复查沿读守卫——改密
-        窗口内抛 VaultKeyEpochMismatchError 由调用方统一返回空列表触发刷新。
+        标记由此处补偿：对全部命中行经 get_entries_by_ids（LENIENT）重读验签（超
+        SQLite 主机变量上限由其内部分批），损坏行带 integrity_error 标记而非抛异常
+        （保持列表路径的 LENIENT 语义）。epoch 复查沿读守卫——改密窗口内抛
+        VaultKeyEpochMismatchError 由调用方统一返回空列表触发刷新。
+
+        PERF-032（修订 PERF-019 的 1000 行验签上界）：上界按 SQL 序取前 1000，但 UI
+        按排序字段重排 + 标签过滤后才截断渲染——重排后落入渲染窗口的行可能恰在 SQL
+        序 1000 名之外，命中 >1000 时部分渲染行未验签（仿真复现默认排序 67/1000）。
+        改为对全部命中行验签：LENIENT 重读约 15.6µs/行，命中数天然被搜索词过滤
+        （宽泛搜索词接近全库时摘要解密本身已是主导成本），5000 命中约 78ms 可接受。
         """
-        ids = [raw.id for raw, _meta in matched[:MAX_SEARCH_VERIFY_ROW_LIMIT] if raw.id is not None]
+        ids = [raw.id for raw, _meta in matched if raw.id is not None]
         if not ids:
             return {}
         with self._vault.epoch_guarded_read():

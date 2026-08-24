@@ -5,6 +5,8 @@
 Business → Crypto 同层依赖可接受，本服务仅供 UI 层调用。
 """
 
+import hmac
+
 from ...crypto.password_generator import PasswordGenerator, StrengthResult
 from ...crypto.totp import TOTPGenerator
 
@@ -66,3 +68,21 @@ class PasswordService:
     def generate_totp_or_raise(secret: str) -> str:
         """生成 TOTP 验证码，失败时抛出 ValueError。"""
         return TOTPGenerator.generate_or_raise(secret)
+
+    @staticmethod
+    def passwords_match(a: str, b: str) -> bool:
+        """常量时间比较两个密码是否一致（SEC-031）。
+
+        确认密码校验的统一门面，供 UI 对话框（改密/备份/共享包）与业务层
+        （entry_manager）共用，收敛两处风险：
+
+        - 时序侧信道：短路 ``==`` 的比较耗时随公共前缀长度变化，可能泄露
+          前缀信息；``hmac.compare_digest`` 常量时间。
+        - QL-019 同型 bug：``compare_digest`` 对 ``str`` 仅接受 ASCII，非 ASCII
+          密码直接抛 ``TypeError`` 且被 Qt 槽吞掉、表单静默失败。两参统一先
+          ``encode("utf-8")`` 再比较，调用方不得各自内联展开。
+
+        Args:
+            a / b: 待比较的两个密码明文（可含任意 Unicode 字符）。
+        """
+        return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))

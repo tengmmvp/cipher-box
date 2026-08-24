@@ -41,20 +41,25 @@ jobs:
       - name: Ruff format check
         if: matrix.python-version == '3.13'
         run: uv run ruff format --check src tests
+      # pytest/mypy/pyright/coverage 统一 -m 形式（MAINT-041）：.venv\Scripts 下的
+      # trampoline 入口（*.exe）在部分 uv/Windows 组合下报 Failed to canonicalize
+      # script path，`-m` / `python -m` 语义等价且本地与 CI 行为一致（pyright 为
+      # node 包装器，无顶层 Python 模块语义差异，经 python -m 调用其 __main__ 包装；
+      # pip-audit 经 --with 临时环境的脚本入口实测不受影响，保持原形式）。
       - name: Mypy
         if: matrix.python-version == '3.13'
-        run: uv run mypy src
+        run: uv run -m mypy src
       - name: Pyright
         if: matrix.python-version == '3.13'
-        run: uv run pyright
+        run: uv run python -m pyright
       - name: Tests with coverage
-        run: uv run pytest --cov=src --cov-branch --cov-report=term-missing --cov-report=xml
+        run: uv run -m pytest --cov=src --cov-branch --cov-report=term-missing --cov-report=xml
       # 分层覆盖率门槛（分支覆盖，MAINT-008）：开启 --cov-branch 后分支率严格 ≤ 行率，
       # 门槛务实下调。复用同一 .coverage，按 --omit/--include 路径切片。
       - name: Non-UI coverage gate
-        run: uv run coverage report --omit="*/src/ui/*" --fail-under=73
+        run: uv run -m coverage report --omit="*/src/ui/*" --fail-under=82
       - name: UI coverage gate
-        run: uv run coverage report --include="*/src/ui/*" --fail-under=18
+        run: uv run -m coverage report --include="*/src/ui/*" --fail-under=65
       # pip-audit 经 --with 临时运行，不入 uv.lock
       - name: Dependency vulnerability scan
         if: matrix.python-version == '3.13'

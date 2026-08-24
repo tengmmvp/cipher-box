@@ -12,26 +12,27 @@
 
 职责边界：输入 raw + 密钥 + 缓存，输出 Entry——不触数据库事务、写路径、变更通知
 （notify_*）与缓存失效决策（缓存只读取：摘要/分类名/失败字段集，失效由
-EntryManager 与 EntryChangeBus 负责）。密钥经 vault 引用实时获取（与
-EntryCacheManager 等子服务一致的注入面），并发安全由调用方在 ``epoch_guarded_read``
-锁内快照 ``key`` 传入（PERF-001）。
+EntryManager 与 EntryChangeBus 负责）。密钥经 vault 引用实时获取，缓存经
+:class:`ViewDecryptCacheProtocol` 最小协议注入（EntryCacheManager 实现，ARCH-032），
+并发安全由调用方在 ``epoch_guarded_read`` 锁内快照 ``key`` 传入（PERF-001）。
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from ..managers.entry_cache import EntryCacheManager, SearchMetadata
+    # SearchMetadata 仅为共享类型标注（decrypt_summary 的 meta 参数），TYPE_CHECKING
+    # 引用类型名、运行时零导入——services→managers 的类型标注引用在
+    # security_analyzer / entry_batch_writer 已有先例（ARCH-032）。
+    from ..managers.entry_cache import SearchMetadata
     from ..managers.vault_manager import VaultManager
 
 from ...exceptions import DecryptionError, EntryIntegrityError
 from ...models import CustomField, Entry, RawEntry, Sensitive
 from .crypto_utils import (
-    build_entry_summary,
     copy_entry_fields,
     decrypt_field as _decrypt_field_impl,
     decrypt_string_fields_strict,
@@ -39,6 +40,49 @@ from .crypto_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class ViewDecryptCacheProtocol(Protocol):
+    """视图解密所需的最小缓存协议，解耦 EntryViewDecryptor 与 EntryCacheManager。
+
+    对齐 :class:`TotpCacheProtocol` 的模式（ARCH-032）：``EntryCacheManager`` 自然
+    满足此协议，构造时注入，services 子包运行时不 import managers，守住分层方向。
+    协议面以实际使用为准——``cached_search_metadata_full`` 属搜索热路径
+    （EntryManager 消费），不在本协议内。
+    """
+
+    def cached_search_metadata(
+        self,
+        raw_entry: RawEntry,
+        *,
+        key: bytes | None = None,
+    ) -> tuple[str, str, str, str]:
+        """解密并缓存 title/username/url/tags（单条路径，含 epoch 校验）。"""
+        ...
+
+    def search_metadata_for_analysis(
+        self,
+        raw_entry: RawEntry,
+        *,
+        key: bytes | None = None,
+    ) -> tuple[str, str, str, str]:
+        """批量循环路径的摘要解密（无逐条 epoch 校验，调用方循环外已失效缓存）。"""
+        ...
+
+    def get_failed_fields(self, crypto_id: str) -> set[str]:
+        """取某条目摘要解密失败的字段集。"""
+        ...
+
+    def decrypt_category_name(
+        self,
+        category_id: int | None,
+        value: str,
+        *,
+        key: bytes | None = None,
+    ) -> str:
+        """解密分类名并缓存（解密失败抛 DecryptionError，由调用方定容错语义）。"""
+        ...
+
 
 # 完整性失败字段→中文标签映射，构造 integrity_message 用。模块级常量避免重建。
 _INTEGRITY_FIELD_LABELS: dict[str, str] = {
@@ -53,9 +97,10 @@ _INTEGRITY_FIELD_LABELS: dict[str, str] = {
 class EntryViewDecryptor:
     """条目视图解密器：详情/导出/摘要三条解密链路的纯变换子服务（MAINT-021）。"""
 
-    def __init__(self, vault_manager: VaultManager, cache: EntryCacheManager):
+    def __init__(self, vault_manager: VaultManager, cache: ViewDecryptCacheProtocol):
         self._vault = vault_manager
-        # 摘要/分类名/失败字段集缓存：仅读取，失效决策留在 EntryManager/EntryChangeBus。
+        # 摘要/分类名/失败字段集缓存（协议视图，ARCH-032）：仅读取，失效决策留在
+        # EntryManager/EntryChangeBus。
         self._cache = cache
 
     @property
@@ -316,8 +361,6 @@ class EntryViewDecryptor:
             )
         # 失败字段集经 cache 锁内采样，避免与并发失效的 .clear() 竞态。
         failed = self._cache.get_failed_fields(raw_entry.crypto_id)
-        summary = build_entry_summary(raw_entry, username)
-        category_name = summary.category_name
         try:
             category_name = self._cache.decrypt_category_name(
                 raw_entry.category_id,
@@ -325,8 +368,8 @@ class EntryViewDecryptor:
                 key=key,
             )
         except DecryptionError:
-            # 解密失败时强制置空：summary.category_name 透传自 raw_entry.category_name，
-            # 是 base64 密文——保留会把不可读的密文当作分类名显示给用户（信息泄漏）。
+            # 解密失败时强制置空：raw_entry.category_name 是 base64 密文——保留会把
+            # 不可读的密文当作分类名显示给用户（信息泄漏）。
             category_name = ""
             failed = set(failed)
             failed.add("category")
@@ -336,12 +379,22 @@ class EntryViewDecryptor:
             messages.append(raw_entry.integrity_message or "元数据")
         messages.extend(_INTEGRITY_FIELD_LABELS[name] for name in failed)
         integrity_message = "、".join(dict.fromkeys(messages))
-        return replace(
-            summary,
+        # 单次构造（PERF-063）：title/url/tags/category_name/integrity_* 六个覆盖字段
+        # 直接并入一次 copy_entry_fields 调用（覆盖键齐备，username 已由缓存/meta 提供），
+        # 消除「build_entry_summary 全字段构造 → replace 再覆盖 6 字段」的第二次
+        # 24-kwarg dataclass 构造（50k 次列表刷新实测差 ~300ms）。字段语义与原两步
+        # 完全一致：敏感四字段（password/notes/custom_fields/totp_secret）置空。
+        return copy_entry_fields(
+            raw_entry,
             title=title,
+            username=username,
+            password="",
             url=url,
-            tags=tags,
             category_name=category_name,
+            tags=tags,
+            notes="",
+            custom_fields=[],
+            totp_secret="",
             integrity_error=integrity_error,
             integrity_message=integrity_message,
         )

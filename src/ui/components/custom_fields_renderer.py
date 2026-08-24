@@ -27,6 +27,7 @@ from ..resources.constants import BTN_COPY, FONT_FAMILY_MONOSPACE
 from ..resources.icons import COPY, set_icon
 from ..resources.theme_colors import c
 from .secret_field import SecretFieldEnv, make_secret_field_row
+from .widgets import create_plain_text_label
 
 if TYPE_CHECKING:
     from ...models import Entry
@@ -142,16 +143,14 @@ class CustomFieldsRenderer:
         copyable: bool = True,
     ) -> tuple[QLabel, QWidget]:
         """创建普通字段行，明文显示并可选附带复制按钮。"""
-        name_label = QLabel(f"{label}：")
-        name_label.setObjectName("fieldLabel")
+        # 自定义字段名与值均为用户/导入数据，PlainText 防富文本注入（SEC-030）
+        name_label = create_plain_text_label(f"{label}：", "fieldLabel")
 
         row_widget = QWidget()
         row_layout = QHBoxLayout(row_widget)
         row_layout.setContentsMargins(0, 0, 0, 0)
 
-        val_label = QLabel(value)
-        val_label.setWordWrap(True)
-        val_label.setObjectName("fieldValue")
+        val_label = create_plain_text_label(value, "fieldValue", word_wrap=True)
         row_layout.addWidget(val_label, 1)
 
         if copyable and value:

@@ -10,6 +10,7 @@ EntryManager 的加密/落库原语（``build_encrypted_entry`` 等公开协作 
 """
 
 import uuid
+from collections.abc import Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -26,6 +27,16 @@ from .entry_validation import validate_plain_entry
 
 if TYPE_CHECKING:
     from ..managers.entry_manager import EntryManager
+
+# 进度上报节流间隔（PERF-065）：每 100 行上报一次，避免 50k 行导入产生 50k 次跨
+# 线程信号发射（UI 侧 repaint 开销反超加密本身）；阶段终值恒上报，保证进度能到达
+# 阶段终点。
+_PROGRESS_REPORT_EVERY = 100
+
+# 写入分块大小（PERF-065）：progress 提供时按此分块调用 add_entries_batch，供写入
+# 阶段上报中间进度。分块间仍处调用方 epoch_guarded_transaction 内（_auto_commit 在
+# 活动事务内为 no-op），全有或全无语义不变。
+_WRITE_PROGRESS_CHUNK = 500
 
 
 class BatchUpdateItem(NamedTuple):
@@ -55,7 +66,10 @@ class PreparedUpdate(NamedTuple):
 
 
 def encrypt_new_entries(
-    entry_mgr: "EntryManager", entries: list[Entry]
+    entry_mgr: "EntryManager",
+    entries: list[Entry],
+    *,
+    progress: Callable[[int, int], None] | None = None,
 ) -> tuple[list[RawEntry], bool]:
     """锁外加密构建新条目密文（MAINT-004），返回 ``(enc_entries, preserve_metadata)``。
 
@@ -64,10 +78,15 @@ def encrypt_new_entries(
     裸写入。加密仅依赖 vault key（不触 db_lock），故可锁外；pre_epoch 守卫保证
     「加密后→写入前」若改密则复查失败回滚，旧密钥密文不落库。
     ``entries`` 须已由 ``Entry.from_dict`` 校验。
+
+    ``progress``（PERF-065）：提供时按 ``(done, total)`` 上报加密进度，每
+    ``_PROGRESS_REPORT_EVERY`` 行节流一次、终值恒上报——加密逐字段是密码学契约，
+    循环结构不变，仅插入上报点。
     """
     now = utc_now_iso()
     enc_entries: list[RawEntry] = []
-    for entry in entries:
+    total = len(entries)
+    for idx, entry in enumerate(entries, start=1):
         entry = replace(
             entry,
             password_strength=PasswordGenerator.check_strength(entry.password).score,
@@ -82,6 +101,8 @@ def encrypt_new_entries(
                 updated_at=entry.updated_at or now,
             )
         )
+        if progress is not None and (idx % _PROGRESS_REPORT_EVERY == 0 or idx == total):
+            progress(idx, total)
     preserve = any(e.created_at or e.updated_at for e in entries)
     return enc_entries, preserve
 
@@ -91,18 +112,33 @@ def write_new_entries(
     enc_entries: list[RawEntry],
     *,
     preserve: bool,
+    progress: Callable[[int, int], None] | None = None,
 ) -> None:
-    """事务内裸写入已加密条目（MAINT-004），executemany 一次性 INSERT。
+    """事务内裸写入已加密条目（MAINT-004），executemany 批量 INSERT。
 
     写入须受 epoch 守卫保护：导入路径在 ``epoch_guarded_transaction`` 内调用；
     不含加密，仅 db 写，把 db_lock 持有收敛到 executemany 时长。不做任何通知——
     通知（含摘要缓存保留语义）由调用方 ImportExportManager 在全部写入完成后经
     ``notify_batch_change`` 统一发一次（PERF-022 移除已成死分支的 notify 参数：
     唯一生产调用方始终传 notify=False，逐条/空批次通知路径不再存在）。
+
+    ``progress``（PERF-065）：提供时按 ``_WRITE_PROGRESS_CHUNK`` 分块写入并逐块
+    上报 ``(done, total)``，消除写入阶段（50k 库实测 2.85s）进度条冻结；分块间
+    仍处调用方 epoch 守卫事务内，原子性与持久化语义不变。未提供时保持单次
+    executemany 原路径（既有调用方零改动）。
     """
     if not enc_entries:
         return
-    entry_mgr.db.add_entries_batch(enc_entries, preserve_metadata=preserve)
+    if progress is None:
+        entry_mgr.db.add_entries_batch(enc_entries, preserve_metadata=preserve)
+        return
+    total = len(enc_entries)
+    done = 0
+    for start in range(0, total, _WRITE_PROGRESS_CHUNK):
+        chunk = enc_entries[start : start + _WRITE_PROGRESS_CHUNK]
+        entry_mgr.db.add_entries_batch(chunk, preserve_metadata=preserve)
+        done += len(chunk)
+        progress(done, total)
 
 
 def prepare_overwrite_updates(

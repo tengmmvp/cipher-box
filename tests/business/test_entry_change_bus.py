@@ -109,7 +109,7 @@ class TestEntryChangeBusEndToEnd:
     def test_notify_invalidates_real_category_cache(self, entry_mgr):
         """经真实 EntryManager.change_bus notify，分类名缓存应失效。"""
         cat_id = entry_mgr.categories.add_category(Category(name="Orig"))
-        cache = entry_mgr._category_mgr._cache  # noqa: SLF001 测试取内部缓存
+        cache = entry_mgr.cache  # 公开只读 property（QL-044），免双层私有穿透
 
         cats = entry_mgr.categories.get_categories()
         orig_name = next(c.name for c in cats if c.id == cat_id)
@@ -128,7 +128,7 @@ class TestEntryChangeBusEndToEnd:
         """notify 默认 clear_summaries=True 清空搜索摘要缓存。"""
         import uuid
 
-        cache = entry_mgr._category_mgr._cache  # noqa: SLF001
+        cache = entry_mgr.cache  # 公开只读 property（QL-044），免双层私有穿透
         cid = uuid.uuid4().hex
         entry = make_entry(title="Hello")
         entry = dataclasses.replace(entry, crypto_id=cid)
@@ -145,7 +145,7 @@ class TestEntryChangeBusEndToEnd:
         """notify 传 crypto_id 仅 pop 单条摘要，不清空全部。"""
         import uuid
 
-        cache = entry_mgr._category_mgr._cache  # noqa: SLF001
+        cache = entry_mgr.cache  # 公开只读 property（QL-044），免双层私有穿透
         cid_a = uuid.uuid4().hex
         cid_b = uuid.uuid4().hex
         entry_a = make_entry(title="A")

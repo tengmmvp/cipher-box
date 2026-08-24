@@ -262,3 +262,115 @@ class TestImportSummaryCacheRetention:
         # 刷新后摘要反映覆盖后的数据（tags 已更新）
         refreshed = {e.title: e for e in entry_mgr.get_entry_summaries()}
         assert refreshed["Target"].tags == "fresh-tag"
+
+
+# ======== 导入加权总进度（PERF-065）========
+
+
+class TestImportWeightedProgress:
+    """progress_callback 覆盖全阶段的加权总进度（PERF-065）。
+
+    旧行为：进度仅在分类阶段逐条上报（50k CSV 端到端 8.43s 中占 0.61s），进度条
+    先冲 100% 再在加密（3.29s）与写入（2.85s）期间冻结。加权后 ``(current, total)``
+    恒为百分比语义：total=100、单调不减、终值 100、emit 次数远小于行数（节流）。
+    """
+
+    # 250 行：加密阶段按 100 行节流上报 3 次（100/200/250），写入阶段单块（<500），
+    # 总 emit 次数远小于行数，可同时验证节流与单调性。
+    ROWS = 250
+
+    @staticmethod
+    def _make_json_import(tmp_path, rows: int) -> str:
+        path = tmp_path / "progress.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "app": "CipherBox",
+                    "secrets_included": True,
+                    "entries": [
+                        {
+                            "title": f"Entry-{i:04d}",
+                            "username": f"user{i:04d}",
+                            "password": f"Pass{i:04d}!x",
+                        }
+                        for i in range(rows)
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return str(path)
+
+    def test_progress_monotonic_and_reaches_100(self, entry_mgr, tmp_path):
+        """进度值单调不减、total 恒 100、终值 100。"""
+        mgr = ImportExportManager(entry_mgr)
+        events: list[tuple[int, int]] = []
+        count = mgr.import_file(
+            self._make_json_import(tmp_path, self.ROWS),
+            "json",
+            progress_callback=lambda current, total: events.append((current, total)),
+        )
+        assert count == self.ROWS
+
+        assert events, "进度回调应至少被调用一次"
+        assert all(total == 100 for _current, total in events)
+        values = [current for current, _total in events]
+        assert all(a <= b for a, b in zip(values, values[1:], strict=False)), (
+            f"进度值须单调不减：{values}"
+        )
+        assert values[-1] == 100
+
+    def test_progress_covers_expensive_phases(self, entry_mgr, tmp_path):
+        """加密/写入耗时主导阶段有中间值：存在 (15,70) 与 (70,100) 区间的上报。"""
+        mgr = ImportExportManager(entry_mgr)
+        events: list[tuple[int, int]] = []
+        mgr.import_file(
+            self._make_json_import(tmp_path, self.ROWS),
+            "json",
+            progress_callback=lambda current, total: events.append((current, total)),
+        )
+        values = [current for current, _total in events]
+        # 加密阶段（15→70）与写入阶段（70→100）均有中间值，进度不再 100% 后冻结。
+        assert any(15 <= v < 70 for v in values)
+        assert any(70 <= v < 100 for v in values)
+        # parse/sanitize 里程碑在最前。
+        assert values[0] <= 10
+
+    def test_progress_throttled_well_below_row_count(self, entry_mgr, tmp_path):
+        """节流生效：新增的加密/写入上报点次数远小于行数。
+
+        分类阶段保留既有逐条语义（覆盖 duplicate/skip 须逐行推进）；加密阶段按
+        100 行节流（250 行 → 3 次，无节流将逐行 250 次）、写入按 500 行分块
+        （250 行 → 1 次）。非分类阶段的合计上报 ≤ 10 次。
+        """
+        mgr = ImportExportManager(entry_mgr)
+        events: list[tuple[int, int]] = []
+        mgr.import_file(
+            self._make_json_import(tmp_path, self.ROWS),
+            "json",
+            progress_callback=lambda current, total: events.append((current, total)),
+        )
+        # 分类阶段逐条 = ROWS 次；其余（parse/sanitize 里程碑 + 加密 3 + 写入 1 +
+        # 终值 1）合计 7 次。若加密未节流，此处将为 ROWS + 250+ 次而远超上限。
+        non_classify_emits = len(events) - self.ROWS
+        assert 0 <= non_classify_emits <= 10
+        # 加密阶段（15→70）确有节流后的中间值（37/59 一档），非仅终值跳变。
+        encrypt_mid = [current for current, _total in events if 15 < current < 70]
+        assert len(encrypt_mid) >= 2
+
+    def test_empty_import_still_reports_100(self, entry_mgr, tmp_path):
+        """空导入（无条目）也上报终值 100，进度条不留悬挂。"""
+        mgr = ImportExportManager(entry_mgr)
+        events: list[tuple[int, int]] = []
+        path = tmp_path / "empty.json"
+        path.write_text(
+            json.dumps({"app": "CipherBox", "secrets_included": True, "entries": []}),
+            encoding="utf-8",
+        )
+        count = mgr.import_file(
+            str(path),
+            "json",
+            progress_callback=lambda current, total: events.append((current, total)),
+        )
+        assert count == 0
+        assert events[-1] == (100, 100)

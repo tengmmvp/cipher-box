@@ -1,11 +1,13 @@
 """DatabaseManager ↔ Repository 委托透传一致性测试。
 
 DatabaseManager 在「委托与编排」区（db_manager.py 尾部）大量手写委托方法，
-把调用透传到 ``_entry_repo`` / ``_category_repo``。Repository 新增公有方法后
+把调用透传到 ``_entry_repo`` / ``_category_repo`` / ``_password_history_repo``。
+Repository 新增公有方法后
 若漏写 DatabaseManager 透传，是高频回归点——业务层经 ``VaultManager.db.<method>()``
 访问会在运行时抛 AttributeError。
 
-本测试用 inspect 枚举 EntryRepository / CategoryRepository 的全部公有方法
+本测试用 inspect 枚举 EntryRepository / CategoryRepository /
+PasswordHistoryRepository 的全部公有方法
 （不含下划线前缀、不含 property），断言每个都经 DatabaseManager 实例可访问
 （``hasattr`` 为 True），把「Repository 新增方法 / DatabaseManager 漏透传」
 的双源漂移从运行时 AttributeError 提到测试期。
@@ -27,6 +29,7 @@ import pytest
 from src.database.category_repository import CategoryRepository
 from src.database.db_manager import DatabaseManager
 from src.database.entry_repository import EntryRepository
+from src.database.password_history_repository import PasswordHistoryRepository
 
 # 豁免透传断言的 (Repository 类, 方法名) 对；新增项须在此登记并说明理由（理由见模块 docstring）。
 _DELEGATION_EXEMPT: set[tuple[type, str]] = {
@@ -52,7 +55,8 @@ def _public_methods(cls: type) -> set[str]:
 def db(tmp_path):
     """DatabaseManager 实例（未打开连接），仅做 hasattr 断言。
 
-    ``__init__`` 已构造 ``_entry_repo`` / ``_category_repo`` 子 Repository，
+    ``__init__`` 已构造 ``_entry_repo`` / ``_category_repo`` /
+    ``_password_history_repo`` 子 Repository，
     ``hasattr`` 校验透传方法是否声明只需实例存在，无需活动连接或表结构，
     故不调用 ``open()`` / ``init_tables()``，保持测试轻量且无文件 I/O 副作用。
     """
@@ -61,8 +65,8 @@ def db(tmp_path):
 
 @pytest.mark.parametrize(
     "repo_cls",
-    [EntryRepository, CategoryRepository],
-    ids=["EntryRepository", "CategoryRepository"],
+    [EntryRepository, CategoryRepository, PasswordHistoryRepository],
+    ids=["EntryRepository", "CategoryRepository", "PasswordHistoryRepository"],
 )
 def test_all_repository_public_methods_accessible_on_database_manager(db, repo_cls):
     """每个 Repository 公有方法都应经 DatabaseManager 实例可访问。

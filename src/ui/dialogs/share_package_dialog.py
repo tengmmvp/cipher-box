@@ -7,7 +7,6 @@ CipherBox、无需联网。后台 worker 执行加密打包，无 vault 写入�
 
 from __future__ import annotations
 
-import hmac
 import logging
 import time
 from pathlib import Path
@@ -252,9 +251,10 @@ class SharePackageDialog(WorkerBackedDialog):
             QMessageBox.warning(self, DLG_TITLE_INFO, error)
             return
         confirm = self._confirm_edit.text()
-        # encode('utf-8') 必须：共享密码可含非 ASCII，compare_digest 对 str 仅接受 ASCII，
-        # 否则抛 TypeError 被槽吞掉致创建静默失败。与 backup_dialog / change_master_dialog 对齐。
-        if not hmac.compare_digest(confirm.encode("utf-8"), password.encode("utf-8")):
+        # 常量时间比较经 PasswordService.passwords_match 统一门面（SEC-031）：
+        # encode('utf-8') 与 compare_digest 的配对不再由各调用点内联维护，防 QL-019
+        # 同型 bug（非 ASCII 共享密码抛 TypeError 被槽吞掉致创建静默失败）复发。
+        if not PasswordService.passwords_match(confirm, password):
             QMessageBox.warning(self, DLG_TITLE_INFO, "两次输入的共享密码不一致。")
             return
         selected_dir = self._selected_dir

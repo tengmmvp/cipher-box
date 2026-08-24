@@ -3,8 +3,9 @@
 负责连接打开/关闭与文件安全、事务管理（begin/commit/rollback/savepoint）、
 vault_meta 元数据读写。线程安全与连接校验经 ``_db_operation`` / ``_db_write``
 装饰器提供（:mod:`._decorators`）。CRUD 委托给子 Repository：entries→
-:class:`EntryRepository`、categories→:class:`CategoryRepository`、schema→
-:class:`SchemaManager`，本类作为统一数据访问入口。
+:class:`EntryRepository`、categories→:class:`CategoryRepository`、密码历史→
+:class:`PasswordHistoryRepository`（MAINT-071）、schema→:class:`SchemaManager`，
+本类作为统一数据访问入口。
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from ..utils.file_security import secure_directory, secure_file
 from ._decorators import _db_operation, _db_write
 from .category_repository import CategoryRepository
 from .entry_repository import EntryRepository
+from .password_history_repository import PasswordHistoryRepository
 from .schema_manager import SchemaManager
 from .types import (
     DEFAULT_HISTORY_BATCH_LIMIT,
@@ -115,6 +117,9 @@ class DatabaseManager:
         # 子 Repository
         self._entry_repo = EntryRepository(self)
         self._category_repo = CategoryRepository(self)
+        # 密码历史单表 Repository（MAINT-071 拆分自 EntryRepository）：委托面不膨胀，
+        # 仅路由迁移。
+        self._password_history_repo = PasswordHistoryRepository(self)
         self._schema_mgr = SchemaManager(self)
 
     # ==================== 子 Repository 公共访问接口 ====================
@@ -566,15 +571,8 @@ class DatabaseManager:
             preserve_metadata=preserve_metadata,
         )
 
-    def update_entry(
-        self,
-        entry: RawEntry,
-        preserve_updated_at: bool = False,
-    ) -> None:
-        return self._entry_repo.update_entry(
-            entry,
-            preserve_updated_at=preserve_updated_at,
-        )
+    def update_entry(self, entry: RawEntry) -> None:
+        return self._entry_repo.update_entry(entry)
 
     def update_overwrite_batch(self, entries: list[RawEntry]) -> None:
         return self._entry_repo.update_overwrite_batch(entries)
@@ -619,7 +617,7 @@ class DatabaseManager:
         """标签聚合窄投影委托（PERF-020，语义见 EntryRepository 同名方法）。"""
         return self._entry_repo.get_entries_tags_projection()
 
-    # -- 委托透传：Password History --
+    # -- 委托透传：Password History（MAINT-071 路由至 PasswordHistoryRepository）--
 
     def add_password_history(
         self,
@@ -627,28 +625,30 @@ class DatabaseManager:
         old_password_enc: str,
         changed_at: str = "",
     ) -> None:
-        return self._entry_repo.add_password_history(entry_id, old_password_enc, changed_at)
+        return self._password_history_repo.add_password_history(
+            entry_id, old_password_enc, changed_at
+        )
 
     def add_password_history_batch(
         self,
         entry_id: int,
         items: list[tuple[str, str]],
     ) -> None:
-        return self._entry_repo.add_password_history_batch(entry_id, items)
+        return self._password_history_repo.add_password_history_batch(entry_id, items)
 
     def get_password_history(self, entry_id: int) -> list[PasswordHistory]:
-        return self._entry_repo.get_password_history(entry_id)
+        return self._password_history_repo.get_password_history(entry_id)
 
     def get_all_password_history(self) -> list[PasswordHistory]:
-        return self._entry_repo.get_all_password_history()
+        return self._password_history_repo.get_all_password_history()
 
     def get_all_password_history_batch(
         self, after_id: int = 0, limit: int = DEFAULT_HISTORY_BATCH_LIMIT
     ) -> list[PasswordHistory]:
-        return self._entry_repo.get_all_password_history_batch(after_id, limit)
+        return self._password_history_repo.get_all_password_history_batch(after_id, limit)
 
     def get_password_history_count(self, entry_id: int) -> int:
-        return self._entry_repo.get_password_history_count(entry_id)
+        return self._password_history_repo.get_password_history_count(entry_id)
 
     def update_password_history_batch(self, rows: list[ReEncryptedHistory]) -> None:
-        return self._entry_repo.update_password_history_batch(rows)
+        return self._password_history_repo.update_password_history_batch(rows)

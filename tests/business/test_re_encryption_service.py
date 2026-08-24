@@ -75,7 +75,12 @@ def _make_raw_entry(
 
 
 class MockDB:
-    """内存 mock，实现 ReEncryptionDB Protocol。"""
+    """内存 mock，实现重加密所需的数据库方法（VaultDataStore 协议的子集）。
+
+    ReEncryptionService 经 VaultDataStore 协议访问 db（ARCH-031 局部协议已收敛到
+    全局协议），mock 仅实现实际用到的方法即可（测试不经 mypy/pyright 门禁，
+    结构化鸭子类型满足运行时调用）。
+    """
 
     def __init__(self):
         self._entries: list[RawEntry] = []
@@ -121,7 +126,7 @@ class MockDB:
     def get_categories(self, *, verify: bool = True) -> list[Category]:
         """返回填充的分类，供 re_encrypt_categories 测试。
 
-        verify 参数为兼容 ReEncryptionDB Protocol（re_encrypt_categories 以
+        verify 参数为兼容 VaultDataStore 协议签名（re_encrypt_categories 以
         verify=False 读取跳过验签）；mock 不验签，参数仅占位。
         """
         return list(self._categories)

@@ -1,6 +1,7 @@
-"""条目数据访问层 — 条目 CRUD、批量操作、密码历史。
+"""条目数据访问层 — 条目 CRUD 与批量操作。
 
-职责单一：条目及密码历史表的增删改查，经 DatabaseManager 委托提供统一数据访问接口。
+职责单一：entries 表的增删改查，经 DatabaseManager 委托提供统一数据访问接口。
+密码历史的单表访问在 :class:`PasswordHistoryRepository`（MAINT-071 拆分）。
 """
 
 import logging
@@ -12,15 +13,13 @@ from dataclasses import replace
 from typing import Any
 
 from ..exceptions import DatabaseError, TransactionError, VaultIntegrityError, VaultLockedError
-from ..models import MAX_PASSWORD_HISTORY, PasswordHistory, RawEntry
+from ..models import RawEntry
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation, _db_write
 from .types import (
-    DEFAULT_HISTORY_BATCH_LIMIT,
     ConnectionProvider,
     EntryQuery,
     ReEncryptedEntry,
-    ReEncryptedHistory,
     VerifyMode,
 )
 
@@ -177,28 +176,8 @@ _SELECT_ENTRY_ANALYSIS_SCAN_SQL = (
 # 标签聚合窄投影（PERF-020）：仅需 (crypto_id, tags_enc) 两列，不 JOIN 分类表。
 _SELECT_ENTRY_TAGS_PROJECTION_SQL = "SELECT crypto_id, tags_enc FROM entries WHERE is_deleted = 0"
 
-# 密码历史 JOIN 条目 crypto_id 的基础查询，供 get_password_history /
-# get_all_password_history / get_all_password_history_batch 复用。
-_SELECT_PASSWORD_HISTORY_SQL = (
-    "SELECT h.*, e.crypto_id AS entry_crypto_id "
-    "FROM password_history h JOIN entries e ON e.id=h.entry_id"
-)
-# 密码历史 INSERT 与截断到 MAX_PASSWORD_HISTORY 的 DELETE；add_password_history
-# 与 batch 共用。
-_INSERT_PASSWORD_HISTORY_SQL = (
-    "INSERT INTO password_history (entry_id, old_password_enc, changed_at) VALUES (?, ?, ?)"
-)
-_TRUNCATE_PASSWORD_HISTORY_SQL = (
-    "DELETE FROM password_history WHERE entry_id = ? AND id NOT IN ("
-    "  SELECT id FROM password_history WHERE entry_id = ?"
-    "  ORDER BY changed_at DESC, id DESC LIMIT ?"
-    ")"
-)
-
 # ID 分批阈值：SQLite 默认限制 999 个主机变量，取 500 留余量。
 _ID_BATCH_SIZE = 500
-# 密码历史分页批量别名：引用 types.DEFAULT_HISTORY_BATCH_LIMIT 单一事实源（QL-007）。
-_DEFAULT_HISTORY_BATCH_LIMIT = DEFAULT_HISTORY_BATCH_LIMIT
 
 
 def _classify_entry_integrity_error(prefix: str, exc: sqlite3.IntegrityError) -> DatabaseError:
@@ -218,7 +197,7 @@ def _classify_entry_integrity_error(prefix: str, exc: sqlite3.IntegrityError) ->
 
 
 class EntryRepository:
-    """条目数据访问层 — 条目 CRUD、批量操作、密码历史。
+    """条目数据访问层 — 条目 CRUD、批量操作。
 
     经 ``conn_provider`` 获取 sqlite3.Connection（通常为 DatabaseManager 实例）。
     """
@@ -453,15 +432,13 @@ class EntryRepository:
         return id_map
 
     @_db_write
-    def update_entry(
-        self,
-        entry: RawEntry,
-        preserve_updated_at: bool = False,
-    ) -> None:
+    def update_entry(self, entry: RawEntry) -> None:
         """更新条目。
 
         Note: 不写 is_deleted/deleted_at，删除状态仅由 soft_delete_entry /
-        restore_entry 管理。
+        restore_entry 管理。updated_at 恒取当前时间（preserve_updated_at 参数已退役，
+        ARCH-021：唯一 True 调用方是测试，需保留原时间戳的批量覆盖路径走
+        :meth:`update_overwrite_batch`，其 SQL 不写 updated_at 列）。
         """
         self._assert_entry_encrypted_fields(entry)
         # 签名载荷（MetadataSigner._payload）含 is_deleted/deleted_at/created_at，但
@@ -475,7 +452,7 @@ class EntryRepository:
         ).fetchone()
         if current is None:
             raise DatabaseError(f"条目 {entry.id} 不存在，无法更新")
-        updated_at = entry.updated_at if preserve_updated_at and entry.updated_at else utc_now_iso()
+        updated_at = utc_now_iso()
         # RawEntry 为 frozen，replace 产生带 DB 现值、新时间戳与签名的新实例供写库。
         entry = replace(
             entry,
@@ -734,119 +711,9 @@ class EntryRepository:
         return [(row[0], row[1] or "") for row in rows]
 
     # ==================== 密码历史 ====================
-
-    @_db_write
-    def add_password_history(
-        self,
-        entry_id: int,
-        old_password_enc: str,
-        changed_at: str = "",
-    ) -> None:
-        """添加密码历史记录。"""
-        self._assert_encrypted(old_password_enc, "password_history")
-        self._conn.execute(
-            _INSERT_PASSWORD_HISTORY_SQL,
-            (entry_id, old_password_enc, changed_at or utc_now_iso()),
-        )
-        # 无条件截断：NOT IN 子查询对未超限条目不匹配任何行，幂等且高效，比先 COUNT
-        # 再 DELETE 少一次查询。隐式依赖 id 为 INTEGER PRIMARY KEY（NOT NULL）：若子查询
-        # 含 NULL，NOT IN 对所有行返回 UNKNOWN 而不删除。
-        self._conn.execute(
-            _TRUNCATE_PASSWORD_HISTORY_SQL,
-            (entry_id, entry_id, MAX_PASSWORD_HISTORY),
-        )
-        self._auto_commit()
-
-    @_db_write
-    def add_password_history_batch(
-        self,
-        entry_id: int,
-        items: list[tuple[str, str]],
-    ) -> None:
-        """批量添加密码历史，末尾统一截断到 MAX_PASSWORD_HISTORY 条。
-
-        相比逐条调用 add_password_history，避免每条触发一次截断 DELETE。
-
-        Args:
-            entry_id: 条目 ID。
-            items: 由旧密码密文与变更时间组成的二元组列表。
-        """
-        if not items:
-            return
-        for encrypted, _changed_at in items:
-            self._assert_encrypted(encrypted, "password_history")
-        now = utc_now_iso()
-        rows = [(entry_id, enc, changed_at or now) for enc, changed_at in items]
-        self._conn.executemany(
-            _INSERT_PASSWORD_HISTORY_SQL,
-            rows,
-        )
-        # 统一截断：仅一次 DELETE，替代逐条触发的 N 次截断
-        self._conn.execute(
-            _TRUNCATE_PASSWORD_HISTORY_SQL,
-            (entry_id, entry_id, MAX_PASSWORD_HISTORY),
-        )
-        self._auto_commit()
-
-    @_db_operation
-    def get_password_history(self, entry_id: int) -> list[PasswordHistory]:
-        """获取指定条目的密码历史，按变更时间倒序返回（供 UI 展示）。"""
-        rows = self._conn.execute(
-            f"{_SELECT_PASSWORD_HISTORY_SQL} "
-            "WHERE h.entry_id = ? ORDER BY h.changed_at DESC, h.id DESC",
-            (entry_id,),
-        ).fetchall()
-        return [self._row_to_password_history(r) for r in rows]
-
-    @_db_operation
-    def get_all_password_history(self) -> list[PasswordHistory]:
-        """获取全部密码历史，用于改密和备份。"""
-        rows = self._conn.execute(f"{_SELECT_PASSWORD_HISTORY_SQL} ORDER BY h.id").fetchall()
-        return [self._row_to_password_history(r) for r in rows]
-
-    @_db_operation
-    def get_all_password_history_batch(
-        self, after_id: int = 0, limit: int = _DEFAULT_HISTORY_BATCH_LIMIT
-    ) -> list[PasswordHistory]:
-        """分批获取全部密码历史，用于改密重加密时控制内存峰值。
-
-        使用游标分页 after_id，与 get_entries 的分页策略一致，
-        避免并发写入时 OFFSET 分页可能导致的跳过/重复问题。
-        """
-        rows = self._conn.execute(
-            f"{_SELECT_PASSWORD_HISTORY_SQL} WHERE h.id > ? ORDER BY h.id LIMIT ?",
-            (after_id, limit),
-        ).fetchall()
-        return [self._row_to_password_history(r) for r in rows]
-
-    @_db_operation
-    def get_password_history_count(self, entry_id: int) -> int:
-        row = self._conn.execute(
-            "SELECT COUNT(*) FROM password_history WHERE entry_id = ?",
-            (entry_id,),
-        ).fetchone()
-        return int(row[0]) if row else 0
-
-    @_db_write
-    def update_password_history_batch(self, rows: list[ReEncryptedHistory]) -> None:
-        """批量更新密码历史记录的密文。
-
-        改密重加密时将逐条 UPDATE 合并为单次 executemany。
-
-        Args:
-            rows: ``ReEncryptedHistory`` NamedTuple 列表（re_encryption 产出）。
-                NamedTuple 自动适配 executemany 位置绑定；不接受普通二元组——解包
-                ``for encrypted, _history_id in rows`` 依赖字段语义，普通 tuple 易错位。
-        """
-        if not rows:
-            return
-        for encrypted, _history_id in rows:
-            self._assert_encrypted(encrypted, "password_history")
-        self._conn.executemany(
-            "UPDATE password_history SET old_password_enc=? WHERE id=?",
-            rows,
-        )
-        self._auto_commit()
+    # 密码历史的单表数据访问已拆至 PasswordHistoryRepository（MAINT-071），本类不再
+    # 承载；跨表清空（clear_vault_data 含 DELETE FROM password_history）属编排操作
+    # 保留于此。DatabaseManager 的密码历史委托面不变（改路由到新 Repository）。
 
     # ========== 内部方法 ==========
 
@@ -944,14 +811,3 @@ class EntryRepository:
                 # 未解锁态（锁定期间后台线程读到已清零域密钥）非完整性错误，向上传播。
                 raise
         return entry
-
-    @staticmethod
-    def _row_to_password_history(row: sqlite3.Row) -> PasswordHistory:
-        """从 JOIN 查询行构建 PasswordHistory 对象，含 entry_crypto_id。"""
-        return PasswordHistory(
-            id=row["id"],
-            entry_id=row["entry_id"],
-            old_password_enc=row["old_password_enc"],
-            changed_at=row["changed_at"],
-            entry_crypto_id=row["entry_crypto_id"],
-        )

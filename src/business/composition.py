@@ -68,6 +68,20 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
     ImportExportManager → BackupRestoreManager 的依赖链，并注册锁定/变更回调
     使缓存失效事件驱动化。调用方（app.py 解锁成功后）取得 ctx 传给 MainWindow。
 
+    子服务装配规则（ARCH-033）：
+
+    - **组合根显式创建注入**：有自持状态/独占缓存的子服务——CategoryManager（分类
+      CRUD + change_bus 通知）、RestorePointManager（恢复点文件域）、SecurityAnalyzer
+      （分析结果 TTL 缓存）、EntryCacheManager（5 套明文缓存）、EntryChangeBus（变更
+      →失效→回调管线）。它们各有独立生命周期与失效语义，是可替换单元：组合根显式
+      构造并注入保持替换间隙一致（测试替身/重配置单一改动点，呼应 MAINT-015 的
+      必传签名强制）。
+    - **宿主内部构造**：纯变换/共享缓存的无状态子服务——TotpService /
+      PasswordHistoryService / EntryViewDecryptor（均无自有缓存或失效状态）。由
+      EntryManager 内部构造并与其共用同一 EntryCacheManager 实例：无独立替换需求，
+      单实例共享缓存避免多份缓存副本漂移（视图解密复用摘要缓存的前提，
+      MAINT-021）。
+
     锁定与备份恢复（密钥轮换）失效 entry 缓存，条目变更失效安全分析缓存；两类
     事件经独立回调通道触发（ARCH-003），详见下方注册处注释。
     """

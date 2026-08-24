@@ -141,6 +141,8 @@ class TestSecurityDashboardRendering:
             _entry(21, title="Site B", username="b"),
         ]
         _deliver_report(dlg, monkeypatch, _report(duplicates=[group], total=5))
+        # 懒填充（PERF-023）：切到该 tab 才构建行
+        dlg._tabs.setCurrentIndex(1)
 
         group_labels = [
             lbl.text()
@@ -164,6 +166,7 @@ class TestSecurityDashboardRendering:
         days = config.get(CFG_OLD_PASSWORD_WARNING_DAYS)
         old = [_entry(30, title="Old Site", password_changed_at="2024-01-01 00:00:00")]
         _deliver_report(dlg, monkeypatch, _report(old=old, total=5))
+        dlg._tabs.setCurrentIndex(2)
 
         titles = [
             lbl.text()
@@ -198,12 +201,15 @@ class TestSecurityDashboardRendering:
             if lbl.objectName() == "secEmptyHint"
         ]
         assert weak_hints == ["没有发现弱密码，做得好！"]
+        # 懒填充：空态提示同样在首次切换到对应 tab 时构建
+        dlg._tabs.setCurrentIndex(1)
         dup_hints = [
             lbl.text()
             for lbl in dlg._dup_container.findChildren(QLabel)
             if lbl.objectName() == "secEmptyHint"
         ]
         assert dup_hints == ["没有发现重复密码。"]
+        dlg._tabs.setCurrentIndex(2)
         old_hints = [
             lbl.text()
             for lbl in dlg._old_container.findChildren(QLabel)
@@ -249,3 +255,177 @@ class TestSecurityDashboardRendering:
         assert call.args[0] == expected_days
         assert callable(call.kwargs.get("cancel_check"))
         assert result["total"] == 0
+
+
+def _row_titles(container) -> list[str]:
+    """收集容器内全部条目行标题（secRowTitle），供懒填充/截断断言计数。"""
+    return [
+        lbl.text() for lbl in container.findChildren(QLabel) if lbl.objectName() == "secRowTitle"
+    ]
+
+
+class TestLazyTabPopulation:
+    """tab 懒填充（PERF-023）：报告加载后仅构建当前 tab，切换时按需构建其余。"""
+
+    def test_only_current_tab_populated_after_load(
+        self, qapp, tmp_path, patched_worker, monkeypatch
+    ):
+        """报告加载后仅弱密码 tab（默认当前）建行，重复/过期 tab 保持空白。"""
+        dlg, _, _ = _make_dialog(tmp_path)
+        report = _report(
+            weak=[_entry(1, title="W")],
+            duplicates=[[_entry(2, title="D1"), _entry(3, title="D2")]],
+            old=[_entry(4, title="O")],
+            total=10,
+        )
+        _deliver_report(dlg, monkeypatch, report)
+
+        assert _row_titles(dlg._weak_container) == ["W"]
+        assert _row_titles(dlg._dup_container) == []
+        assert _row_titles(dlg._old_container) == []
+
+        dlg._tabs.setCurrentIndex(1)
+        assert _row_titles(dlg._dup_container) == ["D1", "D2"]
+        assert _row_titles(dlg._old_container) == []
+
+        dlg._tabs.setCurrentIndex(2)
+        assert _row_titles(dlg._old_container) == ["O"]
+
+    def test_repopulation_skips_already_populated_tabs(
+        self, qapp, tmp_path, patched_worker, monkeypatch
+    ):
+        """来回切换不重复建行：已填充的 tab 幂等跳过。"""
+        dlg, _, _ = _make_dialog(tmp_path)
+        _deliver_report(
+            dlg, monkeypatch, _report(weak=[_entry(1, title="W1"), _entry(2, title="W2")], total=5)
+        )
+        dlg._tabs.setCurrentIndex(1)
+        dlg._tabs.setCurrentIndex(0)  # 回到已填充的弱密码 tab
+
+        assert _row_titles(dlg._weak_container) == ["W1", "W2"]
+
+    def test_switch_before_report_loads_builds_on_current_tab_only(
+        self, qapp, tmp_path, patched_worker, monkeypatch
+    ):
+        """报告加载前切 tab 不触发填充（避免误导性的空态），加载后填充当前 tab。"""
+        dlg, _, _ = _make_dialog(tmp_path)
+        dlg._tabs.setCurrentIndex(2)
+        assert _row_titles(dlg._old_container) == []
+
+        _deliver_report(dlg, monkeypatch, _report(old=[_entry(9, title="O9")], total=5))
+        assert _row_titles(dlg._old_container) == ["O9"]
+        assert _row_titles(dlg._weak_container) == []
+
+
+class TestRowTruncation:
+    """行数上限（PERF-023）：超 _MAX_ROWS_PER_TAB 截断并以页脚提示总量。"""
+
+    def test_weak_tab_over_cap_truncates_with_footer(
+        self, qapp, tmp_path, patched_worker, monkeypatch
+    ):
+        """弱密码 550 条 → 恰好 500 行 + 「仅显示前 500 条，共 550 条」页脚。"""
+        from src.ui.dialogs.security_dashboard import _MAX_ROWS_PER_TAB
+
+        dlg, _, _ = _make_dialog(tmp_path)
+        weak = [_entry(i, title=f"W{i}") for i in range(_MAX_ROWS_PER_TAB + 50)]
+        _deliver_report(dlg, monkeypatch, _report(weak=weak, total=1000))
+
+        assert len(_row_titles(dlg._weak_container)) == _MAX_ROWS_PER_TAB
+        footers = [
+            lbl.text()
+            for lbl in dlg._weak_container.findChildren(QLabel)
+            if lbl.objectName() == "secTruncationHint"
+        ]
+        assert footers == [f"仅显示前 {_MAX_ROWS_PER_TAB} 条，共 {_MAX_ROWS_PER_TAB + 50} 条"]
+
+    def test_duplicate_tab_truncates_by_entry_rows(
+        self, qapp, tmp_path, patched_worker, monkeypatch
+    ):
+        """重复 tab 按条目行计数截断：520 行 → 500 行 + 页脚（分组框不计数）。"""
+        from src.ui.dialogs.security_dashboard import _MAX_ROWS_PER_TAB
+
+        dlg, _, _ = _make_dialog(tmp_path)
+        groups = [
+            [_entry(i, title=f"A{i}"), _entry(i + 10000, title=f"B{i}")]
+            for i in range(_MAX_ROWS_PER_TAB // 2 + 10)
+        ]
+        _deliver_report(dlg, monkeypatch, _report(duplicates=groups, total=1000))
+        dlg._tabs.setCurrentIndex(1)
+
+        assert len(_row_titles(dlg._dup_container)) == _MAX_ROWS_PER_TAB
+        footers = [
+            lbl.text()
+            for lbl in dlg._dup_container.findChildren(QLabel)
+            if lbl.objectName() == "secTruncationHint"
+        ]
+        assert len(footers) == 1
+
+    def test_below_cap_renders_all_without_footer(
+        self, qapp, tmp_path, patched_worker, monkeypatch
+    ):
+        """低于上限时不截断、无页脚提示。"""
+        dlg, _, _ = _make_dialog(tmp_path)
+        weak = [_entry(i, title=f"W{i}") for i in range(3)]
+        _deliver_report(dlg, monkeypatch, _report(weak=weak, total=10))
+
+        assert len(_row_titles(dlg._weak_container)) == 3
+        assert not [
+            lbl
+            for lbl in dlg._weak_container.findChildren(QLabel)
+            if lbl.objectName() == "secTruncationHint"
+        ]
+
+
+class TestBadgeStyling:
+    """徽章集中样式（PERF-023）：objectName 命中 tabs 样式表，行内零 setStyleSheet。"""
+
+    @pytest.mark.parametrize(
+        "tab_index,badge_name", [(0, "secBadgeS"), (1, "secBadgeDup"), (2, "secBadgeOld")]
+    )
+    def test_badges_use_object_name_without_inline_stylesheet(
+        self, qapp, tmp_path, patched_worker, monkeypatch, tab_index, badge_name
+    ):
+        """三个 tab 的徽章均携带 secBadge* objectName 且无逐行内联样式。"""
+        dlg, _, _ = _make_dialog(tmp_path)
+        report = _report(
+            weak=[_entry(1, title="W", password_strength=2)],
+            duplicates=[[_entry(2, title="D"), _entry(3, title="D2")]],
+            old=[_entry(4, title="O")],
+            total=10,
+        )
+        _deliver_report(dlg, monkeypatch, report)
+        dlg._tabs.setCurrentIndex(tab_index)
+
+        containers = {0: dlg._weak_container, 1: dlg._dup_container, 2: dlg._old_container}
+        badges = [
+            lbl
+            for lbl in containers[tab_index].findChildren(QLabel)
+            if lbl.objectName().startswith("secBadge")
+        ]
+        # 重复组内每条目各一枚徽章，其余 tab 一枚
+        assert badges
+        assert all(lbl.objectName().startswith(badge_name) for lbl in badges)
+        # 逐行 setStyleSheet 是大库下的单价主源（Qt 逐 widget 解析 CSS），须为空
+        assert all(lbl.styleSheet() == "" for lbl in badges)
+        # objectName 须能在 tabs 的集中样式表中命中
+        assert f"QLabel#{badges[0].objectName()}" in dlg._tabs.styleSheet()
+
+    def test_badge_labels_render_entry_data_as_plain_text(
+        self, qapp, tmp_path, patched_worker, monkeypatch
+    ):
+        """条目行标题/副标题承载条目数据，PlainText 按字面渲染（SEC-030）。"""
+        from PyQt6.QtCore import Qt
+
+        dlg, _, _ = _make_dialog(tmp_path)
+        _deliver_report(
+            dlg,
+            monkeypatch,
+            _report(weak=[_entry(1, title="<b>伪造粗体</b>", username="<i>u</i>")], total=5),
+        )
+        title = next(
+            lbl
+            for lbl in dlg._weak_container.findChildren(QLabel)
+            if lbl.objectName() == "secRowTitle"
+        )
+        assert title.textFormat() == Qt.TextFormat.PlainText
+        assert title.text() == "<b>伪造粗体</b>"

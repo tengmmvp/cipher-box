@@ -85,6 +85,25 @@ def test_update_category_rejects_duplicate_name(db):
         db.update_category(cat1)
 
 
+def test_category_duplicate_name_raises_entry_error(db):
+    """同「分类重名」用户可见条件统一抛 EntryError（QL-043，与 CategoryManager 一致）。
+
+    EntryError IS ValueError，既有 except ValueError 调用方零行为变化；本测试守护
+    异常类型不回退为裸 ValueError（裸 ValueError 在 to_user_message 之外的分支
+    处理上与业务层领域异常家族割裂）。
+    """
+    from src.exceptions import EntryError
+
+    with pytest.raises(EntryError, match="已存在"):
+        db.add_category(Category(name="未分类"))  # init_tables 注入的默认分类名
+    cat_id = db.add_category(Category(name="唯一分类"))
+    cat = db.get_category(cat_id)
+    assert cat is not None
+    db.add_category(Category(name="另一分类"))
+    with pytest.raises(EntryError, match="已被其他分类占用"):
+        db.update_category(dataclasses.replace(cat, name="另一分类"))
+
+
 def test_add_get_entry(db):
     """条目写入后按 id 读回，各字段（含 favorite/strength 等扩展字段）保持一致。"""
     entry = _make_entry(

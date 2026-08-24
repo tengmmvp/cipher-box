@@ -68,7 +68,10 @@ class SecurityReport(_SecurityReportBase, total=False):
     ``_fingerprint_map`` 与 ``_key_epoch`` 为缓存分层内部键（total=False 可选）：
     第一个供不同 days 重过滤，第二个是含单例桶的完整指纹分桶（PERF-021 增量失效
     据此移动单条条目桶位——duplicate_groups 仅含 >1 的桶，不足以支撑增量更新），
-    第三个供 epoch 失效判定（仅缓存层填充 _key_epoch）。
+    第三个供 epoch 失效判定（仅缓存层填充 _key_epoch）。出口契约（PERF-062）：
+    ``get_cached_report`` / ``get_or_compute_report`` 的返回副本**不含**这三个内部键
+    （无外部消费方，深拷贝是纯开销）；仅内部缓存本体与 :meth:`full_analysis` 的
+    生产结果持全键。
     """
 
     _summaries_with_dates: list[tuple[Entry, datetime | None]]
@@ -193,14 +196,20 @@ class SecurityAnalyzer:
     def _refilter_cache(
         self, cache: SecurityReport, days: int, *, now: datetime | None = None
     ) -> SecurityReport:
-        """从缓存按 days 重新过滤过期条目，返回独立副本。
+        """从缓存按 days 重新过滤过期条目，返回剥离内部键的出口副本（PERF-062）。
 
-        须持 _cache_lock 调用。``dict()`` 浅拷贝使 days-specific 的 old_entries 只
-        落到副本；返回的 Entry 与 duplicate_groups 均经 ``dataclasses.replace`` 复制，
-        调用方修改不污染缓存（summary 无可变容器，浅层 replace 足够）。
+        须持 _cache_lock 调用。顺序：先 ``dict()`` 浅拷贝并在副本上完成 days 重过滤
+        与 QL-001 实例回写（依赖内部键 ``_summaries_with_dates``，须在剥离前），再
+        剥离出口副本的全部下划线内部键——``_fingerprint_map``/``_summaries_with_dates``
+        仅缓存分层内部消费（增量失效/days 重过滤），无任何外部读方，此前出口深拷贝
+        在 50k 库温态 get_cached_report 实测占 2/3 耗时，是纯浪费。出口仅公开字段；
+        weak/old 列表浅拷贝容器并直接共享 Entry 引用（Entry 为 frozen 且无可变容器，
+        逐条 ``dataclasses.replace`` 重建 24-kwarg 实例无变异面可防）；duplicate_groups
+        内层 list 仍复制，防消费方经出口引用就地变异桶成员污染增量更新基准。内部
+        缓存本体（``_analysis_cache``）仍持全键。
         """
         # dict(TypedDict) 退化为 dict[str, object]，cast 标注此复制边界。
-        cache = cast("SecurityReport", dict(cache))
+        result = cast("SecurityReport", dict(cache))
         if days != self._analysis_cache_days:
             cutoff = (now if now is not None else datetime.now(UTC)) - timedelta(days=days)
             new_old_entries = [
@@ -208,8 +217,8 @@ class SecurityAnalyzer:
                 for s, dt in cache.get("_summaries_with_dates", [])
                 if dt is not None and dt < cutoff
             ]
-            cache["old_entries"] = new_old_entries
-            cache["old"] = len(new_old_entries)
+            result["old_entries"] = new_old_entries
+            result["old"] = len(new_old_entries)
             # 同步回写实例缓存（QL-001）：_analysis_cache_days 与 old/old_entries 必须一致，
             # 否则 get_cached_counts 快路径（days == _analysis_cache_days）会读实例中旧 days
             # 的 old 计数（多报过期）。此前仅改副本致实例与 days 脱钩。
@@ -218,25 +227,19 @@ class SecurityAnalyzer:
                 self._analysis_cache["old"] = len(new_old_entries)
             # 更新 days 使后续相同 days 命中跳过重复 O(n) 过滤。
             self._analysis_cache_days = days
-        # 出口复制：Entry 经 replace 创建独立实例，防调用方修改污染缓存。
-        if "weak_entries" in cache:
-            cache["weak_entries"] = [dataclasses.replace(e) for e in cache["weak_entries"]]
-        if "old_entries" in cache:
-            cache["old_entries"] = [dataclasses.replace(e) for e in cache["old_entries"]]
-        if "duplicate_groups" in cache:
-            cache["duplicate_groups"] = [
-                [dataclasses.replace(e) for e in group] for group in cache["duplicate_groups"]
-            ]
-        # _summaries_with_dates 同样出口复制（元素为元组，浅拷贝列表即可）。
-        if "_summaries_with_dates" in cache:
-            cache["_summaries_with_dates"] = list(cache["_summaries_with_dates"])
-        # _fingerprint_map 出口复制（PERF-021）：内层列表须与缓存本体隔离，防消费方
-        # 经副本引用就地变异桶成员污染增量更新基准。
-        if "_fingerprint_map" in cache:
-            cache["_fingerprint_map"] = {
-                fingerprint: list(group) for fingerprint, group in cache["_fingerprint_map"].items()
-            }
-        return cache
+        # 剥离内部键（PERF-062）：出口不含 _fingerprint_map/_summaries_with_dates/
+        # _key_epoch，缓存本体不受影响（副本与内部 dict 为不同容器）。
+        result.pop("_summaries_with_dates", None)
+        result.pop("_fingerprint_map", None)
+        result.pop("_key_epoch", None)
+        # 列表容器浅拷贝（共享 Entry 引用）：隔离调用方对列表结构的就地变异。
+        if "weak_entries" in result:
+            result["weak_entries"] = list(result["weak_entries"])
+        if "old_entries" in result:
+            result["old_entries"] = list(result["old_entries"])
+        if "duplicate_groups" in result:
+            result["duplicate_groups"] = [list(group) for group in result["duplicate_groups"]]
+        return result
 
     def _cached_analysis(
         self,
@@ -267,6 +270,7 @@ class SecurityAnalyzer:
             # 分析期间保险库被锁定（并发改密/自动锁），密钥不可用无法完成解密。
             # 返回空报告且不缓存，避免后台线程崩溃；下次解锁后重新计算填充。
             logger.debug("安全分析期间保险库被锁定，返回空报告")
+            # 出口契约（PERF-062）：空报告同样只含公开字段，不含内部键。
             return {
                 "total": 0,
                 "weak_count": 0,
@@ -275,7 +279,6 @@ class SecurityAnalyzer:
                 "duplicate_count": 0,
                 "old_entries": [],
                 "old": 0,
-                "_summaries_with_dates": [],
             }
         with self._cache_lock:
             # 双重检查锁：full_analysis 在锁外执行，期间可能已被并发线程填充；
@@ -349,17 +352,27 @@ class SecurityAnalyzer:
         """返回缓存报告，若无效则重新计算并缓存。"""
         return self._cached_analysis(days, cancel_check=cancel_check, now=now)
 
-    def _cache_valid_locked(self, cached: SecurityReport | None) -> TypeGuard[SecurityReport]:
+    def _cache_valid_locked(
+        self,
+        cached: SecurityReport | None,
+        *,
+        expected_epoch: str | None = None,
+    ) -> TypeGuard[SecurityReport]:
         """缓存有效性判定（TTL + key_epoch，SEC-002），须持 ``_cache_lock`` 调用。
 
         TypeGuard：返回 True 时调用方分支内 ``cached`` 收窄为非 None，免去逐调用点
         重复窄化样板。epoch 失配即失效：密码指纹依赖旧主密钥，跨 epoch 的指纹/明文
         不可比。
+
+        ``expected_epoch``：提供时取代实时 ``self._vault.key_epoch`` 参与比较，供
+        :meth:`_try_incremental_update` 二次校验比对首次校验快照的 epoch（SEC-040，
+        防跨 epoch grafting，见该方法注释）。
         """
+        epoch = self._vault.key_epoch if expected_epoch is None else expected_epoch
         return (
             cached is not None
             and (time.monotonic() - self._analysis_cache_time) < self._cache_ttl_seconds
-            and cached.get("_key_epoch") == self._vault.key_epoch
+            and cached.get("_key_epoch") == epoch
         )
 
     def invalidate_cache(
@@ -415,6 +428,12 @@ class SecurityAnalyzer:
         with self._cache_lock:
             if not self._cache_valid_locked(self._analysis_cache):
                 return False
+            # 快照首次校验时刻的 epoch（SEC-040）：二次校验比对快照而非实时 epoch。
+            # 防御跨 epoch grafting——锁外重分类期间若发生改密/恢复（epoch 轮换）且缓存
+            # 被并发 full_analysis 以新 epoch 重填，按实时 epoch 双检会全部通过，旧密钥
+            # 派生的 _ClassifyResult（含旧域密钥下的密码指纹）将被并入新 epoch 缓存，
+            # 污染重复检测分组。当前 UI 时序（同线程串行触发失效）不可达，属防御纵深。
+            snapshot_epoch = self._vault.key_epoch
         try:
             with self._vault.epoch_guarded_read():
                 # SKIP 验签与 full_analysis 一致（PERF-010）：逐字段解密已含 GCM 认证，
@@ -435,7 +454,9 @@ class SecurityAnalyzer:
         del key
         with self._cache_lock:
             cached = self._analysis_cache
-            if not self._cache_valid_locked(cached):
+            # 二次校验比对快照 epoch（SEC-040）：缓存报告须仍属首次校验的同一世代，
+            # 期间被并发 full_analysis 以新 epoch 重填则放弃本次增量并入。
+            if not self._cache_valid_locked(cached, expected_epoch=snapshot_epoch):
                 return False
             self._apply_reclassified_entry(cached, crypto_id, result)
         return True
@@ -448,32 +469,47 @@ class SecurityAnalyzer:
     ) -> None:
         """持锁把单条条目的旧分类替换为新分类并重算聚合计数。须持 ``_cache_lock``。
 
-        copy-on-write：指纹桶与各列表一律重建而非就地变异，避免与 _refilter_cache
-        出口复制共享的内层列表被并发消费方观察到中间态。total 不变（单条更新），
-        weak/duplicate/old 从保留条目重算；old 以当前时刻与缓存 days 重过滤（O(n)
-        日期比较，无解密），与 _refilter_cache 的 days 重过滤语义一致。result.summary
-        为 None（条目损坏/无密码损坏）时仅移除不插入，与 full_analysis 的跳过语义
-        一致。
+        局部 copy-on-write（PERF-062）：仅重建「旧指纹所在的桶」（移除该条目后）与
+        「新指纹桶」，其余桶原样共享——出口已剥离 ``_fingerprint_map``（无消费方可
+        触达桶），共享安全；此前每次单条编辑对全部指纹桶逐桶重建（20k 库实测
+        12-45ms 且在 UI 线程）。total 不变（单条更新），weak/duplicate/old 从保留
+        条目重算；old 以当前时刻与缓存 days 重过滤（O(n) 日期比较，无解密），与
+        _refilter_cache 的 days 重过滤语义一致。result.summary 为 None（条目损坏/
+        无密码损坏）时仅移除不插入，与 full_analysis 的跳过语义一致。
         """
-        # 1) 移除旧分类
+        # 1) 移除旧分类（weak 名单与 _summaries_with_dates 整列表重建：仅引用搬运）
         cached["weak_entries"] = [
             e for e in cached.get("weak_entries", []) if e.crypto_id != crypto_id
         ]
         summaries = [
             (s, dt) for s, dt in cached.get("_summaries_with_dates", []) if s.crypto_id != crypto_id
         ]
-        fp_map: dict[bytes, list[Entry]] = {}
-        for fingerprint, group in cached.get("_fingerprint_map", {}).items():
-            kept = [e for e in group if e.crypto_id != crypto_id]
+        old_map = cached.get("_fingerprint_map", {})
+        # 定位旧指纹桶：条目至多出现在一个桶（密码指纹唯一），其余桶无需重建。
+        old_fingerprint: bytes | None = None
+        for fingerprint, group in old_map.items():
+            if any(e.crypto_id == crypto_id for e in group):
+                old_fingerprint = fingerprint
+                break
+        fp_map: dict[bytes, list[Entry]] = dict(old_map)
+        if old_fingerprint is not None:
+            kept = [e for e in old_map[old_fingerprint] if e.crypto_id != crypto_id]
             if kept:
-                fp_map[fingerprint] = kept
+                fp_map[old_fingerprint] = kept
+            else:
+                del fp_map[old_fingerprint]
         # 2) 插入新分类
         if result.summary is not None:
             summaries.append((result.summary, result.changed_utc))
             if result.is_weak:
                 cached["weak_entries"].append(result.summary)
             if result.fingerprint is not None:
-                fp_map.setdefault(result.fingerprint, []).append(result.summary)
+                bucket = fp_map.get(result.fingerprint)
+                # copy-on-write：目标桶可能与其余未触及桶共享同一 list 引用，插入前
+                # 复制以防污染共享桶。
+                fp_map[result.fingerprint] = (
+                    [*bucket, result.summary] if bucket is not None else [result.summary]
+                )
         # 3) 重算聚合
         cached["_summaries_with_dates"] = summaries
         cached["_fingerprint_map"] = fp_map

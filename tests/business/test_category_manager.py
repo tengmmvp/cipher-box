@@ -56,19 +56,31 @@ class TestCategoryManagerAdd:
         assert any(c.name == name for c in cats)
 
     def test_add_notify_true_propagates(self, entry_mgr):
-        """notify=True（默认）应触发变更总线（不抛异常即正常传播）。"""
+        """notify=True（默认）应触发变更总线：经 register_on_change 注册的订阅方
+        收到回调，参数为分类变更语义 (password_changed=False, metadata_changed=False,
+        crypto_id=None)。"""
+        calls: list[tuple] = []
+        entry_mgr.register_on_change(lambda *args: calls.append(args))
+
         entry_mgr.categories.add_category(Category(name=_unique_name("N1")))
+        assert len(calls) == 1
         # 再加一个，验证总线多次通知无累积异常
         entry_mgr.categories.add_category(Category(name=_unique_name("N2")))
+        assert len(calls) == 2
+        # 分类变更不改密码/安全报告元数据判定，crypto_id 为全量语义
+        assert calls[0] == (False, False, None)
 
     def test_add_notify_false_skips_bus(self, entry_mgr):
-        """notify=False 不触发总线（仅落库，无回调）。"""
+        """notify=False 不触发总线回调（仅落库，订阅方不被打扰）。"""
+        calls: list[tuple] = []
+        entry_mgr.register_on_change(lambda *args: calls.append(args))
         name = _unique_name("Silent")
         cat_id = entry_mgr.categories.add_category(
             Category(name=name),
             notify=False,
         )
         assert cat_id > 0
+        assert calls == []  # 总线未被触发
         cats = entry_mgr.categories.get_categories()
         assert any(c.name == name for c in cats)
 

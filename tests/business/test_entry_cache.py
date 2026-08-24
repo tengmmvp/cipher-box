@@ -95,6 +95,55 @@ class TestSearchMetadataCache:
         assert cid not in cache._search_metadata_cache
 
 
+class TestWriterEpochGuard:
+    """摘要缓存回写的写入方世代守卫（SEC-041）：跨世代解密结果不回写新世代缓存。"""
+
+    def test_stale_epoch_writeback_dropped_after_ream(self, entry_mgr, cache):
+        """恢复重臂新 epoch 后，旧世代 worker 的解密结果不得写入新世代缓存。
+
+        场景仿真（后台搜索 worker 未被取消）：worker 在 E1 取 raw+密钥+世代快照 →
+        恢复提交 ``invalidate_all`` → 新读路径重臂 ``cache_epoch=E2`` → 旧 worker
+        用旧 raw+旧密钥解密成功后回写。缓存侧双检（重臂后采样 cache_epoch）会放行，
+        写入方世代守卫拒收（data_epoch=E1 ≠ cache_epoch=E2），恢复前明文不入新缓存。
+        """
+        entry_mgr.add_entry(Entry(title="OldTitle", username="u", password="p"))
+        raw = entry_mgr.db.get_entries(EntryQuery())[0]
+        old_epoch = cache._vault.key_epoch
+        key = cache._key  # E1 世代密钥（worker 锁内快照）
+
+        # 恢复提交：缓存整体失效；随后密钥世代轮换 + 新读路径重臂缓存
+        cache.invalidate_all()
+        cache._vault.set_epoch("restored-e2")
+        cache.invalidate_if_epoch_changed()
+        assert cache._cache_epoch == "restored-e2"
+
+        # 旧 worker 回写（携带 E1 快照世代）：结果本身可正确解密，但守卫拒收入缓存
+        meta = cache._cached_search_metadata_no_check(raw, key=key, data_epoch=old_epoch)
+        assert meta.title == "OldTitle"
+        assert raw.crypto_id not in cache._search_metadata_cache
+
+    def test_legacy_caller_without_data_epoch_keeps_behavior(self, entry_mgr, cache):
+        """不传 data_epoch 的既有调用方保持原行为（缓存侧采样），回写不受影响。"""
+        entry_mgr.add_entry(Entry(title="T", username="u", password="p"))
+        raw = entry_mgr.db.get_entries(EntryQuery())[0]
+        cache.invalidate_if_epoch_changed()
+
+        meta = cache._cached_search_metadata_no_check(raw)
+        assert meta.title == "T"
+        assert raw.crypto_id in cache._search_metadata_cache
+
+    def test_same_epoch_writeback_accepted(self, entry_mgr, cache):
+        """世代一致的回写正常入缓存（守卫不误伤常规路径）。"""
+        entry_mgr.add_entry(Entry(title="T", username="u", password="p"))
+        raw = entry_mgr.db.get_entries(EntryQuery())[0]
+        cache.invalidate_if_epoch_changed()
+        epoch = cache._vault.key_epoch
+
+        meta = cache.cached_search_metadata_full(raw, data_epoch=epoch)
+        assert meta.title == "T"
+        assert raw.crypto_id in cache._search_metadata_cache
+
+
 class TestTotpSecretCache:
     """TOTP secret 缓存的 store/pop/clear 行为。"""
 

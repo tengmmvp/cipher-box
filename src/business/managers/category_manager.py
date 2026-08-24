@@ -42,6 +42,16 @@ class CategoryManager:
         # SELECT + HMAC 验签。分类 CRUD 后主动失效；改密/锁定经 epoch 守卫失效。
         self._categories_cache: list[Category] | None = None
         self._categories_cache_epoch: str | None = None
+        # 分类条目计数会话缓存（PERF-064）：GROUP BY 全表计数在 50k 库实测 ~25ms/次，
+        # 而条目变更后的侧边栏刷新（_do_refresh_after_entry_change）每次都会读。失效
+        # 通道见 get_category_entry_counts 文档。
+        self._entry_counts_cache: dict[int, int] | None = None
+        self._entry_counts_cache_epoch: str | None = None
+        # 结构性变更自订阅（PERF-064）：增删/批量/恢复等改变「分类×条目」分布的
+        # notify 以 crypto_id=None 且安全维度非纯旁路触发；与 bus 内建的
+        # cache.apply_change 同为「缓存失效挂总线」模式，自订阅使任何构造路径
+        # （组合根/测试工厂）都获得失效连线。
+        self._change_bus.register(self._on_entries_structurally_changed)
 
     @property
     def _key(self) -> bytes:
@@ -72,9 +82,15 @@ class CategoryManager:
         return list(result)
 
     def _invalidate_categories_cache(self) -> None:
-        """分类 CRUD 后失效会话缓存，下次 get_categories 重读 DB。"""
+        """分类 CRUD 后失效会话缓存（含条目计数缓存），下次 get_* 重读 DB。
+
+        计数缓存一并失效：add/delete 改变「当前分类集」的计数定义域（新分类补 0、
+        删除分类的条目归 NULL），update_category 虽不改计数但属低频操作，统一失效
+        保持单一失效点。
+        """
         self._categories_cache = None
         self._categories_cache_epoch = None
+        self.invalidate_entry_counts_cache()
 
     def get_category(self, category_id: int) -> Category | None:
         """获取指定分类，分类名经缓存解密。"""
@@ -91,8 +107,49 @@ class CategoryManager:
         return self._vault.db.get_category_entry_count(category_id)
 
     def get_category_entry_counts(self) -> dict[int, int]:
-        """获取全部分类的条目数映射 {category_id: count}。"""
-        return self._vault.db.get_category_entry_counts()
+        """获取全部分类的条目数映射 {category_id: count}（会话缓存，PERF-064）。
+
+        缓存命中跳过 GROUP BY 全表扫描；返回浅拷贝防调用方就地变异污染缓存。失效
+        通道（命中「分类×有效条目」分布变化的全部路径）：
+
+        - 条目结构性变更（增/删/恢复/永久删除/清空回收站/导入批量）：经
+          :meth:`_on_entries_structurally_changed` 的 change_bus 订阅失效。
+        - 单条编辑改 category_id：bus 的 crypto_id 单条通道无法表达该维度，由
+          :meth:`EntryManager._notify_entry_updated` 检测归属变化后显式调用
+          :meth:`invalidate_entry_counts_cache`。
+        - 分类 CRUD：:meth:`_invalidate_categories_cache` 内一并失效。
+        - epoch 轮换（备份恢复整体替换数据）：读时 epoch 守卫自然失效。锁定不改
+          数据，epoch 守卫在解锁后命中旧缓存是正确行为。
+        - 纯旁路变更（toggle_favorite 等）：不失效，二次读取直接命中。
+        """
+        current_epoch = self._vault.key_epoch
+        if self._entry_counts_cache is not None and self._entry_counts_cache_epoch == current_epoch:
+            return dict(self._entry_counts_cache)
+        counts = self._vault.db.get_category_entry_counts()
+        self._entry_counts_cache = counts
+        self._entry_counts_cache_epoch = current_epoch
+        return dict(counts)
+
+    def invalidate_entry_counts_cache(self) -> None:
+        """失效条目计数缓存（结构性变更或单条编辑改 category_id 后调用）。"""
+        self._entry_counts_cache = None
+        self._entry_counts_cache_epoch = None
+
+    def _on_entries_structurally_changed(
+        self,
+        password_changed: bool,
+        metadata_changed: bool,
+        crypto_id: str | None,
+    ) -> None:
+        """change_bus 订阅：条目结构性变更（crypto_id=None 的全量语义）失效计数缓存。
+
+        判定：crypto_id 非 None 属单条编辑（归属变化由 EntryManager 显式失效，纯
+        字段编辑不失效以保缓存命中）；password_changed/metadata_changed 皆 False 的
+        纯旁路变更（toggle_favorite、分类 CRUD 通知）不改变计数，跳过——分类 CRUD
+        的失效经 :meth:`_invalidate_categories_cache` 独立完成。
+        """
+        if crypto_id is None and (password_changed or metadata_changed):
+            self.invalidate_entry_counts_cache()
 
     def _insert_category_two_phase(self, category: Category) -> int:
         """两阶段加密写入单分类（MAINT-002）：占位 id 加密 INSERT → 真实 id 重加密 UPDATE。

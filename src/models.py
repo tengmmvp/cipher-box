@@ -6,6 +6,7 @@
 
 import logging
 from dataclasses import dataclass, field, fields
+from datetime import datetime
 from types import MappingProxyType
 from typing import Any
 
@@ -459,6 +460,15 @@ class Entry:
         ):
             if not isinstance(value, str):
                 raise EntryError(f"{key}类型无效，必须为字符串")
+            # ISO 8601 可解析性校验（QL-042）：非空时间戳格式无效则拒绝导入，与恢复路径
+            # backup/validator 的同款校验对齐——此前仅 isinstance(str) 放行 'not-a-date'
+            # 入库，ORDER BY updated_at 字符串排序错乱（空格分隔与 ISO 'T' 混排序错），
+            # 且 security_analyzer._parse_changed_utc 返回 None 使该条目永久退出过期检测。
+            if value:
+                try:
+                    datetime.fromisoformat(value)
+                except ValueError:
+                    raise EntryError(f"{key}格式无效，必须为可解析的 ISO 8601 时间戳") from None
 
         return cls(
             title=title,

@@ -52,11 +52,11 @@ source = ["src"]
 branch = true
 
 [tool.coverage.report]
-# 分层覆盖率门槛（非 UI 73% / UI 18%，分支覆盖）在 CI 工作流经命令行 `--fail-under`
+# 分层覆盖率门槛（非 UI 82% / UI 65%，分支覆盖）在 CI 工作流经命令行 `--fail-under`
 # 分别定义（pyproject 的单一 fail_under 无法表达分层语义，设全局值会因 UI 拉低全量
 # 而误伤）。本地验证用 CI 等价命令：
-#   uv run coverage report --branch --omit="*/src/ui/*" --fail-under=73
-#   uv run coverage report --branch --include="*/src/ui/*" --fail-under=18
+#   uv run -m coverage report --omit="*/src/ui/*" --fail-under=82
+#   uv run -m coverage report --include="*/src/ui/*" --fail-under=65
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",

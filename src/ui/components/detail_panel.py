@@ -65,7 +65,7 @@ from .custom_fields_renderer import CustomFieldsRenderer
 from .password_history_widget import PasswordHistoryWidget
 from .secret_field import SecretFieldEnv, make_secret_field_row
 from .totp_widget import TOTPWidget
-from .widgets import clear_layout, create_icon_button, disconnect_all
+from .widgets import clear_layout, create_icon_button, create_plain_text_label, disconnect_all
 
 logger = logging.getLogger(__name__)
 
@@ -184,9 +184,10 @@ class DetailPanel(QWidget):
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(16, 12, 16, 8)
 
-        self._title_label = QLabel("选择一个条目查看详情")
-        self._title_label.setObjectName("detailTitle")
-        self._title_label.setWordWrap(True)
+        # 标题承载条目 title（用户/导入数据），PlainText 防富文本注入（SEC-030）
+        self._title_label = create_plain_text_label(
+            "选择一个条目查看详情", "detailTitle", word_wrap=True
+        )
         toolbar.addWidget(self._title_label)
 
         toolbar.addStretch()
@@ -365,9 +366,8 @@ class DetailPanel(QWidget):
             return
         notes_group = QGroupBox("备注")
         notes_layout = QVBoxLayout(notes_group)
-        notes_label = QLabel(entry.notes)
-        notes_label.setWordWrap(True)
-        notes_label.setObjectName("notesValue")
+        # 备注为用户/导入数据，PlainText 按字面显示 `<b>` 等标记（SEC-030）
+        notes_label = create_plain_text_label(entry.notes, "notesValue", word_wrap=True)
         notes_layout.addWidget(notes_label)
         self._content_layout.addWidget(notes_group)
 
@@ -384,8 +384,8 @@ class DetailPanel(QWidget):
         header_info.setSpacing(8)
 
         if entry.category_name:
-            cat_tag = QLabel(f"  {entry.category_name}  ")
-            cat_tag.setObjectName("tag")
+            # 分类名与标签均为用户/导入数据，PlainText 标签（SEC-030）
+            cat_tag = create_plain_text_label(f"  {entry.category_name}  ", "tag")
             header_info.addWidget(cat_tag)
 
         if entry.entry_type and entry.entry_type != ENTRY_TYPE_LOGIN:
@@ -394,8 +394,7 @@ class DetailPanel(QWidget):
             header_info.addWidget(type_tag)
 
         for tag in entry.get_tag_list()[:MAX_TAG_DISPLAY]:
-            tag_label = QLabel(f"  {tag}  ")
-            tag_label.setObjectName("tag")
+            tag_label = create_plain_text_label(f"  {tag}  ", "tag")
             header_info.addWidget(tag_label)
 
         header_info.addStretch()
@@ -489,9 +488,8 @@ class DetailPanel(QWidget):
         row_layout = QHBoxLayout(row_widget)
         row_layout.setContentsMargins(0, 0, 0, 0)
 
-        val_label = QLabel(value)
-        val_label.setWordWrap(True)
-        val_label.setObjectName("fieldValue")
+        # 字段值（如 username）为用户/导入数据，PlainText（SEC-030）
+        val_label = create_plain_text_label(value, "fieldValue", word_wrap=True)
         row_layout.addWidget(val_label, 1)
 
         if copyable and value:
@@ -555,8 +553,8 @@ class DetailPanel(QWidget):
         row_layout = QHBoxLayout(row_widget)
         row_layout.setContentsMargins(0, 0, 0, 0)
 
-        val_label = QLabel(PWD_MASK)
-        val_label.setObjectName("secretValue")
+        # 揭示后的明文密码可能以 `<` 开头，PlainText 保证显示与复制一致（SEC-030）
+        val_label = create_plain_text_label(PWD_MASK, "secretValue")
         row_layout.addWidget(val_label, 1)
 
         show_btn = QPushButton()

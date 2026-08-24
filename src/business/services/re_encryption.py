@@ -9,17 +9,17 @@ from __future__ import annotations
 import logging
 from dataclasses import replace
 from threading import Event
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any
 
 from ...database.types import (
-    DEFAULT_HISTORY_BATCH_LIMIT,
     EntryQuery,
     ReEncryptedEntry,
     ReEncryptedHistory,
+    VaultDataStore,
     VerifyMode,
 )
 from ...exceptions import DecryptionError, VaultError
-from ...models import Category, PasswordHistory, RawEntry
+from ...models import Category
 from ...utils.memory import secure_zero_buffer
 from .crypto_utils import (
     SENSITIVE_ENCRYPTED_FIELDS,
@@ -32,30 +32,6 @@ if TYPE_CHECKING:
     from .metadata_signer import MetadataSigner
 
 logger = logging.getLogger(__name__)
-
-
-@runtime_checkable
-class ReEncryptionDB(Protocol):
-    """ReEncryptionService 所需的数据库接口协议（窄接口，仅含实际使用的方法）。
-
-    独立窄接口声明，避免测试 mock 必须实现全部 CRUD。DatabaseManager 与 MockDB 均满足。
-    """
-
-    def get_entries(self, query: EntryQuery) -> list[RawEntry]: ...
-
-    def update_entries_batch(self, rows: list[ReEncryptedEntry]) -> None: ...
-
-    def get_all_password_history_batch(
-        self,
-        after_id: int = 0,
-        limit: int = DEFAULT_HISTORY_BATCH_LIMIT,
-    ) -> list[PasswordHistory]: ...
-
-    def update_password_history_batch(self, rows: list[ReEncryptedHistory]) -> None: ...
-
-    def get_categories(self, *, verify: bool = True) -> list[Category]: ...
-
-    def update_categories_batch(self, categories: list[Category]) -> None: ...
 
 
 # 重加密分批大小：单批 executemany 一次性写入，控制内存峰值并将 N 次 UPDATE 压缩为 N/200 次。
@@ -71,11 +47,14 @@ class ReEncryptionService:
     本类只负责加解密计算，事务包裹与密钥轮换由调用方 VaultManager._re_encrypt_all 负责。
     """
 
-    def __init__(self, db: ReEncryptionDB, metadata_signer: MetadataSigner):
+    def __init__(self, db: VaultDataStore, metadata_signer: MetadataSigner):
         """初始化重加密服务。
 
         Args:
-            db: DatabaseManager 实例。
+            db: VaultDataStore 协议视图（DatabaseManager 满足）。本服务所需成员
+                （get_entries/update_entries_batch/get_all_password_history_batch/
+                update_password_history_batch/get_categories/update_categories_batch）
+                已全部被全局协议覆盖，无需局部协议收窄（ARCH-031）。
             metadata_signer: 用于对重加密后的条目重新签名。
         """
         self._db = db

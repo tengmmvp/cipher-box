@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import hmac
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -263,9 +262,10 @@ class BackupDialog(WorkerBackedDialog):
             "请再次输入备份密码：",
             QLineEdit.EchoMode.Password,
         )
-        # `encode('utf-8')` 必须：备份密码可含非 ASCII 字符，而 `compare_digest` 对 `str`
-        # 仅接受 ASCII，否则抛 `TypeError` 被 Qt 槽吞掉致加密静默失败。与 `change_master_dialog` 对齐。
-        if not ok or not hmac.compare_digest(confirm.encode("utf-8"), password.encode("utf-8")):
+        # 常量时间比较经 PasswordService.passwords_match 统一门面（SEC-031）：
+        # encode('utf-8') 与 compare_digest 的配对不再由各调用点内联维护，防 QL-019
+        # 同型 bug（非 ASCII 备份密码抛 TypeError 被 Qt 槽吞掉致加密静默失败）复发。
+        if not ok or not PasswordService.passwords_match(confirm, password):
             QMessageBox.warning(self, "密码不一致", "两次输入的备份密码不一致。")
             return
         self._set_busy(True)

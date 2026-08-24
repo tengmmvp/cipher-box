@@ -30,6 +30,7 @@ from ...utils.format import format_datetime
 from ..components.widgets import (
     WorkerBackedDialog,
     clear_layout,
+    create_plain_text_label,
     finalize_worker_if_current,
     release_worker,
     setup_dialog_flags,
@@ -43,7 +44,7 @@ from ..resources.constants import (
 )
 from ..resources.radius import RADIUS_TAG
 from ..resources.strings import DLG_TITLE_ERROR
-from ..resources.theme_colors import c, get_strength_color
+from ..resources.theme_colors import c
 
 if TYPE_CHECKING:
     from ...business.managers.entry_manager import EntryManager
@@ -53,6 +54,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _BADGE_BG_ALPHA = 0.13
+
+# 单 tab 行渲染上限（PERF-023）：三个 tab 逐行创建 QWidget 的成本随库规模线性增长
+# （实测 2 万条 3.7s、5 万条 7-9s 冻结主线程），对齐 MAX_SEARCH_RESULTS_DISPLAY 的
+# 截断+提示策略；超出部分以页脚提示总量，用户可经「修复」直达具体条目。
+_MAX_ROWS_PER_TAB = 500
 
 
 class _HealthScoreWidget(QWidget):
@@ -203,6 +209,10 @@ class SecurityDashboard(WorkerBackedDialog):
         self._duplicate_groups: list[list[Entry]] = []
         self._old_entries: list[Entry] = []
         self._status_hint: QLabel | None = None
+        # tab 懒填充状态（PERF-023）：报告未加载前不填充任何 tab；加载后仅构建
+        # 当前可见 tab，其余在 currentChanged 首次切换到时按需构建。
+        self._report_loaded = False
+        self._populated_tabs: set[int] = set()
         self._setup_ui()
         self._load_data()
 
@@ -258,6 +268,12 @@ class SecurityDashboard(WorkerBackedDialog):
         self._tabs.addTab(self._create_weak_tab(), "弱密码")
         self._tabs.addTab(self._create_duplicate_tab(), "重复密码")
         self._tabs.addTab(self._create_old_tab(), "过期密码")
+        # 徽章/截断页脚样式经 objectName + 集中样式表承载（PERF-023）：原实现每行
+        # 徽章独立 setStyleSheet，Qt 逐 widget 解析 CSS 是大库下的单价主源；集中到
+        # tabs 一份样式表仅解析一次。颜色 token 在构建时按当前主题解析。
+        self._tabs.setStyleSheet(self._build_list_qss())
+        # 懒填充接线：切换 tab 才构建该 tab 的行（PERF-023）
+        self._tabs.currentChanged.connect(self._on_tab_changed)
         main_layout.addWidget(self._tabs, stretch=1)
 
         btn_layout = QHBoxLayout()
@@ -389,9 +405,29 @@ class SecurityDashboard(WorkerBackedDialog):
         self._dup_card.update_count(dup_count)
         self._old_card.update_count(old_count)
 
-        self._populate_weak_tab()
-        self._populate_duplicate_tab()
-        self._populate_old_tab()
+        # 懒填充（PERF-023）：仅构建当前可见 tab，数据已持有在成员变量，其余 tab
+        # 首次切换到时经 _on_tab_changed 按需构建，避免打开仪表盘即付三倍建行成本。
+        self._report_loaded = True
+        self._populated_tabs.clear()
+        self._populate_tab(self._tabs.currentIndex())
+
+    def _on_tab_changed(self, index: int) -> None:
+        """tab 切换回调：报告加载后按需填充目标 tab（加载前保持空白）。"""
+        if not self._report_loaded:
+            return
+        self._populate_tab(index)
+
+    def _populate_tab(self, index: int) -> None:
+        """填充指定 tab（幂等：已填充的 tab 直接跳过，防重复建行）。"""
+        if index in self._populated_tabs:
+            return
+        self._populated_tabs.add(index)
+        if index == 0:
+            self._populate_weak_tab()
+        elif index == 1:
+            self._populate_duplicate_tab()
+        elif index == 2:
+            self._populate_old_tab()
 
     def _on_data_error(self, error_msg: str) -> None:
         """worker.error 信号路径，独立于 _on_data_loaded 的成功/异常出口。"""
@@ -410,17 +446,18 @@ class SecurityDashboard(WorkerBackedDialog):
             self._weak_layout.addWidget(self._create_empty_hint("没有发现弱密码，做得好！"))
             return
 
-        for entry in self._weak_entries:
+        for entry in self._weak_entries[:_MAX_ROWS_PER_TAB]:
             if entry.id is None:
                 continue
             row = self._create_entry_row(
                 title=entry.title or "未命名",
                 subtitle=f"用户名: {entry.username}" if entry.username else "",
                 badge_text=f"强度 {entry.password_strength}",
-                badge_color=get_strength_color(entry.password_strength),
+                badge_name=f"secBadgeS{min(entry.password_strength, 4)}",
                 entry_id=entry.id,
             )
             self._weak_layout.addWidget(row)
+        self._maybe_add_truncation_hint(self._weak_layout, len(self._weak_entries))
 
     def _populate_duplicate_tab(self) -> None:
         self._clear_layout(self._dup_layout)
@@ -429,7 +466,12 @@ class SecurityDashboard(WorkerBackedDialog):
             self._dup_layout.addWidget(self._create_empty_hint("没有发现重复密码。"))
             return
 
+        # 行数上限按条目行（而非分组）计数（PERF-023）：成本主源是逐条目的
+        # QWidget 行，分组框本身开销可忽略。
+        remaining = _MAX_ROWS_PER_TAB
         for group in self._duplicate_groups:
+            if remaining <= 0:
+                break
             group_widget = QFrame()
             group_widget.setObjectName("dupGroup")
             group_layout = QVBoxLayout(group_widget)
@@ -442,16 +484,21 @@ class SecurityDashboard(WorkerBackedDialog):
             for entry in group:
                 if entry.id is None:
                     continue
+                if remaining <= 0:
+                    break
                 entry_row = self._create_entry_row(
                     title=entry.title or "未命名",
                     subtitle=f"用户名: {entry.username}" if entry.username else "",
                     badge_text="重复使用",
-                    badge_color=c("warning_orange"),
+                    badge_name="secBadgeDup",
                     entry_id=entry.id,
                 )
                 group_layout.addWidget(entry_row)
+                remaining -= 1
 
             self._dup_layout.addWidget(group_widget)
+        total_rows = sum(len(group) for group in self._duplicate_groups)
+        self._maybe_add_truncation_hint(self._dup_layout, total_rows)
 
     def _populate_old_tab(self) -> None:
         self._clear_layout(self._old_layout)
@@ -461,7 +508,7 @@ class SecurityDashboard(WorkerBackedDialog):
             return
 
         days = self._config.get(CFG_OLD_PASSWORD_WARNING_DAYS)
-        for entry in self._old_entries:
+        for entry in self._old_entries[:_MAX_ROWS_PER_TAB]:
             if entry.id is None:
                 continue
             updated = entry.password_changed_at or entry.updated_at or entry.created_at or "未知"
@@ -472,20 +519,61 @@ class SecurityDashboard(WorkerBackedDialog):
                 title=entry.title or "未命名",
                 subtitle=f"上次更新: {formatted}",
                 badge_text=f"> {days}天",
-                badge_color=c("warning"),
+                badge_name="secBadgeOld",
                 entry_id=entry.id,
             )
             self._old_layout.addWidget(row)
+        self._maybe_add_truncation_hint(self._old_layout, len(self._old_entries))
+
+    def _maybe_add_truncation_hint(self, layout: QVBoxLayout, total: int) -> None:
+        """总行数超上限时追加页脚提示「仅显示前 N 条，共 M 条」（PERF-023）。"""
+        if total <= _MAX_ROWS_PER_TAB:
+            return
+        layout.addWidget(self._create_truncation_hint(_MAX_ROWS_PER_TAB, total))
+
+    @staticmethod
+    def _badge_rule(object_name: str, color: str) -> str:
+        """生成单个徽章 objectName 的 QSS 规则（背景色为主题色 + 半透明 alpha）。"""
+        bc = QColor(color)
+        bc.setAlpha(int(255 * _BADGE_BG_ALPHA))
+        return (
+            f"QLabel#{object_name} {{"
+            f"background-color: rgba({bc.red()},{bc.green()},{bc.blue()},{bc.alpha()});"
+            f"color: {color};"
+            f"border-radius: {RADIUS_TAG}px;"
+            f"padding: 3px 10px;"
+            f"font-size: 11px;"
+            f"font-weight: 600;}}"
+        )
+
+    @classmethod
+    def _build_list_qss(cls) -> str:
+        """构建列表区集中样式表：7 类徽章（5 档强度 + 重复 + 过期）与截断页脚。
+
+        样式挂在 ``self._tabs`` 上仅解析一次；颜色 token 按当前主题在对话框构建时
+        解析（对话框为短生命周期模态，主题切换期间驻留属可接受边界）。
+        """
+        rules = [cls._badge_rule(f"secBadgeS{i}", c(f"strength_{i}")) for i in range(5)]
+        rules.append(cls._badge_rule("secBadgeDup", c("warning_orange")))
+        rules.append(cls._badge_rule("secBadgeOld", c("warning")))
+        rules.append(
+            f"QLabel#secTruncationHint {{color: {c('text_muted')}; font-size: 12px; padding: 8px;}}"
+        )
+        return "\n".join(rules)
 
     def _create_entry_row(
         self,
         title: str,
         subtitle: str,
         badge_text: str,
-        badge_color: str,
+        badge_name: str,
         entry_id: int,
     ) -> QWidget:
-        """创建一条包含标题、副标题、徽章与修复按钮的条目行。"""
+        """创建一条包含标题、副标题、徽章与修复按钮的条目行。
+
+        ``badge_name`` 为徽章的语义 objectName（如 ``secBadgeS2``），样式由
+        ``_build_list_qss`` 的集中样式表承载，行内不再 ``setStyleSheet``。
+        """
         row_widget = QWidget()
         row_widget.setObjectName("secEntryRow")
         # 启用 hover 属性，使 QSS 的 `QWidget#secEntryRow:hover` 生效
@@ -496,28 +584,17 @@ class SecurityDashboard(WorkerBackedDialog):
         info_layout = QVBoxLayout()
         info_layout.setSpacing(2)
 
-        title_label = QLabel(title)
-        title_label.setObjectName("secRowTitle")
+        # 标题/副标题承载条目数据（title/username），PlainText（SEC-030）
+        title_label = create_plain_text_label(title, "secRowTitle")
         info_layout.addWidget(title_label)
 
         if subtitle:
-            sub_label = QLabel(subtitle)
-            sub_label.setObjectName("secRowSub")
+            sub_label = create_plain_text_label(subtitle, "secRowSub")
             info_layout.addWidget(sub_label)
 
         row_layout.addLayout(info_layout, stretch=1)
 
-        badge = QLabel(badge_text)
-        bc = QColor(badge_color)
-        bc.setAlpha(int(255 * _BADGE_BG_ALPHA))
-        badge.setStyleSheet(
-            f"background-color: rgba({bc.red()},{bc.green()},{bc.blue()},{bc.alpha()});"
-            f"color: {badge_color};"
-            f"border-radius: {RADIUS_TAG}px;"
-            f"padding: 3px 10px;"
-            f"font-size: 11px;"
-            f"font-weight: 600;"
-        )
+        badge = create_plain_text_label(badge_text, badge_name)
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         row_layout.addWidget(badge)
 
@@ -529,6 +606,13 @@ class SecurityDashboard(WorkerBackedDialog):
         row_layout.addWidget(fix_btn)
 
         return row_widget
+
+    @staticmethod
+    def _create_truncation_hint(shown: int, total: int) -> QLabel:
+        """创建截断页脚提示，告知用户实际风险总量超出展示上限。"""
+        hint = create_plain_text_label(f"仅显示前 {shown} 条，共 {total} 条", "secTruncationHint")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        return hint
 
     def _create_empty_hint(self, text: str) -> QLabel:
         label = QLabel(text)

@@ -693,23 +693,32 @@ class EntryDialog(QDialog):
         """
         schema = get_schema(entry_type)
         visible = schema.visible_fields
-        # 仅采集当前类型可见的通用字段，避免类型切换后隐藏控件的残留值被持久化
-        # （如 login→card 切换后，旧 username/url 不应隐式带入不可见的新类型字段）。
-        # 密码按模式区分门控（QL-029）：card/identity 的 visible_fields 不含
-        # "password"，新增模式下残留的隐藏密码不应被持久化到表单上看不见、无法
-        # 清除的位置；编辑模式（self._entry 非 None）不按可见性门控——既有
-        # card/identity 条目可合法持有密码（详情面板会显示），须保留隐藏控件回读
-        # 的值。uses_password=False 的类型（笔记）维持强制置空。
+        # 仅采集当前类型可见的通用字段，避免新增模式下类型切换后隐藏控件的残留值被
+        # 持久化（如 login→card 切换后，旧 username/url 不应隐式带入不可见的新类型
+        # 字段）。password/username/url 三字段统一按「编辑模式豁免 + 可见性」门控
+        # （QL-029 引入密码门控，QL-033 补齐 username/url 的同款豁免）：card/identity/
+        # note 的 visible_fields 不含这些字段，新增模式下残留的隐藏值不应被持久化到
+        # 表单上看不见、无法清除的位置；编辑模式（self._entry 非 None）不按可见性
+        # 门控——既有条目可合法持有这些字段（JSON 导入的带 username 的 card，详情
+        # 面板对任何类型都显示账号/网址行），须保留隐藏控件回读的值，否则保存时被
+        # 静默清空。uses_password=False 的类型（笔记）密码维持强制置空。
         if not schema.uses_password:
             password = ""
         elif self._entry is not None or "password" in visible:
             password = self._password_edit.text()
         else:
             password = ""
-        username = self._username_edit.text().strip() if "username" in visible else ""
-        url = self._url_edit.text().strip() if "url" in visible else ""
+        username = (
+            self._username_edit.text().strip()
+            if self._entry is not None or "username" in visible
+            else ""
+        )
+        url = self._url_edit.text().strip() if self._entry is not None or "url" in visible else ""
 
-        # 由专用字段拼接 url 的类型（服务器）：username/password 已在上方统一读取
+        # 由专用字段拼接 url 的类型（服务器）：username/password 已在上方统一读取。
+        # host 非空时组合值优先；host 为空时保留上方门控结果——编辑模式下即隐藏
+        # url 控件回读的既有值（_load_entry 无条件回填 url，导入的仅有 url 无 host
+        # 的服务器条目不因编辑丢失），新增模式下为空串，两模式行为均合理。
         if schema.composes_url:
             composed = self._compose_server_url()
             if composed:
