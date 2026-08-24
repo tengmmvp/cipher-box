@@ -25,3 +25,33 @@ def test_render_decrypter_embeds_libs_and_version():
     assert "argon2" in html.lower()
     assert "asmCrypto" in html
     assert str(SHARE_VERSION) in html
+
+
+def test_placeholder_in_bundle_not_replaced_second_pass(monkeypatch):
+    """第三方 bundle 含 ``{{...}}`` 字面量时不被二次替换（QL-051）。
+
+    原实现按序多次 str.replace：{{ASMCRYPTO_JS}}/{{VERSION}} 在 HASH_WASM_JS 注入
+    之后替换，若 bundle 恰含同形字面量会被当作模板占位符改写。单遍 re.sub 只扫
+    模板原文，注入内容不参与后续匹配。
+    """
+    from src.business.services.share import renderer
+
+    template = "<html>{{HASH_WASM_JS}}|{{ASMCRYPTO_JS}}|v{{VERSION}}</html>"
+    # argon2 bundle 内嵌另外两个占位名的字面量（模拟 minified 代码碰撞场景）
+    argon2_js = "libA[\"{{ASMCRYPTO_JS}}\"]='{{VERSION}}';"
+    asmcrypto_js = "libB();"
+    resources = {
+        "decrypter_template.html": template,
+        "hash-wasm-argon2.js": argon2_js,
+        "asmcrypto.js": asmcrypto_js,
+    }
+    monkeypatch.setattr(renderer, "_read_resource_text", lambda name: resources[name])
+
+    html = render_decrypter()
+
+    # 模板占位符全部按预期替换
+    assert argon2_js in html and "libB();" in html
+    assert f"v{SHARE_VERSION}</html>" in html
+    # bundle 内的字面量原样保留，未被 {{ASMCRYPTO_JS}}/{{VERSION}} 轮次改写
+    assert '"{{ASMCRYPTO_JS}}"' in html
+    assert "'{{VERSION}}'" in html

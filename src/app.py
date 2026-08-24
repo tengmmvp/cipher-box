@@ -54,6 +54,15 @@ class CipherBoxApp:
         # sys.argv 传给 QApplication 以支持 -style/-platform 等 Qt 平台参数；
         # CipherBox 自身不处理命令行参数。
         self._app = QApplication.instance() or CipherBoxApplication(sys.argv)
+        self._main_window: MainWindow | None = None
+        self._running = False
+        # 崩溃/退出兜底：未捕获异常或绕过 closeEvent 的退出路径也要锁定保险库、
+        # 清空剪贴板，收缩异常路径的明文残留面。安装点前移至 QApplication 创建后
+        # 立即执行（QL-050）：excepthook 依赖的 aboutToQuit 信号挂在该实例上，而
+        # 下方 ConfigManager/configure_logging/build_vault 等启动阶段异常自此即在
+        # 兜底覆盖内。_emergency_cleanup 对 _vault/_main_window 的访问均有吞异常
+        # 守卫，属性未就绪时按「无需清理」降级记录，不会因前移而崩溃。
+        self._install_crash_handlers()
         self._config = ConfigManager()
         configure_logging(self._config.data_dir)
         # 打包 Inter 字体注册到 QFontDatabase；须在 QApplication 创建后、任何 widget
@@ -66,12 +75,7 @@ class CipherBoxApp:
             purge_restore_points(self._config)
         except Exception:
             logger.warning("启动清理恢复点失败", exc_info=True)
-        self._main_window: MainWindow | None = None
-        self._running = False
         self._instance_lock = QLockFile(str(self._config.data_dir / "cipherbox.lock"))
-        # 崩溃/退出兜底：未捕获异常或绕过 closeEvent 的退出路径也要锁定保险库、
-        # 清空剪贴板，收缩异常路径的明文残留面。
-        self._install_crash_handlers()
 
     def _install_crash_handlers(self) -> None:
         """注册崩溃与退出兜底，收缩明文在异常/退出路径的内存残留面。
@@ -263,6 +267,25 @@ def main() -> None:
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough,
     )
-
-    app = CipherBoxApp()
+    try:
+        app = CipherBoxApp()
+    except Exception:
+        # 启动构造兜底（QL-050）：ConfigManager/configure_logging/build_vault 等阶段
+        # 的异常若直接外溢，只在 stderr 留 traceback 后无声退出（QApplication 可能在
+        # 弹窗前就已不可用）。configure_logging 可能未执行，先 basicConfig 兜底再
+        # logger.critical（含 exc_info，同时覆盖「print 到 stderr」）；弹窗尽力而为，
+        # 自身抛异常（无 QApplication/平台插件缺失）时吞掉，stderr 已留完整现场。
+        logging.basicConfig(level=logging.ERROR)
+        logger.critical("应用启动失败", exc_info=True)
+        try:
+            QMessageBox.critical(
+                None,
+                "CipherBox 启动失败",
+                "应用初始化失败，请查看日志文件或重新安装。错误详情已输出到控制台。",
+            )
+        except Exception:
+            pass
+        sys.exit(1)
+    # run() 阶段不在此兜底：此时 crash handler 已安装（__init__ 前移），运行期
+    # 未捕获异常走 sys.excepthook → _emergency_cleanup 收缩明文残留面。
     sys.exit(app.run())

@@ -156,3 +156,55 @@ def test_restore_history_skips_unmapped_entry(tmp_path):
         db.add_password_history_batch.assert_not_called()
     finally:
         vault.close()
+
+
+def test_restore_entries_covers_all_sensitive_fields(tmp_path):
+    """restore_entries 的 RawEntry 构建覆盖全部 SENSITIVE_ENCRYPTED_FIELDS（守护测试）。
+
+    rebuilder 逐字段手工构造 RawEntry（区别于加密侧 build_encrypted_entry_fields 的
+    键集）：若 SENSITIVE_ENCRYPTED_FIELDS 新增字段而本处漏映射，该字段会以空串
+    静默落库（恢复往返丢字段）。本测试对单一事实源的每个敏感字段填充可辨识明文，
+    经 restore_entries 写出的密文行逐字段解密回读断言——新增字段漏映射时直接失败。
+    """
+    from src.business.services.backup.rebuilder import restore_entries
+    from src.business.services.crypto_utils import (
+        SENSITIVE_ENCRYPTED_FIELDS,
+        decrypt_field,
+    )
+    from tests.helpers import make_test_config, make_vault
+
+    vault = make_vault(make_test_config(str(tmp_path)))
+    vault.initialize("test_password_12345")
+    try:
+        key = vault.key
+        item = _entry(1, "c" * 32, None)
+        # 对每个敏感字段填充可辨识明文（custom_fields 为 JSON 结构）
+        expected: dict[str, str] = {}
+        for field in SENSITIVE_ENCRYPTED_FIELDS:
+            if field == "custom_fields":
+                item["custom_fields"] = [{"name": "n1", "value": "v1", "field_type": "text"}]
+            else:
+                item[field] = f"payload-{field}"
+                expected[field] = f"payload-{field}"
+        backup = _backup(entries=[item])
+        db = MagicMock()
+        db.add_entries_batch.return_value = {"c" * 32: 100}
+
+        restore_entries(db, backup, key, {})
+
+        written = db.add_entries_batch.call_args[0][0][0]
+        # 字符串型敏感字段：逐字段解密回读与源明文一致（漏映射字段为空串即失败）
+        for field, plaintext in expected.items():
+            decrypted = decrypt_field(
+                getattr(written, field), key, written.crypto_id, field, strict=True
+            )
+            assert decrypted == plaintext, f"rebuilder 漏加密字段 {field}（守护失败）"
+        # custom_fields：密文 JSON 解密回读结构与源一致
+        import json as _json
+
+        cf_cipher = written.custom_fields
+        assert cf_cipher, "custom_fields 须写入密文"
+        cf_json = decrypt_field(cf_cipher, key, written.crypto_id, "custom_fields", strict=True)
+        assert _json.loads(cf_json) == item["custom_fields"]
+    finally:
+        vault.close()

@@ -48,6 +48,96 @@ def test_signature_encrypted_field_order_is_subset():
     assert signature == sensitive - {"title", "url", "tags"}
 
 
+def test_encrypted_entry_columns_single_source():
+    """加密字段集的 ``{f}_enc`` 列集须与 entries 表实际 _enc 列集一致（QL-046）。
+
+    entry_manager.build_encrypted_entry 与 crypto_utils.build_encrypted_entry_fields
+    已改为对 SENSITIVE_ENCRYPTED_FIELDS 循环产出（加密侧单一事实源跟随），本测试
+    把该事实源再与数据库列单一事实源（entry_repository._ENTRY_COLUMNS）对齐：
+    逻辑字段名→``_enc`` 列的映射漂移（如新增加密字段未建列、或建列未登记字段）
+    在此立即失败。
+    """
+    from src.database.entry_repository import _ENTRY_COLUMNS
+
+    logical_enc_columns = {f"{field}_enc" for field in SENSITIVE_ENCRYPTED_FIELDS}
+    table_enc_columns = {column for column in _ENTRY_COLUMNS if column.endswith("_enc")}
+    assert logical_enc_columns == table_enc_columns, (
+        "SENSITIVE_ENCRYPTED_FIELDS 与 entries 表 _enc 列集漂移："
+        f"仅逻辑字段={logical_enc_columns - table_enc_columns}，"
+        f"仅表列={table_enc_columns - logical_enc_columns}"
+    )
+
+
+def test_build_encrypted_output_covers_all_sensitive_fields(vault, entry_mgr, make_entry):
+    """两条加密构建路径产出的密文字段集 == 单一事实源（QL-046）。
+
+    EntryManager.build_encrypted_entry（单条 CRUD/导入共用）与 crypto_utils.
+    build_encrypted_entry_fields（备份恢复重建共用）此前手工枚举加密字段——新增
+    加密字段时解密/校验侧响亮失败而加密侧静默丢字段（恢复往返断裂）。现二者对
+    SENSITIVE_ENCRYPTED_FIELDS 循环产出；本测试以「每个加密字段写入可区分明文 →
+    构建产出的每个字段必须是有效密文且解密回原明文」守护完备性：字段集漂移
+    （常量加了字段而构建侧未跟随）在此立即失败。
+    """
+    import json
+
+    from src.business.services.crypto_utils import (
+        build_encrypted_entry_fields,
+        decrypt_field,
+        require_vault_key,
+    )
+    from src.models import CustomField
+
+    plaintext = {
+        "title": "t-标题",
+        "username": "u-用户",
+        "password": "p-密码",
+        "url": "https://url-x",
+        "tags": "tag-1",
+        "notes": "n-备注",
+        "totp_secret": "JBSWY3DPEHPK3PXP",
+    }
+    entry = make_entry(
+        **plaintext,
+        custom_fields=[CustomField(name="f-字段", value="v-值")],
+    )
+
+    # 路径 1：EntryManager.build_encrypted_entry（Entry → RawEntry）
+    raw = entry_mgr.build_encrypted_entry(
+        entry, "cid-consistency-guard", "2026-01-01T00:00:00+00:00"
+    )
+    # 路径 2：crypto_utils.build_encrypted_entry_fields（明文 dict → 密文 dict）
+    # custom_fields 沿备份恢复的 portable 形态（CustomField.to_dict 的键结构）
+    item = {
+        **plaintext,
+        "custom_fields": [{"name": "f-字段", "value": "v-值", "field_type": "text"}],
+    }
+    enc_dict = build_encrypted_entry_fields(item, require_vault_key(vault), "cid-consistency-guard")
+
+    # 两条路径的产出键集都恰为单一事实源（custom_fields 在 RawEntry 上为密文 str）
+    assert set(enc_dict.keys()) == set(SENSITIVE_ENCRYPTED_FIELDS)
+    key = require_vault_key(vault)
+    for field in SENSITIVE_ENCRYPTED_FIELDS:
+        cipher = enc_dict[field]
+        # 每个字段都是有效密文（非空明文 → cb2: 前缀密文，而非静默丢字段后的空串）
+        assert cipher.startswith("cb2:"), f"build_encrypted_entry_fields 漏加密 {field}"
+        raw_cipher = getattr(raw, field)
+        assert raw_cipher.startswith("cb2:"), f"build_encrypted_entry 漏加密 {field}"
+        # 就地往返：解密回原明文（custom_fields 为 JSON 序列化形态，比较解析结构）
+        expected_plain = (
+            [{"name": "f-字段", "value": "v-值", "field_type": "text"}]
+            if field == "custom_fields"
+            else plaintext[field]
+        )
+        for got in (
+            decrypt_field(cipher, key, "cid-consistency-guard", field),
+            decrypt_field(raw_cipher, key, "cid-consistency-guard", field),
+        ):
+            if field == "custom_fields":
+                assert json.loads(got) == expected_plain
+            else:
+                assert got == expected_plain
+
+
 def test_entries_table_columns_single_source():
     """schema_manager 建表列与 entry_repository SQL 列须一致（除 autoincrement id）。
 

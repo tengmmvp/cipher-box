@@ -21,12 +21,20 @@ BACKUP_SALT_SIZE = 32
 # 固定头：flags、Argon2 time/memory/parallelism，随后为 32 字节 salt。
 BACKUP_HEADER_STRUCT = struct.Struct("<BIII")
 BACKUP_HEADER_SIZE = len(BACKUP_MAGIC) + BACKUP_HEADER_STRUCT.size + BACKUP_SALT_SIZE
-# 备份文件大小硬上限（64 MB）：inspect_backup 读取前拒绝超大文件，防恶意文件致 OOM。
-# 高于 MAX_BACKUP_PAYLOAD_SIZE 因 header/salt 等开销与压缩载荷尚未展开。
-MAX_BACKUP_FILE_SIZE = 64 * 1024 * 1024
-# 解密后明文 payload 大小上限（32 MB）：恢复路径逐字段累计字节数超限即中止，
+# 备份文件大小硬上限（80 MB）：inspect_backup 读取前拒绝超大文件，防恶意文件致 OOM。
+# 与 MAX_BACKUP_PAYLOAD_SIZE 联动（PERF-068）：文件 = 固定头（61B）+ GCM 加密的
+# payload（≈ 明文 + ~31B），合法文件不超 payload 上限 + 微小开销，本上限取 2 倍
+# 余量（与旧 64MB/32MB 同比例）防边界误差与未来扩容。
+MAX_BACKUP_FILE_SIZE = 80 * 1024 * 1024
+# 解密后明文 payload 大小上限（40 MB）：恢复路径逐字段累计字节数超限即中止，
 # 防恶意构造的大字段经解密展开后撑爆内存。
-MAX_BACKUP_PAYLOAD_SIZE = 32 * 1024 * 1024
+#
+# 与 models.MAX_ENTRIES_LIMIT=50k 联动校准（PERF-068）：50k 条目 × 典型画像
+# ~700-760B/条（实测空模板 336B/条、典型画像 758B/条，payload.py 校准常量）
+# ≈ 35-38MB，故载荷上限须 ≥ 40MB 才能兑现「50k 条目库可备份」的条目数承诺；
+# 旧值 32MB 下 50k 全空库（实际 ~17MB）因密文估算虚高（43MB）被误拦，典型
+# 画像 ~35k 条即撞真实上限。估算精度与该上限的耦合见 collector.estimate_entry_payload_bytes。
+MAX_BACKUP_PAYLOAD_SIZE = 40 * 1024 * 1024
 
 
 class BackupFlag(enum.IntEnum):

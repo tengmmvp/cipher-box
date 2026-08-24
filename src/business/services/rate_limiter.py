@@ -24,6 +24,8 @@ from ...utils.file_security import atomic_write, secure_file
 if TYPE_CHECKING:
     from ...config import ConfigManager
 
+logger = logging.getLogger(__name__)
+
 # 状态文件签名行前缀：与 config.json 的 ``#__sig__:<hex>`` 同款格式（SEC-029），
 # 复用同一心智模型与末行分离逻辑。
 _STATE_SIG_PREFIX = "#__sig__:"
@@ -101,9 +103,7 @@ class RateLimiter:
         try:
             key = self._config.integrity_key
         except Exception:
-            logging.getLogger(__name__).warning(
-                "限流状态签名密钥获取失败，状态文件防篡改降级", exc_info=True
-            )
+            logger.warning("限流状态签名密钥获取失败，状态文件防篡改降级", exc_info=True)
             return None
         if isinstance(key, (bytes, bytearray)) and len(key) > 0:
             return bytes(key)
@@ -150,7 +150,7 @@ class RateLimiter:
             sentinel.write_bytes(b"1")
             secure_file(sentinel)
         except OSError:
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "限流哨兵文件创建失败，删除检测将降级",
                 exc_info=True,
             )
@@ -165,7 +165,7 @@ class RateLimiter:
             cfg.register_security_sentinel(name)
         except Exception:
             # config 写盘失败/校验失败等：不阻断限流，退化为仅哨兵文件配对检测。
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "限流哨兵签名登记失败，同时删除检测将降级",
                 exc_info=True,
             )
@@ -189,7 +189,7 @@ class RateLimiter:
         except Exception:
             # config 读取异常不阻断限流：退回「首次使用」最保守（不锁定），
             # 避免配置读取故障误锁用户；同时删除检测在此退化为仅哨兵文件配对。
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "限流哨兵签名见证读取失败，按首次使用处理",
                 exc_info=True,
             )
@@ -215,9 +215,7 @@ class RateLimiter:
             # 缺失意味着状态被外部删除——降级到最高阶梯锁定，与「文件损坏」
             # 路径一致，避免删文件直接绕过限流。
             if self._sentinel_path is not None and self._sentinel_path.exists():
-                logging.getLogger(__name__).warning(
-                    "限流状态文件缺失但哨兵存在，判定为被删除，降级最高阶梯锁定"
-                )
+                logger.warning("限流状态文件缺失但哨兵存在，判定为被删除，降级最高阶梯锁定")
                 self._apply_max_lockdown()
                 return
             # 哨兵亦缺失：签名 config（HMAC）登记过哨兵建立——攻击者无法伪造签名
@@ -225,7 +223,7 @@ class RateLimiter:
             # 阶梯锁定，关闭「同时删两文件即归零计数」的绕过。无 config 见证（或读取
             # 异常）退回「首次使用」，不误伤新用户、不削弱既有保护。
             if self._sentinel_established_via_config():
-                logging.getLogger(__name__).warning(
+                logger.warning(
                     "限流状态文件与哨兵均缺失但签名 config 记录已建立，"
                     "判定为被删除，降级最高阶梯锁定"
                 )
@@ -234,9 +232,7 @@ class RateLimiter:
         try:
             raw_text = self._state_path.read_text(encoding="utf-8")
         except OSError:
-            logging.getLogger(__name__).warning(
-                "限流状态文件读取失败，按损坏降级最高阶梯锁定", exc_info=True
-            )
+            logger.warning("限流状态文件读取失败，按损坏降级最高阶梯锁定", exc_info=True)
             self._apply_max_lockdown()
             return
         json_text, stored_sig = _split_state_signature(raw_text)
@@ -258,9 +254,7 @@ class RateLimiter:
                 # 签名行是主动抹除篡改痕迹，比失配更可疑，与 config.json 完整性语义
                 # 一致），按保守锁定处理，并经 _apply_max_lockdown 内的 _save_state
                 # 以合法签名重建状态文件（自愈，后续加载不再重复触发本分支）。
-                logging.getLogger(__name__).warning(
-                    "限流状态文件签名校验失败，判定为被篡改，降级最高阶梯锁定"
-                )
+                logger.warning("限流状态文件签名校验失败，判定为被篡改，降级最高阶梯锁定")
                 self._apply_max_lockdown()
                 return
         try:
@@ -331,9 +325,7 @@ class RateLimiter:
             # 状态已成功落盘：确保哨兵存在，使后续「状态文件被删除」可被检测。
             self._ensure_sentinel()
         except OSError:
-            logging.getLogger(__name__).warning(
-                "登录限流状态写盘失败，本次仅内存生效", exc_info=True
-            )
+            logger.warning("登录限流状态写盘失败，本次仅内存生效", exc_info=True)
 
     def check(self) -> str | None:
         """检查是否处于锁定状态。

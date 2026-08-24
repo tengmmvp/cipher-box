@@ -183,6 +183,26 @@ class TestBuildShareBlobRoundtrip:
                 created_at=1700000000,
             )
 
+    def test_share_key_not_left_in_cipher_cache(self):
+        """一次性 share 密钥不滞留模块级 cipher 缓存（SEC-046）。
+
+        _build_share_blob 的 finally 会 secure_zero 派生密钥，但若 AESGCM 入了
+        ``_cipher_cache``，C 层密钥拷贝在清零后仍驻留至缓存淘汰。调用前后缓存
+        快照须逐项一致。
+        """
+        from src.crypto.encryption import _cipher_cache
+
+        snapshot = dict(_cipher_cache)
+        blob = share_package._build_share_blob(
+            [_make_entry()],
+            "sharepass",
+            include_secrets=True,
+            expire_at=EXPIRE_NEVER,
+            created_at=1700000000,
+        )
+        assert blob[: len(SHARE_MAGIC)] == SHARE_MAGIC
+        assert dict(_cipher_cache) == snapshot
+
 
 class TestCreateSharePackage:
     """create_share_package 两文件生成与取消语义。"""

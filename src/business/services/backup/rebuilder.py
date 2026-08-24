@@ -59,27 +59,26 @@ def restore_entries(
     entries: list[RawEntry] = []
     for item in items:
         # PortableEntry(TypedDict)经 cast 桥接到 dict 参数（同上，TypedDict 不兼容 dict）。
-        enc = build_encrypted_entry_fields(cast(dict[str, Any], item), key, item["crypto_id"])
+        # 加密字段整体经 **encrypted 展开（消费 crypto_utils 的 QL-046 循环化入口）：
+        # SENSITIVE_ENCRYPTED_FIELDS 新增字段时自动随展写入 RawEntry，消除本处手工
+        # 枚举的第三份键集（漏映射会致恢复往返静默丢字段）。键来自运行期元组，
+        # 静态检查器无法验证字段名↔构造参数匹配，value 标注 Any 使解包通过，
+        # 键集完备性由 test_backup_rebuilder 的守护测试兜底。
+        encrypted: dict[str, Any] = build_encrypted_entry_fields(
+            cast(dict[str, Any], item), key, item["crypto_id"]
+        )
         entries.append(
             RawEntry(
                 crypto_id=item["crypto_id"],
-                title=enc["title"],
-                username=enc["username"],
-                password=enc["password"],
-                url=enc["url"],
                 category_id=(
                     category_map.get(item["category_id"])
                     if item["category_id"] is not None
                     else None
                 ),
-                tags=enc["tags"],
-                notes=enc["notes"],
-                custom_fields=enc["custom_fields"],
                 is_favorite=item["is_favorite"],
                 is_deleted=item["is_deleted"],
                 password_strength=item["password_strength"],
                 entry_type=item["entry_type"],
-                totp_secret=enc["totp_secret"],
                 created_at=item["created_at"],
                 updated_at=item["updated_at"],
                 deleted_at=item["deleted_at"],
@@ -89,6 +88,7 @@ def restore_entries(
                     or item["created_at"]
                     or utc_now_iso()
                 ),
+                **encrypted,
             )
         )
     crypto_id_to_new_id = db.add_entries_batch(entries, preserve_metadata=True)

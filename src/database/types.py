@@ -22,8 +22,9 @@ if TYPE_CHECKING:
 
 
 # 密码历史分页默认批量（QL-007 单一事实源）：控制改密重加密内存峰值。
-# entry_repository / db_manager / re_encryption 的 get_all_password_history_batch
-# 默认 limit 均引用此常量，消除魔法数 200 跨文件漂移。
+# password_history_repository（MAINT-071 拆分自 entry_repository）/ db_manager /
+# re_encryption 的 get_all_password_history_batch 默认 limit 均引用此常量，
+# 消除魔法数 200 跨文件漂移。
 DEFAULT_HISTORY_BATCH_LIMIT: int = 200
 
 
@@ -279,9 +280,10 @@ class ReEncryptedEntry(NamedTuple):
 class ReEncryptedHistory(NamedTuple):
     """重加密后密码历史的批量更新 DTO（密文, id）。
 
-    字段顺序与 ``EntryRepository.update_password_history_batch`` 的
+    字段顺序与 ``PasswordHistoryRepository.update_password_history_batch`` 的
     ``UPDATE ... WHERE id=?`` SQL 位置绑定一致，供 ``executemany``。
-    ``ReEncryptionService`` 构造、``EntryRepository`` 消费，故定义于数据层避免反向依赖。
+    ``ReEncryptionService`` 构造、``PasswordHistoryRepository``（MAINT-071 拆分自
+    entry_repository）消费，故定义于数据层避免反向依赖。
     """
 
     ciphertext: str

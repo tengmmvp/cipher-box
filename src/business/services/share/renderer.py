@@ -15,12 +15,19 @@ asmcrypto.js（MIT, (c) Ágoston Pör）选用理据：解密器在 ``file://`` 
 """
 
 import logging
+import re
 from importlib.resources import files
 
 from ....exceptions import ShareError
 from .header_codec import SHARE_VERSION
 
 logger = logging.getLogger(__name__)
+
+# 单遍占位符替换（QL-051）：模板内占位符 → 替换值的分派表。原实现按序多次
+# str.replace——后替换的占位符会扫描先注入的第三方 JS bundle，若 bundle 恰含同形
+# 字面量（如 minified 代码中的 {{VERSION}}）会被二次替换。re.sub 只对模板原文单遍
+# 扫描，注入内容永不参与后续匹配。
+_PLACEHOLDER_PATTERN = re.compile(r"\{\{(HASH_WASM_JS|ASMCRYPTO_JS|VERSION)\}\}")
 
 
 def _read_resource_text(name: str) -> str:
@@ -39,15 +46,20 @@ def _read_resource_text(name: str) -> str:
 
 
 def render_decrypter() -> str:
-    """渲染自包含解密器 HTML：模板占位替换为 hash-wasm argon2 JS、asmcrypto JS 与版本号。"""
+    """渲染自包含解密器 HTML：模板占位替换为 hash-wasm argon2 JS、asmcrypto JS 与版本号。
+
+    经 ``_PLACEHOLDER_PATTERN`` 对模板单遍替换（QL-051）：回调按占位名分派到
+    替换值，第三方 bundle 内的 ``{{...}}`` 字面量不会被后续轮次二次替换。
+    """
     template = _read_resource_text("decrypter_template.html")
     argon2_js = _read_resource_text("hash-wasm-argon2.js")
     asmcrypto_js = _read_resource_text("asmcrypto.js")
-    return (
-        template.replace("{{HASH_WASM_JS}}", argon2_js)
-        .replace("{{ASMCRYPTO_JS}}", asmcrypto_js)
-        .replace("{{VERSION}}", str(SHARE_VERSION))
-    )
+    values = {
+        "HASH_WASM_JS": argon2_js,
+        "ASMCRYPTO_JS": asmcrypto_js,
+        "VERSION": str(SHARE_VERSION),
+    }
+    return _PLACEHOLDER_PATTERN.sub(lambda match: values[match.group(1)], template)
 
 
 __all__ = ["render_decrypter"]

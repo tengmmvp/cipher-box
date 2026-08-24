@@ -8,6 +8,8 @@ MainWindow._apply_theme 触发）。线程安全：PyQt6 单线程 UI，所有 c
 
 import logging
 
+from ...config import DEFAULT_THEME
+
 logger = logging.getLogger(__name__)
 
 LIGHT_COLORS = {
@@ -175,9 +177,11 @@ DARK_COLORS = {
 if set(LIGHT_COLORS) != set(DARK_COLORS):
     raise RuntimeError("浅色/深色主题颜色 key 不一致")
 
-# 模块初始主题须与 config.DEFAULT_THEME 一致：本模块为零上层依赖的纯色板不
-# import config，故以注释声明该一致性约定。
-_current_theme = "light"
+# 模块初始主题直接派生自 config.DEFAULT_THEME（ARCH-035）：色板 token 本身仍是
+# 零依赖纯数据，仅初值经单一事实源对齐，消除「同值双源注释约定」的漂移风险
+# （constants.py 的 THEME_LIGHT 派生同源）。import 方向 UI→config 合法（分层：
+# UI 可依赖共享层），config 不反向依赖 UI，无循环。
+_current_theme = DEFAULT_THEME
 _current_colors = dict(LIGHT_COLORS)
 
 

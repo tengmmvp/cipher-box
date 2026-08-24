@@ -301,6 +301,44 @@ def test_cache_respects_max_size():
     assert len(_cipher_cache) == _MAX_CACHE_SIZE
 
 
+def test_cache_key_false_skips_cache_all_methods():
+    """cache_key=False 时 encrypt/decrypt/encrypt_bytes/decrypt_bytes 均不入缓存（SEC-046）。
+
+    一次性密钥（share 包/备份密码派生密钥）调用后即 secure_zero，但缓存 AESGCM 持
+    C 层密钥拷贝、清零不可达——须保证 cache_key=False 路径完全不触碰 _cipher_cache。
+    以调用前后缓存快照逐项对比（含已存在条目的场景：非空缓存不被污染）。
+    """
+    from src.crypto.encryption import _cipher_cache
+
+    # 预置一个缓存条目：验证「不新增」而非仅「缓存为空」
+    warm_key = os.urandom(32)
+    EncryptionEngine.encrypt("warm", warm_key, "aad")
+    snapshot = dict(_cipher_cache)
+
+    key = os.urandom(32)
+    ct = EncryptionEngine.encrypt("payload", key, "aad", cache_key=False)
+    blob = EncryptionEngine.encrypt_bytes(b"payload", key, "aad", cache_key=False)
+    assert dict(_cipher_cache) == snapshot
+
+    assert EncryptionEngine.decrypt(ct, key, "aad", cache_key=False) == "payload"
+    assert EncryptionEngine.decrypt_bytes(blob, key, "aad", cache_key=False) == b"payload"
+    assert dict(_cipher_cache) == snapshot
+
+
+def test_get_cipher_cache_key_false_not_cached():
+    """_get_cipher(cache_key=False) 直接构造 AESGCM，不写入/命中缓存（SEC-046）。"""
+    from src.crypto.encryption import _cipher_cache
+
+    key = os.urandom(32)
+    snapshot = dict(_cipher_cache)
+
+    c1 = EncryptionEngine._get_cipher(key, cache_key=False)
+    c2 = EncryptionEngine._get_cipher(key, cache_key=False)
+
+    assert dict(_cipher_cache) == snapshot
+    assert c1 is not c2  # 每次直接构造，不走缓存复用
+
+
 def test_decrypt_bytes_wrong_prefix():
     """decrypt_bytes 拒绝错误前缀。"""
     with pytest.raises(ValueError, match="不支持的密文字节格式"):

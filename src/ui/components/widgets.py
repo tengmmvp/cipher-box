@@ -38,6 +38,8 @@ from .workers import wait_worker_shutdown
 if TYPE_CHECKING:
     from .workers import BackgroundWorker
 
+logger = logging.getLogger(__name__)
+
 # ======== 信号断开与取消按钮 ========
 
 
@@ -357,8 +359,6 @@ def finalize_worker_if_current(dialog: WorkerBackedDialog) -> bool:
 
 
 # ======== Worker 后台对话框基类 ========
-
-logger = logging.getLogger(__name__)
 
 
 class WorkerBackedDialog(QDialog):

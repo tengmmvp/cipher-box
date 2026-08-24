@@ -78,3 +78,33 @@ def test_empty_and_missing_timestamps_pass():
     assert entry.created_at == ""
     assert entry.updated_at == ""
     assert entry.password_changed_at == ""  # 缺省 → 默认空串
+
+
+class TestCategoryFieldValidation:
+    """Entry.from_dict 的 category 字段类型/长度校验（QL-049）。
+
+    旧行为：``category_name=d.get("category", "")`` 无 isinstance——CSV 携带非 str
+    （如 int）时在下游 ``_ensure_categories`` 的 ``.strip()`` 处裸 AttributeError
+    中断导入且无友好文案。现与相邻字段范式一致在 from_dict 入口拒绝。
+    """
+
+    def test_non_string_category_raises(self):
+        """int 等非字符串分类名抛 EntryError（IS ValueError），不再裸 AttributeError。"""
+        with pytest.raises(EntryError, match="分类名称类型无效"):
+            Entry.from_dict(_base_dict(category=12345))
+        with pytest.raises(ValueError, match="分类名称类型无效"):
+            Entry.from_dict(_base_dict(category=["工作"]))
+
+    def test_overlong_category_raises(self):
+        """超长分类名（>MAX_CATEGORY_NAME 字符）抛 EntryError，对齐 Category.from_dict。"""
+        from src.models import MAX_CATEGORY_NAME
+
+        with pytest.raises(EntryError, match="分类名称过长"):
+            Entry.from_dict(_base_dict(category="分" * (MAX_CATEGORY_NAME + 1)))
+
+    def test_valid_string_category_passes(self):
+        """合法字符串分类名通过并原样保留；空串/缺省回退默认。"""
+        entry = Entry.from_dict(_base_dict(category="工作"))
+        assert entry.category_name == "工作"
+        assert Entry.from_dict(_base_dict(category="")).category_name == ""
+        assert Entry.from_dict(_base_dict()).category_name == ""

@@ -1,10 +1,12 @@
 """UI 层共享常量 — 按钮尺寸、动画时长、显示限制等。"""
 
+from ...business.managers.entry_manager import DEFAULT_RECENT_SUMMARIES_LIMIT
 from ...config import (
     CFG_CLIPBOARD_CLEAR_SECONDS,
     CFG_DEFAULT_PASSWORD_LENGTH,
     CFG_PASSWORD_VISIBLE_SECONDS,
     DEFAULT_CONFIG,
+    DEFAULT_THEME,
 )
 
 # 密码可见秒数等默认值从 config.DEFAULT_CONFIG 派生为单一事实源，避免双源漂移；
@@ -49,7 +51,10 @@ MS_INITIAL_BACKUP_DELAY = 1500  # 启动后首次备份检查延迟
 MAX_HISTORY_DISPLAY = 5  # 详情面板最多显示密码历史条数
 MAX_TAG_DISPLAY = 5  # 详情面板最多显示标签数
 MAX_TAG_AUTOCOMPLETE = 20  # 标签自动补全最大数量
-RECENT_ENTRY_LIMIT = 20  # 「近期更新」筛选最多显示条目数
+# 「近期更新」筛选最多显示条目数（ARCH-034）：引用业务层
+# get_recent_summaries 的默认 limit 作单一事实源（UI→business 合法），原本地同值
+# 20 双源声明在业务侧调整时会静默漂移，使 UI 截断与 SQL LIMIT 失配。
+RECENT_ENTRY_LIMIT = DEFAULT_RECENT_SUMMARIES_LIMIT
 MAX_SEARCH_RESULTS_DISPLAY = 1000  # 搜索结果渲染上限：超大库下避免一次性渲染过多条目卡死 UI
 ASYNC_SEARCH_THRESHOLD = 50  # 超过该条目数时列表/搜索移入后台线程
 # 阈值由 100 下调至 50（PERF-012）：冷缓存下 50-100 条目的全量摘要解密（每条 4 字段
@@ -140,7 +145,8 @@ SERVER_PORT_MIN = 1
 SERVER_PORT_MAX = 65535
 
 # ---------- 主题标识 ----------
-# 主题字符串单例（与 config.DEFAULT_THEME 同值）：'light'/'dark' 字面量归 config
-# 所有，此处仅为 UI 层提供单一事实源，避免多处内联漂移。
-THEME_LIGHT = "light"
+# 主题字符串单例：'light'/'dark' 字面量归 config 所有。THEME_LIGHT 直接派生自
+# config.DEFAULT_THEME（ARCH-035），消除「同值双源」漂移；THEME_DARK 无 config 侧
+# 常量（DEFAULT_THEME 恒为 light），保留字面量。
+THEME_LIGHT = DEFAULT_THEME
 THEME_DARK = "dark"

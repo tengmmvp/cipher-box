@@ -347,22 +347,30 @@ def build_encrypted_entry_fields(
 
     供备份恢复等从明文字典重建加密条目场景，字段集与解密侧保持一致避免漂移。
 
+    对 :data:`SENSITIVE_ENCRYPTED_FIELDS` 循环产出（QL-046）：custom_fields 为 JSON
+    结构非纯字符串，序列化特判；其余字符串字段统一经 encrypt_field（AAD 构造与原
+    手工枚举逐字段完全一致）。新增加密字段只需登记单一事实源，加密侧自动跟随——
+    消除「解密/验签侧响亮失败、加密侧静默丢字段」的写读不对称（丢字段的密文入库
+    会使恢复往返断裂）。键集完备性由 tests/test_field_consistency.py 守护。
+
     Args:
         item: 含明文字段的字典（来自备份 JSON）。
         key: AES-256 密钥。
         crypto_id: 条目加密标识，参与 AAD。
+
+    Returns:
+        ``{逻辑字段名: 密文}``，键集恰为 SENSITIVE_ENCRYPTED_FIELDS。
     """
     custom_fields = item.get("custom_fields", [])
     custom_json = json.dumps(custom_fields, ensure_ascii=False) if custom_fields else ""
     return {
-        "title": encrypt_field(item.get("title", ""), key, crypto_id, "title"),
-        "username": encrypt_field(item.get("username", ""), key, crypto_id, "username"),
-        "password": encrypt_field(item.get("password", ""), key, crypto_id, "password"),
-        "url": encrypt_field(item.get("url", ""), key, crypto_id, "url"),
-        "tags": encrypt_field(item.get("tags", ""), key, crypto_id, "tags"),
-        "notes": encrypt_field(item.get("notes", ""), key, crypto_id, "notes"),
-        "custom_fields": encrypt_field(custom_json, key, crypto_id, "custom_fields"),
-        "totp_secret": encrypt_field(item.get("totp_secret", ""), key, crypto_id, "totp_secret"),
+        field: encrypt_field(
+            custom_json if field == "custom_fields" else item.get(field, ""),
+            key,
+            crypto_id,
+            field,
+        )
+        for field in SENSITIVE_ENCRYPTED_FIELDS
     }
 
 

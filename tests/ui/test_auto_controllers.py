@@ -38,6 +38,7 @@ class TestAutoBackupController:
             def __init__(self, func, parent=None):
                 captured["func"] = func
                 self.error = MagicMock()
+                self.finished = MagicMock()
 
             def cancel_check(self):
                 return False
@@ -56,6 +57,117 @@ class TestAutoBackupController:
         ctrl._backup.maybe_auto_backup.assert_called_once()
         kwargs = ctrl._backup.maybe_auto_backup.call_args.kwargs
         assert callable(kwargs["cancel_check"])
+
+    def test_run_async_business_failure_shows_toast(self, qapp, monkeypatch):
+        """maybe_auto_backup 返回 (False, msg) 的业务失败经 finished 信号触发 Toast（QL-048）。
+
+        旧行为：_task 返回 (False, msg) 元组走 worker.finished，而控制器只连了
+        worker.error——业务失败（路径无效/权限失败/载荷超限等）仅业务层日志、无
+        用户可见反馈，QL-004 契约只兑现了异常路径。
+        """
+        ctrl = AutoBackupController(MagicMock(), MagicMock(), MagicMock())
+        ctrl._vault.is_unlocked = True
+        ctrl._parent = MagicMock()  # Toast.show 需非 None parent（已 monkeypatch，值不触真实 Qt）
+        captured: dict = {}
+
+        class _FakeWorker:
+            def __init__(self, func, parent=None):
+                captured["func"] = func
+                self.error = MagicMock()
+                self.finished = MagicMock()
+
+            def cancel_check(self):
+                return False
+
+            def start(self):
+                captured["started"] = True
+
+        monkeypatch.setattr(
+            "src.ui.controllers.auto_backup_controller.BackgroundWorker",
+            _FakeWorker,
+        )
+        toast_calls: list[tuple] = []
+        monkeypatch.setattr(
+            "src.ui.components.toast.Toast.show",
+            staticmethod(lambda *args, **kwargs: toast_calls.append(args)),
+        )
+
+        ctrl._run_async()
+        finished_handler = ctrl._worker.finished.connect.call_args[0][0]
+
+        finished_handler((False, "备份目录路径无效: D:/missing"))
+
+        assert toast_calls, "业务失败 (False, msg) 应触发 Toast（QL-048）"
+
+    def test_run_async_business_success_no_toast(self, qapp, monkeypatch):
+        """maybe_auto_backup 返回 (True, "")（含禁用/未到期跳过）不触发 Toast。"""
+        ctrl = AutoBackupController(MagicMock(), MagicMock(), MagicMock())
+        ctrl._vault.is_unlocked = True
+        ctrl._parent = MagicMock()
+
+        class _FakeWorker:
+            def __init__(self, func, parent=None):
+                self.error = MagicMock()
+                self.finished = MagicMock()
+
+            def cancel_check(self):
+                return False
+
+            def start(self):
+                pass
+
+        monkeypatch.setattr(
+            "src.ui.controllers.auto_backup_controller.BackgroundWorker",
+            _FakeWorker,
+        )
+        toast_calls: list[tuple] = []
+        monkeypatch.setattr(
+            "src.ui.components.toast.Toast.show",
+            staticmethod(lambda *args, **kwargs: toast_calls.append(args)),
+        )
+
+        ctrl._run_async()
+        finished_handler = ctrl._worker.finished.connect.call_args[0][0]
+
+        finished_handler((True, ""))
+
+        assert toast_calls == []
+
+    def test_run_async_stale_worker_finished_ignored(self, qapp, monkeypatch):
+        """被后续备份替换后的旧 worker finished 回调被忽略（stale 守卫）。"""
+        ctrl = AutoBackupController(MagicMock(), MagicMock(), MagicMock())
+        ctrl._vault.is_unlocked = True
+        ctrl._parent = MagicMock()
+
+        class _FakeWorker:
+            def __init__(self, func, parent=None):
+                self.error = MagicMock()
+                self.finished = MagicMock()
+
+            def cancel_check(self):
+                return False
+
+            def start(self):
+                pass
+
+        monkeypatch.setattr(
+            "src.ui.controllers.auto_backup_controller.BackgroundWorker",
+            _FakeWorker,
+        )
+        toast_calls: list[tuple] = []
+        monkeypatch.setattr(
+            "src.ui.components.toast.Toast.show",
+            staticmethod(lambda *args, **kwargs: toast_calls.append(args)),
+        )
+
+        ctrl._run_async()
+        stale_worker = ctrl._worker
+        stale_handler = stale_worker.finished.connect.call_args[0][0]
+        ctrl._worker = MagicMock()  # 已被新一轮备份替换
+
+        stale_handler((False, "过期消息"))
+
+        assert toast_calls == []
 
 
 class TestAutoLockController:

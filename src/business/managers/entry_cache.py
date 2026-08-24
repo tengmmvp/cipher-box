@@ -349,6 +349,7 @@ class EntryCacheManager:
         value: str,
         *,
         key: bytes | None = None,
+        data_epoch: str | None = None,
     ) -> str:
         """解密分类名并缓存（首次解密后缓存）。
 
@@ -357,6 +358,13 @@ class EntryCacheManager:
         ``epoch_guarded_read`` with 块内快照的主密钥。锁外解密期间若发生改密，
         实时 ``self._key`` 已轮换为新密钥与本批旧密文不匹配致 GCM 认证失败、错误
         空分类名以新 epoch 写入缓存持续污染；传 ``key`` 用快照解密旧密文确保正确。
+
+        ``data_epoch`` 为写入方世代（SEC-043，语义同 :meth:`_cached_search_metadata_no_check`
+        的 SEC-041 守卫）：调用方在锁内与 raw/密钥同刻快照的世代，提供时优先于缓存
+        侧采样参与回写守卫，堵「锁外解密期间恢复重臂新世代、旧明文植入新缓存」的
+        跨世代 grafting。未提供时保持缓存侧采样原行为——剩余不传的调用方为
+        category_manager 的分类名解密（自持会话缓存路径，不在本守卫改造的文件集内，
+        其窗口与既有 version 守卫的防护面一致，接入留作后续）。
         """
         if category_id is None or not value:
             return ""
@@ -364,7 +372,8 @@ class EntryCacheManager:
             cached = self._category_name_cache.get(category_id)
             # 采样 epoch，回写时复查（与 _cached_search_metadata_no_check 对称）：锁外
             # 解密期间若改密清缓存致 _cache_epoch 变化，不回写避免旧明文 stale 污染。
-            entry_epoch = self._cache_epoch
+            # data_epoch 提供时取代缓存侧采样（SEC-043，理由见 docstring）。
+            entry_epoch = data_epoch if data_epoch is not None else self._cache_epoch
             entry_version = self._invalidate_version
         if cached is not None:
             return cached
@@ -376,7 +385,7 @@ class EntryCacheManager:
             strict=True,
         )
         with self._cache_lock:
-            # epoch + version 双重守卫，语义同 _cached_search_metadata_no_check（M4）。
+            # epoch + version 双重守卫，语义同 _cached_search_metadata_no_check（M4/SEC-043）。
             if self._cache_epoch == entry_epoch and self._invalidate_version == entry_version:
                 self._category_name_cache[category_id] = name
         return name
@@ -397,6 +406,11 @@ class EntryCacheManager:
         读路径经 ``epoch_guarded_read`` 守卫（ARCH-005）：TOTP 定时器是真实并发读者，
         改密 commit 与密钥激活的微秒窗口内裸读会用旧密钥解密新密文致 GCM 认证失败。
         单条解密锁内开销可忽略；epoch 不一致时返回 None，下次定时器周期重新解析。
+
+        缓存回写带写入方世代守卫（SEC-044，镜像摘要缓存回写模式）：解密前在读守卫
+        锁内采样缓存世代与失效版本，回写前双重复查——解密完成（退出读守卫）到回写
+        之间若恢复/锁定触发 ``invalidate_all`` 且新读路径重臂新世代，旧世代 secret
+        不得写入新世代缓存（TOTP secret 是双因子凭证，跨世代驻留泄漏面更大）。
         """
         if use_cache:
             with self._cache_lock:
@@ -408,6 +422,11 @@ class EntryCacheManager:
                 raw = self._vault.db.get_entry(entry_id)
                 if raw is None or not raw.totp_secret:
                     return None
+                # 解密前锁内采样世代与版本（SEC-044）：读守卫持有 db_lock，恢复/
+                # 改密 commit 无法插入采样与解密之间，故此处缓存侧采样即调用方世代。
+                with self._cache_lock:
+                    entry_epoch = self._cache_epoch
+                    entry_version = self._invalidate_version
                 secret = _decrypt_field_impl(
                     raw.totp_secret,
                     self._key,
@@ -420,18 +439,36 @@ class EntryCacheManager:
             return None
         if use_cache:
             with self._cache_lock:
-                self._totp_secret_cache[entry_id] = secret
+                # epoch + version 双重复查（SEC-044）：语义同 _cached_search_metadata_no_check
+                # （M4/SEC-041）——解密期间发生过任何整体失效（含恢复重臂新世代）或
+                # 单条失效（pop_totp），本次解密结果均不回写。
+                if self._cache_epoch == entry_epoch and self._invalidate_version == entry_version:
+                    self._totp_secret_cache[entry_id] = secret
         return secret
 
-    def store_totp(self, entry_id: int, secret: str) -> None:
+    def store_totp(
+        self,
+        entry_id: int,
+        secret: str,
+        *,
+        data_epoch: str | None = None,
+    ) -> None:
         """预热 TOTP secret 缓存（供 TotpService.get_state 首次展示后预热）。
 
         空串归一：与 :meth:`resolve_totp_secret` 的 ``if not secret: return None`` 对齐——
         空串等价无 secret，不入缓存，避免空串落缓存后 use_cache 命中返回空串绕过归一。
+
+        ``data_epoch`` 为写入方世代复查（SEC-044）：提供时要求当前缓存世代仍等于
+        该世代才落缓存，堵「secret 解密于恢复前世代、store 晚于恢复重臂」的跨世代
+        grafting——本方法自身无解密窗口（无可复查的采样-回写间隙），世代来源只能
+        是调用方随 secret 一并传递的快照。未提供保持无条件落缓存（既有调用方的
+        secret 与缓存世代同线程同世代，无跨世代窗口）。
         """
         if not secret:
             return
         with self._cache_lock:
+            if data_epoch is not None and self._cache_epoch != data_epoch:
+                return
             self._totp_secret_cache[entry_id] = secret
 
     def pop_totp(self, entry_id: int) -> None:

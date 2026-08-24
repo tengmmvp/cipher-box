@@ -58,10 +58,30 @@ class TestTOTPErrorHandling:
         assert TOTPGenerator._extract_period(uri, 30) == 30
 
     def test_normalize_base32(self):
-        """_normalize_base32 正确标准化密钥，自动补齐 Base32 填充。"""
+        """_normalize_base32 正确标准化密钥，剥离既有填充后统一补齐。"""
         assert TOTPGenerator._normalize_base32("  abc def  ") == "ABCDEF=="
         assert TOTPGenerator._normalize_base32("jbswy3dpehpk3pxp") == "JBSWY3DPEHPK3PXP"
         assert TOTPGenerator._normalize_base32("") == ""
+
+    def test_normalize_base32_strips_redundant_trailing_padding(self):
+        """对齐长度 + 多余尾随 = 形态（QL-045）：剥离既有 = 后统一补齐，可正常解码。
+
+        部分认证器导出 16 数据字符后仍跟尾随 =；原「只补齐不剥离」会把填充叠加成
+        非法组合（8 个 =）致 b32decode 抛 binascii.Error。合法对齐输入剥离后重补
+        结果不变（等幂），无回归面。
+        """
+        # 已对齐（16 数据字符）+ 1/2/6 个多余尾随 =：归一为无填充的等幂形态
+        assert TOTPGenerator._normalize_base32("JBSWY3DPEHPK3PXP=") == "JBSWY3DPEHPK3PXP"
+        assert TOTPGenerator._normalize_base32("JBSWY3DPEHPK3PXP==") == "JBSWY3DPEHPK3PXP"
+        assert TOTPGenerator._normalize_base32("JBSWY3DPEHPK3PXP======") == "JBSWY3DPEHPK3PXP"
+        # 未对齐（6 数据字符）+ 多余 =：剥离后按标准补 2 个（既有 6= 形态不回归）
+        assert TOTPGenerator._normalize_base32("ABCDEF=") == "ABCDEF=="
+        assert TOTPGenerator._normalize_base32("ABCDEF======") == "ABCDEF=="
+
+    def test_trailing_padding_secret_decodable_end_to_end(self):
+        """'JBSWY3DPEHPK3PXP=' 全链路可解（validate 通过、能生成 6 位验证码）。"""
+        assert TOTPGenerator.validate_secret("JBSWY3DPEHPK3PXP=") is True
+        assert TOTPGenerator.generate_or_raise("JBSWY3DPEHPK3PXP=") != ""
 
     # --- period<=0 边界：辅助方法须与 _parse_config 一致，避免崩溃 ---
 

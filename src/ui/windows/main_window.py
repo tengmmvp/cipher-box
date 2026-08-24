@@ -57,7 +57,7 @@ from ..components.detail_panel import DetailPanel
 from ..components.entry_list_widget import EntryItemDelegate, EntryListModel
 from ..components.toast import ToastManager
 from ..components.tray_icon import TrayIcon
-from ..components.widgets import disconnect_all
+from ..components.widgets import create_plain_text_label, disconnect_all
 from ..controllers.auto_backup_controller import AutoBackupController
 from ..controllers.auto_lock_controller import AutoLockController
 from ..controllers.entry_actions_controller import (
@@ -493,8 +493,9 @@ class MainWindow(QMainWindow):
         list_header = QHBoxLayout()
         list_header.setContentsMargins(12, 8, 12, 4)
 
-        self._list_title = QLabel("全部条目")
-        self._list_title.setObjectName("sidebarListTitle")
+        # 列表标题经 PlainText 工厂创建（SEC-030）：list_refresh_controller 会以
+        # 分类名 setText 本标签，分类名可经导入携带富文本标记
+        self._list_title = create_plain_text_label("全部条目", "sidebarListTitle")
         list_header.addWidget(self._list_title)
 
         list_header.addStretch()

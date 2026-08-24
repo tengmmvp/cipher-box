@@ -114,7 +114,7 @@ class BitwardenFieldType(enum.IntEnum):
 
 
 def _bitwarden_field_value(field: dict[str, Any]) -> str:
-    """提取 Bitwarden 自定义字段值，布尔型转 true/false 字符串保真（P2）。
+    """提取 Bitwarden 自定义字段值，布尔型转 true/false 字符串保真（转换保真决策）。
 
     Bitwarden 布尔字段（type=2）值为 JSON bool，``_as_str`` 对非 str 返回空串会丢失；
     转为 ``true``/``false`` 字符串保留语义。文本/隐藏字段经 ``_as_str`` 守卫。
@@ -266,7 +266,7 @@ class BitwardenImporter:
                 totp_secret=_sanitize_totp_secret(_as_str(login.get("totp"))),
                 is_favorite=bool(item.get("favorite", False)),
                 category_name=folder_name,
-                # 保留 Bitwarden 密码修改时间（M5）：避免导入后 password_changed_at 全部
+                # 保留 Bitwarden 密码修改时间（时间戳保真决策）：避免导入后 password_changed_at 全部
                 # 冻结为导入时刻，使过期检测把本应过期的密码当作「刚修改」而漏报。
                 # passwordRevisionDate 仅 login 有值；note/card 为 null → 空串回退当前时间。
                 password_changed_at=_parse_bitwarden_date(login.get("passwordRevisionDate")),

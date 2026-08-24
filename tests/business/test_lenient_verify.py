@@ -111,11 +111,14 @@ class TestLenientVerify:
 
 
 class TestSearchPathReverify:
-    """搜索路径的 SKIP 拉取 + 命中行 LENIENT 补验签（PERF-019）。
+    """搜索路径的 SKIP 拉取 + 命中行就地 LENIENT 补验签（PERF-019/067）。
 
     搜索 fetch 改 VerifyMode.SKIP（省全部行逐行 HMAC 验签），完整性标记改为对
-    匹配命中且将渲染的行经 get_entries_by_ids 补验签。守护两点：命中行仍被验签
-    （篡改行在结果中带 integrity_error，不抛异常），过滤语义与全量路径一致。
+    匹配命中且将渲染的行就地验签（PERF-067：经 metadata_signer.verify_raw 对已
+    物化的行纯 HMAC 比对，不再经 get_entries_by_ids 二次读库）。篡改一律以真实
+    SQL 改写非加密元数据（password_strength 入签载荷，改动即 mac 失配）模拟，
+    与就地验签机制同源。守护三点：命中行仍被验签（篡改行在结果中带
+    integrity_error，不抛异常）、验签不二次读库、过滤语义与全量路径一致。
     """
 
     @pytest.fixture(autouse=True)
@@ -135,19 +138,23 @@ class TestSearchPathReverify:
         yield
         self._vault.close()
 
+    def _tamper_all_rows(self):
+        """SQL 改写全部行的非加密元数据（入签载荷），使 metadata_mac 比对必然失配。"""
+        conn = self._vault.db._conn
+        assert conn is not None
+        conn.execute("UPDATE entries SET password_strength = password_strength + 40")
+        conn.commit()
+
     def test_search_matched_rows_still_verified(self):
-        """搜索命中的行经补验签：篡改行在结果中带 integrity_error 而非抛异常。"""
-
-        def bad_verifier(entry: RawEntry):
-            raise VaultIntegrityError("元数据签名不匹配")
-
-        self._vault.db._entry_verifier = bad_verifier
+        """搜索命中的行经就地补验签：篡改行在结果中带 integrity_error 而非抛异常。"""
+        self._tamper_all_rows()
 
         # SKIP 拉取阶段不验签（否则此处直接全量标记）；补验签仅覆盖命中行
         results = self._entry_mgr.get_entry_summaries(search="git")
         # GitHub 首页 / GitLab 备用 命中（title 小写含 "git"），均应带完整性警示
         assert {r.title for r in results} == {"GitHub 首页", "GitLab 备用"}
         assert all(r.integrity_error is True for r in results)
+        assert all(r.integrity_message == "元数据完整性校验失败" for r in results)
 
     def test_search_results_consistent_with_full_list(self):
         """SKIP 后的内存过滤语义与原全量路径一致（同一数据两种路径结果一致）。"""
@@ -165,13 +172,50 @@ class TestSearchPathReverify:
             assert s.integrity_message == f.integrity_message
 
     def test_search_no_match_returns_empty_without_verify(self):
-        """无命中时不做补验签也不抛异常（未命中行的篡改检测由全量列表刷新覆盖）。"""
+        """无命中时不做补验签也不抛异常（未命中行的篡改检测由全量列表刷新覆盖）。
 
-        def bad_verifier(entry: RawEntry):
-            raise VaultIntegrityError("元数据签名不匹配")
+        同时守护 PERF-067 的「不二次读库」：get_entries_by_ids 被替换为抛错哨兵，
+        无命中路径若经其重读会立即失败。
+        """
 
-        self._vault.db._entry_verifier = bad_verifier
+        def _forbid_reread(*_args, **_kwargs):
+            raise AssertionError("无命中时不应二次读库补验签")
+
+        self._vault.db.get_entries_by_ids = _forbid_reread  # type: ignore[method-assign]
         assert self._entry_mgr.get_entry_summaries(search="不存在的关键词") == []
+
+    def test_reverify_in_place_without_database_reread(self):
+        """命中行就地验签（PERF-067）：有命中也不经 get_entries_by_ids 二次读库。"""
+        self._tamper_all_rows()
+
+        def _forbid_reread(*_args, **_kwargs):
+            raise AssertionError("就地验签不应二次读库（PERF-067）")
+
+        self._vault.db.get_entries_by_ids = _forbid_reread  # type: ignore[method-assign]
+        results = self._entry_mgr.get_entry_summaries(search="git")
+        assert len(results) == 2
+        assert all(r.integrity_error is True for r in results)
+
+    def test_in_place_verify_matches_db_reread_path(self):
+        """就地验签与原 get_entries_by_ids（LENIENT）路径的判定结果一致（PERF-067）。
+
+        同一批篡改行，两条验签路径（就地纯 HMAC vs db 层 verifier 钩子）对
+        integrity_error/integrity_message 的结论必须一致——保证机制替换零语义漂移。
+        """
+        entry_id = next(e.id for e in self._entry_mgr.get_entries() if e.username == "alice")
+        assert entry_id is not None
+        conn = self._vault.db._conn
+        assert conn is not None
+        conn.execute("UPDATE entries SET is_favorite = 1 - is_favorite WHERE id=?", (entry_id,))
+        conn.commit()
+
+        searched = self._entry_mgr.get_entry_summaries(search="alice")
+        assert len(searched) == 1
+        # db 层参照路径：get_entries_by_ids 内部走 _row_to_entry 的 LENIENT 验签
+        reread = self._vault.db.get_entries_by_ids([entry_id])
+        assert len(reread) == 1
+        assert searched[0].integrity_error == reread[0].integrity_error is True
+        assert searched[0].integrity_message == reread[0].integrity_message
 
     def test_search_ciphertext_corruption_marks_integrity(self):
         """搜索命中行的密文损坏（GCM 失败）仍计入完整性警示。"""
@@ -197,17 +241,13 @@ class TestSearchPathReverify:
         旧实现对 ``matched`` 按 SQL 序取前 1000 补验签，但 UI 在排序字段重排 + 标签
         过滤后才截断渲染——SQL 序 1000 名之外的行可能落入渲染窗口而未验签（仿真
         复现默认排序 67/1000）。修复后对全部命中行验签：本测试构造 1005 条命中并
-        全部篡改（bad_verifier），断言每条渲染结果都带 integrity_error。
+        全部篡改（SQL 批量改写入签元数据），断言每条渲染结果都带 integrity_error。
         """
         for i in range(1005):
             self._entry_mgr.add_entry(
                 Entry(title=f"site{i:04d}", username="u", password="pass1", entry_type="login")
             )
-
-        def bad_verifier(entry: RawEntry):
-            raise VaultIntegrityError("元数据签名不匹配")
-
-        self._vault.db._entry_verifier = bad_verifier
+        self._tamper_all_rows()
 
         results = self._entry_mgr.get_entry_summaries(search="site")
         # 全部 1005 条命中且全部经验签带警示（旧实现仅前 1000 条带警示）

@@ -25,6 +25,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ...business.managers.import_export import (
+    export_decrypt_percent,
+    export_write_percent,
+)
 from ...utils.file_security import secure_file
 from ..components.widgets import (
     WorkerBackedDialog,
@@ -296,22 +300,37 @@ class ImportExportDialog(WorkerBackedDialog):
                 return
 
         self._set_busy(True)
+        # 进度条初始为不确定模式，收到首个 progress 信号后切换到确定范围（PERF-070，
+        # 与导入侧同款；50k 导出 = 解密 5.1s + 写文件 1.9s，此前全程不确定旋转）。
+        self._progress.setRange(0, 0)
+        self._progress.setValue(0)
+        self._progress.show()
 
         def _export_task() -> int:
             # worker 是下方赋值的自由变量，闭包延迟绑定（_export_task 在 worker.run
-            # 时执行，worker 已赋值）。
+            # 时执行，worker 已赋值）。解密/写文件两阶段均按条目节流上报原始计数，
+            # 百分比加权（解密 0→70 / 写文件 70→100）经业务层映射函数完成。
+            def _decrypt_progress(done: int, total: int) -> None:
+                worker.emit_progress(export_decrypt_percent(done, total), 100)
+
             entries = self._entry_mgr.get_entries_for_export(
                 include_pwd,
                 cancel_check=worker.cancel_check,
+                progress=_decrypt_progress,
             )
             if worker.is_cancelled:
                 return 0
+
+            def _write_progress(done: int, total: int) -> None:
+                worker.emit_progress(export_write_percent(done, total), 100)
+
             if fmt == "JSON":
                 self._import_export.export_to_json(
                     path,
                     entries,
                     include_pwd,
                     cancel_check=worker.cancel_check,
+                    progress=_write_progress,
                 )
             else:
                 self._import_export.export_to_csv(
@@ -319,12 +338,14 @@ class ImportExportDialog(WorkerBackedDialog):
                     entries,
                     include_pwd,
                     cancel_check=worker.cancel_check,
+                    progress=_write_progress,
                 )
             return len(entries)
 
         self._worker_is_export = True
         worker = BackgroundWorker(_export_task, parent=self)
         self._worker = worker
+        worker.progress.connect(self._on_export_progress)
         worker.finished.connect(self._on_export_done)
         worker.error.connect(self._on_export_error)
         # cancelled 监听：export 可取消，worker 取消时 emit cancelled 而非 finished
@@ -332,6 +353,11 @@ class ImportExportDialog(WorkerBackedDialog):
         # is_cancelled 是永不命中的死代码。改由 cancelled 信号驱动 _on_export_cancelled。
         worker.cancelled.connect(self._on_export_cancelled)
         worker.start()
+
+    def _on_export_progress(self, current: int, total: int) -> None:
+        """导出进度回调：切换到确定范围并更新进度条（PERF-070，参照导入侧模式）。"""
+        self._progress.setRange(0, total)
+        self._progress.setValue(current)
 
     def _on_export_done(self, count: int) -> None:
         if not finalize_worker_if_current(self):

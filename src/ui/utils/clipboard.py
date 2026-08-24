@@ -176,7 +176,7 @@ class ClipboardManager(QObject):
             # 消除 setText 与排除标记分两次写入的时序窗口；非 Windows 或失败回退 Qt setText。
             if not _copy_with_history_exclusion(text):
                 # setText 容错（SEC-017）：与 _clear_clipboard 的 text() 读取容错对称——
-                # H1 已使读取失败降级，写入失败同样须降级，否则 Windows 下剪贴板被占用时
+                # 读取失败已降级，写入失败同样须降级，否则 Windows 下剪贴板被占用时
                 # 复制操作直接崩 UI。写入失败则无内容可清，直接返回不设 hash/不定时。
                 try:
                     clipboard.setText(text)

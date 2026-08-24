@@ -27,6 +27,7 @@ from ...models import MAX_CATEGORY_NAME, Category, Entry, RawEntry
 from ...utils.file_security import atomic_write, validate_file_path
 from ...utils.format import utc_now_iso
 from ..services.entry_batch_writer import (
+    PROGRESS_REPORT_EVERY,
     BatchUpdateItem,
     PreparedUpdate,
     encrypt_new_entries,
@@ -67,14 +68,26 @@ _IMPORT_PROGRESS_TOTAL = 100
 _PROGRESS_PARSE_DONE = 5
 # sanitize 完成里程碑（公式注入清洗，粗粒度单点上报）。
 _PROGRESS_SANITIZE_DONE = 10
-# classify 阶段跨度：10 → 15。
-_PROGRESS_CLASSIFY_SPAN = 5
-# encrypt 阶段：15 → 70（耗时主导，行级细粒度）。
+# 去重计划 + 覆盖目标密文预读完成里程碑（PERF-069：此前该段无任何上报）。
+_PROGRESS_PLAN_DONE = 12
+# classify 阶段跨度：12 → 15（PERF-069：每 PROGRESS_REPORT_EVERY 行节流上报，
+# 终值恒上报——50k 行逐条上报的跨线程信号发射开销反超分类本身）。
+_PROGRESS_CLASSIFY_SPAN = 3
+# encrypt 阶段：15 → 70（耗时主导，行级细粒度；新条目与覆盖条目合并计量，PERF-069）。
 _PROGRESS_ENCRYPT_BASE = 15
 _PROGRESS_ENCRYPT_SPAN = 55
-# write 阶段：70 → 100（次主导，分块细粒度）。
+# write 阶段：70 → 100（次主导，分块细粒度；新增与覆盖写入合并计量，PERF-069）。
 _PROGRESS_WRITE_BASE = 70
 _PROGRESS_WRITE_SPAN = 30
+
+# ======== 导出加权总进度刻度（PERF-070）========
+# 50k 实测导出 = 解密 5.1s + 写文件 1.9s（≈ 73%/27%），全程原为不确定旋转。
+# 解密阶段（get_entries_for_export 按条目节流）映射 0 → 70，写文件阶段（export_to_*
+# 按已写条目节流）映射 70 → 100；百分比映射由 UI 调用方（import_export_dialog）完成，
+# 业务函数只上报原始 (done, total) 条目计数。
+_EXPORT_DECRYPT_SPAN = 70
+_EXPORT_WRITE_BASE = 70
+_EXPORT_WRITE_SPAN = 30
 
 
 def _phase_progress(base: int, span: int, done: int, total: int) -> int:
@@ -89,7 +102,7 @@ def _phase_progress(base: int, span: int, done: int, total: int) -> int:
 
 
 def _emit_milestone(callbacks: "ImportCallbacks", value: int) -> None:
-    """粗粒度阶段里程碑上报（parse/sanitize/终值）：单点 ``(value, 100)``。"""
+    """粗粒度阶段里程碑上报（parse/sanitize/plan/终值）：单点 ``(value, 100)``。"""
     if callbacks.progress_callback is not None:
         callbacks.progress_callback(value, _IMPORT_PROGRESS_TOTAL)
 
@@ -107,12 +120,50 @@ def _sanitize_formula_prefix(value: str) -> str:
     return value
 
 
+def export_decrypt_percent(done: int, total: int) -> int:
+    """导出解密阶段 ``(done, total)`` → 加权总进度百分比 0→70（PERF-070）。
+
+    供 UI（import_export_dialog）把 ``get_entries_for_export`` 的原始条目计数上报
+    映射为总进度；50k 实测解密 5.1s / 写文件 1.9s，按 73/27 取整为 70/30 刻度。
+    """
+    return _phase_progress(0, _EXPORT_DECRYPT_SPAN, done, total)
+
+
+def export_write_percent(done: int, total: int) -> int:
+    """导出写文件阶段 ``(done, total)`` → 加权总进度百分比 70→100（PERF-070）。
+
+    与 :func:`export_decrypt_percent` 同一刻度连续；``_phase_progress`` 的空阶段
+    取满语义使零条目导出亦上报 100（进度不留悬挂）。
+    """
+    return _phase_progress(_EXPORT_WRITE_BASE, _EXPORT_WRITE_SPAN, done, total)
+
+
 def _sanitize_entry_formula_fields(entry: Entry) -> Entry:
     """对条目受公式注入影响的文本字段转义（SEC-008 入库边界清洗）。
 
     仅清洗会外流至表格软件的文本字段；password/totp_secret 为不外流至表格的密钥，
     不清洗（转义会破坏密钥有效性）。字段集在此显式声明为单一事实源。
+
+    custom_fields 的 name/value（SEC-045）：非 password 类型字段的值经详情面板
+    「一键复制」外流且 CSV 导出拼入 notes（``name=value``），原样入库会使
+    ``=cmd|...`` 类公式值直达粘贴执行；非 password 类型字段的 name/value 统一
+    清洗。password 类型字段的值豁免——密钥完整性优先，与 SEC-008/SEC-039 的
+    「不清洗密钥字段」决策一致（对其 name 亦不清洗，字段名仅作显示标签且非
+    复制目标，保持该豁免简单可陈述）。
     """
+    custom_fields = entry.custom_fields
+    sanitized_fields = [
+        (
+            replace(
+                field,
+                name=_sanitize_formula_prefix(field.name),
+                value=_sanitize_formula_prefix(field.value),
+            )
+            if field.field_type != "password"
+            else field
+        )
+        for field in custom_fields
+    ]
     return replace(
         entry,
         title=_sanitize_formula_prefix(entry.title),
@@ -120,6 +171,7 @@ def _sanitize_entry_formula_fields(entry: Entry) -> Entry:
         url=_sanitize_formula_prefix(entry.url),
         tags=_sanitize_formula_prefix(entry.tags),
         notes=_sanitize_formula_prefix(entry.notes),
+        custom_fields=sanitized_fields,
     )
 
 
@@ -155,9 +207,11 @@ class ImportCallbacks:
     字段含义：
         progress_callback: ``(current, total)`` 进度回调，加权总进度语义（PERF-065）：
             ``total`` 恒为 100，``current`` 为各阶段按实测耗时占比映射的百分比
-            （parse 5 / sanitize 10 / classify 10→15 / encrypt 15→70 / write 70→100），
-            单调不减且终值 100——覆盖加密与写入两个耗时主导阶段，进度条不再先冲
-            100% 再冻结。
+            （parse 5 / sanitize 10 / plan 12 / classify 12→15 / encrypt 15→70 /
+            write 70→100），单调不减且终值 100。各阶段均按 ``PROGRESS_REPORT_EVERY``
+            行节流上报、阶段终值恒上报（PERF-069：classify 亦节流，50k 行逐条跨
+            线程信号发射的开销反超阶段本身）；encrypt/write 两阶段合并计量新条目
+            与覆盖条目（纯覆盖导入不再全程冻结在 15%）。
         cancel_check: 取消探针，返回真值时中止分类循环（已分类部分随事务提交，
             构成部分导入）。
         overwrite_merger: 覆盖合并器 ``(导入条目, 已有条目) → 合并后条目``，由各
@@ -302,8 +356,10 @@ class ImportExportManager:
         """批量预读待覆盖条目的密文 raw（不解密），单次 SQL 查询替代 N+1。
 
         仅预读密文，解密推迟到覆盖循环逐条执行并立即清零，使任一时刻仅 1 条
-        覆盖目标的完整明文驻留内存，与单条路径的「用毕即清」纪律一致。raw 供
-        ``update_entry`` 经 ``preloaded_raw`` 复用（跳过重复 ``get_entry``）。
+        覆盖目标的完整明文驻留内存，与单条路径的「用毕即清」纪律一致。raw 流向
+        :class:`OverwritePlan` → :class:`BatchUpdateItem`，由
+        :func:`entry_batch_writer.prepare_overwrite_updates` 在锁外预处理阶段消费
+        （取密文做旧密码解密比对与新密文构建，MAINT-004）。
         """
         ids_by_idx: dict[int, int] = {}
         for idx, summary in overwrite.items():
@@ -396,13 +452,19 @@ class ImportExportManager:
         entries: list[Entry],
         include_password: bool = False,
         cancel_check: Callable[[], bool] | None = None,
+        progress: Callable[[int, int], None] | None = None,
     ) -> bool:
         """导出为 JSON 文件。
 
         导出前经 :func:`validate_file_path` 校验路径（SEC-003），与导入侧
         :meth:`_validate_import_path` 对齐，拒绝目录遍历与符号链接重定向。
+
+        ``progress``（PERF-070）：提供时按已写条目数上报 ``(written, total)``，每
+        ``PROGRESS_REPORT_EVERY`` 条节流、终值恒上报——50k 条写文件实测 1.9s，此前
+        该阶段与解密阶段（5.1s）全程不确定旋转。百分比映射由 UI 调用方完成。
         """
         resolved = validate_file_path(filepath, check_ancestors=True)
+        total = len(entries)
 
         def write_cb(f: IO[str]) -> bool:
             header = {
@@ -416,6 +478,7 @@ class ImportExportManager:
                 f.write(f"  {json.dumps(key)}: {json.dumps(value, ensure_ascii=False)}{comma}\n")
             f.write('  "entries": [')
             first = True
+            written = 0
             for entry in entries:
                 if cancel_check and cancel_check():
                     return False
@@ -429,6 +492,13 @@ class ImportExportManager:
                 )
                 f.write("\n".join(f"    {line}" for line in serialized.splitlines()))
                 first = False
+                written += 1
+                if progress is not None and (
+                    written % PROGRESS_REPORT_EVERY == 0 or written == total
+                ):
+                    progress(written, total)
+            if progress is not None and total == 0:
+                progress(0, 0)  # 空导出也上报终值（UI 侧映射为 100，进度不留悬挂）
             if not first:
                 f.write("\n")
             f.write("  ]\n}\n")
@@ -442,6 +512,7 @@ class ImportExportManager:
         entries: list[Entry],
         include_password: bool = False,
         cancel_check: Callable[[], bool] | None = None,
+        progress: Callable[[int, int], None] | None = None,
     ) -> bool:
         """导出为 CSV 文件。
 
@@ -451,6 +522,9 @@ class ImportExportManager:
         列，跳过 ``'`` 前缀转义（SEC-039）——与导入侧 ``_sanitize_entry_formula_fields``
         「不清洗密钥字段」（SEC-008）的决策对称：任何改变密钥值的清洗（前置 ``'``）都会
         使用户从 CSV 复制得到错误秘密、重导入静默存入带 ``'`` 的密码（往返损坏）。
+
+        ``progress``（PERF-070）：提供时按已写条目数上报 ``(written, total)``（与
+        :meth:`export_to_json` 同款节流与终值语义），百分比映射由 UI 调用方完成。
         """
         resolved = validate_file_path(filepath, check_ancestors=True)
         fieldnames = [
@@ -473,6 +547,8 @@ class ImportExportManager:
         def write_cb(f: IO[str]) -> bool:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
+            total = len(entries)
+            written = 0
             for entry in entries:
                 if cancel_check and cancel_check():
                     return False
@@ -500,6 +576,13 @@ class ImportExportManager:
                         for key, value in row.items()
                     }
                 )
+                written += 1
+                if progress is not None and (
+                    written % PROGRESS_REPORT_EVERY == 0 or written == total
+                ):
+                    progress(written, total)
+            if progress is not None and total == 0:
+                progress(0, 0)  # 空导出也上报终值（UI 侧映射为 100，进度不留悬挂）
             return True
 
         return atomic_write(
@@ -551,6 +634,9 @@ class ImportExportManager:
         # ARCH-001：预扫描批量创建缺失分类，替代 _dedupe_and_classify 内逐条
         # _resolve_category→add_category 的 O(N×M) 全表解密查重。
         self._ensure_categories(entries, duplicate_indices, ctx, callbacks.cancel_check)
+        # 去重计划 + 覆盖目标预读 + 分类预扫描完成里程碑（PERF-069：该段此前无上报，
+        # 与 sanitize 里程碑首尾相接覆盖 10%→12% 档）。
+        _emit_milestone(callbacks, _PROGRESS_PLAN_DONE)
 
         new_entries, overwrite_plans, classify_skipped = self._dedupe_and_classify(
             entries,
@@ -561,38 +647,47 @@ class ImportExportManager:
         )
 
         # 锁外加密（MAINT-004）：加密前快照 pre_epoch，供写入事务复查防「加密后改密」。
-        # 加密进度经加权映射上报 15%→70%（PERF-065）。
+        # 加密进度经加权映射上报 15%→70%（PERF-065）；新条目与覆盖条目两个子批合并
+        # 计量同一刻度（PERF-069）——纯覆盖导入（duplicate_action=overwrite 全命中）的
+        # 加密预处理是耗时主导，此前全程冻结在 15%。
         pre_epoch = self._entry_mgr.key_epoch
+        encrypt_total = len(new_entries) + len(overwrite_plans)
+        encrypt_adapter = self._offset_phase_reporter(
+            callbacks, _PROGRESS_ENCRYPT_BASE, _PROGRESS_ENCRYPT_SPAN, encrypt_total
+        )
         enc_new, preserve, new_skipped = self._encrypt_new_batch(
             new_entries,
             ctx.source_label,
-            progress=self._phase_reporter(
-                callbacks, _PROGRESS_ENCRYPT_BASE, _PROGRESS_ENCRYPT_SPAN
-            ),
+            progress=encrypt_adapter(offset=0, sub_total=len(new_entries)),
         )
         overwrite_prepared, overwrite_skipped = self._prepare_overwrite_batch(
             overwrite_plans,
             ctx.source_label,
+            progress=encrypt_adapter(offset=len(new_entries), sub_total=len(overwrite_plans)),
         )
 
         # ---- 锁内：epoch 守卫事务内裸写入 ----
         # epoch 守卫是冗余防御层：真正的串行化由 db.transaction() 持有的数据库锁保证
         # （改密 _re_encrypt_all 同样经该锁串行），不会与导入并发写库。pre_epoch 复查是
         # 纵深防御——加密已移出 db_lock（MAINT-004），复查确保「加密后→写入前」未发生改密。
-        # 写入进度经分块上报 70%→100%（PERF-065，事务内分块不破坏原子性）。
+        # 写入进度经分块上报 70%→100%（PERF-065，事务内分块不破坏原子性）；新增与
+        # 覆盖写入合并计量（PERF-069）。
+        write_total = len(enc_new) + len(overwrite_prepared)
+        write_adapter = self._offset_phase_reporter(
+            callbacks, _PROGRESS_WRITE_BASE, _PROGRESS_WRITE_SPAN, write_total
+        )
         with self._entry_mgr.epoch_guarded_transaction(operation="导入", pre_epoch=pre_epoch):
             write_new_entries(
                 self._entry_mgr,
                 enc_new,
                 preserve=preserve,
-                progress=self._phase_reporter(
-                    callbacks, _PROGRESS_WRITE_BASE, _PROGRESS_WRITE_SPAN
-                ),
+                progress=write_adapter(offset=0, sub_total=len(enc_new)),
             )
             overwrite_count = write_overwrite_updates(
                 self._entry_mgr,
                 overwrite_prepared,
                 pre_epoch,
+                progress=write_adapter(offset=len(enc_new), sub_total=len(overwrite_prepared)),
             )
 
         _emit_milestone(callbacks, _IMPORT_PROGRESS_TOTAL)
@@ -645,12 +740,15 @@ class ImportExportManager:
                 # 用户取消：中止分类，已分类条目随后批量/逐条写入（部分导入随事务提交）。
                 # 使 worker.cancel() 真正生效而非空转冻结 UI。
                 break
-            # 每条都推进进度（含 duplicate/skip/overwrite）：total 含全部条目，进度应
-            # 覆盖全部行，避免 duplicate/skip 跳过 progress_callback 导致后续阶段进度
-            # 突跳。加权映射到总进度 10%→15%（PERF-065）。
-            if callbacks.progress_callback is not None:
+            # 进度按 PROGRESS_REPORT_EVERY 节流上报、终值恒上报（PERF-069：50k 行
+            # 逐条上报的跨线程信号发射开销反超分类本身，与 entry_batch_writer 的
+            # 加密/写入阶段同款节流纪律；进度语义不变——total 含全部条目，单调不减，
+            # 后续阶段不突跳）。加权映射到总进度 12%→15%。
+            if callbacks.progress_callback is not None and (
+                (i + 1) % PROGRESS_REPORT_EVERY == 0 or i + 1 == total
+            ):
                 callbacks.progress_callback(
-                    _phase_progress(_PROGRESS_SANITIZE_DONE, _PROGRESS_CLASSIFY_SPAN, i + 1, total),
+                    _phase_progress(_PROGRESS_PLAN_DONE, _PROGRESS_CLASSIFY_SPAN, i + 1, total),
                     _IMPORT_PROGRESS_TOTAL,
                 )
             if i in duplicate_indices:
@@ -705,8 +803,9 @@ class ImportExportManager:
 
         ``existing`` 用毕即清：明文 password/totp_secret 经 replace 重新绑定到空串，
         旧明文 str 失去引用由 GC 回收。任一时刻仅 1 条覆盖目标完整明文驻留内存，
-        与单条路径的「用毕即清」纪律一致。raw 供 ``update_entry`` 经 ``preloaded_raw``
-        复用（跳过重复 ``get_entry``）。
+        与单条路径的「用毕即清」纪律一致。raw 随 :class:`OverwritePlan` 流向
+        :class:`BatchUpdateItem`，由 :func:`entry_batch_writer.prepare_overwrite_updates`
+        在锁外预处理阶段消费（MAINT-004）。
         """
         existing = self._entry_mgr.decrypt_entry(raw)
         try:
@@ -763,6 +862,7 @@ class ImportExportManager:
         self,
         overwrite_plans: list[OverwritePlan],
         source_label: str,
+        progress: Callable[[int, int], None] | None = None,
     ) -> tuple[list[PreparedUpdate], int]:
         """锁外 prepare 覆盖项（MAINT-004），返回 ``(prepared, skipped)``。
 
@@ -773,7 +873,8 @@ class ImportExportManager:
         old_password 延迟提取（SEC-013/PERF-006）：留 None 由 prepare_overwrite_updates
         的 prepared 阶段逐条解密、比对即 del，避免全部旧密码同刻驻留。
         ``failures`` 索引对齐 ``overwrite_plans``（同序），取原 source idx 记日志，
-        不打印标题（可能含敏感信息）。
+        不打印标题（可能含敏感信息）。``progress`` 透传 prepare_overwrite_updates
+        供覆盖加密阶段上报（PERF-069）。
         """
         if not overwrite_plans:
             return [], 0
@@ -787,6 +888,7 @@ class ImportExportManager:
             self._entry_mgr,
             batch_items,
             preserve_password_changed_at=True,
+            progress=progress,
         )
         skipped = 0
         # batch_failures 索引对齐 batch_items（与 overwrite_plans 同序）；
@@ -817,24 +919,37 @@ class ImportExportManager:
         return prepared, skipped
 
     @staticmethod
-    def _phase_reporter(
+    def _offset_phase_reporter(
         callbacks: ImportCallbacks,
         base: int,
         span: int,
-    ) -> Callable[[int, int], None] | None:
-        """构造阶段进度适配器：阶段内 ``(done, total)`` → 加权总进度后经用户回调上报。
+        grand_total: int,
+    ) -> Callable[..., Callable[[int, int], None] | None]:
+        """构造带偏移的阶段进度适配器工厂（PERF-069）。
 
-        用户未提供 progress_callback 时返回 None（下游跳过上报与写入分块，保持原
-        单次批量路径）。
+        一个阶段（encrypt/write）由两个子批构成（新条目 + 覆盖条目），各自上报
+        子批内 ``(done, sub_total)``；本工厂按 ``_make(offset, sub_total)`` 生成子批
+        适配器，把子批进度折算为 ``offset + done``（子批 done 即子批条目数，与全阶段
+        ``grand_total`` 同单位）后经 ``_phase_progress`` 映射到加权总进度。空子批返回
+        None（下游跳过上报）；用户未提供 progress_callback 或 grand_total<=0 时工厂
+        恒返回 None 适配器（下游保持原单次批量路径）。
         """
-        if callbacks.progress_callback is None:
-            return None
-        user_callback = callbacks.progress_callback
 
-        def _report(done: int, total: int) -> None:
-            user_callback(_phase_progress(base, span, done, total), _IMPORT_PROGRESS_TOTAL)
+        def _make(offset: int, sub_total: int) -> Callable[[int, int], None] | None:
+            user_callback = callbacks.progress_callback
+            if user_callback is None or grand_total <= 0 or sub_total <= 0:
+                return None
 
-        return _report
+            def _report(done: int, _total: int) -> None:
+                # min 钳制防 offset+done 溢出 grand_total 致阶段刻度越界。
+                overall = min(offset + done, grand_total)
+                user_callback(
+                    _phase_progress(base, span, overall, grand_total), _IMPORT_PROGRESS_TOTAL
+                )
+
+            return _report
+
+        return _make
 
     def _categories_by_folded_name(self) -> dict[str, Category]:
         """构造分类名 casefold 映射，供导入按名匹配分类（大小写不敏感）。"""

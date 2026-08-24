@@ -318,3 +318,47 @@ class TestViewDecryptionDelegation:
         assert (
             entry_mgr._view_decryptor._cache is entry_mgr._cache  # noqa: SLF001
         )
+
+
+class TestListLimitPushdown:
+    """无搜索列表的 SQL LIMIT 下推契约（PERF-066，EntryListController.fetch_all 消费）。
+
+    超过 limit 的全量视图查询返回 ≤limit 条且排序为 SQL 索引序
+    （is_favorite DESC, updated_at DESC，PERF-011 复合索引），而非插入序/标题序——
+    UI 渲染截断（MAX_SEARCH_RESULTS_DISPLAY）依赖该等价性才能安全下推。
+    """
+
+    def test_limit_truncates_in_index_order(self, entry_mgr, make_entry):
+        """60 条目 + limit=50：返回恰 50 条，前段为索引序（收藏优先，再按更新时间倒序）。"""
+        from datetime import UTC, datetime, timedelta
+
+        base = datetime(2026, 8, 20, 10, 0, 0, tzinfo=UTC)
+        # 3 条收藏（更新时间递增落库）+ 57 条普通条目
+        for i in range(3):
+            entry_mgr.add_entry(
+                make_entry(
+                    title=f"收藏-{i:02d}",
+                    created_at=base.isoformat(),
+                    updated_at=(base + timedelta(minutes=i)).isoformat(),
+                    is_favorite=True,
+                )
+            )
+        for i in range(57):
+            entry_mgr.add_entry(
+                make_entry(
+                    title=f"普通-{i:02d}",
+                    created_at=base.isoformat(),
+                    updated_at=(base + timedelta(minutes=i)).isoformat(),
+                )
+            )
+
+        summaries = entry_mgr.get_entry_summaries(limit=50)
+
+        assert len(summaries) == 50
+        # 索引序断言：前 3 条为收藏（收藏内部按 updated_at 倒序），第 4 条起为
+        # 非收藏的最新条目——证明截断发生在 SQL 索引序上而非其他顺序。
+        assert [s.title for s in summaries[:3]] == ["收藏-02", "收藏-01", "收藏-00"]
+        assert summaries[3].title == "普通-56"
+        assert summaries[-1].title == "普通-10"
+        # 全部返回均非回收站条目
+        assert all(not s.is_deleted for s in summaries)

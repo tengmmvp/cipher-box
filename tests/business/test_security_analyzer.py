@@ -351,13 +351,14 @@ class TestIncrementalUpdateEpochSnapshot:
         original_epoch = vault.key_epoch
         original_classify = ctx.security._classify_entry
 
-        def _classify_with_concurrent_rotation(raw_arg, key):
+        def _classify_with_concurrent_rotation(raw_arg, key, **kwargs):
             # 模拟锁外重分类期间的并发改密/恢复：epoch 轮换 + full_analysis 以新 epoch
-            # 重填缓存（_key_epoch 更新为新世代）。
+            # 重填缓存（_key_epoch 更新为新世代）。kwargs 透传 SEC-043 的 data_epoch
+            # 等 keyword-only 参数，保持与生产签名解耦。
             vault.set_epoch("rotated-e2")
             assert ctx.security._analysis_cache is not None
             ctx.security._analysis_cache["_key_epoch"] = "rotated-e2"
-            return original_classify(raw_arg, key)
+            return original_classify(raw_arg, key, **kwargs)
 
         ctx.security._classify_entry = _classify_with_concurrent_rotation
         try:

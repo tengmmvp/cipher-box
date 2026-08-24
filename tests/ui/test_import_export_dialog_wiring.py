@@ -291,3 +291,58 @@ class TestWorkerErrorPaths:
         dlg._on_import_done(0)
 
         assert emitted == []
+
+
+class TestExportProgressWiring:
+    """导出确定进度接线（PERF-070）：解密/写文件两阶段计数 → 加权百分比 → 进度条。
+
+    50k 导出实测解密 5.1s + 写文件 1.9s 全程不确定旋转；解密 0→70 / 写文件
+    70→100 的百分比映射经业务层 export_*_percent 完成，UI 侧收到确定值即切换
+    确定模式（参照导入侧 _on_import_progress 模式）。
+    """
+
+    def test_export_task_maps_phase_counts_to_percent(self, qapp, wired):
+        """task 内两阶段适配器把 (done, total) 计数映射为 (percent, 100) 后发射。"""
+        dlg, import_export, entry_mgr = _make_dialog()
+
+        dlg._do_export("/tmp/cipherbox_export.json")
+        task = wired["run"]
+        worker = dlg._worker
+        task()
+
+        # 解密阶段：50/100 → 35%（0→70 刻度）
+        decrypt_cb = entry_mgr.get_entries_for_export.call_args.kwargs["progress"]
+        decrypt_cb(50, 100)
+        worker.emit_progress.assert_called_with(35, 100)
+        # 写文件阶段：50/100 → 85%（70→100 刻度）
+        write_cb = import_export.export_to_json.call_args.kwargs["progress"]
+        write_cb(50, 100)
+        worker.emit_progress.assert_called_with(85, 100)
+
+    def test_export_worker_connects_progress_signal(self, qapp, wired):
+        """worker.progress 连接 _on_export_progress（不确定→确定切换的驱动源）。"""
+        dlg, _, _ = _make_dialog()
+
+        dlg._do_export("/tmp/cipherbox_export.json")
+
+        connected = dlg._worker.progress.connect.call_args[0][0]
+        assert connected == dlg._on_export_progress
+
+    def test_export_progress_switches_to_determinate(self, qapp, wired):
+        """_on_export_progress 收到确定值后切换确定范围并更新值。"""
+        dlg, _, _ = _make_dialog()
+        dlg._progress.setRange(0, 0)  # 初始不确定模式
+
+        dlg._on_export_progress(35, 100)
+
+        assert dlg._progress.maximum() == 100
+        assert dlg._progress.value() == 35
+
+    def test_do_export_shows_progress_bar(self, qapp, wired):
+        """_do_export 启动时显示进度条（初始不确定，待首个 progress 信号切换）。"""
+        dlg, _, _ = _make_dialog()
+        assert dlg._progress.isHidden()  # _setup_ui 默认隐藏
+
+        dlg._do_export("/tmp/cipherbox_export.json")
+
+        assert not dlg._progress.isHidden()

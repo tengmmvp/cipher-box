@@ -17,8 +17,7 @@ if TYPE_CHECKING:
     from ..managers.entry_cache import EntryCacheManager
     from ..managers.vault_manager import VaultManager
 
-logger = logging.getLogger(__name__)
-
+from ...config import OLD_PASSWORD_WARNING_DAYS_DEFAULT
 from ...database.types import VerifyMode
 from ...exceptions import (
     DecryptionError,
@@ -28,6 +27,8 @@ from ...exceptions import (
 )
 from ...models import Entry, RawEntry
 from .crypto_utils import build_entry_summary, decrypt_field, require_vault_key
+
+logger = logging.getLogger(__name__)
 
 # 全量分析取消探测掩码：每 64 条检查一次取消请求，降低热循环开销。安全分析扫描
 # 频率高于改密，故取消探测比改密路径（每条检查）更稀疏。
@@ -43,10 +44,12 @@ HEALTH_PENALTY_WEAK = 15
 HEALTH_PENALTY_DUPLICATE = 10
 HEALTH_PENALTY_OLD = 5
 
-# 过期检测默认天数（QL-005）：数值与 config.OLD_PASSWORD_WARNING_DAYS_DEFAULT 对齐，
-# 但 security_analyzer 属业务层不反向依赖 config，故本地声明同值常量解耦。供全部分析
-# 入口的 days 默认值引用，消除 90 字面量散落。
-DEFAULT_ANALYSIS_DAYS = 90
+# 过期检测默认天数（ARCH-034）：直接引用 config.OLD_PASSWORD_WARNING_DAYS_DEFAULT，
+# 与设置页可配置项的默认值同源——原「业务层不反向依赖 config 故本地同值声明」的
+# 解耦理由已失效（business→config 合法且有 composition/database_bootstrap/rate_limiter
+# 等先例），双源同值一旦漂移会使分析口径与设置页展示默认不一致。供全部分析入口的
+# days 默认值引用，消除 90 字面量散落。
+DEFAULT_ANALYSIS_DAYS = OLD_PASSWORD_WARNING_DAYS_DEFAULT
 
 
 class _SecurityReportBase(TypedDict):
@@ -154,7 +157,7 @@ class SecurityAnalyzer:
     def _key(self) -> bytes:
         return require_vault_key(self._vault)
 
-    def _make_summary(self, raw: RawEntry) -> Entry:
+    def _make_summary(self, raw: RawEntry, *, data_epoch: str | None = None) -> Entry:
         """只返回分析界面所需字段，避免缓存敏感明文。
 
         摘要字段与分类名复用 EntryCacheManager 的缓存解密，避免独立解密产生重复
@@ -162,9 +165,15 @@ class SecurityAnalyzer:
         skipped_count。刻意用 EntryIntegrityError（非 ValueError 子类）：使「损坏即
         跳过」不依赖「缓存层吸收 DecryptionError」隐性契约，即便未来透传
         DecryptionError（IS-A ValueError）也不被跳过分支误吞。
+
+        ``data_epoch``（SEC-043 写入方世代）：调用方与 raw/密钥同刻快照的世代，
+        透传摘要/分类名缓存作回写守卫——分析 worker 在恢复重臂新世代后回写时，
+        守卫拒收跨世代解密结果（语义见 EntryCacheManager._cached_search_metadata_no_check）。
         """
         # 循环外已 invalidate_if_epoch_changed，此处经无校验入口避免每条重复加锁。
-        title, username, url, tags = self._cache.search_metadata_for_analysis(raw)
+        title, username, url, tags = self._cache.search_metadata_for_analysis(
+            raw, data_epoch=data_epoch
+        )
         if self._cache.get_failed_fields(raw.crypto_id):
             raise EntryIntegrityError(f"条目 {raw.crypto_id} 摘要字段解密失败")
         summary = build_entry_summary(raw, username)
@@ -176,6 +185,7 @@ class SecurityAnalyzer:
                 category_name = self._cache.decrypt_category_name(
                     raw.category_id,
                     raw.category_name,
+                    data_epoch=data_epoch,
                 )
             except DecryptionError:
                 raise EntryIntegrityError(f"条目 {raw.crypto_id} 分类名解密失败") from None
@@ -441,13 +451,17 @@ class SecurityAnalyzer:
                 raw = self._vault.db.get_entry_by_crypto_id(crypto_id, verify=VerifyMode.SKIP)
                 # PERF-001 对齐：锁内快照主密钥，锁外重分类用快照。
                 key = self._key
+                # SEC-043 写入方世代：与 raw/key 同刻快照，供 _make_summary 的摘要/
+                # 分类名缓存回写守卫拒收跨世代解密结果（增量路径的 db 读仅持 db_lock，
+                # 锁外重分类期间恢复可提交并重臂缓存，是真实可达的跨世代窗口）。
+                data_epoch = self._vault.key_epoch
         except (VaultLockedError, VaultKeyEpochMismatchError):
             return False
         if raw is None or raw.is_deleted:
             return False
         self._cache.invalidate_if_epoch_changed()
         try:
-            result = self._classify_entry(raw, key)
+            result = self._classify_entry(raw, key, data_epoch=data_epoch)
         except (DecryptionError, EntryIntegrityError):
             # _classify_entry 内部已吸收这两类；此处防御未来透传路径的意外逃逸。
             return False
@@ -575,6 +589,10 @@ class SecurityAnalyzer:
             skipped_count = 0
             # 循环外取一次主密钥副本，供重复检测的 HMAC 指纹复用。
             vault_key = self._key
+            # SEC-043 写入方世代：与 entries/vault_key 同刻快照（持写锁期间 epoch 不变，
+            # 属防御纵深——堵「分析循环中被外部失效重臂」的极端交错），供
+            # _make_summary 的摘要/分类名缓存回写守卫。
+            data_epoch = self._vault.key_epoch
             # 循环外一次性 epoch 校验，循环内避免每条重复加锁（持写锁期间 epoch 不变）。
             self._cache.invalidate_if_epoch_changed()
             for idx, raw in enumerate(entries):
@@ -586,7 +604,7 @@ class SecurityAnalyzer:
                     or (cancel_check is not None and cancel_check())
                 ):
                     raise VaultLockedError("安全分析因锁定/取消请求而中止")
-                result = self._classify_entry(raw, vault_key)
+                result = self._classify_entry(raw, vault_key, data_epoch=data_epoch)
                 if result.counted_in_skipped:
                     skipped_count += 1
                 if result.summary is None:
@@ -619,17 +637,24 @@ class SecurityAnalyzer:
             "_fingerprint_map": password_map,
         }
 
-    def _classify_entry(self, raw: RawEntry, vault_key: bytes) -> _ClassifyResult:
+    def _classify_entry(
+        self,
+        raw: RawEntry,
+        vault_key: bytes,
+        *,
+        data_epoch: str | None = None,
+    ) -> _ClassifyResult:
         """对单条目做安全分类（弱/日期/重复指纹），抽取自 full_analysis 循环体。
 
         返回 :class:`_ClassifyResult`：None 语义见该类（summary None=完全跳过，
-        fingerprint None=无密码或解密失败）。
+        fingerprint None=无密码或解密失败）。``data_epoch``（SEC-043）透传
+        :meth:`_make_summary` 作缓存回写世代守卫。
         """
         if raw.integrity_error:
             logger.debug("安全分析跳过元数据完整性失败条目 id=%s", raw.id)
             return _ClassifyResult(None, None, False, None, True)
         try:
-            summary = self._make_summary(raw)
+            summary = self._make_summary(raw, data_epoch=data_epoch)
         except EntryIntegrityError:
             logger.debug("安全分析跳过损坏条目 id=%s", raw.id, exc_info=True)
             return _ClassifyResult(None, None, False, None, True)

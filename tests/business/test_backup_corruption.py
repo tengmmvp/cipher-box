@@ -258,6 +258,55 @@ class TestBackupCorruption:
         assert not success
         assert cleaned, "恢复点创建异常时应调用 _safe_delete_restore_point 清理"
 
+    def test_restore_point_payload_too_large_degrades_not_blocks(self, monkeypatch, caplog):
+        """恢复点创建因载荷超限（PayloadTooLargeError）降级跳过，不阻断恢复（QL-047）。
+
+        恢复点体积取决于**当前库**（恢复前全量明文）而非待恢复备份——把小备份恢复
+        进大库时，旧实现中恢复点超限会使整个恢复失败。现仅降级：跳过恢复点 +
+        logger.warning + 结果拼装「本次恢复无回退快照」警告，恢复数据照常落库。
+        """
+        import logging
+
+        from src.exceptions import PayloadTooLargeError
+
+        path = os.path.join(self._tmp_dir, "degrade.cbox")
+        self._create_valid_backup(path, "BackupTest!2026")
+
+        def _raise_payload_too_large(*_args, **_kwargs):
+            raise PayloadTooLargeError("备份数据过大")
+
+        monkeypatch.setattr(self._backup_mgr, "_create_backup_locked", _raise_payload_too_large)
+
+        with caplog.at_level(logging.WARNING):
+            success, error = self._backup_mgr.restore_backup(path, "BackupTest!2026")
+
+        assert success, f"恢复点超限不应阻断恢复：{error}"
+        assert "恢复点创建失败" in error and "无回退快照" in error
+        assert any("QL-047" in rec.message for rec in caplog.records), (
+            "降级路径应有可见的 warning 日志（QL-047）"
+        )
+        # 恢复数据照常落库（当前库条目被备份内容替换）
+        restored = self._entry_mgr.get_entries()
+        assert [e.title for e in restored] == ["测试条目"]
+
+    def test_restore_point_other_exceptions_still_abort(self, monkeypatch):
+        """恢复点创建的非超限异常（磁盘满等）仍向上中止恢复（QL-047 只降级超限）。
+
+        非超限异常同样可能影响恢复写入本身，不宜带病继续；与
+        test_restore_point_cleaned_on_creation_exception 的 OSError 路径互为补充，
+        本测试显式锁定「仅 PayloadTooLargeError 降级」的边界。
+        """
+        path = os.path.join(self._tmp_dir, "abort.cbox")
+        self._create_valid_backup(path, "BackupTest!2026")
+
+        def _raise_os_error(*_args, **_kwargs):
+            raise OSError("simulated disk full")
+
+        monkeypatch.setattr(self._backup_mgr, "_create_backup_locked", _raise_os_error)
+
+        success, _error = self._backup_mgr.restore_backup(path, "BackupTest!2026")
+        assert not success
+
 
 class TestRestorePlaintextRelease:
     """恢复载荷明文释放契约（SEC-027）：恢复退出后 payload 明文字段被置空。

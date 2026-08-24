@@ -258,9 +258,13 @@ class TOTPGenerator:
 
     @staticmethod
     def _normalize_base32(raw: str) -> str:
-        """标准化 Base32 密钥：大写、去除常见分隔符、自动补齐填充。"""
+        """标准化 Base32 密钥：大写、去除常见分隔符、剥离既有填充后统一补齐。"""
         cleaned = raw.upper().strip().translate(_BASE32_STRIP_TABLE)
-        # 自动补齐 Base32 填充，兼容其他认证器导出的非标准填充密钥
+        # 先剥离全部既有 = 再统一补齐（QL-045）：部分认证器导出「对齐长度 + 多余尾随
+        # =」形态（如 16 数据字符后跟 1 个 =），原「只补齐不剥离」会把填充数叠加成
+        # 非法组合（8 个 =）抛 binascii.Error，与本函数兼容非标准填充的契约矛盾。
+        # 合法对齐的输入剥离后重补结果不变（等幂），无回归面。
+        cleaned = cleaned.rstrip("=")
         padding = (8 - len(cleaned) % 8) % 8
         if padding:
             cleaned += "=" * padding

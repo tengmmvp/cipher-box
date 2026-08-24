@@ -142,7 +142,9 @@ class PasswordHistoryWidget(QObject):
             row = QHBoxLayout()
             row.setSpacing(8)
 
-            time_label = QLabel(record.get("changed_at", ""))
+            # changed_at 时间标签经 PlainText 工厂（SEC-030）：时间戳字符串随导入
+            # 数据可携带 markup 字符，字面显示与密码标签契约一致
+            time_label = create_plain_text_label(record.get("changed_at", ""))
             time_label.setFixedWidth(140)
             time_label.setStyleSheet(f"color: {c('text_muted')}; font-size: 12px;")
             row.addWidget(time_label)

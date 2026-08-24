@@ -501,7 +501,7 @@ class EntryRepository:
 
     @_db_write
     def update_overwrite_batch(self, entries: list[RawEntry]) -> None:
-        """批量更新覆盖导入的条目（PERF：executemany 替代逐条 UPDATE）。
+        """批量更新覆盖导入的条目（PERF-004 同族：executemany 批量写入替代逐条 UPDATE）。
 
         与 :meth:`update_entry` 对称的签名对齐：批量重读各条目的
         ``is_deleted/deleted_at/created_at``（UPDATE 不写这三列，签名载荷含它们须用

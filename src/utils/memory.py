@@ -39,7 +39,7 @@ def mark_secret_discarded(value: str) -> None:
     的明文释放依赖调用方置空引用（如 ``self._x = ""``）触发 GC（调用点 detail_panel /
     custom_fields_renderer / password_history_widget 均在调用后 ``.clear()`` 或置空引用）。
     历史实现经 ``encode`` 创建临时 bytearray 再清零，只擦除了自身刚创建的副本而原串
-    未动，反而短暂增加明文副本数（反效果，M2），故移除编码逻辑。函数名避用 ``zero``
+    未动，反而短暂增加明文副本数（反效果），故移除编码逻辑。函数名避用 ``zero``
     以免误以为已原地擦除原串；保留函数供调用方统一表达「此 secret 已弃用」意图并
     提示读者真正的释放责任在置空引用。
 

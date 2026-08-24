@@ -41,6 +41,12 @@ MAX_PASSWORD_HISTORY = 10
 
 # 导入/备份共享的条目数与单条目载荷上限，供 import_export 与 backup/validator 复用，
 # 避免两处独立声明漂移产生「能导入却无法备份」的边界。
+#
+# 联动校准（PERF-068）：本条目数上限与 backup/header_codec.MAX_BACKUP_PAYLOAD_SIZE
+# 联动——50k 条 × 典型画像 ~700-760B/条（JSON 序列化实测，见 backup/payload.py 校准
+# 常量）≈ 35-38MB，故载荷上限定为 40MB。上调本值或典型画像体积显著增长时，须同步
+# 复核 MAX_BACKUP_PAYLOAD_SIZE / MAX_BACKUP_FILE_SIZE，否则「能导入满 50k 条却无法
+# 备份/创建恢复点」的断层会复现。
 MAX_ENTRIES_LIMIT = 50_000
 MAX_ENTRY_PAYLOAD_SIZE = 2 * 1024 * 1024
 
@@ -288,6 +294,20 @@ def _parse_tag_list(tags: str) -> list[str]:
     return [t.strip() for t in tags.split(",") if t.strip()]
 
 
+def _validated_category_name(value: Any) -> str:
+    """校验导入数据的分类名字段：须为 str 且不超 MAX_CATEGORY_NAME 字符（QL-049）。
+
+    与 ENTRY_FIELD_LIMITS 表驱动校验的范式一致（类型无效/超长抛 EntryError），
+    防止 CSV 等外部数据携带非 str 值（如 int）在下游 ``.strip()`` 处裸
+    AttributeError 中断导入。
+    """
+    if not isinstance(value, str):
+        raise EntryError("分类名称类型无效，必须为字符串")
+    if len(value) > MAX_CATEGORY_NAME:
+        raise EntryError(f"分类名称过长（最多 {MAX_CATEGORY_NAME} 字符）")
+    return value
+
+
 @dataclass(repr=False, frozen=True)
 class Entry:
     """密码条目（明文态）。
@@ -475,7 +495,11 @@ class Entry:
             username=username,
             password=password,
             url=url,
-            category_name=d.get("category", ""),
+            # 分类名类型/长度校验（QL-049）：CSV 携带非 str（如 int）时曾裸
+            # AttributeError 直达用户（_ensure_categories 的 .strip() 崩溃），
+            # 与相邻字段范式一致在 from_dict 入口拒绝；长度上限对齐
+            # MAX_CATEGORY_NAME（Category.from_dict 同款字符数语义）。
+            category_name=_validated_category_name(d.get("category", "")),
             tags=tags,
             notes=notes,
             custom_fields=custom_fields,

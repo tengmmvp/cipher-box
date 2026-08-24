@@ -88,7 +88,7 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
     cache = EntryCacheManager(vault)
     change_bus = EntryChangeBus(cache)
     # CategoryManager / RestorePointManager 提升为一等依赖，由组合根显式创建并注入
-    # （ARCH：保持替换间隙一致，便于测试替身与重配置）。
+    # （ARCH-033：保持替换间隙一致，便于测试替身与重配置）。
     category_mgr = CategoryManager(vault, cache, change_bus)
     entry_mgr = EntryManager(vault, cache, change_bus, category_mgr)
     security = SecurityAnalyzer(vault, cache)

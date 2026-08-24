@@ -94,8 +94,8 @@ class DatabaseManager:
     """SQLite 数据库管理器
 
     作为统一数据访问入口，所有公共 CRUD 方法委托给子 Repository
-    （entries / categories / schema）。跨表编排（如删除分类时解关联条目
-    并重算签名）由本层协调，各 Repository 仅负责单表操作。
+    （entries / categories / password history / schema）。跨表编排（如删除分类时
+    解关联条目并重算签名）由本层协调，各 Repository 仅负责单表操作。
     """
 
     def __init__(self, db_path: Path, *, test_mode: bool = False):

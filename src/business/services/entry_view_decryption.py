@@ -14,7 +14,8 @@
 （notify_*）与缓存失效决策（缓存只读取：摘要/分类名/失败字段集，失效由
 EntryManager 与 EntryChangeBus 负责）。密钥经 vault 引用实时获取，缓存经
 :class:`ViewDecryptCacheProtocol` 最小协议注入（EntryCacheManager 实现，ARCH-032），
-并发安全由调用方在 ``epoch_guarded_read`` 锁内快照 ``key`` 传入（PERF-001）。
+并发安全由调用方在 ``epoch_guarded_read`` 锁内快照 ``key`` 传入（PERF-001），缓存
+回写的写入方世代守卫由调用方同刻快照 ``data_epoch`` 传入（SEC-041/043）。
 """
 
 from __future__ import annotations
@@ -49,6 +50,9 @@ class ViewDecryptCacheProtocol(Protocol):
     满足此协议，构造时注入，services 子包运行时不 import managers，守住分层方向。
     协议面以实际使用为准——``cached_search_metadata_full`` 属搜索热路径
     （EntryManager 消费），不在本协议内。
+
+    ``data_epoch``（SEC-041/043 写入方世代）：各解密方法的可选世代参数，实现方
+    （EntryCacheManager）以调用方锁内快照的世代守卫缓存回写，拒收跨世代解密结果。
     """
 
     def cached_search_metadata(
@@ -56,6 +60,7 @@ class ViewDecryptCacheProtocol(Protocol):
         raw_entry: RawEntry,
         *,
         key: bytes | None = None,
+        data_epoch: str | None = None,
     ) -> tuple[str, str, str, str]:
         """解密并缓存 title/username/url/tags（单条路径，含 epoch 校验）。"""
         ...
@@ -65,6 +70,7 @@ class ViewDecryptCacheProtocol(Protocol):
         raw_entry: RawEntry,
         *,
         key: bytes | None = None,
+        data_epoch: str | None = None,
     ) -> tuple[str, str, str, str]:
         """批量循环路径的摘要解密（无逐条 epoch 校验，调用方循环外已失效缓存）。"""
         ...
@@ -79,6 +85,7 @@ class ViewDecryptCacheProtocol(Protocol):
         value: str,
         *,
         key: bytes | None = None,
+        data_epoch: str | None = None,
     ) -> str:
         """解密分类名并缓存（解密失败抛 DecryptionError，由调用方定容错语义）。"""
         ...
@@ -165,7 +172,13 @@ class EntryViewDecryptor:
             raise EntryIntegrityError("自定义字段结构无效")
         return [CustomField.from_dict(item) for item in items]
 
-    def decrypt_entry(self, raw_entry: RawEntry, *, key: bytes | None = None) -> Entry:
+    def decrypt_entry(
+        self,
+        raw_entry: RawEntry,
+        *,
+        key: bytes | None = None,
+        data_epoch: str | None = None,
+    ) -> Entry:
         """解密条目的所有敏感字段，返回新的 Entry 对象（详情/编辑路径）。
 
         字段解密失败时容错：失败字段收集到 ``integrity_message``，password/totp
@@ -174,6 +187,9 @@ class EntryViewDecryptor:
 
         ``key`` 语义见 :meth:`_decrypt_field`（PERF-001 并发修补）：锁外解密期间改密
         activate 后用快照而非实时 ``self._key`` 解密本批旧密文，避免 GCM 认证失败。
+
+        ``data_epoch`` 语义见 :class:`ViewDecryptCacheProtocol`（SEC-041/043 写入方
+        世代）：透传摘要/分类名缓存作回写守卫，跨世代解密结果不入新世代缓存。
         """
         integrity_errors: list[str] = []
         if raw_entry.integrity_error:
@@ -225,6 +241,7 @@ class EntryViewDecryptor:
                 raw_entry.category_id,
                 raw_entry.category_name,
                 key=key,
+                data_epoch=data_epoch,
             )
         except DecryptionError:
             category_name = ""
@@ -233,7 +250,9 @@ class EntryViewDecryptor:
         # detail 路径复用列表摘要缓存（title/username/url/tags 已解密），避免详情面板
         # 选中时重复解密这 4 字段；仅 notes/password/totp/custom_fields 需解密。摘要解密
         # 失败的字段经 get_failed_fields 取，按原容错语义（英文字段名）计入 integrity_errors。
-        title, username, url, tags = self._cache.cached_search_metadata(raw_entry, key=key)
+        title, username, url, tags = self._cache.cached_search_metadata(
+            raw_entry, key=key, data_epoch=data_epoch
+        )
         failed = self._cache.get_failed_fields(cid)
         integrity_errors.extend(
             _INTEGRITY_FIELD_LABELS[name]
@@ -334,6 +353,7 @@ class EntryViewDecryptor:
         skip_epoch_check: bool = False,
         key: bytes | None = None,
         meta: SearchMetadata | None = None,
+        data_epoch: str | None = None,
     ) -> Entry:
         """仅解密列表展示所需字段，不让密码等明文进入列表模型。
 
@@ -348,6 +368,10 @@ class EntryViewDecryptor:
         activate 后用快照而非实时 ``self._key`` 解密本批旧密文，避免 GCM 认证失败、
         错误摘要以新 epoch 写入缓存持续污染。
 
+        ``data_epoch`` 语义见 :class:`ViewDecryptCacheProtocol`（SEC-041/043 写入方
+        世代）：调用方（列表/近期更新等批量路径）锁内快照的世代，透传摘要/分类名
+        缓存作回写守卫——meta 提供时摘要缓存不经本方法，仅分类名缓存受守卫。
+
         ``meta``：调用方预取的完整 :class:`SearchMetadata`，提供则跳过内部缓存查询
         （搜索热路径一次取 meta 供摘要与小写匹配共用，PERF-016）。
         """
@@ -355,9 +379,9 @@ class EntryViewDecryptor:
             title, username, url, tags = meta.title, meta.username, meta.url, meta.tags
         else:
             title, username, url, tags = (
-                self._cache.search_metadata_for_analysis(raw_entry, key=key)
+                self._cache.search_metadata_for_analysis(raw_entry, key=key, data_epoch=data_epoch)
                 if skip_epoch_check
-                else self._cache.cached_search_metadata(raw_entry, key=key)
+                else self._cache.cached_search_metadata(raw_entry, key=key, data_epoch=data_epoch)
             )
         # 失败字段集经 cache 锁内采样，避免与并发失效的 .clear() 竞态。
         failed = self._cache.get_failed_fields(raw_entry.crypto_id)
@@ -366,6 +390,7 @@ class EntryViewDecryptor:
                 raw_entry.category_id,
                 raw_entry.category_name,
                 key=key,
+                data_epoch=data_epoch,
             )
         except DecryptionError:
             # 解密失败时强制置空：raw_entry.category_name 是 base64 密文——保留会把

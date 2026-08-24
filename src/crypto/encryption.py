@@ -2,6 +2,9 @@
 
 ``_cipher_cache`` 以密钥 SHA-256 摘要索引 AESGCM（不持原始密钥），密钥失效
 （锁定/改密）须 ``clear_cache``。bytes 不可变，彻底清零依赖 GC（CPython 限制）。
+一次性密钥（share/备份等用后即 ``secure_zero`` 的派生密钥）应传
+``cache_key=False`` 绕过缓存：缓存 AESGCM 持 C 层密钥拷贝，``secure_zero``
+清不掉，入缓存即违背「已清零」语义（SEC-046）。
 """
 
 import base64
@@ -46,8 +49,15 @@ class EncryptionEngine:
     BYTES_PREFIX = CIPHERTEXT_BYTES_PREFIX
 
     @classmethod
-    def _get_cipher(cls, key: bytes | bytearray) -> AESGCM:
-        """获取或创建 AESGCM 实例，按密钥 SHA-256 摘要缓存。"""
+    def _get_cipher(cls, key: bytes | bytearray, *, cache_key: bool = True) -> AESGCM:
+        """获取或创建 AESGCM 实例，按密钥 SHA-256 摘要缓存。
+
+        ``cache_key=False``：一次性密钥（share 包 / 备份密码派生密钥等调用后即
+        ``secure_zero`` 的密钥）直接构造 AESGCM 不入缓存（SEC-046）——缓存条目的
+        AESGCM 在 OpenSSL C 层持有密钥拷贝，``secure_zero_buffer`` 清不掉，入缓存
+        会使「已清零」的一次性密钥以 C 层副本形式驻留至容量淘汰/锁定清理，违背
+        本模块「收窄缓存以限制密钥拷贝驻留」的设计契约。
+        """
         # 密钥校验：类型与长度，防止意外降级为 AES-128
         if not isinstance(key, (bytes, bytearray)):
             raise TypeError(f"AES-256 密钥类型无效：期望 bytes，实际 {type(key).__name__}")
@@ -55,17 +65,19 @@ class EncryptionEngine:
             raise ValueError(
                 f"AES-256 密钥长度无效：期望 {cls.KEY_SIZE} 字节，实际 {len(key)} 字节"
             )
+        if not cache_key:
+            return AESGCM(key)
         with _cache_lock:
-            cache_key = _cache_key(key)
-            cipher = _cipher_cache.get(cache_key)
+            digest = _cache_key(key)
+            cipher = _cipher_cache.get(digest)
             if cipher is None:
                 cipher = AESGCM(key)
-                _cipher_cache[cache_key] = cipher
+                _cipher_cache[digest] = cipher
                 # LRU：超限时淘汰最旧条目，而非全量清空（保留活跃密钥）
                 if len(_cipher_cache) > _MAX_CACHE_SIZE:
                     _cipher_cache.popitem(last=False)
             else:
-                _cipher_cache.move_to_end(cache_key)
+                _cipher_cache.move_to_end(digest)
             return cipher
 
     @classmethod
@@ -94,6 +106,8 @@ class EncryptionEngine:
         plaintext: str,
         key: bytes | bytearray,
         associated_data: str | bytes,
+        *,
+        cache_key: bool = True,
     ) -> str:
         """加密明文，返回带前缀的 base64 密文。
 
@@ -101,12 +115,14 @@ class EncryptionEngine:
             plaintext: 待加密的明文字符串
             key: 32 字节 AES-256 密钥
             associated_data: 参与认证的附加数据，解密时需原样提供
+            cache_key: False 时 AESGCM 不入模块级缓存（SEC-046，一次性密钥专用）；
+                解密方须传一致值，仅影响缓存驻留不影响密文
 
         Returns:
             ``cb2:`` 前缀加 base64 的密文字符串（随机 nonce + 密文 + GCM 标签）。
         """
         nonce = os.urandom(cls.NONCE_SIZE)
-        aesgcm = cls._get_cipher(key)
+        aesgcm = cls._get_cipher(key, cache_key=cache_key)
         aad = cls._aad_bytes(associated_data)
         ciphertext = aesgcm.encrypt(nonce, plaintext.encode("utf-8"), aad)
         encoded = base64.b64encode(nonce + ciphertext).decode("ascii")
@@ -118,6 +134,8 @@ class EncryptionEngine:
         encrypted_b64: str,
         key: bytes | bytearray,
         associated_data: str | bytes,
+        *,
+        cache_key: bool = True,
     ) -> str:
         """解密由 encrypt 产生的密文，返回明文字符串。
 
@@ -125,6 +143,8 @@ class EncryptionEngine:
             encrypted_b64: encrypt 返回的密文字符串
             key: 32 字节 AES-256 密钥
             associated_data: 加密时使用的附加数据，须与加密时完全一致
+            cache_key: False 时 AESGCM 不入模块级缓存（SEC-046，一次性密钥专用）；
+                仅影响缓存驻留不影响解密结果
 
         Returns:
             解密后的明文字符串
@@ -151,7 +171,7 @@ class EncryptionEngine:
             raise DecryptionError("密文长度无效")
         nonce = raw[: cls.NONCE_SIZE]
         ciphertext = raw[cls.NONCE_SIZE :]
-        aesgcm = cls._get_cipher(key)
+        aesgcm = cls._get_cipher(key, cache_key=cache_key)
         aad = cls._aad_bytes(associated_data)
         try:
             plaintext = aesgcm.decrypt(nonce, ciphertext, aad)
@@ -166,13 +186,16 @@ class EncryptionEngine:
         data: bytes,
         key: bytes | bytearray,
         associated_data: str | bytes,
+        *,
+        cache_key: bool = True,
     ) -> bytes:
         """加密字节数据，返回带 ``CB2`` 字节前缀的密文（与 encrypt 对称）。
 
         空数据也经 AES-GCM 加密，保证 AAD 始终参与认证。
+        ``cache_key=False``：一次性密钥不入模块级缓存（SEC-046）。
         """
         nonce = os.urandom(cls.NONCE_SIZE)
-        aesgcm = cls._get_cipher(key)
+        aesgcm = cls._get_cipher(key, cache_key=cache_key)
         aad = cls._aad_bytes(associated_data)
         ciphertext = aesgcm.encrypt(nonce, data, aad)
         payload = nonce + ciphertext
@@ -184,6 +207,8 @@ class EncryptionEngine:
         data: bytes,
         key: bytes | bytearray,
         associated_data: str | bytes,
+        *,
+        cache_key: bool = True,
     ) -> bytes:
         """解密由 encrypt_bytes 产生的字节密文。
 
@@ -191,6 +216,8 @@ class EncryptionEngine:
             data: encrypt_bytes 返回的密文字节
             key: 32 字节 AES-256 密钥
             associated_data: 加密时使用的附加数据，须与加密时完全一致
+            cache_key: False 时 AESGCM 不入模块级缓存（SEC-046，一次性密钥专用）；
+                仅影响缓存驻留不影响解密结果
 
         Returns:
             解密后的原始字节数据
@@ -210,7 +237,7 @@ class EncryptionEngine:
             raise DecryptionError("密文长度无效")
         nonce = payload[: cls.NONCE_SIZE]
         ciphertext = payload[cls.NONCE_SIZE :]
-        aesgcm = cls._get_cipher(key)
+        aesgcm = cls._get_cipher(key, cache_key=cache_key)
         aad = cls._aad_bytes(associated_data)
         try:
             return aesgcm.decrypt(nonce, ciphertext, aad)

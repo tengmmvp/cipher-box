@@ -65,6 +65,7 @@ class SettingsDialog(QDialog):
         self._load_settings()
 
     def _setup_ui(self) -> None:
+        """装配对话框布局：四个设置标签页与底部按钮行。"""
         self.setWindowTitle("设置")
         self.setMinimumSize(*DIALOG_SETTINGS_MIN_SIZE)
         setup_dialog_flags(self)
@@ -98,6 +99,7 @@ class SettingsDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def _create_general_tab(self) -> QWidget:
+        """创建「通用」标签页：主题与系统托盘选项。"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -125,6 +127,7 @@ class SettingsDialog(QDialog):
         return widget
 
     def _create_security_tab(self) -> QWidget:
+        """创建「安全」标签页：自动锁定、剪贴板清空与密码显示时长。"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -159,6 +162,7 @@ class SettingsDialog(QDialog):
         return widget
 
     def _create_password_tab(self) -> QWidget:
+        """创建「密码生成」标签页：默认生成规则与密码过期提醒天数。"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -196,6 +200,7 @@ class SettingsDialog(QDialog):
         return widget
 
     def _create_backup_tab(self) -> QWidget:
+        """创建「备份」标签页：备份目录与本地自动快照选项。"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -236,6 +241,7 @@ class SettingsDialog(QDialog):
         return widget
 
     def _browse_backup_dir(self) -> None:
+        """浏览选择备份目录；落选前探测可写性，不可写则警告且不回填路径。"""
         path = QFileDialog.getExistingDirectory(self, "选择备份目录")
         if not path:
             return
@@ -344,6 +350,7 @@ class SettingsDialog(QDialog):
         accessor_type: str,
         value: Any,
     ) -> None:
+        """按访问类型把配置值写入对应控件。"""
         # accessor_type 与 widget 子类型在 _SETTINGS_MAP 中一一配对；isinstance 兼顾
         # 类型 narrowing 与运行时契约（不配对属编程错误，静默跳过）。
         if accessor_type == "combo" and isinstance(widget, QComboBox):
@@ -356,6 +363,7 @@ class SettingsDialog(QDialog):
     def _get_widget_value(
         self, widget: QComboBox | QCheckBox | QSpinBox, accessor_type: str
     ) -> str | bool | int | None:
+        """按访问类型读取控件当前值；类型与控件不配对返回 None。"""
         if accessor_type == "combo" and isinstance(widget, QComboBox):
             return THEME_LIGHT if widget.currentIndex() == 0 else THEME_DARK
         if accessor_type == "check" and isinstance(widget, QCheckBox):
@@ -365,6 +373,7 @@ class SettingsDialog(QDialog):
         return None
 
     def _load_settings(self) -> None:
+        """把当前配置回填到各控件，并同步托盘/快照选项的启用态。"""
         for key, attr, atype, default in self._SETTINGS_MAP:
             self._set_widget_value(getattr(self, attr), atype, self._config.get(key, default))
         self._backup_path_edit.setText(self._config.get(CFG_BACKUP_DIRECTORY, ""))
@@ -372,14 +381,17 @@ class SettingsDialog(QDialog):
         self._update_backup_options(self._auto_backup_check.isChecked())
 
     def _update_tray_options(self, enabled: bool) -> None:
+        """按「显示托盘图标」开关联动其余托盘选项的启用态。"""
         self._minimize_tray_check.setEnabled(enabled)
         self._close_tray_check.setEnabled(enabled)
 
     def _update_backup_options(self, enabled: bool) -> None:
+        """按「启用自动快照」开关联动间隔与保留数量的启用态。"""
         self._backup_interval_spin.setEnabled(enabled)
         self._backup_retention_spin.setEnabled(enabled)
 
     def _save_settings(self) -> None:
+        """校验生成规则后把控件值写回配置并持久化；写盘失败回滚内存快照。"""
         # 至少需要一种字符集，校验文案经共享 helper 单一事实源
         ok, error = PasswordService.validate_charset_selection(
             self._default_upper_check.isChecked(),

@@ -109,7 +109,9 @@ def _build_share_blob(
     key = derive_share_key(password, salt, params)
     try:
         aad = header_aad(salt, params, expire_at, created_at)
-        encrypted = EncryptionEngine.encrypt_bytes(payload_bytes, key, aad)
+        # cache_key=False：share 密钥是一次性派生密钥（finally 即 secure_zero），
+        # 入模块级 cipher 缓存会使 C 层密钥拷贝在清零后仍驻留至缓存淘汰（SEC-046）
+        encrypted = EncryptionEngine.encrypt_bytes(payload_bytes, key, aad, cache_key=False)
         buf = io.BytesIO()
         write_share_header(buf, salt, params, expire_at, created_at)
         buf.write(encrypted)

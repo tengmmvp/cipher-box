@@ -254,3 +254,45 @@ class TestDecryptEntryForExport:
 
         with pytest.raises(DecryptionError):
             entry_mgr.decrypt_entry_for_export(raw, include_secrets=False)
+
+
+class TestExportDecryptProgress:
+    """get_entries_for_export 的解密进度上报（PERF-070）。
+
+    50k 库解密实测 5.1s（导出全程原为不确定旋转）；progress 按已解密条目数上报
+    原始 ``(done, total)`` 计数，每 ``PROGRESS_REPORT_EVERY=100`` 条节流、终值恒
+    上报（复用导入侧 PERF-065 的节流纪律）。百分比加权由 UI 调用方完成。
+    """
+
+    ROWS = 250  # > PROGRESS_REPORT_EVERY，产生 100/200/250 三档节流中间值
+
+    def test_decrypt_progress_throttled_monotonic_final(self, entry_mgr, make_entry):
+        """解密进度节流（250 行 → 3 次）、单调、终值 (total, total)。"""
+        for i in range(self.ROWS):
+            entry_mgr.add_entry(make_entry(title=f"E{i:04d}", password=f"P{i:04d}!x"))
+
+        events: list[tuple[int, int]] = []
+        entries = entry_mgr.get_entries_for_export(
+            include_secrets=False,
+            progress=lambda done, total: events.append((done, total)),
+        )
+
+        assert len(entries) == self.ROWS
+        # 节流：250 行仅 3 次上报（无节流将逐条 250 次）
+        assert events == [(100, 250), (200, 250), (250, 250)]
+
+    def test_decrypt_progress_empty_vault_reports_final(self, entry_mgr):
+        """空库上报单点 (0, 0)（UI 侧映射为 100，进度不留悬挂）。"""
+        events: list[tuple[int, int]] = []
+        entries = entry_mgr.get_entries_for_export(
+            include_secrets=False,
+            progress=lambda done, total: events.append((done, total)),
+        )
+        assert entries == []
+        assert events == [(0, 0)]
+
+    def test_decrypt_progress_not_reported_without_callback(self, entry_mgr, make_entry):
+        """未提供 progress 时行为不变（默认路径零开销）。"""
+        entry_mgr.add_entry(make_entry(title="only"))
+        entries = entry_mgr.get_entries_for_export(include_secrets=False)
+        assert len(entries) == 1

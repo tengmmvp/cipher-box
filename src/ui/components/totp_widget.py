@@ -139,6 +139,9 @@ class TOTPWidget(QObject):
         code_row = QHBoxLayout()
         code_row.setSpacing(12)
 
+        # TOTP 验证码为 HOTP 截断生成的纯数字串（crypto.totp._compute_totp），
+        # 非「用户/导入数据」——Qt::mightBeRichText 不会把纯数字判为富文本，
+        # 无需 create_plain_text_label（SEC-030 评估结论：此处安全）。
         self._code_label = QLabel(state["code"])
         self._code_label.setStyleSheet(
             f"font-size: 28px; font-weight: 600; letter-spacing: 6px; "

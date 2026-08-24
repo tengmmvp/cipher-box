@@ -141,3 +141,93 @@ class TestWriteOverwriteUpdates:
         assert read.password == "NewPass2!"
         # 密码变更归档历史（db 层计数，含旧密文）
         assert entry_mgr.db.get_password_history_count(entry_id) >= 1
+
+
+class TestOverwriteProgressReporting:
+    """prepare/write_overwrite_updates 的进度上报（PERF-069）。
+
+    纯覆盖导入此前全程冻结在 15%——两函数增可选 progress 后按已处理条目数上报
+    ``(done, total)``，每 ``PROGRESS_REPORT_EVERY=100`` 条节流、终值恒上报。
+    """
+
+    ROWS = 250  # > PROGRESS_REPORT_EVERY：3 次节流上报（100/200/250）
+
+    def _seed_items(self, entry_mgr, make_entry):
+        items = []
+        for i in range(self.ROWS):
+            entry_id = entry_mgr.add_entry(make_entry(title=f"A{i:04d}", password=f"Old{i:04d}!x"))
+            raw = entry_mgr.db.get_entry(entry_id)
+            assert raw is not None
+            new_entry = dataclasses.replace(
+                make_entry(title=f"A{i:04d}", password=f"New{i:04d}!y"), id=entry_id
+            )
+            items.append(BatchUpdateItem(entry=new_entry, raw=raw, old_password=f"Old{i:04d}!x"))
+        return items
+
+    def test_prepare_reports_throttled_with_final(self, entry_mgr, make_entry):
+        """prepare：250 条 → 3 次上报，终值 (250, 250)。"""
+        items = self._seed_items(entry_mgr, make_entry)
+        events: list[tuple[int, int]] = []
+        prepared, failures = prepare_overwrite_updates(
+            entry_mgr, items, progress=lambda done, total: events.append((done, total))
+        )
+        assert failures == []
+        assert len(prepared) == self.ROWS
+        assert events == [(100, 250), (200, 250), (250, 250)]
+
+    def test_prepare_progress_counts_failed_items(self, entry_mgr, make_entry):
+        """失败项也计入进度（done 覆盖全部已处理条目，终值恒达 total）。"""
+        good = self._seed_items(entry_mgr, make_entry)
+        # 追加一个缺 id 的失败项（EntryError 收集为 failure）
+        raw = good[0].raw
+        bad = BatchUpdateItem(entry=make_entry(title="bad"), raw=raw, old_password=None)
+        events: list[tuple[int, int]] = []
+        prepared, failures = prepare_overwrite_updates(
+            entry_mgr, good + [bad], progress=lambda done, total: events.append((done, total))
+        )
+        assert len(failures) == 1
+        assert events[-1] == (len(good) + 1, len(good) + 1)
+
+    def test_write_reports_chunked_progress(self, entry_mgr, make_entry):
+        """write：>500 条分块上报中间值（600 → 2 块，500/600 中间值）。"""
+        rows = 600
+        items = []
+        for i in range(rows):
+            entry_id = entry_mgr.add_entry(make_entry(title=f"B{i:04d}", password=f"Old{i:04d}!x"))
+            raw = entry_mgr.db.get_entry(entry_id)
+            assert raw is not None
+            new_entry = dataclasses.replace(
+                make_entry(title=f"B{i:04d}", password=f"New{i:04d}!y"), id=entry_id
+            )
+            items.append(BatchUpdateItem(entry=new_entry, raw=raw, old_password=f"Old{i:04d}!x"))
+        prepared, _ = prepare_overwrite_updates(entry_mgr, items)
+        events: list[tuple[int, int]] = []
+        count = write_overwrite_updates(
+            entry_mgr,
+            prepared,
+            pre_epoch=entry_mgr.key_epoch,
+            progress=lambda done, total: events.append((done, total)),
+        )
+        assert count == rows
+        assert (500, rows) in events  # 分块中间值
+        assert events[-1] == (rows, rows)
+
+    def test_write_without_progress_single_batch(self, entry_mgr, make_entry, monkeypatch):
+        """未提供 progress 时保持单次批量路径（不分块，既有调用方零改动）。"""
+        items = self._seed_items(entry_mgr, make_entry)[:150]
+        prepared, _ = prepare_overwrite_updates(entry_mgr, items)
+        calls: list[int] = []
+        real_batch = type(entry_mgr.db).update_overwrite_batch
+
+        def _counting_batch(self_db, entries):
+            calls.append(len(entries))
+            return real_batch(self_db, entries)
+
+        monkeypatch.setattr(
+            type(entry_mgr.db),
+            "update_overwrite_batch",
+            _counting_batch,
+        )
+        count = write_overwrite_updates(entry_mgr, prepared, pre_epoch=entry_mgr.key_epoch)
+        assert count == 150
+        assert calls == [150]  # 单次批量，未按 500 分块

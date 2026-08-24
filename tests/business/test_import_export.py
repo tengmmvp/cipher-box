@@ -205,3 +205,99 @@ def test_import_from_bitwarden_json_sanitizes_url_and_totp(entry_mgr, tmp_path):
     safe = by_title["Safe"]
     assert safe.url == "https://github.com"
     assert safe.totp_secret == "GEZDGNBVGY3TQOJQ"
+
+
+# ======== 导出确定进度（PERF-070）========
+
+
+class TestExportWriteProgress:
+    """export_to_json / export_to_csv 的写文件进度上报（PERF-070）。
+
+    50k 条写文件实测 1.9s；progress 按已写条目数上报原始 ``(written, total)``
+    计数，每 ``PROGRESS_REPORT_EVERY=100`` 条节流、终值恒上报。
+    """
+
+    ROWS = 250
+
+    @staticmethod
+    def _entries(rows: int) -> list[Entry]:
+        return [Entry(title=f"E{i:04d}", username=f"u{i}", password=f"P{i}!x") for i in range(rows)]
+
+    @staticmethod
+    def _mgr():
+        from unittest.mock import MagicMock
+
+        from src.business.managers.import_export import ImportExportManager
+
+        # 导出函数不触 entry_mgr（_csv_safe 为静态方法），mock 注入即可
+        return ImportExportManager(MagicMock())
+
+    def test_json_write_progress_throttled_final(self, tmp_path):
+        """JSON 导出：250 条 → 3 次节流上报，终值 (250, 250)。"""
+        events: list[tuple[int, int]] = []
+        ok = self._mgr().export_to_json(
+            str(tmp_path / "p.json"),
+            self._entries(self.ROWS),
+            include_password=True,
+            progress=lambda done, total: events.append((done, total)),
+        )
+        assert ok is True
+        assert events == [(100, 250), (200, 250), (250, 250)]
+
+    def test_csv_write_progress_throttled_final(self, tmp_path):
+        """CSV 导出：与 JSON 同款节流与终值语义。"""
+        events: list[tuple[int, int]] = []
+        ok = self._mgr().export_to_csv(
+            str(tmp_path / "p.csv"),
+            self._entries(self.ROWS),
+            include_password=True,
+            progress=lambda done, total: events.append((done, total)),
+        )
+        assert ok is True
+        assert events == [(100, 250), (200, 250), (250, 250)]
+
+    def test_empty_export_reports_final(self, tmp_path):
+        """空导出上报单点 (0, 0)（UI 侧映射为 100，进度不留悬挂）。"""
+        for writer in ("export_to_json", "export_to_csv"):
+            events: list[tuple[int, int]] = []
+            ok = getattr(self._mgr(), writer)(
+                str(tmp_path / f"empty.{writer[-1]}"),
+                [],
+                include_password=False,
+                progress=lambda done, total, sink=events: sink.append((done, total)),
+            )
+            assert ok is True
+            assert events == [(0, 0)]
+
+
+class TestExportPercentMappers:
+    """导出两阶段百分比映射函数（PERF-070）：解密 0→70、写文件 70→100。"""
+
+    def test_decrypt_percent(self):
+        from src.business.managers.import_export import export_decrypt_percent
+
+        assert export_decrypt_percent(0, 100) == 0
+        assert export_decrypt_percent(50, 100) == 35
+        assert export_decrypt_percent(100, 100) == 70
+        # 空阶段取满（_phase_progress 语义）：零条目直接到阶段终点
+        assert export_decrypt_percent(0, 0) == 70
+
+    def test_write_percent(self):
+        from src.business.managers.import_export import export_write_percent
+
+        assert export_write_percent(0, 100) == 70
+        assert export_write_percent(50, 100) == 85
+        assert export_write_percent(100, 100) == 100
+        assert export_write_percent(0, 0) == 100
+
+    def test_mappers_compose_monotonic(self):
+        """两阶段映射拼接单调不减且终值 100（UI 进度条契约）。"""
+        from src.business.managers.import_export import (
+            export_decrypt_percent,
+            export_write_percent,
+        )
+
+        values = [export_decrypt_percent(d, 250) for d in (100, 200, 250)]
+        values += [export_write_percent(d, 250) for d in (100, 200, 250)]
+        assert all(a <= b for a, b in zip(values, values[1:], strict=False))
+        assert values[-1] == 100

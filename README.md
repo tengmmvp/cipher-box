@@ -108,7 +108,7 @@ uv run python main.py
 ## 🧪 测试
 
 ```bash
-uv run pytest tests/             # pytest（经 uv 运行锁定环境）
+uv run -m pytest tests/          # pytest（经 uv 运行锁定环境）
 python -m unittest discover tests/  # unittest
 ```
 

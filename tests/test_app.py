@@ -9,10 +9,14 @@ LoginWindow/MainWindow 的 GUI 交互，难以在无头测试中端到端驱动�
 等副作用），手动注入 vault 与 main_window，隔离测试兜底逻辑本身。
 """
 
+import logging
 import tempfile
 from unittest.mock import MagicMock
 
-from src.app import CipherBoxApp
+import pytest
+
+import src.app as app_module
+from src.app import CipherBoxApp, main
 from tests.helpers import make_test_config, make_vault
 
 
@@ -171,3 +175,60 @@ def test_main_window_construction_failure_rolls_back(monkeypatch):
     # 停止运行并退出事件循环
     assert app._running is False
     app._app.quit.assert_called_once()
+
+
+class TestMainEntryPoint:
+    """main() 启动构造兜底（QL-050）：构造抛异常时 stderr 留痕、尽力弹窗、退出码 1。"""
+
+    def test_construction_failure_exits_1_with_log_and_dialog(self, monkeypatch, caplog):
+        """构造阶段异常：兜底日志（CRITICAL + exc_info 完整现场）+ 弹窗 + 退出码 1。
+
+        生产环境 basicConfig 兜底后该 CRITICAL 记录（含 traceback）落 stderr；
+        测试进程经 caplog 断言日志管线收到记录，等价守护「现场不丢失」。
+        """
+        critical_calls: list = []
+        monkeypatch.setattr(
+            app_module, "CipherBoxApp", MagicMock(side_effect=RuntimeError("init boom"))
+        )
+        monkeypatch.setattr(
+            "src.app.QMessageBox.critical", lambda *a, **k: critical_calls.append(a)
+        )
+
+        with (
+            pytest.raises(SystemExit) as exc_info,
+            caplog.at_level(logging.CRITICAL, logger="src.app"),
+        ):
+            main()
+
+        assert exc_info.value.code == 1
+        assert critical_calls  # 尽力弹窗路径被执行
+        assert critical_calls[0][1] == "CipherBox 启动失败"
+        records = [r for r in caplog.records if r.levelno >= logging.CRITICAL]
+        assert any("应用启动失败" in r.message for r in records)
+        assert any(r.exc_info is not None and "init boom" in str(r.exc_info[1]) for r in records)
+
+    def test_construction_failure_survives_dialog_error(self, monkeypatch):
+        """QApplication 未建成（弹窗自身抛异常）时不得二次崩溃，仍以退出码 1 结束。"""
+
+        def _raise_dialog(*args, **kwargs):
+            raise RuntimeError("no QApplication available")
+
+        monkeypatch.setattr(app_module, "CipherBoxApp", MagicMock(side_effect=RuntimeError("boom")))
+        monkeypatch.setattr("src.app.QMessageBox.critical", _raise_dialog)
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 1
+
+    def test_main_success_passes_run_exit_code(self, monkeypatch):
+        """构造成功：退出码透传 run() 返回值，兜底分支不介入。"""
+        fake_app = MagicMock()
+        fake_app.run.return_value = 0
+        monkeypatch.setattr(app_module, "CipherBoxApp", MagicMock(return_value=fake_app))
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 0
+        fake_app.run.assert_called_once()

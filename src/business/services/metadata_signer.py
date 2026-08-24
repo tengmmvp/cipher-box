@@ -8,7 +8,7 @@ import logging
 from ...exceptions import VaultIntegrityError, VaultLockedError
 from ...models import Category, RawEntry
 from ...utils.memory import secure_zero_buffer
-from .vault_meta_keys import VAULT_META_SIGNED_KEYS
+from . import vault_meta_keys
 
 logger = logging.getLogger(__name__)
 
@@ -17,13 +17,19 @@ logger = logging.getLogger(__name__)
 _DOMAIN_INFO_ENTRY_METADATA = b"cipherbox:entry-metadata-key"
 _DOMAIN_INFO_VAULT_META = b"cipherbox:vault-meta-key"
 
-# vault_meta 完整性签名覆盖的键集（源自 vault_meta_keys 单一事实源），此处 re-export
-# 供既有调用方引用（vault_meta_store / backup_restore 经本模块 import）。
+# vault_meta 完整性签名覆盖的键集，源自 vault_meta_keys 单一事实源。此处显式重绑定
+# re-export 供既有调用方引用（vault_meta_store / backup_restore 经本模块 import）——
+# 相比 ``from .vault_meta_keys import VAULT_META_SIGNED_KEYS`` 的隐式转发，赋值语句使
+# 本模块确实持有一个同名模块级名字，import 重排/清理工具不会把「仅转发未消费」的
+# import 误判为可移除而静默断链下游引用。
 
 # 签名绑定的加密字段及固定顺序（顺序变更会破坏已有 metadata_mac）。等于
 # crypto_utils.SENSITIVE_ENCRYPTED_FIELDS 减 {title,url,tags}（这三者以密文形态直接
 # 入签），由 tests/test_field_consistency.py 守护此子集关系。custom_fields 取密文 db_value。
 SIGNATURE_ENCRYPTED_FIELD_ORDER = ("username", "password", "notes", "totp_secret", "custom_fields")
+
+# vault_meta 完整性签名覆盖键集的 re-export 落点（见文件头注释）。
+VAULT_META_SIGNED_KEYS = vault_meta_keys.VAULT_META_SIGNED_KEYS
 
 
 class MetadataSigner:
@@ -258,3 +264,30 @@ class MetadataSigner:
             "created_at": category.created_at,
         }
         return MetadataSigner._canonical_json_bytes(data)
+
+
+def verify_raw(raw: RawEntry, domain_key: bytes | bytearray) -> bool:
+    """对已物化的 :class:`RawEntry` 做纯函数 HMAC 验签（PERF-067）。
+
+    提取自 ``entry_repository._row_to_entry`` 的 ``entry_verifier`` 钩子实现逻辑
+    （期望 MAC 计算 + ``compare_digest`` 比对），供搜索补验签对已物化的命中行就地
+    验签，替代经 ``get_entries_by_ids`` 的二次 SQL 读库（命中行的 RawEntry 本已在
+    内存，二次全表读实测 5000 ids 234.6ms、50k 1.3-2s，且第二份物化多驻留一份
+    宽行）。比对语义与 db 层 LENIENT 路径一致——空签名（缺失）与比对失败统一由
+    调用方置 ``integrity_error`` 标志，不区分文案（同 ``_row_to_entry`` 的 LENIENT
+    分支归一为「元数据完整性校验失败」）。
+
+    Args:
+        raw: 已物化的密文态条目（含 metadata_mac 与验签所需全部载荷字段）。
+        domain_key: 元数据域密钥，须与 ``raw`` 同世代——由调用方用
+            ``epoch_guarded_read`` 锁内快照的主密钥经
+            :meth:`MetadataSigner.compute_domain_key` 派生（与 PERF-001 快照解密
+            同纪律），保证 raw/密钥/域密钥三者同 epoch，比对结果不自洽漂移。
+
+    Returns:
+        签名缺失或比对失败返回 False，验签通过返回 True。
+    """
+    if not raw.metadata_mac:
+        return False
+    expected = hmac.new(domain_key, MetadataSigner._payload(raw), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(raw.metadata_mac, expected)

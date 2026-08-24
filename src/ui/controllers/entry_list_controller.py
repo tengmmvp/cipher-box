@@ -11,7 +11,11 @@ from typing import TYPE_CHECKING
 
 from ...business.services.crypto_utils import matches_search, matches_tag
 from ...config import CFG_OLD_PASSWORD_WARNING_DAYS
-from ..resources.constants import RECENT_ENTRY_LIMIT, SORT_OPTIONS
+from ..resources.constants import (
+    MAX_SEARCH_RESULTS_DISPLAY,
+    RECENT_ENTRY_LIMIT,
+    SORT_OPTIONS,
+)
 
 if TYPE_CHECKING:
     from ...business.managers.entry_manager import EntryManager
@@ -78,11 +82,25 @@ class EntryListController:
         search: str,
         cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[list[Entry], str]:
-        """获取全部条目，可按分类和搜索过滤。"""
+        """获取全部条目，可按分类和搜索过滤。
+
+        PERF-066：无搜索时把渲染上限（MAX_SEARCH_RESULTS_DISPLAY）经 EntryQuery 下推
+        SQL LIMIT——UI 渲染本就截断到该上限（list_refresh_controller 的
+        ``_apply_entry_results``），SQL 沿同一 PERF-011 复合索引序（is_favorite DESC,
+        updated_at DESC）截断与其等价，却免去大库的全量拉取 + 逐行 HMAC 验签 + Entry
+        构造（50k 温态实测 1.8-3s → 预期 ~60-70ms）。搜索路径不下推 limit：加密字段
+        无法 SQL 过滤，先截断后过滤会致命中失真，仍由 get_entry_summaries 全量解密
+        过滤后按 limit 截断。
+
+        已知取舍：标签过滤在 UI 侧后置施加（业务层 EntryQuery 无 tag 参数），截断后
+        的标签子集可能漏掉索引序上限之外的命中——与渲染截断同级的损失面；库内总数
+        语义由状态栏/侧边栏/空态的独立 COUNT 保持，不依赖本列表长度。
+        """
         return self._entry_mgr.get_entry_summaries(
             category_id=category_id,
             search=search,
             cancel_check=cancel_check,
+            limit=MAX_SEARCH_RESULTS_DISPLAY if not search else None,
         ), "全部条目"
 
     def fetch_favorite(

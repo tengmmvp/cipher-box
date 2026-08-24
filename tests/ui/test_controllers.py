@@ -134,6 +134,38 @@ class TestBuildDeleteMessage:
         assert name == "金融"
 
 
+class TestFetchAll:
+    """EntryListController.fetch_all 的无搜索 LIMIT 下推（PERF-066）。"""
+
+    def test_no_search_pushes_render_cap_limit(self):
+        """无搜索时把渲染上限经 get_entry_summaries 的 limit 下推 SQL（PERF-066）。
+
+        UI 渲染本就截断到 MAX_SEARCH_RESULTS_DISPLAY，SQL 沿同一复合索引序截断等价，
+        却免去大库全量拉取+逐行验签+Entry 构造。
+        """
+        from src.ui.resources.constants import MAX_SEARCH_RESULTS_DISPLAY
+
+        ctrl = _entry_list_controller()
+        ctrl.fetch_all(None, "")
+        ctrl._entry_mgr.get_entry_summaries.assert_called_once_with(
+            category_id=None,
+            search="",
+            cancel_check=None,
+            limit=MAX_SEARCH_RESULTS_DISPLAY,
+        )
+
+    def test_search_path_passes_no_limit(self):
+        """有搜索时不下推 limit：加密字段须先全量解密过滤，先截断会致命中失真。"""
+        ctrl = _entry_list_controller()
+        ctrl.fetch_all(3, "关键词")
+        ctrl._entry_mgr.get_entry_summaries.assert_called_once_with(
+            category_id=3,
+            search="关键词",
+            cancel_check=None,
+            limit=None,
+        )
+
+
 class TestFetchRecent:
     """EntryListController.fetch_recent 的 SQL 下推与内存排序分支。"""
 

@@ -32,6 +32,8 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
   - `EntryManager`：条目 CRUD，透明加解密；经 property 暴露子服务 `categories`
     （`CategoryManager`）/ `totp`（`TotpService`）/ `password_history`
     （`PasswordHistoryService`）。
+  - `CategoryManager`：分类的加密 CRUD、名称唯一性与缓存失效编排；组合根显式
+    创建并注入 EntryManager（MAINT-015），经其 `categories` property 暴露。
   - `EntryCacheManager`：摘要/分类名/标签/TOTP secret 多级缓存（LRU + epoch 失效）。
   - `EntryChangeBus`：统一「变更→缓存失效→回调」管线，支持 crypto_id 单条精细失效。
   - `ImportExportManager`：CSV/JSON/浏览器导入导出，格式解析拆分至 `managers/importers/`
@@ -39,6 +41,8 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
     db_lock（MAINT-004），再于 epoch 守卫事务内裸写入保证原子性。
   - `BackupRestoreManager`：可移植二进制加密备份格式；经 `restore_points` property
     暴露 `RestorePointManager`（恢复点统计/清理）。
+  - `RestorePointManager`：恢复前快照（`pre_restore_*.cbox`）的创建/统计/清理
+    （ARCH-006）；组合根显式创建并注入 BackupRestoreManager（MAINT-015）。
 - **`services/`（无状态业务服务：加解密、校验、分析等，密钥经 vault 引用现取）**
   - 加解密与字段：`crypto_utils`（`SENSITIVE_ENCRYPTED_FIELDS` 单一事实源、统一加解密
     入口）、`entry_validation`、`password_service`、`card_validation`（二者切断 UI→Crypto
@@ -113,7 +117,7 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
   清零影响。
 - **CPython 固有限制**：`bytes` 不可变，OpenSSL 内部密钥副本依赖 GC 回收。
   `lock()` 主动 `gc.collect()` 缩短驻留。
-- **epoch 守卫**：`key_epoch`（UUID）随改密/恢复轮换。`_enforce_key_epoch` 在每次
+- **epoch 守卫**：`key_epoch`（UUID）随改密/恢复轮换。`enforce_key_epoch` 在每次
   写库前比对内存 epoch 与 `vault_meta.key_epoch`，不匹配则清除状态拒绝写入，
   防止改密后旧会话用旧密钥写入导致数据损坏。
 
@@ -177,12 +181,15 @@ HMAC-SHA256 签名（`metadata_mac` 列）：
   `get_safe` 再施加运行时下限，构成 load + 读取双层防御。
 - **哨兵机制**：`RateLimiter` 用哨兵文件区分「首次使用」与「状态被恶意删除」，
   后者降级最高阶梯锁定。
-- **签名密钥封装**：`config.key`（签名密钥）经 Windows DPAPI（当前用户凭据）封装
-  存储——即便被同权限进程读取也无法在别处解密重算签名，收缩「本地攻击者读
-  config.key 重算签名绕过配置完整性」的攻击面。非 Windows 或 DPAPI 不可用时
-  回退明文存储（不阻断启动）。残余限制：DPAPI 仅防「窃取文件后离线重算」，不防
-  「能以当前用户身份运行代码的攻击者」（其可直接调 `CryptProtectData` 重算签名），
-  后者属超出本地优先应用防御范围的强对手。
+- **签名密钥封装**：签名密钥按平台三级链存储（加载/存储下沉
+  `src/config_key_store.py`，MAINT-020）：Windows 经 DPAPI（当前用户凭据）封装于
+  `config.key`；macOS/Linux 经 keyring 存入系统密钥链（Keychain / Secret
+  Service）；平台存储不可用（headless Linux / CI、keyring 未安装或后端失败）时
+  回退明文 0600 `config.key` 并记 ERROR 使降级可见，不阻断启动。封装使密钥即便
+  被同权限进程读取也无法在别处解密重算签名，收缩「本地攻击者读 config.key
+  重算签名绕过配置完整性」的攻击面。残余限制：DPAPI 仅防「窃取文件后离线重算」，
+  不防「能以当前用户身份运行代码的攻击者」（其可直接调 `CryptProtectData`
+  重算签名），后者属超出本地优先应用防御范围的强对手。
 
 ## 9. 安全自省与已知边界
 

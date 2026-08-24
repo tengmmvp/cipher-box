@@ -337,11 +337,12 @@ class TestImportWeightedProgress:
         assert values[0] <= 10
 
     def test_progress_throttled_well_below_row_count(self, entry_mgr, tmp_path):
-        """节流生效：新增的加密/写入上报点次数远小于行数。
+        """节流生效（PERF-069）：全阶段合计上报次数远小于行数。
 
-        分类阶段保留既有逐条语义（覆盖 duplicate/skip 须逐行推进）；加密阶段按
-        100 行节流（250 行 → 3 次，无节流将逐行 250 次）、写入按 500 行分块
-        （250 行 → 1 次）。非分类阶段的合计上报 ≤ 10 次。
+        classify 阶段原为逐条上报（250 行 = 250 次跨线程信号发射，50k 行同放大），
+        PERF-069 起与加密/写入阶段同款按 ``PROGRESS_REPORT_EVERY=100`` 节流、终值
+        恒上报。250 行的期望总 emit 数：parse/sanitize/plan 里程碑 3 + classify 3
+        （100/200/250）+ 加密 3 + 写入 1 + 终值 1 = 11。
         """
         mgr = ImportExportManager(entry_mgr)
         events: list[tuple[int, int]] = []
@@ -350,10 +351,12 @@ class TestImportWeightedProgress:
             "json",
             progress_callback=lambda current, total: events.append((current, total)),
         )
-        # 分类阶段逐条 = ROWS 次；其余（parse/sanitize 里程碑 + 加密 3 + 写入 1 +
-        # 终值 1）合计 7 次。若加密未节流，此处将为 ROWS + 250+ 次而远超上限。
-        non_classify_emits = len(events) - self.ROWS
-        assert 0 <= non_classify_emits <= 10
+        # 总 emit 次数远小于行数（无节流时 classify 单段即为 ROWS 次）。
+        assert len(events) <= 15, f"节流失效：250 行导入产生 {len(events)} 次上报"
+        assert len(events) < self.ROWS // 10
+        # 分类阶段（12→15）节流后仍有中间值（13/14 一档），非仅首尾跳变。
+        classify_mid = [current for current, _total in events if 12 < current < 15]
+        assert len(classify_mid) >= 1
         # 加密阶段（15→70）确有节流后的中间值（37/59 一档），非仅终值跳变。
         encrypt_mid = [current for current, _total in events if 15 < current < 70]
         assert len(encrypt_mid) >= 2
@@ -374,3 +377,167 @@ class TestImportWeightedProgress:
         )
         assert count == 0
         assert events[-1] == (100, 100)
+
+
+# ======== 纯覆盖导入进度（PERF-069）========
+
+
+class TestOverwriteOnlyImportProgress:
+    """duplicate_action=overwrite 全命中时进度不再冻结在 15%（PERF-069）。
+
+    旧行为：encrypt/write 进度只挂在「新条目」子批（encrypt_new_entries /
+    write_new_entries），纯覆盖导入两子批均空，进度条分类结束（15%）后冻结到
+    终值 100 直跳——重导全量覆盖是典型场景。PERF-069 起覆盖条目的
+    prepare_overwrite_updates / write_overwrite_updates 与新条目合并计量同一
+    加权刻度（15→70 / 70→100）。
+    """
+
+    # 600 行 > _WRITE_PROGRESS_CHUNK(500)：覆盖写入分 2 块产生 (70,100) 开区间中间值；
+    # 加密子批按 100 节流产生 (15,70) 开区间中间值。
+    ROWS = 600
+
+    @staticmethod
+    def _seed_existing(entry_mgr, rows: int) -> None:
+        """预置与导入文件同 (title, username) 的既有条目，使全量命中覆盖。"""
+        for i in range(rows):
+            entry_mgr.add_entry(
+                Entry(
+                    title=f"Entry-{i:04d}",
+                    username=f"user{i:04d}",
+                    password=f"OldPass{i:04d}!x",
+                )
+            )
+
+    def _make_overwrite_import(self, tmp_path) -> str:
+        path = tmp_path / "overwrite.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "app": "CipherBox",
+                    "secrets_included": True,
+                    "entries": [
+                        {
+                            "title": f"Entry-{i:04d}",
+                            "username": f"user{i:04d}",
+                            "password": f"NewPass{i:04d}!y",
+                        }
+                        for i in range(self.ROWS)
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return str(path)
+
+    def test_overwrite_only_progress_monotonic_with_midvalues(self, entry_mgr, tmp_path):
+        """纯覆盖导入：进度单调、有 (15,100) 开区间中间值、终值 100。"""
+        self._seed_existing(entry_mgr, self.ROWS)
+        mgr = ImportExportManager(entry_mgr)
+        events: list[tuple[int, int]] = []
+        count = mgr.import_file(
+            self._make_overwrite_import(tmp_path),
+            "json",
+            duplicate_action="overwrite",
+            progress_callback=lambda current, total: events.append((current, total)),
+        )
+        assert count == self.ROWS
+
+        values = [current for current, _total in events]
+        assert all(total == 100 for _current, total in events)
+        assert all(a <= b for a, b in zip(values, values[1:], strict=False)), (
+            f"进度值须单调不减：{values}"
+        )
+        assert values[-1] == 100
+        # 覆盖加密（15→70）与覆盖写入（70→100）均有中间值——不再冻结在 15%。
+        assert any(15 < v < 70 for v in values), f"覆盖加密阶段无中间进度：{values}"
+        assert any(70 < v < 100 for v in values), f"覆盖写入阶段无中间进度：{values}"
+
+    def test_overwrite_only_updates_passwords(self, entry_mgr, tmp_path):
+        """进度改造不改变覆盖语义：全量命中时密码被覆盖为新值。"""
+        self._seed_existing(entry_mgr, self.ROWS)
+        mgr = ImportExportManager(entry_mgr)
+        count = mgr.import_file(
+            self._make_overwrite_import(tmp_path),
+            "json",
+            duplicate_action="overwrite",
+        )
+        assert count == self.ROWS
+        by_title = {e.title: e for e in entry_mgr.get_entries()}
+        assert len(by_title) == self.ROWS
+        assert by_title["Entry-0000"].password == "NewPass0000!y"
+
+
+# ======== 自定义字段公式清洗（SEC-045）========
+
+
+class TestCustomFieldsFormulaSanitize:
+    """导入入库边界对 custom_fields 的公式前缀清洗（SEC-045）。
+
+    旧行为：``_sanitize_entry_formula_fields`` 显式字段集不含 custom_fields——
+    非 password 类型字段的 name/value 含 ``=cmd|...`` 类公式值原样入库，详情
+    面板「一键复制」与 CSV 导出（拼入 notes）使其直达粘贴执行。password 类型
+    值豁免（密钥完整性优先，与 SEC-008/SEC-039 决策一致）。
+    """
+
+    @staticmethod
+    def _import_with_custom_fields(entry_mgr, tmp_path, custom_fields):
+        mgr = ImportExportManager(entry_mgr)
+        path = tmp_path / "cf.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "app": "CipherBox",
+                    "secrets_included": True,
+                    "entries": [
+                        {
+                            "title": "CF Entry",
+                            "username": "u",
+                            "password": "Pass1234!x",
+                            "custom_fields": custom_fields,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert mgr.import_file(str(path), "json") == 1
+        return entry_mgr.get_entries()[0]
+
+    def test_malicious_text_field_sanitized(self, entry_mgr, tmp_path):
+        """text 字段的恶意公式 name/value 均被前置 ``'`` 转义入库。"""
+        imported = self._import_with_custom_fields(
+            entry_mgr,
+            tmp_path,
+            [
+                {
+                    "name": '+HYPERLINK("http://evil")',
+                    "value": "=cmd|' /C calc'!A0",
+                    "field_type": "text",
+                }
+            ],
+        )
+        field = imported.custom_fields[0]
+        assert field.name == '\'+HYPERLINK("http://evil")'
+        assert field.value == "'=cmd|' /C calc'!A0"
+
+    def test_password_field_value_untouched(self, entry_mgr, tmp_path):
+        """password 类型字段的值不清洗（密钥完整性优先，SEC-039 对称决策）。"""
+        imported = self._import_with_custom_fields(
+            entry_mgr,
+            tmp_path,
+            [{"name": "恢复代码", "value": "=CMD-secret-key", "field_type": "password"}],
+        )
+        field = imported.custom_fields[0]
+        assert field.value == "=CMD-secret-key"
+        assert field.name == "恢复代码"
+
+    def test_benign_custom_fields_unchanged(self, entry_mgr, tmp_path):
+        """无危险前缀的普通字段原样保留（不引入误伤）。"""
+        imported = self._import_with_custom_fields(
+            entry_mgr,
+            tmp_path,
+            [{"name": "邮箱", "value": "a@b.com", "field_type": "email"}],
+        )
+        field = imported.custom_fields[0]
+        assert field.name == "邮箱"
+        assert field.value == "a@b.com"

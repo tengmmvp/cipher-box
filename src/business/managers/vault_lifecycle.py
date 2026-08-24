@@ -198,7 +198,8 @@ class VaultLifecycleOrchestrator:
             # 加载」的部分就位窗口：此窗口内 is_unlocked 为 False，并发读取者不会得到
             # 「已解锁但 snapshot_key 缺失」的中间态。
             self._vault.mark_unlocked()
-            # S4: 解锁后主动截断 WAL，清除上次运行可能残留的旧明文页（如恢复后
+            # 解锁后主动截断 WAL（SEC-010 高敏感路径家族的解锁触点：主动收缩 -wal
+            # 残留明文），清除上次运行可能残留的旧明文页（如恢复后
             # secure_checkpoint 失败时 -wal 残留——恢复不轮换主密钥，残留页由当前
             # 主密钥加密，持主密钥+WAL 者可解出恢复前旧明文）。失败非致命（数据已
             # 可读），下次解锁重试。

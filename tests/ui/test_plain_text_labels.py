@@ -159,6 +159,42 @@ class TestPasswordHistoryPlainText:
         pwd_label.setText(widget._history_passwords[0])
         assert pwd_label.text() == "<svg/onload=x>old"
 
+    def test_history_timestamp_label_is_plain_text(self, qapp):
+        """changed_at 时间标签同为 PlainText（SEC-030）：导入数据的时间戳可含 markup。"""
+        from src.ui.components.password_history_widget import PasswordHistoryWidget
+
+        widget = PasswordHistoryWidget()
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        widget._build_history([{"changed_at": "<i>2024-01-01</i>", "password": "old"}], layout)
+
+        # 行内首个 QLabel 是 changed_at 时间标签（密码标签为第二个）
+        time_label = host.findChildren(QLabel)[0]
+        assert time_label.textFormat() == Qt.TextFormat.PlainText
+        assert time_label.text() == "<i>2024-01-01</i>"
+
+
+class TestMainWindowListTitlePlainText:
+    """主窗口条目列表标题的 PlainText 契约（SEC-030 漏点收编）。"""
+
+    def test_list_title_is_plain_text_and_survives_set_text(self, qapp):
+        """列表标题创建即 PlainText；list_refresh_controller 以分类名 setText 后
+        markup 字面保留（分类名可经导入携带富文本标记）。"""
+        from PyQt6.QtWidgets import QSplitter
+
+        from src.ui.windows.main_window import MainWindow
+
+        mw = MainWindow.__new__(MainWindow)
+        mw._splitter = QSplitter()
+        mw._build_entry_list()
+
+        title = mw._list_title
+        assert title.objectName() == "sidebarListTitle"
+        assert title.textFormat() == Qt.TextFormat.PlainText
+        title.setText('<b style="color:red">工作</b><img src="x.svg">')
+        assert title.textFormat() == Qt.TextFormat.PlainText
+        assert title.text() == '<b style="color:red">工作</b><img src="x.svg">'
+
 
 @pytest.mark.parametrize(
     "text",

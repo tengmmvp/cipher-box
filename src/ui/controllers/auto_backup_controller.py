@@ -102,28 +102,47 @@ class AutoBackupController:
                 cancel_check=worker.cancel_check,
             )
 
+        def _notify_failure(reason: str) -> None:
+            """自动快照失败的用户可见反馈（QL-004 异常路径 / QL-048 业务失败路径共用）。
+
+            含全量明文的快照连续失败是泄漏面/可恢复性问题，用户应知晓；后台静默
+            任务失败时用户无感知，故 Toast + 日志双通道上报。
+            """
+            logger.warning("自动快照失败: %s", reason)
+            from ..components.toast import Toast
+            from ..resources.constants import MS_TOAST_DEFAULT
+
+            # self._parent 标注为 QObject（setup 宽接口），实际注入 MainWindow(QWidget)；
+            # Toast.show 需 QWidget，经 cast 桥接 + None 守卫。
+            if self._parent is not None:
+                Toast.show(
+                    cast("QWidget", self._parent),
+                    "自动快照失败，详见日志",
+                    Toast.WARNING,
+                    duration=MS_TOAST_DEFAULT,
+                )
+
         def _on_backup_error(msg: str) -> None:
             # 守卫：仅当当前备份 worker 仍是本 worker 时记录，避免被后续备份替换后
             # 旧 worker 的延迟错误信号触发误导性日志。worker 为自由变量，延迟绑定。
             if self._worker is worker:
-                logger.warning("自动快照失败: %s", msg)
-                # QL-004：自动备份失败给用户可见反馈（后台静默任务，失败时用户无感知）。
-                # 含全量明文的快照连续失败是泄漏面/可恢复性问题，用户应知晓。
-                from ..components.toast import Toast
-                from ..resources.constants import MS_TOAST_DEFAULT
+                _notify_failure(msg)
 
-                # self._parent 标注为 QObject（setup 宽接口），实际注入 MainWindow(QWidget)；
-                # Toast.show 需 QWidget，经 cast 桥接 + None 守卫。
-                if self._parent is not None:
-                    Toast.show(
-                        cast("QWidget", self._parent),
-                        "自动快照失败，详见日志",
-                        Toast.WARNING,
-                        duration=MS_TOAST_DEFAULT,
-                    )
+        def _on_backup_finished(result: object) -> None:
+            # 业务失败路径（QL-048）：maybe_auto_backup 以 (False, msg) 元组返回的业务
+            # 失败（路径无效/权限失败/载荷超限等）不抛异常，走 worker.finished 而非
+            # error 信号——此前只连 error，业务失败仅业务层日志、无 Toast，QL-004
+            # 契约只兑现了异常路径。此处检查返回值，False 时复用同一反馈通道。
+            # 与 _on_backup_error 同款 stale-worker 守卫；运行时信号载荷为 object，
+            # 收窄为 (bool, str) 元组。
+            if self._worker is not worker:
+                return
+            if isinstance(result, tuple) and len(result) == 2 and result[0] is False:
+                _notify_failure(str(result[1]) or "未知错误")
 
         worker = BackgroundWorker(_task, parent=self._parent)
         worker.error.connect(_on_backup_error)
+        worker.finished.connect(_on_backup_finished)
         self._worker = worker
         worker.start()
 

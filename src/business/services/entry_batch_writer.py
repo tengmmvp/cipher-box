@@ -30,8 +30,8 @@ if TYPE_CHECKING:
 
 # 进度上报节流间隔（PERF-065）：每 100 行上报一次，避免 50k 行导入产生 50k 次跨
 # 线程信号发射（UI 侧 repaint 开销反超加密本身）；阶段终值恒上报，保证进度能到达
-# 阶段终点。
-_PROGRESS_REPORT_EVERY = 100
+# 阶段终点。公开常量供 import_export 的 classify 阶段复用同一节流纪律（PERF-069）。
+PROGRESS_REPORT_EVERY = 100
 
 # 写入分块大小（PERF-065）：progress 提供时按此分块调用 add_entries_batch，供写入
 # 阶段上报中间进度。分块间仍处调用方 epoch_guarded_transaction 内（_auto_commit 在
@@ -80,7 +80,7 @@ def encrypt_new_entries(
     ``entries`` 须已由 ``Entry.from_dict`` 校验。
 
     ``progress``（PERF-065）：提供时按 ``(done, total)`` 上报加密进度，每
-    ``_PROGRESS_REPORT_EVERY`` 行节流一次、终值恒上报——加密逐字段是密码学契约，
+    ``PROGRESS_REPORT_EVERY`` 行节流一次、终值恒上报——加密逐字段是密码学契约，
     循环结构不变，仅插入上报点。
     """
     now = utc_now_iso()
@@ -101,7 +101,7 @@ def encrypt_new_entries(
                 updated_at=entry.updated_at or now,
             )
         )
-        if progress is not None and (idx % _PROGRESS_REPORT_EVERY == 0 or idx == total):
+        if progress is not None and (idx % PROGRESS_REPORT_EVERY == 0 or idx == total):
             progress(idx, total)
     preserve = any(e.created_at or e.updated_at for e in entries)
     return enc_entries, preserve
@@ -146,6 +146,7 @@ def prepare_overwrite_updates(
     items: list[BatchUpdateItem],
     *,
     preserve_password_changed_at: bool = True,
+    progress: Callable[[int, int], None] | None = None,
 ) -> tuple[list[PreparedUpdate], list[tuple[int, Exception]]]:
     """锁外验证+加密覆盖项（MAINT-004），返回 ``(prepared, failures)``。
 
@@ -155,11 +156,17 @@ def prepare_overwrite_updates(
     failures 仅收集验证/解密阶段的 EntryError / EntryIntegrityError / DecryptionError
     （数据问题，逐条跳过）；写阶段错误由 :func:`write_overwrite_updates` 向上传播中止。
     pop_totp 在此阶段（加密前）失效缓存。
+
+    ``progress``（PERF-069）：提供时按已处理条目数（含失败项）上报 ``(done, total)``，
+    每 ``PROGRESS_REPORT_EVERY`` 条节流、终值恒上报——纯覆盖导入（duplicate_action=
+    overwrite 全命中）此前全程冻结在 15%，重导全量覆盖是典型场景，加密预处理是
+    其耗时主导，须有可见进度。
     """
     failures: list[tuple[int, Exception]] = []
     now = utc_now_iso()
     prepared: list[PreparedUpdate] = []
-    for idx, item in enumerate(items):
+    total = len(items)
+    for idx, item in enumerate(items, start=1):
         entry, raw, old_password = item.entry, item.raw, item.old_password
         try:
             validate_plain_entry(entry)
@@ -199,6 +206,8 @@ def prepare_overwrite_updates(
             prepared.append(PreparedUpdate(enc_entry, raw, password_changed, password_changed_at))
         except (EntryError, EntryIntegrityError, DecryptionError) as exc:
             failures.append((idx, exc))
+        if progress is not None and (idx % PROGRESS_REPORT_EVERY == 0 or idx == total):
+            progress(idx, total)
     return prepared, failures
 
 
@@ -206,8 +215,10 @@ def write_overwrite_updates(
     entry_mgr: "EntryManager",
     prepared: list[PreparedUpdate],
     pre_epoch: str | None,
+    progress: Callable[[int, int], None] | None = None,
 ) -> int:
-    """锁内批量写入已加密覆盖项（PERF：executemany 替代逐条 SAVEPOINT，MAINT-004）。
+    """锁内批量写入已加密覆盖项（PERF-004 同族：executemany 批量写入替代逐条
+    SAVEPOINT；MAINT-004）。
 
     须在 ``epoch_guarded_transaction(pre_epoch=...)`` 内调用。复查 ``pre_epoch`` 一次
     （db_lock 已串行化改密，批量写期间无并发改密），随后批量 UPDATE 条目 + 按条目分组
@@ -216,6 +227,10 @@ def write_overwrite_updates(
     单事务全有或全无：任一写入失败由外层 ``epoch_guarded_transaction`` 统一回滚，避免
     逐条 SAVEPOINT 提交留下的部分成功不一致状态（导入可整体重试）。``pre_epoch`` 由
     调用方在锁外加密前快照并传入——纵深防御「写入期间改密」，不匹配则中止导入。
+
+    ``progress``（PERF-069）：提供时按 ``_WRITE_PROGRESS_CHUNK`` 分块调用
+    update_overwrite_batch 并逐块上报 ``(done, total)``（与 write_new_entries 同款，
+    分块仍处调用方事务内，原子性不变）；密码历史分组写入计入终值。
     """
     if not prepared:
         return 0
@@ -223,7 +238,16 @@ def write_overwrite_updates(
         raise VaultKeyEpochMismatchError(
             "更新期间检测到密钥变更（改密/锁定），已中止以防写入旧密钥密文"
         )
-    entry_mgr.db.update_overwrite_batch([item.enc_entry for item in prepared])
+    total = len(prepared)
+    if progress is None:
+        entry_mgr.db.update_overwrite_batch([item.enc_entry for item in prepared])
+    else:
+        done = 0
+        for start in range(0, total, _WRITE_PROGRESS_CHUNK):
+            chunk = prepared[start : start + _WRITE_PROGRESS_CHUNK]
+            entry_mgr.db.update_overwrite_batch([item.enc_entry for item in chunk])
+            done += len(chunk)
+            progress(done, total)
     # 批量密码历史：按 entry_id 分组，每组一次 add_password_history_batch（INSERT + 单次
     # 截断），changed_at 用与条目一致的 password_changed_at 避免微秒级时序倒置。
     history_by_entry: dict[int, list[tuple[str, str]]] = {}
@@ -240,6 +264,7 @@ def write_overwrite_updates(
 __all__ = [
     "BatchUpdateItem",
     "PreparedUpdate",
+    "PROGRESS_REPORT_EVERY",
     "encrypt_new_entries",
     "prepare_overwrite_updates",
     "write_new_entries",

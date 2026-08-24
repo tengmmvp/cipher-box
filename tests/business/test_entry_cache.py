@@ -96,7 +96,11 @@ class TestSearchMetadataCache:
 
 
 class TestWriterEpochGuard:
-    """摘要缓存回写的写入方世代守卫（SEC-041）：跨世代解密结果不回写新世代缓存。"""
+    """摘要缓存回写的写入方世代守卫（SEC-041 接入搜索分支 / SEC-043 全读路径接入）。
+
+    跨世代解密结果不回写新世代缓存；四个读路径分支（非搜索列表/近期更新/详情/
+    安全分析）各自的「解密期间恢复重臂 → 旧世代回写被拒」行为在此一并守护。
+    """
 
     def test_stale_epoch_writeback_dropped_after_ream(self, entry_mgr, cache):
         """恢复重臂新 epoch 后，旧世代 worker 的解密结果不得写入新世代缓存。
@@ -122,8 +126,14 @@ class TestWriterEpochGuard:
         assert meta.title == "OldTitle"
         assert raw.crypto_id not in cache._search_metadata_cache
 
-    def test_legacy_caller_without_data_epoch_keeps_behavior(self, entry_mgr, cache):
-        """不传 data_epoch 的既有调用方保持原行为（缓存侧采样），回写不受影响。"""
+    def test_inlock_caller_without_data_epoch_keeps_fallback(self, entry_mgr, cache):
+        """不传 data_epoch 的调用方退回缓存侧采样并正常回写（回退语义保持）。
+
+        SEC-043 全路径接入后，锁外解密的生产路径（列表/近期/详情/分析）均传锁内
+        快照世代；回退保留给未接线的调用方（category_manager 的分类名会话缓存
+        路径不在本轮文件集内，其防护面与既有 version 守卫一致）与测试直调——本
+        测试守护回退行为不回归：同世代下采样即写入方世代，回写正常入缓存。
+        """
         entry_mgr.add_entry(Entry(title="T", username="u", password="p"))
         raw = entry_mgr.db.get_entries(EntryQuery())[0]
         cache.invalidate_if_epoch_changed()
@@ -131,6 +141,97 @@ class TestWriterEpochGuard:
         meta = cache._cached_search_metadata_no_check(raw)
         assert meta.title == "T"
         assert raw.crypto_id in cache._search_metadata_cache
+
+    def _install_mid_decrypt_rotation(self, monkeypatch, cache):
+        """在首次摘要解密期间模拟恢复提交：invalidate_all → 轮换 epoch → 重臂 E2。
+
+        时序对应真实竞态：worker 在 E1 锁内取 raw+密钥+世代快照后进入锁外解密；
+        恢复在解密期间提交（清缓存+轮换密钥世代），随后新读路径把缓存重臂为 E2。
+        旧 worker 的解密结果本身正确（旧 raw+旧密钥自洽），但不得回写 E2 缓存。
+        """
+
+        real_decrypt = entry_cache_module._decrypt_field_impl
+        triggered = {"done": False}
+
+        def _decrypt_with_restore_commit(encrypted, key, crypto_id, field_name, *, strict):
+            if not triggered["done"]:
+                triggered["done"] = True
+                cache.invalidate_all()
+                cache._vault.set_epoch("restored-e2")
+                cache.invalidate_if_epoch_changed()
+            return real_decrypt(encrypted, key, crypto_id, field_name, strict=strict)
+
+        monkeypatch.setattr(
+            entry_cache_module,
+            "_decrypt_field_impl",
+            _decrypt_with_restore_commit,
+        )
+
+    def test_non_search_list_rejects_cross_generation_writeback(
+        self, entry_mgr, cache, monkeypatch
+    ):
+        """非搜索列表分支（SEC-043）：解密期间恢复重臂 E2 后，旧世代回写被拒收。
+
+        复现口径：get_entry_summaries 无搜索词路径此前 meta=None 走缓存侧采样，
+        旧明文可植入新 epoch 缓存；接入锁内快照世代后守卫拒收。
+        """
+        entry_mgr.add_entry(Entry(title="T1", username="u", password="p"))
+        entry_mgr.add_entry(Entry(title="T2", username="u", password="p"))
+        self._install_mid_decrypt_rotation(monkeypatch, cache)
+
+        summaries = entry_mgr.get_entry_summaries()
+
+        # 结果本身完整返回（旧 raw+旧密钥自洽解密成功），但缓存不收旧世代明文
+        assert {s.title for s in summaries} == {"T1", "T2"}
+        assert len(cache._search_metadata_cache) == 0
+
+    def test_recent_summaries_rejects_cross_generation_writeback(
+        self, entry_mgr, cache, monkeypatch
+    ):
+        """近期更新分支（SEC-043）：同上时序，get_recent_summaries 的回写被拒收。"""
+        entry_mgr.add_entry(Entry(title="R1", username="u", password="p"))
+        entry_mgr.add_entry(Entry(title="R2", username="u", password="p"))
+        self._install_mid_decrypt_rotation(monkeypatch, cache)
+
+        summaries = entry_mgr.get_recent_summaries(limit=10)
+
+        assert {s.title for s in summaries} == {"R1", "R2"}
+        assert len(cache._search_metadata_cache) == 0
+
+    def test_detail_path_rejects_cross_generation_writeback(self, entry_mgr, cache, monkeypatch):
+        """详情分支（SEC-043）：get_entry 的摘要/分类名缓存回写在重臂后被拒收。"""
+        from src.models import Category
+
+        category_id = entry_mgr.categories.add_category(Category(name="详情分类"))
+        entry_id = entry_mgr.add_entry(
+            Entry(title="D1", username="u", password="p", category_id=category_id)
+        )
+        self._install_mid_decrypt_rotation(monkeypatch, cache)
+
+        detail = entry_mgr.get_entry(entry_id)
+
+        assert detail is not None
+        assert detail.title == "D1"
+        assert detail.category_name == "详情分类"
+        # 摘要与分类名缓存均不收旧世代明文
+        assert len(cache._search_metadata_cache) == 0
+        assert len(cache._category_name_cache) == 0
+
+    def test_analyzer_summary_rejects_cross_generation_writeback(
+        self, entry_mgr, cache, monkeypatch
+    ):
+        """安全分析分支（SEC-043）：full_analysis 摘要构建期间重臂后回写被拒收。"""
+        from src.business.services.security_analyzer import SecurityAnalyzer
+
+        entry_mgr.add_entry(Entry(title="A1", username="u", password="Str0ngPass!1"))
+        entry_mgr.add_entry(Entry(title="A2", username="u", password="Str0ngPass!2"))
+        analyzer = SecurityAnalyzer(entry_mgr._vault, cache)
+        self._install_mid_decrypt_rotation(monkeypatch, cache)
+
+        report = analyzer.full_analysis()
+
+        assert report["total"] == 2
+        assert len(cache._search_metadata_cache) == 0
 
     def test_same_epoch_writeback_accepted(self, entry_mgr, cache):
         """世代一致的回写正常入缓存（守卫不误伤常规路径）。"""
@@ -145,7 +246,7 @@ class TestWriterEpochGuard:
 
 
 class TestTotpSecretCache:
-    """TOTP secret 缓存的 store/pop/clear 行为。"""
+    """TOTP secret 缓存的 store/pop/clear 与回写世代守卫（SEC-044）。"""
 
     def test_store_pop_clear(self, cache):
         cache.store_totp(1, "SECRET")
@@ -155,6 +256,54 @@ class TestTotpSecretCache:
         cache.store_totp(2, "SECRET2")
         cache.clear_totp()
         assert len(cache._totp_secret_cache) == 0
+
+    def test_resolve_rejects_cross_generation_writeback(self, entry_mgr, cache, monkeypatch):
+        """resolve_totp_secret 回写世代守卫（SEC-044）：解密后、回写前恢复重臂新世代。
+
+        时序仿真（TOTP 定时器是真实并发读者）：E1 读守卫内取 raw+采样世代 →
+        解密成功 → 退出读守卫后恢复提交（invalidate_all + 轮换 + 重臂 E2）→ 回写。
+        旧世代 secret 不得写入新世代缓存（TOTP secret 为双因子凭证）。
+        """
+        entry_id = entry_mgr.add_entry(
+            Entry(title="T", username="u", password="p", totp_secret="JBSWY3DPEHPK3PXP")
+        )
+
+        real_decrypt = entry_cache_module._decrypt_field_impl
+        rotated = {"done": False}
+
+        def _decrypt_then_rotate(encrypted, key, crypto_id, field_name, *, strict=False):
+            value = real_decrypt(encrypted, key, crypto_id, field_name, strict=strict)
+            # 解密完成后、缓存回写前插入恢复提交时序
+            if not rotated["done"] and field_name == "totp_secret":
+                rotated["done"] = True
+                cache.invalidate_all()
+                cache._vault.set_epoch("restored-e2")
+                cache.invalidate_if_epoch_changed()
+            return value
+
+        monkeypatch.setattr(entry_cache_module, "_decrypt_field_impl", _decrypt_then_rotate)
+
+        secret = cache.resolve_totp_secret(entry_id, use_cache=True)
+
+        # 明文照常返回（旧 raw+旧密钥自洽），但缓存拒收旧世代回写
+        assert secret == "JBSWY3DPEHPK3PXP"
+        assert entry_id not in cache._totp_secret_cache
+
+    def test_store_totp_with_stale_data_epoch_rejected(self, entry_mgr, cache):
+        """store_totp 世代复查（SEC-044）：data_epoch 失配（恢复已重臂）时拒收。"""
+        entry_mgr.add_entry(Entry(title="T", username="u", password="p"))
+        cache.invalidate_if_epoch_changed()
+        stale_epoch = cache._vault.key_epoch
+
+        cache.invalidate_all()
+        cache._vault.set_epoch("restored-e2")
+        cache.invalidate_if_epoch_changed()
+
+        # 旧世代调用方携带 E1 快照预热：新世代缓存拒收；同世代快照正常落缓存
+        cache.store_totp(7, "OLD-SECRET", data_epoch=stale_epoch)
+        assert 7 not in cache._totp_secret_cache
+        cache.store_totp(8, "NEW-SECRET", data_epoch="restored-e2")
+        assert cache._totp_secret_cache.get(8) == "NEW-SECRET"
 
 
 class TestTagsCacheValid:
