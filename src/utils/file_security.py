@@ -284,7 +284,11 @@ def _restrict_windows_acl_via_api(path: Path, is_directory: bool, sid: str) -> N
     # 字符串还原，免跨函数维护二进制 SID 副本。
     psid = ctypes.c_void_p()
     if not advapi32.ConvertStringSidToSidW(sid, ctypes.byref(psid)):
-        raise OSError(f"ConvertStringSidToSidW 失败：{ctypes.get_last_error()}")
+        # get_last_error 在非 Windows 平台的 typeshed 不暴露（win32-only API），
+        # 本函数整体处于 sys.platform == "nt" 守卫内，非 Windows 不会执行。
+        raise OSError(  # type: ignore[attr-defined, unused-ignore]
+            f"ConvertStringSidToSidW 失败：{ctypes.get_last_error()}"
+        )
     new_dacl = ctypes.c_void_p()
     try:
         access = _ExplicitAccessW(
@@ -302,7 +306,9 @@ def _restrict_windows_acl_via_api(path: Path, is_directory: bool, sid: str) -> N
         if (
             advapi32.SetEntriesInAclW(1, ctypes.byref(access), None, ctypes.byref(new_dacl)) != 0
         ):  # ERROR_SUCCESS=0
-            raise OSError(f"SetEntriesInAclW 失败：{ctypes.get_last_error()}")
+            raise OSError(  # type: ignore[attr-defined, unused-ignore]
+                f"SetEntriesInAclW 失败：{ctypes.get_last_error()}"
+            )
         se_file_object = 1
         # DACL_SECURITY_INFORMATION(0x4) | PROTECTED_DACL_SECURITY_INFORMATION(0x80000000)：
         # 后者等价 icacls /inheritance:r——丢弃继承 ACE 仅保留显式 DACL。注意
@@ -321,7 +327,9 @@ def _restrict_windows_acl_via_api(path: Path, is_directory: bool, sid: str) -> N
             )
             != 0
         ):
-            raise OSError(f"SetNamedSecurityInfoW 失败：{ctypes.get_last_error()}")
+            raise OSError(  # type: ignore[attr-defined, unused-ignore]
+                f"SetNamedSecurityInfoW 失败：{ctypes.get_last_error()}"
+            )
     finally:
         if new_dacl:
             kernel32.LocalFree(new_dacl)
