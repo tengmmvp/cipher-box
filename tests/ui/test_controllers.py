@@ -10,6 +10,8 @@ EntryListController 与 SidebarController 设计为不依赖 PyQt6 控件的纯�
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from src.ui.controllers.entry_list_controller import EntryListController
 from src.ui.controllers.sidebar_controller import SidebarController
 
@@ -70,6 +72,103 @@ class TestGetFetcher:
         ctrl = _entry_list_controller()
         # bound method 每次访问创建新对象，比较底层函数而非对象身份
         assert ctrl.get_fetcher("nonexistent").__func__ is EntryListController.fetch_all
+
+
+class TestFetchLimitPushdown:
+    """SQL LIMIT 下推的排序感知决策（PERF-072/073 守护）。
+
+    下推条件为「无搜索 且 排序字段可 SQL 表达」：8 种排序中 6 种（updated_at/
+    password_strength/created_at 双向）经 ORDER BY 字段序截断，集合与用户所选排序
+    一致；标题 2 种因 title 密文列无法 SQL 排序（加密架构固有限制）不下推，全量
+    拉取后内存排序——50k 库实测标题序全量 1756ms vs 字段序下推 ~50ms，但错误下推
+    （PERF-072 之前 PERF-066 的复合序截断）会丢排序序窗口外条目（实测约半数不可见）。
+    """
+
+    @pytest.mark.parametrize(
+        "sort_index,expected_field,expected_desc",
+        [
+            (0, "updated_at", True),  # 更新时间 ↓
+            (1, "updated_at", False),  # 更新时间 ↑
+            (4, "password_strength", True),  # 强度 高→低
+            (5, "password_strength", False),  # 强度 低→高
+            (6, "created_at", True),  # 创建时间 ↓
+            (7, "created_at", False),  # 创建时间 ↑
+        ],
+    )
+    def test_sql_sortable_orders_push_limit_and_order(
+        self, sort_index, expected_field, expected_desc
+    ):
+        """6 种可 SQL 排序：limit 与 ORDER BY 字段/方向一同下推（PERF-073）。"""
+        from src.ui.resources.constants import MAX_SEARCH_RESULTS_DISPLAY
+
+        ctrl = _entry_list_controller()
+        ctrl.fetch_all(None, "", None, sort_index=sort_index)
+        kwargs = ctrl._entry_mgr.get_entry_summaries.call_args.kwargs
+        assert kwargs["limit"] == MAX_SEARCH_RESULTS_DISPLAY
+        assert kwargs["order_by"] == expected_field
+        assert kwargs["order_desc"] is expected_desc
+
+    @pytest.mark.parametrize("sort_index", [2, 3])
+    def test_title_orders_never_push(self, sort_index):
+        """标题序（密文列不可 SQL 排序）：不下推 limit，也不传 order_by。"""
+        ctrl = _entry_list_controller()
+        ctrl.fetch_all(None, "", None, sort_index=sort_index)
+        kwargs = ctrl._entry_mgr.get_entry_summaries.call_args.kwargs
+        assert kwargs["limit"] is None
+        assert kwargs["order_by"] is None
+
+    def test_all_with_search_never_pushes(self):
+        """fetch_all 搜索路径：不下推（加密字段先截断后过滤致命中失真）。"""
+        ctrl = _entry_list_controller()
+        ctrl.fetch_all(None, "关键词", None, sort_index=0)
+        kwargs = ctrl._entry_mgr.get_entry_summaries.call_args.kwargs
+        assert kwargs["limit"] is None
+        assert kwargs["order_by"] is None
+
+    @pytest.mark.parametrize(
+        "fetcher_name,extra_kwargs",
+        [
+            ("fetch_favorite", {"favorite_only": True}),
+            ("fetch_trash", {"deleted_only": True}),
+        ],
+    )
+    def test_favorite_trash_pushdown_rules(self, fetcher_name, extra_kwargs):
+        """收藏/回收站：默认序下推（含 order_by）、标题序与搜索路径不下推（对齐 fetch_all）。"""
+        from src.ui.resources.constants import MAX_SEARCH_RESULTS_DISPLAY
+
+        ctrl = _entry_list_controller()
+        fetcher = getattr(ctrl, fetcher_name)
+        fetcher("", None, sort_index=0)
+        kwargs = ctrl._entry_mgr.get_entry_summaries.call_args.kwargs
+        assert kwargs["limit"] == MAX_SEARCH_RESULTS_DISPLAY
+        assert kwargs["order_by"] == "updated_at"
+        assert all(kwargs.get(k) is v for k, v in extra_kwargs.items())
+
+        fetcher("", None, sort_index=2)  # 标题 A→Z
+        followup = ctrl._entry_mgr.get_entry_summaries.call_args.kwargs
+        assert followup["limit"] is None
+        assert followup["order_by"] is None
+
+        fetcher("词", None, sort_index=0)
+        assert ctrl._entry_mgr.get_entry_summaries.call_args.kwargs["limit"] is None
+
+    def test_fetch_recent_accepts_sort_index(self):
+        """fetch_recent 接受 sort_index 而不抛 TypeError（PERF-072 统一调用签名契约）。"""
+        ctrl = _entry_list_controller()
+        ctrl._entry_mgr.get_recent_summaries.return_value = []
+        ctrl.fetch_recent("", None, sort_index=5)  # 任意索引均被忽略（本视图固定排序）
+        ctrl._entry_mgr.get_recent_summaries.assert_called_once()
+
+    def test_pushdown_fields_align_with_db_whitelist(self):
+        """UI 可下推字段集与 db 层 ORDER_BY_FIELDS 一致（PERF-073 双源守护）。
+
+        UI 不直接 import 数据层（分层方向 UI→Business），两集合平行声明；本断言
+        在测试层锚定二者一致，漂移（新增 SQL 可排序列漏更新 UI 集，或反之）即刻失败。
+        """
+        from src.database.types import ORDER_BY_FIELDS
+        from src.ui.controllers.entry_list_controller import _SQL_PUSHDOWN_SORT_FIELDS
+
+        assert _SQL_PUSHDOWN_SORT_FIELDS == ORDER_BY_FIELDS
 
 
 class TestBuildCategoryLabel:
@@ -135,13 +234,13 @@ class TestBuildDeleteMessage:
 
 
 class TestFetchAll:
-    """EntryListController.fetch_all 的无搜索 LIMIT 下推（PERF-066）。"""
+    """EntryListController.fetch_all 的无搜索 LIMIT 下推（PERF-066/073）。"""
 
     def test_no_search_pushes_render_cap_limit(self):
-        """无搜索时把渲染上限经 get_entry_summaries 的 limit 下推 SQL（PERF-066）。
+        """无搜索时把渲染上限与排序字段一同下推 SQL（PERF-066/073）。
 
-        UI 渲染本就截断到 MAX_SEARCH_RESULTS_DISPLAY，SQL 沿同一复合索引序截断等价，
-        却免去大库全量拉取+逐行验签+Entry 构造。
+        UI 渲染本就截断到 MAX_SEARCH_RESULTS_DISPLAY；ORDER BY 字段序截断使集合与
+        用户所选排序一致，免去大库全量拉取+逐行验签+Entry 构造。
         """
         from src.ui.resources.constants import MAX_SEARCH_RESULTS_DISPLAY
 
@@ -152,6 +251,8 @@ class TestFetchAll:
             search="",
             cancel_check=None,
             limit=MAX_SEARCH_RESULTS_DISPLAY,
+            order_by="updated_at",
+            order_desc=True,
         )
 
     def test_search_path_passes_no_limit(self):
@@ -163,6 +264,8 @@ class TestFetchAll:
             search="关键词",
             cancel_check=None,
             limit=None,
+            order_by=None,
+            order_desc=True,
         )
 
 

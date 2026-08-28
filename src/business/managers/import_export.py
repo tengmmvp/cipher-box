@@ -1,8 +1,9 @@
 """导入导出管理器，负责多种格式（CSV/JSON/KeePass CSV/Bitwarden JSON）导入与 CSV/JSON 导出。
 
-格式特定的文件解析与覆盖合并器拆分至 :mod:`.importers` 策略类包；本模块仅保留
-公开导入/导出 API 与共享编排（文件路径校验、去重判定、分类解析、覆盖写入、
-事务与 epoch 守卫、CSV 注入防护）。
+格式特定的文件解析与覆盖合并器拆分至 :mod:`.importers` 策略类包，导出序列化
+拆分至 :mod:`.exporters` 策略函数包（ARCH-038）；本模块仅保留公开导入/导出 API
+与共享编排（文件路径校验、去重判定、分类解析、覆盖写入、事务与 epoch 守卫、
+公式注入的入库边界清洗）。
 """
 
 import csv
@@ -23,9 +24,8 @@ from ...exceptions import (
     ImportFormatError,
     ImportSizeError,
 )
-from ...models import MAX_CATEGORY_NAME, Category, Entry, RawEntry
+from ...models import MAX_CATEGORY_NAME, MAX_IMPORT_FILE_SIZE, Category, Entry, RawEntry
 from ...utils.file_security import atomic_write, validate_file_path
-from ...utils.format import utc_now_iso
 from ..services.entry_batch_writer import (
     PROGRESS_REPORT_EVERY,
     BatchUpdateItem,
@@ -35,6 +35,8 @@ from ..services.entry_batch_writer import (
     write_new_entries,
     write_overwrite_updates,
 )
+from ..services.url_hygiene import sanitize_formula_prefix
+from .exporters import write_csv_entries, write_json_entries
 from .importers import (
     BitwardenImporter,
     CsvImporter,
@@ -50,14 +52,6 @@ logger = logging.getLogger(__name__)
 
 # 装饰器 _validate_import_input 的返回类型透传 TypeVar。
 T = TypeVar("T")
-
-MAX_IMPORT_FILE_SIZE = 25 * 1024 * 1024
-
-# CSV 导出中不做公式前缀转义的密钥类列（SEC-039）：与导入侧
-# ``_sanitize_entry_formula_fields``「不清洗 password/totp_secret」（SEC-008）的决策
-# 对称——导出侧转义（前置 ``'``）会静默破坏密钥值：用户从 CSV 复制得到错误秘密，
-# 重导入把带 ``'`` 的值存为密码（往返损坏）。换行替换等保 CSV 结构完整的处理仍保留。
-_CSV_SECRET_COLUMNS = frozenset({"password", "totp_secret"})
 
 # ======== 导入加权总进度刻度（PERF-065）========
 # 50k CSV 端到端实测 8.43s 中加密 3.29s + 写入 2.85s 占 ~73%，而原 progress_callback
@@ -107,19 +101,6 @@ def _emit_milestone(callbacks: "ImportCallbacks", value: int) -> None:
         callbacks.progress_callback(value, _IMPORT_PROGRESS_TOTAL)
 
 
-def _sanitize_formula_prefix(value: str) -> str:
-    """转义 CSV/表格公式注入危险前缀（= +/-/@/制表符），供入库与导出共享。
-
-    把清洗点前移到入库边界（SEC-008）：导入阶段统一对受影响文本字段转义，使后续
-    剪贴板复制、JSON 导出等外流路径无需各自防护即可避免表格软件公式执行。导出路径
-    （:meth:`ImportExportManager._csv_safe`）复用同一逻辑作为纵深防御（覆盖非导入
-    来源、如用户手建的危险前缀条目）。
-    """
-    if value.startswith(("=", "+", "-", "@", "\t")):
-        return "'" + value
-    return value
-
-
 def export_decrypt_percent(done: int, total: int) -> int:
     """导出解密阶段 ``(done, total)`` → 加权总进度百分比 0→70（PERF-070）。
 
@@ -156,8 +137,8 @@ def _sanitize_entry_formula_fields(entry: Entry) -> Entry:
         (
             replace(
                 field,
-                name=_sanitize_formula_prefix(field.name),
-                value=_sanitize_formula_prefix(field.value),
+                name=sanitize_formula_prefix(field.name),
+                value=sanitize_formula_prefix(field.value),
             )
             if field.field_type != "password"
             else field
@@ -166,11 +147,11 @@ def _sanitize_entry_formula_fields(entry: Entry) -> Entry:
     ]
     return replace(
         entry,
-        title=_sanitize_formula_prefix(entry.title),
-        username=_sanitize_formula_prefix(entry.username),
-        url=_sanitize_formula_prefix(entry.url),
-        tags=_sanitize_formula_prefix(entry.tags),
-        notes=_sanitize_formula_prefix(entry.notes),
+        title=sanitize_formula_prefix(entry.title),
+        username=sanitize_formula_prefix(entry.username),
+        url=sanitize_formula_prefix(entry.url),
+        tags=sanitize_formula_prefix(entry.tags),
+        notes=sanitize_formula_prefix(entry.notes),
         custom_fields=sanitized_fields,
     )
 
@@ -290,6 +271,13 @@ class ImportExportManager:
 
     @staticmethod
     def _validate_import_path(filepath: str) -> str:
+        """导入路径校验（manager 入口第一道）：路径安全解析 + 大小前置拒绝。
+
+        上限单一事实源为 ``models.MAX_IMPORT_FILE_SIZE``（SEC-048 消双源：本模块
+        原有本地 25MB 上限与 models 常量同名异值，且 25MB 拒绝满配自导出文件
+        ——50k 条 JSON 导出 ≈35-38MB 的「能导出不能导入」断层）；importer 层的
+        ``_check_import_file_size`` 为第二道（防绕过 manager 直接调 parse）。
+        """
         resolved = str(validate_file_path(filepath))
         size = Path(resolved).stat().st_size
         if size > MAX_IMPORT_FILE_SIZE:
@@ -298,42 +286,33 @@ class ImportExportManager:
             )
         return resolved
 
-    @staticmethod
-    def _csv_safe(value: Any, *, escape_formula: bool = True) -> str:
-        """防护 CSV 注入：转义危险前缀（复用 :func:`_sanitize_formula_prefix`），替换内部控制字符。
-
-        ``escape_formula=False`` 供密钥类列（password/totp_secret）跳过公式前缀转义
-        （SEC-039，见 :meth:`export_to_csv`）：换行替换仍执行（防 CSV 行断裂），仅跳过
-        会改变密钥值的 ``'`` 前缀转义。
-        """
-        text = str(value) if value is not None else ""
-        # 替换嵌入的换行符为空格，防止 CSV 行断裂
-        text = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
-        return _sanitize_formula_prefix(text) if escape_formula else text
-
     def _duplicate_plan(
         self,
         entries_data: list[dict[str, Any]],
         duplicate_action: str,
         source_label: str,
-    ) -> tuple[set[int], dict[int, Entry]]:
-        """按重复策略生成导入计划，返回 ``(跳过索引集, 覆盖映射)``。
+    ) -> tuple[set[int], dict[int, int]]:
+        """按重复策略生成导入计划，返回 ``(跳过索引集, 覆盖目标 id 映射)``。
 
         按 ``(title, username)`` casefold 匹配已有条目，策略决定返回语义：
         - ``import_all``：两者均空，全部作为新增。
         - ``skip``：重复项索引收入跳过集，覆盖映射为空。
-        - ``overwrite``：重复项 ``索引 → 已有条目`` 收入覆盖映射，跳过集为空。
+        - ``overwrite``：重复项 ``索引 → 已有条目 id`` 收入覆盖映射，跳过集为空。
+
+        去重对照经 :meth:`EntryManager.get_entry_dedup_index`（PERF-075）：窄投影 +
+        摘要缓存取 (title, username, id)，替代原 ``get_entry_summaries()`` 全量摘要
+        构建——覆盖策略只需 id 供 :meth:`_prepare_overwrite_map` 回查密文，完整
+        existing 摘要纯属浪费（50k 冷缓存 1834ms → 窄投影约半）。
         """
         if duplicate_action not in {"import_all", "skip", "overwrite"}:
             raise ValueError("无效的重复项处理策略")
         if duplicate_action == "import_all":
             return set(), {}
 
-        existing_entries = self._entry_mgr.get_entry_summaries()
         existing_by_key = {
-            (entry.title.casefold(), entry.username.casefold()): entry
-            for entry in existing_entries
-            if entry.title
+            (title.casefold(), username.casefold()): entry_id
+            for title, username, entry_id in self._entry_mgr.get_entry_dedup_index()
+            if title
         }
         matched = {}
         for index, item in enumerate(entries_data):
@@ -351,7 +330,7 @@ class ImportExportManager:
 
     def _prepare_overwrite_map(
         self,
-        overwrite: dict[int, Entry],
+        overwrite: dict[int, int],
     ) -> dict[int, RawEntry]:
         """批量预读待覆盖条目的密文 raw（不解密），单次 SQL 查询替代 N+1。
 
@@ -360,17 +339,16 @@ class ImportExportManager:
         :class:`OverwritePlan` → :class:`BatchUpdateItem`，由
         :func:`entry_batch_writer.prepare_overwrite_updates` 在锁外预处理阶段消费
         （取密文做旧密码解密比对与新密文构建，MAINT-004）。
+
+        ``overwrite`` 为 ``导入索引 → 已有条目 id``（PERF-075：原为摘要 Entry，
+        仅 id 被消费，窄投影化后直接传 id）。
         """
-        ids_by_idx: dict[int, int] = {}
-        for idx, summary in overwrite.items():
-            if summary.id is not None:
-                ids_by_idx[idx] = summary.id
-        if not ids_by_idx:
+        if not overwrite:
             return {}
-        raw_entries = self._entry_mgr.db.get_entries_by_ids(list(ids_by_idx.values()))
+        raw_entries = self._entry_mgr.db.get_entries_by_ids(list(overwrite.values()))
         entries_by_id = {e.id: e for e in raw_entries}
         result: dict[int, RawEntry] = {}
-        for idx, entry_id in ids_by_idx.items():
+        for idx, entry_id in overwrite.items():
             raw = entries_by_id.get(entry_id)
             if raw is None:
                 raise EntryError(f"待覆盖条目 {entry_id} 已不存在")
@@ -459,50 +437,17 @@ class ImportExportManager:
         导出前经 :func:`validate_file_path` 校验路径（SEC-003），与导入侧
         :meth:`_validate_import_path` 对齐，拒绝目录遍历与符号链接重定向。
 
+        序列化格式逻辑在 :func:`.exporters.write_json_entries`（ARCH-038 拆分）；
+        本方法保留编排骨架（路径校验 + 原子写入）。
+
         ``progress``（PERF-070）：提供时按已写条目数上报 ``(written, total)``，每
         ``PROGRESS_REPORT_EVERY`` 条节流、终值恒上报——50k 条写文件实测 1.9s，此前
         该阶段与解密阶段（5.1s）全程不确定旋转。百分比映射由 UI 调用方完成。
         """
         resolved = validate_file_path(filepath, check_ancestors=True)
-        total = len(entries)
 
         def write_cb(f: IO[str]) -> bool:
-            header = {
-                "app": "CipherBox",
-                "exported_at": utc_now_iso(),
-                "secrets_included": include_password,
-            }
-            f.write("{\n")
-            for key, value in header.items():
-                comma = ","  # header 后必跟 entries 数组，故每项后都加逗号
-                f.write(f"  {json.dumps(key)}: {json.dumps(value, ensure_ascii=False)}{comma}\n")
-            f.write('  "entries": [')
-            first = True
-            written = 0
-            for entry in entries:
-                if cancel_check and cancel_check():
-                    return False
-                if not first:
-                    f.write(",")
-                f.write("\n")
-                serialized = json.dumps(
-                    entry.to_dict(include_password=include_password),
-                    indent=2,
-                    ensure_ascii=False,
-                )
-                f.write("\n".join(f"    {line}" for line in serialized.splitlines()))
-                first = False
-                written += 1
-                if progress is not None and (
-                    written % PROGRESS_REPORT_EVERY == 0 or written == total
-                ):
-                    progress(written, total)
-            if progress is not None and total == 0:
-                progress(0, 0)  # 空导出也上报终值（UI 侧映射为 100，进度不留悬挂）
-            if not first:
-                f.write("\n")
-            f.write("  ]\n}\n")
-            return True
+            return write_json_entries(f, entries, include_password, cancel_check, progress)
 
         return atomic_write(resolved, write_cb, mode="w", encoding="utf-8")
 
@@ -518,72 +463,17 @@ class ImportExportManager:
 
         导出前经 :func:`validate_file_path` 校验路径（SEC-003），与导入侧对齐。
 
-        公式注入转义仅应用于外流至表格软件的文本列；password/totp_secret 为密钥类
-        列，跳过 ``'`` 前缀转义（SEC-039）——与导入侧 ``_sanitize_entry_formula_fields``
-        「不清洗密钥字段」（SEC-008）的决策对称：任何改变密钥值的清洗（前置 ``'``）都会
-        使用户从 CSV 复制得到错误秘密、重导入静默存入带 ``'`` 的密码（往返损坏）。
+        行构造/公式转义/自定义字段内联在 :func:`.exporters.write_csv_entries`
+        （ARCH-038 拆分），含密钥列豁免转义决策（SEC-039，与导入侧「不清洗密钥
+        字段」SEC-008 对称）；本方法保留编排骨架（路径校验 + 原子写入）。
 
         ``progress``（PERF-070）：提供时按已写条目数上报 ``(written, total)``（与
         :meth:`export_to_json` 同款节流与终值语义），百分比映射由 UI 调用方完成。
         """
         resolved = validate_file_path(filepath, check_ancestors=True)
-        fieldnames = [
-            "title",
-            "username",
-            "password",
-            "totp_secret",
-            "url",
-            "category",
-            "tags",
-            "notes",
-            "is_favorite",
-            "created_at",
-            "updated_at",
-        ]
-        if not include_password:
-            fieldnames.remove("password")
-            fieldnames.remove("totp_secret")
 
         def write_cb(f: IO[str]) -> bool:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-            writer.writeheader()
-            total = len(entries)
-            written = 0
-            for entry in entries:
-                if cancel_check and cancel_check():
-                    return False
-                if not entry.is_decrypted:
-                    continue
-                row = entry.to_dict(include_password=include_password)
-                cf = entry.custom_fields
-                if not isinstance(cf, list):
-                    continue
-                exported_fields = [
-                    field for field in cf if include_password or field.field_type != "password"
-                ]
-                cf_str = "; ".join(f"{f.name}={f.value}" for f in exported_fields)
-                if row.get("notes"):
-                    if cf_str:
-                        row["notes"] += f"\n[自定义字段] {cf_str}"
-                elif cf_str:
-                    row["notes"] = f"[自定义字段] {cf_str}"
-                # 密钥类列（password/totp_secret）跳过公式前缀转义（SEC-039）：转义破坏
-                # 密钥有效性，与导入侧不清洗密钥字段的决策对称；换行替换等保结构完整的
-                # 处理由 _csv_safe 无差别保留。
-                writer.writerow(
-                    {
-                        key: self._csv_safe(value, escape_formula=key not in _CSV_SECRET_COLUMNS)
-                        for key, value in row.items()
-                    }
-                )
-                written += 1
-                if progress is not None and (
-                    written % PROGRESS_REPORT_EVERY == 0 or written == total
-                ):
-                    progress(written, total)
-            if progress is not None and total == 0:
-                progress(0, 0)  # 空导出也上报终值（UI 侧映射为 100，进度不留悬挂）
-            return True
+            return write_csv_entries(f, entries, include_password, cancel_check, progress)
 
         return atomic_write(
             resolved,

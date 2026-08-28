@@ -213,7 +213,7 @@ def test_get_entries_with_limit(db):
 
 
 def test_get_entries_filter_branches(db):
-    """get_entries 的 deleted_only/category_id/favorite_only/sort_by_updated 分支。
+    """get_entries 的 deleted_only/category_id/favorite_only/order_by 分支。
 
     各分支经 EntryQuery 字段触发，覆盖 SQL 过滤/排序子句的不同组合。
     """
@@ -235,9 +235,14 @@ def test_get_entries_filter_branches(db):
     favs = db.get_entries(EntryQuery(favorite_only=True))
     assert len(favs) == 1 and favs[0].is_favorite
 
-    # sort_by_updated：走 updated_at DESC 分支（与默认 is_favorite DESC 排序分支区分）
-    by_updated = db.get_entries(EntryQuery(sort_by_updated=True))
+    # order_by 字段序（PERF-073）：updated_at DESC 分支（与默认 is_favorite DESC
+    # 复合序分支区分）；白名单外字段在构造点即拒绝。
+    by_updated = db.get_entries(EntryQuery(order_by="updated_at"))
     assert len(by_updated) == 2  # A + Fav（Del 已软删除，默认不含）
+    with pytest.raises(ValueError, match="order_by"):
+        EntryQuery(order_by="title")  # 密文列不可 SQL 排序，构造即拒绝
+    with pytest.raises(ValueError, match="order_by"):
+        EntryQuery(order_by="1; DROP TABLE entries")  # 注入面在构造点拒绝
 
 
 def test_entry_to_dict():

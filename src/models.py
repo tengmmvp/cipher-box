@@ -7,7 +7,6 @@
 import logging
 from dataclasses import dataclass, field, fields
 from datetime import datetime
-from types import MappingProxyType
 from typing import Any
 
 from .exceptions import EntryError
@@ -22,6 +21,22 @@ def is_real_int(value: object) -> bool:
     重复与笔误。
     """
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def normalized_iso_timestamp(value: str) -> str:
+    """解析 ISO 8601 时间戳并归一化为 ``datetime.isoformat()`` 标准形态（QL-060）。
+
+    可解析变体统一归一（``2026-01-02 03:04:05`` → ``T`` 分隔、``03:04`` → 补全秒、
+    ``03:04:05,123`` → ``.123``、``Z`` 后缀 → ``+00:00``、基本格式 → 扩展格式），
+    使入库时间戳形态唯一、字符串排序==时间排序**绝对**成立。导入
+    （:meth:`Entry.from_dict`）与备份恢复（backup/validator）两路径共用此单一
+    事实源——QL-042/053 的拒绝式校验分别存在「可解析但不规范变体漏网」与
+    「恢复路径绕过导入侧约束」的缺口，归一化不拒任何可解析输入且天然对称。
+
+    Raises:
+        ValueError: 值不可解析为 ISO 8601。
+    """
+    return datetime.fromisoformat(value).isoformat()
 
 
 # 字段最大长度常量。约束加密前的明文输入；密文经 base64+nonce+tag 后显著更长，
@@ -50,6 +65,14 @@ MAX_PASSWORD_HISTORY = 10
 MAX_ENTRIES_LIMIT = 50_000
 MAX_ENTRY_PAYLOAD_SIZE = 2 * 1024 * 1024
 
+# 导入文件大小前置上限（SEC-048/050）：各 importer 的 parse 在 json.load / list(reader)
+# 全量物化**之前**经 stat 前置拒绝，与备份/共享包的同款前置模式对齐——条目数与
+# 逐项大小校验（_validate_items）在物化之后才生效，挡不住大文件物化瞬间的内存
+# 峰值。口径与同型防护一致（SEC-050）：满配自导出文件 ≈38MB（50k × 典型 ~758B/条，
+# 与备份 payload 同型基准），按备份/共享包的「payload × 2」余量惯例取 80MB——
+# 原 200MB 是 5 倍余量，json.load 物化膨胀 5-10 倍时防护窗口过宽。
+MAX_IMPORT_FILE_SIZE = 80 * 1024 * 1024
+
 # 加密密文格式前缀，跨层单一事实源：EncryptionEngine、db_manager._assert_encrypted
 # 与日志脱敏正则均引用此处。格式升级时字面量散落多处会静默漂移——脱敏正则失效会
 # 致密文明文落入日志文件。
@@ -75,16 +98,19 @@ ENTRY_TYPE_IDENTITY = "identity"
 ENTRY_TYPE_NOTE = "note"
 ENTRY_TYPE_SERVER = "server"
 
-# 只读映射：MappingProxyType 使误用 ``ENTRY_TYPES[k] = ...`` / ``.pop()`` 等原地突变
-# 在运行时即抛 TypeError，防止模块级常量被无意改写（ARCH-010）。读取路径
-# （``in`` / ``[]`` / ``.items()`` / ``.get()``）与原 dict 完全一致。
-ENTRY_TYPES = MappingProxyType(
+# 合法条目类型键集合（ARCH-037）：仅承担 entry_type 合法性判定（from_dict 校验、
+# entry_validation、backup/validator 等 ``in`` 检查）与 schema 注册表遍历。原值内
+# 的中文 label 与图标占位符是 UI 展示语义，消费方全部在 UI，已下沉
+# ``ui/resources/strings.py`` 的 ENTRY_TYPE_LABELS/ENTRY_TYPE_ICONS——共享层不再
+# 承载展示文案（改 UI 文案不应触碰三层共享的数据模型）。frozenset 天然防原地
+# 突变（原 MappingProxyType 的 ARCH-010 防护语义由不可变集合类型承接）。
+ENTRY_TYPES = frozenset(
     {
-        ENTRY_TYPE_LOGIN: MappingProxyType({"label": "登录凭证", "icon": "[KEY]"}),
-        ENTRY_TYPE_CARD: MappingProxyType({"label": "信用卡", "icon": "[CARD]"}),
-        ENTRY_TYPE_IDENTITY: MappingProxyType({"label": "身份信息", "icon": "[ID]"}),
-        ENTRY_TYPE_NOTE: MappingProxyType({"label": "安全笔记", "icon": "[NOTE]"}),
-        ENTRY_TYPE_SERVER: MappingProxyType({"label": "服务器", "icon": "[SRV]"}),
+        ENTRY_TYPE_LOGIN,
+        ENTRY_TYPE_CARD,
+        ENTRY_TYPE_IDENTITY,
+        ENTRY_TYPE_NOTE,
+        ENTRY_TYPE_SERVER,
     }
 )
 
@@ -272,16 +298,6 @@ class PasswordHistory:
         }
 
 
-def _entry_type_icon(entry_type: str) -> str:
-    """条目类型图标（未知类型回退 login）。"""
-    return ENTRY_TYPES.get(entry_type, ENTRY_TYPES[ENTRY_TYPE_LOGIN])["icon"]
-
-
-def _entry_type_label(entry_type: str) -> str:
-    """条目类型标签（未知类型回退 login）。"""
-    return ENTRY_TYPES.get(entry_type, ENTRY_TYPES[ENTRY_TYPE_LOGIN])["label"]
-
-
 def _entry_has_totp(totp_present: bool, totp_secret: str) -> bool:
     """是否配置了 TOTP（显式标记或存在 secret）。"""
     return totp_present or bool(totp_secret)
@@ -373,16 +389,6 @@ class Entry:
             )
 
     @property
-    def type_icon(self) -> str:
-        """获取条目类型图标。"""
-        return _entry_type_icon(self.entry_type)
-
-    @property
-    def type_label(self) -> str:
-        """获取条目类型标签。"""
-        return _entry_type_label(self.entry_type)
-
-    @property
     def has_totp(self) -> bool:
         """是否配置了 TOTP。"""
         return _entry_has_totp(self.totp_present, self.totp_secret)
@@ -460,7 +466,11 @@ class Entry:
         totp_secret = values["totp_secret"]
 
         custom_fields = []
-        if "custom_fields" in d and isinstance(d["custom_fields"], list):
+        if "custom_fields" in d:
+            # 显式拒绝非 list 形态（QL-054）：与相邻字段「类型无效即 EntryError」范式
+            # 对齐——此前 dict/str 静默置空，导入方丢字段无感知。
+            if not isinstance(d["custom_fields"], list):
+                raise EntryError("custom_fields类型无效，必须为列表")
             # strict=True：导入路径拒绝非法类型与超长字段，避免静默降级掩盖损坏数据
             custom_fields = [CustomField.from_dict(f, strict=True) for f in d["custom_fields"]]
         # 限制单条目自定义字段数量，防御恶意或异常导入数据。
@@ -480,15 +490,21 @@ class Entry:
         ):
             if not isinstance(value, str):
                 raise EntryError(f"{key}类型无效，必须为字符串")
-            # ISO 8601 可解析性校验（QL-042）：非空时间戳格式无效则拒绝导入，与恢复路径
-            # backup/validator 的同款校验对齐——此前仅 isinstance(str) 放行 'not-a-date'
-            # 入库，ORDER BY updated_at 字符串排序错乱（空格分隔与 ISO 'T' 混排序错），
-            # 且 security_analyzer._parse_changed_utc 返回 None 使该条目永久退出过期检测。
+            # 时间戳校验+归一化（QL-042 拒绝不可解析 → QL-053 形态约束 → QL-060 归一化）：
+            # 非空时间戳经 :func:`normalized_iso_timestamp` 解析并归一为标准形态后落值，
+            # 与恢复路径 backup/validator 共用同一函数——字符串排序==时间排序由形态
+            # 唯一保证，此前仅校验时 'not-a-date' 入库破坏排序且使过期检测静默失效。
             if value:
                 try:
-                    datetime.fromisoformat(value)
+                    normalized = normalized_iso_timestamp(value)
                 except ValueError:
                     raise EntryError(f"{key}格式无效，必须为可解析的 ISO 8601 时间戳") from None
+                if key == "created_at":
+                    created_at = normalized
+                elif key == "updated_at":
+                    updated_at = normalized
+                else:
+                    password_changed_at = normalized
 
         return cls(
             title=title,
@@ -572,16 +588,6 @@ class RawEntry:
     def custom_fields_db_value(self) -> str:
         """密文 custom_fields，直接用于 DB 存储/签名/重加密。"""
         return self.custom_fields
-
-    @property
-    def type_icon(self) -> str:
-        """获取条目类型图标。"""
-        return _entry_type_icon(self.entry_type)
-
-    @property
-    def type_label(self) -> str:
-        """获取条目类型标签。"""
-        return _entry_type_label(self.entry_type)
 
     @property
     def has_totp(self) -> bool:

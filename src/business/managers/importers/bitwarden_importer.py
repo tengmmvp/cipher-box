@@ -27,6 +27,7 @@ from ...services.entry_validation import validate_plain_entry
 from ...services.url_hygiene import sanitize_url_scheme
 from .base import (
     ParsedImport,
+    _check_import_file_size,
     _merge_bitwarden_secrets,
     _sanitize_totp_secret,
     _validate_items,
@@ -68,9 +69,9 @@ def _parse_bitwarden_date(value: Any) -> str:
     """解析 Bitwarden ISO 日期为 CipherBox 统一 ISO 格式，失败返回空串。
 
     Bitwarden 的 passwordRevisionDate 等为 ISO 8601 字符串（如
-    ``2024-01-15T10:30:00.000Z``）。Python 3.10 ``datetime.fromisoformat`` 不支持末尾
-    ``Z``，替换为 ``+00:00`` 后解析；无时区视作 UTC；解析失败返回空串使调用方回退
-    当前时间。
+    ``2024-01-15T10:30:00.000Z``）。末尾 ``Z`` 替换为 ``+00:00`` 后解析（显式归一
+    与 ``utc_now_iso`` 产物形态一致，requires-python >= 3.12 的 fromisoformat 虽
+    已直接接受 Z）；无时区视作 UTC；解析失败返回空串使调用方回退当前时间。
     """
     raw = _as_str(value)
     if not raw:
@@ -218,6 +219,7 @@ class BitwardenImporter:
     """
 
     def parse(self, filepath: str) -> ParsedImport:
+        _check_import_file_size(filepath)
         with open(filepath, encoding="utf-8") as f:
             data = json.load(f)
 

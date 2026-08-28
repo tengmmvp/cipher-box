@@ -7,6 +7,7 @@ from ....models import Entry
 from ...services.url_hygiene import sanitize_url_scheme
 from .base import (
     ParsedImport,
+    _check_import_file_size,
     _merge_non_exported_secrets,
     _sanitize_totp_secret,
     _validate_items,
@@ -31,6 +32,7 @@ class JsonImporter:
     """
 
     def parse(self, filepath: str) -> ParsedImport:
+        _check_import_file_size(filepath)
         with open(filepath, encoding="utf-8") as f:
             data = json.load(f)
 

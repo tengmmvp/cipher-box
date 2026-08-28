@@ -46,7 +46,10 @@ class EntryQuery:
     """entries 表查询参数（过滤 + 排序 + limit + verify），get_entries 的单一入口。
 
     构造时校验 ``deleted_only`` / ``include_deleted`` 互斥——前者仅回收站、后者含
-    全部（含回收站），同时为 True 语义矛盾，须构造即拒绝。
+    全部（含回收站），同时为 True 语义矛盾，须构造即拒绝。``order_by`` 同样构造即
+    校验白名单（PERF-073）：排序子句经字段名拼接 SQL，白名单外的值在构造点拒绝，
+    与 repository 侧的硬编码映射构成双重防注入（值来自调用方内部常量，非用户输入，
+    防线是纵深而非唯一屏障）。
     """
 
     deleted_only: bool = False
@@ -55,7 +58,13 @@ class EntryQuery:
     favorite_only: bool = False
     limit: int | None = None
     after_id: int | None = None
-    sort_by_updated: bool = False
+    # 明文排序字段（PERF-073）：None 走默认复合序（is_favorite DESC, updated_at
+    # DESC）；指定白名单字段时 ORDER BY 仅按该列（供列表视图按用户所选排序下推
+    # LIMIT 到 SQL，替代原 sort_by_updated 布尔的单一表达——50k 库标题序全量拉取
+    # 实测 1756ms vs 字段序下推 ~50ms，8 种排序中 6 种可字段化，title 为密文
+    # 无法 SQL 排序属加密架构固有限制）。
+    order_by: str | None = None
+    order_desc: bool = True
     verify: VerifyMode = VerifyMode.LENIENT
 
     def __post_init__(self) -> None:
@@ -64,6 +73,17 @@ class EntryQuery:
                 "EntryQuery: deleted_only 与 include_deleted 互斥——"
                 "deleted_only=True 仅返回回收站，include_deleted=True 含全部（含回收站）"
             )
+        if self.order_by is not None and self.order_by not in ORDER_BY_FIELDS:
+            raise ValueError(
+                f"EntryQuery: order_by 仅支持白名单字段 {sorted(ORDER_BY_FIELDS)}，"
+                f"收到 {self.order_by!r}"
+            )
+
+
+# 可 SQL 排序的明文列白名单（PERF-073）：repository 的 ORDER BY 子句经硬编码映射
+# 消费此集合，字段名不经任何字符串拼接进 SQL。title/username 等展示字段为密文列
+# （title_enc），无法 SQL 排序，不在此集合。
+ORDER_BY_FIELDS: frozenset[str] = frozenset({"updated_at", "created_at", "password_strength"})
 
 
 @runtime_checkable
@@ -124,6 +144,11 @@ class EntryStore(Protocol):
     def get_entry_count(self, include_deleted: bool = False) -> int: ...
 
     def get_entries_by_ids(self, entry_ids: list[int]) -> list[RawEntry]: ...
+
+    # 搜索路径窄投影（PERF-074）：供 get_entry_summaries 的 search 分支替代宽行
+    # 全量物化——50k 库实测宽行拉取+24 字段 RawEntry 构造 656ms 中，同条件 6 列
+    # 窄投影仅 102ms，命中行按 id 回查完整行（LENIENT 验签）。
+    def get_entries_search_projection(self, query: EntryQuery) -> list[SearchRow]: ...
 
     def get_entry_by_crypto_id(
         self,
@@ -248,6 +273,25 @@ class VaultDataStore(EntryStore, CategoryStore, VaultDataConnection, Protocol):
     Business manager 经 ``VaultManager.db`` 拿到此协议视图，收窄暴露面（不含装配期
     setter，仅 VaultManager 内部经 ``self._db`` 使用），便于测试替身。
     """
+
+
+class SearchRow(NamedTuple):
+    """搜索路径的窄投影行（PERF-074）：仅携带匹配所需的密文字段与定位键。
+
+    搜索只需解密 title/username/url/tags 四摘要字段做小写匹配（宽行 24 字段构造
+    是温态搜索的主导成本，50k 库实测占 656ms 拉取中的大头，同条件窄投影仅
+    102ms）；命中行按 ``id`` 经 :meth:`EntryStore.get_entries_by_ids`（LENIENT
+    验签）回查完整行构建摘要。字段名与 :class:`RawEntry` 的密文属性同名
+    （title/username/url/tags 存密文），使 EntryCacheManager 的摘要解密入口可经
+    结构协议同时接受 RawEntry 与本类型（见 entry_cache.SearchRowProtocol）。
+    """
+
+    id: int | None
+    crypto_id: str
+    title: str  # 密文（title_enc 列）
+    username: str  # 密文
+    url: str  # 密文
+    tags: str  # 密文
 
 
 class ReEncryptedEntry(NamedTuple):

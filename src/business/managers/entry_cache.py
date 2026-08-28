@@ -11,13 +11,13 @@ import logging
 import threading
 from collections import OrderedDict
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 if TYPE_CHECKING:
     from ..managers.vault_manager import VaultManager
 
 from ...exceptions import DecryptionError, VaultKeyEpochMismatchError
-from ...models import MAX_ENTRIES_LIMIT, RawEntry
+from ...models import MAX_ENTRIES_LIMIT
 from ..services.crypto_utils import (
     category_crypto_id,
     decrypt_field as _decrypt_field_impl,
@@ -48,6 +48,31 @@ class SearchMetadata(NamedTuple):
     username_lower: str
     url_lower: str
     tags_lower: str
+
+
+class SearchRowSource(Protocol):
+    """摘要解密的最小输入协议（PERF-074，对齐 ARCH-032 的 TotpCacheProtocol 模式）。
+
+    本类对输入行的依赖面仅 5 个密文属性（crypto_id + 四摘要字段），结构上由
+    :class:`models.RawEntry` 与 db 层窄投影 :class:`database.types.SearchRow`
+    同时满足——搜索路径改窄投影拉取（SearchRow）后无需物化完整宽行，本协议
+    使同一解密入口接受两者。属性名与 RawEntry 密文属性同名（title 等存密文）。
+    """
+
+    @property
+    def crypto_id(self) -> str: ...
+
+    @property
+    def title(self) -> str: ...
+
+    @property
+    def username(self) -> str: ...
+
+    @property
+    def url(self) -> str: ...
+
+    @property
+    def tags(self) -> str: ...
 
 
 class EntryCacheManager:
@@ -162,7 +187,7 @@ class EntryCacheManager:
 
     def cached_search_metadata(
         self,
-        raw_entry: RawEntry,
+        raw_entry: SearchRowSource,
         *,
         key: bytes | None = None,
         data_epoch: str | None = None,
@@ -193,7 +218,7 @@ class EntryCacheManager:
 
     def _cached_search_metadata_no_check(
         self,
-        raw_entry: RawEntry,
+        raw_entry: SearchRowSource,
         *,
         key: bytes | None = None,
         data_epoch: str | None = None,
@@ -272,14 +297,18 @@ class EntryCacheManager:
                 self._search_metadata_cache[cid] = result
                 self._search_metadata_cache.move_to_end(cid)
                 if len(self._search_metadata_cache) > _MAX_SEARCH_METADATA_CACHE_SIZE:
-                    self._search_metadata_cache.popitem(last=False)
+                    # LRU 淘汰与 failed 字典容量联动（QL-058）：被淘汰条目的 failed
+                    # 记录同步清理，否则「解密失败 + 缓存超上限」同现时 failed 字典
+                    # 随时间无界驻留（epoch 失效外的另一泄漏面）。
+                    evicted_cid, _ = self._search_metadata_cache.popitem(last=False)
+                    self._search_metadata_failed.pop(evicted_cid, None)
                 if failed:
                     self._search_metadata_failed[cid] = failed
         return result
 
     def search_metadata_for_analysis(
         self,
-        raw_entry: RawEntry,
+        raw_entry: SearchRowSource,
         *,
         key: bytes | None = None,
         data_epoch: str | None = None,
@@ -302,7 +331,7 @@ class EntryCacheManager:
 
     def search_lower_no_check(
         self,
-        raw_entry: RawEntry,
+        raw_entry: SearchRowSource,
         *,
         key: bytes | None = None,
         data_epoch: str | None = None,
@@ -321,7 +350,7 @@ class EntryCacheManager:
 
     def cached_search_metadata_full(
         self,
-        raw_entry: RawEntry,
+        raw_entry: SearchRowSource,
         *,
         key: bytes | None = None,
         data_epoch: str | None = None,
@@ -339,9 +368,14 @@ class EntryCacheManager:
         return self._cached_search_metadata_no_check(raw_entry, key=key, data_epoch=data_epoch)
 
     def get_failed_fields(self, crypto_id: str) -> set[str]:
-        """取某条目摘要解密失败的字段集（锁内采样，避免与 clear 竞态）。"""
+        """取某条目摘要解密失败的字段集（锁内采样，返回拷贝）。
+
+        返回内部 set 的拷贝（QL-056）：直接返回 ``dict.get`` 引用时，调用方原地
+        修改（add/discard）会污染缓存——当前消费方只读或已有 ``set(...)`` 拷贝
+        防御，此处收口使 API 语义与「采样」docstring 一致，新调用方无需自防。
+        """
         with self._cache_lock:
-            return self._search_metadata_failed.get(crypto_id, set())
+            return set(self._search_metadata_failed.get(crypto_id, ()))
 
     def decrypt_category_name(
         self,

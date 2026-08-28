@@ -111,14 +111,15 @@ class TestLenientVerify:
 
 
 class TestSearchPathReverify:
-    """搜索路径的 SKIP 拉取 + 命中行就地 LENIENT 补验签（PERF-019/067）。
+    """搜索路径的窄投影拉取 + 命中行回查 LENIENT 验签（PERF-019/074）。
 
-    搜索 fetch 改 VerifyMode.SKIP（省全部行逐行 HMAC 验签），完整性标记改为对
-    匹配命中且将渲染的行就地验签（PERF-067：经 metadata_signer.verify_raw 对已
-    物化的行纯 HMAC 比对，不再经 get_entries_by_ids 二次读库）。篡改一律以真实
-    SQL 改写非加密元数据（password_strength 入签载荷，改动即 mac 失配）模拟，
-    与就地验签机制同源。守护三点：命中行仍被验签（篡改行在结果中带
-    integrity_error，不抛异常）、验签不二次读库、过滤语义与全量路径一致。
+    搜索拉取改窄投影（仅 4 摘要密文字段 + id，免宽行 24 字段物化），完整性标记由
+    命中行按 id 经 get_entries_by_ids（LENIENT，db 层 _row_to_entry 验签）回查完整
+    行时补偿（PERF-074：替代 PERF-067 的就地验签——窄投影后宽行不再物化，回查是
+    摘要构建的必要步骤而非重复读库）。篡改一律以真实 SQL 改写非加密元数据
+    （password_strength 入签载荷，改动即 mac 失配）模拟。守护三点：命中行仍被验签
+    （篡改行在结果中带 integrity_error，不抛异常）、回查仅覆盖命中 id 集、
+    过滤语义与全量路径一致。
     """
 
     @pytest.fixture(autouse=True)
@@ -172,35 +173,48 @@ class TestSearchPathReverify:
             assert s.integrity_message == f.integrity_message
 
     def test_search_no_match_returns_empty_without_verify(self):
-        """无命中时不做补验签也不抛异常（未命中行的篡改检测由全量列表刷新覆盖）。
+        """无命中时不做回查也不抛异常（未命中行的篡改检测由全量列表刷新覆盖）。
 
-        同时守护 PERF-067 的「不二次读库」：get_entries_by_ids 被替换为抛错哨兵，
-        无命中路径若经其重读会立即失败。
+        守护窄投影链路（PERF-074）的「未命中行零回查」：get_entries_by_ids 被替换为
+        抛错哨兵，无命中路径若经其重读会立即失败。
         """
 
         def _forbid_reread(*_args, **_kwargs):
-            raise AssertionError("无命中时不应二次读库补验签")
+            raise AssertionError("无命中时不应回查完整行")
 
         self._vault.db.get_entries_by_ids = _forbid_reread  # type: ignore[method-assign]
         assert self._entry_mgr.get_entry_summaries(search="不存在的关键词") == []
 
-    def test_reverify_in_place_without_database_reread(self):
-        """命中行就地验签（PERF-067）：有命中也不经 get_entries_by_ids 二次读库。"""
+    def test_hit_rows_reread_exactly_matched_ids(self):
+        """命中行回查（PERF-074）：仅命中 id 集合经 get_entries_by_ids 回读验签。
+
+        窄投影后宽行不再物化，回查是摘要构建与 LENIENT 验签的必要步骤（替代原
+        PERF-067 就地验签的「不回查」不变量——该不变量以「宽行已物化」为前提，
+        架构变化后退役）。本测试守护新的最小回查面：回查 id 集 == 命中 id 集，
+        未命中行（本例 1 条）不产生回查。
+        """
         self._tamper_all_rows()
+        reread_ids: list[list[int]] = []
+        original = self._vault.db.get_entries_by_ids
 
-        def _forbid_reread(*_args, **_kwargs):
-            raise AssertionError("就地验签不应二次读库（PERF-067）")
+        def _spy_reread(entry_ids):
+            reread_ids.append(list(entry_ids))
+            return original(entry_ids)
 
-        self._vault.db.get_entries_by_ids = _forbid_reread  # type: ignore[method-assign]
+        self._vault.db.get_entries_by_ids = _spy_reread  # type: ignore[method-assign]
         results = self._entry_mgr.get_entry_summaries(search="git")
         assert len(results) == 2
         assert all(r.integrity_error is True for r in results)
+        # 单次回查且 id 集恰为命中行（3 条中 "git" 命中 2 条，邮箱未命中不在集合内）
+        assert len(reread_ids) == 1
+        assert len(reread_ids[0]) == 2
 
     def test_in_place_verify_matches_db_reread_path(self):
-        """就地验签与原 get_entries_by_ids（LENIENT）路径的判定结果一致（PERF-067）。
+        """搜索路径与 db 回读（LENIENT）路径的判定结果一致（PERF-067/074）。
 
-        同一批篡改行，两条验签路径（就地纯 HMAC vs db 层 verifier 钩子）对
-        integrity_error/integrity_message 的结论必须一致——保证机制替换零语义漂移。
+        同一批篡改行，搜索结果与 get_entries_by_ids 直读（db 层 verifier 钩子）对
+        integrity_error/integrity_message 的结论必须一致——窄投影回查链路与直读
+        走同一验签钩子，本测试锚定零语义漂移。
         """
         entry_id = next(e.id for e in self._entry_mgr.get_entries() if e.username == "alice")
         assert entry_id is not None

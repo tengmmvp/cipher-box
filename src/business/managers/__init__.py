@@ -1,17 +1,8 @@
 """业务管理器层：编排 Crypto 与 Data 层的核心管理器。
 
-集中 re-export 核心管理器，使调用方可经 ``from src.business.managers import
-EntryManager`` 简洁导入，并以此声明本包的公共 API。
+核心管理器：``vault_manager.VaultManager``、``entry_manager.EntryManager``、
+``import_export.ImportExportManager``、``backup_restore.BackupRestoreManager``
+（MAINT-085：原集中 re-export 零消费方——组合根与测试均走子模块全路径导入，
+无人经 ``from src.business.managers import X``；无检查守护的声明面随时间必然
+漂移，故删除，消费方导入路径不变）。
 """
-
-from .backup_restore import BackupRestoreManager
-from .entry_manager import EntryManager
-from .import_export import ImportExportManager
-from .vault_manager import VaultManager
-
-__all__ = [
-    "BackupRestoreManager",
-    "EntryManager",
-    "ImportExportManager",
-    "VaultManager",
-]

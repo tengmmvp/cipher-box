@@ -2,7 +2,7 @@
 
 覆盖 ``src/business/services/totp_service.py``：generate / generate_cached /
 get_state / evict 的缓存命中/未命中/驱逐行为与对 ``TotpCacheProtocol`` 的委托。
-经 MagicMock 注入 vault + cache（满足 ``TotpCacheProtocol``），不触真实 DB 与解密。
+经 MagicMock 注入 cache（满足 ``TotpCacheProtocol``），不触真实 DB 与解密。
 """
 
 from unittest.mock import MagicMock
@@ -13,10 +13,12 @@ _VALID_SECRET = "JBSWY3DPEHPK3PXP"  # 10 字节 base32，满足 validate_secret 
 
 
 def _make_service() -> tuple[TotpService, MagicMock]:
-    """构造 TotpService + 其 cache mock，便于断言缓存调用。"""
+    """构造 TotpService + 其 cache mock，便于断言缓存调用。
+
+    单参构造（ARCH-039 死依赖删除后无 vault 参数）。
+    """
     cache = MagicMock()
-    vault = MagicMock()
-    return TotpService(vault, cache), cache
+    return TotpService(cache), cache
 
 
 class TestGenerate:

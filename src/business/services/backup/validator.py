@@ -2,7 +2,6 @@
 
 import logging
 from collections.abc import Set
-from datetime import datetime
 from typing import Any
 
 from ....crypto.password_generator import MAX_STRENGTH_SCORE
@@ -24,6 +23,7 @@ from ....models import (
     MAX_PASSWORD_HISTORY,
     CustomField,
     is_real_int,
+    normalized_iso_timestamp,
 )
 from ..crypto_utils import STRING_ENCRYPTED_FIELDS
 from .header_codec import BACKUP_FORMAT, BACKUP_VERSION
@@ -191,13 +191,16 @@ def validate_entry_fields(item: dict[str, Any], category_ids: set[int]) -> None:
     # 时间戳字段：64 字节上限（ISO 8601 字符串）
     for field in _ENTRY_TIMESTAMP_FIELDS:
         require_text(item[field], f"条目字段 {field}", 64)
-    # ISO 8601 格式校验：非空时间戳格式无效则拒绝整条（此前仅 warning 致无效时间戳
-    # 入库，使 security_analyzer 的过期检测静默失效）。空值跳过（如未删除条目的 deleted_at）。
+    # ISO 8601 校验+归一化（QL-060）：非空时间戳经 models.normalized_iso_timestamp
+    # 解析并归一为标准形态后写回——恢复路径经 RawEntry 直构回写不经 Entry.from_dict，
+    # 若仅做可解析性校验，手改备份的空格分隔/Z 后缀等变体会绕过导入侧约束入库，
+    # 与 from_dict 共用同一归一函数保证两路径校验强度与形态唯一性对称。空值跳过
+    # （如未删除条目的 deleted_at）。此前仅 warning 致无效时间戳入库，使过期检测静默失效。
     for key in _ENTRY_TIMESTAMP_FIELDS:
         val = item.get(key, "")
         if val:
             try:
-                datetime.fromisoformat(val)
+                item[key] = normalized_iso_timestamp(val)
             except (ValueError, TypeError):
                 raise BackupError(f"备份条目字段 {key} 日期格式无效") from None
 

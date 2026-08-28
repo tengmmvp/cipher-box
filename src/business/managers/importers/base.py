@@ -13,13 +13,43 @@
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Protocol
 
 from ....crypto.totp import TOTPGenerator
-from ....exceptions import ImportSizeError
-from ....models import MAX_ENTRIES_LIMIT, MAX_ENTRY_PAYLOAD_SIZE, Entry
+from ....exceptions import ImportFormatError, ImportSizeError
+from ....models import (
+    MAX_ENTRIES_LIMIT,
+    MAX_ENTRY_PAYLOAD_SIZE,
+    MAX_IMPORT_FILE_SIZE,
+    Entry,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _check_import_file_size(filepath: str) -> None:
+    """导入文件大小前置校验（SEC-048），各策略类 parse 入口最先调用。
+
+    备份（backup_restore）与共享包（share/header_codec）均有 stat 前置拒绝。上限
+    单一事实源为 ``models.MAX_IMPORT_FILE_SIZE``；manager 入口的
+    ``_validate_import_path`` 是第一道（正常导入路径先经 manager），本函数是第二道
+    纵深——防未来调用方绕过 manager 直接调 parse。条目数与逐项大小校验
+    （_validate_items）在 json.load / list(reader) 物化之后才生效，挡不住 GB 级
+    单文件把 worker 线程内存撑爆。
+    """
+    try:
+        size = Path(filepath).stat().st_size
+    except OSError as exc:
+        # stat 失败（文件不存在/被占用）归一领域异常（QL-061）：裸 FileNotFoundError
+        # 违反「领域异常→用户文案」约定——manager 入口经装饰器归一，本第二道防线
+        # 若无归一层，绕过 manager 的未来调用方会把裸异常直达用户。
+        raise ImportFormatError(f"导入文件无法访问：{exc.strerror or exc}") from exc
+    if size > MAX_IMPORT_FILE_SIZE:
+        raise ImportSizeError(
+            f"导入文件过大（{size / 1024 / 1024:.0f}MB），上限 "
+            f"{MAX_IMPORT_FILE_SIZE / 1024 / 1024:.0f}MB"
+        )
 
 
 def _sanitize_totp_secret(secret: str) -> str:

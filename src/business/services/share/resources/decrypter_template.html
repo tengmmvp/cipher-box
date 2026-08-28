@@ -113,6 +113,17 @@ footer{margin-top:24px;color:#86868b;font-size:12px;text-align:center}
   function onFileChange(e) {
     var file = e.target.files[0];
     if (!file) return;
+    // 文件大小前置上限（SEC-047，镜像 Python 侧 header_codec.MAX_SHARE_FILE_SIZE=4MB）：
+    // 本页威胁模型是解析不可信共享包（KDF 参数上下界同此），GB 级恶意文件若无此检查
+    // 会被 arrayBuffer() 全量读入致标签页 OOM。
+    if (file.size > 4 * 1024 * 1024) {
+      header = null;
+      fileBytes = null;
+      fileInfo.textContent = "";
+      stepPwd.hidden = true;
+      showError("文件过大（超过 4MB），不是有效的密匣共享包");
+      return;
+    }
     showStatus("正在读取文件…", "info");
     file.arrayBuffer().then(function (buf) {
       fileBytes = new Uint8Array(buf);
@@ -127,6 +138,11 @@ footer{margin-top:24px;color:#86868b;font-size:12px;text-align:center}
       stepPwd.hidden = false;
       pwdInput.focus();
       showStatus("请输入共享密码后点击「解密」", "info");
+    }).catch(function (err) {
+      // 读取失败（权限/被占用）须反馈，否则 UI 停留在「正在读取文件…」无响应（SEC-047）。
+      header = null;
+      fileBytes = null;
+      showError("文件读取失败：" + (err && err.message ? err.message : String(err)));
     });
   }
 

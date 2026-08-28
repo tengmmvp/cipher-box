@@ -283,7 +283,8 @@ def main() -> None:
                 "CipherBox 启动失败",
                 "应用初始化失败，请查看日志文件或重新安装。错误详情已输出到控制台。",
             )
-        except Exception:
+        except Exception:  # noqa: S110 -- 吞异常仅限弹窗尽力而为（QL-050）；上一行
+            # logger.critical(exc_info=True) 已留完整现场，S110 建议的日志化已满足
             pass
         sys.exit(1)
     # run() 阶段不在此兜底：此时 crash handler 已安装（__init__ 前移），运行期

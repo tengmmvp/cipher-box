@@ -15,6 +15,7 @@ from ....models import ENTRY_FIELD_LIMITS, MAX_ENTRY_PAYLOAD_SIZE, Entry
 from ...services.url_hygiene import sanitize_url_scheme
 from .base import (
     ParsedImport,
+    _check_import_file_size,
     _merge_csv_secrets,
     _sanitize_totp_secret,
     _validate_items,
@@ -160,6 +161,8 @@ class _CsvLikeImporter:
         self._source_label = source_label
 
     def parse(self, filepath: str) -> ParsedImport:
+        # 文件级前置大小上限（SEC-048）：先于 field_size_limit 与 list(reader) 物化。
+        _check_import_file_size(filepath)
         # 限制 csv 解析器单字段最大长度（MAINT-009）：默认 128KB 与本项目逐项大小策略
         # 脱节，显式设为 MAX_ENTRY_PAYLOAD_SIZE 后单字段超 2MB 在解析阶段即抛 csv.Error，
         # 先于 ``list(reader)`` 物化整行进内存。csv.field_size_limit 是进程级全局设置，

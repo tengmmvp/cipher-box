@@ -4,8 +4,10 @@
 entry_dialog / custom_fields_renderer / import_export 等消费。新增条目类型只需
 扩展注册表，无需散弹式修改多处 ``if entry_type ==`` 分支。
 
-label/icon 从 ``models.ENTRY_TYPES`` 派生（单一事实源），专用字段 storage_name 复用
-``models.SPECIAL_FIELD_*`` 常量，确保导入路径与 UI schema 写出一致的 storage_name。
+注册表键集从 ``models.ENTRY_TYPES`` 派生（合法类型单一事实源），专用字段
+storage_name 复用 ``models.SPECIAL_FIELD_*`` 常量，确保导入路径与 UI schema
+写出一致的 storage_name。类型的展示文案（label/icon）不在此层——见
+``ui/resources/strings.py``（ARCH-037）。
 """
 
 from __future__ import annotations
@@ -57,8 +59,10 @@ class SpecialFieldSpec:
 class EntryTypeSchema:
     """单个条目类型的完整 schema：字段集 + 可见字段顺序 + 类型特化行为钩子。
 
-    type_id / label / icon 标识类型；visible_fields 为通用 + 专用字段的显示顺序，
-    驱动类型切换时的显隐；special_fields 为该类型的专用字段配置。
+    type_id 标识类型；visible_fields 为通用 + 专用字段的显示顺序，驱动类型切换时
+    的显隐；special_fields 为该类型的专用字段配置。原 label/icon 转发字段已随
+    ARCH-037 删除——其值仅是 models.ENTRY_TYPES 展示文案的搬运且无生产消费方，
+    UI 展示（下拉/详情/列表图标）直接查 ``ui/resources/strings.py``。
 
     行为钩子（ARCH-007）以布尔标志形式挂入，消除消费方 ``if entry_type ==``
     类型身份判断——改为查阅 schema 标志。标志默认无副作用（不会触发密码置空、
@@ -73,8 +77,6 @@ class EntryTypeSchema:
     """
 
     type_id: str
-    label: str
-    icon: str
     visible_fields: tuple[str, ...]
     special_fields: tuple[SpecialFieldSpec, ...] = ()
     uses_password: bool = True
@@ -111,7 +113,7 @@ _SERVER_FIELDS = (
 
 
 def _build_schemas() -> dict[str, EntryTypeSchema]:
-    """构建类型 schema 注册表，label/icon 从 models.ENTRY_TYPES 派生（单一事实源）。"""
+    """构建类型 schema 注册表，键集遍历 models.ENTRY_TYPES（合法类型单一事实源）。"""
     special_by_type: dict[str, tuple[SpecialFieldSpec, ...]] = {
         ENTRY_TYPE_LOGIN: (),
         ENTRY_TYPE_CARD: _CARD_FIELDS,
@@ -128,7 +130,9 @@ def _build_schemas() -> dict[str, EntryTypeSchema]:
         ENTRY_TYPE_SERVER: {"composes_url": True},
     }
     schemas: dict[str, EntryTypeSchema] = {}
-    for type_id, meta in ENTRY_TYPES.items():
+    # ENTRY_TYPES 已收敛为类型键集合（ARCH-037），遍历注册全部类型；注册表消费方
+    # 经 get_schema 按 type_id 查询，不依赖遍历顺序。
+    for type_id in ENTRY_TYPES:
         special = special_by_type.get(type_id, ())
         if type_id in (ENTRY_TYPE_CARD, ENTRY_TYPE_IDENTITY):
             visible = ("title", *(s.field_key for s in special))
@@ -140,8 +144,6 @@ def _build_schemas() -> dict[str, EntryTypeSchema]:
             visible = ("title", "username", "password", "url")
         schemas[type_id] = EntryTypeSchema(
             type_id=type_id,
-            label=meta["label"],
-            icon=meta["icon"],
             visible_fields=visible,
             special_fields=special,
             **behavior_overrides.get(type_id, {}),

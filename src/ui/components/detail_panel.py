@@ -60,6 +60,7 @@ from ..resources.icons import (
     set_icon,
 )
 from ..resources.radius import RADIUS_TINY
+from ..resources.strings import entry_type_icon, entry_type_label
 from ..resources.theme_colors import c, get_strength_color
 from .custom_fields_renderer import CustomFieldsRenderer
 from .password_history_widget import PasswordHistoryWidget
@@ -273,7 +274,9 @@ class DetailPanel(QWidget):
 
         闭包仅捕获 ``entry.id``，避免信号槽持有整个 entry 引用阻碍 GC。
         """
-        self._title_label.setText(f"{entry.type_icon} {entry.title}")
+        # 类型图标占位符经 UI 展示查表（ARCH-037）：models.ENTRY_TYPES 已收敛为
+        # 纯类型键集合，展示元数据单一事实源在 ui/resources/strings.py。
+        self._title_label.setText(f"{entry_type_icon(entry.entry_type)} {entry.title}")
         self._edit_btn.setVisible(not entry.is_deleted)
         self._share_btn.setVisible(not entry.is_deleted)
         self._delete_btn.setVisible(not entry.is_deleted)
@@ -389,7 +392,8 @@ class DetailPanel(QWidget):
             header_info.addWidget(cat_tag)
 
         if entry.entry_type and entry.entry_type != ENTRY_TYPE_LOGIN:
-            type_tag = QLabel(f"  {entry.type_label}  ")
+            # SEC-030 复核：文案为 strings 查表的固定类型标签（非用户数据），保持 QLabel
+            type_tag = QLabel(f"  {entry_type_label(entry.entry_type)}  ")
             type_tag.setObjectName("typeTag")
             header_info.addWidget(type_tag)
 

@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from .vault_manager import VaultManager
 
 from ...crypto.password_generator import PasswordGenerator
-from ...database.types import EntryQuery, VaultDataStore, VerifyMode
+from ...database.types import EntryQuery, SearchRow, VaultDataStore, VerifyMode
 from ...exceptions import (
     DecryptionError,
     EntryIntegrityError,
@@ -32,7 +32,6 @@ from ...models import (
     RawEntry,
 )
 from ...utils.format import utc_now_iso
-from ...utils.memory import secure_zero_buffer
 from ..services.crypto_utils import (
     SENSITIVE_ENCRYPTED_FIELDS,
     decrypt_field as _decrypt_field_impl,
@@ -43,7 +42,6 @@ from ..services.crypto_utils import (
 from ..services.entry_batch_writer import PROGRESS_REPORT_EVERY
 from ..services.entry_validation import validate_plain_entry
 from ..services.entry_view_decryption import EntryViewDecryptor
-from ..services.metadata_signer import MetadataSigner, verify_raw
 from ..services.password_history_service import PasswordHistoryService
 from ..services.password_service import PasswordService
 from ..services.totp_service import TotpService
@@ -74,9 +72,10 @@ class EntryManager:
         self._change_bus = change_bus
         # 分类子服务经组合根/测试工厂显式注入（一等依赖，可替换/可测；MAINT-015 移除
         # 兜底内部构造——可选注入使遗漏装配在运行期才暴露且与组合根实例不一致）。
-        # TOTP/密码历史为无状态子服务，保持内部构造。
+        # TOTP/密码历史为无状态子服务，保持内部构造。TotpService 的 vault 死依赖已
+        # 删除（ARCH-039），单参构造仅注入缓存协议。
         self._category_mgr = category_mgr
-        self._totp_svc = TotpService(vault_manager, cache)
+        self._totp_svc = TotpService(cache)
         self._history_svc = PasswordHistoryService(vault_manager)
         # 视图解密子服务（MAINT-021 下沉）：详情/导出/摘要的 raw→Entry 纯变换。
         # 与 TOTP/密码历史同为无状态子服务，保持内部构造。
@@ -299,6 +298,7 @@ class EntryManager:
         include_secrets: bool = False,
         *,
         key: bytes | None = None,
+        data_epoch: str | None = None,
     ) -> Entry:
         """仅解密导出所需字段，默认不让密码与 TOTP 进入内存结果。
 
@@ -306,11 +306,13 @@ class EntryManager:
         ``include_secrets=False`` 时跳过 password/totp_secret 解密。
 
         ``key`` 语义见 :meth:`_decrypt_field`（PERF-001 并发修补）。
+        ``data_epoch`` 语义同 :meth:`decrypt_entry`（SEC-049 补齐 export 链）：
+        分类名缓存回写守卫据此拒收跨世代解密结果。
 
         实现委托 :class:`EntryViewDecryptor.decrypt_entry_for_export`（MAINT-021 下沉）。
         """
         return self._view_decryptor.decrypt_entry_for_export(
-            raw_entry, include_secrets=include_secrets, key=key
+            raw_entry, include_secrets=include_secrets, key=key, data_epoch=data_epoch
         )
 
     def add_entry(
@@ -653,6 +655,9 @@ class EntryManager:
         search: str = "",
         limit: int | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        *,
+        order_by: str | None = None,
+        order_desc: bool = True,
     ) -> list[Entry]:
         """获取不含密码等敏感明文的列表摘要。
 
@@ -663,6 +668,11 @@ class EntryManager:
               此时 ``limit`` 不下推到 SQL（否则会先
               截断再过滤，导致搜索命中远少于实际），由调用方在内存过滤后自行截断。
               即当 search 非空时本方法忽略 limit，返回全部命中结果。
+
+        ``order_by``/``order_desc``（PERF-073）：SQL 排序字段（白名单见
+        ``database.types.ORDER_BY_FIELDS``），供列表视图按用户所选排序下推 LIMIT——
+        截断集合须与排序序一致才不丢条目。``None``（默认）走复合序；title 密文列
+        无法 SQL 排序，调用方（UI fetcher）对标题序不传 limit 与 order_by。
 
         读路径经 :meth:`epoch_guarded_read` 守卫（ARCH-005）：改密窗口内 epoch 不一致时
         返回空列表，触发 UI 经变更回调刷新。锁定期 :class:`VaultLockedError` 仍正常传播。
@@ -675,22 +685,29 @@ class EntryManager:
         # delegate 据此显示完整性警示。
         try:
             with self._vault.epoch_guarded_read():
-                raw_entries = self.db.get_entries(
-                    EntryQuery(
-                        deleted_only=deleted_only,
-                        category_id=category_id,
-                        favorite_only=favorite_only,
-                        limit=sql_limit,
-                        # 搜索路径先 SKIP 拉取（PERF-019）：温缓存下搜索的耗时主导是
-                        # 全部行的逐行 HMAC 验签 + e.* 全列物化（摘要解密≈0 时反转为主
-                        # 导成本，实测 2000 条目 94-213ms/次）；改 SKIP 拉取后仅对匹配
-                        # 命中的行补验签（见 _reverify_search_matches）。
-                        # 安全取舍：未命中的行不验签，其篡改检测由无搜索词的全量
-                        # 列表刷新（LENIENT）覆盖——搜索只是列表的过滤视图，篡改行
-                        # 在回到全量视图时仍会被标记。
-                        verify=VerifyMode.SKIP if search else VerifyMode.LENIENT,
-                    )
+                query = EntryQuery(
+                    deleted_only=deleted_only,
+                    category_id=category_id,
+                    favorite_only=favorite_only,
+                    limit=sql_limit,
+                    # 字段序下推（PERF-073）：与 limit 配套，截断集合按用户所选排序
+                    # 取前 N（复合序截断 + 非默认排序会丢排序序窗口外的条目）。
+                    order_by=order_by,
+                    order_desc=order_desc,
+                    verify=VerifyMode.LENIENT,
                 )
+                if search:
+                    # 搜索路径改窄投影拉取（PERF-074）：宽行（e.* + 24 字段 RawEntry 构造）
+                    # 是温态搜索主导成本（50k 库实测 656ms，同条件 6 列窄投影仅 102ms），
+                    # 搜索只需 4 个摘要密文字段做小写匹配。投影无验签（不含签名载荷列），
+                    # 命中行按 id 回查完整行时经 get_entries_by_ids 的 LENIENT 验签补偿；
+                    # 未命中行不验签的安全取舍与 PERF-019 声明一致（篡改检测由无搜索词
+                    # 的全量列表刷新覆盖）。
+                    search_rows = self.db.get_entries_search_projection(query)
+                    raw_entries = []
+                else:
+                    search_rows = []
+                    raw_entries = self.db.get_entries(query)
                 # PERF-001 并发修补（M3）：锁内快照主密钥，锁外解密用快照（见 get_entries）。
                 key = self._key
                 # SEC-041/043 写入方世代：与 raw/key 同刻快照 epoch，供摘要缓存回写守卫——
@@ -708,18 +725,18 @@ class EntryManager:
             # 摘要字段首次搜索后进入会话缓存，后续搜索无重复解密成本。
             summaries = []
             if search:
-                matched: list[tuple[RawEntry, SearchMetadata]] = []
-                for raw in raw_entries:
+                matched: list[tuple[SearchRow, SearchMetadata]] = []
+                for row in search_rows:
                     if cancel_check and cancel_check():
                         break
                     # 搜索：一次取完整 SearchMetadata，摘要与小写匹配共用，省第二次缓存查询（PERF-016）。
                     # data_epoch 传锁内快照世代，回写守卫据此拒收跨世代解密结果（SEC-041）。
                     meta = self._cache.cached_search_metadata_full(
-                        raw, key=key, data_epoch=data_epoch
+                        row, key=key, data_epoch=data_epoch
                     )
-                    # 匹配检查前移到摘要构建之前（PERF-018）：仅命中条目才走完整
-                    # decrypt_summary，省去未命中条目的 Entry 构造 + 分类名/failed_fields
-                    # 缓存查询（meta 已含匹配所需小写形式）。
+                    # 匹配检查前移到摘要构建之前（PERF-018）：仅命中条目才回查完整行
+                    # 走 decrypt_summary，省去未命中条目的宽行物化 + Entry 构造 +
+                    # 分类名/failed_fields 缓存查询（meta 已含匹配所需小写形式）。
                     if not matches_search_lower(
                         (
                             meta.title_lower,
@@ -730,14 +747,27 @@ class EntryManager:
                         search,
                     ):
                         continue
-                    matched.append((raw, meta))
-                # 命中行就地 LENIENT 验签（PERF-019/067）：损坏→integrity_error 标记不抛异常。
-                verified_by_id = self._reverify_search_matches(matched, key=key)
-                for raw, meta in matched:
-                    verified = verified_by_id.get(raw.id) if raw.id is not None else None
+                    matched.append((row, meta))
+                # 命中行按 id 回查完整行（PERF-074）：LENIENT 验签在 db 层 _row_to_entry
+                # 完成（替代原 PERF-067 的就地验签——窄投影后宽行不再物化，回查是
+                # 摘要构建的必要步骤而非重复读库），损坏行带 integrity_error 标记不抛
+                # 异常。命中数 ≪ 全库（搜索是过滤视图），回查开销 ~10-50ms 量级。
+                # 无命中时跳过回查（空列表调用对纯读虽无害，但守护「未命中行不回查」
+                # 的测试以哨兵 spy 断言零调用）。
+                hit_ids = [row.id for row, _meta in matched if row.id is not None]
+                full_by_id: dict[int | None, RawEntry] = {}
+                if hit_ids:
+                    for hit_raw in self.db.get_entries_by_ids(hit_ids):
+                        full_by_id[hit_raw.id] = hit_raw
+                for row, meta in matched:
+                    full = full_by_id.get(row.id) if row.id is not None else None
+                    # 回查缺失（窄投影后行被并发删除）：跳过而非中断——搜索是尽力
+                    # 视图，与列表路径对并发删除的容忍语义一致。
+                    if full is None:
+                        continue
                     summaries.append(
                         self._view_decryptor.decrypt_summary(
-                            verified if verified is not None else raw,
+                            full,
                             skip_epoch_check=True,
                             key=key,
                             meta=meta,
@@ -765,55 +795,6 @@ class EntryManager:
             summaries = summaries[:limit]
         return summaries
 
-    def _reverify_search_matches(
-        self,
-        matched: list[tuple[RawEntry, SearchMetadata]],
-        *,
-        key: bytes,
-    ) -> dict[int, RawEntry]:
-        """对全部搜索命中的行就地 LENIENT 补验签（PERF-019/032/067），返回 ``{id: raw}``。
-
-        搜索路径的拉取改用 VerifyMode.SKIP（见 get_entry_summaries 处注释），完整性
-        标记由此处补偿。PERF-067 前的实现经 ``get_entries_by_ids``（LENIENT）对命中
-        行二次读库验签——命中行的 RawEntry 本已物化在内存，二次 SQL 读纯属重复：
-        实测 5000 ids 234.6ms、50k 1.3-2s（约为 PERF-019 注释所估 15.6µs/行的 3 倍，
-        SQL 读+行物化而非纯 HMAC），且第二份宽行物化使 50k 库多驻留 ~208MB。现经
-        :func:`metadata_signer.verify_raw` 对已物化的行就地 HMAC 验签：域密钥由与
-        解密同源的锁内快照主密钥派生（raw/密钥/域密钥同 epoch），比对语义与 db 层
-        ``_row_to_entry`` 的 verifier 钩子一致。就地验签不再持 db_lock（原二次读库
-        须进读守卫），跨世代污染由调用方已就位的 data_epoch 缓存守卫兜底。
-
-        损坏行经 ``dataclasses.replace`` 置 integrity_error 标志而非抛异常（保持列表
-        路径的 LENIENT 语义，文案与 _row_to_entry 的 LENIENT 分支归一一致）。
-
-        PERF-032（修订 PERF-019 的 1000 行验签上界）：UI 按排序字段重排 + 标签过滤
-        后才截断渲染，验签集合须覆盖全部命中行（SQL 序 1000 名之外仍可能落入渲染
-        窗口）。就地验签消除 SQL 读后，全量验签仅剩纯 HMAC 计算，亦无
-        ``get_entries_by_ids`` 的主机变量分批需求。
-        """
-        verified: dict[int, RawEntry] = {}
-        if not matched:
-            return verified
-        # 域密钥派生自锁内快照主密钥（一次性 HMAC），用毕原地清零（与
-        # compute_vault_meta_mac 的域密钥清零纪律一致）。
-        domain_key = MetadataSigner.compute_domain_key(key)
-        try:
-            for raw, _meta in matched:
-                if raw.id is None:
-                    continue
-                verified[raw.id] = (
-                    raw
-                    if verify_raw(raw, domain_key)
-                    else replace(
-                        raw,
-                        integrity_error=True,
-                        integrity_message="元数据完整性校验失败",
-                    )
-                )
-        finally:
-            secure_zero_buffer(domain_key)
-        return verified
-
     def get_recent_summaries(self, limit: int = DEFAULT_RECENT_SUMMARIES_LIMIT) -> list[Entry]:
         """获取最近更新的条目摘要，供「近期更新」视图。
 
@@ -832,7 +813,13 @@ class EntryManager:
         try:
             with self._vault.epoch_guarded_read():
                 raw_entries = self.db.get_entries(
-                    EntryQuery(sort_by_updated=True, limit=limit, verify=VerifyMode.LENIENT),
+                    # 字段序下推（PERF-073）：updated_at DESC 明文表达，替代原
+                    # sort_by_updated 布尔单字段特例。
+                    EntryQuery(
+                        order_by="updated_at",
+                        limit=limit,
+                        verify=VerifyMode.LENIENT,
+                    ),
                 )
                 # PERF-001 并发修补（M3）：锁内快照主密钥，锁外解密用快照（见 get_entries）。
                 key = self._key
@@ -850,6 +837,36 @@ class EntryManager:
                 )
                 for entry in raw_entries
             ]
+        except VaultKeyEpochMismatchError:
+            return []
+
+    def get_entry_dedup_index(self) -> list[tuple[str, str, int]]:
+        """导入去重对照所需的 ``(title, username, id)`` 明文索引（PERF-075）。
+
+        去重只需 ``(title, username)`` casefold 对照与覆盖目标的 id，原路径经
+        ``get_entry_summaries()`` 拉全量摘要——多解密 url/tags 之外的完整 summary
+        构建（50k 冷缓存实测 1834ms，导入 worker 后台）。现改搜索同款窄投影 +
+        摘要缓存解密：四摘要字段一次解密入会话缓存（去重只消费 title/username，
+        但导入后紧随的列表/搜索刷新命中同一缓存，摊销后整体更优），不物化宽行
+        与 summary Entry。title 解密失败的条目摘要为空串，被调用方的
+        ``if entry.title`` 前置过滤天然排除（与原摘要路径语义一致）。
+
+        读路径经 :meth:`epoch_guarded_read` 守卫，语义与 :meth:`get_entry_summaries`
+        一致（改密窗口内 epoch 不一致时返回空列表）。
+        """
+        try:
+            with self._vault.epoch_guarded_read():
+                rows = self.db.get_entries_search_projection(EntryQuery(include_deleted=False))
+                key = self._key
+                data_epoch = self._vault.key_epoch
+            self._cache.invalidate_if_epoch_changed()
+            result: list[tuple[str, str, int]] = []
+            for row in rows:
+                if row.id is None:
+                    continue
+                meta = self._cache.cached_search_metadata_full(row, key=key, data_epoch=data_epoch)
+                result.append((meta.title, meta.username, row.id))
+            return result
         except VaultKeyEpochMismatchError:
             return []
 
@@ -881,6 +898,9 @@ class EntryManager:
             raw_entries = self.db.get_entries(EntryQuery(include_deleted=False))
             # PERF-001 并发修补（M3）：锁内快照主密钥，锁外解密用快照（见 get_entries）。
             key = self._key
+            # 锁内快照世代（SEC-049）：分类名缓存回写守卫据此拒收「导出 worker 在飞 +
+            # 恢复提交重臂新世代」交错下的跨世代解密结果（与 get_entry/摘要路径对齐）。
+            data_epoch = self._vault.key_epoch
         # 解密移出 db_lock（PERF-001）；epoch 不一致已在 with 块内抛 VaultKeyEpochMismatchError
         # 向上传播（导出为用户主动操作，空结果会误导用户）。用锁内快照 key 解密。
         entries = []
@@ -889,7 +909,11 @@ class EntryManager:
         for raw_entry in raw_entries:
             if cancel_check and cancel_check():
                 break
-            entries.append(self.decrypt_entry_for_export(raw_entry, include_secrets, key=key))
+            entries.append(
+                self.decrypt_entry_for_export(
+                    raw_entry, include_secrets, key=key, data_epoch=data_epoch
+                )
+            )
             done += 1
             if progress is not None and (done % PROGRESS_REPORT_EVERY == 0 or done == total):
                 progress(done, total)

@@ -32,6 +32,7 @@ from .types import (
     EntryQuery,
     ReEncryptedEntry,
     ReEncryptedHistory,
+    SearchRow,
     VerifyMode,
 )
 
@@ -600,6 +601,10 @@ class DatabaseManager:
 
     def get_entries_by_ids(self, entry_ids: list[int]) -> list[RawEntry]:
         return self._entry_repo.get_entries_by_ids(entry_ids)
+
+    def get_entries_search_projection(self, query: EntryQuery) -> list[SearchRow]:
+        """搜索窄投影委托（PERF-074，语义见 EntryRepository 同名方法）。"""
+        return self._entry_repo.get_entries_search_projection(query)
 
     def get_entry_by_crypto_id(
         self,

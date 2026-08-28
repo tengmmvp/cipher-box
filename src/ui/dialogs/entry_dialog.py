@@ -58,7 +58,6 @@ from ...exceptions import (
 )
 from ...models import (
     ENTRY_TYPE_LOGIN,
-    ENTRY_TYPES,
     MAX_FIELD_NOTES,
     MAX_FIELD_PASSWORD,
     MAX_FIELD_TAGS,
@@ -91,7 +90,12 @@ from ..resources.constants import (
     SERVER_PORT_MIN,
 )
 from ..resources.icons import GENERATE
-from ..resources.strings import DLG_TITLE_ERROR, DLG_TITLE_INFO
+from ..resources.strings import (
+    DLG_TITLE_ERROR,
+    DLG_TITLE_INFO,
+    ENTRY_TYPE_LABELS,
+    entry_type_icon,
+)
 from ..resources.theme_colors import c
 
 if TYPE_CHECKING:
@@ -191,8 +195,10 @@ class EntryDialog(QDialog):
         type_row.addWidget(type_label)
 
         self._type_combo = QComboBox()
-        for key, info in ENTRY_TYPES.items():
-            self._type_combo.addItem(f"{info['icon']} {info['label']}", key)
+        # 展示查表移 UI 层（ARCH-037）：label/icon 单一事实源在 strings.py，遍历其
+        # 插入序保持原下拉顺序（models.ENTRY_TYPES 已收敛为无序类型键集合）。
+        for key, label in ENTRY_TYPE_LABELS.items():
+            self._type_combo.addItem(f"{entry_type_icon(key)} {label}", key)
         self._type_combo.currentIndexChanged.connect(self._on_type_changed)
         type_row.addWidget(self._type_combo, 1)
         layout.addLayout(type_row)

@@ -12,10 +12,11 @@
 
 职责边界：输入 raw + 密钥 + 缓存，输出 Entry——不触数据库事务、写路径、变更通知
 （notify_*）与缓存失效决策（缓存只读取：摘要/分类名/失败字段集，失效由
-EntryManager 与 EntryChangeBus 负责）。密钥经 vault 引用实时获取，缓存经
-:class:`ViewDecryptCacheProtocol` 最小协议注入（EntryCacheManager 实现，ARCH-032），
-并发安全由调用方在 ``epoch_guarded_read`` 锁内快照 ``key`` 传入（PERF-001），缓存
-回写的写入方世代守卫由调用方同刻快照 ``data_epoch`` 传入（SEC-041/043）。
+EntryManager 与 EntryChangeBus 负责）。密钥经 :class:`crypto_utils.KeyProvider`
+最小协议的 vault 引用实时获取（ARCH-039），缓存经 :class:`ViewDecryptCacheProtocol`
+最小协议注入（EntryCacheManager 实现，ARCH-032），并发安全由调用方在
+``epoch_guarded_read`` 锁内快照 ``key`` 传入（PERF-001），缓存回写的写入方世代
+守卫由调用方同刻快照 ``data_epoch`` 传入（SEC-041/043）。
 """
 
 from __future__ import annotations
@@ -29,11 +30,11 @@ if TYPE_CHECKING:
     # 引用类型名、运行时零导入——services→managers 的类型标注引用在
     # security_analyzer / entry_batch_writer 已有先例（ARCH-032）。
     from ..managers.entry_cache import SearchMetadata
-    from ..managers.vault_manager import VaultManager
 
 from ...exceptions import DecryptionError, EntryIntegrityError
 from ...models import CustomField, Entry, RawEntry, Sensitive
 from .crypto_utils import (
+    KeyProvider,
     copy_entry_fields,
     decrypt_field as _decrypt_field_impl,
     decrypt_string_fields_strict,
@@ -104,7 +105,10 @@ _INTEGRITY_FIELD_LABELS: dict[str, str] = {
 class EntryViewDecryptor:
     """条目视图解密器：详情/导出/摘要三条解密链路的纯变换子服务（MAINT-021）。"""
 
-    def __init__(self, vault_manager: VaultManager, cache: ViewDecryptCacheProtocol):
+    def __init__(self, vault_manager: KeyProvider, cache: ViewDecryptCacheProtocol):
+        # vault 经 KeyProvider 最小协议注入（ARCH-039）：本类对保险库的依赖面仅
+        # require_vault_key 所需的 is_unlocked + key 两成员，协议化后 services 子包
+        # 不再 TYPE_CHECKING 引用具体 manager 类（对齐 ARCH-032 cache 协议模式）。
         self._vault = vault_manager
         # 摘要/分类名/失败字段集缓存（协议视图，ARCH-032）：仅读取，失效决策留在
         # EntryManager/EntryChangeBus。
@@ -286,6 +290,7 @@ class EntryViewDecryptor:
         include_secrets: bool = False,
         *,
         key: bytes | None = None,
+        data_epoch: str | None = None,
     ) -> Entry:
         """解密条目字段（导出路径）。
 
@@ -295,6 +300,9 @@ class EntryViewDecryptor:
         安全默认对齐（避免内部入口默认解出密码，与公开 API 保守默认矛盾）。
 
         ``key`` 语义见 :meth:`_decrypt_field`（PERF-001 并发修补）。
+        ``data_epoch`` 语义见 :class:`ViewDecryptCacheProtocol`（SEC-049 补齐 export
+        链的写入方世代守卫）：分类名缓存回写据此拒收跨世代解密结果，与
+        :meth:`decrypt_entry` / :meth:`decrypt_summary` 对齐。
         """
         if raw_entry.integrity_error:
             raise DecryptionError(f"条目 {raw_entry.id} 元数据完整性校验失败，已拒绝导出")
@@ -327,6 +335,7 @@ class EntryViewDecryptor:
                 raw_entry.category_id,
                 raw_entry.category_name,
                 key=key,
+                data_epoch=data_epoch,
             )
         except DecryptionError:
             raise DecryptionError(f"条目 {raw_entry.id} 导出失败，数据可能已损坏") from None

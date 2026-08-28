@@ -5,8 +5,9 @@
 - ``get`` / ``get_count`` 委托 vault.db。
 
 经 MagicMock 注入 vault（``is_unlocked``/``key``/``vault_write_lock`` 满足
-``require_vault_key`` 与持锁契约），真实加解密经 ``crypto_utils.encrypt_field`` /
-``decrypt_field`` 的单一域分离路径（``entry:<crypto_id>:password``）。
+``PasswordHistoryVaultProtocol`` 的 4 成员面，ARCH-039），真实加解密经
+``crypto_utils.encrypt_field`` / ``decrypt_field`` 的单一域分离路径
+（``entry:<crypto_id>:password``）。
 """
 
 import logging

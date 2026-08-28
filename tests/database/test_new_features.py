@@ -81,17 +81,24 @@ def test_entry_type_constants():
 
 
 def test_entry_type_icon():
-    """各 entry_type 映射正确的图标与中文标签。"""
-    entry = RawEntry(title="Test", entry_type="card")
-    assert entry.type_icon == "[CARD]"
-    assert entry.type_label == "信用卡"
+    """各 entry_type 映射正确的图标与中文标签（ARCH-037 后经 UI strings 查表）。
+
+    展示查表从 Entry/RawEntry 的 property 下沉至 ``ui/resources/strings.py``——
+    共享层数据模型不再承载 UI 文案，语义（含 login 回退）不变。
+    """
+    from src.ui.resources.strings import entry_type_icon, entry_type_label
+
+    assert entry_type_icon("card") == "[CARD]"
+    assert entry_type_label("card") == "信用卡"
+    # 未知类型回退 login（原 property 的回退语义）
+    assert entry_type_icon("nonexistent") == "[KEY]"
+    assert entry_type_label("nonexistent") == "登录凭证"
 
 
 def test_entry_default_type():
-    """不指定 entry_type 时默认 login，图标为 [KEY]。"""
+    """不指定 entry_type 时默认 login。"""
     entry = RawEntry(title="Test")
     assert entry.entry_type == ENTRY_TYPE_LOGIN
-    assert entry.type_icon == "[KEY]"
 
 
 def test_has_totp():

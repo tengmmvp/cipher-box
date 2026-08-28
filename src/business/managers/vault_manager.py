@@ -405,6 +405,10 @@ class VaultManager:
         self._key_mgr.activate(key, snapshot_key, epoch)
         self.set_domain_key(key)
         self._is_unlocked = True
+        # 与 mark_unlocked 对齐置位（QL-052）：initialize 走 activate_keys，漏置会使
+        # 「首次建库→锁定」会话内 enforce_key_epoch 的 _ever_unlocked 短路恒 False，
+        # 锁定拒绝写入的最后防线整类失效。
+        self._ever_unlocked = True
 
     def clear_vault_state(self) -> None:
         """清除密钥材料和加密缓存，并触发 gc 回收 AESGCM 缓存副本。

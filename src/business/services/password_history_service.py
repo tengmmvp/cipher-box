@@ -4,23 +4,43 @@
 在事务内完成（涉及 epoch 复查与旧密钥保护），此处仅负责读取与解密展示。
 """
 
+from __future__ import annotations
+
 import logging
-from typing import TYPE_CHECKING
+from contextlib import AbstractContextManager
+from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from ..managers.vault_manager import VaultManager
+    from ...database.types import VaultDataStore
 
 from ...models import PasswordHistory
 from ...utils.format import format_datetime
-from .crypto_utils import decrypt_field, require_vault_key
+from .crypto_utils import KeyProvider, decrypt_field, require_vault_key
 
 logger = logging.getLogger(__name__)
+
+
+class PasswordHistoryVaultProtocol(KeyProvider, Protocol):
+    """密码历史服务所需的最小保险库协议（ARCH-039「一删三协议」）。
+
+    ``VaultManager`` 自然满足此协议。实际依赖面共 4 成员：取密钥两成员
+    （:class:`crypto_utils.KeyProvider`，经 require_vault_key 消费）+ db
+    （:class:`~...database.types.VaultDataStore` 数据库协议切片，本服务仅用其
+    get_password_history/get_password_history_count）+ vault_write_lock（decrypt
+    接触全量历史明文须与改密/备份串行化）。协议化后 services 子包不再
+    TYPE_CHECKING 引用具体 manager 类，测试替身只需 4 成员。
+    """
+
+    @property
+    def db(self) -> VaultDataStore: ...
+
+    def vault_write_lock(self) -> AbstractContextManager[None]: ...
 
 
 class PasswordHistoryService:
     """密码历史的数据库读取与解密展示。"""
 
-    def __init__(self, vault: "VaultManager"):
+    def __init__(self, vault: PasswordHistoryVaultProtocol):
         self._vault = vault
 
     @property

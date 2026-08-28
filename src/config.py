@@ -166,8 +166,8 @@ _BOOL_KEYS = {
 # 状态文件损坏/删除降级使用 RATE_LIMITS[-1]，故最高阶梯亦为降级锁定时长。
 RATE_LIMITS: list[tuple[int, int]] = [(3, 10), (5, 30), (8, 60), (10, 120), (15, 600)]
 
-# 已知配置键的字面量类型分组(供 get/get_safe/set 的 @overload 按键派生返回/入参类型,
-# 收窄热点调用的静态类型)。键到类型的映射须与 DEFAULT_CONFIG 保持一致:新增或改型
+# 已知配置键的字面量类型分组（供 get/get_safe/set 的 @overload 按键派生返回/入参类型，
+# 收窄热点调用的静态类型）。键到类型的映射须与 DEFAULT_CONFIG 保持一致：新增或改型
 # 配置键须同步更新此处与对应 @overload。
 # 注：Literal 须用字面量（mypy/Pyright 不支持从 Final 变量派生），与上方 CFG_ 常量各自
 # 维护；启动期断言校验两者一致，重命名时改 CFG_ 常量 + 此处字面量，断言捕获遗漏。

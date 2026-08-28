@@ -25,7 +25,9 @@ def format_datetime(iso_str: str) -> str:
     if not iso_str:
         return ""
     try:
-        # Python 3.10 的 fromisoformat 不接受 'Z' 后缀（3.11+ 才支持），先归一化为 +00:00 再解析。
+        # 'Z' 后缀先归一化为 +00:00 再解析：项目 requires-python >= 3.12 的
+        # fromisoformat 虽已接受 Z，但显式归一使解析输入与 utc_now_iso 产物形态
+        # 一致，防御外部导入数据可能携带的边界形态。
         normalized = iso_str[:-1] + "+00:00" if iso_str.endswith("Z") else iso_str
         dt = datetime.fromisoformat(normalized)
         if dt.tzinfo is None:

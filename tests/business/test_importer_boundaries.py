@@ -137,6 +137,68 @@ class TestCsvBoundaries:
         assert len(result.entries) == 1
         assert result.entries[0].title == "GitHub"
 
+
+class TestFileSizeLimit:
+    """导入文件大小前置上限（SEC-048）：parse 入口先于全量物化拒绝超限文件。
+
+    备份/共享包均有 stat 前置拒绝，导入路径此前缺失——条目数与逐项校验在
+    json.load / list(reader) 之后才生效，GB 级文件先把 worker 线程 OOM。
+    """
+
+    @pytest.fixture
+    def tiny_limit(self, monkeypatch):
+        """把上限压到 10 字节，使小文件即触发超限（避免真写 200MB 文件）。"""
+        import src.business.managers.importers.base as base_module
+
+        monkeypatch.setattr(base_module, "MAX_IMPORT_FILE_SIZE", 10)
+
+    @pytest.mark.parametrize(
+        "importer_cls,make_file",
+        [
+            (JsonImporter, lambda tmp: _write_json(tmp, "f.json", {"app": "CipherBox"})),
+            (
+                BitwardenImporter,
+                lambda tmp: _write_json(tmp, "f.json", {"items": []}),
+            ),
+            (
+                CsvImporter,
+                lambda tmp: _write_csv(tmp, "f.csv", "title,username\nGitHub,user\n"),
+            ),
+            (
+                KeePassCsvImporter,
+                lambda tmp: _write_csv(tmp, "f.csv", "Title,UserName\nGitHub,user\n"),
+            ),
+        ],
+    )
+    def test_oversized_file_rejected_before_parse(
+        self, tmp_path, tiny_limit, importer_cls, make_file
+    ):
+        """四个策略类的 parse 均在格式解析前抛 ImportSizeError。"""
+        path = make_file(tmp_path)
+        with pytest.raises(ImportSizeError, match="文件过大"):
+            importer_cls().parse(path)
+
+    def test_normal_size_file_unaffected(self, tmp_path, tiny_limit):
+        """上限以上的合法小文件正常解析（上限改回 10 字节前先验证未误伤路径）。"""
+        import src.business.managers.importers.base as base_module
+
+        # 恢复真实上限验证正常路径（fixture 已压小，此处显式还原）
+        monkeypatch_limit = base_module.MAX_IMPORT_FILE_SIZE
+        assert monkeypatch_limit == 10  # fixture 已生效的前置
+        from src.models import MAX_IMPORT_FILE_SIZE as real_limit
+
+        base_module.MAX_IMPORT_FILE_SIZE = real_limit
+        try:
+            path = _write_json(
+                tmp_path,
+                "ok.json",
+                {"app": "CipherBox", "secrets_included": True, "entries": []},
+            )
+            result = JsonImporter().parse(path)
+            assert result.entries == []
+        finally:
+            base_module.MAX_IMPORT_FILE_SIZE = monkeypatch_limit
+
     def test_overlong_field_raises(self, tmp_path):
         """超长字段（title > 1024）整批中止（ImportSizeError）。"""
         text = f"title,username,password\n{'x' * 2000},u,p\n"

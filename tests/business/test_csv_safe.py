@@ -1,57 +1,58 @@
 """CSV 注入防护测试。
 
-验证 ImportExportManager._csv_safe 对公式注入前缀的转义，
+验证 csv_safe 对公式注入前缀的转义，
 确保 CSV 公式注入仅在导出写入路径处理；以及密钥类列（password/totp_secret）
 不转义、导入侧不 strip 的密钥保真决策（SEC-039）。
 """
 
 import csv
 
+from src.business.managers.exporters import csv_safe
 from src.business.managers.import_export import ImportExportManager
 from src.models import Entry
 
 
 class TestCsvSafe:
-    """ImportExportManager._csv_safe 转义防护测试。"""
+    """csv_safe 转义防护测试。"""
 
     def test_formula_prefix_equals(self):
         """以 = 开头的值应被单引号前缀转义。"""
-        result = ImportExportManager._csv_safe("=CMD")
+        result = csv_safe("=CMD")
         assert result == "'=CMD"
 
     def test_formula_prefix_plus(self):
         """以 + 开头的值应被单引号前缀转义。"""
-        result = ImportExportManager._csv_safe("+CMD")
+        result = csv_safe("+CMD")
         assert result == "'+CMD"
 
     def test_formula_prefix_minus(self):
         """以 - 开头的值应被单引号前缀转义。"""
-        result = ImportExportManager._csv_safe("-CMD")
+        result = csv_safe("-CMD")
         assert result == "'-CMD"
 
     def test_formula_prefix_at(self):
         """以 @ 开头的值应被单引号前缀转义。"""
-        result = ImportExportManager._csv_safe("@SUM")
+        result = csv_safe("@SUM")
         assert result == "'@SUM"
 
     def test_normal_text_unchanged(self):
         """普通文本不应被修改。"""
-        assert ImportExportManager._csv_safe("hello") == "hello"
-        assert ImportExportManager._csv_safe("user@example.com") == "user@example.com"
-        assert ImportExportManager._csv_safe("1+2=3") == "1+2=3"
+        assert csv_safe("hello") == "hello"
+        assert csv_safe("user@example.com") == "user@example.com"
+        assert csv_safe("1+2=3") == "1+2=3"
 
     def test_none_returns_empty(self):
         """None 应返回空字符串。"""
-        assert ImportExportManager._csv_safe(None) == ""
+        assert csv_safe(None) == ""
 
     def test_empty_string_unchanged(self):
         """空字符串不变。"""
-        assert ImportExportManager._csv_safe("") == ""
+        assert csv_safe("") == ""
 
     def test_non_string_converted(self):
         """非字符串值应先转为字符串。"""
-        assert ImportExportManager._csv_safe(42) == "42"
-        assert ImportExportManager._csv_safe(3.14) == "3.14"
+        assert csv_safe(42) == "42"
+        assert csv_safe(3.14) == "3.14"
 
 
 class TestCsvSafeSecretColumns:
@@ -60,13 +61,13 @@ class TestCsvSafeSecretColumns:
     def test_escape_formula_false_keeps_prefix_verbatim(self):
         """escape_formula=False 时以 =/+/-/@ 开头的值原样返回（密钥不转义）。"""
         for value in ("=J6f*kL", "+K3yn", "-topsecret", "@token"):
-            assert ImportExportManager._csv_safe(value, escape_formula=False) == value
+            assert csv_safe(value, escape_formula=False) == value
 
     def test_escape_formula_false_still_replaces_newlines(self):
         """escape_formula=False 仍替换换行符（保 CSV 行结构），仅跳过前缀转义。"""
-        assert ImportExportManager._csv_safe("a\nb", escape_formula=False) == "a b"
-        assert ImportExportManager._csv_safe("a\r\nb", escape_formula=False) == "a b"
-        assert ImportExportManager._csv_safe("a\rb", escape_formula=False) == "a b"
+        assert csv_safe("a\nb", escape_formula=False) == "a b"
+        assert csv_safe("a\r\nb", escape_formula=False) == "a b"
+        assert csv_safe("a\rb", escape_formula=False) == "a b"
 
 
 class TestCsvSecretRoundtrip:
@@ -74,7 +75,6 @@ class TestCsvSecretRoundtrip:
 
     def test_export_keeps_secret_columns_verbatim_and_escapes_title(self, entry_mgr, tmp_path):
         """以 =/+/-/@ 开头的密码/TOTP 导出后原样落 CSV，title 列仍被转义。"""
-        from src.business.managers.import_export import ImportExportManager
 
         entry_mgr.add_entry(
             Entry(
@@ -99,7 +99,6 @@ class TestCsvSecretRoundtrip:
 
     def test_export_import_roundtrip_preserves_formula_password(self, entry_mgr, tmp_path):
         """含危险前缀密码经 CSV 导出→导入往返后不变（不静默损坏）。"""
-        from src.business.managers.import_export import ImportExportManager
 
         mgr = ImportExportManager(entry_mgr)
         entry_mgr.add_entry(Entry(title="公式密码条目", username="alice", password="=J6f*kL"))
@@ -113,7 +112,6 @@ class TestCsvSecretRoundtrip:
 
     def test_import_keeps_whitespace_password_verbatim(self, entry_mgr, tmp_path):
         """CSV 导入的 password 列不 strip：首尾空白是密码的一部分（SEC-039）。"""
-        from src.business.managers.import_export import ImportExportManager
 
         mgr = ImportExportManager(entry_mgr)
         csv_path = tmp_path / "ws.csv"

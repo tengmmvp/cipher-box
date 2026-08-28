@@ -8,7 +8,7 @@ import logging
 import sqlite3
 import threading
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -20,6 +20,7 @@ from .types import (
     ConnectionProvider,
     EntryQuery,
     ReEncryptedEntry,
+    SearchRow,
     VerifyMode,
 )
 
@@ -173,6 +174,24 @@ _SELECT_ENTRY_ANALYSIS_SCAN_SQL = (
     "WHERE e.is_deleted = 0"
 )
 
+# ORDER BY 列映射（PERF-073）：字段名经硬编码字典映射到列表达式，不经任何字符串
+# 拼接消费调用方输入（EntryQuery 构造点已先校验白名单，构成双重防线）。
+_ORDER_BY_COLUMN_SQL: Mapping[str, str] = {
+    "updated_at": "e.updated_at",
+    "created_at": "e.created_at",
+    "password_strength": "e.password_strength",
+}
+
+# 搜索窄投影 SQL（PERF-074）：仅取匹配所需列 + 定位键（id/crypto_id），列别名与
+# SearchRow 字段名对齐。50k 库实测宽行（e.*）拉取 + 24 字段 RawEntry 构造 656ms，
+# 同条件本投影 102ms——搜索只需解密 4 个摘要密文字段做小写匹配，命中行按 id 回查
+# 完整行（LENIENT 验签），宽行物化纯属浪费。
+_SELECT_ENTRY_SEARCH_PROJECTION_SQL = (
+    "SELECT e.id, e.crypto_id, e.title_enc AS title, e.username_enc AS username, "
+    "e.url_enc AS url, e.tags_enc AS tags "
+    "FROM entries e"
+)
+
 # 标签聚合窄投影（PERF-020）：仅需 (crypto_id, tags_enc) 两列，不 JOIN 分类表。
 _SELECT_ENTRY_TAGS_PROJECTION_SQL = "SELECT crypto_id, tags_enc FROM entries WHERE is_deleted = 0"
 
@@ -266,21 +285,15 @@ class EntryRepository:
         """
         return _entry_column_values(entry, _UPDATE_ENTRY_COLUMNS)
 
-    def get_entries(self, query: EntryQuery) -> list[RawEntry]:
-        """获取密码条目列表，过滤/排序/limit/verify 经 ``EntryQuery`` 单一传入。
+    @staticmethod
+    def _entry_query_clauses(query: EntryQuery) -> tuple[str, list[Any]]:
+        """构造 EntryQuery 的 WHERE/ORDER BY/LIMIT 子句（不含 SELECT/FROM）。
 
-        ``query.sort_by_updated`` 为 True 时仅按 updated_at DESC 排序（不带
-        is_favorite），供「近期更新」视图下推 LIMIT 到 SQL，免全量内存排序再截断。
-
-        ``query.verify`` 完整性校验模式：默认 LENIENT（逐行 HMAC 验签并标记异常，
-        不抛异常），列表/搜索/标签等只读路径沿用默认以检测篡改；SKIP 仅用于签名
-        计算前的原始读取（不能先验签再算签名）；STRICT 单条详情用，失败抛异常。
+        get_entries 与 get_entries_search_projection（PERF-074）共用，过滤语义单一
+        事实源——两查询的行集差异仅在投影列，WHERE 漂移会使搜索与列表视图的条目
+        可见性分叉。返回 ``(子句 SQL（以 WHERE 1=1 起头），位置参数)``。
         """
-        # ARCH-005：本方法手写 with self._lock 而非挂 @_db_operation，跳过装饰器连接
-        # 校验，显式补齐使未连接时抛 DatabaseError 而非无诊断的 AttributeError。
-        if self._conn is None:
-            raise DatabaseError("数据库未连接")
-        sql = _SELECT_ENTRY_WITH_CATEGORY_SQL + " WHERE 1=1"
+        sql = " WHERE 1=1"
         params: list[Any] = []
 
         if query.deleted_only:
@@ -299,20 +312,71 @@ class EntryRepository:
             sql += " AND e.id > ?"
             params.append(query.after_id)
             sql += " ORDER BY e.id ASC"
-        elif query.sort_by_updated:
-            sql += " ORDER BY e.updated_at DESC"
+        elif query.order_by is not None:
+            # 字段序下推（PERF-073）：列表达式经 _ORDER_BY_COLUMN_SQL 硬编码映射，
+            # 方向经字面量二选一——query.order_by 已在 EntryQuery 构造点校验白名单。
+            column = _ORDER_BY_COLUMN_SQL[query.order_by]
+            sql += f" ORDER BY {column} {'DESC' if query.order_desc else 'ASC'}"
         else:
             sql += " ORDER BY e.is_favorite DESC, e.updated_at DESC"
 
         if query.limit is not None:
             sql += " LIMIT ?"
             params.append(query.limit)
+        return sql, params
+
+    def get_entries(self, query: EntryQuery) -> list[RawEntry]:
+        """获取密码条目列表，过滤/排序/limit/verify 经 ``EntryQuery`` 单一传入。
+
+        ``query.order_by`` 指定白名单明文字段（PERF-073）时按该列排序（方向由
+        ``order_desc`` 决定），供列表视图按用户所选排序下推 LIMIT 到 SQL；
+        ``None``（默认）走复合序（is_favorite DESC, updated_at DESC）。
+
+        ``query.verify`` 完整性校验模式：默认 LENIENT（逐行 HMAC 验签并标记异常，
+        不抛异常），列表/搜索/标签等只读路径沿用默认以检测篡改；SKIP 仅用于签名
+        计算前的原始读取（不能先验签再算签名）；STRICT 单条详情用，失败抛异常。
+        """
+        # ARCH-005：本方法手写 with self._lock 而非挂 @_db_operation，跳过装饰器连接
+        # 校验，显式补齐使未连接时抛 DatabaseError 而非无诊断的 AttributeError。
+        if self._conn is None:
+            raise DatabaseError("数据库未连接")
+        clauses, params = self._entry_query_clauses(query)
+        sql = _SELECT_ENTRY_WITH_CATEGORY_SQL + clauses
 
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         # fetchall 后 sqlite3.Row 已脱离游标；完整性验签与 dataclass 构建不再
         # 持有数据库锁，避免大库后台搜索长期阻塞其他短查询。
         return [self._row_to_entry(r, verify=query.verify) for r in rows]
+
+    def get_entries_search_projection(self, query: EntryQuery) -> list[SearchRow]:
+        """搜索路径的窄投影拉取（PERF-074）：仅匹配所需列 + 定位键，无验签。
+
+        行集与 :meth:`get_entries` 经 :meth:`_entry_query_clauses` 完全一致（单一
+        事实源）；``query.verify`` 对本方法无效——投影不含签名载荷列，完整性由调用
+        方对**命中行**经 :meth:`get_entries_by_ids`（LENIENT）回查完整行时验签，
+        未命中行不验签的取舍与 PERF-019 声明一致（篡改检测由无搜索词的全量列表
+        刷新覆盖）。
+        """
+        # ARCH-005：同 get_entries，手写持锁 + 显式连接校验。
+        if self._conn is None:
+            raise DatabaseError("数据库未连接")
+        clauses, params = self._entry_query_clauses(query)
+        sql = _SELECT_ENTRY_SEARCH_PROJECTION_SQL + clauses
+
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [
+            SearchRow(
+                id=row["id"],
+                crypto_id=row["crypto_id"],
+                title=row["title"],
+                username=row["username"],
+                url=row["url"],
+                tags=row["tags"],
+            )
+            for row in rows
+        ]
 
     @_db_operation
     def get_entry(self, entry_id: int) -> RawEntry | None:

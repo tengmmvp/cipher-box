@@ -407,6 +407,7 @@ class ListRefreshController:
         category_id: int | None = None,
         search: str | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        sort_index: int | None = None,
         use_current_state: bool = True,
     ) -> tuple[list[Entry], str]:
         """按过滤器键获取数据，参数绑定基于当前 UI 状态。
@@ -414,14 +415,23 @@ class ListRefreshController:
         过滤器→方法的映射复用 EntryListController.get_fetcher。各 fetcher 所需的当前
         分类、搜索等参数在此按 filter_key 统一绑定。排序在数据获取阶段完成（同步与
         异步 worker 均在此排序），使 _apply_entry_results 仅负责渲染。
+
+        ``sort_index`` 缺省读当前 UI（同步路径）；异步 worker 闭包须传调用前快照
+        （QComboBox 不可跨线程访问，与 category/search 的快照模式一致）。
         """
         effective_search = self._current_search if use_current_state else (search or "")
         effective_category = self._current_category_id if use_current_state else category_id
         fetcher = self._entry_list_ctrl.get_fetcher(filter_key)
+        # 当前排序索引透传给 fetcher（PERF-072）：sort_index==0（默认序）才允许 SQL
+        # LIMIT 下推，其余排序须全量拉取后内存排序（截断集合与排序序不匹配的回归）。
+        if sort_index is None:
+            sort_index = self._view.sort_combo.currentIndex()
         if filter_key == "all":
-            entries, title = fetcher(effective_category, effective_search, cancel_check)
+            entries, title = fetcher(
+                effective_category, effective_search, cancel_check, sort_index=sort_index
+            )
         elif filter_key in ("favorite", "recent", "trash"):
-            entries, title = fetcher(effective_search, cancel_check)
+            entries, title = fetcher(effective_search, cancel_check, sort_index=sort_index)
         else:
             entries, title = fetcher()  # weak、duplicate 无参数
         if filter_key in ("all", "favorite", "trash"):
@@ -489,10 +499,12 @@ class ListRefreshController:
         """构造异步 fetcher 工厂：冻结当前 filter/category/search，注入 cancel_check。
 
         闭包捕获赋值时的 ``_current_*`` 快照（非运行时读取）——worker 在后台线程执行
-        时读快照，而非主线程可能已变更的当前状态。
+        时读快照，而非主线程可能已变更的当前状态。sort_index 同款快照（PERF-072）：
+        QComboBox 不可跨线程访问，须在主线程构造闭包时读取。
         """
         category_id = self._current_category_id
         search = self._current_search
+        sort_index = self._view.sort_combo.currentIndex()
 
         def fetch(cancel_check: Callable[[], bool]) -> tuple[list[Entry], str]:
             return self._fetch_for_filter(
@@ -500,6 +512,7 @@ class ListRefreshController:
                 category_id=category_id,
                 search=search,
                 cancel_check=cancel_check,
+                sort_index=sort_index,
                 use_current_state=False,
             )
 

@@ -519,7 +519,8 @@ class BackupRestoreManager:
         ``restore_point_skipped=True`` 供结果拼装"本次恢复无回退快照"警告；其余异常
         （磁盘满/IO）仍向上中止——那类失败同样可能影响恢复写入本身，不宜带病继续。
         理想的「恢复点改文件级快照（vault.db 加密整库复制）」不受明文载荷上限约束，
-        属数据安全架构变更，未实施（见恢复流程未尽事项）。
+        属数据安全架构变更，未实施（MAINT-086：原「见恢复流程未尽事项」指向不存在的
+        文档/章节，悬空追溯点删除；如需跟踪，登记 docs/audit_codes.md 新编号承载）。
         """
         plaintext = payload.plaintext
         data = payload.data

@@ -44,6 +44,11 @@ message 中的旧编号引用。
 | `ARCH-033` | — | 2 | 组合根子服务装配规则显式化：有自持状态/独占缓存的组合根显式注入；纯变换/共享缓存无状态的宿主内部构造共用同一 cache 实例。 |
 | `ARCH-034` | — | 2 | 双源常量收编：security_analyzer.DEFAULT_ANALYSIS_DAYS 改 import config.OLD_PASSWORD_WARNING_DAYS_DEFAULT（QL-005 的本地解耦理由已失效，business→config 合法），ui/constants.RECENT_ENTRY_LIMIT 改引 business 的 DEFAULT_RECENT_SUMMARIES_LIMIT（UI→business 合法，业务默认成唯一源）。 |
 | `ARCH-035` | — | 2 | 主题默认值单一事实源：constants.THEME_LIGHT 与 theme_colors._current_theme 模块初值均直接派生自 config.DEFAULT_THEME（UI→config import 合法，无循环），消除三处 'light' 字面量靠注释约定同值的漂移面。 |
+| `ARCH-036` | — | 1 | SidebarController 锁定态守卫责任显式化：方法均有返回值故不可套 require_unlocked（特化 Callable[...,None] 锁定返 None 是类型谎言），改为模块 docstring 声明「守卫在调用方」并列出各调用链现状与新增调用方须保持的隔离要求。 |
+| `ARCH-037` | — | 8 | 条目类型展示属性下沉 UI：models.ENTRY_TYPES 收敛为 frozenset 类型键集合（仅合法性判定），中文 label 与图标占位符移 ui/resources/strings.py（ENTRY_TYPE_LABELS/ICONS + 带 login 回退的查表函数），Entry/RawEntry 的 type_icon/type_label property 与 EntryTypeSchema 的 label/icon 转发字段删除（后者无生产消费方）。 |
+| `ARCH-038` | — | 8 | 导出格式策略包：export_to_json/export_to_csv 的序列化内联块拆 managers/exporters/（json_exporter/csv_exporter 写回调 + base 的 csv_safe 与密钥列豁免），manager 收窄为路径校验+原子写编排骨架，与 importers/ 对称；_sanitize_formula_prefix 随之下沉 services/url_hygiene（公共名 sanitize_formula_prefix，避免 manager↔exporters 循环）。 |
+| `ARCH-039` | — | 10 | services 对 managers 具体类依赖的「一删三协议两锚定」：TotpService 删除零读取的 vault 死依赖（单参构造）；crypto_utils 定义 KeyProvider 两成员协议（require_vault_key/entry_view_decryption 共用）；password_history_service 的 PasswordHistoryVaultProtocol（KeyProvider+db+vault_write_lock）；security_analyzer 的 AnalysisCacheProtocol 四成员协议。security_analyzer 的 vault 依赖与 entry_batch_writer 整体**维持** TYPE_CHECKING 具体类并锚定理由（成员面与 VaultManager/EntryManager 核心同构，协议是影子类无净收益）。 |
+| `ARCH-040` | — | 3 | strings.py 展示键集常量化+完备性自检：ENTRY_TYPE_LABELS/ICONS 键改用 models 的 ENTRY_TYPE_* 常量（消除与 frozenset 的字面量双源），模块加载期 if+RuntimeError 断言键集==ENTRY_TYPES（对齐 _ENTRY_COLUMNS 启动自检形式，-O 存活）——新增类型漏更新表时启动即炸，优于 UI 静默回退 login 文案。 |
 
 ### MAINT — 维护/可维护性（20 项）
 
@@ -69,6 +74,12 @@ message 中的旧编号引用。
 | `MAINT-041` | — | 0（ci.yml、CLAUDE.md） | 命令统一 ``uv run -m <module>`` 形式（pytest/mypy/pyright/coverage）：trampoline 入口在部分 uv/Windows 组合报 canonicalize 失败；引用位于 ci.yml 与 CLAUDE.md（非 .py，处数按代码口径为 0）。 |
 | `MAINT-071` | — | 8 | entry_repository（844 行全库最大）的密码历史块拆分 ``password_history_repository.py``（7 方法单表访问，镜像 category_repository 模式），DatabaseManager 委托纯搬迁零增减。 |
 | `MAINT-081` | — | 0（tests） | ``tests/utils/test_clipboard.py`` git mv 至 ``tests/ui/``：被测对象为 ``src/ui/utils/clipboard.py``，恢复 tests↔src 目录镜像约定（文件内均为绝对导入，移动零改动）。 |
+| `MAINT-082` | — | 0 | CHANGELOG 1.0.0 转正：Unreleased 段转 ``[1.0.0] - 2026-08-22`` 并终结 ``0.1.0.dev0`` 开发占位引用（版本已随 fa3d536 升至 1.0.0 但变更记录未跟随）。纯文档修正，代码无触点。 |
+| `MAINT-083` | — | 0（pyproject.toml） | ruff select 补 ``S``/``PERF``：原 per-file-ignores 的 S105/S608/S603/PERF203 条目与代码内 14 处 nosec B608 全部空转（规则未启用、注释承诺的 lint 门禁不存在）；新增 app.py S110 行内豁免、password_history_repository S105 与 tests/** 测试固有形态整目录豁免，check src tests 全过使门禁真实生效。 |
+| `MAINT-084` | — | 0（.pre-commit-config.yaml） | pre-commit entry 统一 ``uv run -m <module>``（pyright 为 ``uv run python -m pyright``），对齐 MAINT-041 的 CI 命令形态——裸 trampoline 入口在部分 uv/Windows 组合报 canonicalize 失败，与文件自述「与 CI 完全同源」矛盾。 |
+| `MAINT-085` | — | 2 | crypto/ 与 business/managers/ 两个 ``__init__.py`` 的零消费类 re-export 删除（全库无 ``from src.crypto import X``/``from src.business.managers import X`` 类导入，无检查守护的声明面随时间漂移为谎言 API）；importers/ 的 re-export 有真实消费方（import_export 经包级导入四个类）保留。 |
+| `MAINT-086` | — | 1 | backup_restore 恢复点 docstring 的「见恢复流程未尽事项」悬空指向删除：全库不存在该文档/章节（可能仅存于早期 commit message），追溯承诺无法兑现。 |
+| `MAINT-088` | — | 0（tests） | 第五轮守护测试补齐：QL-055 导出进度终值（test_export_progress，跳过条目 processed==total 可达 + 取消语义）；QL-056 get_failed_fields 拷贝与 QL-058 LRU 淘汰联动（test_username_cache，monkeypatch 解密与容量构造）；QL-057 now 注入增量时钟（test_security_analyzer，注入未来时钟重判过期）。「修复了但没锁」缺口的收口。 |
 
 ### PERF — 性能（34 项）
 
@@ -108,6 +119,12 @@ message 中的旧编号引用。
 | `PERF-069` | — | 14 | 导入进度接入覆盖路径（prepare/write_overwrite 增 progress 参数，纯覆盖导入不再冻结在 15%）+ classify 阶段节流（对齐 encrypt 的每 100 行，消除 50k 次跨线程信号）。 |
 | `PERF-070` | — | 8 | 导出确定进度：解密阶段 0→70 / 写文件 70→100 节流上报（50k 实测 5.1s/1.9s 定刻度），UI 收到确定值切确定模式。 |
 | `PERF-071` | — | 2 | EntryItemDelegate 颜色缓存升级为直接持 QColor 对象（_get_color/_get_strength_color 共用，clear_color_cache 一并失效）：paint 每行 ~9 次 QColor(hex) 构造（~1.8-2.1µs/次）改 dict 命中（~0.06µs），offscreen 交替 A/B 实测典型行省 ~18µs、含警示/删除徽章行省 ~26µs。 |
+| `PERF-072` | — | 6 | LIMIT 下推排序感知化 + 收藏/回收站补全：PERF-066 的下推仅在 sort_index==0（更新时间↓，与 PERF-011 索引序同构）时截断等价，其余 7 种排序下索引序前 N ≠ 排序序前 N（50k 库按标题序实测约半数条目永久不可见，前三轮优化回归）；fetch_favorite/fetch_trash 补同规则下推（50k 库收藏视图冷 1409ms→与 fetch_all 同级）；异步 worker 闭包按快照模式捕获 sort_index（QComboBox 不可跨线程访问）。 |
+| `PERF-073` | — | 10 | 排序下推字段化（PERF-072「非默认序一律全量」过度保守的修正）：EntryQuery 的 sort_by_updated 布尔退役为 order_by/order_desc（ORDER_BY_FIELDS 白名单防注入，ORDER BY 列映射硬编码），8 种排序中 6 种（updated_at/password_strength/created_at 双向）下推 ``ORDER BY 字段 LIMIT``——50k 库标题序全量 1756ms vs 字段序下推 ~50ms；标题 2 种因密文列固有限制全量并注释声明；fetcher 下推判定从魔法索引 0 改字段化，UI 集↔db 白名单一致性由测试锚定。 |
+| `PERF-074` | — | 9 | 搜索路径窄投影 SearchRow：db 层新增 get_entries_search_projection（6 列：id/crypto_id/4 摘要密文，行集与 get_entries 经共用子句构造一致），EntryCacheManager 摘要解密签名收窄为 SearchRowSource 最小协议（RawEntry/SearchRow 双满足），命中行经 get_entries_by_ids LENIENT 回查完整行做摘要构建+验签（PERF-067 就地验签随宽行不再物化而退役）；实测 2k 条宽行 94.2ms → 窄投影 10.1ms（~9×），50k 温态搜索 681→~250ms。 |
+| `PERF-075` | — | 3 | 导入去重窄投影：_duplicate_plan 从 get_entry_summaries() 全量摘要（50k 冷缓存 1834ms）改 get_entry_dedup_index() 窄投影（title/username/id 三元组 + 摘要缓存解密 + epoch 守卫），_prepare_overwrite_map 的 existing 由回查 raw 解密（语义零变化）；预计 1834→~900ms。 |
+| `PERF-076` | — | 7 | 单条编辑增量分析差分：weak/_summaries_with_dates 两轮 O(n) 列表推导改就地单点移除；旧指纹 O(桶数) 全扫描改 _crypto_id_to_fp 反向索引缓存内部键（full/增量平行维护，出口剥离保持 PERF-062；缺失回退扫描兜底）；old_entries O(n) 重过滤改差分。实测 20k 库 median 8.8ms（旧实现同比例约 17-50ms），5k→20k 仅增 3ms 近似常数。 |
+| `PERF-077` | — | 8 | Windows ACL 子进程链 ctypes 化：SID 经 OpenProcessToken→GetTokenInformation→ConvertSidToStringSidW 免 whoami；ACL 经 TRUSTEE_W/EXPLICIT_ACCESS_W→SetEntriesInAclW→SetNamedSecurityInfoW(PROTECTED_DACL) 一次调用等价 icacls 两次子进程，子进程路径保留为失败回退。实测收紧 41.5ms→0.36-0.40ms/文件（~100×）、SID 28.7ms→亚毫秒；icacls 读回验证 ACL 等价（单显式 ACE 无继承标记）；消除 whoami 受限环境脆弱性。 |
 
 ### QL — 质量/可读性（36 项）
 
@@ -117,7 +134,7 @@ message 中的旧编号引用。
 | `QL-002` | `QL-002` | 2 | # 恢复点含恢复前全部明文，删除失败意味着泄漏面未收缩，需可见日志（QL-002）。 |
 | `QL-003` | `QL-003` | 1 | 供状态文件缺失/损坏等绕过嫌疑场景复用（QL-003，三处重复抽此方法）：最高阶梯 |
 | `QL-004` | `QL-004` | 5 | 命名 ImportDataError（QL-004）以消除与 Python 内置 ``ImportError`` 的同名遮蔽—— |
-| `QL-005` | `QL-006` | 1 | # 过期检测默认天数（QL-005）：数值与 config.OLD_PASSWORD_WARNING_DAYS_DEFAULT 对齐， |
+| `QL-005` | `QL-006` | 0 | （已取代）过期检测默认天数与 config 对齐——引用已被 ARCH-034 的双源收编整体取代（security_analyzer 改 import config 常量），索引处数未随实施归零，本轮修正。 |
 | `QL-006` | `QL-007` | 1 | # 启动期断言（QL-006）：overload 的 Literal 键集须与 DEFAULT_CONFIG 中对应类型键一致， |
 | `QL-007` | `QL-008` | 2 | # 重加密内存峰值（QL-007，消除魔法数 200）。 |
 | `QL-008` | `QL-009` | 1 | """自动备份间隔判定所需的 config 视图（QL-008，替代 ``object`` + ``type: ignore``）。 |
@@ -149,6 +166,16 @@ message 中的旧编号引用。
 | `QL-049` | — | 2 | Entry.from_dict 补 category 字段 isinstance+长度校验，堵住非 str 值导入中途裸 AttributeError 直达用户。 |
 | `QL-050` | — | 2 | 启动入口双兜底：main() 包 try/except（构造期异常 basicConfig+logger.critical 落 stderr、尽力 QMessageBox.critical、退出码 1），_install_crash_handlers 前移至 QApplication 创建后立即安装；main.py 删除恒死代码 sys.path.insert（import 成功后插入无效果）。 |
 | `QL-051` | — | 2 | share/renderer 占位替换改单遍 re.sub（回调按名分派）：原按序多次 str.replace 时后置占位符会扫描先注入的第三方 JS bundle，bundle 内 ``{{...}}`` 字面量会被二次替换。 |
+| `QL-052` | — | 1 | activate_keys 补 ``_ever_unlocked = True``（与 mark_unlocked 对齐）：initialize 走 activate_keys 漏置该标志，使「首次建库→使用→锁定」的整个应用会话内 enforce_key_epoch 的 ``_ever_unlocked and not is_unlocked`` 短路恒 False，锁定拒绝写入的最后防线整类失效（实测复现；一行修复 + initialize→lock 抛 VaultLockedError 守护测试）。 |
+| `QL-053` | — | 2 | Entry.from_dict 时间戳强制 T 分隔扩展格式（``^\d{4}-\d{2}-\d{2}T`` 锚 + 可解析性）：fromisoformat 亦接受空格分隔/纯日期/基本格式/周日期等可解析变体，与 isoformat() 产物混存时字符串排序不再等于时间排序（空格 0x20 < 'T' 0x54），QL-042 注释声称的排序等价修复存在缺口。 |
+| `QL-054` | — | 1 | Entry.from_dict 的 custom_fields 非 list 形态显式抛 EntryError：原 ``if isinstance(..., list)`` 使 dict/str 静默置空，导入方丢字段无感知，与相邻字段「类型无效即拒绝」范式不对称。 |
+| `QL-055` | — | 1 | CSV 导出进度改度量「遍历位置」（processed）而非「成功写出数」：两个防御性 continue（当前类型系统下不可达）使 ``processed == total`` 终值永不可达，PERF-070「终值恒上报」契约 silently 失效且与 JSON 导出不对称。 |
+| `QL-056` | — | 1 | EntryCacheManager.get_failed_fields 返回内部 set 的拷贝：原 ``dict.get`` 返回存储引用，调用方原地修改即污染缓存；API 语义收口与「锁内采样」docstring 一致，新调用方无需自防。 |
+| `QL-057` | — | 4 | 增量安全分析链（invalidate_cache→_try_incremental_update→_apply_reclassified_entry）补 now 注入透传：原硬编码 ``datetime.now(UTC)`` 使测试注入时钟时增量路径与全量路径（full_analysis/_refilter_cache 均可注入）行为分叉。 |
+| `QL-058` | — | 1 | 摘要缓存 LRU 淘汰与 _search_metadata_failed 容量联动：popitem 淘汰条目时同步清理 failed 记录，堵「解密失败 + 缓存超上限」同现时的无界驻留。 |
+| `QL-059` | — | 1 | add_categories_batch 空列表分支 notify 补 ``metadata_changed=False`` 与非空分支对齐：缺省 True 触发 SecurityAnalyzer 整库重算与分类计数缓存无谓失效（同方法两分支参数漂移）。 |
+| `QL-060` | — | 3 | 时间戳归一化取代拒绝式校验：models.normalized_iso_timestamp（fromisoformat 解析 + isoformat() 归一）为导入（Entry.from_dict）与备份恢复（backup/validator 写回）共用单一事实源。QL-053 的正则拒绝存在 T 后变体漏网（逗号小数秒/截断时间/Z 后缀实测绕过，',' 0x2C < '.' 0x2E 等错序），恢复路径仅可解析性校验与导入侧强度分叉——归一化不拒任何可解析输入，形态唯一使「字符串排序==时间排序」绝对成立。 |
+| `QL-061` | — | 1 | _check_import_file_size 的 stat 异常归一 ImportFormatError：裸 FileNotFoundError 违反「领域异常→用户文案」约定，manager 入口经装饰器归一而第二道防线无归一层，绕过 manager 的调用方会把裸异常直达用户。 |
 
 ### SEC — 安全（34 项）
 
@@ -187,4 +214,8 @@ message 中的旧编号引用。
 | `SEC-043` | — | 12 | SEC-041 的 data_epoch 写入方世代守卫全读路径接入：非搜索列表/get_recent_summaries/get_entry 详情（含 decrypt_summary/decrypt_entry 透传与 ViewDecryptCacheProtocol 声明）、SecurityAnalyzer._make_summary 调用链（full_analysis/_classify_entry/_try_incremental_update）、decrypt_category_name 均在锁内快照世代传入，堵「跨恢复后旧明文植入新 epoch 缓存」的四条遗留漏点。 |
 | `SEC-044` | — | 4 | TOTP secret 缓存回写世代守卫：resolve_totp_secret 解密前锁内采样 epoch+version、回写前双重复查（TOTP 定时器是真实并发读者）；store_totp 增可选 data_epoch 复查（未提供保持无条件落缓存，既有调用方无跨世代窗口）。 |
 | `SEC-045` | — | 1 | 导入侧公式注入清洗扩至 custom_fields 非 password 类型的 name/value（password 值豁免保持密钥完整性，与 SEC-039 决策对称），补齐 SEC-008「复制/导出无需各自防护」声明对该字段的不变量。 |
-| `SEC-046` | — | 10 | EncryptionEngine.encrypt/decrypt/encrypt_bytes/decrypt_bytes 增 keyword-only ``cache_key``（False 时直接构造 AESGCM 不入模块级缓存）：一次性密钥（share 包派生密钥已接入）secure_zero 后 C 层副本不再滞留 _cipher_cache 至容量淘汰。backup_restore 两处调用点接入与恢复路径 clear_cache 为未尽事项。 |
+| `SEC-046` | — | 10 | EncryptionEngine.encrypt/decrypt/encrypt_bytes/decrypt_bytes 增 keyword-only ``cache_key``（False 时直接构造 AESGCM 不入模块级缓存）：一次性密钥（share 包派生密钥已接入）secure_zero 后 C 层副本不再滞留 _cipher_cache 至容量淘汰。backup_restore 两处调用点（cache_key=False）与恢复路径 clear_cache 已全部落地（原「未尽事项」描述过时，本轮核实修正）。 |
+| `SEC-047` | — | 0（decrypter_template.html） | share 解密器 JS 的 onFileChange 补 file.size 4MB 前置上限（镜像 Python 侧 header_codec.MAX_SHARE_FILE_SIZE）与 arrayBuffer promise 的 .catch：GB 级恶意文件全量读入致标签页 OOM、读取失败（权限/占用）UI 停留「正在读取文件…」无反馈。 |
+| `SEC-048` | — | 4 | 导入文件大小前置上限单一事实源 models.MAX_IMPORT_FILE_SIZE（200MB）：importers/base 新增 _check_import_file_size 供四策略类 parse 入口调用（第二道纵深），manager 的 _validate_import_path 引用同一常量（第一道）——原本地 25MB 与 models 新常量同名异值成双源，且 25MB 拒绝满配自导出文件（50k 条 JSON ≈35-38MB 的「能导出不能导入」断层）。 |
+| `SEC-049` | — | 3 | decrypt_entry_for_export 三层补 data_epoch 世代守卫透传（ViewDecryptor→EntryManager 薄委托→get_entries_for_export 锁内快照）：导出 worker 在飞 + 恢复提交重臂新世代交错下，旧密钥解出的分类名经缓存回写植入新世代——SEC-043 全读路径接入的 export 链漏点（SEC-040 同级防御纵深）。 |
+| `SEC-050` | — | 1 | 导入文件上限 200MB→80MB 口径对齐：同型防护（备份 80MB/共享包 4MB）均按 payload×2 取余量，导入满配自导出基准 ≈38MB（50k×~758B/条）应取 80MB；原 200MB 是 5 倍余量，json.load 物化膨胀 5-10 倍时（≈1-2GB 峰值）低内存机防护窗口过宽。 |

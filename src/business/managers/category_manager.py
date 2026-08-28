@@ -226,11 +226,15 @@ class CategoryManager:
         new_ids: list[int] = []
         if not categories:
             if notify:
+                # 参数与非空分支对齐（QL-059）：metadata_changed=False 跳过安全缓存
+                # 失效——空列表无数据变更，缺省 True 会触发 SecurityAnalyzer 整库
+                # 重算与分类计数缓存无谓失效（同方法两分支参数漂移的典型）。
                 self._change_bus.notify(
                     password_changed=False,
                     tags_changed=False,
                     category_changed=True,
                     clear_summaries=False,
+                    metadata_changed=False,
                 )
             return new_ids
         with self._vault.db.transaction():

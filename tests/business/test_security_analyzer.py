@@ -369,3 +369,129 @@ class TestIncrementalUpdateEpochSnapshot:
         # 缓存仍属新 epoch 重填的世代，未被旧世代结果并入
         assert ctx.security._analysis_cache is not None
         assert ctx.security._analysis_cache["_key_epoch"] == "rotated-e2"
+
+
+class TestIncrementalFingerprintIndex:
+    """_crypto_id_to_fp 反向索引与指纹桶的一致性守护（PERF-076）。
+
+    索引是增量更新 O(1) 定位旧桶的依据，与 ``_fingerprint_map`` 平行维护
+    （full_analysis 构建 / 增量更新同步）。两者失同步会使增量路径定位错桶——
+    索引指向的桶不含该条目（误删/漏删桶成员）或桶内条目不在索引（回退扫描
+    兜底但 O(桶数) 退化）。本类锚定三条不变量在全量与增量路径后均成立。
+    """
+
+    @pytest.fixture
+    def ctx_vault(self, tmp_path):
+        """组装生产接线的 BusinessContext（change_bus → security 增量失效）。"""
+        from src.business.composition import build_business_context
+        from tests.helpers import make_test_config, make_vault
+
+        config = make_test_config(str(tmp_path))
+        vault = make_vault(config)
+        vault.initialize("TestFpIndex!20260828")
+        ctx = build_business_context(config, vault)
+        yield ctx, vault
+        vault.close()
+
+    @staticmethod
+    def _assert_index_consistent(ctx):
+        """三条不变量：索引键==桶成员集；索引值==成员所在桶；无指纹条目不入索引。"""
+        internal = ctx.security._analysis_cache
+        assert internal is not None
+        fp_map = internal["_fingerprint_map"]
+        index = internal["_crypto_id_to_fp"]
+        bucket_members = {e.crypto_id for group in fp_map.values() for e in group}
+        assert set(index) == bucket_members, "索引键集须与指纹桶全体成员一致"
+        for crypto_id, fingerprint in index.items():
+            group = fp_map[fingerprint]
+            assert any(e.crypto_id == crypto_id for e in group), (
+                f"索引 {crypto_id} 指向的桶不含该条目"
+            )
+
+    def test_index_consistent_after_full_and_incremental(self, ctx_vault):
+        """full_analysis 构建后一致；改密/改元数据两类增量更新后仍一致。"""
+        import dataclasses
+
+        ctx, _vault = ctx_vault
+        shared = "SharedPass!2026"
+        id_a = ctx.entry_mgr.add_entry(Entry(title="A", username="a", password=shared))
+        id_b = ctx.entry_mgr.add_entry(Entry(title="B", username="b", password=shared))
+        id_c = ctx.entry_mgr.add_entry(Entry(title="C", username="c", password="Pass0123!Unique"))
+        ctx.security.get_or_compute_report()
+        self._assert_index_consistent(ctx)
+
+        # 增量一：改标题（元数据编辑，指纹不变）
+        entry = ctx.entry_mgr.get_entry(id_c)
+        ctx.entry_mgr.update_entry(dataclasses.replace(entry, title="C2"))
+        self._assert_index_consistent(ctx)
+
+        # 增量二：改密码（指纹移动——C 并入 A/B 的重复桶）
+        entry = ctx.entry_mgr.get_entry(id_c)
+        ctx.entry_mgr.update_entry(dataclasses.replace(entry, password=shared))
+        self._assert_index_consistent(ctx)
+        internal = ctx.security._analysis_cache
+        assert internal is not None
+        raw_c = ctx.entry_mgr.db.get_entry(id_c)
+        assert raw_c is not None
+        # C 的新指纹 == A 的指纹（同密码同密钥）
+        fp_a = internal["_crypto_id_to_fp"][ctx.entry_mgr.db.get_entry(id_a).crypto_id]
+        assert internal["_crypto_id_to_fp"][raw_c.crypto_id] == fp_a
+        # 行为回归：三条同密码 → duplicate_count == 2
+        assert ctx.security.get_or_compute_report()["duplicate_count"] == 2
+
+        # 增量三：改为无密码（NOTE 语义——指纹移除，索引须同步清除）
+        entry = ctx.entry_mgr.get_entry(id_c)
+        ctx.entry_mgr.update_entry(dataclasses.replace(entry, password=""))
+        self._assert_index_consistent(ctx)
+        internal = ctx.security._analysis_cache
+        assert internal is not None
+        assert raw_c.crypto_id not in internal["_crypto_id_to_fp"]
+
+
+class TestIncrementalClockInjection:
+    """invalidate_cache 的 now 注入在增量路径真实生效（QL-057 守护）。
+
+    原缺陷：``_apply_reclassified_entry`` 硬编码 ``datetime.now(UTC)``，测试注入
+    时钟时增量路径与全量路径（full_analysis/_refilter_cache 均可注入）行为分叉，
+    now 参数形同虚设。守护：注入未来时钟的增量更新须按注入时刻重判过期。
+    """
+
+    @pytest.fixture
+    def ctx_vault(self, tmp_path):
+        """组装生产接线的 BusinessContext（同 TestIncrementalFingerprintIndex）。"""
+        from src.business.composition import build_business_context
+        from tests.helpers import make_test_config, make_vault
+
+        config = make_test_config(str(tmp_path))
+        vault = make_vault(config)
+        vault.initialize("TestClockInj!20260828")
+        ctx = build_business_context(config, vault)
+        yield ctx, vault
+        vault.close()
+
+    def test_injected_clock_drives_incremental_old_reclassification(self, ctx_vault):
+        """注入未来时钟的增量更新把未过期条目重判为过期。"""
+        from datetime import UTC, datetime, timedelta
+
+        ctx, _vault = ctx_vault
+        now = datetime.now(UTC)
+        # 密码 50 天前变更：days=90 下未过期
+        id_e = ctx.entry_mgr.add_entry(
+            Entry(
+                title="E",
+                username="e",
+                password="Pass0123!Unique",
+                password_changed_at=(now - timedelta(days=50)).isoformat(),
+            )
+        )
+        report = ctx.security.get_or_compute_report(days=90)
+        assert report["old"] == 0
+
+        raw_e = ctx.entry_mgr.db.get_entry(id_e)
+        assert raw_e is not None
+        # 注入 400 天后的时钟做增量更新：50+400=450 天前 > 90 天 → 应计入过期
+        future = now + timedelta(days=400)
+        ctx.security.invalidate_cache(crypto_id=raw_e.crypto_id, now=future)
+
+        followup = ctx.security.get_or_compute_report(days=90)
+        assert followup["old"] == 1, "注入时钟须被增量路径消费（硬编码 now 的回归）"

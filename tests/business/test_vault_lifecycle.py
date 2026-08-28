@@ -243,6 +243,20 @@ class TestKeyEpochRotation:
         db_epoch = fresh_vault.db.get_meta("key_epoch")
         assert db_epoch == epoch_after
 
+    def test_initialize_session_lock_rejects_writes(self, fresh_vault):
+        """首次建库会话锁定后写守卫仍生效（QL-052 守护）。
+
+        守护不变量：initialize 经 activate_keys 与 mark_unlocked 对齐置位
+        _ever_unlocked，故「首次建库→使用→锁定」的整个会话内（未重启、未经
+        unlock）enforce_key_epoch 走「已锁定拒绝写入」分支抛 VaultLockedError，
+        不会因漏置 _ever_unlocked 而使锁定写守卫整类失效。
+        """
+        fresh_vault.initialize(_MASTER_PASSWORD)
+        fresh_vault.lock()
+
+        with pytest.raises(VaultLockedError):
+            fresh_vault.enforce_key_epoch()
+
 
 class TestUnlockFailureNoHalfState:
     """解锁失败不留下半激活状态。"""

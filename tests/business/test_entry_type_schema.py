@@ -24,13 +24,17 @@ def test_schemas_cover_all_entry_types():
     assert set(ENTRY_TYPE_SCHEMAS) == set(ENTRY_TYPES)
 
 
-def test_schema_label_icon_derived_from_models():
-    """label/icon 从 models.ENTRY_TYPES 派生（单一事实源），不重复声明。"""
-    for type_id, meta in ENTRY_TYPES.items():
-        schema = ENTRY_TYPE_SCHEMAS[type_id]
-        assert schema.label == meta["label"]
-        assert schema.icon == meta["icon"]
-        assert schema.type_id == type_id
+def test_schema_has_no_display_fields():
+    """schema 不含展示字段（ARCH-037）：label/icon 已随展示语义下沉 UI 层。
+
+    守护注册表不回潮：业务层 schema 只描述字段集与行为钩子，展示文案单一
+    事实源在 ``ui/resources/strings.py``（本测试在 business 层，不 import UI 模块，
+    仅断言字段不存在）。
+    """
+    for schema in ENTRY_TYPE_SCHEMAS.values():
+        assert not hasattr(schema, "label")
+        assert not hasattr(schema, "icon")
+        assert schema.type_id in ENTRY_TYPES
 
 
 def test_get_schema_unknown_falls_back_to_login():

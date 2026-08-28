@@ -11,20 +11,36 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, TypedDict, Unpack
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict, Unpack
 
 if TYPE_CHECKING:
     # VaultDataStore（数据库协议切片）替代具体 DatabaseManager：本模块实际只用
     # transaction/get_categories/update_category（均在协议内），是 services 层与
     # 数据层解耦的统一协议视图（ARCH-031）。
     from ...database.types import VaultDataStore
-    from ..managers.vault_manager import VaultManager
 
 from ...crypto.encryption import EncryptionEngine
 from ...exceptions import DecryptionError, VaultLockedError
 from ...models import CustomField, Entry, RawEntry
 
 logger = logging.getLogger(__name__)
+
+
+class KeyProvider(Protocol):
+    """取密钥所需的最小保险库协议：解锁状态 + 主密钥（ARCH-039）。
+
+    ``VaultManager`` 自然满足此协议。crypto_utils（require_vault_key）与
+    entry_view_decryption / password_history_service 对 VaultManager 的依赖面
+    实际仅此两成员——经协议声明后 services 子包不再 TYPE_CHECKING 引用具体
+    manager 类，测试替身只需两属性即可满足（对齐 TotpCacheProtocol /
+    ViewDecryptCacheProtocol 的既有模式，ARCH-032）。
+    """
+
+    @property
+    def is_unlocked(self) -> bool: ...
+
+    @property
+    def key(self) -> bytes: ...
 
 
 class EntryOverrides(TypedDict, total=False):
@@ -81,7 +97,7 @@ STRING_ENCRYPTED_FIELDS: tuple[str, ...] = tuple(
 )
 
 
-def require_vault_key(vault_manager: VaultManager) -> bytes:
+def require_vault_key(vault_manager: KeyProvider) -> bytes:
     """获取保险库加密密钥，未解锁时抛出 VaultLockedError。
 
     vault.key 自身已 fail-fast 守卫（MAINT-007）；本函数保留 is_unlocked 前置检查
@@ -89,7 +105,8 @@ def require_vault_key(vault_manager: VaultManager) -> bytes:
     仍为 False，前置检查在此窄窗即抛，无需依赖 key 守卫的二次判定）。
 
     Args:
-        vault_manager: 保险库管理器，提供解锁状态与加密密钥。
+        vault_manager: 提供解锁状态与加密密钥的最小协议视图（:class:`KeyProvider`，
+            VaultManager 及测试替身均自然满足，ARCH-039）。
 
     Returns:
         当前有效的 32 字节 AES-256 主密钥。

@@ -1,4 +1,16 @@
-"""侧边栏控制器：分类管理的纯数据操作，不操作 UI 控件。"""
+"""侧边栏控制器：分类管理的纯数据操作，不操作 UI 控件。
+
+锁定态守卫责任在调用方（ARCH-036），本控制器不经 ``_locked_guard.require_unlocked``：
+该装饰器特化 ``Callable[..., None]``（锁定时静默返回 None），而本类方法均有返回值
+（list/dict/bool/tuple），套用会使锁定态拿到 None 破坏类型契约、比异常更难排查。
+现有调用方的守卫现状（新增调用方须保持同等隔离）：
+- ListRefreshController 的信号槽（on_category_changed 等）自带 ``@require_unlocked``；
+  refresh_* 系列仅在解锁后刷新/数据变更回调链上触发，锁定态不可达（prepare_for_lock
+  已清空分类/标签控件并阻断信号）；
+- EntryActionsController 的分类增删改均带 ``@require_unlocked``；
+- 设置→主题切换（rebuild_for_theme）入口在菜单栏，锁定态经主窗口禁用/隐藏隔离，
+  托盘菜单无设置入口。
+"""
 
 from __future__ import annotations
 

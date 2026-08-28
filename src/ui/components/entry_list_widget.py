@@ -11,9 +11,10 @@ from PyQt6.QtCore import QAbstractItemModel, QModelIndex, QObject, QRectF, QSize
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
 from PyQt6.QtWidgets import QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
-from ...models import ENTRY_TYPE_LOGIN, ENTRY_TYPES, Entry
+from ...models import Entry
 from ..resources.constants import FONT_FAMILY_FALLBACKS, FONT_FAMILY_PRIMARY
 from ..resources.radius import RADIUS_CARD, RADIUS_TINY
+from ..resources.strings import entry_type_icon
 from ..resources.theme_colors import c
 
 FAVORITE_MARKER = "★ "
@@ -222,8 +223,10 @@ class EntryItemDelegate(QStyledItemDelegate):
             )
             painter.setPen(get_color("text_primary"))
             painter.setFont(get_font(FONT_FAMILY_PRIMARY, 15))
-            type_info = ENTRY_TYPES.get(entry.entry_type, ENTRY_TYPES[ENTRY_TYPE_LOGIN])
-            painter.drawText(icon_rect, Qt.AlignmentFlag.AlignCenter, type_info["icon"])
+            # 类型图标占位符经 UI 展示查表（ARCH-037），login 回退由查表函数承载。
+            painter.drawText(
+                icon_rect, Qt.AlignmentFlag.AlignCenter, entry_type_icon(entry.entry_type)
+            )
 
             text_left = rect.left() + self.TEXT_LEFT_OFFSET
             right_reserved = (

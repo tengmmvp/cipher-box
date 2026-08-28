@@ -1,22 +1,25 @@
 # 本地质量门禁：ruff（lint + format）与 mypy，统一经 `uv run` 复用 uv.lock 锁定的
 # 工具版本，与 CI 完全同源（单一事实源 = uv.lock），从结构上消除版本/依赖双源漂移。
+# 命令形态统一 `uv run -m <module>`（MAINT-084，对齐 MAINT-041 的 CI 形态）：裸
+# `uv run <工具名>` 走 trampoline 入口，在部分 uv/Windows 组合报
+# `Failed to canonicalize script path`，与本文件自述「与 CI 完全同源」矛盾。
 # 启用：pip install pre-commit && pre-commit install
 repos:
   - repo: local
     hooks:
       - id: ruff-check
         name: ruff check
-        entry: uv run ruff check
+        entry: uv run -m ruff check
         language: system
         types_or: [python, pyi]
       - id: ruff-format
         name: ruff format
-        entry: uv run ruff format
+        entry: uv run -m ruff format
         language: system
         types_or: [python, pyi]
       - id: mypy
         name: mypy
-        entry: uv run mypy
+        entry: uv run -m mypy
         language: system
         # 仅在 src 变更时触发；pass_filenames:false 使 mypy 整包检查而非仅暂存文件，
         # 避免单文件检查因缺导入上下文误报。运行时依赖（PyQt6 等）由 uv 环境提供。
@@ -26,7 +29,7 @@ repos:
         args: [--config-file=pyproject.toml, src]
       - id: pyright
         name: pyright
-        entry: uv run pyright
+        entry: uv run python -m pyright
         language: system
         # 与 mypy 一致：仅 src 变更触发、整包检查。pyright 经 pyproject include=["src"]
         # 限定范围，tests 由 pytest 守护（Mock/Optional/私有访问模式与 pyright 严格模式摩擦）。

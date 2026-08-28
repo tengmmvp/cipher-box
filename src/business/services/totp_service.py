@@ -6,10 +6,7 @@ secret 解密与缓存复用缓存层（EntryCacheManager）的单一解密路�
 import managers，由 ``EntryCacheManager`` 实现协议在构造时注入，守住分层方向。
 """
 
-from typing import TYPE_CHECKING, Protocol, TypedDict
-
-if TYPE_CHECKING:
-    from ..managers.vault_manager import VaultManager
+from typing import Protocol, TypedDict
 
 from ...crypto.totp import TOTPGenerator
 
@@ -54,8 +51,10 @@ class TotpCacheProtocol(Protocol):
 class TotpService:
     """条目 TOTP 验证码生成与状态查询。"""
 
-    def __init__(self, vault: "VaultManager", cache: TotpCacheProtocol):
-        self._vault = vault
+    def __init__(self, cache: TotpCacheProtocol):
+        # 死依赖删除（ARCH-039「一删三协议」）：原 ``vault: VaultManager`` 参数在
+        # 本类全文件零读取（self._vault 仅赋值一次），为永不使用的字段服务的参数、
+        # TYPE_CHECKING import 与构造传参一并移除——依赖不该协议化，该删除。
         self._cache = cache
 
     def generate(self, entry_id: int) -> str | None:
