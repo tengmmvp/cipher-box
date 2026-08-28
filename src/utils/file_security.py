@@ -1,7 +1,8 @@
 """应用数据文件的最小权限控制 — 跨平台 ACL、原子写入、安全覆写删除与 DPAPI。
 
-Unix 经 ``chmod`` 0600/0700，Windows 经 ``icacls`` 收紧为当前用户独占（含 ACL 缓存
-与 SID 解析）；``atomic_write`` 经临时文件 + ``os.replace`` + 落地即 0600 实现原子写，
+Unix 经 ``chmod`` 0600/0700，Windows 经 ctypes 进程内直调（进程令牌取 SID +
+SetNamedSecurityInfoW，PERF-077）收紧为当前用户独占（icacls 子进程回退），含 ACL
+缓存与 SID 解析；``atomic_write`` 经临时文件 + ``os.replace`` + 落地即 0600 实现原子写，
 消除收紧前的世界可读窗口（SEC-015）；``secure_delete_file`` 覆写再 unlink 收缩取证还原面；
 ``validate_file_path`` 拒绝目录遍历与符号链接/reparse 重定向；DPAPI 封装敏感配置密钥。
 """

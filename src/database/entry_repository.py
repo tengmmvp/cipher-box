@@ -17,6 +17,7 @@ from ..models import RawEntry
 from ..utils.format import utc_now_iso
 from ._decorators import _db_operation, _db_write
 from .types import (
+    ORDER_BY_FIELDS,
     ConnectionProvider,
     EntryQuery,
     ReEncryptedEntry,
@@ -181,14 +182,26 @@ _ORDER_BY_COLUMN_SQL: Mapping[str, str] = {
     "created_at": "e.created_at",
     "password_strength": "e.password_strength",
 }
+# 键集与 ORDER_BY_FIELDS 白名单的启动期自检（PERF-073 双重防线的收口）：向白名单
+# 新增可排序字段而漏加映射时，构造点放行但本文件 ORDER BY 分支的字典取值抛裸
+# KeyError 直达用户操作路径——模块加载即炸优于运行期 KeyError（对齐 _ENTRY_COLUMNS
+# 自检模式，python -O 存活）。
+if set(_ORDER_BY_COLUMN_SQL) != ORDER_BY_FIELDS:
+    raise RuntimeError(
+        "_ORDER_BY_COLUMN_SQL 键集与 types.ORDER_BY_FIELDS 白名单漂移，"
+        "排序下推会在运行期抛 KeyError"
+    )
 
 # 搜索窄投影 SQL（PERF-074）：仅取匹配所需列 + 定位键（id/crypto_id），列别名与
 # SearchRow 字段名对齐。50k 库实测宽行（e.*）拉取 + 24 字段 RawEntry 构造 656ms，
 # 同条件本投影 102ms——搜索只需解密 4 个摘要密文字段做小写匹配，命中行按 id 回查
-# 完整行（LENIENT 验签），宽行物化纯属浪费。
+# 完整行（LENIENT 验签），宽行物化纯属浪费。password_strength/created_at/updated_at
+# 三个明文列（PERF-078）供 manager 的内存排序路径作排序键（title 序键在解密后的
+# meta.title_lower，来自缓存而非本投影）。
 _SELECT_ENTRY_SEARCH_PROJECTION_SQL = (
     "SELECT e.id, e.crypto_id, e.title_enc AS title, e.username_enc AS username, "
-    "e.url_enc AS url, e.tags_enc AS tags "
+    "e.url_enc AS url, e.tags_enc AS tags, e.password_strength, e.created_at, "
+    "e.updated_at "
     "FROM entries e"
 )
 
@@ -374,6 +387,9 @@ class EntryRepository:
                 username=row["username"],
                 url=row["url"],
                 tags=row["tags"],
+                password_strength=row["password_strength"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
             )
             for row in rows
         ]

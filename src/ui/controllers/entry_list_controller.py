@@ -23,13 +23,6 @@ if TYPE_CHECKING:
     from ...config import ConfigManager
     from ...models import Entry
 
-# 可 SQL 下推 LIMIT 的排序字段（PERF-073）：8 种排序选项中 6 种的排序键是明文列
-# （updated_at/created_at/password_strength），截断集合与排序序一致；title 为密文列
-# 无法 SQL ORDER BY（加密架构固有限制），标题序须全量拉取后内存排序。本集合与
-# db 层 types.ORDER_BY_FIELDS 保持一致（UI 不直接 import 数据层——分层方向
-# UI→Business），一致性由 tests/ui/test_controllers.py 的守护断言锚定。
-_SQL_PUSHDOWN_SORT_FIELDS = frozenset({"updated_at", "created_at", "password_strength"})
-
 
 class EntryListController:
     """条目列表的纯数据逻辑控制器，不持有任何 UI 控件引用。"""
@@ -93,30 +86,25 @@ class EntryListController:
     ) -> tuple[list[Entry], str]:
         """获取全部条目，可按分类和搜索过滤。
 
-        PERF-066/073：无搜索且排序字段可 SQL 表达时把渲染上限
-        （MAX_SEARCH_RESULTS_DISPLAY）连同 ``ORDER BY 字段 LIMIT`` 下推 SQL——UI
-        渲染本就截断到该上限（list_refresh_controller 的 ``_apply_entry_results``），
-        截断集合与用户所选排序序一致，却免去大库的全量拉取 + 逐行 HMAC 验签 +
-        Entry 构造（50k 温态实测 1.8-3s → ~50-70ms；8 种排序中 6 种可字段化——
-        updated_at 双向 / password_strength 双向 / created_at 双向）。
-
-        不下推的两种情形：标题序（title 为密文列无法 SQL ORDER BY，加密架构固有限制，
-        50k 全量内存排序实测 1756ms，深度优化需重构 UI 排序数据流，暂受）；搜索路径
-        （加密字段无法 SQL 过滤，先截断后过滤会致命中失真）。
+        PERF-066/073/078：统一传渲染上限（MAX_SEARCH_RESULTS_DISPLAY）与用户所选
+        排序，由 manager 分流——SQL 白名单字段 + 无搜索经 ``ORDER BY 字段 LIMIT``
+        下推（50k 温态实测 1.8-3s → ~50-70ms）；标题序（密文列不可 SQL 排序）与
+        搜索路径走「窄投影全量 → 内存 meta 排序 → 仅前 limit 回查宽行」（标题序
+        50k 实测 ~1750 → ~300ms，宽搜索词命中回查不再全量）。UI 渲染本就截断到
+        该上限（``_apply_entry_results``），三条路径的截断集合均=排序序前 N。
 
         已知取舍：标签过滤在 UI 侧后置施加（业务层 EntryQuery 无 tag 参数），截断后
         的标签子集可能漏掉索引序上限之外的命中——与渲染截断同级的损失面；库内总数
         语义由状态栏/侧边栏/空态的独立 COUNT 保持，不依赖本列表长度。
         """
         field, order = self.get_sort_config(sort_index)
-        pushdown = not search and field in _SQL_PUSHDOWN_SORT_FIELDS
         return self._entry_mgr.get_entry_summaries(
             category_id=category_id,
             search=search,
             cancel_check=cancel_check,
-            limit=MAX_SEARCH_RESULTS_DISPLAY if pushdown else None,
-            order_by=field if pushdown else None,
-            order_desc=(order == "desc") if pushdown else True,
+            limit=MAX_SEARCH_RESULTS_DISPLAY,
+            order_by=field,
+            order_desc=(order == "desc"),
         ), "全部条目"
 
     def fetch_favorite(
@@ -128,20 +116,19 @@ class EntryListController:
     ) -> tuple[list[Entry], str]:
         """获取收藏条目，可按搜索过滤。
 
-        无搜索且排序字段可 SQL 表达时下推 ``ORDER BY 字段 LIMIT``（PERF-072/073，
-        对齐 fetch_all 模式）：50k 库（22.5k 收藏）冷 1409ms → 与 fetch_all 同级。
-        标题序/搜索路径不下推（理由同 fetch_all）。
+        统一传 limit+order_by 由 manager 分流（PERF-078，对齐 fetch_all）：50k 库
+        （22.5k 收藏）冷 1409ms → 与 fetch_all 同级；标题序/搜索路径同样走内存
+        meta 排序 + 前 N 回查。
         """
         field, order = self.get_sort_config(sort_index)
-        pushdown = not search and field in _SQL_PUSHDOWN_SORT_FIELDS
         return (
             self._entry_mgr.get_entry_summaries(
                 favorite_only=True,
                 search=search,
                 cancel_check=cancel_check,
-                limit=MAX_SEARCH_RESULTS_DISPLAY if pushdown else None,
-                order_by=field if pushdown else None,
-                order_desc=(order == "desc") if pushdown else True,
+                limit=MAX_SEARCH_RESULTS_DISPLAY,
+                order_by=field,
+                order_desc=(order == "desc"),
             ),
             "收藏",
         )
@@ -203,21 +190,20 @@ class EntryListController:
     ) -> tuple[list[Entry], str]:
         """获取回收站条目（已软删除），可按搜索过滤。
 
-        无搜索且排序字段可 SQL 表达时下推 ``ORDER BY 字段 LIMIT``（PERF-072/073，
-        对齐 fetch_all/fetch_favorite）。与 fetch_all 同为**近似**等价：回收站条目
-        保留 is_favorite（软删除不清收藏），复合序下收藏优先的取舍面与 fetch_all
-        一致；字段序下推后截断严格按所选排序，无此取舍。标题序/搜索路径不下推。
+        统一传 limit+order_by 由 manager 分流（PERF-078，对齐 fetch_all/
+        fetch_favorite）。与 fetch_all 同为**近似**等价：回收站条目保留
+        is_favorite（软删除不清收藏），复合序下收藏优先的取舍面与 fetch_all
+        一致；字段序下推后截断严格按所选排序，无此取舍。
         """
         field, order = self.get_sort_config(sort_index)
-        pushdown = not search and field in _SQL_PUSHDOWN_SORT_FIELDS
         return (
             self._entry_mgr.get_entry_summaries(
                 deleted_only=True,
                 search=search,
                 cancel_check=cancel_check,
-                limit=MAX_SEARCH_RESULTS_DISPLAY if pushdown else None,
-                order_by=field if pushdown else None,
-                order_desc=(order == "desc") if pushdown else True,
+                limit=MAX_SEARCH_RESULTS_DISPLAY,
+                order_by=field,
+                order_desc=(order == "desc"),
             ),
             "回收站",
         )

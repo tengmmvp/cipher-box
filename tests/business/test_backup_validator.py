@@ -483,3 +483,45 @@ class TestEncryptedFieldsSingleSource:
         from src.business.services.backup.validator import REQUIRED_ENTRY_KEYS
 
         assert set(STRING_ENCRYPTED_FIELDS) <= REQUIRED_ENTRY_KEYS
+
+
+class TestTimestampNormalizationWriteback:
+    """恢复路径时间戳归一化的原地写回守护（QL-060）。
+
+    恢复经 RawEntry 直构回写**不经 Entry.from_dict**，归一化唯一入口是
+    validate_entry_fields 的写回（item[key] = normalized_iso_timestamp(val)）。
+    若写回静默丢失（如改回仅校验不写），手改备份的空格分隔/Z 后缀等变体会
+    以非标形态入库，破坏「字符串排序==时间排序」——本类锁定写回行为本身。
+    """
+
+    @pytest.mark.parametrize(
+        "variant,normalized",
+        [
+            ("2024-01-02 03:04:05", "2024-01-02T03:04:05"),  # 空格分隔
+            ("2024-01-02T03:04:05Z", "2024-01-02T03:04:05+00:00"),  # Z 后缀
+            ("2024-01-02T03:04", "2024-01-02T03:04:00"),  # 截断时间
+        ],
+    )
+    def test_variant_timestamps_normalized_in_place(self, variant, normalized):
+        """可解析变体经校验后被原地写回为归一形态（与导入侧 from_dict 对称）。"""
+        entry = _valid_entry()
+        entry["created_at"] = variant
+        entry["updated_at"] = variant
+        validate_entry_fields(entry, {1})
+        assert entry["created_at"] == normalized
+        assert entry["updated_at"] == normalized
+
+    def test_standard_form_unchanged_and_empty_kept(self):
+        """已是标准形态的值写回后不变（幂等）；空值保持空串。"""
+        entry = _valid_entry()
+        entry["deleted_at"] = ""
+        validate_entry_fields(entry, {1})
+        assert entry["created_at"] == "2024-01-01T00:00:00"
+        assert entry["deleted_at"] == ""
+
+    def test_unparseable_still_rejected(self):
+        """归一化不放宽拒绝：不可解析时间戳仍抛 BackupError 整条拒绝。"""
+        entry = _valid_entry()
+        entry["created_at"] = "not-a-date"
+        with pytest.raises(BackupError, match="日期格式无效"):
+            validate_entry_fields(entry, {1})

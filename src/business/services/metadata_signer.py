@@ -266,28 +266,7 @@ class MetadataSigner:
         return MetadataSigner._canonical_json_bytes(data)
 
 
-def verify_raw(raw: RawEntry, domain_key: bytes | bytearray) -> bool:
-    """对已物化的 :class:`RawEntry` 做纯函数 HMAC 验签（PERF-067）。
-
-    提取自 ``entry_repository._row_to_entry`` 的 ``entry_verifier`` 钩子实现逻辑
-    （期望 MAC 计算 + ``compare_digest`` 比对），供搜索补验签对已物化的命中行就地
-    验签，替代经 ``get_entries_by_ids`` 的二次 SQL 读库（命中行的 RawEntry 本已在
-    内存，二次全表读实测 5000 ids 234.6ms、50k 1.3-2s，且第二份物化多驻留一份
-    宽行）。比对语义与 db 层 LENIENT 路径一致——空签名（缺失）与比对失败统一由
-    调用方置 ``integrity_error`` 标志，不区分文案（同 ``_row_to_entry`` 的 LENIENT
-    分支归一为「元数据完整性校验失败」）。
-
-    Args:
-        raw: 已物化的密文态条目（含 metadata_mac 与验签所需全部载荷字段）。
-        domain_key: 元数据域密钥，须与 ``raw`` 同世代——由调用方用
-            ``epoch_guarded_read`` 锁内快照的主密钥经
-            :meth:`MetadataSigner.compute_domain_key` 派生（与 PERF-001 快照解密
-            同纪律），保证 raw/密钥/域密钥三者同 epoch，比对结果不自洽漂移。
-
-    Returns:
-        签名缺失或比对失败返回 False，验签通过返回 True。
-    """
-    if not raw.metadata_mac:
-        return False
-    expected = hmac.new(domain_key, MetadataSigner._payload(raw), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(raw.metadata_mac, expected)
+# verify_raw（对已物化 RawEntry 的纯函数 HMAC 验签）已随 PERF-074 架构退役删除：
+# 搜索命中行现经 get_entries_by_ids 回查完整行，db 层 _row_to_entry 的 LENIENT
+# 验签在回查中即完成，就地验签失去全部消费方（原 PERF-067「省二次读库」前提
+# 不复存在——回查本身是摘要构建的必要步骤）。

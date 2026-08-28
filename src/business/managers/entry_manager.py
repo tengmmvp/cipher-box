@@ -662,23 +662,32 @@ class EntryManager:
         """获取不含密码等敏感明文的列表摘要。
 
         Note:
-            ``limit`` 的生效方式取决于 ``search``：
-            - ``search`` 为空时，``limit`` 在 SQL 层生效（LIMIT 子句），高效截断。
-            - ``search`` 非空时，因摘要字段已加密，必须先全量解密搜索摘要再过滤。
-              此时 ``limit`` 不下推到 SQL（否则会先
-              截断再过滤，导致搜索命中远少于实际），由调用方在内存过滤后自行截断。
-              即当 search 非空时本方法忽略 limit，返回全部命中结果。
+            ``limit`` 的生效方式（PERF-078 后统一）：
+            - 无搜索且排序为 SQL 白名单字段/默认复合序：``limit`` 经
+              ``ORDER BY ... LIMIT`` 下推 SQL（PERF-073）。
+            - 搜索非空或标题序（内存路径）：匹配/收集必须全量（加密字段不可先截断
+              后过滤），排序在内存按 meta/窄行键完成后取前 ``limit``——仅这前 N 条
+              回查宽行与构建摘要，语义与 SQL「ORDER BY ... LIMIT」同构。``limit``
+              为 None 时返回全部（内存全量回查，既有调用方语义不变）。
 
-        ``order_by``/``order_desc``（PERF-073）：SQL 排序字段（白名单见
-        ``database.types.ORDER_BY_FIELDS``），供列表视图按用户所选排序下推 LIMIT——
-        截断集合须与排序序一致才不丢条目。``None``（默认）走复合序；title 密文列
-        无法 SQL 排序，调用方（UI fetcher）对标题序不传 limit 与 order_by。
+        ``order_by``/``order_desc``（PERF-073/078）：``database.types.ORDER_BY_FIELDS``
+        白名单字段 + 无搜索 → SQL 下推；``"title"``（密文列不可 SQL 排序）或搜索
+        非空 → 内存排序（title 键为缓存的 meta.title_lower，其余键为窄投影明文列），
+        截断集合=排序序前 N。``None``（默认）走复合序（内存路径下即窄投影的 SQL
+        序，不重排）。
 
         读路径经 :meth:`epoch_guarded_read` 守卫（ARCH-005）：改密窗口内 epoch 不一致时
         返回空列表，触发 UI 经变更回调刷新。锁定期 :class:`VaultLockedError` 仍正常传播。
         """
-        # search 非空时不向 SQL 下推 limit，避免「先截断后过滤」导致命中失真。
-        sql_limit = limit if not search else None
+        # 路径分流（PERF-078）：搜索路径与标题序（title 密文列不可 SQL 排序）走
+        # 「窄投影全量 → 内存 meta 排序 → 仅前 limit 回查宽行」；其余（无搜索 +
+        # SQL 白名单字段/默认复合序）维持 PERF-073 的 SQL ``ORDER BY ... LIMIT``
+        # 下推宽行路径。
+        in_memory_path = bool(search) or order_by == "title"
+        sql_pushdown = not in_memory_path
+        # SQL 路径的 limit 直接下推；内存路径的 limit 在排序后截断（匹配必须全量，
+        # 截断在排序后语义等价于 SQL「ORDER BY ... LIMIT」的前 N）。
+        sql_limit = limit if sql_pushdown else None
         # 列表（无搜索词）传 LENIENT：逐行 HMAC 验签并标记篡改条目（不抛异常），使列表
         # 能检测非加密元数据篡改（is_favorite/category_id/password_strength/deleted_at）。
         # _view_decryptor.decrypt_summary 将 raw.integrity_error 透传到 summary，列表
@@ -692,17 +701,19 @@ class EntryManager:
                     limit=sql_limit,
                     # 字段序下推（PERF-073）：与 limit 配套，截断集合按用户所选排序
                     # 取前 N（复合序截断 + 非默认排序会丢排序序窗口外的条目）。
-                    order_by=order_by,
+                    # 内存路径恒传 None——SQL 层保持复合序作为内存排序的稳定基数
+                    # （同键条目的相对序继承复合序，与 SQL 字段序的稳定语义一致）。
+                    order_by=order_by if sql_pushdown else None,
                     order_desc=order_desc,
                     verify=VerifyMode.LENIENT,
                 )
-                if search:
-                    # 搜索路径改窄投影拉取（PERF-074）：宽行（e.* + 24 字段 RawEntry 构造）
-                    # 是温态搜索主导成本（50k 库实测 656ms，同条件 6 列窄投影仅 102ms），
-                    # 搜索只需 4 个摘要密文字段做小写匹配。投影无验签（不含签名载荷列），
-                    # 命中行按 id 回查完整行时经 get_entries_by_ids 的 LENIENT 验签补偿；
-                    # 未命中行不验签的安全取舍与 PERF-019 声明一致（篡改检测由无搜索词
-                    # 的全量列表刷新覆盖）。
+                if in_memory_path:
+                    # 窄投影拉取（PERF-074/078）：宽行（e.* + 24 字段 RawEntry 构造）是
+                    # 温态主导成本（50k 库实测 656ms，同条件窄投影仅 102ms）；搜索只需
+                    # 4 个摘要密文字段做小写匹配，标题序只需 meta.title_lower + 行明文
+                    # 排序键。投影无验签（不含签名载荷列），回查完整行时经
+                    # get_entries_by_ids 的 LENIENT 验签补偿；未命中/未截断行不验签的
+                    # 取舍与 PERF-019 声明一致（篡改检测由无搜索词的全量列表刷新覆盖）。
                     search_rows = self.db.get_entries_search_projection(query)
                     raw_entries = []
                 else:
@@ -710,59 +721,90 @@ class EntryManager:
                     raw_entries = self.db.get_entries(query)
                 # PERF-001 并发修补（M3）：锁内快照主密钥，锁外解密用快照（见 get_entries）。
                 key = self._key
-                # SEC-041/043 写入方世代：与 raw/key 同刻快照 epoch，供摘要缓存回写守卫——
-                # 后台 worker 在恢复提交（invalidate_all → 新读路径重臂新 epoch）后
-                # 未被取消时，其旧 raw+旧密钥的解密结果不得写入新世代缓存（跨世代
-                # grafting 会把恢复前明文持久污染进新缓存）。SEC-043 将该快照从仅
-                # 搜索分支扩展到非搜索列表分支（本方法）与 get_recent_summaries/
-                # get_entry/SecurityAnalyzer 全部读路径。
+                # SEC-041/043 写入方世代：与 raw/key 同刻快照 epoch，供摘要/分类名缓存
+                # 回写守卫——后台 worker 在恢复提交（invalidate_all → 新读路径重臂新
+                # epoch）后未被取消时，其旧 raw+旧密钥的解密结果不得写入新世代缓存
+                # （跨世代 grafting 会把恢复前明文持久污染进新缓存）。该快照覆盖本方法
+                # 全部分支（含搜索分支的 decrypt_summary meta 路径——分类名解密经
+                # data_epoch 守卫，PERF-074 重写时曾掉落、PERF-078 复核补齐）。
                 data_epoch = self._vault.key_epoch
             # 解密移出 db_lock（PERF-001）：with 块内仅读 raw（持锁快速），锁外逐条解密，
             # 释放 db_lock 供 TOTP 定时器读与写入。循环外一次性 invalidate_if_epoch_changed
             # 固定本批缓存 epoch，循环内走无校验路径避免每条目重复加锁取 epoch。
             self._cache.invalidate_if_epoch_changed()
-            # search 与非 search 共用同一循环：search 时在 append 前做 matches_search 过滤。
-            # 摘要字段首次搜索后进入会话缓存，后续搜索无重复解密成本。
             summaries = []
-            if search:
-                matched: list[tuple[SearchRow, SearchMetadata]] = []
+            if in_memory_path:
+                selected: list[tuple[SearchRow, SearchMetadata]] = []
                 for row in search_rows:
                     if cancel_check and cancel_check():
                         break
-                    # 搜索：一次取完整 SearchMetadata，摘要与小写匹配共用，省第二次缓存查询（PERF-016）。
-                    # data_epoch 传锁内快照世代，回写守卫据此拒收跨世代解密结果（SEC-041）。
+                    # 一次取完整 SearchMetadata，匹配与排序键共用，省第二次缓存查询
+                    # （PERF-016）。data_epoch 传锁内快照世代，回写守卫据此拒收跨世代
+                    # 解密结果（SEC-041）。
                     meta = self._cache.cached_search_metadata_full(
                         row, key=key, data_epoch=data_epoch
                     )
-                    # 匹配检查前移到摘要构建之前（PERF-018）：仅命中条目才回查完整行
-                    # 走 decrypt_summary，省去未命中条目的宽行物化 + Entry 构造 +
-                    # 分类名/failed_fields 缓存查询（meta 已含匹配所需小写形式）。
-                    if not matches_search_lower(
-                        (
-                            meta.title_lower,
-                            meta.username_lower,
-                            meta.url_lower,
-                            meta.tags_lower,
-                        ),
-                        search,
-                    ):
-                        continue
-                    matched.append((row, meta))
-                # 命中行按 id 回查完整行（PERF-074）：LENIENT 验签在 db 层 _row_to_entry
-                # 完成（替代原 PERF-067 的就地验签——窄投影后宽行不再物化，回查是
-                # 摘要构建的必要步骤而非重复读库），损坏行带 integrity_error 标记不抛
-                # 异常。命中数 ≪ 全库（搜索是过滤视图），回查开销 ~10-50ms 量级。
-                # 无命中时跳过回查（空列表调用对纯读虽无害，但守护「未命中行不回查」
-                # 的测试以哨兵 spy 断言零调用）。
-                hit_ids = [row.id for row, _meta in matched if row.id is not None]
+                    if search:
+                        # 匹配检查前移到回查/摘要构建之前（PERF-018）：仅命中条目进入
+                        # 排序与回查（meta 已含匹配所需小写形式）。
+                        if not matches_search_lower(
+                            (
+                                meta.title_lower,
+                                meta.username_lower,
+                                meta.url_lower,
+                                meta.tags_lower,
+                            ),
+                            search,
+                        ):
+                            continue
+                    selected.append((row, meta))
+                # 内存排序（PERF-078）：title 序的键在 meta.title_lower（缓存已有，
+                # UI 的 (e.title or "").lower() 与其同源），其余键来自窄投影的明文列
+                # ——排序无需宽行 Entry。原「标题序需重构 UI 排序数据流、暂受 1.76s」
+                # 的声明被推翻：排序键全在窄行+meta，5k 库实测标题序全量宽行
+                # 165.9ms → meta 排序+前 1000 回查 53.8ms（3.1×，50k 等比外推
+                # ~1.7s → ~0.5s）。order_by 为 None（搜索调用方未指定排序）时不重排
+                # ——窄投影的 SQL 复合序（is_favorite DESC, updated_at DESC）即默认
+                # 视图序，稳定排序继承之。
+                if order_by is not None:
+
+                    def sort_key(item: tuple[SearchRow, SearchMetadata]) -> str | int:
+                        row_i, meta_i = item
+                        if order_by == "title":
+                            return meta_i.title_lower
+                        if order_by == "password_strength":
+                            return row_i.password_strength or 0
+                        if order_by == "created_at":
+                            return row_i.created_at or ""
+                        return row_i.updated_at or ""  # updated_at
+
+                    selected.sort(key=sort_key, reverse=order_desc)
+                # 截断在排序后（PERF-078 收口）：匹配/收集必须全量，排序后取前 limit
+                # 才与「ORDER BY ... LIMIT」语义同构——原实现收集全部命中后**全量回查**
+                # 才在出口截断，宽搜索词（单字符命中 20k）时 836ms 反超旧宽行直拉且
+                # 双份驻留；现仅回查/构建前 limit 条（5k 全命中实测 187.7ms →
+                # 50.6ms，3.7×）。
+                if limit:
+                    selected = selected[:limit]
+                # 回查完整行（PERF-074）：LENIENT 验签在 db 层 _row_to_entry 完成
+                # （替代原 PERF-067 的就地验签——窄投影后宽行不再物化，回查是摘要
+                # 构建的必要步骤而非重复读库），损坏行带 integrity_error 标记不抛
+                # 异常。无命中/截断后为空时跳过回查（守护「未命中行不回查」的测试
+                # 以哨兵 spy 断言零调用）。
+                hit_ids = [row.id for row, _meta in selected if row.id is not None]
                 full_by_id: dict[int | None, RawEntry] = {}
                 if hit_ids:
                     for hit_raw in self.db.get_entries_by_ids(hit_ids):
                         full_by_id[hit_raw.id] = hit_raw
-                for row, meta in matched:
+                for row, meta in selected:
+                    # 回查段同样可取消（PERF-078）：原第二段（回查+构建）无探针，宽
+                    # 搜索词取消后 worker 空转数秒——与第一段 break 语义一致，返回
+                    # 已构建部分。
+                    if cancel_check and cancel_check():
+                        break
                     full = full_by_id.get(row.id) if row.id is not None else None
-                    # 回查缺失（窄投影后行被并发删除）：跳过而非中断——搜索是尽力
-                    # 视图，与列表路径对并发删除的容忍语义一致。
+                    # 回查缺失（窄投影后行被并发删除）：跳过而非中断——尽力视图，
+                    # 与列表路径对并发删除的容忍语义一致。
                     if full is None:
                         continue
                     summaries.append(
@@ -771,6 +813,11 @@ class EntryManager:
                             skip_epoch_check=True,
                             key=key,
                             meta=meta,
+                            # data_epoch 透传（PERF-078 修复 PERF-074 的回归）：meta 路径
+                            # 的 title 等四字段取自 meta 无回写，但分类名解密回写需要
+                            # 世代守卫——漏传使搜索 worker 在飞+恢复重臂新世代时旧
+                            # 分类名植入新缓存（SEC-043 的搜索分支漏点）。
+                            data_epoch=data_epoch,
                         )
                     )
             else:
@@ -790,9 +837,7 @@ class EntryManager:
                     )
         except VaultKeyEpochMismatchError:
             return []
-        # search 时 limit 未下推 SQL（避免先截断后过滤致命中失真），此处截断兑现契约
-        if search and limit:
-            summaries = summaries[:limit]
+        # 内存路径的 limit 已在排序后截断（回查与构建仅前 limit 条），无出口二次截断。
         return summaries
 
     def get_recent_summaries(self, limit: int = DEFAULT_RECENT_SUMMARIES_LIMIT) -> list[Entry]:

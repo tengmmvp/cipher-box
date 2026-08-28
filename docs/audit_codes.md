@@ -46,7 +46,7 @@ message 中的旧编号引用。
 | `ARCH-035` | — | 2 | 主题默认值单一事实源：constants.THEME_LIGHT 与 theme_colors._current_theme 模块初值均直接派生自 config.DEFAULT_THEME（UI→config import 合法，无循环），消除三处 'light' 字面量靠注释约定同值的漂移面。 |
 | `ARCH-036` | — | 1 | SidebarController 锁定态守卫责任显式化：方法均有返回值故不可套 require_unlocked（特化 Callable[...,None] 锁定返 None 是类型谎言），改为模块 docstring 声明「守卫在调用方」并列出各调用链现状与新增调用方须保持的隔离要求。 |
 | `ARCH-037` | — | 8 | 条目类型展示属性下沉 UI：models.ENTRY_TYPES 收敛为 frozenset 类型键集合（仅合法性判定），中文 label 与图标占位符移 ui/resources/strings.py（ENTRY_TYPE_LABELS/ICONS + 带 login 回退的查表函数），Entry/RawEntry 的 type_icon/type_label property 与 EntryTypeSchema 的 label/icon 转发字段删除（后者无生产消费方）。 |
-| `ARCH-038` | — | 8 | 导出格式策略包：export_to_json/export_to_csv 的序列化内联块拆 managers/exporters/（json_exporter/csv_exporter 写回调 + base 的 csv_safe 与密钥列豁免），manager 收窄为路径校验+原子写编排骨架，与 importers/ 对称；_sanitize_formula_prefix 随之下沉 services/url_hygiene（公共名 sanitize_formula_prefix，避免 manager↔exporters 循环）。 |
+| `ARCH-038` | — | 8 | 导出格式策略包：export_to_json/export_to_csv 的序列化内联块拆 managers/exporters/（json_exporter/csv_exporter 写回调 + base 的 csv_safe 与密钥列豁免），manager 收窄为路径校验+原子写编排骨架，与 importers/ 对称；_sanitize_formula_prefix 随之下沉 services/url_hygiene（公共名 sanitize_formula_prefix，避免 manager↔exporters 循环）。与 importers 的差异为显式取舍：exporters 无策略协议/注册表——导出为用户显式选格式直调对应方法，无 dispatch 场景，2 格式下强行对称为过度抽象；格式≥3 或需按扩展名 dispatch 时再引入 FormatExporter 协议。 |
 | `ARCH-039` | — | 10 | services 对 managers 具体类依赖的「一删三协议两锚定」：TotpService 删除零读取的 vault 死依赖（单参构造）；crypto_utils 定义 KeyProvider 两成员协议（require_vault_key/entry_view_decryption 共用）；password_history_service 的 PasswordHistoryVaultProtocol（KeyProvider+db+vault_write_lock）；security_analyzer 的 AnalysisCacheProtocol 四成员协议。security_analyzer 的 vault 依赖与 entry_batch_writer 整体**维持** TYPE_CHECKING 具体类并锚定理由（成员面与 VaultManager/EntryManager 核心同构，协议是影子类无净收益）。 |
 | `ARCH-040` | — | 3 | strings.py 展示键集常量化+完备性自检：ENTRY_TYPE_LABELS/ICONS 键改用 models 的 ENTRY_TYPE_* 常量（消除与 frozenset 的字面量双源），模块加载期 if+RuntimeError 断言键集==ENTRY_TYPES（对齐 _ENTRY_COLUMNS 启动自检形式，-O 存活）——新增类型漏更新表时启动即炸，优于 UI 静默回退 login 文案。 |
 
@@ -114,7 +114,7 @@ message 中的旧编号引用。
 | `PERF-064` | — | 4 | 分类条目计数会话缓存（CategoryManager 持有，epoch 守卫 + change_bus 结构性变更自订阅 + 条目改分类显式失效；50k 库省 24.6ms/次的 UI 线程 GROUP BY）。 |
 | `PERF-065` | — | 10 | 导入进度回调覆盖全阶段加权刻度（parse 5%/sanitize 10%/classify 15%/encrypt 70%/write 100%，每 100 行节流），替代只覆盖 7% 时长的先冲满后冻结。 |
 | `PERF-066` | — | 1 | 无搜索全列表刷新 LIMIT 下推：EntryListController.fetch_all 把 MAX_SEARCH_RESULTS_DISPLAY 经 EntryQuery 下推 SQL LIMIT（UI 渲染本就截断、同一 PERF-011 复合索引序，行为等价），50k 温态全量拉取+逐行验签+Entry 构造 1.8-3s → ~60-70ms；搜索路径不下推（先截断后过滤致命中失真）。 |
-| `PERF-067` | — | 2 | 搜索补验签改内存就地验签：metadata_signer 暴露纯函数 verify_raw（提取 db 层 entry_verifier 钩子的 HMAC 计算与比对），_reverify_search_matches 对已物化命中行就地验签（域密钥由锁内快照主密钥派生），删除经 get_entries_by_ids 的二次 SQL 全表读（实测 5000 ids 234.6ms、50k 1.3-2s，另驻留一份 208MB 宽行）。 |
+| `PERF-067` | — | 2 | 搜索补验签改内存就地验签：metadata_signer 暴露纯函数 verify_raw（提取 db 层 entry_verifier 钩子的 HMAC 计算与比对），_reverify_search_matches 对已物化命中行就地验签（域密钥由锁内快照主密钥派生），删除经 get_entries_by_ids 的二次 SQL 全表读（实测 5000 ids 234.6ms、50k 1.3-2s，另驻留一份 208MB 宽行）。（第六轮注：verify_raw 与 _reverify_search_matches 已随 PERF-074 架构退役删除——搜索命中行现经 get_entries_by_ids 回查完整行，db 层 LENIENT 验签在回查中即完成，就地验签的「省二次读库」前提不复存在。） |
 | `PERF-068` | — | 10 | 备份载荷估算改明文长度 + JSON 模板字节数运行期校准（消除密文估算 1.65 倍虚高）；上限 32→40MB/64→80MB 与 50k 条目上限联动（50k 空库 ≈17MB、典型画像 ≈38MB < 40MB）。 |
 | `PERF-069` | — | 14 | 导入进度接入覆盖路径（prepare/write_overwrite 增 progress 参数，纯覆盖导入不再冻结在 15%）+ classify 阶段节流（对齐 encrypt 的每 100 行，消除 50k 次跨线程信号）。 |
 | `PERF-070` | — | 8 | 导出确定进度：解密阶段 0→70 / 写文件 70→100 节流上报（50k 实测 5.1s/1.9s 定刻度），UI 收到确定值切确定模式。 |
@@ -125,6 +125,7 @@ message 中的旧编号引用。
 | `PERF-075` | — | 3 | 导入去重窄投影：_duplicate_plan 从 get_entry_summaries() 全量摘要（50k 冷缓存 1834ms）改 get_entry_dedup_index() 窄投影（title/username/id 三元组 + 摘要缓存解密 + epoch 守卫），_prepare_overwrite_map 的 existing 由回查 raw 解密（语义零变化）；预计 1834→~900ms。 |
 | `PERF-076` | — | 7 | 单条编辑增量分析差分：weak/_summaries_with_dates 两轮 O(n) 列表推导改就地单点移除；旧指纹 O(桶数) 全扫描改 _crypto_id_to_fp 反向索引缓存内部键（full/增量平行维护，出口剥离保持 PERF-062；缺失回退扫描兜底）；old_entries O(n) 重过滤改差分。实测 20k 库 median 8.8ms（旧实现同比例约 17-50ms），5k→20k 仅增 3ms 近似常数。 |
 | `PERF-077` | — | 8 | Windows ACL 子进程链 ctypes 化：SID 经 OpenProcessToken→GetTokenInformation→ConvertSidToStringSidW 免 whoami；ACL 经 TRUSTEE_W/EXPLICIT_ACCESS_W→SetEntriesInAclW→SetNamedSecurityInfoW(PROTECTED_DACL) 一次调用等价 icacls 两次子进程，子进程路径保留为失败回退。实测收紧 41.5ms→0.36-0.40ms/文件（~100×）、SID 28.7ms→亚毫秒；icacls 读回验证 ACL 等价（单显式 ACE 无继承标记）；消除 whoami 受限环境脆弱性。 |
+| `PERF-078` | — | 11 | 排序/搜索统一「内存 meta 排序 + 仅前 N 回查宽行」路径（推翻 PERF-073「标题序固有限制」声明）：SearchRow 补 password_strength/created_at/updated_at 明文列（内存排序键完备），get_entry_summaries 的 order_by 扩展 "title" 语义（密文列不可 SQL 排序但 meta.title_lower 可内存排序），三 fetcher 统一透传 limit+排序由 manager 分流（fetcher 层路径判断退役）；搜索命中行按排序键取前 limit 回查（全量命中回查悬崖 187.7→50.6ms@5k，3.7×）。实测标题序 165.9→53.8ms@5k（3.1×，50k 等比 ~1750→~500ms）。附带修复：搜索分支 decrypt_summary 补 data_epoch（PERF-074 重写时掉落的 SEC-043 守卫回归）、回查段补 cancel_check。 |
 
 ### QL — 质量/可读性（36 项）
 

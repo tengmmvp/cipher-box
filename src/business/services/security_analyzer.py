@@ -550,7 +550,9 @@ class SecurityAnalyzer:
         （出口经 _refilter_cache 浅拷贝隔离，PERF-062），不会外泄。指纹桶的局部
         copy-on-write（PERF-062）保持：仅重建「旧指纹桶」与「新指纹桶」，其余桶
         原样共享；``_crypto_id_to_fp`` 反向索引同步维护（O(1) 定位旧桶，索引缺失
-        时回退逐桶扫描兜底）。
+        时回退逐桶扫描兜底）。索引的会话驻留量级：50k 库 ≈7.5MB（dict + str 键 +
+        bytes 值），随 ``_fingerprint_map`` 平行驻留至 TTL 失效/缓存清空，换取
+        增量路径 O(1) 定位，量级可接受。
 
         old 差分的正确性依赖 old_entries 与 _summaries_with_dates 此前一致
         （full_analysis 构建 / _refilter_cache 的 days 重过滤 / 本方法的同步维护

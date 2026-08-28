@@ -267,3 +267,120 @@ class TestSearchPathReverify:
         # 全部 1005 条命中且全部经验签带警示（旧实现仅前 1000 条带警示）
         assert len(results) == 1005
         assert all(r.integrity_error is True for r in results)
+
+
+class TestInMemorySortPath:
+    """内存 meta 排序 + 前 N 回查路径（PERF-078 守护）。
+
+    标题序（密文列不可 SQL 排序）与搜索路径统一走「窄投影全量 → 内存排序
+    （title 键在 meta.title_lower，其余键在窄投影明文列）→ 仅前 limit 回查宽行」；
+    PERF-074 重写时掉落的搜索分支 data_epoch 透传（SEC-043 漏点）与第二段
+    cancel_check 亦在此锚定。
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup_vault(self, vault_config):
+        self._vault = make_vault(vault_config)
+        self._vault.initialize("test_password_12345")
+        self._entry_mgr = make_entry_manager(self._vault)
+        # 标题字母序与插入序刻意不同，检验排序真实生效
+        for title in ("zebra", "alpha", "middle"):
+            self._entry_mgr.add_entry(
+                Entry(title=title, username="u", password="pass1", entry_type="login")
+            )
+        yield
+        self._vault.close()
+
+    def test_title_order_sorts_by_meta_and_truncates(self):
+        """无搜索标题序：按 meta.title_lower 排序后截断，与全量路径排序等价。"""
+        results = self._entry_mgr.get_entry_summaries(order_by="title", order_desc=False, limit=2)
+        assert [r.title for r in results] == ["alpha", "middle"]
+
+        desc = self._entry_mgr.get_entry_summaries(order_by="title", order_desc=True, limit=2)
+        assert [r.title for r in desc] == ["zebra", "middle"]
+
+        # 无 limit 全量：完整字母序（旧行为锁定——内存路径 limit 为 None 时全量回查）
+        full = self._entry_mgr.get_entry_summaries(order_by="title", order_desc=False)
+        assert [r.title for r in full] == ["alpha", "middle", "zebra"]
+
+    def test_title_order_matches_legacy_full_path(self):
+        """标题序新路径与「全量拉取 + UI sort_entries」结果等价（PERF-078 核心声明）。
+
+        UI 的排序键 (e.title or "").lower() 与 manager 的 meta.title_lower 同源
+        （同一解密缓存），两路径对同一数据的前 N 集合与顺序一致。
+        """
+        from unittest.mock import MagicMock
+
+        from src.ui.controllers.entry_list_controller import EntryListController
+
+        legacy_full = self._entry_mgr.get_entry_summaries()
+        legacy_sorted = EntryListController(
+            MagicMock(), MagicMock(), MagicMock()
+        ).sort_entries(
+            list(legacy_full),
+            3,  # sort_index 3 = 标题 Z→A
+        )[:2]
+
+        new_path = self._entry_mgr.get_entry_summaries(order_by="title", order_desc=True, limit=2)
+        assert [r.id for r in new_path] == [r.id for r in legacy_sorted]
+
+    def test_search_with_limit_rereads_only_top_n(self):
+        """搜索 + limit：回查收口到前 limit 条（PERF-078 悬崖修复）。
+
+        原实现收集全部命中后**全量回查**才出口截断——宽搜索词（命中 20k）时
+        836ms 反超旧宽行直拉。现排序后仅回查前 limit；spy 断言回查 id 数 == limit。
+        """
+        reread_ids: list[list[int]] = []
+        original = self._vault.db.get_entries_by_ids
+
+        def _spy_reread(entry_ids):
+            reread_ids.append(list(entry_ids))
+            return original(entry_ids)
+
+        self._vault.db.get_entries_by_ids = _spy_reread  # type: ignore[method-assign]
+        results = self._entry_mgr.get_entry_summaries(search="a", limit=1)
+        # "a" 命中全部 3 条标题，limit=1 仅回查/返回排序序第 1 条
+        assert len(results) == 1
+        assert len(reread_ids) == 1
+        assert len(reread_ids[0]) == 1
+
+    def test_reread_missing_row_skipped(self):
+        """回查缺失（并发删除）跳过不抛异常（PERF-074 容忍语义锁定）。"""
+        self._vault.db.get_entries_by_ids = lambda _ids: []  # type: ignore[method-assign]
+        results = self._entry_mgr.get_entry_summaries(search="a")
+        assert results == []  # 全部回查缺失 → 尽力视图返回空，不抛异常
+
+    def test_cancel_in_reread_phase_returns_partial(self):
+        """回查构建段可取消（PERF-078）：取消后返回已构建部分，不抛异常。"""
+        # 第 1 次调用（解密 meta 段）放行，第 2 次（回查构建段首条）取消
+        calls = {"n": 0}
+
+        def _cancel_after_first_phase() -> bool:
+            calls["n"] += 1
+            return calls["n"] > 3  # 3 条解密放行后，第 4 次起取消（回查段循环头）
+
+        results = self._entry_mgr.get_entry_summaries(
+            search="a", cancel_check=_cancel_after_first_phase
+        )
+        # 取消时机在第 4 次探针（回查段第一条之前或之中）——部分或空结果，绝不抛异常
+        assert isinstance(results, list)
+
+    def test_search_passes_data_epoch_to_summary(self):
+        """搜索分支 decrypt_summary 透传锁内快照世代（PERF-078 修复 PERF-074 回归）。
+
+        PERF-074 重写搜索链时 data_epoch 从 decrypt_summary 调用中掉落——meta 路径
+        的 title 等四字段取自 meta 无回写，但分类名解密回写需要世代守卫（SEC-043
+        的搜索分支漏点）。锚定：搜索路径与非搜索路径同样传 data_epoch 且值等于
+        vault.key_epoch。
+        """
+        received: list[str | None] = []
+        original = self._entry_mgr._view_decryptor.decrypt_summary
+
+        def _spy_summary(raw, **kwargs):
+            received.append(kwargs.get("data_epoch"))
+            return original(raw, **kwargs)
+
+        self._entry_mgr._view_decryptor.decrypt_summary = _spy_summary  # type: ignore[method-assign]
+        self._entry_mgr.get_entry_summaries(search="a")
+        assert received, "搜索路径应调用 decrypt_summary"
+        assert all(epoch == self._vault.key_epoch for epoch in received)

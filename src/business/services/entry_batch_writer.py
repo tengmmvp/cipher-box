@@ -26,6 +26,12 @@ from ...utils.format import utc_now_iso
 from .entry_validation import validate_plain_entry
 
 if TYPE_CHECKING:
+    # 对 EntryManager 维持 TYPE_CHECKING 具体类（ARCH-039 显式决策）：本模块对其
+    # 依赖面 8 成员横跨加密原语/db/totp/epoch（build_encrypted_entry/
+    # db.add_entries_batch/totp.evict/prepare_password_update/resolve_password_
+    # changed_at/key_epoch/db.update_overwrite_batch/db.add_password_history_batch），
+    # 协议化只会产出 EntryManager 的「影子类」——核心编排 API 抄一遍再让唯一实现
+    # 满足，无测试替身或第二实现的净收益。
     from ..managers.entry_manager import EntryManager
 
 # 进度上报节流间隔（PERF-065）：每 100 行上报一次，避免 50k 行导入产生 50k 次跨

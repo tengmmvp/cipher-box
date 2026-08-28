@@ -29,10 +29,11 @@ logger = logging.getLogger(__name__)
 class KeyProvider(Protocol):
     """取密钥所需的最小保险库协议：解锁状态 + 主密钥（ARCH-039）。
 
-    ``VaultManager`` 自然满足此协议。crypto_utils（require_vault_key）与
-    entry_view_decryption / password_history_service 对 VaultManager 的依赖面
-    实际仅此两成员——经协议声明后 services 子包不再 TYPE_CHECKING 引用具体
-    manager 类，测试替身只需两属性即可满足（对齐 TotpCacheProtocol /
+    ``VaultManager`` 自然满足此协议。require_vault_key（crypto_utils）与
+    entry_view_decryption 对保险库的依赖面仅此两成员；password_history_service
+    以本协议为基扩展出 4 成员协议（另加 db 与 vault_write_lock，见
+    PasswordHistoryVaultProtocol）——经协议声明后 services 子包不再 TYPE_CHECKING
+    引用具体 manager 类，测试替身只需协议成员即可满足（对齐 TotpCacheProtocol /
     ViewDecryptCacheProtocol 的既有模式，ARCH-032）。
     """
 

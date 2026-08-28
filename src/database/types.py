@@ -62,7 +62,10 @@ class EntryQuery:
     # DESC）；指定白名单字段时 ORDER BY 仅按该列（供列表视图按用户所选排序下推
     # LIMIT 到 SQL，替代原 sort_by_updated 布尔的单一表达——50k 库标题序全量拉取
     # 实测 1756ms vs 字段序下推 ~50ms，8 种排序中 6 种可字段化，title 为密文
-    # 无法 SQL 排序属加密架构固有限制）。
+    # 无法 SQL 排序属加密架构固有限制）。类型层保留 str（调用方 fetch 层持动态
+    # 排序字段名，Literal 化会在该处产生类型错误），值集约束由 __post_init__ 的
+    # ORDER_BY_FIELDS 白名单运行期把关；新增可排序字段须同时更新 ORDER_BY_FIELDS
+    # 与 entry_repository._ORDER_BY_COLUMN_SQL（后者的键集断言守护联动）。
     order_by: str | None = None
     order_desc: bool = True
     verify: VerifyMode = VerifyMode.LENIENT
@@ -276,14 +279,19 @@ class VaultDataStore(EntryStore, CategoryStore, VaultDataConnection, Protocol):
 
 
 class SearchRow(NamedTuple):
-    """搜索路径的窄投影行（PERF-074）：仅携带匹配所需的密文字段与定位键。
+    """搜索/内存排序路径的窄投影行（PERF-074/078）：匹配所需密文字段 + 排序键 + 定位键。
 
     搜索只需解密 title/username/url/tags 四摘要字段做小写匹配（宽行 24 字段构造
     是温态搜索的主导成本，50k 库实测占 656ms 拉取中的大头，同条件窄投影仅
     102ms）；命中行按 ``id`` 经 :meth:`EntryStore.get_entries_by_ids`（LENIENT
     验签）回查完整行构建摘要。字段名与 :class:`RawEntry` 的密文属性同名
     （title/username/url/tags 存密文），使 EntryCacheManager 的摘要解密入口可经
-    结构协议同时接受 RawEntry 与本类型（见 entry_cache.SearchRowProtocol）。
+    结构协议同时接受 RawEntry 与本类型（见 entry_cache.SearchRowSource）。
+
+    ``password_strength``/``created_at``/``updated_at`` 三个明文列（PERF-078）：
+    内存排序路径的排序键——title 序的键在解密后的 meta.title_lower，其余排序
+    键来自行的明文列，使「全量窄投影 → 内存排序 → 仅前 limit 回查宽行」的
+    截断与 SQL ``ORDER BY ... LIMIT`` 语义同构（截断集合=排序序前 N）。
     """
 
     id: int | None
@@ -292,6 +300,9 @@ class SearchRow(NamedTuple):
     username: str  # 密文
     url: str  # 密文
     tags: str  # 密文
+    password_strength: int
+    created_at: str
+    updated_at: str
 
 
 class ReEncryptedEntry(NamedTuple):
