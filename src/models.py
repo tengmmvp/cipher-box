@@ -65,6 +65,13 @@ MAX_PASSWORD_HISTORY = 10
 MAX_ENTRIES_LIMIT = 50_000
 MAX_ENTRY_PAYLOAD_SIZE = 2 * 1024 * 1024
 
+# 「近期更新」视图默认拉取的条目数，供 EntryManager.get_recent_summaries 的默认
+# limit 与 UI 的 RECENT_ENTRY_LIMIT 共用（ARCH-041）：原定义于
+# business/managers/entry_manager 且被 ui/resources/constants 模块级 import——任何
+# 叶子 UI 模块 import constants 都会传递拉起整个业务栈。移入共享层后两侧各自引用，
+# 单一事实源不变而依赖链解耦（business→models / UI→models 均为合法方向）。
+DEFAULT_RECENT_SUMMARIES_LIMIT = 20
+
 # 导入文件大小前置上限（SEC-048/050）：各 importer 的 parse 在 json.load / list(reader)
 # 全量物化**之前**经 stat 前置拒绝，与备份/共享包的同款前置模式对齐——条目数与
 # 逐项大小校验（_validate_items）在物化之后才生效，挡不住大文件物化瞬间的内存
@@ -303,8 +310,14 @@ def _entry_has_totp(totp_present: bool, totp_secret: str) -> bool:
     return totp_present or bool(totp_secret)
 
 
-def _parse_tag_list(tags: str) -> list[str]:
-    """逗号分隔的 tags 字符串解析为去空白、去空的标签列表。"""
+def parse_tag_list(tags: str) -> list[str]:
+    """逗号分隔的 tags 字符串解析为去空白、去空的标签列表。
+
+    公开单一事实源（QL-065）：Entry/RawEntry 的 ``get_tag_list`` 与
+    EntryCacheManager 的标签计数（差分与全量聚合两口径）共用本解析——此前
+    ``[t.strip() for t in tags.split(",") if t.strip()]`` 在三处各持一份手抄，
+    任一份漂移（如改分隔符/空白口径）即差分计数与全量重算分歧。
+    """
     if not tags:
         return []
     return [t.strip() for t in tags.split(",") if t.strip()]
@@ -359,7 +372,7 @@ class Entry:
     # 运行时字段
     integrity_error: bool = False
     integrity_message: str = ""
-    # password_present / totp_present 由 crypto_utils.copy_entry_fields 设置，
+    # password_present / totp_present 由 entry_view_decryption.copy_entry_fields 设置，
     # 标记原始数据库条目中该字段是否包含非空密文。解密后若值为空则
     # 表示"已加密但内容为空字符串"，而非"从未存储过"。
     password_present: bool = False
@@ -395,7 +408,7 @@ class Entry:
 
     def get_tag_list(self) -> list[str]:
         """获取标签列表。"""
-        return _parse_tag_list(self.tags)
+        return parse_tag_list(self.tags)
 
     def to_dict(self, include_password: bool = False) -> dict[str, Any]:
         """转换为字典，供导出流程使用。
@@ -596,7 +609,7 @@ class RawEntry:
 
     def get_tag_list(self) -> list[str]:
         """获取标签列表。"""
-        return _parse_tag_list(self.tags)
+        return parse_tag_list(self.tags)
 
 
 # 运行时守护：RawEntry（DB 密文态）与 Entry（明文态）字段名集合必须一致

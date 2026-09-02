@@ -1,6 +1,5 @@
 """UI 层共享常量 — 按钮尺寸、动画时长、显示限制等。"""
 
-from ...business.managers.entry_manager import DEFAULT_RECENT_SUMMARIES_LIMIT
 from ...config import (
     CFG_CLIPBOARD_CLEAR_SECONDS,
     CFG_DEFAULT_PASSWORD_LENGTH,
@@ -8,6 +7,7 @@ from ...config import (
     DEFAULT_CONFIG,
     DEFAULT_THEME,
 )
+from ...models import DEFAULT_RECENT_SUMMARIES_LIMIT
 
 # 密码可见秒数等默认值从 config.DEFAULT_CONFIG 派生为单一事实源，避免双源漂移；
 # 其余为本模块独有 UI 常量。
@@ -51,9 +51,9 @@ MS_INITIAL_BACKUP_DELAY = 1500  # 启动后首次备份检查延迟
 MAX_HISTORY_DISPLAY = 5  # 详情面板最多显示密码历史条数
 MAX_TAG_DISPLAY = 5  # 详情面板最多显示标签数
 MAX_TAG_AUTOCOMPLETE = 20  # 标签自动补全最大数量
-# 「近期更新」筛选最多显示条目数（ARCH-034）：引用业务层
-# get_recent_summaries 的默认 limit 作单一事实源（UI→business 合法），原本地同值
-# 20 双源声明在业务侧调整时会静默漂移，使 UI 截断与 SQL LIMIT 失配。
+# 「近期更新」筛选最多显示条目数（ARCH-034/041）：引用业务层 get_recent_summaries
+# 的默认 limit 作单一事实源（现居共享层 models，UI→models 合法且不再传递拉起业务栈），
+# 原本地同值 20 双源声明在业务侧调整时会静默漂移，使 UI 截断与 SQL LIMIT 失配。
 RECENT_ENTRY_LIMIT = DEFAULT_RECENT_SUMMARIES_LIMIT
 MAX_SEARCH_RESULTS_DISPLAY = 1000  # 搜索结果渲染上限：超大库下避免一次性渲染过多条目卡死 UI
 ASYNC_SEARCH_THRESHOLD = 50  # 超过该条目数时列表/搜索移入后台线程

@@ -15,8 +15,10 @@ teardown ``v.close()`` 释放 Windows 文件锁；fixture teardown 比逐测试 
 
 import dataclasses
 
+from src.business.managers.entry_manager import EntryManager
 from src.crypto.password_generator import PasswordGenerator
 from src.models import CIPHERTEXT_PREFIX, CustomField
+from tests.helpers import decrypt_all_entries
 
 
 class TestAddEntry:
@@ -241,9 +243,9 @@ class TestDeleteRestorePermanent:
         entry_id = entry_mgr.add_entry(make_entry(title="A"))
         assert entry_mgr.delete_entry(entry_id) is True
 
-        active = [e.id for e in entry_mgr.get_entries()]
+        active = [e.id for e in decrypt_all_entries(entry_mgr)]
         assert entry_id not in active
-        trash = [e.id for e in entry_mgr.get_entries(deleted_only=True)]
+        trash = [e.id for e in decrypt_all_entries(entry_mgr, deleted_only=True)]
         assert entry_id in trash
 
     def test_restore_returns_entry_to_active(self, entry_mgr, make_entry):
@@ -252,9 +254,9 @@ class TestDeleteRestorePermanent:
         entry_mgr.delete_entry(entry_id)
         assert entry_mgr.restore_entry(entry_id) is True
 
-        active = [e.id for e in entry_mgr.get_entries()]
+        active = [e.id for e in decrypt_all_entries(entry_mgr)]
         assert entry_id in active
-        trash = [e.id for e in entry_mgr.get_entries(deleted_only=True)]
+        trash = [e.id for e in decrypt_all_entries(entry_mgr, deleted_only=True)]
         assert entry_id not in trash
 
     def test_restore_preserves_decrypted_fields(self, entry_mgr, make_entry):
@@ -283,8 +285,8 @@ class TestDeleteRestorePermanent:
         entry_mgr.permanent_delete_entry(entry_id)
 
         assert entry_mgr.get_entry(entry_id) is None
-        assert entry_id not in [e.id for e in entry_mgr.get_entries()]
-        assert entry_id not in [e.id for e in entry_mgr.get_entries(deleted_only=True)]
+        assert entry_id not in [e.id for e in decrypt_all_entries(entry_mgr)]
+        assert entry_id not in [e.id for e in decrypt_all_entries(entry_mgr, deleted_only=True)]
 
     def test_delete_and_restore_missing_entry_return_false(self, entry_mgr):
         """对不存在的条目软删除/恢复返回 False，不抛异常。"""
@@ -315,9 +317,8 @@ class TestViewDecryptionDelegation:
 
     def test_view_decryptor_shares_cache_instance(self, entry_mgr):
         """解密器与 EntryManager 共用同一 EntryCacheManager（详情路径复用摘要缓存的前提）。"""
-        assert (
-            entry_mgr._view_decryptor._cache is entry_mgr._cache  # noqa: SLF001
-        )
+        # cache 观察面（MAINT-095）：两侧均为公开只读 property
+        assert entry_mgr._view_decryptor.cache is entry_mgr.cache  # noqa: SLF001
 
 
 class TestListLimitPushdown:
@@ -362,3 +363,184 @@ class TestListLimitPushdown:
         assert summaries[-1].title == "普通-10"
         # 全部返回均非回收站条目
         assert all(not s.is_deleted for s in summaries)
+
+
+class TestUpdateEntrySignature:
+    """update_entry 签名收口（MAINT-090）：preloaded_raw/preloaded_old_password 已删除。
+
+    两参数全库（含测试）零调用方传入，docstring 自述「保留是为签名兼容」而项目
+    未发布无兼容包袱。守护签名不再回退加回这两个参数。
+    """
+
+    def test_signature_has_no_preloaded_params(self):
+        """update_entry 的签名不含 preloaded_raw/preloaded_old_password。"""
+        import inspect
+
+        params = inspect.signature(EntryManager.update_entry).parameters
+        assert "preloaded_raw" not in params
+        assert "preloaded_old_password" not in params
+        assert set(params) == {"self", "entry", "preserve_password_changed_at", "notify"}
+
+
+class TestGetEntriesRetired:
+    """get_entries 退役守护（MAINT-098）：测试专用「一次性解密全部密码」入口不再回到生产 API 面。
+
+    原方法 src 零调用、测试 40+ 处消费（docstring 自述「主要供测试断言」），在生产
+    API 面上保留等于公开一个无消费方的全量密码解密入口。等价能力已移
+    ``tests.helpers.decrypt_all_entries``；此处守护方法不被重新加回。
+    """
+
+    def test_get_entries_not_on_entry_manager(self):
+        """EntryManager 公开面上不存在 get_entries 方法（防回退）。"""
+        assert not hasattr(EntryManager, "get_entries")
+
+
+class TestAddDeleteIncrementalNotify:
+    """增删恢复的单条增量通知（PERF-079）：crypto_id 透传 + 标签计数差分。
+
+    增删携带该条 crypto_id 经 change_bus 通知（订阅方如 SecurityAnalyzer 据此做
+    单条增量而非整库失效）；标签计数经 apply_tag_delta 差分维护，不再触发
+    get_all_tags 的全量重解密重算（以 db 窄投影 spy 断言零重算）。
+    """
+
+    def _register_recorder(self, entry_mgr) -> list[tuple[bool, bool, str | None]]:
+        received: list[tuple[bool, bool, str | None]] = []
+        entry_mgr.register_on_change(lambda pw, md, cid: received.append((pw, md, cid)))
+        return received
+
+    @staticmethod
+    def _tags_projection_calls(vault, monkeypatch) -> "list[int]":
+        """spy db.get_entries_tags_projection 的调用次数（全量标签重算的标志）。"""
+        calls: list[int] = []
+        original = vault.db.get_entries_tags_projection
+
+        def _spy():
+            calls.append(1)
+            return original()
+
+        monkeypatch.setattr(vault.db, "get_entries_tags_projection", _spy)
+        return calls
+
+    def test_add_delete_notify_with_crypto_id(self, entry_mgr, make_entry):
+        """add/delete/restore 的通知携带该条 crypto_id（单条增量语义入口）。"""
+        received = self._register_recorder(entry_mgr)
+        entry_id = entry_mgr.add_entry(make_entry(title="A", tags="t1"))
+        raw = entry_mgr.db.get_entry(entry_id)
+        assert raw is not None
+        assert received[-1][2] == raw.crypto_id
+
+        entry_mgr.delete_entry(entry_id)
+        assert received[-1][2] == raw.crypto_id
+
+        entry_mgr.restore_entry(entry_id)
+        assert received[-1][2] == raw.crypto_id
+
+    def test_tags_counts_tracked_by_delta_without_full_recalc(
+        self, entry_mgr, make_entry, monkeypatch
+    ):
+        """增删后标签计数差分正确且不触发全量重算（窄投影零调用）。"""
+        entry_mgr.add_entry(make_entry(title="A", tags="工作,社交"))
+        entry_mgr.add_entry(make_entry(title="B", tags="工作"))
+        before = dict(entry_mgr.get_all_tags())
+        assert before == {"工作": 2, "社交": 1}
+
+        spy = self._tags_projection_calls(
+            entry_mgr._vault,
+            monkeypatch,  # noqa: SLF001
+        )
+        # 新增：工作 → 3（差分，无全量重算）
+        entry_id_c = entry_mgr.add_entry(make_entry(title="C", tags="工作"))
+        assert dict(entry_mgr.get_all_tags())["工作"] == 3
+        # 软删除 C：工作 → 2（差分）
+        entry_mgr.delete_entry(entry_id_c)
+        assert dict(entry_mgr.get_all_tags())["工作"] == 2
+        # 恢复 C：工作 → 3
+        entry_mgr.restore_entry(entry_id_c)
+        assert dict(entry_mgr.get_all_tags())["工作"] == 3
+        # 全量重算（窄投影）零触发——差分全程命中缓存
+        assert len(spy) == 0
+
+    def test_tags_delta_on_edit_replaces_counts(self, entry_mgr, make_entry):
+        """编辑改 tags：旧标签 -1、新标签 +1（update 路径差分，PERF-079）。"""
+        import dataclasses as dc
+
+        entry_id = entry_mgr.add_entry(make_entry(title="A", tags="旧标签"))
+        assert dict(entry_mgr.get_all_tags()) == {"旧标签": 1}
+
+        entry = entry_mgr.get_entry(entry_id)
+        entry_mgr.update_entry(dc.replace(entry, tags="新标签"))
+
+        assert dict(entry_mgr.get_all_tags()) == {"新标签": 1}
+
+    def test_permanent_delete_of_active_entry_dedupes_tags(self, entry_mgr, make_entry):
+        """直接物理删除活跃条目补齐差分（回收站二次删除路径则幂等 no-op）。"""
+        entry_id = entry_mgr.add_entry(make_entry(title="A", tags="仅此一条"))
+        assert dict(entry_mgr.get_all_tags()) == {"仅此一条": 1}
+
+        entry_mgr.permanent_delete_entry(entry_id)  # 未经软删除的直接物理删除
+        assert entry_mgr.get_all_tags() == []
+
+        # 回收站路径：软删除已差分，物理删除不再重复扣减
+        entry_id2 = entry_mgr.add_entry(make_entry(title="B", tags="回收站路径"))
+        entry_mgr.delete_entry(entry_id2)
+        assert entry_mgr.get_all_tags() == []
+        entry_mgr.permanent_delete_entry(entry_id2)
+        assert entry_mgr.get_all_tags() == []
+
+    def test_delete_tampered_entry_still_works(self, entry_mgr, make_entry):
+        """元数据被篡改（HMAC 失配）的条目仍可软删除（PERF-079 前置读取 LENIENT）。
+
+        差分前置读取走 ``get_entries_by_ids``（LENIENT）而非 ``get_entry``（STRICT
+        抛 EntryIntegrityError）——删除损坏条目是清理路径，不得因验签失败而不可用。
+        """
+        entry_id = entry_mgr.add_entry(make_entry(title="被篡改", tags="篡改标签"))
+        conn = entry_mgr.db._conn  # noqa: SLF001
+        assert conn is not None
+        # 改写入签载荷的非加密元数据且不重签：metadata_mac 比对必然失配
+        conn.execute("UPDATE entries SET is_favorite = 1 - is_favorite WHERE id=?", (entry_id,))
+        conn.commit()
+
+        assert entry_mgr.delete_entry(entry_id) is True  # 不抛 EntryIntegrityError
+
+        trash = [e.id for e in decrypt_all_entries(entry_mgr, deleted_only=True)]
+        assert entry_id in trash
+
+    def test_delete_corrupted_tags_entry_invalidates_tags_cache(
+        self, entry_mgr, make_entry, monkeypatch
+    ):
+        """tags 密文损坏的条目删除后标签缓存被失效（QL-066，问题 1 回归守护）。
+
+        旧行为：delete/restore 的差分对解密失败回退空串（静默 no-op）且
+        ``tags_changed=False``，损坏 tags 条目被删除后 ``_tags_cache`` 陈旧。
+        现解密失败返回 None 哨兵 → 保守 ``tags_changed=True`` 整表失效（对齐
+        编辑路径 ``_notify_entry_updated`` 的既有保守口径）。
+        """
+        entry_mgr.add_entry(make_entry(title="好条目", tags="正常标签"))
+        entry_id = entry_mgr.add_entry(make_entry(title="损坏", tags="损坏标签"))
+        conn = entry_mgr.db._conn  # noqa: SLF001
+        assert conn is not None
+        # 直改 tags 密文为非法载荷（不重签）：GCM 认证必然失败
+        conn.execute("UPDATE entries SET tags_enc='cb2:garbage' WHERE id=?", (entry_id,))
+        conn.commit()
+
+        # 全量聚合对损坏 tags 回退空串：缓存不含「损坏标签」
+        assert dict(entry_mgr.get_all_tags()) == {"正常标签": 1}
+        spy = self._tags_projection_calls(entry_mgr._vault, monkeypatch)
+        assert entry_mgr.delete_entry(entry_id) is True
+
+        # 解密失败 → 保守整表失效：下次 get_all_tags 触发全量重算（非差分命中）
+        assert dict(entry_mgr.get_all_tags()) == {"正常标签": 1}
+        assert len(spy) == 1  # 全量重算发生（差分被放弃，缓存经失效重建）
+
+    def test_restore_corrupted_tags_entry_invalidates_tags_cache(self, entry_mgr, make_entry):
+        """恢复路径同款保守失效（QL-066）：损坏 tags 条目恢复不残留陈旧计数。"""
+        entry_id = entry_mgr.add_entry(make_entry(title="损坏", tags="损坏标签"))
+        conn = entry_mgr.db._conn  # noqa: SLF001
+        conn.execute("UPDATE entries SET tags_enc='cb2:garbage' WHERE id=?", (entry_id,))
+        conn.commit()
+        assert entry_mgr.delete_entry(entry_id) is True
+        assert entry_mgr.get_all_tags() == []
+
+        assert entry_mgr.restore_entry(entry_id) is True
+        # 恢复的差分解密失败 → 保守整表失效，不引入陈旧计数
+        assert entry_mgr.get_all_tags() == []

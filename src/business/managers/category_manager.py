@@ -39,7 +39,8 @@ class CategoryManager:
         self._cache = cache
         self._change_bus = change_bus
         # 会话级分类缓存（epoch 守卫）：分类数据变更频率低，缓存命中时跳过全量 DB
-        # SELECT + HMAC 验签。分类 CRUD 后主动失效；改密/锁定经 epoch 守卫失效。
+        # SELECT + HMAC 验签。分类 CRUD 后主动失效；锁定经组合根注册的
+        # invalidate_caches 显式清空明文（SEC-053），改密/恢复经 epoch 守卫失效。
         self._categories_cache: list[Category] | None = None
         self._categories_cache_epoch: str | None = None
         # 分类条目计数会话缓存（PERF-064）：GROUP BY 全表计数在 50k 库实测 ~25ms/次，
@@ -57,12 +58,48 @@ class CategoryManager:
     def _key(self) -> bytes:
         return require_vault_key(self._vault)
 
+    @property
+    def categories_cache_present(self) -> bool:
+        """明文分类会话缓存是否驻留（测试观察用，MAINT-095）。
+
+        只读视图：守护 SEC-053 锁定清空连线的测试经此断言缓存置空，不再直读
+        ``_categories_cache``（缓存置空时 epoch 一并由 invalidate_caches 同步置空）。
+        """
+        return self._categories_cache is not None
+
+    @property
+    def entry_counts_cache(self) -> dict[int, int] | None:
+        """分类条目计数缓存的拷贝（测试观察用，MAINT-095），未填充返回 None。
+
+        拷贝语义与 :meth:`get_category_entry_counts` 的出口一致，测试断言内容
+        相等性（如「锁定保留纯计数缓存」的锚定）不污染内部缓存。
+        """
+        return None if self._entry_counts_cache is None else dict(self._entry_counts_cache)
+
+    def invalidate_caches(self) -> None:
+        """清空明文分类缓存（锁定/密钥轮换回调入口，SEC-053）。
+
+        组合根注册到 register_on_lock / register_on_epoch_rotated：``_categories_cache``
+        持有解密后的明文分类名，锁定后若驻留会使明文在锁定态（密钥已清零）仍可从
+        内存 dump 读出——读时 epoch 守卫只防锁定后复用，不清内存，须显式置空收缩
+        暴露面（与 list_refresh_controller.prepare_for_lock 清 UI 侧同源缓存的纪律
+        对齐）。解锁后 epoch 不变也不会命中已置空缓存，重读 DB 即可。
+
+        条目计数缓存（``_entry_counts_cache``）有意不清：纯 COUNT 整数、无明文，
+        锁定驻留无泄漏面；且锁定不改数据，保留命中是正确行为（见
+        :meth:`get_category_entry_counts` 的失效通道说明），轮换后由读时 epoch 守卫
+        自然失效。
+        """
+        self._categories_cache = None
+        self._categories_cache_epoch = None
+
     def get_categories(self) -> list[Category]:
         """获取全部分类，分类名经缓存解密，按 sort_order 与名称排序。
 
         会话级缓存（epoch 守卫）：缓存命中时跳过全量 DB SELECT + HMAC 验签。分类
-        CRUD 后主动失效；改密/锁定经 epoch 守卫失效。返回浅拷贝避免调用方修改污染
-        缓存（Category 为 frozen dataclass，浅拷贝足够）。
+        CRUD 后主动失效；锁定经 :meth:`invalidate_caches` 清空明文（SEC-053），改密/
+        恢复经 epoch 守卫失效。返回浅拷贝避免调用方修改污染缓存（Category 为
+        frozen dataclass，浅拷贝足够）。
         """
         current_epoch = self._vault.key_epoch
         if self._categories_cache is not None and self._categories_cache_epoch == current_epoch:

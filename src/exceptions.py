@@ -19,10 +19,12 @@ __all__ = [
     "VaultIntegrityError",
     "VaultKeyEpochMismatchError",
     "VaultAlreadyInitializedError",
+    "MasterPasswordPolicyError",
     "DecryptionError",
     "EntryError",
     "EntryIntegrityError",
     "BackupError",
+    "RestoreAbortedError",
     "PayloadTooLargeError",
     "ShareError",
     "DatabaseError",
@@ -64,6 +66,17 @@ class VaultAlreadyInitializedError(VaultError):
     """保险库已初始化，不能重复设置主密码。"""
 
 
+class MasterPasswordPolicyError(VaultError, ValueError):
+    """主密码策略校验失败（新密码强度不足、新旧相同等可预期的用户输入问题）。
+
+    ARCH-042：``change_master_password`` 的 ``(bool, str)`` 返回契约中 ``False``
+    收窄为唯一语义「旧主密码认证失败」，策略类失败以本异常类型化走异常通道，
+    调用方（改密对话框）据返回值形态区分「计入速率限制」与「不惩罚用户」，
+    不再比对文案字符串。双重继承 ``ValueError`` 对齐 :class:`EntryError` 的
+    用户输入校验范式，经 ``to_user_message`` 保留 ``str(exc)`` 原文。
+    """
+
+
 class DecryptionError(CipherBoxError, ValueError):
     """解密失败。"""
 
@@ -87,6 +100,16 @@ class EntryIntegrityError(EntryError):
 
 class BackupError(CipherBoxError):
     """备份/恢复操作异常。"""
+
+
+class RestoreAbortedError(BackupError):
+    """恢复流程面向用户的中止（缺备份密码/保险库未解锁/备份文件无效等）。
+
+    ARCH-045：恢复各阶段方法以本异常替代 ``数据 | tuple[bool, str] | None``
+    联合返回，``str(exc)`` 即面向用户的完整中止文案，经
+    :func:`src.business.services.error_messages.to_user_message` 原样保留（先于
+    ``BackupError`` 的固定文案归一分支拦截）。
+    """
 
 
 class PayloadTooLargeError(BackupError, ValueError):

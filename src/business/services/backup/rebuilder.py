@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 from ....models import Category, RawEntry
 from ....utils.format import utc_now_iso
 from ..crypto_utils import build_encrypted_entry_fields, encrypt_field
+from ..entry_batch_writer import should_report_progress
 from .payload import PortableBackup
 
 if TYPE_CHECKING:
@@ -48,16 +49,20 @@ def restore_entries(
     backup: PortableBackup,
     key: bytes,
     category_map: dict[int, int],
+    progress: Callable[[int, int], None] | None = None,
 ) -> tuple[dict[int, int], dict[int, str]]:
     """重建条目，加密敏感字段，返回 (entry_map, crypto_id_map)。
 
     全部条目先在内存构建再经 ``add_entries_batch`` 一次性 executemany 写入，
     避免逐条 INSERT+commit 的 N 次 fsync 拖长 vault_write_lock 持锁（UI 冻结窗口）。
     item 经 validator 校验，直接索引字段，无 .get(default) 死分支。
+    ``progress``（PERF-083）按已加密构建条目数每 ``PROGRESS_REPORT_EVERY`` 条节流
+    上报原始 ``(done, total)`` 计数、终值恒上报，加权映射由调用方完成。
     """
     items = backup["entries"]
+    total = len(items)
     entries: list[RawEntry] = []
-    for item in items:
+    for done, item in enumerate(items, start=1):
         # PortableEntry(TypedDict)经 cast 桥接到 dict 参数（同上，TypedDict 不兼容 dict）。
         # 加密字段整体经 **encrypted 展开（消费 crypto_utils 的 QL-046 循环化入口）：
         # SENSITIVE_ENCRYPTED_FIELDS 新增字段时自动随展写入 RawEntry，消除本处手工
@@ -91,6 +96,8 @@ def restore_entries(
                 **encrypted,
             )
         )
+        if progress is not None and should_report_progress(done, total):
+            progress(done, total)
     crypto_id_to_new_id = db.add_entries_batch(entries, preserve_metadata=True)
     entry_map: dict[int, int] = {}
     crypto_id_map: dict[int, str] = {}  # 旧 entry_id 到 crypto_id 的映射
@@ -107,12 +114,22 @@ def restore_history(
     key: bytes,
     entry_map: dict[int, int],
     crypto_id_map: dict[int, str],
+    progress: Callable[[int, int], None] | None = None,
 ) -> None:
-    """重建密码历史，按 entry_id 分组批量写入并统一截断。"""
+    """重建密码历史，按 entry_id 分组批量写入并统一截断。
+
+    ``progress``（PERF-083）按已加密历史条数节流上报原始 ``(done, total)`` 计数
+    （总数按载荷内全部历史计，未命中 entry_map 的跳过项亦计入 done 保持单调）。
+    """
     history_by_entry: dict[int, list[tuple[str, str]]] = {}
+    total = len(backup["password_history"])
+    done = 0
     for item in backup["password_history"]:
+        done += 1
         new_entry_id = entry_map.get(item["entry_id"])
         if not new_entry_id:
+            if progress is not None and should_report_progress(done, total):
+                progress(done, total)
             continue
         # entry_map 命中则 crypto_id_map 必存在（同填充），直接取避免空 crypto_id 致 AAD 不一致。
         crypto_id = crypto_id_map[item["entry_id"]]
@@ -120,5 +137,7 @@ def restore_history(
         # encrypt_field 经 EncryptionEngine.encrypt 总返回非空密文（空明文亦产 cb2: 前缀），
         # 无需 if 守卫；保留恒真分支会暗示 encrypt_field 可能返回空串的错误心智模型。
         history_by_entry.setdefault(new_entry_id, []).append((ciphertext, item["changed_at"]))
+        if progress is not None and should_report_progress(done, total):
+            progress(done, total)
     for entry_id, items in history_by_entry.items():
         db.add_password_history_batch(entry_id, items)

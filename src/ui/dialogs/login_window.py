@@ -27,7 +27,6 @@ from ...business.services.rate_limiter import RateLimiter
 
 if TYPE_CHECKING:
     from ...business.managers.vault_manager import VaultManager
-    from ...config import ConfigManager
 from ..components.widgets import (
     WorkerBackedDialog,
     create_password_toggle_btn,
@@ -56,21 +55,18 @@ class LoginWindow(WorkerBackedDialog):
     def __init__(
         self,
         vault_manager: VaultManager,
-        config: ConfigManager | None = None,
+        rate_limiter: RateLimiter,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self._vault = vault_manager
-        self._config = config
+        # 限流器经组合根创建注入（ARCH-043）：有跨进程持久状态的业务安全模块，状态
+        # 文件命名与哨兵登记归业务层单一事实源，UI 不再实例化。
+        self._rate_limiter = rate_limiter
         # 命令-查询分离（ARCH-004）：`is_initialized` 为纯查询，先显式打开数据库（命令）
         # 再查询是否已初始化。db 文件不存在时 `is_initialized` 直接返回 False，无需打开。
         vault_manager.ensure_db_open()
         self._is_first_time = not vault_manager.is_initialized
-        # 直接索引 `data_dir`（有类型 property）：缺失会在静态检查/运行时即时暴露，
-        # 而非 `getattr` 静默退化为仅内存限流（跨会话退避与哨兵删文件检测全部失效）。
-        state_path = self._vault.data_dir / "login_rate_limit.json"
-        # 传入 config：把哨兵登记到签名 config，关闭「同时删除状态文件+哨兵即归零计数」的绕过
-        self._rate_limiter = RateLimiter(state_path, config)
         self._setup_ui()
 
     def _setup_ui(self) -> None:

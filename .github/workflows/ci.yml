@@ -41,6 +41,11 @@ jobs:
       - name: Ruff format check
         if: matrix.python-version == '3.13'
         run: uv run ruff format --check src tests
+      # 审计编号索引与代码一致性（处数/分区项数/下一可用号/缺登检测）：
+      # 纯 stdlib、pathlib 路径，三平台矩阵均可在 3.13 档跑一次即可
+      - name: Audit codes index check
+        if: matrix.python-version == '3.13'
+        run: uv run python scripts/verify_audit_codes.py
       # pytest/mypy/pyright/coverage 统一 -m 形式（MAINT-041）：.venv\Scripts 下的
       # trampoline 入口（*.exe）在部分 uv/Windows 组合下报 Failed to canonicalize
       # script path，`-m` / `python -m` 语义等价且本地与 CI 行为一致（pyright 为

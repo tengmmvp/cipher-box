@@ -19,7 +19,8 @@ Python 运行时下的根本约束。
 - **风险**：进程崩溃 dump（Windows Error Reporting、第三方崩溃收集器）在退出路径
   未完成 GC 时，可能包含上一次解锁密钥的 AESGCM C 层副本。
 - **缓解**：缓存容量上限 `_MAX_CACHE_SIZE = 2`（仅容纳改密瞬间的旧+新双密钥窗口），
-  最小化驻留副本数量；`lock()` / 改密后显式 `clear_cache()` + `gc.collect()`。
+  最小化驻留副本数量；`lock()` / 改密后显式 `clear_cache()`，完整 `gc.collect()`
+  经短延迟后台线程执行（引用释放即时生效，回收延后一个短窗口以免锁定 UI 卡顿）。
 - **残余风险**：CPython 无法从 Python 层强制释放 C 层内存。
 
 ### 1.2 不可变 `bytes` 密钥副本无法原地清零
@@ -49,8 +50,11 @@ property 读取时返回 `bytes()` **副本**（防止并发清零风险），�
 ### 1.4 Python `str` 明文不可原地清零
 
 UI 控件（`QLineEdit` / `QTextEdit`）持有的明文字符串是不可变 `str`，`clear()` 只
-是重置控件文本，原始 `str` 对象依赖 GC 回收。`mark_secret_discarded` 只能清零
-`encode` 生成的临时副本，非原地擦除原串。
+是重置控件文本，原始 `str` 对象依赖 GC 回收。`mark_secret_discarded` 是纯语义
+标记（函数体仅 `del` 解除本帧对参数的引用，无任何擦除动作）——真正的明文释放
+依赖调用方置空引用 / `clear()` 控件后由 GC 回收（历史上的「encode 出临时
+bytearray 再清零」实现只擦除自身刚创建的副本、原串未动，反而短暂增加明文
+副本数，已删除）。
 
 - **风险**：UI 中曾显示的明文（密码、备注）在 GC 前驻留内存。
 - **缓解**：保存/关闭后立即 `clear()` 控件释放引用；敏感字段经 `Sensitive` 包装
@@ -76,6 +80,7 @@ UI 控件（`QLineEdit` / `QTextEdit`）持有的明文字符串是不可变 `st
 | 密文置换/篡改 | GCM 认证 + 字段级 AAD（crypto_id + field_name）+ metadata HMAC |
 | 时序侧信道 | `hmac.compare_digest` 用于密码/令牌/签名校验 |
 | SQL 注入 | 全部参数化绑定（`?`），DDL/列名硬编码常量 |
+| 共享包解密器页面 XSS | 输出统一 `esc()` 转义 + CSP `default-src 'none'`（仅放行内联脚本/样式与 WASM，封死外联加载与表单/嵌入通道） |
 | 日志明文泄漏 | `RedactingFormatter` + `SensitiveDataFilter` 脱敏固定模式 |
 | 改密/恢复期间崩溃 | 事务原子性 + epoch 守卫 + 异常路径密钥清零 |
 | 历史明文快照泄漏 | snapshot_key 随主密钥轮换 + 旧快照/恢复点自动清理 |

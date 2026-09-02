@@ -1,6 +1,8 @@
-"""条目视图解密服务：密文 RawEntry → 明文视图 Entry 的纯变换（MAINT-021）。
+"""条目视图构造与解密服务：密文 RawEntry → 明文视图 Entry 的纯变换（MAINT-021）。
 
 从 EntryManager 下沉的视图解密族（同类先例：entry_batch_writer 下沉导入批量写入）。
+模块级 ``copy_entry_fields``/``build_entry_summary`` 为视图构造原语（自 crypto_utils
+迁入，MAINT-097——视图域构造与字段加解密单一事实源本属两个职责域）。
 三条解密链路各有完整性语义：
 
 - :meth:`EntryViewDecryptor.decrypt_entry`（详情/编辑路径）：字段级容错，失败字段
@@ -23,7 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, TypedDict, Unpack
 
 if TYPE_CHECKING:
     # SearchMetadata 仅为共享类型标注（decrypt_summary 的 meta 参数），TYPE_CHECKING
@@ -35,13 +37,93 @@ from ...exceptions import DecryptionError, EntryIntegrityError
 from ...models import CustomField, Entry, RawEntry, Sensitive
 from .crypto_utils import (
     KeyProvider,
-    copy_entry_fields,
     decrypt_field as _decrypt_field_impl,
     decrypt_string_fields_strict,
     require_vault_key,
 )
 
 logger = logging.getLogger(__name__)
+
+
+class EntryOverrides(TypedDict, total=False):
+    """copy_entry_fields 的可选覆盖字段，键集合与 :class:`Entry` 字段一一对应。
+
+    total=False 全可选。custom_fields 解密路径传 ``list[CustomField]``；password
+    运行时可为 :class:`Sensitive`（str 子类），标注为 str 兼容二者。
+    """
+
+    id: int | None
+    crypto_id: str
+    title: str
+    username: str
+    password: str
+    url: str
+    category_id: int | None
+    category_name: str
+    tags: str
+    notes: str
+    custom_fields: list[CustomField]
+    is_favorite: bool
+    is_deleted: bool
+    password_strength: int
+    entry_type: str
+    totp_secret: str
+    created_at: str
+    updated_at: str
+    deleted_at: str
+    password_changed_at: str
+    metadata_mac: str
+    integrity_error: bool
+    integrity_message: str
+    password_present: bool
+    totp_present: bool
+
+
+def copy_entry_fields(raw: RawEntry, **overrides: Unpack[EntryOverrides]) -> Entry:
+    """从密文态 RawEntry 构建明文 Entry，按需覆盖字段。
+
+    RawEntry 与 Entry 是不同 dataclass，不能跨类型 ``dataclasses.replace``（产出 RawEntry），
+    故直接构造。custom_fields 默认空 list，解密路径应在 overrides 传入解密后的 list。
+    """
+    return Entry(
+        id=overrides.get("id", raw.id),
+        crypto_id=overrides.get("crypto_id", raw.crypto_id),
+        title=overrides.get("title", raw.title),
+        username=overrides.get("username", raw.username),
+        password=overrides.get("password", raw.password),
+        url=overrides.get("url", raw.url),
+        category_id=overrides.get("category_id", raw.category_id),
+        category_name=overrides.get("category_name", raw.category_name),
+        tags=overrides.get("tags", raw.tags),
+        notes=overrides.get("notes", raw.notes),
+        custom_fields=overrides.get("custom_fields", []),
+        is_favorite=overrides.get("is_favorite", raw.is_favorite),
+        is_deleted=overrides.get("is_deleted", raw.is_deleted),
+        password_strength=overrides.get("password_strength", raw.password_strength),
+        entry_type=overrides.get("entry_type", raw.entry_type),
+        totp_secret=overrides.get("totp_secret", raw.totp_secret),
+        created_at=overrides.get("created_at", raw.created_at),
+        updated_at=overrides.get("updated_at", raw.updated_at),
+        deleted_at=overrides.get("deleted_at", raw.deleted_at),
+        password_changed_at=overrides.get("password_changed_at", raw.password_changed_at),
+        metadata_mac=overrides.get("metadata_mac", raw.metadata_mac),
+        integrity_error=overrides.get("integrity_error", raw.integrity_error),
+        integrity_message=overrides.get("integrity_message", raw.integrity_message),
+        password_present=overrides.get("password_present", bool(raw.password)),
+        totp_present=overrides.get("totp_present", bool(raw.totp_secret)),
+    )
+
+
+def build_entry_summary(raw: RawEntry, username: str = "") -> Entry:
+    """从原始数据库字段构建摘要 Entry（不含敏感字段，仅用于列表显示与安全分析）。"""
+    return copy_entry_fields(
+        raw,
+        username=username,
+        password="",
+        notes="",
+        custom_fields=[],
+        totp_secret="",
+    )
 
 
 class ViewDecryptCacheProtocol(Protocol):
@@ -113,6 +195,11 @@ class EntryViewDecryptor:
         # 摘要/分类名/失败字段集缓存（协议视图，ARCH-032）：仅读取，失效决策留在
         # EntryManager/EntryChangeBus。
         self._cache = cache
+
+    @property
+    def cache(self) -> ViewDecryptCacheProtocol:
+        """注入的缓存实例（测试观察用，MAINT-095）：守护与宿主共用同一缓存。"""
+        return self._cache
 
     @property
     def _key(self) -> bytes:

@@ -8,6 +8,7 @@ KeePass 导出 CSV 的 ``Title/UserName/Password/URL/Notes/Group`` 列，
 """
 
 from src.business.managers.import_export import ImportExportManager
+from tests.helpers import decrypt_all_entries
 
 
 def test_import_from_keepass_csv_maps_columns(entry_mgr, tmp_path):
@@ -30,7 +31,7 @@ def test_import_from_keepass_csv_maps_columns(entry_mgr, tmp_path):
     count = mgr.import_file(str(csv_path), "keepass_csv")
 
     assert count == 2
-    entries = entry_mgr.get_entries()
+    entries = decrypt_all_entries(entry_mgr)
     by_title = {e.title: e for e in entries}
     assert set(by_title) == {"GitHub", "Gmail"}
 
@@ -69,7 +70,7 @@ def test_import_from_keepass_csv_without_group(entry_mgr, tmp_path):
     count = mgr.import_file(str(csv_path), "keepass_csv")
 
     assert count == 1
-    entries = entry_mgr.get_entries()
+    entries = decrypt_all_entries(entry_mgr)
     assert len(entries) == 1
     entry = entries[0]
     assert entry.title == "GitHub"
@@ -90,4 +91,4 @@ def test_import_from_keepass_csv_empty(entry_mgr, tmp_path):
     )
 
     assert mgr.import_file(str(csv_path), "keepass_csv") == 0
-    assert entry_mgr.get_entries() == []
+    assert decrypt_all_entries(entry_mgr) == []

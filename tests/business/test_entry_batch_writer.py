@@ -4,7 +4,9 @@
 write_overwrite_updates 四个公开函数：加密密文构建、空批次静默、密码变更检测、
 覆盖缺 id 失败收集、preserve_password_changed_at 透传、epoch 守卫与密码历史归档。
 补足该核心安全路径的独立回归网（此前仅端到端 + mock 覆盖，与同轮 collector/rebuilder
-不对称）。
+不对称）。进度契约共享函数（phase_progress / should_report_progress，MAINT-099）
+的语义在此直测——import_export 与 backup_restore 的消费语义由各自加权刻度测试
+覆盖。
 """
 
 import dataclasses
@@ -12,14 +14,46 @@ import dataclasses
 import pytest
 
 from src.business.services.entry_batch_writer import (
+    PROGRESS_REPORT_EVERY,
     BatchUpdateItem,
     encrypt_new_entries,
+    phase_progress,
     prepare_overwrite_updates,
+    should_report_progress,
     write_new_entries,
     write_overwrite_updates,
 )
 from src.exceptions import EntryError, VaultKeyEpochMismatchError
 from src.models import CIPHERTEXT_PREFIX
+
+
+class TestProgressContractHelpers:
+    """进度契约共享函数（MAINT-099）：加权映射与节流谓词的单一事实源语义。"""
+
+    def test_phase_progress_maps_fraction_linearly(self):
+        """阶段内 (done/total) 线性映射到 [start, end] 的整数下取整。"""
+        assert phase_progress(0, 4, 10, 20) == 10
+        assert phase_progress(2, 4, 10, 20) == 15
+        assert phase_progress(3, 4, 10, 20) == 17  # 10 + 10*3//4
+
+    def test_phase_progress_full_at_terminal_and_empty(self):
+        """done>=total 与 total<=0（空阶段）均取满 end（单调不减、不留悬挂）。"""
+        assert phase_progress(4, 4, 10, 20) == 20
+        assert phase_progress(5, 4, 10, 20) == 20  # 越界钳制到 end
+        assert phase_progress(0, 0, 10, 20) == 20
+        assert phase_progress(3, -1, 10, 20) == 20
+
+    def test_phase_progress_clamps_below_start(self):
+        """非单调输入（done<=0）钳制到 start，不越阶段下界。"""
+        assert phase_progress(0, 4, 10, 20) == 10
+        assert phase_progress(-2, 4, 10, 20) == 10
+
+    def test_should_report_progress_throttles_and_reports_terminal(self):
+        """每 PROGRESS_REPORT_EVERY 条一次、终值恒上报。"""
+        assert should_report_progress(PROGRESS_REPORT_EVERY, 250) is True
+        assert should_report_progress(PROGRESS_REPORT_EVERY + 1, 250) is False
+        assert should_report_progress(250, 250) is True  # 终值（非整间隔也上报）
+        assert should_report_progress(7, 7) is True  # 小批量终值同样上报
 
 
 class TestEncryptNewEntries:
@@ -96,6 +130,29 @@ class TestPrepareOverwriteUpdates:
         assert prepared == []
         assert len(failures) == 1
         assert isinstance(failures[0][1], EntryError)
+        # 失败索引 0 基对齐 items（QL-062）：消费方以其直接索引同序覆盖计划列表
+        assert failures[0][0] == 0
+
+    def test_failure_indices_are_zero_based(self, entry_mgr, make_entry):
+        """失败索引 0 基对齐 items 位置（QL-062）：首项与末项失败各归其位。
+
+        旧行为为 1 基索引：末项失败时消费方 ``overwrite_plans[batch_idx]`` 越界
+        （IndexError 中止整次导入），非末项失败时警告/日志指向下一条目。
+        """
+        ok_id = entry_mgr.add_entry(make_entry(title="A", password="P1!@#"))
+        raw = entry_mgr.db.get_entry(ok_id)
+        assert raw is not None
+        ok_item = BatchUpdateItem(
+            entry=dataclasses.replace(make_entry(title="A", password="P2!@#"), id=ok_id),
+            raw=raw,
+            old_password="P1!@#",
+        )
+        # 缺 id → EntryError：置于首项与末项，锁定两个边界位置的索引语义
+        bad_item = BatchUpdateItem(entry=make_entry(title="bad"), raw=raw, old_password=None)
+        prepared, failures = prepare_overwrite_updates(entry_mgr, [bad_item, ok_item, bad_item])
+        assert [idx for idx, _exc in failures] == [0, 2]
+        assert all(isinstance(exc, EntryError) for _idx, exc in failures)
+        assert len(prepared) == 1
 
     def test_preserve_password_changed_at_passthrough(self, entry_mgr, make_entry):
         entry_id = entry_mgr.add_entry(make_entry(title="A", password="P1!@#"))

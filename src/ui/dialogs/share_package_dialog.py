@@ -122,8 +122,18 @@ class SharePackageDialog(WorkerBackedDialog):
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
+        # _build_* 分块构建（MAINT-094，对齐 entry_dialog 模式）：条目预览 → 共享密码 →
+        # 有效期/含密码 → 输出目录 → 状态 → 按钮行，纯机械搬移不改控件树与行为。
+        layout.addWidget(self._build_preview_group())
+        layout.addWidget(self._build_password_group())
+        layout.addLayout(self._build_options_row())
+        layout.addLayout(self._build_output_row())
+        self._build_status_label(layout)
+        layout.addStretch()
+        layout.addLayout(self._build_buttons())
 
-        # 条目预览（只读标题列表）
+    def _build_preview_group(self) -> QGroupBox:
+        """构建待共享条目预览（只读标题列表）。"""
         preview_group = QGroupBox("待共享条目")
         preview_layout = QVBoxLayout(preview_group)
         self._entry_list = QListWidget()
@@ -131,9 +141,10 @@ class SharePackageDialog(WorkerBackedDialog):
         self._entry_list.addItem(self._entry.title or "(无标题)")
         self._entry_list.setFixedHeight(96)
         preview_layout.addWidget(self._entry_list)
-        layout.addWidget(preview_group)
+        return preview_group
 
-        # 共享密码
+    def _build_password_group(self) -> QGroupBox:
+        """构建共享密码分组：输入/生成行、强度、确认与提示。"""
         pwd_group = QGroupBox("共享密码")
         pwd_layout = QVBoxLayout(pwd_group)
 
@@ -168,9 +179,10 @@ class SharePackageDialog(WorkerBackedDialog):
         hint.setStyleSheet(f"color: {c('warning_orange')}; font-size: 12px;")
         hint.setWordWrap(True)
         pwd_layout.addWidget(hint)
-        layout.addWidget(pwd_group)
+        return pwd_group
 
-        # 有效期 + 含密码
+    def _build_options_row(self) -> QHBoxLayout:
+        """构建有效期下拉与含密码单选行。"""
         opt_row = QHBoxLayout()
         opt_row.addWidget(QLabel("有效期："))
         self._expiry_combo = QComboBox()
@@ -188,9 +200,10 @@ class SharePackageDialog(WorkerBackedDialog):
         opt_row.addWidget(self._include_radio)
         opt_row.addWidget(self._exclude_radio)
         opt_row.addStretch()
-        layout.addLayout(opt_row)
+        return opt_row
 
-        # 输出目录
+    def _build_output_row(self) -> QHBoxLayout:
+        """构建输出目录选择行。"""
         dir_row = QHBoxLayout()
         dir_row.addWidget(QLabel("输出目录："))
         self._dir_label = QLabel("未选择")
@@ -200,17 +213,17 @@ class SharePackageDialog(WorkerBackedDialog):
         self._browse_btn = QPushButton("浏览...")
         self._browse_btn.clicked.connect(self._browse_dir)
         dir_row.addWidget(self._browse_btn)
-        layout.addLayout(dir_row)
+        return dir_row
 
-        # 状态
+    def _build_status_label(self, layout: QVBoxLayout) -> None:
+        """构建居中状态标签。"""
         self._status_label = QLabel("")
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._status_label.setObjectName("formStatus")
         layout.addWidget(self._status_label)
 
-        layout.addStretch()
-
-        # 按钮
+    def _build_buttons(self) -> QHBoxLayout:
+        """构建取消与创建共享包按钮行。"""
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         btn_row.addWidget(create_cancel_button(self))
@@ -221,7 +234,7 @@ class SharePackageDialog(WorkerBackedDialog):
         # 经基类 _set_busy 统一禁用/启用主操作按钮
         self._primary_action_btn = self._create_btn
         btn_row.addWidget(self._create_btn)
-        layout.addLayout(btn_row)
+        return btn_row
 
     def _update_strength(self, text: str) -> None:
         update_strength_label(self._strength_label, text)

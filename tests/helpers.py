@@ -8,6 +8,8 @@ from src.business.managers.entry_change_bus import EntryChangeBus
 from src.business.managers.entry_manager import EntryManager
 from src.business.managers.vault_manager import VaultManager
 from src.config import ConfigManager
+from src.database.types import EntryQuery
+from src.models import Entry
 
 if TYPE_CHECKING:
     from src.business.managers.backup_restore import BackupRestoreManager
@@ -58,3 +60,33 @@ def make_backup_manager(
         entry_mgr if entry_mgr is not None else make_entry_manager(vault),
         RestorePointManager(vault),
     )
+
+
+def decrypt_all_entries(
+    entry_mgr: EntryManager,
+    *,
+    deleted_only: bool = False,
+    include_deleted: bool = False,
+    category_id: int | None = None,
+    favorite_only: bool = False,
+) -> list[Entry]:
+    """测试助手：一次性解密全部条目（含 password/totp_secret 等敏感字段，MAINT-098）。
+
+    等价已退役的 ``EntryManager.get_entries``（src 零调用、仅测试消费的「一次性
+    解密全部密码」入口，生产 API 面不再保留）：经公开 API 组装 ``db.get_entries``
+    窄读 + ``decrypt_entry`` 详情解密。测试断言数据往返用此助手；防回退守护断言
+    ``EntryManager`` 上无同名方法。
+
+    与原实现的差异：不再包 ``epoch_guarded_read`` / epoch 失配返空——单线程测试
+    体内无并发改密窗口，锁定态会经 ``decrypt_entry`` 的密钥守卫自然抛
+    ``VaultLockedError``（原实现同样在锁定期传播该异常）。
+    """
+    raw_entries = entry_mgr.db.get_entries(
+        EntryQuery(
+            deleted_only=deleted_only,
+            include_deleted=include_deleted,
+            category_id=category_id,
+            favorite_only=favorite_only,
+        )
+    )
+    return [entry_mgr.decrypt_entry(raw) for raw in raw_entries]

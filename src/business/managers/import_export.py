@@ -27,11 +27,12 @@ from ...exceptions import (
 from ...models import MAX_CATEGORY_NAME, MAX_IMPORT_FILE_SIZE, Category, Entry, RawEntry
 from ...utils.file_security import atomic_write, validate_file_path
 from ..services.entry_batch_writer import (
-    PROGRESS_REPORT_EVERY,
     BatchUpdateItem,
     PreparedUpdate,
     encrypt_new_entries,
+    phase_progress,
     prepare_overwrite_updates,
+    should_report_progress,
     write_new_entries,
     write_overwrite_updates,
 )
@@ -87,12 +88,11 @@ _EXPORT_WRITE_SPAN = 30
 def _phase_progress(base: int, span: int, done: int, total: int) -> int:
     """把阶段内进度 ``(done/total)`` 映射为加权总进度百分比。
 
-    ``done >= total`` 时取满 ``base + span``；``total <= 0``（空阶段）同样取满，
-    保持进度单调不减。整数下取整使连续上报值单调不降。
+    薄委托 :func:`entry_batch_writer.phase_progress`（MAINT-099 共享单一事实源，
+    base/span 形态适配 start/end 形态）：``done >= total`` 或 ``total <= 0``（空
+    阶段）取满 ``base + span``，保持进度单调不减；整数下取整使连续上报值单调不降。
     """
-    if total <= 0 or done >= total:
-        return base + span
-    return base + span * done // total
+    return phase_progress(done, total, base, base + span)
 
 
 def _emit_milestone(callbacks: "ImportCallbacks", value: int) -> None:
@@ -294,7 +294,7 @@ class ImportExportManager:
     ) -> tuple[set[int], dict[int, int]]:
         """按重复策略生成导入计划，返回 ``(跳过索引集, 覆盖目标 id 映射)``。
 
-        按 ``(title, username)`` casefold 匹配已有条目，策略决定返回语义：
+        按 ``(title, username)`` strip().casefold 匹配已有条目，策略决定返回语义：
         - ``import_all``：两者均空，全部作为新增。
         - ``skip``：重复项索引收入跳过集，覆盖映射为空。
         - ``overwrite``：重复项 ``索引 → 已有条目 id`` 收入覆盖映射，跳过集为空。
@@ -309,10 +309,19 @@ class ImportExportManager:
         if duplicate_action == "import_all":
             return set(), {}
 
+        # 库内侧键与导入侧对称 strip().casefold()（QL-063）：JSON 导入路径
+        # Entry.from_dict 不 strip 标题，库内可存在带首尾空白的标题，仅 casefold
+        # 会漏匹配使 skip/overwrite 失效（产生本应被拦截的重复条目）。归一在消费处
+        # 完成——get_entry_dedup_index 返回的 meta 同时供摘要缓存等路径复用，不在
+        # 生产侧（entry_manager）改写键构造。
+        # 「无标题不入去重」守卫测 strip 后判空（QL-063 补齐）：守卫若测未 strip
+        # 值，纯空白标题（' '）通过守卫、键 strip 后成 ''，与无标题导入项的
+        # ('', username) 键匹配——skip 丢行 / overwrite 覆盖到空白标题条目，
+        # 违背守卫「无标题不入去重」的本意。
         existing_by_key = {
-            (title.casefold(), username.casefold()): entry_id
+            (title.strip().casefold(), username.strip().casefold()): entry_id
             for title, username, entry_id in self._entry_mgr.get_entry_dedup_index()
-            if title
+            if title.strip()
         }
         matched = {}
         for index, item in enumerate(entries_data):
@@ -634,9 +643,7 @@ class ImportExportManager:
             # 逐条上报的跨线程信号发射开销反超分类本身，与 entry_batch_writer 的
             # 加密/写入阶段同款节流纪律；进度语义不变——total 含全部条目，单调不减，
             # 后续阶段不突跳）。加权映射到总进度 12%→15%。
-            if callbacks.progress_callback is not None and (
-                (i + 1) % PROGRESS_REPORT_EVERY == 0 or i + 1 == total
-            ):
+            if callbacks.progress_callback is not None and should_report_progress(i + 1, total):
                 callbacks.progress_callback(
                     _phase_progress(_PROGRESS_PLAN_DONE, _PROGRESS_CLASSIFY_SPAN, i + 1, total),
                     _IMPORT_PROGRESS_TOTAL,
@@ -762,9 +769,9 @@ class ImportExportManager:
 
         old_password 延迟提取（SEC-013/PERF-006）：留 None 由 prepare_overwrite_updates
         的 prepared 阶段逐条解密、比对即 del，避免全部旧密码同刻驻留。
-        ``failures`` 索引对齐 ``overwrite_plans``（同序），取原 source idx 记日志，
-        不打印标题（可能含敏感信息）。``progress`` 透传 prepare_overwrite_updates
-        供覆盖加密阶段上报（PERF-069）。
+        ``failures`` 的索引 0 基对齐 ``overwrite_plans``（与 batch_items 同序构建，
+        QL-062），取原 source idx 记日志，不打印标题（可能含敏感信息）。
+        ``progress`` 透传 prepare_overwrite_updates 供覆盖加密阶段上报（PERF-069）。
         """
         if not overwrite_plans:
             return [], 0
@@ -781,7 +788,7 @@ class ImportExportManager:
             progress=progress,
         )
         skipped = 0
-        # batch_failures 索引对齐 batch_items（与 overwrite_plans 同序）；
+        # batch_idx 为 0 基索引，直接对齐同序构建的 overwrite_plans（QL-062）；
         # 取原 source idx 记日志，不打印标题（可能含敏感信息）。
         for batch_idx, failure_exc in batch_failures:
             plan = overwrite_plans[batch_idx]

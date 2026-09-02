@@ -52,7 +52,7 @@ class BackgroundWorker(QThread, Generic[_T]):
             return result
 
         worker = BackgroundWorker(heavy_task)
-        worker.progress.connect(lambda cur, total: progress_bar.setValue(cur))
+        worker.progress.connect(lambda cur, total: progress_bar.setValue(cur, total))
         worker.start()
 
     取消::
@@ -145,39 +145,68 @@ def wait_worker_shutdown(
     """取消并等待后台 worker 结束，统一关闭时的取消-等待模式。
 
     Args:
-        worker: BackgroundWorker 实例，为 None 或未运行时直接返回。
+        worker: BackgroundWorker 实例，为 None 时直接返回。
         cancel: 是否先请求协作取消。恢复/导入等有写入副作用的操作传 False，
             仅等待其自然完成以确保数据一致性。
-        timeout: 等待超时毫秒，默认 WORKER_WAIT_TIMEOUT_MS。
+        timeout: 等待超时毫秒数，默认 WORKER_WAIT_TIMEOUT_MS。
 
-    供对话框 reject 与主窗口锁定/关闭时复用。
+    供对话框 reject 与主窗口锁定/关闭时复用。等待线程退出后断开全部信号
+    （QL-067，见 :func:`_disconnect_worker_signals`），丢弃仍排队未投递的延迟回调。
     """
-    if worker is None or not worker.isRunning():
+    if worker is None:
         return True
-    if timeout is None:
-        from ..resources.constants import WORKER_WAIT_TIMEOUT_MS
+    if worker.isRunning():
+        if timeout is None:
+            from ..resources.constants import WORKER_WAIT_TIMEOUT_MS
 
-        timeout = WORKER_WAIT_TIMEOUT_MS
-    if cancel:
-        worker.cancel()
-    worker.wait(timeout)
-    # 超时后 worker 仍运行属异常：父对象析构时 QThread 处于 running 会触发
-    # Qt 致命警告（QThread: Destroyed while thread is still running）并崩溃。
-    # 记录 error 提升可见性；配合业务层 cancel_check 应使长操作快速退出，
-    # 正常情况下不会触发此告警。
-    if worker.isRunning():
-        logger.error(
-            "后台 worker 等待 %dms 后仍在运行，再等待一个同等周期作为兜底",
-            timeout,
-        )
+            timeout = WORKER_WAIT_TIMEOUT_MS
+        if cancel:
+            worker.cancel()
         worker.wait(timeout)
-    if worker.isRunning():
-        # 兜底超时后仍运行属极端异常（worker 卡死）。继续无限等待会让关闭永久
-        # 挂起，比 QThread 析构警告更影响体验；记录 critical 后放弃等待，由调用方
-        # 决定后续（接受可能的 Qt 警告）。不调用 terminate()，因其强制终止可能
-        # 留下未释放的资源与不一致状态。
-        logger.critical(
-            "后台 worker 兜底等待 %dms 后仍在运行，放弃等待以避免关闭永久卡死",
-            timeout,
-        )
+        # 超时后 worker 仍运行属异常：父对象析构时 QThread 处于 running 会触发
+        # Qt 致命警告（QThread: Destroyed while thread is still running）并崩溃。
+        # 记 error 提升可见性；配合业务层 cancel_check 应使长操作快速退出，
+        # 正常情况下不会触发此告警。
+        if worker.isRunning():
+            logger.error(
+                "后台 worker 等待 %dms 后仍在运行，再等待一个同等周期作为兜底",
+                timeout,
+            )
+            worker.wait(timeout)
+        if worker.isRunning():
+            # 兜底超时后仍运行属极端异常（worker 卡死）。继续无限等待会让关闭永久
+            # 挂起，比 QThread 析构警告更影响体验；记录 critical 后放弃等待，由调用方
+            # 决定后续（接受可能的 Qt 警告）。不调用 terminate()，因其强制终止可能
+            # 留下未释放的资源与不一致状态。
+            logger.critical(
+                "后台 worker 兜底等待 %dms 后仍运行，放弃等待以避免关闭永久卡死",
+                timeout,
+            )
+    _disconnect_worker_signals(worker)
     return not worker.isRunning()
+
+
+def _disconnect_worker_signals(worker: BackgroundWorker[Any]) -> None:
+    """断开 worker 的全部信号，丢弃仍排队未投递的延迟回调（QL-067）。
+
+    背景（锁定清零链同步 GC 的配套加固）：worker 线程退出前发射的
+    ``finished``/``error`` 等信号经队列连接投递到 GUI 线程，事件要到下次事件
+    循环才送达；若等待方在投递前执行完整 ``gc.collect()``（vault 锁定清零链
+    ``clear_vault_state`` 的同步 GC），GC 可能回收 PyQt 闭包槽连接的内部代理
+    结构，其后事件循环投递该排队事件时解引用悬挂指针 → access violation
+    （``_locked``/identity 等守卫不可达——崩溃发生在进入槽函数体之前的 C++
+    投递层，实测进入函数首行前即崩溃）。关闭路径在等待线程退出后统一断开
+    信号，Qt 投递时即丢弃已断开连接的排队事件，消除该窗口。
+
+    防御式实现：getattr 容忍测试替身无信号属性；PyQt 对「无连接可断」的
+    disconnect 抛 TypeError（部分版本为 RuntimeError），静默吞掉——目标状态
+    （无连接）已达成。
+    """
+    for signal_name in ("finished", "error", "cancelled", "progress"):
+        signal = getattr(worker, signal_name, None)
+        if signal is None:
+            continue
+        try:
+            signal.disconnect()
+        except (RuntimeError, TypeError):
+            pass

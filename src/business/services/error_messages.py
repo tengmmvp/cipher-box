@@ -6,6 +6,8 @@
 归一为固定友好提示，不暴露 ``str(exc)`` 内部细节（列名/crypto_id/驱动信息）；用户
 输入校验类 ``ValueError`` 保留其面向用户的可操作消息。``DecryptionError`` 虽是
 ``ValueError`` 子类，但在 ``ValueError`` 分支前已按 ``CipherBoxError`` 归一，不透传。
+例外：携带面向用户文案的 ``RestoreAbortedError`` / ``ShareError`` / 纯 ``VaultError``
+本体（系统错误包装通道，ARCH-042）保留原文——子类的罐头映射先于本体分支命中。
 """
 
 from __future__ import annotations
@@ -21,8 +23,10 @@ from ...exceptions import (
     EntryIntegrityError,
     ImportDataError,
     PayloadTooLargeError,
+    RestoreAbortedError,
     SchemaError,
     ShareError,
+    VaultError,
     VaultIntegrityError,
     VaultKeyEpochMismatchError,
     VaultLockedError,
@@ -64,9 +68,21 @@ def to_user_message(exc: BaseException, *, default: str = "操作失败，请重
         exc: 待翻译的异常。
         default: 未明确归类的异常兜底文案，调用方可按场景定制。
     """
+    # RestoreAbortedError 是携带面向用户文案的 BackupError 子类（ARCH-045），须
+    # 先于 _FIXED_MESSAGES 的 BackupError 归一分支拦截以保留原文——与 ImportDataError/
+    # ShareError 的保留语义一致（如「请输入创建备份时设置的备份密码」）。
+    if isinstance(exc, RestoreAbortedError):
+        return str(exc).strip() or default
     for exc_type, message in _FIXED_MESSAGES:
         if isinstance(exc, exc_type):
             return message
+    # 纯 VaultError 本体：携带面向用户文案的系统错误通道（ARCH-042——vault_lifecycle
+    # 把系统错误经 to_user_message 翻译后以 VaultError 包装，子类（VaultLockedError 等）
+    # 已在上方 _FIXED_MESSAGES 命中罐头映射，本体则保留原文），否则 worker error 通道
+    # 的二次翻译会把磁盘满/IO 错误的准确文案覆盖为「操作失败，请重试。」。抛出方须
+    # 保证 str 面向用户（不携内部细节），与 ImportDataError/ShareError 契约一致。
+    if isinstance(exc, VaultError):
+        return str(exc).strip() or default
     if isinstance(exc, OSError):
         if exc.errno == errno.ENOSPC:
             return "磁盘空间不足。"

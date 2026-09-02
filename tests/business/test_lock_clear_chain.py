@@ -8,9 +8,11 @@
 3. ``close()`` 安全：密钥清零、数据库连接关闭，且**双 close 幂等不抛异常**；
 4. ``lock()`` 后再 unlock 仍可正常工作（清零不破坏后续解锁能力）。
 
-经 ``vault._key_mgr._key`` / ``_snapshot_key`` 直接观测 KeyManager 内部 bytearray
-槽位是否回落 None——只有内部 bytearray 被置 None 才表明 secure_zero_buffer 已原地
-清零并释放引用（property 返回的 bytes 副本无法反映清零）。
+经 ``vault._key_mgr.key`` / ``.snapshot_key``（KeyManager 公开只读 property）观测
+内部 bytearray 槽位是否回落 None——property 仅在内部槽位为 None 时返回 None，
+「清零了 bytearray 但未释放引用」的回归会返回全零 bytes（非 None）被本测试捕获。
+``vault._key_mgr`` 单层私有访问保留：密钥清零是 KeyManager 的白盒安全属性，
+VaultManager 无等价公开观测面（is_unlocked 无法区分标志清零与密钥清零）。
 """
 
 from src.crypto.encryption import _cipher_cache
@@ -35,16 +37,16 @@ class TestLockClearsKeys:
             assert ok
             # 前置条件：解锁后密钥材料就位
             assert vault.is_unlocked
-            assert vault._key_mgr._key is not None
-            assert vault._key_mgr._snapshot_key is not None
+            assert vault._key_mgr.key is not None
+            assert vault._key_mgr.snapshot_key is not None
 
             vault.lock()
 
             # is_unlocked 同时要求 _is_unlocked 标志与主密钥就位，二者均被清后为 False
             assert vault.is_unlocked is False
             # KeyManager 内部 bytearray 槽位置 None：secure_zero_buffer 已原地清零
-            assert vault._key_mgr._key is None
-            assert vault._key_mgr._snapshot_key is None
+            assert vault._key_mgr.key is None
+            assert vault._key_mgr.snapshot_key is None
         finally:
             vault.close()
 
@@ -69,6 +71,50 @@ class TestClearVaultStateEmptiesCipherCache:
             vault.close()
 
 
+class TestClearVaultStateRunsGcSynchronously:
+    """5. clear_vault_state 在调用线程同步执行 GC（PERF-084 已撤销）。
+
+    gc.collect 可能 finalize 引用循环中的无父 QObject，在非 GUI 线程删除 C++
+    对象会破坏 Qt 线程亲和（「Timers cannot be stopped from another thread」
+    警告或间歇崩溃）。PERF-084 曾把 GC 移入 threading.Timer 后台线程引入该风险，
+    已撤销：清零与 GC 在调用线程（lock 的调用方为 GUI 线程）同步完成；锁定低频
+    且窗口已隐藏，同步段的大堆遍历卡顿可接受。
+    """
+
+    def test_clear_vault_state_runs_gc_in_calling_thread(self, vault_config, monkeypatch):
+        """清零同步段内于调用线程执行 GC；公开 force_gc 为同一立即执行入口。
+
+        以实例级 spy 观察 force_gc（不 patch 全局 gc.collect，避免干扰 pytest
+        内部的 GC 行为）。
+        """
+        import threading
+
+        vault = make_vault(vault_config)
+        try:
+            vault.initialize(_MASTER_PASSWORD, params=_WEAK_KDF)
+            ok, _ = vault.unlock(_MASTER_PASSWORD)
+            assert ok
+
+            gc_threads: list[int] = []
+            real_force_gc = vault.force_gc
+            monkeypatch.setattr(
+                vault,
+                "force_gc",
+                lambda: (gc_threads.append(threading.get_ident()), real_force_gc()),
+            )
+
+            vault.clear_vault_state()
+
+            # 清零与 GC 均已同步完成，且 GC 与调用方同线程（Qt 线程亲和）
+            assert vault._key_mgr.key is None
+            assert gc_threads == [threading.get_ident()]
+        finally:
+            try:
+                vault.close()
+            except Exception:
+                pass
+
+
 class TestCloseSafety:
     """3. close() 安全：密钥清零、数据库连接关闭，且双 close 幂等。"""
 
@@ -82,8 +128,8 @@ class TestCloseSafety:
             vault.close()
 
             assert vault.is_unlocked is False
-            assert vault._key_mgr._key is None
-            assert vault._key_mgr._snapshot_key is None
+            assert vault._key_mgr.key is None
+            assert vault._key_mgr.snapshot_key is None
             # close 经 self._db.close() 关闭连接：_conn 回落 None
             assert vault._db.is_open is False
         finally:
@@ -101,6 +147,9 @@ class TestCloseSafety:
             # 第二次 close 不得抛异常：close 经 lock()→clear_vault_state（已清零则空转）
             # 与 _db.close()（_conn 已 None 则跳过）均为幂等
             vault.close()
+            # 终态值比对：双 close 后保持锁定且连接已关
+            assert vault.is_unlocked is False
+            assert vault._key_mgr.key is None
         finally:
             try:
                 vault.close()
@@ -126,7 +175,7 @@ class TestUnlockAfterLock:
             ok2, msg = vault.unlock(_MASTER_PASSWORD)
             assert ok2, msg
             assert vault.is_unlocked
-            assert vault._key_mgr._key is not None
-            assert vault._key_mgr._snapshot_key is not None
+            assert vault._key_mgr.key is not None
+            assert vault._key_mgr.snapshot_key is not None
         finally:
             vault.close()

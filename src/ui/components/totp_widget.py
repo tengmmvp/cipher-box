@@ -62,6 +62,7 @@ class TOTPWidget(QObject):
         entry_manager: EntryManager,
         content_layout: QVBoxLayout,
         secret: str | None = None,
+        data_epoch: str | None = None,
     ) -> None:
         """启动 TOTP 刷新。
 
@@ -70,10 +71,12 @@ class TOTPWidget(QObject):
             entry_manager: EntryManager 实例，用于获取 TOTP 状态
             content_layout: TOTP 区域加入的目标布局（DetailPanel._content_layout）
             secret: 调用方已解密的 totp_secret 明文（可选，避免 get_state 二次解密）
+            data_epoch: secret 的解密世代（SEC-054）：随 secret 从 DetailPanel 透传，
+                预热写入按世代复查，跨恢复窗口的旧世代 secret 不落新世代缓存
         """
         self._entry_mgr = entry_manager
         self._content_layout = content_layout
-        self._build(entry_id, secret)
+        self._build(entry_id, secret, data_epoch=data_epoch)
 
     def stop(self) -> None:
         self._timer.stop()
@@ -104,11 +107,21 @@ class TOTPWidget(QObject):
 
     # ---- 内部方法 ----
 
-    def _build(self, entry_id: int, secret: str | None = None) -> None:
+    def _build(
+        self,
+        entry_id: int,
+        secret: str | None = None,
+        *,
+        data_epoch: str | None = None,
+    ) -> None:
         """构建 TOTP 区域并启动刷新。secret 为调用方已解密的 totp_secret（可选）。"""
         if not self._entry_mgr:
             return
-        state = self._entry_mgr.totp.get_state(entry_id, preloaded_secret=secret)
+        state = self._entry_mgr.totp.get_state(
+            entry_id,
+            preloaded_secret=secret,
+            data_epoch=data_epoch,
+        )
         if not state:
             return
         self._entry_id = entry_id

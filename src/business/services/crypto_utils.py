@@ -1,9 +1,11 @@
-"""业务层字段加解密与列表搜索/标签过滤的共享工具。
+"""业务层字段加解密的统一入口与加密字段集单一事实源。
 
 ``encrypt_field``/``decrypt_field`` 为条目与分类字段加解密的统一入口，确保 AAD 构造
 一致（防密文在条目或字段间置换）；``SENSITIVE_ENCRYPTED_FIELDS`` 为全项目加密字段集
 的单一事实源，新增加密字段须同步解密/构建与签名绑定（详见常量处注释）。另含保险库
-解锁守卫（:func:`require_vault_key`）与列表搜索、标签过滤等无状态辅助。
+解锁守卫（:func:`require_vault_key`）。搜索谓词/视图构造/备份 portable dict 解密已按
+职责域拆出（MAINT-097）：见 entry_search_match / entry_view_decryption /
+backup.collector。
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Protocol, TypedDict, Unpack
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     # VaultDataStore（数据库协议切片）替代具体 DatabaseManager：本模块实际只用
@@ -21,7 +23,7 @@ if TYPE_CHECKING:
 
 from ...crypto.encryption import EncryptionEngine
 from ...exceptions import DecryptionError, VaultLockedError
-from ...models import CustomField, Entry, RawEntry
+from ...models import RawEntry
 
 logger = logging.getLogger(__name__)
 
@@ -42,40 +44,6 @@ class KeyProvider(Protocol):
 
     @property
     def key(self) -> bytes: ...
-
-
-class EntryOverrides(TypedDict, total=False):
-    """copy_entry_fields 的可选覆盖字段，键集合与 :class:`Entry` 字段一一对应。
-
-    total=False 全可选。custom_fields 解密路径传 ``list[CustomField]``；password
-    运行时可为 :class:`Sensitive`（str 子类），标注为 str 兼容二者。
-    """
-
-    id: int | None
-    crypto_id: str
-    title: str
-    username: str
-    password: str
-    url: str
-    category_id: int | None
-    category_name: str
-    tags: str
-    notes: str
-    custom_fields: list[CustomField]
-    is_favorite: bool
-    is_deleted: bool
-    password_strength: int
-    entry_type: str
-    totp_secret: str
-    created_at: str
-    updated_at: str
-    deleted_at: str
-    password_changed_at: str
-    metadata_mac: str
-    integrity_error: bool
-    integrity_message: str
-    password_present: bool
-    totp_present: bool
 
 
 # 条目需加密的敏感字段名（逻辑属性名）。加解密字段集的单一事实源，新增加密字段
@@ -194,8 +162,8 @@ def decrypt_string_fields_strict(
     任一字段解密失败抛 :class:`DecryptionError`（strict），调用方按各自语义包装。
 
     供导出路径的两条同构解密链路消费（EntryViewDecryptor.decrypt_entry_for_export 组装 Entry
-    与本模块 decrypt_entry_to_portable_dict 组装 portable dict），消除手工逐字段
-    枚举——新增加密字段只需加入 SENSITIVE_ENCRYPTED_FIELDS，两条路径自动跟随，
+    与 backup/collector.decrypt_entry_to_portable_dict 组装 portable dict），消除手工
+    逐字段枚举——新增加密字段只需加入 SENSITIVE_ENCRYPTED_FIELDS，两条路径自动跟随，
     不会静默漏解密。
     """
     return {
@@ -214,154 +182,10 @@ def decrypt_string_fields_strict(
     }
 
 
-def matches_search(entry: Entry | RawEntry, query: str) -> bool:
-    """检查条目是否匹配搜索关键词（大小写不敏感，搜 title/username/url/tags）。
-
-    Args:
-        entry: 待匹配的明文 Entry 摘要。生产路径不应传入 RawEntry。
-        query: 搜索关键词，空串匹配所有。
-    """
-    if not query:
-        return True
-    kw = query.lower()
-    username = entry.username or ""
-    return (
-        kw in (entry.title or "").lower()
-        or kw in username.lower()
-        or kw in (entry.url or "").lower()
-        or kw in (entry.tags or "").lower()
-    )
-
-
-def matches_search_lower(
-    lower: tuple[str, str, str, str],
-    query: str,
-) -> bool:
-    """检查条目是否匹配搜索关键词，复用预计算的小写字段值，省去每条目 4 次 ``.lower()``。
-
-    供批量搜索热路径消除 N×4 次 ``.lower()`` 开销，匹配语义与 :func:`matches_search` 一致。
-
-    Args:
-        lower: 预计算小写形式的 (title, username, url, tags)。
-        query: 搜索关键词，空串匹配所有。
-    """
-    if not query:
-        return True
-    kw = query.lower()
-    return kw in lower[0] or kw in lower[1] or kw in lower[2] or kw in lower[3]
-
-
-def matches_tag(entry: Entry, tag: str) -> bool:
-    """检查条目是否含指定标签（大小写不敏感精确匹配），解析逻辑与 ``Entry.get_tag_list()`` 一致。"""
-    if not tag:
-        return True
-    tag_lower = tag.strip().lower()
-    entry_tags = [t.strip().lower() for t in (entry.tags or "").split(",") if t.strip()]
-    return tag_lower in entry_tags
-
-
-def copy_entry_fields(raw: RawEntry, **overrides: Unpack[EntryOverrides]) -> Entry:
-    """从密文态 RawEntry 构建明文 Entry，按需覆盖字段。
-
-    RawEntry 与 Entry 是不同 dataclass，不能跨类型 ``dataclasses.replace``（产出 RawEntry），
-    故直接构造。custom_fields 默认空 list，解密路径应在 overrides 传入解密后的 list。
-    """
-    return Entry(
-        id=overrides.get("id", raw.id),
-        crypto_id=overrides.get("crypto_id", raw.crypto_id),
-        title=overrides.get("title", raw.title),
-        username=overrides.get("username", raw.username),
-        password=overrides.get("password", raw.password),
-        url=overrides.get("url", raw.url),
-        category_id=overrides.get("category_id", raw.category_id),
-        category_name=overrides.get("category_name", raw.category_name),
-        tags=overrides.get("tags", raw.tags),
-        notes=overrides.get("notes", raw.notes),
-        custom_fields=overrides.get("custom_fields", []),
-        is_favorite=overrides.get("is_favorite", raw.is_favorite),
-        is_deleted=overrides.get("is_deleted", raw.is_deleted),
-        password_strength=overrides.get("password_strength", raw.password_strength),
-        entry_type=overrides.get("entry_type", raw.entry_type),
-        totp_secret=overrides.get("totp_secret", raw.totp_secret),
-        created_at=overrides.get("created_at", raw.created_at),
-        updated_at=overrides.get("updated_at", raw.updated_at),
-        deleted_at=overrides.get("deleted_at", raw.deleted_at),
-        password_changed_at=overrides.get("password_changed_at", raw.password_changed_at),
-        metadata_mac=overrides.get("metadata_mac", raw.metadata_mac),
-        integrity_error=overrides.get("integrity_error", raw.integrity_error),
-        integrity_message=overrides.get("integrity_message", raw.integrity_message),
-        password_present=overrides.get("password_present", bool(raw.password)),
-        totp_present=overrides.get("totp_present", bool(raw.totp_secret)),
-    )
-
-
-def build_entry_summary(raw: RawEntry, username: str = "") -> Entry:
-    """从原始数据库字段构建摘要 Entry（不含敏感字段，仅用于列表显示与安全分析）。"""
-    return copy_entry_fields(
-        raw,
-        username=username,
-        password="",
-        notes="",
-        custom_fields=[],
-        totp_secret="",
-    )
-
-
-def decrypt_entry_to_portable_dict(
-    raw_entry: RawEntry,
-    key: bytes | bytearray,
-    *,
-    include_secrets: bool = True,
-) -> dict[str, Any]:
-    """将原始 Entry 解密为明文字典，任一字段损坏抛异常。供备份/导出等整条解密场景。
-
-    字符串型加密字段经 :func:`decrypt_string_fields_strict` 统一解密（QL-018 单一
-    事实源），本函数仅组装 portable dict 并单独处理 custom_fields 的 JSON 反序列化。
-
-    Args:
-        raw_entry: 数据库层原始 Entry，加密字段为密文字符串。
-        key: AES-256 密钥。
-        include_secrets: 是否包含密码和 TOTP 密钥等敏感字段。
-
-    Raises:
-        DecryptionError: 元数据完整性失败，或任一加密字段解密失败。
-        json.JSONDecodeError: 自定义字段密文解密成功但 JSON 结构损坏。
-    """
-    if raw_entry.integrity_error:
-        raise DecryptionError(f"条目 {raw_entry.crypto_id} 元数据完整性校验失败")
-    # 全部加密字段统一 strict=True：任一字段损坏即抛 DecryptionError。实际触发极少，
-    # 因 metadata_mac 已绑定全部加密字段密文（title/url/tags 直接入签，余者经 _enc_hash），
-    # 损坏会先触发完整性失败。
-    fields = decrypt_string_fields_strict(raw_entry, key, include_secrets=include_secrets)
-    custom_json = decrypt_field(
-        raw_entry.custom_fields_db_value,
-        key,
-        raw_entry.crypto_id,
-        "custom_fields",
-        strict=True,
-    )
-    custom_fields = json.loads(custom_json) if custom_json else []
-    return {
-        "id": raw_entry.id,
-        "crypto_id": raw_entry.crypto_id,
-        **fields,
-        "custom_fields": custom_fields,
-        "category_id": raw_entry.category_id,
-        "password_strength": raw_entry.password_strength,
-        "entry_type": raw_entry.entry_type,
-        "is_favorite": raw_entry.is_favorite,
-        "is_deleted": raw_entry.is_deleted,
-        "created_at": raw_entry.created_at,
-        "updated_at": raw_entry.updated_at,
-        "deleted_at": raw_entry.deleted_at,
-        "password_changed_at": raw_entry.password_changed_at,
-    }
-
-
 def build_encrypted_entry_fields(
     item: dict[str, Any], key: bytes | bytearray, crypto_id: str
 ) -> dict[str, Any]:
-    """加密条目的敏感字段，与 decrypt_entry_to_portable_dict 对称。
+    """加密条目的敏感字段，与 backup/collector.decrypt_entry_to_portable_dict 对称。
 
     供备份恢复等从明文字典重建加密条目场景，字段集与解密侧保持一致避免漂移。
 

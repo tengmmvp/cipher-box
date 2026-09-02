@@ -8,8 +8,6 @@ VaultManager 的初始化与改密重加密、BackupRestoreManager 的备份恢�
 
 import dataclasses
 import os
-import shutil
-import tempfile
 from pathlib import Path
 from unittest.mock import PropertyMock, patch
 
@@ -22,20 +20,22 @@ from src.crypto.encryption import EncryptionEngine
 from src.database.db_manager import DatabaseManager
 from src.exceptions import DatabaseError, VaultLockedError
 from src.models import Category, CustomField, Entry, RawEntry
-from tests.helpers import make_backup_manager, make_entry_manager, make_test_config, make_vault
+from tests.helpers import (
+    decrypt_all_entries,
+    make_backup_manager,
+    make_entry_manager,
+)
 
 
 @pytest.fixture()
-def entry_mgr_env():
-    """创建 VaultManager + EntryManager，返回 (entry_mgr, vault, tmp_dir)。"""
-    tmp_dir = tempfile.mkdtemp()
-    config = make_test_config(tmp_dir)
-    vault = make_vault(config)
-    vault.initialize("test_password_123")
-    entry_mgr = make_entry_manager(vault)
-    yield entry_mgr, vault, tmp_dir
-    vault.close()
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+def entry_mgr_env(make_vault_env):
+    """创建 VaultManager + EntryManager，返回 (entry_mgr, vault, tmp_dir)。
+
+    经 conftest 的 make_vault_env 工厂组装（建库/初始化/EntryManager/teardown
+    close 统一收敛），主密码 ``test_password_123`` 供测试体内改密/解锁引用。
+    """
+    env = make_vault_env(master_password="test_password_123")
+    yield env.entry_mgr, env.vault, str(env.root)
 
 
 def test_add_and_retrieve_entry(entry_mgr_env):
@@ -59,7 +59,7 @@ def test_add_and_retrieve_entry(entry_mgr_env):
     assert entry_id > 0
 
     # 获取并解密
-    entries = entry_mgr.get_entries()
+    entries = decrypt_all_entries(entry_mgr)
     assert len(entries) == 1
 
     decrypted = entries[0]
@@ -221,25 +221,26 @@ def test_get_all_tags(entry_mgr_env):
 
 
 @pytest.fixture()
-def vault_lifecycle_env():
-    """创建临时目录和 config，返回 (config, tmp_dir)。"""
-    tmp_dir = tempfile.mkdtemp()
-    config = make_test_config(tmp_dir)
-    yield config, tmp_dir
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+def vault_lifecycle_env(make_vault_env):
+    """创建已装配未初始化的 vault + config，返回 (env, master_pwd)。
+
+    生命周期测试自行驱动 initialize/unlock/lock 流程（工厂 initialize=False），
+    teardown 的 close 由工厂统一兜底（幂等）。
+    """
+    env = make_vault_env(initialize=False)
+    return env, "test_password_123"
 
 
 def test_initialize_and_unlock(vault_lifecycle_env):
     """锁定清零密钥后，凭主密码重新解锁数据可读，错误密码解锁失败。"""
-    config, _tmp_dir = vault_lifecycle_env
-    master_pwd = "test_password_123"
+    env, master_pwd = vault_lifecycle_env
+    vault = env.vault
 
     # 1. 初始化并添加条目
-    vault = make_vault(config)
     assert vault.initialize(master_pwd)[0]
     assert vault.is_unlocked
 
-    entry_mgr = make_entry_manager(vault)
+    entry_mgr = env.entry_mgr
     entry_id = entry_mgr.add_entry(
         Entry(
             title="持久化测试",
@@ -263,7 +264,7 @@ def test_initialize_and_unlock(vault_lifecycle_env):
 
     # 4. 验证数据可读
     entry_mgr2 = make_entry_manager(vault)
-    entries = entry_mgr2.get_entries()
+    entries = decrypt_all_entries(entry_mgr2)
     assert len(entries) == 1
     assert entries[0].title == "持久化测试"
     assert entries[0].username == "persistent_user"
@@ -278,14 +279,14 @@ def test_initialize_and_unlock(vault_lifecycle_env):
 
 def test_change_password_re_encrypts(vault_lifecycle_env):
     """改密后所有条目可用新密钥解密。"""
-    config, _tmp_dir = vault_lifecycle_env
+    env, _master_pwd = vault_lifecycle_env
+    vault = env.vault
     old_pwd = "old_password_123"
     new_pwd = "new_password_456"
 
     # 1. 初始化 + 添加条目
-    vault = make_vault(config)
     vault.initialize(old_pwd)
-    entry_mgr = make_entry_manager(vault)
+    entry_mgr = env.entry_mgr
 
     totp_secret = "JBSWY3DPEHPK3PXP"
     entry_id = entry_mgr.add_entry(
@@ -302,7 +303,7 @@ def test_change_password_re_encrypts(vault_lifecycle_env):
 
     # 3. 验证 get_entries 仍能正确解密
     entry_mgr2 = make_entry_manager(vault)
-    entries = entry_mgr2.get_entries()
+    entries = decrypt_all_entries(entry_mgr2)
     assert len(entries) == 1
     assert entries[0].username == "rekey_user"
     assert entries[0].password == "MySecretP@ss!"
@@ -328,17 +329,11 @@ def test_change_password_re_encrypts(vault_lifecycle_env):
 
 
 @pytest.fixture()
-def backup_restore_env():
-    """创建 VaultManager + EntryManager + BackupRestoreManager。"""
-    tmp_dir = tempfile.mkdtemp()
-    config = make_test_config(tmp_dir)
-    vault = make_vault(config)
-    vault.initialize("test_password_123")
-    entry_mgr = make_entry_manager(vault)
-    backup_mgr = make_backup_manager(vault, entry_mgr)
-    yield entry_mgr, backup_mgr, vault, tmp_dir
-    vault.close()
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+def backup_restore_env(make_vault_env):
+    """创建 VaultManager + EntryManager + BackupRestoreManager（经 conftest 工厂组装）。"""
+    env = make_vault_env(master_password="test_password_123")
+    backup_mgr = make_backup_manager(env.vault, env.entry_mgr)
+    yield env.entry_mgr, backup_mgr, env.vault, str(env.root)
 
 
 def test_backup_and_restore_preserves_all_fields(backup_restore_env):
@@ -377,13 +372,13 @@ def test_backup_and_restore_preserves_all_fields(backup_restore_env):
 
     # 4. 清空条目，通过恢复备份验证数据是否完整
     entry_mgr.permanent_delete_entry(entry_id)
-    assert len(entry_mgr.get_entries()) == 0
+    assert len(decrypt_all_entries(entry_mgr)) == 0
 
     # 5. 恢复备份
     assert backup_mgr.restore_backup(backup_path)
 
     # 6. 验证所有字段完整
-    entries = entry_mgr.get_entries()
+    entries = decrypt_all_entries(entry_mgr)
     assert len(entries) == 1
 
     restored = entries[0]
@@ -459,22 +454,16 @@ def test_unlock_after_master_change_verifies_vault_meta_mac(entry_mgr_env):
     success, error = vault.unlock("NewMasterPassword!2026")
     assert success, f"改密后解锁失败（vault_meta_mac 可能未用新域密钥重算）: {error}"
     # 改密后条目用新密钥重加密 + 重签 metadata_mac，解锁后可正确解密
-    entries = entry_mgr.get_entries()
+    entries = decrypt_all_entries(entry_mgr)
     assert any(e.title == "改密前条目" for e in entries)
 
 
 @pytest.fixture()
-def security_analyzer_env():
-    """创建 VaultManager + EntryManager + SecurityAnalyzer。"""
-    tmp_dir = tempfile.mkdtemp()
-    config = make_test_config(tmp_dir)
-    vault = make_vault(config)
-    vault.initialize("test_password_123")
-    entry_mgr = make_entry_manager(vault)
-    analyzer = SecurityAnalyzer(vault, EntryCacheManager(vault))
-    yield entry_mgr, analyzer, vault, tmp_dir
-    vault.close()
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+def security_analyzer_env(make_vault_env):
+    """创建 VaultManager + EntryManager + SecurityAnalyzer（经 conftest 工厂组装）。"""
+    env = make_vault_env(master_password="test_password_123")
+    analyzer = SecurityAnalyzer(env.vault, EntryCacheManager(env.vault))
+    yield env.entry_mgr, analyzer, env.vault, str(env.root)
 
 
 def test_full_analysis(security_analyzer_env):
@@ -537,16 +526,13 @@ def test_empty_password_not_counted_as_weak(security_analyzer_env):
 
 
 @pytest.fixture()
-def db_env():
-    """创建 DatabaseManager。"""
-    tmp_dir = tempfile.mkdtemp()
-    db_path = Path(tmp_dir) / "test_vault.db"
-    db = DatabaseManager(db_path, test_mode=True)
+def db_env(tmp_path):
+    """创建 DatabaseManager（db 层直连，不经 vault 装配）。"""
+    db = DatabaseManager(tmp_path / "test_vault.db", test_mode=True)
     db.open()
     db.init_tables()
-    yield db, tmp_dir
+    yield db, str(tmp_path)
     db.close()
-    shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def test_transaction_commit(db_env):
@@ -612,17 +598,11 @@ def test_transaction_rollback(db_env):
 
 
 @pytest.fixture()
-def import_export_env():
-    """创建 VaultManager + EntryManager + ImportExportManager。"""
-    tmpdir = tempfile.mkdtemp()
-    config = make_test_config(tmpdir)
-    vault = make_vault(config)
-    vault.initialize("test_password_123")
-    entry_mgr = make_entry_manager(vault)
-    import_export = ImportExportManager(entry_mgr)
-    yield entry_mgr, import_export, vault, tmpdir
-    vault.close()
-    shutil.rmtree(tmpdir, ignore_errors=True)
+def import_export_env(make_vault_env):
+    """创建 VaultManager + EntryManager + ImportExportManager（经 conftest 工厂组装）。"""
+    env = make_vault_env(master_password="test_password_123")
+    import_export = ImportExportManager(env.entry_mgr)
+    yield env.entry_mgr, import_export, env.vault, str(env.root)
 
 
 def test_json_roundtrip(import_export_env):
@@ -641,21 +621,21 @@ def test_json_roundtrip(import_export_env):
     assert entry_id > 0
 
     # 2. 导出 JSON
-    entries = entry_mgr.get_entries()
+    entries = decrypt_all_entries(entry_mgr)
     json_path = str(Path(tmpdir) / "export.json")
     import_export.export_to_json(json_path, entries, include_password=True)
     assert os.path.exists(json_path)
 
     # 3. 删除条目
     entry_mgr.permanent_delete_entry(entry_id)
-    assert len(entry_mgr.get_entries()) == 0
+    assert len(decrypt_all_entries(entry_mgr)) == 0
 
     # 4. 导入 JSON
     count = import_export.import_file(json_path, "json")
     assert count == 1
 
     # 5. 验证数据完整
-    restored = entry_mgr.get_entries()
+    restored = decrypt_all_entries(entry_mgr)
     assert len(restored) == 1
     assert restored[0].title == "导入导出测试"
     assert restored[0].username == "export_user@example.com"
@@ -681,21 +661,21 @@ def test_csv_roundtrip(import_export_env):
     assert entry_id > 0
 
     # 2. 导出 CSV
-    entries = entry_mgr.get_entries()
+    entries = decrypt_all_entries(entry_mgr)
     csv_path = str(Path(tmpdir) / "export.csv")
     import_export.export_to_csv(csv_path, entries, include_password=True)
     assert os.path.exists(csv_path)
 
     # 3. 删除条目
     entry_mgr.permanent_delete_entry(entry_id)
-    assert len(entry_mgr.get_entries()) == 0
+    assert len(decrypt_all_entries(entry_mgr)) == 0
 
     # 4. 导入 CSV
     count = import_export.import_file(csv_path, "csv")
     assert count == 1
 
     # 5. 验证 title、username、url 等基本字段
-    restored = entry_mgr.get_entries()
+    restored = decrypt_all_entries(entry_mgr)
     assert len(restored) == 1
     assert restored[0].title == "CSV测试条目"
     assert restored[0].username == "csv_user@example.com"
@@ -716,12 +696,10 @@ def test_decrypt_with_wrong_key():
         EncryptionEngine.decrypt(ciphertext, key2, aad)
 
 
-def test_backup_with_locked_vault():
+def test_backup_with_locked_vault(make_vault_env):
     """锁定状态创建备份应失败。"""
-    tmp_dir = tempfile.mkdtemp()
-    config = make_test_config(tmp_dir)
-    vault = make_vault(config)
-    vault.initialize("test_password_123")
+    env = make_vault_env(master_password="test_password_123")
+    vault = env.vault
     backup_mgr = make_backup_manager(vault)
 
     # 锁定保险库
@@ -729,21 +707,15 @@ def test_backup_with_locked_vault():
     assert not vault.is_unlocked
 
     # 锁定状态下创建备份应返回失败及错误信息
-    backup_path = str(Path(tmp_dir) / "locked_backup.cbox")
+    backup_path = str(env.root / "locked_backup.cbox")
     result = backup_mgr.create_backup(backup_path)
     assert not result[0]
     assert len(result[1]) > 0
 
-    vault.close()
-    shutil.rmtree(tmp_dir, ignore_errors=True)
 
-
-def test_change_password_wrong_old():
+def test_change_password_wrong_old(make_vault_env):
     """旧密码错误时改密应失败。"""
-    tmp_dir = tempfile.mkdtemp()
-    config = make_test_config(tmp_dir)
-    vault = make_vault(config)
-    vault.initialize("OriginalMaster!2026")
+    vault = make_vault_env(master_password="OriginalMaster!2026").vault
 
     # 用错误的旧密码改密应返回 False
     result = vault.change_master_password("WrongOldMaster!2026", "NewMasterPassword!2026")
@@ -753,22 +725,17 @@ def test_change_password_wrong_old():
     vault.lock()
     assert vault.unlock("OriginalMaster!2026")[0]
 
-    vault.close()
-    shutil.rmtree(tmp_dir, ignore_errors=True)
 
-
-def test_ensure_db_open_raises_when_db_cannot_open():
+def test_ensure_db_open_raises_when_db_cannot_open(make_vault_env):
     """ensure_db_open 在 DB 打开失败时应抛 DatabaseError（命令-查询分离，ARCH-004）。
 
     is_initialized 现为纯查询，打开数据库的副作用与失败判定移至 ensure_db_open 命令侧：
     打开失败时显式抛 DatabaseError 而非静默降级，避免调用方误判为未初始化。
     """
-    tmp_dir = tempfile.mkdtemp()
-    config = make_test_config(tmp_dir)
-    vault = make_vault(config)
+    vault = make_vault_env(initialize=False).vault
 
     # 确保 db_path 存在使文件检查通过
-    db_file = Path(tmp_dir) / "vault.db"
+    db_file = Path(vault.config.db_path)
     db_file.touch()
 
     # 让 is_open 返回 False、open() 返回 False，模拟数据库无法打开
@@ -776,6 +743,3 @@ def test_ensure_db_open_raises_when_db_cannot_open():
         with patch.object(vault._db, "open", return_value=False):
             with pytest.raises(DatabaseError):
                 vault.ensure_db_open()
-
-    vault.close()
-    shutil.rmtree(tmp_dir, ignore_errors=True)

@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
@@ -20,7 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from ...business.managers.vault_manager import AUTH_FAILED_MESSAGE, VaultManager
+from ...business.managers.vault_manager import VaultManager
 from ...business.services.password_service import PasswordService
 from ...business.services.rate_limiter import RateLimiter
 from ..components.widgets import (
@@ -40,9 +39,6 @@ from ..resources.constants import (
 )
 from ..resources.strings import DLG_TITLE_ERROR, DLG_TITLE_SUCCESS
 
-if TYPE_CHECKING:
-    from ...config import ConfigManager
-
 logger = logging.getLogger(__name__)
 
 
@@ -52,17 +48,14 @@ class ChangeMasterDialog(WorkerBackedDialog):
     def __init__(
         self,
         vault_manager: VaultManager,
-        config: ConfigManager | None = None,
+        rate_limiter: RateLimiter,
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
         self._vault = vault_manager
-        self._config = config
-        # 直接索引 `data_dir`：缺失时即时暴露，而非 `getattr` 静默退化为仅内存限流。
-        state_path = self._vault.data_dir / "change_master_rate_limit.json"
-        # 传入 config：使 `RateLimiter` 把哨兵登记到签名 config，关闭「同时删除
-        # 状态文件+哨兵即归零计数」的绕过。`config=None` 时退回仅文件配对检测。
-        self._rate_limiter = RateLimiter(state_path, config)
+        # 限流器经组合根创建注入（ARCH-043）：有跨进程持久状态的业务安全模块，
+        # 状态文件命名与哨兵登记归业务层单一事实源，UI 不再实例化。
+        self._rate_limiter = rate_limiter
         self._setup_ui()
 
     def _clear_password_inputs(self) -> None:
@@ -89,8 +82,17 @@ class ChangeMasterDialog(WorkerBackedDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(14)
         layout.setContentsMargins(36, 30, 36, 30)
+        # _build_* 分块构建（MAINT-094，对齐 entry_dialog 模式）：标题 → 三段密码输入 →
+        # 强度/提示 → 按钮行，纯机械搬移不改控件树与行为。
+        self._build_header(layout)
+        self._build_old_password_field(layout)
+        self._build_new_password_field(layout)
+        self._build_confirm_password_field(layout)
+        self._build_feedback_labels(layout)
+        layout.addLayout(self._build_buttons())
 
-        # 标题
+    def _build_header(self, layout: QVBoxLayout) -> None:
+        """构建标题与说明区。"""
         title = QLabel("修改主密码")
         title.setStyleSheet("font-size: 17px; font-weight: 600;")
         layout.addWidget(title)
@@ -100,64 +102,66 @@ class ChangeMasterDialog(WorkerBackedDialog):
         info.setWordWrap(True)
         layout.addWidget(info)
 
-        # 旧密码
-        layout.addWidget(QLabel("当前主密码："))
-        old_pwd_layout = QHBoxLayout()
-        self._old_pwd = QLineEdit()
-        self._old_pwd.setEchoMode(QLineEdit.EchoMode.Password)
-        self._old_pwd.setPlaceholderText("请输入当前主密码")
-        old_pwd_layout.addWidget(self._old_pwd)
-        self._old_toggle = create_password_toggle_btn(
-            self._old_pwd,
-            auto_hide_seconds=PWD_TOGGLE_AUTO_HIDE_SECONDS,
-        )
-        old_pwd_layout.addWidget(self._old_toggle)
-        layout.addLayout(old_pwd_layout)
+    def _build_old_password_field(self, layout: QVBoxLayout) -> None:
+        """构建当前主密码输入行。"""
+        self._old_pwd = self._make_pwd_edit("请输入当前主密码")
+        self._add_pwd_field_row(layout, "当前主密码：", self._old_pwd, "_old_toggle")
 
-        # 新密码
-        layout.addWidget(QLabel("新主密码："))
-        new_pwd_layout = QHBoxLayout()
-        self._new_pwd = QLineEdit()
-        self._new_pwd.setEchoMode(QLineEdit.EchoMode.Password)
-        self._new_pwd.setPlaceholderText("请输入新主密码（至少 15 位）")
+    def _build_new_password_field(self, layout: QVBoxLayout) -> None:
+        """构建新主密码输入行（强度联动）。"""
+        self._new_pwd = self._make_pwd_edit("请输入新主密码（至少 15 位）")
         self._new_pwd.textChanged.connect(self._on_pwd_changed)
-        new_pwd_layout.addWidget(self._new_pwd)
-        self._new_toggle = create_password_toggle_btn(
-            self._new_pwd,
-            auto_hide_seconds=PWD_TOGGLE_AUTO_HIDE_SECONDS,
-        )
-        new_pwd_layout.addWidget(self._new_toggle)
-        layout.addLayout(new_pwd_layout)
+        self._add_pwd_field_row(layout, "新主密码：", self._new_pwd, "_new_toggle")
 
-        # 确认新密码
-        layout.addWidget(QLabel("确认新密码："))
-        confirm_pwd_layout = QHBoxLayout()
-        self._confirm_pwd = QLineEdit()
-        self._confirm_pwd.setEchoMode(QLineEdit.EchoMode.Password)
-        self._confirm_pwd.setPlaceholderText("请再次输入新主密码")
+    def _build_confirm_password_field(self, layout: QVBoxLayout) -> None:
+        """构建确认新密码输入行（回车直接提交）。"""
+        self._confirm_pwd = self._make_pwd_edit("请再次输入新主密码")
         self._confirm_pwd.returnPressed.connect(self._on_change)
-        confirm_pwd_layout.addWidget(self._confirm_pwd)
-        self._confirm_toggle = create_password_toggle_btn(
-            self._confirm_pwd,
-            auto_hide_seconds=PWD_TOGGLE_AUTO_HIDE_SECONDS,
-        )
-        confirm_pwd_layout.addWidget(self._confirm_toggle)
-        layout.addLayout(confirm_pwd_layout)
+        self._add_pwd_field_row(layout, "确认新密码：", self._confirm_pwd, "_confirm_toggle")
 
-        # 强度
+    def _add_pwd_field_row(
+        self,
+        layout: QVBoxLayout,
+        label_text: str,
+        edit: QLineEdit,
+        toggle_attr: str,
+    ) -> None:
+        """把「标签 + 密码框 + 显示切换按钮」行加入布局。
+
+        三段密码输入（当前/新/确认）行结构同构，经本 helper 组装消除三段复制
+        （MAINT-094）；切换按钮经 ``setattr`` 存入 ``toggle_attr`` 指定的实例属性。
+        """
+        layout.addWidget(QLabel(label_text))
+        field_layout = QHBoxLayout()
+        field_layout.addWidget(edit)
+        toggle = create_password_toggle_btn(edit, auto_hide_seconds=PWD_TOGGLE_AUTO_HIDE_SECONDS)
+        setattr(self, toggle_attr, toggle)
+        field_layout.addWidget(toggle)
+        layout.addLayout(field_layout)
+
+    @staticmethod
+    def _make_pwd_edit(placeholder: str) -> QLineEdit:
+        """构建密码输入框（密码回显模式 + 占位文案）。"""
+        edit = QLineEdit()
+        edit.setEchoMode(QLineEdit.EchoMode.Password)
+        edit.setPlaceholderText(placeholder)
+        return edit
+
+    def _build_feedback_labels(self, layout: QVBoxLayout) -> None:
+        """构建强度显示与错误提示标签。"""
         self._strength_label = QLabel("")
         self._strength_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._strength_label.setStyleSheet("font-size: 12px;")
         layout.addWidget(self._strength_label)
 
-        # 提示
         self._msg_label = QLabel("")
         self._msg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._msg_label.setObjectName("formMessage")
         set_label_severity(self._msg_label, "error")
         layout.addWidget(self._msg_label)
 
-        # 按钮
+    def _build_buttons(self) -> QHBoxLayout:
+        """构建取消与修改按钮行。"""
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
@@ -168,8 +172,7 @@ class ChangeMasterDialog(WorkerBackedDialog):
         self._change_btn.setFixedSize(*BTN_DIALOG)
         self._change_btn.clicked.connect(self._on_change)
         btn_layout.addWidget(self._change_btn)
-
-        layout.addLayout(btn_layout)
+        return btn_layout
 
     def _on_pwd_changed(self, text: str) -> None:
         update_strength_label(self._strength_label, text)
@@ -250,12 +253,12 @@ class ChangeMasterDialog(WorkerBackedDialog):
             QMessageBox.information(self, DLG_TITLE_SUCCESS, message)
             self.accept()
         else:
-            display_msg = error_msg or AUTH_FAILED_MESSAGE
-            # 仅明确的认证失败计入速率限制；新密码校验问题或系统错误不惩罚用户
-            if error_msg == AUTH_FAILED_MESSAGE:
-                lock_seconds = self._rate_limiter.record_failure()
-            else:
-                lock_seconds = 0
+            # (False, ...) 契约下唯一语义为认证失败（ARCH-042 对齐 unlock）：一律计入
+            # 速率限制；新密码策略问题与系统错误走 worker.error 异常通道（
+            # _on_change_error），不惩罚用户——不再比对文案字符串，文案调整/i18n 不会
+            # 使改密暴力尝试脱离限流。
+            display_msg = error_msg or "当前主密码错误"
+            lock_seconds = self._rate_limiter.record_failure()
             if lock_seconds > 0:
                 self._msg_label.setText(
                     f"{display_msg}。尝试次数过多，请等待 {lock_seconds} 秒后重试"

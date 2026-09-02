@@ -9,6 +9,7 @@ import json
 from typing import cast
 
 from src.models import CustomField, Entry, Sensitive
+from tests.helpers import decrypt_all_entries
 
 
 def test_entry_json_roundtrip(tmp_path):
@@ -198,7 +199,7 @@ def test_import_from_bitwarden_json_sanitizes_url_and_totp(entry_mgr, tmp_path):
     count = mgr.import_file(str(bw_path), "bitwarden_json")
 
     assert count == 2
-    by_title = {e.title: e for e in entry_mgr.get_entries()}
+    by_title = {e.title: e for e in decrypt_all_entries(entry_mgr)}
     danger = by_title["Danger"]
     assert danger.url == ""  # javascript: scheme 已清空
     assert danger.totp_secret == ""  # 无效 base32 已清空

@@ -12,7 +12,7 @@ from typing import IO
 
 from ....models import Entry
 from ....utils.format import utc_now_iso
-from ...services.entry_batch_writer import PROGRESS_REPORT_EVERY
+from ...services.entry_batch_writer import should_report_progress
 
 
 def write_json_entries(
@@ -55,7 +55,7 @@ def write_json_entries(
         f.write("\n".join(f"    {line}" for line in serialized.splitlines()))
         first = False
         written += 1
-        if progress is not None and (written % PROGRESS_REPORT_EVERY == 0 or written == total):
+        if progress is not None and should_report_progress(written, total):
             progress(written, total)
     if progress is not None and total == 0:
         progress(0, 0)  # 空导出也上报终值（UI 侧映射为 100，进度不留悬挂）

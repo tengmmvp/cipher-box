@@ -11,8 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from src.business.managers.backup_restore import BackupRestoreManager
-from src.business.managers.restore_point_manager import RestorePointManager
 from src.business.services.backup.header_codec import (
     BACKUP_MAGIC,
     BACKUP_SALT_SIZE,
@@ -21,21 +19,19 @@ from src.business.services.backup.header_codec import (
 from src.crypto.master_key import DEFAULT_KDF_PARAMS, MasterKeyManager
 from src.exceptions import BackupError
 from src.models import Entry
-from tests.helpers import make_entry_manager, make_vault
+from tests.helpers import decrypt_all_entries, make_backup_manager
 
 
 class TestBackupCorruption:
     """备份文件损坏与恢复边界场景测试集合。"""
 
     @pytest.fixture(autouse=True)
-    def setup_vault(self, tmp_path, vault_config):
+    def setup_vault(self, tmp_path, make_vault_env):
+        env = make_vault_env(master_password="test_password_12345")
         self._tmp_dir = str(tmp_path)
-        self._vault = make_vault(vault_config)
-        self._vault.initialize("test_password_12345")
-        self._entry_mgr = make_entry_manager(self._vault)
-        self._backup_mgr = BackupRestoreManager(
-            self._vault, self._entry_mgr, RestorePointManager(self._vault)
-        )
+        self._vault = env.vault
+        self._entry_mgr = env.entry_mgr
+        self._backup_mgr = make_backup_manager(self._vault, self._entry_mgr)
         self._entry_mgr.add_entry(
             Entry(
                 title="测试条目",
@@ -46,8 +42,6 @@ class TestBackupCorruption:
                 entry_type="login",
             )
         )
-        yield
-        self._vault.close()
 
     def _create_valid_backup(self, filepath: str, password: str = "BackupTest!2026"):
         """创建一个有效的密码保护备份。"""
@@ -139,17 +133,37 @@ class TestBackupCorruption:
         path = os.path.join(self._tmp_dir, "verify.cbox")
         self._create_valid_backup(path, "Verify_Pwd!2026")
 
-        original = self._entry_mgr.get_entries()[0]
+        original = decrypt_all_entries(self._entry_mgr)[0]
 
         success, error = self._backup_mgr.restore_backup(path, "Verify_Pwd!2026")
         assert success, f"恢复失败: {error}"
 
-        restored = self._entry_mgr.get_entries()[0]
+        restored = decrypt_all_entries(self._entry_mgr)[0]
         assert restored.title == original.title
         assert restored.username == original.username
         assert restored.password == original.password
         assert restored.url == original.url
         assert restored.notes == original.notes
+
+    def test_restore_progress_reports_monotonic_weighted_values(self):
+        """恢复进度上报加权总进度：单调不减、total 恒 100、终值 100（PERF-083）。"""
+        path = os.path.join(self._tmp_dir, "progress.cbox")
+        self._create_valid_backup(path, "BackupTest!2026")
+
+        reports: list[tuple[int, int]] = []
+        success, error = self._backup_mgr.restore_backup(
+            path, "BackupTest!2026", progress=lambda cur, total: reports.append((cur, total))
+        )
+        assert success, f"恢复失败: {error}"
+
+        assert reports, "恢复进度须有上报（大库恢复全程模态，进度条不可空转）"
+        values = [cur for cur, _total in reports]
+        # 加权总进度契约：total 恒 100、值单调不减（阶段区间连续衔接）、终值恒 100
+        assert all(total == 100 for _cur, total in reports)
+        assert values == sorted(values)
+        assert values[-1] == 100
+        # 首个上报为解密完成里程碑（5），其后进入恢复点创建/重建区间
+        assert values[0] == 5
 
     def test_inspect_rejects_unknown_flags(self):
         """包含未知标志的备份应被拒绝。"""
@@ -207,7 +221,7 @@ class TestBackupCorruption:
         success, error = self._backup_mgr.restore_backup(path, "DeletedEntry!26")
         assert success, f"恢复失败: {error}"
 
-        all_entries = self._entry_mgr.get_entries(include_deleted=True)
+        all_entries = decrypt_all_entries(self._entry_mgr, include_deleted=True)
         deleted = [e for e in all_entries if e.is_deleted]
         assert len(deleted) >= 1
 
@@ -235,6 +249,8 @@ class TestBackupCorruption:
 
     def test_restore_point_cleaned_on_creation_exception(self, monkeypatch):
         """恢复点创建抛异常时应触发清理，避免含明文的恢复点残留。"""
+        from src.business.managers.restore_point_manager import RestorePointManager
+
         path = os.path.join(self._tmp_dir, "rp.cbox")
         self._create_valid_backup(path, "BackupTest!2026")
 
@@ -286,7 +302,7 @@ class TestBackupCorruption:
             "降级路径应有可见的 warning 日志（QL-047）"
         )
         # 恢复数据照常落库（当前库条目被备份内容替换）
-        restored = self._entry_mgr.get_entries()
+        restored = decrypt_all_entries(self._entry_mgr)
         assert [e.title for e in restored] == ["测试条目"]
 
     def test_restore_point_other_exceptions_still_abort(self, monkeypatch):
@@ -319,14 +335,12 @@ class TestRestorePlaintextRelease:
     """
 
     @pytest.fixture(autouse=True)
-    def setup_vault(self, tmp_path, vault_config):
+    def setup_vault(self, tmp_path, make_vault_env):
+        env = make_vault_env(master_password="test_password_12345")
         self._tmp_dir = str(tmp_path)
-        self._vault = make_vault(vault_config)
-        self._vault.initialize("test_password_12345")
-        self._entry_mgr = make_entry_manager(self._vault)
-        self._backup_mgr = BackupRestoreManager(
-            self._vault, self._entry_mgr, RestorePointManager(self._vault)
-        )
+        self._vault = env.vault
+        self._entry_mgr = env.entry_mgr
+        self._backup_mgr = make_backup_manager(self._vault, self._entry_mgr)
         self._entry_mgr.add_entry(
             Entry(
                 title="释放契约条目",
@@ -337,8 +351,6 @@ class TestRestorePlaintextRelease:
                 entry_type="login",
             )
         )
-        yield
-        self._vault.close()
 
     def _create_snapshot_backup(self, filepath: str) -> str:
         """创建快照备份（不经 Argon2id 密码派生，加速本组契约测试）。"""

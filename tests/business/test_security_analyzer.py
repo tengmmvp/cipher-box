@@ -1,18 +1,19 @@
 """``SecurityAnalyzer.compute_health_score`` 与搜索匹配等价性测试。
 
 覆盖 ``src/business/services/security_analyzer.py::compute_health_score`` 静态方法的
-边界（空库、满分、各档累加、clamp）与 ``src/business/services/crypto_utils.py`` 的
-``matches_search`` / ``matches_search_lower`` 在相同输入下结果等价（后者复用预计算
-小写字段，是前者的批量优化版，匹配语义须完全一致）。
+边界（空库、满分、各档累加、clamp）与 ``src/business/services/entry_search_match.py``
+的 ``matches_search`` / ``matches_search_lower`` 在相同输入下结果等价（后者复用预
+计算小写字段，是前者的批量优化版，匹配语义须完全一致）。
 """
 
 import dataclasses
 
 import pytest
 
-from src.business.services.crypto_utils import matches_search, matches_search_lower
+from src.business.services.entry_search_match import matches_search, matches_search_lower
 from src.business.services.security_analyzer import SecurityAnalyzer
 from src.models import Entry
+from tests.helpers import decrypt_all_entries
 
 
 class TestComputeHealthScore:
@@ -185,20 +186,146 @@ class TestIncrementalCacheInvalidation:
         assert baseline["weak_count"] == refreshed["weak_count"]
         assert baseline["old"] == refreshed["old"]
 
-    def test_add_and_delete_still_fully_invalidate(self, ctx_vault):
-        """增删条目不携带 crypto_id（全量语义），缓存整体失效下次重算。"""
+    def test_add_delete_restore_are_incremental(self, ctx_vault, monkeypatch):
+        """增删恢复携带 crypto_id 走单条增量（PERF-079）：缓存保留、total 差分正确。
+
+        原行为：增删经 crypto_id=None 触发整库失效，100ms 后状态栏 worker 执行
+        full_analysis（O(n) 全库解密+指纹+摘要）。现 add/restore 重读插入并按缓存
+        成员资格上调 total，delete 见 is_deleted 构造移除差分下调 total——全程
+        不触发整库重算。
+        """
         ctx, _vault = ctx_vault
-        entry_id = ctx.entry_mgr.add_entry(Entry(title="t", username="u", password="pw123456"))
-        ctx.security.get_or_compute_report()
-        assert ctx.security._analysis_cache is not None
+        ctx.entry_mgr.add_entry(Entry(title="t", username="u", password="pw123456"))
+        report = ctx.security.get_or_compute_report()
+        assert report["total"] == 1
 
+        monkeypatch.setattr(ctx.security, "full_analysis", self._forbid_full_analysis())
+
+        # 新增：total 1→2，缓存命中即反映（无整库重算）
         ctx.entry_mgr.add_entry(Entry(title="t2", username="u2", password="pw654321"))
-        assert ctx.security._analysis_cache is None
+        refreshed = ctx.security.get_or_compute_report()
+        assert refreshed["total"] == 2
 
-        ctx.security.get_or_compute_report()
-        assert ctx.security._analysis_cache is not None
+        # 与全量重算等价（新鲜实例直接从库计算）
+        self._assert_matches_fresh_full_analysis(ctx)
+
+        # 软删除：total 2→1，重复/弱名单同步移除
+        entry_id = next(e.id for e in decrypt_all_entries(ctx.entry_mgr) if e.title == "t2")
         ctx.entry_mgr.delete_entry(entry_id)
+        refreshed = ctx.security.get_or_compute_report()
+        assert refreshed["total"] == 1
+        self._assert_matches_fresh_full_analysis(ctx)
+
+        # 恢复：total 1→2（重读插入）
+        ctx.entry_mgr.restore_entry(entry_id)
+        refreshed = ctx.security.get_or_compute_report()
+        assert refreshed["total"] == 2
+        self._assert_matches_fresh_full_analysis(ctx)
+
+        # 物理删除（回收站路径，条目已软删）：差分幂等 no-op，total 不变
+        ctx.entry_mgr.delete_entry(entry_id)
+        ctx.security.get_or_compute_report()
+        ctx.entry_mgr.permanent_delete_entry(entry_id)
+        refreshed = ctx.security.get_or_compute_report()
+        assert refreshed["total"] == 1
+        self._assert_matches_fresh_full_analysis(ctx)
+
+    @staticmethod
+    def _assert_matches_fresh_full_analysis(ctx) -> None:
+        """增量后的缓存报告与新鲜全量分析在四项计数上一致（等价守护）。"""
+        from src.business.managers.entry_cache import EntryCacheManager
+        from src.business.services.security_analyzer import SecurityAnalyzer
+
+        refreshed = ctx.security.get_or_compute_report()
+        fresh = SecurityAnalyzer(ctx.vault, EntryCacheManager(ctx.vault)).full_analysis()
+        for key in ("total", "weak_count", "duplicate_count", "old"):
+            assert refreshed[key] == fresh[key], f"增量与全量在 {key} 上分叉"
+
+    def test_delete_flips_duplicate_state_incrementally(self, ctx_vault, monkeypatch):
+        """删除共享密码的一条：另一条离开重复分组，total 差分 -1，不整库重算。"""
+        ctx, _vault = ctx_vault
+        shared = "SharedDelete!2026"
+        ctx.entry_mgr.add_entry(Entry(title="A", username="a", password=shared))
+        id_b = ctx.entry_mgr.add_entry(Entry(title="B", username="b", password=shared))
+        report = ctx.security.get_or_compute_report()
+        assert report["total"] == 2
+        assert report["duplicate_count"] == 1
+
+        monkeypatch.setattr(ctx.security, "full_analysis", self._forbid_full_analysis())
+        ctx.entry_mgr.delete_entry(id_b)
+
+        refreshed = ctx.security.get_or_compute_report()
+        assert refreshed["duplicate_count"] == 0
+        assert refreshed["duplicate_groups"] == []
+        assert refreshed["total"] == 1
+
+    def test_add_with_empty_cache_falls_back_cleanly(self, ctx_vault):
+        """缓存缺失时增删通知回退全量失效语义（无缓存可增量，行为不变）。"""
+        ctx, _vault = ctx_vault
+        ctx.entry_mgr.add_entry(Entry(title="t", username="u", password="pw123456"))
+        # 未曾 get_or_compute_report → _analysis_cache 为 None，增量路径返回 False
+        # 后的全量失效对 None 缓存是无操作，随后首次计算正常覆盖新条目。
         assert ctx.security._analysis_cache is None
+        report = ctx.security.get_or_compute_report()
+        assert report["total"] == 1
+
+
+class TestInflightInvalidationGenerationGuard:
+    """在飞 full_analysis 期间的全量失效不污染缓存（PERF-080 补全的写回守卫）。
+
+    场景：状态栏 worker 的 full_analysis 读库后用户删除条目 → 删除的增量 notify
+    发现缓存为 None 直接 no-op（仅失效世代递增）→ worker 完成时把删除前报告写入
+    缓存（fresh TTL）→ _on_finished 消费脏标记重启 → fast path get_cached_counts
+    命中刚写的过期报告（原缺陷：计数陈旧需等 TTL 自愈）。守卫：写回前比对失效
+    世代，不一致则丢弃写回（报告照常返回供本次渲染），重启轮走新全量。
+    """
+
+    @pytest.fixture
+    def ctx_vault(self, tmp_path):
+        """组装生产接线的 BusinessContext（change_bus → security 增量失效）。"""
+        from src.business.composition import build_business_context
+        from tests.helpers import make_test_config, make_vault
+
+        config = make_test_config(str(tmp_path))
+        vault = make_vault(config)
+        vault.initialize("TestGenerationGuard!2026")
+        ctx = build_business_context(config, vault)
+        yield ctx, vault
+        vault.close()
+
+    def test_midflight_invalidation_discards_stale_writeback(self, ctx_vault, monkeypatch):
+        """读库后失效、完成后写回：缓存不被过期报告污染，重启轮重新全量。"""
+        ctx, _vault = ctx_vault
+        id_t1 = ctx.entry_mgr.add_entry(Entry(title="t1", username="u", password="pw123456"))
+        ctx.entry_mgr.add_entry(Entry(title="t2", username="u", password="pw654321"))
+
+        # 模拟「worker 读库后、写回前」的并发删除：real_full 返回后才删除，
+        # 契合 full_analysis 已越过读库点、缓存尚未写回的窗口。
+        real_full = ctx.security.full_analysis
+        midflight_done: list[bool] = []
+
+        def _full_then_delete(days, *, cancel_check=None, now=None):
+            report = real_full(days, cancel_check=cancel_check, now=now)
+            if not midflight_done:
+                midflight_done.append(True)
+                ctx.entry_mgr.delete_entry(id_t1)
+            return report
+
+        monkeypatch.setattr(ctx.security, "full_analysis", _full_then_delete)
+
+        report = ctx.security.get_or_compute_report()
+
+        # 本次渲染照常返回删除前报告（worker 结果不丢弃）
+        assert report["total"] == 2
+        assert midflight_done
+        # 核心断言：缓存未被过期报告污染——fast path miss（修复前此处命中
+        # fresh TTL 的 total=2 过期报告）
+        assert ctx.security.get_cached_counts() is None
+        # 脏标记重启轮（_on_finished → update_status_bar → get_or_compute_report）
+        # 走新全量：计数反映删除
+        refreshed = ctx.security.get_or_compute_report()
+        assert refreshed["total"] == 1
+        assert ctx.security.get_cached_counts() is not None
 
 
 # ======== 出口契约与增量重建局部化（PERF-062）========

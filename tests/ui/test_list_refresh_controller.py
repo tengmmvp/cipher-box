@@ -2,7 +2,7 @@
 
 覆盖筛选、排序、列表刷新、状态栏、worker 生命周期：3 定时器创建、锁定态守卫、
 ``@require_unlocked`` 跳过、刷新防抖定时器、排序配置委托、``clear_search`` 分支、
-生命周期方法与缓存 property。
+生命周期方法与缓存 property、fetcher 排序契约、状态栏 worker 的在飞置脏重启。
 
 worker 异步刷新的代际守卫经 ``test_product_hardening`` 端到端守护，亦由本文件
 ``TestStaleWorkerResultDiscarded`` 经 ``_FakeAsyncWorker`` 手动发射 finished 槽
@@ -20,6 +20,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QListWidgetItem, QMainWindow
 
 import src.ui.controllers.entry_refresh_coordinator as coordinator_module
+import src.ui.controllers.list_refresh_controller as lr_module
 from src.ui.controllers.list_refresh_controller import (
     ListRefreshController,
     ListRefreshDeps,
@@ -52,16 +53,21 @@ class _FakeAsyncWorker:
         self.error = _FakeSignal()
         self.cancelled = _FakeSignal()
         self.cancel_calls = 0
+        self.running = False
         type(self).instances.append(self)
+
+    @property
+    def cancel_check(self):
+        return lambda: False
 
     def cancel(self) -> None:
         self.cancel_calls += 1
 
     def isRunning(self) -> bool:
-        return False
+        return self.running
 
     def start(self) -> None:
-        pass
+        self.running = True
 
 
 def _make_view() -> ListRefreshView:
@@ -93,7 +99,6 @@ def _make_controller() -> ListRefreshController:
     """构造 controller，配置 mock 使 setup 初始填充（空集合）可运行。"""
     entry_list_ctrl = MagicMock()
     entry_list_ctrl.get_fetcher.return_value = lambda *a, **k: ([], "标题")
-    entry_list_ctrl.sort_entries.return_value = []
     sidebar_ctrl = MagicMock()
     sidebar_ctrl.get_categories.return_value = []
     sidebar_ctrl.get_category_entry_counts.return_value = {}
@@ -292,8 +297,10 @@ class TestStaleWorkerResultDiscarded:
 
         ctrl.refresh_entries()  # generation → G，启动 worker_old
         worker_old = _FakeAsyncWorker.instances[-1]
-        # 模拟用户再次触发刷新：代际推进，worker_old 的 generation 已过期
-        ctrl._coordinator._entry_refresh_generation += 1
+        # 模拟用户再次触发刷新：走真实刷新路径推进代际（不再直改内部计数器），
+        # worker_old 的 generation 已过期
+        ctrl.refresh_entries()
+        assert _FakeAsyncWorker.instances[-1] is not worker_old  # 新 worker 已取代
         self._fire_finished(worker_old, ([], "过期结果"))
 
         view.entry_model.set_entries.assert_not_called()
@@ -304,8 +311,11 @@ class TestStaleWorkerResultDiscarded:
 
         ctrl.refresh_entries()  # worker 捕获 filter_key='all'
         worker = _FakeAsyncWorker.instances[-1]
-        # 模拟用户切换过滤器，旧 worker 的 filter_key='all' 已与当前 _current_filter 不符
-        ctrl._current_filter = "favorite"
+        # 模拟用户切换过滤器：走真实信号处理路径（不再直写 _current_filter），
+        # 旧 worker 的 filter_key='all' 已与当前 _current_filter 不符
+        item = QListWidgetItem()
+        item.setData(Qt.ItemDataRole.UserRole, "favorite")
+        ctrl.on_filter_changed(item, None)
         self._fire_finished(worker, ([], "过期结果"))
 
         view.entry_model.set_entries.assert_not_called()
@@ -331,9 +341,9 @@ class TestStaleWorkerResultDiscarded:
         ctrl, view = self._async_controller(monkeypatch)
         ctrl.refresh_entries()  # 启动异步 worker（generation=G）
         worker = _FakeAsyncWorker.instances[-1]
-        gen_before = ctrl._coordinator._entry_refresh_generation
+        gen_before = ctrl._coordinator.entry_refresh_generation
         ctrl._coordinator.cancel_entry_worker()
-        assert ctrl._coordinator._entry_refresh_generation == gen_before + 1
+        assert ctrl._coordinator.entry_refresh_generation == gen_before + 1
         # 旧 worker 延迟完成：generation 不匹配 → 丢弃，不刷新 UI
         self._fire_finished(worker, ([], "过期结果"))
         view.entry_model.set_entries.assert_not_called()
@@ -348,10 +358,140 @@ class TestStaleWorkerResultDiscarded:
         ctrl._sidebar_ctrl.tags_cache_valid = False
         ctrl.refresh_tag_filter()  # 大库 + 缓存失效 → 启动异步 tag worker
         tag_worker = _FakeAsyncWorker.instances[-1]
-        gen_before = ctrl._coordinator._tag_refresh_generation
+        gen_before = ctrl._coordinator.tag_refresh_generation
         view.tag_combo.clear.reset_mock()  # 隔离 setup 初始同步填充的重建调用
         ctrl._coordinator.cancel_tag_worker()
-        assert ctrl._coordinator._tag_refresh_generation == gen_before + 1
+        assert ctrl._coordinator.tag_refresh_generation == gen_before + 1
         # 旧 tag worker 延迟完成：tag generation 不匹配 → 丢弃，不重建下拉
         self._fire_finished(tag_worker, [("t", 1)])
         view.tag_combo.clear.assert_not_called()
+
+
+class TestFetchForFilterSortContract:
+    """_fetch_for_filter 的排序契约（MAINT-091）：fetcher 已含排序，不再二次重排。
+
+    原实现对 all/favorite/trash 的结果再调 ``_sort_entries``——该调用在异步
+    worker 线程执行时读 ``sort_combo.currentIndex()``（绕过 _build_entry_fetch
+    的快照，QComboBox 不可跨线程访问），且对 fetcher 已按同键排序的结果属稳定
+    空操作。删除后：结果原样透传，sort_entries 零调用。
+    """
+
+    def test_no_resort_after_fetcher(self, qapp):
+        """fetcher 返回的条目顺序原样透传，EntryListController.sort_entries 不被调用。"""
+        ctrl = _make_controller()
+        view = _setup(ctrl)
+        order = ["c", "a", "b"]
+        ctrl._entry_list_ctrl.get_fetcher.return_value = lambda *a, **k: (
+            [MagicMock(title=t) for t in order],
+            "全部条目",
+        )
+        entries, _title = ctrl._fetch_for_filter("all")
+        assert [e.title for e in entries] == order
+        ctrl._entry_list_ctrl.sort_entries.assert_not_called()
+
+    def test_weak_duplicate_do_not_participate_in_sort(self, qapp):
+        """weak/duplicate 视图有意不参与排序切换：fetcher 零参调用、不透传 sort_index。"""
+        ctrl = _make_controller()
+        _setup(ctrl)
+        weak_entries = [MagicMock(title="w")]
+        fetcher_mock = MagicMock(return_value=(weak_entries, "弱"))
+        ctrl._entry_list_ctrl.get_fetcher.return_value = fetcher_mock
+        ctrl._view.sort_combo.currentIndex.return_value = 5
+
+        entries, _title = ctrl._fetch_for_filter("weak")
+
+        assert entries is weak_entries
+        # fetcher 以零参数调用（安全摘要序固定，不透传 sort_index）
+        fetcher_mock.assert_called_once_with()
+        ctrl._entry_list_ctrl.sort_entries.assert_not_called()
+
+
+class TestStatusBarWorkerDirtyRestart:
+    """状态栏 worker 的单飞守卫改「在飞置脏 + 完成后重启」（PERF-080 回归守护）。
+
+    原守卫 ``if self._status_worker.isRunning(): return`` 在 worker 在飞时吞掉新
+    失效——worker 双检发现缓存为 None 后仍写入启动时刻读到的旧数据，删除后状态栏
+    计数陈旧需等 TTL 120s 自愈。现为：在飞置脏 → 完成回调见脏标记重启一轮。
+    """
+
+    _REPORT = {
+        "total": 3,
+        "weak_count": 1,
+        "duplicate_count": 0,
+        "old": 0,
+    }
+
+    def _status_controller(self, monkeypatch):
+        """构造 controller 并 patch 本模块的 BackgroundWorker，配置缓存未命中。"""
+        monkeypatch.setattr(lr_module, "BackgroundWorker", _FakeAsyncWorker)
+        _FakeAsyncWorker.instances = []
+        ctrl = _make_controller()
+        _setup(ctrl)
+        # 缓存未命中 → 走 worker 路径（setup 的初始 update_status_bar 已用真实
+        # QTimer 环境外的 mock counts 命中同步分支，重置为 None 驱动 worker）
+        ctrl._security.get_cached_counts.return_value = None
+        return ctrl
+
+    @staticmethod
+    def _fire_finished(worker: _FakeAsyncWorker, result) -> None:
+        for slot in list(worker.finished.slots):
+            slot(result)
+
+    def test_dirty_flag_restarts_worker_after_finish(self, qapp, monkeypatch):
+        """在飞期间的新失效不被吞：完成回调消费脏标记并重启一轮。"""
+        ctrl = self._status_controller(monkeypatch)
+        ctrl.update_status_bar()  # worker1 启动
+        worker1 = _FakeAsyncWorker.instances[-1]
+        assert worker1.running
+
+        ctrl.update_status_bar()  # 在飞 → 置脏（原实现在此吞掉新失效）
+        assert ctrl._status_dirty is True
+
+        self._fire_finished(worker1, dict(self._REPORT))
+        # 脏标记消费 → 重启：新 worker 创建且脏标记清零
+        assert len(_FakeAsyncWorker.instances) == 2
+        assert ctrl._status_dirty is False
+        assert ctrl._status_worker is _FakeAsyncWorker.instances[-1]
+
+    def test_clean_finish_does_not_restart(self, qapp, monkeypatch):
+        """无在飞失效时完成不重启（脏标记为 False → 单 worker 收尾）。"""
+        ctrl = self._status_controller(monkeypatch)
+        ctrl.update_status_bar()
+        worker = _FakeAsyncWorker.instances[-1]
+
+        self._fire_finished(worker, dict(self._REPORT))
+
+        assert len(_FakeAsyncWorker.instances) == 1
+        assert ctrl._status_worker is None
+        assert ctrl._status_dirty is False
+
+    def test_restart_with_cache_hit_renders_synchronously(self, qapp, monkeypatch):
+        """重启轮缓存已命中：同步渲染即返回，不再拉起新 worker。"""
+        ctrl = self._status_controller(monkeypatch)
+        ctrl.update_status_bar()
+        worker = _FakeAsyncWorker.instances[-1]
+        ctrl.update_status_bar()  # 置脏
+        # 失效的增量更新在完成前已把缓存填回（PERF-079 增删增量的典型时序）
+        ctrl._security.get_cached_counts.return_value = MagicMock(
+            total=3, weak_count=1, duplicate_count=0, old=0
+        )
+
+        self._fire_finished(worker, dict(self._REPORT))
+
+        assert len(_FakeAsyncWorker.instances) == 1  # 缓存命中，无新 worker
+        assert ctrl._status_dirty is False
+
+    def test_error_path_drops_dirty_flag(self, qapp, monkeypatch):
+        """失败路径丢弃脏标记：立即重试大概率再失败，重试交由防抖定时器。"""
+        ctrl = self._status_controller(monkeypatch)
+        ctrl.update_status_bar()
+        worker = _FakeAsyncWorker.instances[-1]
+        ctrl.update_status_bar()  # 置脏
+        assert ctrl._status_dirty is True
+
+        for slot in list(worker.error.slots):
+            slot("boom")
+
+        assert ctrl._status_dirty is False
+        assert ctrl._status_worker is None
+        ctrl._view.status_bar.showMessage.assert_called_with("安全分析暂时不可用")

@@ -13,7 +13,11 @@ if TYPE_CHECKING:
     from PyQt6.QtCore import QEvent, QObject
 
 from . import __version__
-from .business.composition import build_business_context, build_vault
+from .business.composition import (
+    build_business_context,
+    build_login_rate_limiter,
+    build_vault,
+)
 from .business.services.backup.purge import purge_restore_points
 from .config import CFG_THEME, DEFAULT_THEME, ConfigManager
 from .logging_config import configure_logging
@@ -191,7 +195,9 @@ class CipherBoxApp:
         if not self._running:
             return
 
-        login = LoginWindow(self._vault, self._config)
+        # 登录限流器经组合根工厂创建注入（ARCH-043）：每次登录窗口构造各建一个，
+        # 生命周期与窗口一致，跨会话退避状态经状态文件恢复。
+        login = LoginWindow(self._vault, build_login_rate_limiter(self._config))
 
         def on_login() -> None:
             first_show = self._main_window is None

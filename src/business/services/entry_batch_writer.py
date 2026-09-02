@@ -45,6 +45,34 @@ PROGRESS_REPORT_EVERY = 100
 _WRITE_PROGRESS_CHUNK = 500
 
 
+def should_report_progress(done: int, total: int) -> bool:
+    """进度上报节流谓词（单一事实源，MAINT-099）：每 ``PROGRESS_REPORT_EVERY`` 条一次、终值恒上报。
+
+    ``done % PROGRESS_REPORT_EVERY == 0 or done == total`` 此前在加密/覆盖预处理/
+    分类/解密/导出/备份采集/恢复重建等 10 处手抄——任一处漂移（漏终值、误改间隔）
+    即该阶段进度冻结或过密。消费方统一改调本谓词。
+    """
+    return done % PROGRESS_REPORT_EVERY == 0 or done == total
+
+
+def phase_progress(done: int, total: int, start: int, end: int) -> int:
+    """把阶段内进度 ``(done/total)`` 线性映射到 ``[start, end]`` 的加权总进度值（MAINT-099）。
+
+    ``total <= 0``（空阶段）与 ``done >= total``（阶段终值）均返回 ``end``，保持
+    进度单调不减、空阶段不留悬挂；``done <= 0`` 钳制到 ``start``（防调用方传入
+    非单调的越界值使映射越过阶段下界）。整数下取整使连续上报值单调不降。
+
+    import_export（PERF-065/069/070）与 backup_restore（PERF-083）的加权刻度
+    此前各持一份字节级相同的实现，收敛至本模块——它已是进度契约的家
+    （``PROGRESS_REPORT_EVERY`` 的单一事实源）。
+    """
+    if total <= 0 or done >= total:
+        return end
+    if done <= 0:
+        return start
+    return start + (end - start) * done // total
+
+
 class BatchUpdateItem(NamedTuple):
     """批量覆盖更新项（导入覆盖路径）：合并后条目、待覆盖条目密文 raw。
 
@@ -107,7 +135,7 @@ def encrypt_new_entries(
                 updated_at=entry.updated_at or now,
             )
         )
-        if progress is not None and (idx % PROGRESS_REPORT_EVERY == 0 or idx == total):
+        if progress is not None and should_report_progress(idx, total):
             progress(idx, total)
     preserve = any(e.created_at or e.updated_at for e in entries)
     return enc_entries, preserve
@@ -160,8 +188,9 @@ def prepare_overwrite_updates(
     再于 ``epoch_guarded_transaction(pre_epoch=...)`` 内调 :func:`write_overwrite_updates`。
 
     failures 仅收集验证/解密阶段的 EntryError / EntryIntegrityError / DecryptionError
-    （数据问题，逐条跳过）；写阶段错误由 :func:`write_overwrite_updates` 向上传播中止。
-    pop_totp 在此阶段（加密前）失效缓存。
+    （数据问题，逐条跳过），元素为 ``(items 的 0 基索引, 异常)``（QL-062：消费方以其
+    直接索引同序构建的覆盖计划列表）；写阶段错误由 :func:`write_overwrite_updates`
+    向上传播中止。pop_totp 在此阶段（加密前）失效缓存。
 
     ``progress``（PERF-069）：提供时按已处理条目数（含失败项）上报 ``(done, total)``，
     每 ``PROGRESS_REPORT_EVERY`` 条节流、终值恒上报——纯覆盖导入（duplicate_action=
@@ -172,7 +201,9 @@ def prepare_overwrite_updates(
     now = utc_now_iso()
     prepared: list[PreparedUpdate] = []
     total = len(items)
-    for idx, item in enumerate(items, start=1):
+    # 失败项索引 0 基对齐 items（QL-062）：消费方按其直接索引同序构建的覆盖计划列表，
+    # 1 基索引在末项失败时越界（IndexError 中止整次导入）、非末项失败时报告错误的条目。
+    for idx, item in enumerate(items):
         entry, raw, old_password = item.entry, item.raw, item.old_password
         try:
             validate_plain_entry(entry)
@@ -212,8 +243,10 @@ def prepare_overwrite_updates(
             prepared.append(PreparedUpdate(enc_entry, raw, password_changed, password_changed_at))
         except (EntryError, EntryIntegrityError, DecryptionError) as exc:
             failures.append((idx, exc))
-        if progress is not None and (idx % PROGRESS_REPORT_EVERY == 0 or idx == total):
-            progress(idx, total)
+        # 进度按「已处理条目数」1 基计数（done），与失败索引的 0 基语义解耦（QL-062）。
+        done = idx + 1
+        if progress is not None and should_report_progress(done, total):
+            progress(done, total)
     return prepared, failures
 
 
@@ -272,7 +305,9 @@ __all__ = [
     "PreparedUpdate",
     "PROGRESS_REPORT_EVERY",
     "encrypt_new_entries",
+    "phase_progress",
     "prepare_overwrite_updates",
+    "should_report_progress",
     "write_new_entries",
     "write_overwrite_updates",
 ]

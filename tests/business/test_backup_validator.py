@@ -88,7 +88,10 @@ class TestValidateRestoreData:
     """顶层校验链。"""
 
     def test_valid_data_passes(self):
-        validate_restore_data(_valid_restore_data())  # 不抛即通过
+        # 异常契约 API：合法载荷返回 None 且不改写顶层结构
+        data = _valid_restore_data()
+        assert validate_restore_data(data) is None
+        assert data["format"] == BACKUP_FORMAT
 
     def test_bad_format_rejected(self):
         data = _valid_restore_data()
@@ -276,11 +279,11 @@ class TestValidateEntryFields:
     """单条目字段校验。"""
 
     def test_valid_passes(self):
-        validate_entry_fields(_valid_entry(), {1})  # 不抛即通过
+        assert validate_entry_fields(_valid_entry(), {1}) is None
 
     def test_category_id_none_allowed(self):
         entry = _valid_entry(category_id=None)
-        validate_entry_fields(entry, set())  # None 不参与引用校验
+        assert validate_entry_fields(entry, set()) is None  # None 不参与引用校验
 
     def test_oversize_entry_json_rejected(self):
         entry = _valid_entry()
@@ -351,11 +354,14 @@ class TestValidateEntryCustomFields:
     """自定义字段校验。"""
 
     def test_valid_passes(self):
-        validate_entry_custom_fields(
-            [
-                {"name": "n1", "value": "v1", "field_type": "text"},
-                {"name": "n2", "value": "v2", "field_type": "password"},
-            ]
+        assert (
+            validate_entry_custom_fields(
+                [
+                    {"name": "n1", "value": "v1", "field_type": "text"},
+                    {"name": "n2", "value": "v2", "field_type": "password"},
+                ]
+            )
+            is None
         )
 
     def test_too_many_rejected(self):
@@ -391,7 +397,7 @@ class TestValidateHistory:
     """密码历史校验。"""
 
     def test_valid_passes(self):
-        validate_history([_valid_history(1)], {1})
+        assert validate_history([_valid_history(1)], {1}) is None
 
     def test_non_dict_rejected(self):
         with pytest.raises(BackupError, match="格式"):
@@ -418,7 +424,7 @@ class TestRequireKeys:
     """require_keys 多余/缺失键拒绝。"""
 
     def test_exact_match_passes(self):
-        require_keys({"a": 1, "b": 2}, {"a", "b"}, "测试")
+        assert require_keys({"a": 1, "b": 2}, {"a", "b"}, "测试") is None
 
     def test_missing_key_rejected(self):
         with pytest.raises(BackupError, match="不完整"):
@@ -433,7 +439,7 @@ class TestRequireText:
     """require_text 字节/类型/空校验。"""
 
     def test_valid_string_passes(self):
-        require_text("hello", "测试", 1024)
+        assert require_text("hello", "测试", 1024) is None
 
     def test_oversize_bytes_rejected(self):
         with pytest.raises(PayloadTooLargeError):
@@ -444,7 +450,7 @@ class TestRequireText:
             require_text(123, "测试", 50)
 
     def test_empty_allowed_by_default(self):
-        require_text("", "测试", 50)
+        assert require_text("", "测试", 50) is None
 
     def test_empty_rejected_when_disallowed(self):
         with pytest.raises(BackupError, match="不能为空"):

@@ -161,26 +161,29 @@ class TestEnforceKdfFloor:
             )
 
     def test_accepts_default(self):
-        """默认参数不应被拒绝（floor 等于默认）。"""
-        enforce_kdf_floor(DEFAULT_KDF_PARAMS)  # 不抛异常即通过
+        """默认参数不应被拒绝（floor 等于默认），守卫返回 None。"""
+        assert enforce_kdf_floor(DEFAULT_KDF_PARAMS) is None
 
 
 class TestEnforceKdfCeiling:
     """enforce_kdf_ceiling 拒绝远超默认的参数，防恢复路径内存耗尽 DoS。"""
 
     def test_accepts_default(self):
-        """默认参数（合法备份恒用）不应被拒绝。"""
-        backup_header_codec.enforce_kdf_ceiling(DEFAULT_KDF_PARAMS)
+        """默认参数（合法备份恒用）不应被拒绝，守卫返回 None。"""
+        assert backup_header_codec.enforce_kdf_ceiling(DEFAULT_KDF_PARAMS) is None
 
     def test_accepts_up_to_multiplier(self):
-        """各分量恰为 DEFAULT 的倍数上限时通过。"""
+        """各分量恰为 DEFAULT 的倍数上限时通过（边界含端）。"""
         m = backup_header_codec.MAX_RESTORE_KDF_MULTIPLIER
-        backup_header_codec.enforce_kdf_ceiling(
-            KdfParams(
-                DEFAULT_KDF_PARAMS.time_cost * m,
-                DEFAULT_KDF_PARAMS.memory_cost * m,
-                DEFAULT_KDF_PARAMS.parallelism * m,
+        assert (
+            backup_header_codec.enforce_kdf_ceiling(
+                KdfParams(
+                    DEFAULT_KDF_PARAMS.time_cost * m,
+                    DEFAULT_KDF_PARAMS.memory_cost * m,
+                    DEFAULT_KDF_PARAMS.parallelism * m,
+                )
             )
+            is None
         )
 
     def test_rejects_oversized_time(self):

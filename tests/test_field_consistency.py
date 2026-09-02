@@ -2,7 +2,7 @@
 
 防止字段集在多处定义间漂移：
 
-- ``Entry`` 与 ``RawEntry`` 字段名集合须一致——``crypto_utils.copy_entry_fields``
+- ``Entry`` 与 ``RawEntry`` 字段名集合须一致——``entry_view_decryption.copy_entry_fields``
   手写逐字段映射，任一 dataclass 加字段需同步更新，否则映射遗漏导致字段丢失。
 - 加密字段集（``SENSITIVE_ENCRYPTED_FIELDS``）被 ``re_encryption`` 重加密与
   ``crypto_utils`` 加解密引用，新增加密字段须三处同步。
@@ -23,8 +23,8 @@ def test_entry_and_raw_entry_share_field_names():
     entry_fields = {f.name for f in dataclasses.fields(Entry)}
     raw_fields = {f.name for f in dataclasses.fields(RawEntry)}
     assert entry_fields == raw_fields, (
-        "Entry/RawEntry 字段名不一致，crypto_utils.copy_entry_fields 的逐字段映射"
-        f"需同步更新：仅 Entry={entry_fields - raw_fields}，"
+        "Entry/RawEntry 字段名不一致，entry_view_decryption.copy_entry_fields 的"
+        f"逐字段映射需同步更新：仅 Entry={entry_fields - raw_fields}，"
         f"仅 RawEntry={raw_fields - entry_fields}"
     )
 
@@ -176,17 +176,17 @@ def test_entry_query_rejects_conflicting_deleted_flags():
 def test_strict_decrypt_paths_cover_all_sensitive_fields(vault, entry_mgr, make_entry):
     """两条严格解密路径产出的字段键集 == SENSITIVE_ENCRYPTED_FIELDS 派生集（QL-018）。
 
-    EntryManager._decrypt_for_export（Entry 组装）与 crypto_utils.
+    EntryManager._decrypt_for_export（Entry 组装）与 backup/collector.
     decrypt_entry_to_portable_dict（portable dict）是导出/备份的两条同构解密链路，
     此前各自手工枚举加密字段，新增加密字段会静默漏解密。二者现统一消费
     decrypt_string_fields_strict（STRING_ENCRYPTED_FIELDS 单一事实源循环）；
     本测试以「每个加密字段写入可区分明文 → 两条路径必须解出该明文」守护覆盖
     完备性：字段集漂移（常量加了字段而消费方未跟随）在此立即失败。
     """
+    from src.business.services.backup.collector import decrypt_entry_to_portable_dict
     from src.business.services.crypto_utils import (
         SENSITIVE_ENCRYPTED_FIELDS,
         STRING_ENCRYPTED_FIELDS,
-        decrypt_entry_to_portable_dict,
         require_vault_key,
     )
     from src.models import CustomField

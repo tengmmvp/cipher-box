@@ -95,3 +95,24 @@ def test_maybe_auto_backup_cancelled(vault, vault_config):
     assert not ok
     assert "取消" in err
     assert _snapshots(vault_config) == []
+
+
+def test_maybe_auto_backup_preserves_integrity_warning(vault, vault_config):
+    """自动备份时间戳保存保留完整性告警（QL-064 补齐）。
+
+    maybe_auto_backup 成功后的 ``config.save()`` 是后台自动写盘而非用户驱动的
+    配置修复：若走默认清零语义，本会话检出过的篡改告警被静默清除，抑制
+    MainWindow 的完整性用户通知（与 register_security_sentinel 的哨兵登记
+    写盘语义一致，均传 keep_integrity_warning=True）。
+    """
+    mgr = make_backup_manager(vault)
+    vault_config.set("auto_backup_enabled", True)
+    # 模拟本会话加载时检出篡改：告警置位（save 默认语义会将其清零）
+    vault_config._integrity_warning = True  # noqa: SLF001
+
+    ok, err = mgr.maybe_auto_backup(vault_config, force=True)
+
+    assert ok and err == ""
+    assert len(_snapshots(vault_config)) == 1
+    # 告警未被后台写盘清零：check_integrity 仍失败（用户通知仍可触达）
+    assert not vault_config.check_integrity()

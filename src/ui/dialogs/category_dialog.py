@@ -165,8 +165,16 @@ class CategoryDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.setSpacing(16)
+        # _build_* 分块构建（MAINT-094，对齐 entry_dialog 模式）：表单 → 颜色区 →
+        # 预览/分隔线 → 按钮行，纯机械搬移不改控件树与行为。
+        layout.addLayout(self._build_form())
+        self._build_color_section(layout)
+        self._build_color_preview(layout)
+        self._build_separator(layout)
+        layout.addLayout(self._build_buttons())
 
-        # 表单
+    def _build_form(self) -> QFormLayout:
+        """构建名称与图标表单。"""
         form = QFormLayout()
         form.setSpacing(12)
 
@@ -188,10 +196,10 @@ class CategoryDialog(QDialog):
             self._icon_combo.addItem(icon)
         self._icon_combo.setMaxVisibleItems(12)
         form.addRow("图标：", self._icon_combo)
+        return form
 
-        layout.addLayout(form)
-
-        # 颜色选择区域
+    def _build_color_section(self, layout: QVBoxLayout) -> None:
+        """构建颜色选择区：标题、预设色圆点行与自定义颜色按钮。"""
         color_label = QLabel("颜色：")
         color_label.setStyleSheet(f"font-weight: 600; color: {c('text_primary')};")
         layout.addWidget(color_label)
@@ -227,19 +235,23 @@ class CategoryDialog(QDialog):
 
         layout.addLayout(color_row)
 
-        # 颜色预览
+    def _build_color_preview(self, layout: QVBoxLayout) -> None:
+        """构建选中颜色预览条。"""
         self._color_preview = QLabel()
         self._color_preview.setFixedHeight(4)
         self._set_color_preview()
         layout.addWidget(self._color_preview)
 
-        # 分隔线
+    @staticmethod
+    def _build_separator(layout: QVBoxLayout) -> None:
+        """构建分隔线。"""
         separator = QLabel()
         separator.setFixedHeight(1)
         separator.setStyleSheet(f"background-color: {c('divider')};")
         layout.addWidget(separator)
 
-        # 底部按钮
+    def _build_buttons(self) -> QHBoxLayout:
+        """构建底部取消/保存按钮行。"""
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
@@ -250,8 +262,7 @@ class CategoryDialog(QDialog):
         save_btn.setFixedSize(*BTN_DIALOG)
         save_btn.clicked.connect(self._on_save)
         btn_layout.addWidget(save_btn)
-
-        layout.addLayout(btn_layout)
+        return btn_layout
 
     def _load_category(self, category: Category) -> None:
         """将已有分类数据回填到表单。"""

@@ -98,15 +98,15 @@ class TestSecurityDashboardRendering:
 
         # 健康评分：weak=2 / 重复组=1 / old=3 / total=100 → 100-(30+10+15)=45
         expected = 45
-        assert dlg._health_widget._score == expected
+        assert dlg._health_widget.score == expected
         assert SecurityAnalyzer.compute_health_score(2, 1, 3, 100) == expected
         # 45 分落在 40≤score<60 区间，应映射到 warning_orange 颜色 token
         assert _HealthScoreWidget._health_score_color(expected) == c("warning_orange")
 
         # 统计卡片计数：弱密码=2、重复密码=1（按组计）、过期=3
-        assert dlg._weak_card._count_label.text() == "2"
-        assert dlg._dup_card._count_label.text() == "1"
-        assert dlg._old_card._count_label.text() == "3"
+        assert dlg._weak_card.count_text == "2"
+        assert dlg._dup_card.count_text == "1"
+        assert dlg._old_card.count_text == "3"
 
     def test_weak_tab_populates_rows_with_strength_badge(
         self, qapp, tmp_path, patched_worker, monkeypatch
@@ -189,11 +189,11 @@ class TestSecurityDashboardRendering:
         dlg, _, _ = _make_dialog(tmp_path)
         _deliver_report(dlg, monkeypatch, _report(total=0))
 
-        assert dlg._health_widget._score == 100
+        assert dlg._health_widget.score == 100
         # 三张统计卡片均显示 0
-        assert dlg._weak_card._count_label.text() == "0"
-        assert dlg._dup_card._count_label.text() == "0"
-        assert dlg._old_card._count_label.text() == "0"
+        assert dlg._weak_card.count_text == "0"
+        assert dlg._dup_card.count_text == "0"
+        assert dlg._old_card.count_text == "0"
 
         weak_hints = [
             lbl.text()

@@ -10,6 +10,7 @@ import csv
 from src.business.managers.exporters import csv_safe
 from src.business.managers.import_export import ImportExportManager
 from src.models import Entry
+from tests.helpers import decrypt_all_entries
 
 
 class TestCsvSafe:
@@ -86,7 +87,7 @@ class TestCsvSecretRoundtrip:
         )
         csv_path = tmp_path / "export.csv"
         ImportExportManager(entry_mgr).export_to_csv(
-            str(csv_path), entry_mgr.get_entries(), include_password=True
+            str(csv_path), decrypt_all_entries(entry_mgr), include_password=True
         )
 
         with csv_path.open(encoding="utf-8-sig", newline="") as f:
@@ -103,11 +104,11 @@ class TestCsvSecretRoundtrip:
         mgr = ImportExportManager(entry_mgr)
         entry_mgr.add_entry(Entry(title="公式密码条目", username="alice", password="=J6f*kL"))
         csv_path = tmp_path / "roundtrip.csv"
-        mgr.export_to_csv(str(csv_path), entry_mgr.get_entries(), include_password=True)
+        mgr.export_to_csv(str(csv_path), decrypt_all_entries(entry_mgr), include_password=True)
 
         count = mgr.import_file(str(csv_path), "csv", duplicate_action="overwrite")
         assert count == 1
-        restored = entry_mgr.get_entries()[0]
+        restored = decrypt_all_entries(entry_mgr)[0]
         assert restored.password == "=J6f*kL"
 
     def test_import_keeps_whitespace_password_verbatim(self, entry_mgr, tmp_path):
@@ -120,4 +121,4 @@ class TestCsvSecretRoundtrip:
             encoding="utf-8",
         )
         assert mgr.import_file(str(csv_path), "csv") == 1
-        assert entry_mgr.get_entries()[0].password == "  spaced Pass!  "
+        assert decrypt_all_entries(entry_mgr)[0].password == "  spaced Pass!  "

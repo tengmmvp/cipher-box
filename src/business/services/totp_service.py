@@ -39,8 +39,14 @@ class TotpCacheProtocol(Protocol):
         """解析条目 totp_secret 明文；use_cache 为真时读写会话内缓存。"""
         ...
 
-    def store_totp(self, entry_id: int, secret: str) -> None:
-        """预热 TOTP secret 缓存。"""
+    def store_totp(
+        self,
+        entry_id: int,
+        secret: str,
+        *,
+        data_epoch: str | None = None,
+    ) -> None:
+        """预热 TOTP secret 缓存；提供 data_epoch 时按写入方世代复查后落缓存。"""
         ...
 
     def pop_totp(self, entry_id: int) -> None:
@@ -92,6 +98,7 @@ class TotpService:
         entry_id: int,
         *,
         preloaded_secret: str | None = None,
+        data_epoch: str | None = None,
     ) -> TotpState | None:
         """获取指定条目的 TOTP 完整状态（验证码、倒计时、周期）。
 
@@ -99,13 +106,20 @@ class TotpService:
         解密得到），传入则直接用并预热缓存，跳过重复解密。为空时走
         resolve_totp_secret 单一解密路径。
 
+        data_epoch：preloaded_secret 的解密世代（SEC-054，补 SEC-044 的 preloaded
+        漏点）。预热写入带写入方世代守卫——「secret 解密于恢复前世代、预热晚于恢复
+        重臂新世代」时旧世代 secret 不落新世代缓存（TOTP secret 是双因子凭证，跨
+        世代驻留泄漏面更大）。调用方应在收到解密条目的时点（而非本方法调用时点）
+        快照世代传入，锁内解密与预热间隔越短守卫越严。无 preloaded_secret 时本
+        参数无意义（resolve 路径自带 SEC-044 守卫），忽略。
+
         Returns:
             含 code/remaining/period 的字典；条目不存在或无 TOTP 密钥时返回 None。
         """
         self._cache.invalidate_if_epoch_changed()
         if preloaded_secret:
             secret = preloaded_secret
-            self._cache.store_totp(entry_id, secret)
+            self._cache.store_totp(entry_id, secret, data_epoch=data_epoch)
         else:
             # 用临时变量承接 str|None 并收窄后再赋给 secret，避免跨分支类型冲突。
             resolved = self._resolve_totp_secret(entry_id, use_cache=True)

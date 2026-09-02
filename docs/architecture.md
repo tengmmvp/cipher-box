@@ -45,10 +45,14 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
     （ARCH-006）；组合根显式创建并注入 BackupRestoreManager（MAINT-015）。
 - **`services/`（无状态业务服务：加解密、校验、分析等，密钥经 vault 引用现取）**
   - 加解密与字段：`crypto_utils`（`SENSITIVE_ENCRYPTED_FIELDS` 单一事实源、统一加解密
-    入口）、`entry_validation`、`password_service`、`card_validation`（二者切断 UI→Crypto
+    入口；搜索谓词/视图构造/portable dict 解密已按职责域拆出，MAINT-097）、
+    `entry_validation`、`password_service`、`card_validation`（二者切断 UI→Crypto
     跨层依赖的业务门面）、`url_hygiene`（URL scheme 卫生清洗纯函数，导入与共享包共用）。
   - 条目子域：`totp_service`、`password_history_service`、`entry_batch_writer`（导入
     批量写入加密/落库编排，从 EntryManager 下沉，经 entry_mgr 参数注入加密原语）、
+    `entry_search_match`（列表搜索与标签过滤的匹配谓词纯函数，UI 过滤与
+    EntryManager 搜索热路径共用）、`entry_view_decryption`（视图构造原语
+    `copy_entry_fields`/`build_entry_summary` + `EntryViewDecryptor` 三视图解密）、
     `entry_type_schema`（5 种条目类型的字段 schema 注册表单一事实源，供
     entry_dialog / custom_fields_renderer / import_export 等消费）。
   - 完整性与重加密：`metadata_signer`（HMAC 签名）、`re_encryption`（改密全量重加密）、
@@ -61,7 +65,8 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
   - 备份无状态子包 `backup/`：`header_codec`（二进制头编解码/检视）、`validator`
     （恢复前载荷校验）、`paths`（备份文件命名约定）、`payload`（Portable
     系列 TypedDict 与 PreparedBackup 载荷类型）、`collector`（可移植数据采集 +
-    载荷大小校验）、`rebuilder`（恢复重建纯变换：载荷→加密行逐表回写）、
+    `decrypt_entry_to_portable_dict` 整条解密 + 载荷大小校验）、`rebuilder`
+    （恢复重建纯变换：载荷→加密行逐表回写）、
     `auto_backup_policy`（自动备份间隔判定/retention 清理纯策略）、`purge`
     （备份目录策略与 snapshot/恢复点文件清理，下沉自 VaultManager）。
   - 限时加密共享子包 `share/`：`header_codec`（.cboxshare 二进制头编解码/密钥派生，头纳入

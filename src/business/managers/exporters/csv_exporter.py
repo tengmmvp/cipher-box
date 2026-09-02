@@ -12,7 +12,7 @@ from collections.abc import Callable
 from typing import IO
 
 from ....models import Entry
-from ...services.entry_batch_writer import PROGRESS_REPORT_EVERY
+from ...services.entry_batch_writer import should_report_progress
 from .base import CSV_SECRET_COLUMNS, csv_safe
 
 # CSV 列序（include_password=False 时移除两个密钥列）
@@ -86,7 +86,7 @@ def write_csv_entries(
             }
         )
         processed += 1
-        if progress is not None and (processed % PROGRESS_REPORT_EVERY == 0 or processed == total):
+        if progress is not None and should_report_progress(processed, total):
             progress(processed, total)
     if progress is not None and total == 0:
         progress(0, 0)  # 空导出也上报终值（UI 侧映射为 100，进度不留悬挂）

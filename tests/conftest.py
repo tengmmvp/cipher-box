@@ -103,6 +103,55 @@ def entry_mgr(vault):
 
 
 @pytest.fixture
+def make_vault_env(tmp_path):
+    """「建库→初始化→EntryManager」组合工厂（setup 复制粘贴收敛）。
+
+    各测试文件原先各自复制 ``tempdir→config→make_vault→initialize→
+    make_entry_manager→…→close`` 八行样板；此工厂复用 helpers 既有工厂集中组装，
+    返回 ``types.SimpleNamespace``（config/vault/entry_mgr/root 四成员），
+    teardown 统一幂等 close（个别测试自行提前 close 亦安全）。
+
+    参数：
+
+    - ``root``：数据目录（默认 ``tmp_path``；双保险库用例传 ``tmp_path / "source"``
+      等子目录隔离 db 文件）。
+    - ``master_password``：初始化主密码（默认 ``TestPassword123!``）。
+    - ``initialize``：False 时仅装配不初始化（弱密码拒绝/未建库等用例）。
+    - ``kdf``：显式 KDF 参数（默认走 conftest 弱 KDF monkeypatch，与既有行为一致；
+      验证生产级参数持久化的用例显式传 DEFAULT_KDF_PARAMS）。
+    """
+    from types import SimpleNamespace
+
+    from tests.helpers import make_entry_manager, make_vault
+
+    created: list = []
+
+    def _factory(
+        *,
+        root=None,
+        master_password: str = "TestPassword123!",
+        initialize: bool = True,
+        kdf=None,
+    ):
+        data_root = root if root is not None else tmp_path
+        config = make_test_config(data_root)
+        vault = make_vault(config, test_mode=True)
+        if initialize:
+            ok, msg = vault.initialize(master_password, params=kdf)
+            assert ok, msg
+        entry_mgr = make_entry_manager(vault)
+        created.append(vault)
+        return SimpleNamespace(config=config, vault=vault, entry_mgr=entry_mgr, root=data_root)
+
+    yield _factory
+    for vault in created:
+        try:
+            vault.close()
+        except Exception:
+            pass
+
+
+@pytest.fixture
 def make_entry():
     """创建测试用 Entry 的工厂 fixture。
 

@@ -24,22 +24,25 @@ from src.business.services.backup.header_codec import (
     BACKUP_HEADER_SIZE,
     BACKUP_SALT_SIZE,
 )
-from src.exceptions import VaultKeyEpochMismatchError
+from src.exceptions import VaultError, VaultKeyEpochMismatchError
 from src.models import CustomField, Entry
-from tests.helpers import make_backup_manager, make_entry_manager, make_test_config, make_vault
+from tests.helpers import (
+    decrypt_all_entries,
+    make_backup_manager,
+    make_entry_manager,
+)
 
 
 class TestChangePasswordRollbackConsistency:
     """改密重加密失败时的事务回滚与密钥/数据一致性。"""
 
     @pytest.fixture(autouse=True)
-    def setup_vault(self, tmp_path):
+    def setup_vault(self, tmp_path, make_vault_env):
         self._tmp_dir = str(tmp_path)
-        config = make_test_config(self._tmp_dir)
-        self._vault = make_vault(config)
+        env = make_vault_env(master_password="OriginalMaster!2026")
+        self._vault = env.vault
         self._master_pwd = "OriginalMaster!2026"
-        self._vault.initialize(self._master_pwd)
-        self._entry_mgr = make_entry_manager(self._vault)
+        self._entry_mgr = env.entry_mgr
         # 写入一条含全部敏感字段的条目，验证回滚后密钥/数据匹配
         self._entry_id = self._entry_mgr.add_entry(
             Entry(
@@ -56,8 +59,6 @@ class TestChangePasswordRollbackConsistency:
         )
         # 记录原始明文，供回滚后逐字段比对
         self._original = self._entry_mgr.get_entry(self._entry_id)
-        yield
-        self._vault.close()
 
     def test_change_password_rollback_preserves_vault(self):
         """重加密中途抛异常时，改密失败且回滚到原始状态。
@@ -76,8 +77,9 @@ class TestChangePasswordRollbackConsistency:
         epoch_before = self._vault.db.get_meta("key_epoch")
 
         # 在 re_encrypt_entries 第一步即抛异常，模拟重加密中途失败。
-        # 使用 RuntimeError 而非 CipherBoxError，确保被 _change_master_password_locked
-        # 的 except Exception 捕获并返回失败元组，而非向上传播。
+        # 使用 RuntimeError 而非 CipherBoxError：非认证失败的系统错误经 ARCH-042
+        # 契约走异常通道（VaultError 包装，终译保留原文），(False, ...) 仅表认证失败。
+        # 新密码须过强度校验（≥15 字符）——否则在重加密前即抛策略异常，patch 不被触达。
         def _failing_re_encrypt_entries(self_rotator, old_key, new_key, *, cancel_event=None):
             raise RuntimeError("模拟重加密中途失败")
 
@@ -85,9 +87,8 @@ class TestChangePasswordRollbackConsistency:
             "src.business.services.re_encryption.ReEncryptionService.re_encrypt_entries",
             new=_failing_re_encrypt_entries,
         ):
-            ok, _error = self._vault.change_master_password(self._master_pwd, "NewMaster!2026")
-
-        assert not ok
+            with pytest.raises(VaultError):
+                self._vault.change_master_password(self._master_pwd, "NewMasterPassword!2026")
 
         # 关键一致性验证：原主密码仍可解锁，密钥与数据匹配且未损坏
         self._vault.lock()
@@ -122,7 +123,7 @@ class TestChangePasswordRollbackConsistency:
         assert original is not None
         epoch_before = self._vault.db.get_meta("key_epoch")
 
-        # 条目重加密放行，历史重加密抛异常
+        # 条目重加密放行，历史重加密抛异常（系统错误走异常通道，ARCH-042）
         def _failing_re_encrypt_history(self_rotator, old_key, new_key, *, cancel_event=None):
             raise RuntimeError("模拟历史重加密失败")
 
@@ -130,11 +131,8 @@ class TestChangePasswordRollbackConsistency:
             "src.business.services.re_encryption.ReEncryptionService.re_encrypt_history",
             new=_failing_re_encrypt_history,
         ):
-            ok, _error = self._vault.change_master_password(
-                self._master_pwd, "AnotherNewMaster!2026"
-            )
-
-        assert not ok
+            with pytest.raises(VaultError):
+                self._vault.change_master_password(self._master_pwd, "AnotherNewMaster!2026")
 
         # 原密码仍可用，数据完好
         self._vault.lock()
@@ -201,13 +199,12 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
     """备份恢复失败时数据库回滚与恢复点清理。"""
 
     @pytest.fixture(autouse=True)
-    def setup_vault(self, tmp_path):
+    def setup_vault(self, tmp_path, make_vault_env):
         self._tmp_dir = str(tmp_path)
-        config = make_test_config(self._tmp_dir)
-        self._vault = make_vault(config)
+        env = make_vault_env(master_password="test_password_123")
+        self._vault = env.vault
         self._master_pwd = "test_password_123"
-        self._vault.initialize(self._master_pwd)
-        self._entry_mgr = make_entry_manager(self._vault)
+        self._entry_mgr = env.entry_mgr
         self._backup_mgr = make_backup_manager(self._vault, self._entry_mgr)
         # 写入两条条目作为恢复失败时“不应被清空”的存量数据
         self._entry_mgr.add_entry(
@@ -227,8 +224,6 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
             )
         )
         self._backups_dir = self._vault.data_dir / "backups"
-        yield
-        self._vault.close()
 
     def _count_restore_points(self) -> int:
         """统计备份目录下 pre_restore_*.cbox 文件数量。"""
@@ -286,7 +281,7 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
         assert "损坏" in error or "密码错误" in error
 
         # 数据库存量条目未被清空，回滚生效或未到达数据清理步骤
-        entries = self._entry_mgr.get_entries()
+        entries = decrypt_all_entries(self._entry_mgr)
         assert len(entries) == 2, "恢复失败后存量条目不应丢失"
         titles = {e.title for e in entries}
         assert titles == {"存量条目A", "存量条目B"}
@@ -345,7 +340,7 @@ class TestBackupRestoreRollbackAndRestorePointCleanup:
         assert not success, "格式无效的备份不应恢复成功"
 
         # 存量数据完好
-        entries = self._entry_mgr.get_entries()
+        entries = decrypt_all_entries(self._entry_mgr)
         assert len(entries) == 2
 
         # 不残留恢复点
@@ -385,13 +380,12 @@ class TestImportEpochGuard:
     """导入事务内 epoch 被轮换时，导入被守卫中止。"""
 
     @pytest.fixture(autouse=True)
-    def setup_vault(self, tmp_path):
+    def setup_vault(self, tmp_path, make_vault_env):
         self._tmp_dir = str(tmp_path)
-        config = make_test_config(self._tmp_dir)
-        self._vault = make_vault(config)
+        env = make_vault_env(master_password="test_password_123")
+        self._vault = env.vault
         self._master_pwd = "test_password_123"
-        self._vault.initialize(self._master_pwd)
-        self._entry_mgr = make_entry_manager(self._vault)
+        self._entry_mgr = env.entry_mgr
         self._import_export = ImportExportManager(self._entry_mgr)
 
         # 写入一份合法的 CipherBox JSON 导出文件供导入
@@ -402,12 +396,10 @@ class TestImportEpochGuard:
             url="https://import.example.com",
         )
         self._entry_mgr.add_entry(entry)
-        entries = self._entry_mgr.get_entries()
+        entries = decrypt_all_entries(self._entry_mgr)
         self._json_path = str(Path(self._tmp_dir) / "export.json")
         self._import_export.export_to_json(self._json_path, entries, include_password=True)
-        self._entry_mgr.get_entries()
-        yield
-        self._vault.close()
+        decrypt_all_entries(self._entry_mgr)
 
     def test_import_aborted_when_epoch_changes_mid_transaction(self):
         """导入写入前 key_epoch 被并发改密轮换时，导入被守卫中止。
@@ -426,7 +418,7 @@ class TestImportEpochGuard:
         real_epoch = self._vault.key_epoch
         assert real_epoch is not None
 
-        entry_count_before = len(self._entry_mgr.get_entries())
+        entry_count_before = len(decrypt_all_entries(self._entry_mgr))
 
         original_egt = self._vault.epoch_guarded_transaction
         captured: dict[str, object] = {}
@@ -453,7 +445,7 @@ class TestImportEpochGuard:
         assert captured["pre_epoch"] == real_epoch
 
         # 导入被中止，数据保持一致：条目数不变
-        entry_count_after = len(self._entry_mgr.get_entries())
+        entry_count_after = len(decrypt_all_entries(self._entry_mgr))
         assert entry_count_after == entry_count_before, "epoch 守卫中止导入后，数据库条目数不应变化"
 
     def test_import_succeeds_when_epoch_unchanged(self):
@@ -462,35 +454,30 @@ class TestImportEpochGuard:
         作为上一个测试的对照，确认 epoch 守卫不会误伤正常导入路径，
         _import_entries 的二次校验在 epoch 一致时放行。
         """
-        entry_count_before = len(self._entry_mgr.get_entries())
+        entry_count_before = len(decrypt_all_entries(self._entry_mgr))
 
         count = self._import_export.import_file(self._json_path, "json")
 
         # 正常导入应成功导入 1 条
         assert count == 1
-        entry_count_after = len(self._entry_mgr.get_entries())
+        entry_count_after = len(decrypt_all_entries(self._entry_mgr))
         assert entry_count_after == entry_count_before + 1
 
 
-def test_restore_rotates_snapshot_key(tmp_path):
+def test_restore_rotates_snapshot_key(tmp_path, make_vault_env):
     """恢复成功后轮换 snapshot_key，使旧 snapshot 加密的快照失效以收缩泄漏面。
 
     与改密路径一致：恢复整体替换数据后，旧 snapshot_key 加密的快照含恢复前
     明文，轮换并清理使其失效。验证 snapshot_key 实际变化且恢复点被清理。
     """
-    source_dir = str(tmp_path / "source")
-    target_dir = str(tmp_path / "target")
-    Path(source_dir).mkdir()
-    Path(target_dir).mkdir()
-
-    source = make_vault(make_test_config(source_dir))
-    source.initialize("SourceMaster!2026")
-    make_entry_manager(source).add_entry(Entry(title="Incoming", password="IncomingSecret!2026"))
-    portable = str(Path(source_dir) / "portable.cbox")
+    source_env = make_vault_env(root=tmp_path / "source", master_password="SourceMaster!2026")
+    source = source_env.vault
+    source_env.entry_mgr.add_entry(Entry(title="Incoming", password="IncomingSecret!2026"))
+    portable = str(source_env.root / "portable.cbox")
     assert make_backup_manager(source).create_backup(portable, "PortableBackup!2026")[0]
 
-    target = make_vault(make_test_config(target_dir))
-    target.initialize("TargetMaster!2026")
+    target_env = make_vault_env(root=tmp_path / "target", master_password="TargetMaster!2026")
+    target = target_env.vault
     old_snapshot_key = bytes(target.snapshot_key)
     backup_mgr = make_backup_manager(target)
     assert backup_mgr.restore_backup(portable, "PortableBackup!2026")[0]
@@ -498,8 +485,5 @@ def test_restore_rotates_snapshot_key(tmp_path):
     # 恢复后 snapshot_key 应轮换为全新值
     assert bytes(target.snapshot_key) != old_snapshot_key
     # 旧恢复点被清理（snapshot_key 轮换使其失效并 purge）
-    backup_dir = Path(target_dir) / "backups"
+    backup_dir = Path(target_env.root) / "backups"
     assert list(backup_dir.glob("pre_restore_*.cbox")) == []
-
-    source.close()
-    target.close()

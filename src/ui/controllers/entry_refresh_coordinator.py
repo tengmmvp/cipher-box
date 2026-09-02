@@ -74,6 +74,20 @@ class EntryRefreshCoordinator:
 
     # ========== entry 异步刷新 ==========
 
+    @property
+    def entry_refresh_generation(self) -> int:
+        """entry 刷新代际计数器当前值（测试观察用，MAINT-095）。
+
+        只读视图：计数器仅在 start/cancel 路径内部推进，测试经此断言代际推进与
+        过期丢弃，不再直改内部计数器。
+        """
+        return self._entry_refresh_generation
+
+    @property
+    def tag_refresh_generation(self) -> int:
+        """tag 刷新代际计数器当前值（测试观察用，MAINT-095），语义同 entry 侧。"""
+        return self._tag_refresh_generation
+
     def cancel_entry_worker(self) -> None:
         """取消当前 entry worker（同步刷新路径调用）。
 

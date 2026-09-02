@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QRadioButton,
     QVBoxLayout,
@@ -58,6 +59,7 @@ class BackupDialog(WorkerBackedDialog):
 
     # 收窄基类声明（QLabel | None → QLabel）：`_setup_ui` 构造期赋值，运行时不为 None。
     _status_label: QLabel
+    _progress: QProgressBar
 
     def __init__(
         self,
@@ -120,6 +122,12 @@ class BackupDialog(WorkerBackedDialog):
         self._browse_btn.clicked.connect(self._browse)
         file_layout.addWidget(self._browse_btn)
         layout.addWidget(file_group)
+
+        # 恢复进度条（PERF-083）：初始隐藏，恢复启动时以不确定模式显示，收到首个
+        # progress 信号后切换确定范围（与导入/导出对话框同款模式）。
+        self._progress = QProgressBar()
+        self._progress.hide()
+        layout.addWidget(self._progress)
 
         # 状态
         self._status_label = QLabel("")
@@ -352,21 +360,35 @@ class BackupDialog(WorkerBackedDialog):
                 return
         self._set_busy(True)
         self._worker_is_backup = False
+        # 进度条初始为不确定模式，收到首个 progress 信号后切换到确定范围（PERF-083；
+        # 50k 库恢复实测 15-25s，此前全程模态无反馈，与导入/导出的进度模式对齐）。
+        self._progress.setRange(0, 0)
+        self._progress.setValue(0)
+        self._progress.show()
 
         def _run(pwd: str | None = password) -> object:
-            return self._backup.restore_backup(path, pwd)
+            return self._backup.restore_backup(path, pwd, progress=worker.emit_progress)
 
-        self._worker = BackgroundWorker(_run, parent=self)
-        self._worker.finished.connect(self._on_restore_done)
-        self._worker.error.connect(self._on_restore_error)
-        self._worker.start()
+        # worker 是局部名（闭包 `_run` 延迟绑定引用其 emit_progress，启动时已赋值）。
+        worker = BackgroundWorker(_run, parent=self)
+        self._worker = worker
+        worker.progress.connect(self._on_restore_progress)
+        worker.finished.connect(self._on_restore_done)
+        worker.error.connect(self._on_restore_error)
+        worker.start()
         # 删除局部 password 仅缩短局部引用，与 `_do_backup` 对齐。
         del password
+
+    def _on_restore_progress(self, current: int, total: int) -> None:
+        """恢复进度回调：切换到确定范围并更新进度条（PERF-083，参照导入侧模式）。"""
+        self._progress.setRange(0, total)
+        self._progress.setValue(current)
 
     def _on_restore_done(self, result: object) -> None:
         if not finalize_worker_if_current(self):
             return
         self._set_busy(False)
+        self._progress.hide()
         success, error_msg = cast(tuple[bool, str], result)
         if success:
             self.data_changed = True
@@ -382,6 +404,7 @@ class BackupDialog(WorkerBackedDialog):
             )
 
     def _on_restore_error(self, error_msg: str) -> None:
+        self._progress.hide()
         self._report_worker_error(
             error_msg,
             status_text="恢复失败",

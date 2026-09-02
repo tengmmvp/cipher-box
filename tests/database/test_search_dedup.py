@@ -4,7 +4,7 @@
 覆盖精确匹配、部分匹配、域名片段匹配以及空关键字命中全部等场景。
 """
 
-from src.business.services.crypto_utils import matches_search
+from src.business.services.entry_search_match import matches_search
 from src.models import Entry
 
 

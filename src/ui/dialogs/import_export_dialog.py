@@ -120,8 +120,20 @@ class ImportExportDialog(WorkerBackedDialog):
 
         layout = QVBoxLayout(self)
         layout.setSpacing(14)
+        # _build_* 分块构建（MAINT-094，对齐 entry_dialog 模式）：模式/格式/选项/路径/
+        # 进度/状态/按钮，纯机械搬移不改控件树与行为。
+        layout.addLayout(self._build_mode_row())
+        layout.addLayout(self._build_format_row())
+        self._build_password_option(layout)
+        self._build_duplicate_option(layout)
+        layout.addLayout(self._build_path_row())
+        self._build_progress(layout)
+        self._build_status_label(layout)
+        layout.addStretch()
+        layout.addLayout(self._build_buttons())
 
-        # 模式选择
+    def _build_mode_row(self) -> QHBoxLayout:
+        """构建导出/导入模式单选行。"""
         mode_layout = QHBoxLayout()
         self._mode_group = QButtonGroup(self)
 
@@ -135,20 +147,21 @@ class ImportExportDialog(WorkerBackedDialog):
         mode_layout.addWidget(import_radio)
 
         mode_layout.addStretch()
-        layout.addLayout(mode_layout)
-
         self._mode_group.buttonClicked.connect(self._on_mode_changed)
+        return mode_layout
 
-        # 格式选择
+    def _build_format_row(self) -> QHBoxLayout:
+        """构建格式下拉行。"""
         format_layout = QHBoxLayout()
         format_layout.addWidget(QLabel("格式："))
         self._format_combo = QComboBox()
         self._format_combo.addItems(_EXPORT_FORMATS)
         format_layout.addWidget(self._format_combo)
         format_layout.addStretch()
-        layout.addLayout(format_layout)
+        return format_layout
 
-        # 密码选项仅在导出模式下可见
+    def _build_password_option(self, layout: QVBoxLayout) -> None:
+        """构建密码包含选项（仅导出模式可见）。"""
         self._password_container = QWidget()
         pwd_layout = QHBoxLayout(self._password_container)
         pwd_layout.setContentsMargins(0, 0, 0, 0)
@@ -159,6 +172,8 @@ class ImportExportDialog(WorkerBackedDialog):
         pwd_layout.addWidget(self._exclude_pwd_radio)
         layout.addWidget(self._password_container)
 
+    def _build_duplicate_option(self, layout: QVBoxLayout) -> None:
+        """构建重复项处理选项（仅导入模式可见，初始隐藏）。"""
         self._duplicate_container = QWidget()
         duplicate_layout = QHBoxLayout(self._duplicate_container)
         duplicate_layout.setContentsMargins(0, 0, 0, 0)
@@ -171,7 +186,8 @@ class ImportExportDialog(WorkerBackedDialog):
         self._duplicate_container.hide()
         layout.addWidget(self._duplicate_container)
 
-        # 文件路径
+    def _build_path_row(self) -> QHBoxLayout:
+        """构建文件路径选择行。"""
         path_layout = QHBoxLayout()
         self._file_label = QLabel("文件：")
         path_layout.addWidget(self._file_label)
@@ -184,23 +200,23 @@ class ImportExportDialog(WorkerBackedDialog):
         self._browse_btn = QPushButton("浏览...")
         self._browse_btn.clicked.connect(self._browse_file)
         path_layout.addWidget(self._browse_btn)
+        return path_layout
 
-        layout.addLayout(path_layout)
-
-        # 进度
+    def _build_progress(self, layout: QVBoxLayout) -> None:
+        """构建导入/导出进度条（初始隐藏）。"""
         self._progress = QProgressBar()
         self._progress.hide()
         layout.addWidget(self._progress)
 
-        # 状态
+    def _build_status_label(self, layout: QVBoxLayout) -> None:
+        """构建居中状态标签。"""
         self._status_label = QLabel("")
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._status_label.setObjectName("formStatus")
         layout.addWidget(self._status_label)
 
-        layout.addStretch()
-
-        # 按钮
+    def _build_buttons(self) -> QHBoxLayout:
+        """构建取消与主操作按钮行。"""
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
@@ -213,8 +229,7 @@ class ImportExportDialog(WorkerBackedDialog):
         # 经基类 _set_busy 统一禁用/启用主操作按钮
         self._primary_action_btn = self._action_btn
         btn_layout.addWidget(self._action_btn)
-
-        layout.addLayout(btn_layout)
+        return btn_layout
 
     def _on_mode_changed(self) -> None:
         self._is_export = self._mode_group.checkedId() == 0

@@ -31,7 +31,8 @@ from ...exceptions import (
     VaultLockedError,
 )
 from ...models import Entry, RawEntry
-from .crypto_utils import build_entry_summary, decrypt_field, require_vault_key
+from .crypto_utils import decrypt_field, require_vault_key
+from .entry_view_decryption import build_entry_summary
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +180,10 @@ class SecurityAnalyzer:
         self._analysis_cache: SecurityReport | None = None
         self._analysis_cache_time: float = 0
         self._analysis_cache_days: int = 0
+        # 失效世代计数（PERF-080 补全）：invalidate_cache 的全量失效路径在清缓存
+        # 同时递增；full_analysis 在飞期间发生过失效即世代不一致，其结果拒绝写回
+        # 缓存（详见 _cached_analysis 写回守卫）。持 _cache_lock 读写。
+        self._invalidated_generation = 0
         self._cache_lock = threading.Lock()
 
     @staticmethod
@@ -258,13 +263,14 @@ class SecurityAnalyzer:
 
         须持 _cache_lock 调用。顺序：先 ``dict()`` 浅拷贝并在副本上完成 days 重过滤
         与 QL-001 实例回写（依赖内部键 ``_summaries_with_dates``，须在剥离前），再
-        剥离出口副本的全部下划线内部键——``_fingerprint_map``/``_summaries_with_dates``
-        仅缓存分层内部消费（增量失效/days 重过滤），无任何外部读方，此前出口深拷贝
-        在 50k 库温态 get_cached_report 实测占 2/3 耗时，是纯浪费。出口仅公开字段；
-        weak/old 列表浅拷贝容器并直接共享 Entry 引用（Entry 为 frozen 且无可变容器，
-        逐条 ``dataclasses.replace`` 重建 24-kwarg 实例无变异面可防）；duplicate_groups
-        内层 list 仍复制，防消费方经出口引用就地变异桶成员污染增量更新基准。内部
-        缓存本体（``_analysis_cache``）仍持全键。
+        经 :meth:`_export_report` 剥离出口副本的全部下划线内部键——
+        ``_fingerprint_map``/``_summaries_with_dates`` 仅缓存分层内部消费（增量失效/
+        days 重过滤），无任何外部读方，此前出口深拷贝在 50k 库温态 get_cached_report
+        实测占 2/3 耗时，是纯浪费。出口仅公开字段；weak/old 列表浅拷贝容器并直接
+        共享 Entry 引用（Entry 为 frozen 且无可变容器，逐条 ``dataclasses.replace``
+        重建 24-kwarg 实例无变异面可防）；duplicate_groups 内层 list 仍复制，防消费方
+        经出口引用就地变异桶成员污染增量更新基准。内部缓存本体
+        （``_analysis_cache``）仍持全键。
         """
         # dict(TypedDict) 退化为 dict[str, object]，cast 标注此复制边界。
         result = cast("SecurityReport", dict(cache))
@@ -285,6 +291,18 @@ class SecurityAnalyzer:
                 self._analysis_cache["old"] = len(new_old_entries)
             # 更新 days 使后续相同 days 命中跳过重复 O(n) 过滤。
             self._analysis_cache_days = days
+        return self._export_report(result)
+
+    @staticmethod
+    def _export_report(report: SecurityReport) -> SecurityReport:
+        """剥离内部键并拷贝列表容器，产出出口副本（PERF-062 契约）。
+
+        供 :meth:`_refilter_cache` 尾段与失效世代守卫的拒收路径
+        （:meth:`_cached_analysis`）共用：后者返回的报告不入缓存，仍须遵守出口
+        契约——不含内部键（无外部消费方）、列表容器隔离（防调用方就地变异）。
+        """
+        # dict(TypedDict) 退化为 dict[str, object]，cast 标注此复制边界。
+        result = cast("SecurityReport", dict(report))
         # 剥离内部键（PERF-062）：出口不含 _fingerprint_map/_crypto_id_to_fp/
         # _summaries_with_dates/_key_epoch，缓存本体不受影响（副本与内部 dict 为
         # 不同容器）。
@@ -312,11 +330,15 @@ class SecurityAnalyzer:
 
         命中仅校验 key_epoch 与 TTL；条目增删改由 EntryManager 主动 invalidate_cache
         失效，TTL 兜底。key_epoch 校验保证改密后缓存失效（密码指纹依赖旧主密钥）。
-        days 变化仅从 ``_summaries_with_dates`` 重过滤过期条目，避免重新解密全部密码
-        （重复检测的 HMAC 是性能瓶颈）。
+        full_analysis 在飞期间的全量失效经失效世代守卫拒收其写回（PERF-080 补全），
+        防过期报告以 fresh TTL 污染缓存。days 变化仅从 ``_summaries_with_dates``
+        重过滤过期条目，避免重新解密全部密码（重复检测的 HMAC 是性能瓶颈）。
         """
         with self._cache_lock:
             current_epoch = self._vault.key_epoch
+            # 失效世代快照（PERF-080 补全）：full_analysis 读库期间若有全量失效到达，
+            # 本次结果基于失效前数据，写回前据此拒收（见下方写回守卫）。
+            generation = self._invalidated_generation
             cached = self._analysis_cache
             if (
                 cached is not None
@@ -342,7 +364,9 @@ class SecurityAnalyzer:
             }
         with self._cache_lock:
             # 双重检查锁：full_analysis 在锁外执行，期间可能已被并发线程填充；
-            # 持锁后重新校验，若仍有效直接复用以避免覆盖冗余写入。
+            # 持锁后重新校验，若仍有效直接复用以避免覆盖冗余写入。缓存非 None
+            # 且 TTL 内意味着其写入晚于最后一次全量失效（失效路径会清缓存），
+            # 复用安全。
             cached = self._analysis_cache
             if (
                 cached is not None
@@ -350,6 +374,14 @@ class SecurityAnalyzer:
                 and cached.get("_key_epoch") == current_epoch
             ):
                 return self._refilter_cache(cached, days, now=now)
+            # 写回守卫（PERF-080 补全）：读库后有全量失效到达（典型：worker 读库后
+            # 用户删条目，增量 notify 发现缓存为 None 直接 no-op 仅 bump 世代）——
+            # 本次结果已过期，写回会以 fresh TTL 污染缓存，使 _on_finished 消费脏
+            # 标记的重启轮 fast path 命中过期报告（原缺陷：计数陈旧需等 TTL 自愈）。
+            # 报告照常返回供本次渲染，缓存不写，重启轮走新全量。比对与 bump 在
+            # 同一 _cache_lock 临界区内，无检查-写回竞态。
+            if generation != self._invalidated_generation:
+                return self._export_report(result)
             result["_key_epoch"] = current_epoch
             self._analysis_cache = result
             self._analysis_cache_time = time.monotonic()
@@ -455,13 +487,20 @@ class SecurityAnalyzer:
           **单条增量更新**——仅重读/重分类该条并重算聚合计数（指纹桶、重复分组、
           弱/过期名单），其余 N-1 条的密码解密与 HMAC 指纹结果原样复用。纯元数据
           编辑与改单条密码共用此路径：重分类一条是常数开销，报告内嵌的展示元数据
-          （标题等）亦随之刷新，无需按 password_changed 分支。任何读取失败（锁定/
-          改密窗口/条目缺失）回退全量失效，语义保守。
+          （标题等）亦随之刷新，无需按 password_changed 分支。**增删路径同走此通道**
+          （PERF-079）：新增/恢复携带 crypto_id 重读插入并按缓存成员资格上调 total，
+          删除/物理删除重读见 ``is_deleted``/行缺失时构造「仅移除」差分——替代原
+          crypto_id=None 的整库失效（增删一次即触发状态栏 worker 的 O(n) 全量重算）。
+          任何读取失败（锁定/改密窗口）回退全量失效，语义保守。
 
         两者皆 False 时直接返回（PERF：旁路变更不影响任何安全分析输入）。回调签名
         经 :meth:`EntryChangeBus.notify` 以位置参数 ``(password_changed,
         metadata_changed, crypto_id)`` 传入；锁定/epoch 轮换通道零参调用经默认
         True 保持全量失效不变。
+
+        全量失效路径同时递增失效世代（PERF-080 补全）：在飞 full_analysis 的
+        写回守卫据此拒收过期结果——典型场景是缓存尚为 None 时增删到达（增量
+        no-op、清 None 亦 no-op），仅世代递增承载「失效已发生」的事实。
 
         ``now`` 供测试注入时钟（QL-057）：增量路径的过期重过滤与 full_analysis/
         _refilter_cache 的注入时钟对齐，否则注入时钟的测试中增量与全量行为分叉。
@@ -475,9 +514,12 @@ class SecurityAnalyzer:
             self._analysis_cache_time = 0
             # 维持「cache 为 None 时 days 必为 0」不变量，避免下次 days 比较基于残留值误判。
             self._analysis_cache_days = 0
+            # 失效世代递增（PERF-080 补全）：与清缓存同一临界区，写回守卫的比对
+            # 无检查-写回竞态。
+            self._invalidated_generation += 1
 
     def _try_incremental_update(self, crypto_id: str, *, now: datetime | None = None) -> bool:
-        """单条增量更新缓存报告（PERF-021），成功返回 True。
+        """单条增量更新缓存报告（PERF-021/079），成功返回 True。
 
         步骤：锁外经 ``get_entry_by_crypto_id``（crypto_id UNIQUE 索引，O(1)）重读
         该条并重分类（复用 full_analysis 的 :meth:`_classify_entry`，含单条密码
@@ -486,9 +528,13 @@ class SecurityAnalyzer:
         _cache_lock（cache 锁内禁访问数据库的锁序约定）；重分类期间缓存被并发
         失效则放弃更新（返回 False 交由调用方全量失效）。
 
+        重读结果为行缺失或 ``is_deleted``（PERF-079 增删扩展）：构造 summary=None
+        的「仅移除」差分——该条目已离开分析集合（get_entries_for_analysis 过滤
+        is_deleted），按缓存成员资格移出各名单并下调 total；条目本就不在缓存
+        （如已软删条目的物理删除二次通知）时整体为幂等 no-op。
+
         回退全量的情形：缓存缺失/过期/epoch 失配（指纹与密钥绑定，跨 epoch 不可比）、
-        条目已删/不存在（增删路径不携带 crypto_id，到达此处属异常状态）、保险库
-        锁定或改密窗口（无法取密钥）。
+        保险库锁定或改密窗口（无法取密钥）。
 
         ``now`` 透传 :meth:`_apply_reclassified_entry`（QL-057 测试时钟注入）。
         """
@@ -515,14 +561,17 @@ class SecurityAnalyzer:
         except (VaultLockedError, VaultKeyEpochMismatchError):
             return False
         if raw is None or raw.is_deleted:
-            return False
-        self._cache.invalidate_if_epoch_changed()
-        try:
-            result = self._classify_entry(raw, key, data_epoch=data_epoch)
-        except (DecryptionError, EntryIntegrityError):
-            # _classify_entry 内部已吸收这两类；此处防御未来透传路径的意外逃逸。
-            return False
-        del key
+            # 增删差分（PERF-079）：移除结果不经解密，key 立即释放。
+            result = _ClassifyResult(None, None, False, None, False)
+            del key
+        else:
+            self._cache.invalidate_if_epoch_changed()
+            try:
+                result = self._classify_entry(raw, key, data_epoch=data_epoch)
+            except (DecryptionError, EntryIntegrityError):
+                # _classify_entry 内部已吸收这两类；此处防御未来透传路径的意外逃逸。
+                return False
+            del key
         with self._cache_lock:
             cached = self._analysis_cache
             # 二次校验比对快照 epoch（SEC-040）：缓存报告须仍属首次校验的同一世代，
@@ -558,23 +607,26 @@ class SecurityAnalyzer:
         （full_analysis 构建 / _refilter_cache 的 days 重过滤 / 本方法的同步维护
         三方保证）：先移除旧条目的 old 成员资格（按 crypto_id 定位），再按新
         changed_utc 判定加入，与「以当前时刻与缓存 days 过滤」语义一致。
-        result.summary 为 None（条目损坏/无密码损坏）时仅移除不插入，与
-        full_analysis 的跳过语义一致。
+        result.summary 为 None（条目移除/损坏）时仅移除不插入，与 full_analysis
+        的跳过语义一致；此时 total 按缓存成员资格下调（PERF-079 增删差分）。
 
         ``now`` 缺省实时（QL-057）：此前的硬编码 ``datetime.now(UTC)`` 使测试注入
         时钟时增量路径与全量路径行为分叉（full_analysis/_refilter_cache 均可注入）。
         """
         # 1) 移除旧分类：weak 与 summaries 就地单点移除（线性定位 + del，PERF-076
-        # 免两轮整表重建分配）。条目至多出现一次（按 crypto_id 唯一）。
+        # 免两轮整表重建分配）。条目至多出现一次（按 crypto_id 唯一）。summaries
+        # 的定位结果兼作 total 差分的成员资格判定（PERF-079，见 3)）。
         weak_entries = cached.get("weak_entries", [])
         for i, e in enumerate(weak_entries):
             if e.crypto_id == crypto_id:
                 del weak_entries[i]
                 break
         summaries = cached.get("_summaries_with_dates", [])
+        was_in_summaries = False
         for i, (s, _dt) in enumerate(summaries):
             if s.crypto_id == crypto_id:
                 del summaries[i]
+                was_in_summaries = True
                 break
         # 旧指纹 O(1) 定位（PERF-076）：反向索引先行，缺失（异常缓存形态）时回退
         # 逐桶扫描兜底，保证任意来源缓存的行为与原实现一致。
@@ -612,6 +664,17 @@ class SecurityAnalyzer:
         cached["_summaries_with_dates"] = summaries
         cached["_fingerprint_map"] = fp_map
         cached["_crypto_id_to_fp"] = fp_index
+        # total 差分（PERF-079）：按「缓存成员资格」调节——插入此前不在缓存的条目
+        # （新增/恢复/外部新条目）+1，移除此前在缓存的条目（删除）-1，原位替换
+        # （编辑/改密）不变，与 full_analysis 的 total==分析集行数语义保持一致。
+        # 成员资格以 _summaries_with_dates 为准（复用 1) 的线性定位，零额外开销）；
+        # 已知取舍：损坏条目（summary 为 None，full_analysis 计 total 但不入
+        # summaries）的增删在 total 上最多滞后一个 TTL 窗口，由任何后续全量失效
+        # 自愈——损坏态条目本不可正常编辑，属可接受边界。
+        if result.summary is not None and not was_in_summaries:
+            cached["total"] = cached.get("total", 0) + 1
+        elif result.summary is None and was_in_summaries:
+            cached["total"] = max(0, cached.get("total", 0) - 1)
         groups = [list(g) for g in fp_map.values() if len(g) > 1]
         cached["duplicate_groups"] = groups
         cached["duplicate_count"] = sum(len(g) - 1 for g in groups)

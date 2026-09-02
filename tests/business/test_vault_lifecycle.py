@@ -216,6 +216,60 @@ class TestChangeMasterPassword:
         ok_orig, err_orig = fresh_vault.unlock(_MASTER_PASSWORD)
         assert ok_orig, f"旧密码错误改密被拒后，原主密码应仍可用: {err_orig}"
 
+    def test_weak_new_password_raises_policy_error(self, fresh_vault):
+        """新密码强度不足抛 MasterPasswordPolicyError，而非返回 (False, 文案)（ARCH-042）。
+
+        (False, ...) 契约收窄为唯一语义「认证失败」——策略类可预期失败类型化走异常
+        通道，改密对话框据返回值形态判定计入速率限制，不再比对文案字符串。
+        """
+        from src.exceptions import MasterPasswordPolicyError
+
+        fresh_vault.initialize(_MASTER_PASSWORD)
+
+        with pytest.raises(MasterPasswordPolicyError):
+            fresh_vault.change_master_password(_MASTER_PASSWORD, "short")
+
+    def test_same_password_raises_policy_error(self, fresh_vault):
+        """新旧主密码相同抛 MasterPasswordPolicyError（含 Unicode 密码不抛 TypeError）。"""
+        from src.exceptions import MasterPasswordPolicyError
+
+        fresh_vault.initialize(_MASTER_PASSWORD)
+
+        with pytest.raises(MasterPasswordPolicyError, match="相同"):
+            fresh_vault.change_master_password(_MASTER_PASSWORD, _MASTER_PASSWORD)
+
+    def test_system_error_message_survives_double_translation(self, fresh_vault, monkeypatch):
+        """重加密系统错误经异常通道抛 VaultError，最终文案保留原始原因（ARCH-042）。
+
+        对齐 unlock 的编码哲学：系统错误走 worker.error 异常通道，改密对话框按
+        「非认证失败」处理（不计入速率限制），不惩罚遭遇故障的用户。包装用无固定
+        映射的 VaultError 本体：worker error 通道（to_user_message）的二次翻译保留
+        原文——此前包装为 VaultLockedError 时被 _FIXED_MESSAGES 归一为「保险库已
+        锁定，请先解锁后重试。」罐头文案，磁盘满时误导用户（保险库明明已解锁）。
+        """
+        import errno
+
+        from src.business.services.error_messages import to_user_message
+        from src.exceptions import VaultError
+
+        def _failing_re_encrypt(*args, **kwargs):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(
+            "src.business.services.re_encryption.ReEncryptionService.re_encrypt_entries",
+            _failing_re_encrypt,
+        )
+        fresh_vault.initialize(_MASTER_PASSWORD)
+
+        with pytest.raises(VaultError) as exc_info:
+            fresh_vault.change_master_password(_MASTER_PASSWORD, "NewMasterPassword!2026")
+        # 系统错误不用 VaultLockedError 包装（其罐头映射正是二次翻译覆盖的根源）
+        assert not isinstance(exc_info.value, VaultLockedError)
+        # worker error 通道的二次翻译后，最终用户文案仍包含原始原因
+        final_message = to_user_message(exc_info.value)
+        assert "磁盘空间不足" in final_message
+        assert "保险库已锁定" not in final_message
+
 
 class TestKeyEpochRotation:
     """key_epoch 守卫：改密轮换 epoch，作为密钥版本不变量。"""

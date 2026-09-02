@@ -30,6 +30,14 @@ logger = logging.getLogger(__name__)
 # 复用同一心智模型与末行分离逻辑。
 _STATE_SIG_PREFIX = "#__sig__:"
 
+# 登录/改密限流器的状态文件名（ARCH-043 单一事实源）：状态文件须与哨兵 stem
+# （``<stem>.json.sentinel``）及签名 config 的 ``security_sentinels`` 登记名（stem）
+# 稳定对应，命名收归本模块，组合根（composition.build_*_rate_limiter）据此构造，
+# UI 对话框不再散落文件名。stem 同时用作哨兵登记名，改名会使既有登记「孤儿化」
+# （旧名见证仍在、新名按首次使用处理），勿轻改。
+LOGIN_RATE_LIMIT_FILENAME = "login_rate_limit.json"
+CHANGE_MASTER_RATE_LIMIT_FILENAME = "change_master_rate_limit.json"
+
 
 def _split_state_signature(raw_text: str) -> tuple[str, str]:
     """分离状态文件末尾签名行，返回 (JSON 文本, 签名 hex)；无签名行返回 (原文, "")。

@@ -34,37 +34,38 @@ class TestLoginWindowAuthGlue:
 
     def test_failure_records_and_shows_lock_wait(self, qapp, tmp_path):
         """认证失败经 ``record_failure``；返回锁定秒数时显示等待提示。"""
-        dialog = LoginWindow(_make_vault(tmp_path))  # type: ignore[arg-type]
+        limiter = MagicMock()
+        limiter.record_failure.return_value = 30
+        # 限流器经构造注入（ARCH-043），测试直接注入 mock 驱动状态机断言
+        dialog = LoginWindow(_make_vault(tmp_path), limiter)  # type: ignore[arg-type]
         try:
-            dialog._rate_limiter = MagicMock()
-            dialog._rate_limiter.record_failure.return_value = 30
             dialog._on_auth_result(False, "主密码错误")
-            dialog._rate_limiter.record_failure.assert_called_once()
+            limiter.record_failure.assert_called_once()
             assert "等待 30 秒" in dialog._message_label.text()
         finally:
             dialog.close()
 
     def test_failure_without_lock_shows_raw_error(self, qapp, tmp_path):
         """认证失败但未触发锁定（``record_failure`` 返回 0）时显示原始错误文案。"""
-        dialog = LoginWindow(_make_vault(tmp_path))  # type: ignore[arg-type]
+        limiter = MagicMock()
+        limiter.record_failure.return_value = 0
+        dialog = LoginWindow(_make_vault(tmp_path), limiter)  # type: ignore[arg-type]
         try:
-            dialog._rate_limiter = MagicMock()
-            dialog._rate_limiter.record_failure.return_value = 0
             dialog._on_auth_result(False, "主密码错误")
-            dialog._rate_limiter.record_failure.assert_called_once()
+            limiter.record_failure.assert_called_once()
             assert dialog._message_label.text() == "主密码错误"
         finally:
             dialog.close()
 
     def test_success_records_and_emits_signal(self, qapp, tmp_path):
         """认证成功经 ``record_success`` 并发射 ``login_success`` 信号。"""
-        dialog = LoginWindow(_make_vault(tmp_path))  # type: ignore[arg-type]
+        limiter = MagicMock()
+        dialog = LoginWindow(_make_vault(tmp_path), limiter)  # type: ignore[arg-type]
         try:
-            dialog._rate_limiter = MagicMock()
             emitted: list[bool] = []
             dialog.login_success.connect(lambda: emitted.append(True))
             dialog._on_auth_result(True, "")
-            dialog._rate_limiter.record_success.assert_called_once()
+            limiter.record_success.assert_called_once()
             assert emitted == [True]
         finally:
             dialog.close()
@@ -74,10 +75,10 @@ class TestLoginWindowAuthGlue:
 
         锁定态应短路在 ``worker`` 启动前，避免无谓的解锁尝试（被限流拒绝）与 ``worker`` 开销。
         """
-        dialog = LoginWindow(_make_vault(tmp_path))  # type: ignore[arg-type]
+        limiter = MagicMock()
+        limiter.check.return_value = "请等待 60 秒后重试"
+        dialog = LoginWindow(_make_vault(tmp_path), limiter)  # type: ignore[arg-type]
         try:
-            dialog._rate_limiter = MagicMock()
-            dialog._rate_limiter.check.return_value = "请等待 60 秒后重试"
             dialog._on_confirm()
             assert "等待 60 秒" in dialog._message_label.text()
             assert dialog._worker is None  # 未启动后台 ``worker``

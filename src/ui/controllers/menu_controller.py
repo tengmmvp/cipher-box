@@ -118,6 +118,9 @@ class MenuController:
         self._entry_mgr = ctx.entry_mgr
         self._security = ctx.security
         self._import_export = ctx.import_export
+        # 改密限流器经组合根创建、随 ctx 注入（ARCH-043）：UI 不自行实例化有跨进程
+        # 持久状态的业务安全模块。
+        self._change_rate_limiter = ctx.change_master_rate_limiter
         self._backup = ctx.backup
         self._clipboard = deps.clipboard
         self._detail_panel = deps.detail_panel
@@ -300,7 +303,7 @@ class MenuController:
         快照 ``force=True`` 绕过自动备份开关——即使用户已禁用自动备份，改密前的
         可回滚点仍须保留。Toast 文案不谎称「已创建」（异步可能被并发跳过或失败）。
         """
-        dialog = ChangeMasterDialog(self._vault, self._config, self._parent)
+        dialog = ChangeMasterDialog(self._vault, self._change_rate_limiter, self._parent)
         result = dialog.exec()
         dialog.deleteLater()
         if result == ChangeMasterDialog.DialogCode.Accepted:

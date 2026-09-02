@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from ..managers.vault_manager import VaultManager
 
 from ...exceptions import DecryptionError, VaultKeyEpochMismatchError
-from ...models import MAX_ENTRIES_LIMIT
+from ...models import MAX_ENTRIES_LIMIT, parse_tag_list
 from ..services.crypto_utils import (
     category_crypto_id,
     decrypt_field as _decrypt_field_impl,
@@ -377,6 +377,37 @@ class EntryCacheManager:
         with self._cache_lock:
             return set(self._search_metadata_failed.get(crypto_id, ()))
 
+    @property
+    def cache_epoch(self) -> str | None:
+        """缓存当前臂住的 key_epoch（测试观察用，MAINT-095）。
+
+        只读视图：测试经此断言失效/重臂后的世代值，不再直读 ``_cache_epoch``。
+        """
+        with self._cache_lock:
+            return self._cache_epoch
+
+    @property
+    def search_metadata_cached_ids(self) -> frozenset[str]:
+        """搜索摘要缓存当前持有的 crypto_id 集合（测试观察用，MAINT-095）。
+
+        只读快照：测试经此断言缓存命中/清空/精确失效（成员资格与规模），不再
+        直读 ``_search_metadata_cache`` 内部 OrderedDict。
+        """
+        with self._cache_lock:
+            return frozenset(self._search_metadata_cache)
+
+    @property
+    def invalidate_version(self) -> int:
+        """当前失效版本号（调用方快照用，QL-065）。
+
+        EntryManager 在增删/编辑的写事务**前**经此快照版本，事务提交后随
+        :meth:`apply_tag_delta` 的 ``expected_version`` 复查——「读 raw → 提交 →
+        差分」窗口内若发生任何失效（并发导入/恢复的 notify 置空标签缓存并重建），
+        差分被放弃，由下次全量重算吸收，堵双扣。
+        """
+        with self._cache_lock:
+            return self._invalidate_version
+
     def decrypt_category_name(
         self,
         category_id: int | None,
@@ -515,24 +546,34 @@ class EntryCacheManager:
         with self._cache_lock:
             self._totp_secret_cache.clear()
 
-    def _decrypt_tags_by_crypto_id(
+    def decrypt_tags_for_delta(
         self,
         crypto_id: str,
         tags_enc: str,
         key: bytes | None = None,
-    ) -> str:
-        """仅解密 tags 字段供标签聚合（窄投影版，PERF-020）。
+    ) -> str | None:
+        """解密单条 tags 供计数差分（QL-066 单一事实源），失败返回 None 哨兵。
 
-        优先复用搜索摘要缓存的 tags（列表 worker 已解密填充于 ``tags`` 字段），命中则
-        省去一次 AES-GCM 解密；未命中再走专用单字段解密（冷缓存下省去
-        title/username/url 的冗余解密，约 3/4 开销）。``key`` 由批量调用方循环外传入
-        快照避免每条经 ``self._key`` 复制密钥（PERF-009）。失败回退空串，与
-        :meth:`_cached_search_metadata_no_check` 的容错一致。
+        区分「解密失败」（None，差分不可依赖，调用方保守整表失效）与「合法空串」
+        （''，差分 no-op）——此前 ``_decrypt_tags_for_delta``（EntryManager 侧）与
+        本方法聚合口径均失败回退 ''，使 tags 密文损坏条目被删除（LENIENT 读路径
+        服务的清理场景）后差分静默 no-op，``_tags_cache`` 陈旧。
+
+        优先复用搜索摘要缓存的 tags（列表 worker 已解密，PERF-020 的暖缓存复用）；
+        暖缓存的 tags 为「失败回退空串」形态，须经 ``_search_metadata_failed`` 的
+        字段集区分失败与合法空。``key`` 由批量调用方循环外传入快照（PERF-009）。
+
+        Returns:
+            解密成功的 tags 明文（可为空串）；解密失败（GCM 认证失败）为 None。
         """
         with self._cache_lock:
             cached = self._search_metadata_cache.get(crypto_id)
-        if cached is not None:
-            return cached.tags
+            if cached is not None:
+                if "tags" in self._search_metadata_failed.get(crypto_id, ()):
+                    return None
+                return cached.tags
+        if not tags_enc:
+            return ""
         try:
             return _decrypt_field_impl(
                 tags_enc,
@@ -542,7 +583,22 @@ class EntryCacheManager:
                 strict=True,
             )
         except DecryptionError:
-            return ""
+            return None
+
+    def _decrypt_tags_by_crypto_id(
+        self,
+        crypto_id: str,
+        tags_enc: str,
+        key: bytes | None = None,
+    ) -> str:
+        """仅解密 tags 字段供标签聚合（窄投影版，PERF-020），失败回退空串。
+
+        :meth:`decrypt_tags_for_delta` 的聚合口径包装（QL-066 收敛解密单一事实源）：
+        全量重算对损坏 tags 回退空串（该条目不贡献标签计数），与
+        :meth:`_cached_search_metadata_no_check` 的容错口径一致。
+        """
+        result = self.decrypt_tags_for_delta(crypto_id, tags_enc, key)
+        return result if result is not None else ""
 
     def get_all_tags(self) -> list[tuple[str, int]]:
         """获取所有标签及其使用频率，结果在会话内缓存。
@@ -571,7 +627,9 @@ class EntryCacheManager:
                 vault_key = self._key
                 for crypto_id, tags_enc in self._vault.db.get_entries_tags_projection():
                     tags_str = self._decrypt_tags_by_crypto_id(crypto_id, tags_enc, vault_key)
-                    for tag in (t.strip() for t in tags_str.split(",") if t.strip()):
+                    # 解析走 models.parse_tag_list 单一事实源（QL-065）：与差分路径
+                    # （apply_tag_delta）共用同一解析，两口径计数不漂移。
+                    for tag in parse_tag_list(tags_str):
                         tag_count[tag] = tag_count.get(tag, 0) + 1
         except VaultKeyEpochMismatchError:
             # epoch 不一致：返回已聚合部分，不回填缓存（observed_epoch != 当前
@@ -599,3 +657,53 @@ class EntryCacheManager:
         """
         with self._cache_lock:
             return self._tags_cache is not None and self._cache_epoch == self._vault.key_epoch
+
+    def apply_tag_delta(
+        self,
+        old_tags: str = "",
+        new_tags: str = "",
+        *,
+        expected_version: int | None = None,
+    ) -> None:
+        """单条条目的标签计数差分（PERF-079），一次锁内先减旧再加新。
+
+        增删/恢复/编辑 tags 路径以此原地增减该条 tags 的各标签计数（重排保持
+        「计数降序」出口契约、清零标签移除），免去 ``tags_changed=True`` 触发的
+        下次 get_all_tags 全量重解密重算。缓存未填充/已失效（None）时无操作——
+        下次全量重算天然吸收；old/new 任一为空是合法端点（纯增或纯减）。
+
+        单次锁内完成「减旧+加新」（QL-065）：此前编辑路径两次锁调用（先 removed
+        后 added），中间并发 get_all_tags 可见「旧已减、新未加」的撕裂态。
+
+        ``expected_version`` 为写回世代守卫（QL-065，SEC-041 的同款模式）：调用方
+        （EntryManager）在写事务**前**经 :attr:`invalidate_version` 快照，「读 raw →
+        提交事务 → 差分」窗口内若发生任何失效（并发导入/恢复的 notify 置空
+        ``_tags_cache`` 并由后续 get_all_tags 基于新库重建），本次差分被放弃——
+        重建结果已含本条变更，再扣即双扣。不传时保持无条件写回（测试直调等
+        既有调用方语义不变）。
+
+        有意不推进 ``_invalidate_version``：差分仅触碰 ``_tags_cache``（无锁外
+        解密-回写窗口，get_all_tags 亦不消费 version），推进会使在飞的摘要/分类名
+        解密回写被无谓丢弃。
+        """
+        removed = parse_tag_list(old_tags)
+        added = parse_tag_list(new_tags)
+        if not removed and not added:
+            return
+        with self._cache_lock:
+            cached = self._tags_cache
+            if cached is None:
+                return
+            # 写回世代守卫：快照版本与当前不一致说明差分窗口内发生过失效，
+            # 放弃本次差分（下次全量重算吸收），不向重建后的缓存叠加旧变更。
+            if expected_version is not None and self._invalidate_version != expected_version:
+                return
+            counts = dict(cached)
+            for tag in removed:
+                counts[tag] = counts.get(tag, 0) - 1
+            for tag in added:
+                counts[tag] = counts.get(tag, 0) + 1
+            self._tags_cache = sorted(
+                ((tag, count) for tag, count in counts.items() if count > 0),
+                key=lambda item: -item[1],
+            )

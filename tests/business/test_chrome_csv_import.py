@@ -4,6 +4,7 @@ import pytest
 
 from src.business.managers.import_export import ImportExportManager
 from src.exceptions import ImportFormatError
+from tests.helpers import decrypt_all_entries
 
 
 def test_import_from_chrome_csv_maps_columns(entry_mgr, tmp_path):
@@ -23,7 +24,7 @@ def test_import_from_chrome_csv_maps_columns(entry_mgr, tmp_path):
     count = mgr.import_file(str(csv_path), "chrome_csv")
 
     assert count == 2
-    entries = entry_mgr.get_entries()
+    entries = decrypt_all_entries(entry_mgr)
     by_title = {e.title: e for e in entries}
     assert set(by_title) == {"GitHub", "Gmail"}
     gh = by_title["GitHub"]
@@ -42,7 +43,7 @@ def test_import_from_chrome_csv_empty(entry_mgr, tmp_path):
     csv_path.write_text("name,url,username,password\n", encoding="utf-8")
 
     assert mgr.import_file(str(csv_path), "chrome_csv") == 0
-    assert entry_mgr.get_entries() == []
+    assert decrypt_all_entries(entry_mgr) == []
 
 
 def test_import_rejects_missing_default_category(entry_mgr, tmp_path):

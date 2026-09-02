@@ -247,12 +247,18 @@ class DetailPanel(QWidget):
         ):
             return
         logger.debug("显示条目详情: id=%d", entry.id)
+        # 在接收条目的最早时点快照数据世代（SEC-054）：entry 的敏感字段（含
+        # totp_secret）解密于该世代，TOTP 预热写入据此复查——「解密后→预热前」
+        # 窗口内发生恢复重臂新世代时，旧世代 secret 不落新世代缓存。快照越早窗口
+        # 越窄：主路径（get_entry→show_entry 同步栈）为零间隙，仅 force 重建等
+        # 持旧条目重显的路径残留理论窗口（数据本已过期，刷新列表即收敛）。
+        data_epoch = self._entry_mgr.key_epoch if self._entry_mgr is not None else None
         self._prepare_display(entry)
         self._update_header_and_actions(entry)
         self._content_layout.addLayout(self._build_tags_section(entry))
         self._render_integrity_warning(entry)
         self._render_core_form(entry)
-        self._render_totp_and_history(entry)
+        self._render_totp_and_history(entry, data_epoch=data_epoch)
         self._build_meta_section(entry)
         self._render_notes(entry)
         self._render_custom_fields(entry)
@@ -351,14 +357,19 @@ class DetailPanel(QWidget):
             url_label.setOpenExternalLinks(True)
         return url_label
 
-    def _render_totp_and_history(self, entry: Entry) -> None:
-        """启动 TOTP 显示与密码历史延迟加载 stub。"""
+    def _render_totp_and_history(self, entry: Entry, *, data_epoch: str | None = None) -> None:
+        """启动 TOTP 显示与密码历史延迟加载 stub。
+
+        data_epoch 为 show_entry 时点快照的数据世代（SEC-054），随 preloaded secret
+        透传给 TOTP 预热写入做世代复查。
+        """
         if entry.has_totp and entry.id and self._entry_mgr is not None:
             self._totp_widget.start(
                 entry.id,
                 self._entry_mgr,
                 self._content_layout,
                 entry.totp_secret,
+                data_epoch,
             )
         if entry.id and self._entry_mgr:
             self._history_widget.build_stub(entry.id, self._entry_mgr, self._content_layout)

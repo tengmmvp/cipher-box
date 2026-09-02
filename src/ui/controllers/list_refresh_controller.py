@@ -143,6 +143,9 @@ class ListRefreshController:
         self._last_refresh_filter: str | None = None
         # status worker（状态栏安全摘要专用，独立于 entry/tag 刷新）
         self._status_worker: BackgroundWorker | None = None
+        # 在飞失效的置脏标记（PERF-080）：update_status_bar 的单飞守卫遇 worker 在飞
+        # 时置位，完成回调消费后重启一轮——防新失效被吞导致状态栏计数陈旧。
+        self._status_dirty = False
         # entry/tag 异步刷新协调器（setup 创建，管 worker 池与 generation 守卫）
         self._coordinator: EntryRefreshCoordinator
         # 定时器（setup 创建，parent=host 保证 Qt 线程亲和性与析构自动断开）
@@ -318,9 +321,6 @@ class ListRefreshController:
         self._config.set(CFG_SORT_ORDER, order)
         self.refresh_entries()
 
-    def _sort_entries(self, entries: list[Entry]) -> list[Entry]:
-        return self._entry_list_ctrl.sort_entries(entries, self._view.sort_combo.currentIndex())
-
     # ========== 数据操作 ==========
 
     def refresh_categories(self) -> None:
@@ -413,8 +413,12 @@ class ListRefreshController:
         """按过滤器键获取数据，参数绑定基于当前 UI 状态。
 
         过滤器→方法的映射复用 EntryListController.get_fetcher。各 fetcher 所需的当前
-        分类、搜索等参数在此按 filter_key 统一绑定。排序在数据获取阶段完成（同步与
-        异步 worker 均在此排序），使 _apply_entry_results 仅负责渲染。
+        分类、搜索等参数在此按 filter_key 统一绑定。排序契约（MAINT-091）：all/
+        favorite/trash 的排序由 fetcher 透传 order_by 给 manager 完成（SQL 下推或
+        PERF-078 内存路径，键函数与 UI 的 sort_entries 同一事实源），本方法不再对
+        结果二次重排——原重排在 worker 线程读 sort_combo（绕过 _build_entry_fetch
+        的快照）且属稳定空操作；weak/duplicate/recent 视图**有意不参与排序切换**
+        （安全摘要序/固定 updated_at↓ 序），不透传排序参数。
 
         ``sort_index`` 缺省读当前 UI（同步路径）；异步 worker 闭包须传调用前快照
         （QComboBox 不可跨线程访问，与 category/search 的快照模式一致）。
@@ -433,9 +437,7 @@ class ListRefreshController:
         elif filter_key in ("favorite", "recent", "trash"):
             entries, title = fetcher(effective_search, cancel_check, sort_index=sort_index)
         else:
-            entries, title = fetcher()  # weak、duplicate 无参数
-        if filter_key in ("all", "favorite", "trash"):
-            entries = self._sort_entries(entries)
+            entries, title = fetcher()  # weak、duplicate 无参数（不参与排序切换）
         return entries, title
 
     def _current_category_name(self) -> str:
@@ -640,7 +642,8 @@ class ListRefreshController:
         """刷新状态栏四项安全计数：缓存命中同步渲染，未命中启动后台 worker。
 
         锁定后或被取代的 worker 回调经 ``_locked`` / identity 守卫丢弃，避免
-        对已清零状态应用结果。
+        对已清零状态应用结果。worker 在飞时的新失效经置脏标记（PERF-080）由完成
+        回调消费并重启一轮，不再被单飞守卫吞掉。
         """
         days = self._config.get(CFG_OLD_PASSWORD_WARNING_DAYS)
         # 快速路径：缓存命中时仅取计数——get_cached_counts 跳过 get_cached_report 经
@@ -658,7 +661,13 @@ class ListRefreshController:
         status_bar = self._view.status_bar
         status_bar.showMessage("安全分析中...")
         if self._status_worker and self._status_worker.isRunning():
+            # 在飞置脏（PERF-080）：worker 的 full_analysis 可能在新失效到达前已越过
+            # 缓存读取点（或在失效前的旧数据上计算），本轮结果不反映新失效；完成回调
+            # 见脏标记即重启一轮。此前直接 return 会吞掉新失效——worker 双检发现缓存
+            # 为 None 后仍写入启动时刻的旧数据，删除后计数陈旧需等 TTL 120s 自愈。
+            self._status_dirty = True
             return
+        self._status_dirty = False
         worker = BackgroundWorker(
             lambda: self._security.get_or_compute_report(days, cancel_check=worker.cancel_check),
             parent=self._parent,
@@ -678,6 +687,12 @@ class ListRefreshController:
             )
             if self._status_worker is worker:
                 self._status_worker = None
+            # 脏标记消费（PERF-080）：在飞期间有新失效到达则重启一轮。先清标记再
+            # 重启——重启路径若缓存已命中会同步渲染即返回，避免残留脏标记使下一次
+            # 完成回调空转重启。
+            if self._status_dirty:
+                self._status_dirty = False
+                self.update_status_bar()
 
         worker.finished.connect(_on_finished)
 
@@ -687,6 +702,9 @@ class ListRefreshController:
             status_bar.showMessage("安全分析暂时不可用")
             if self._status_worker is worker:
                 self._status_worker = None
+            # 失败路径丢弃脏标记：立即重试大概率再失败（同一错误源），重试交由下一次
+            # 状态栏防抖定时器（任何条目变更/解锁都会触发 start_status_timer）。
+            self._status_dirty = False
 
         worker.error.connect(_on_error)
         worker.start()

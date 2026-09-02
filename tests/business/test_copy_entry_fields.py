@@ -6,7 +6,7 @@ build_entry_summary 生成的摘要条目不包含敏感字段。
 
 import dataclasses
 
-from src.business.services.crypto_utils import build_entry_summary, copy_entry_fields
+from src.business.services.entry_view_decryption import build_entry_summary, copy_entry_fields
 from src.models import RawEntry
 
 

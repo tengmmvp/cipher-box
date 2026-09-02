@@ -36,6 +36,7 @@ from ...exceptions import (
     BackupError,
     DecryptionError,
     PayloadTooLargeError,
+    RestoreAbortedError,
 )
 from ...utils.file_security import (
     atomic_write,
@@ -81,12 +82,44 @@ from ..services.backup.validator import (
     validate_restore_data,
 )
 from ..services.crypto_utils import require_vault_key
+from ..services.entry_batch_writer import phase_progress
 from ..services.error_messages import to_user_message
 from ..services.metadata_signer import VAULT_META_SIGNED_KEYS, MetadataSigner
 from ..services.password_service import PasswordService
 from .restore_point_manager import RestorePointManager
 
 logger = logging.getLogger(__name__)
+
+# ======== 恢复加权总进度刻度（PERF-083）========
+# 50k 库恢复实测 15-25s 全程模态无反馈，比照导入（PERF-065）/导出（PERF-070）的加权
+# 刻度方法：按各阶段耗时画像映射到 [0,100]。两段 CPU 主导大头是「恢复点创建」（恢复
+# 前全量库的逐条解密 collect_portable_data + 整体重加密落盘）与「逐表重建」
+# （restore_entries 逐条多字段加密 + 批量写库），两者工作量对称于同一份条目集；重建
+# 中条目（每条约 8 个加密字段）远重于密码历史（每条 1 个），区间按 35:15 分配；
+# 头部+KDF 派生+解密为固定成本（Argon2id t3/m64MiB + GCM 解密 ~1-2s），收尾
+# （WAL 截断 + 旧快照 purge）为快速 IO 段，合并占首尾 5+5。
+_RESTORE_PROGRESS_TOTAL = 100
+# 头部解析 + PASSWORD Argon2id 派生 + GCM 解密 + 结构校验完成（粗粒度单点上报）。
+_RESTORE_DECRYPT_DONE = 5
+# 恢复点创建阶段：5 → 45。
+_RESTORE_POINT_BASE = 5
+_RESTORE_POINT_SPAN = 40
+# 重建条目阶段：45 → 80。
+_RESTORE_REBUILD_ENTRIES_BASE = 45
+_RESTORE_REBUILD_ENTRIES_SPAN = 35
+# 重建密码历史阶段：80 → 95；事务后收尾（WAL 截断/purge）占 95 → 100。
+_RESTORE_REBUILD_HISTORY_BASE = 80
+_RESTORE_REBUILD_HISTORY_SPAN = 15
+
+
+def _weighted_progress(base: int, span: int, done: int, total: int) -> int:
+    """把阶段内进度 ``(done/total)`` 映射为恢复加权总进度百分比。
+
+    薄委托 :func:`entry_batch_writer.phase_progress`（MAINT-099 共享单一事实源，
+    base/span 形态适配 start/end 形态）：与 import_export 的导入/导出刻度共用
+    同一映射语义（``total <= 0`` 空阶段取满、终值取满、整数下取整单调不降）。
+    """
+    return phase_progress(done, total, base, base + span)
 
 
 @dataclass
@@ -196,15 +229,18 @@ class BackupRestoreManager:
         backup_password: str | None,
         use_snapshot_key: bool,
         cancel_check: Callable[[], bool] | None,
+        progress: Callable[[int, int], None] | None = None,
     ) -> tuple[bool, str]:
         """备份全流程；调用方须已持有 ``vault_write_lock``。
 
         持锁顺序执行 prepare + finalize，供 :class:`RestorePointManager.create` 经
         ``creator`` 参数在已持锁上下文复用以创建恢复点。亦为测试 monkeypatch 拦截恢复点
         创建的桩点（见 test_restore_point_cleaned_on_creation_exception）。
+        ``progress``（PERF-083）仅恢复点创建路径传入（经 collector 按条目上报）；
+        正式备份路径无进度 UI，恒 None。
         """
         prepared = self._prepare_backup_locked(filepath, backup_password, use_snapshot_key)
-        return self._finalize_backup(prepared, cancel_check)
+        return self._finalize_backup(prepared, cancel_check, progress)
 
     def _prepare_backup_locked(
         self,
@@ -259,6 +295,7 @@ class BackupRestoreManager:
         self,
         prepared: PreparedBackup,
         cancel_check: Callable[[], bool] | None,
+        progress: Callable[[int, int], None] | None = None,
     ) -> tuple[bool, str]:
         """锁外完成密钥派生、全量解密、加密与落盘（缩短 vault_write_lock 持有，
         锁内 prepare → 锁外 finalize 拆分，见 :meth:`create_backup` 的决策说明）。
@@ -292,6 +329,7 @@ class BackupRestoreManager:
                 raw_entries=prepared.raw_entries,
                 history_rows=prepared.history_rows,
                 categories=prepared.categories,
+                progress=progress,
             )
             if data is None:
                 return False, "备份已取消"
@@ -329,53 +367,62 @@ class BackupRestoreManager:
         self,
         filepath: str,
         backup_password: str | None = None,
+        progress: Callable[[int, int], None] | None = None,
     ) -> tuple[bool, str]:
-        """恢复备份；任何步骤失败都会回滚当前数据库。"""
+        """恢复备份；任何步骤失败都会回滚当前数据库。
+
+        ``progress``（PERF-083）按加权总进度上报 ``(current, 100)``，覆盖解密完成
+        里程碑、恢复点创建（5→45）、逐表重建（45→95）与终值 100；大库恢复实测
+        15-25s，此前全程模态无反馈。None 时不上报（调用方无进度 UI 的路径不变）。
+        """
         try:
             t0 = time.monotonic()
             filepath = str(validate_file_path(filepath))
             if Path(filepath).stat().st_size > MAX_BACKUP_FILE_SIZE:
                 return False, "备份文件过大"
             with open(filepath, "rb") as file:
-                result = self._restore_current(file, backup_password)
+                result = self._restore_current(file, backup_password, progress)
                 if result[0]:
                     logger.info("备份恢复完成 (%.1fms)", (time.monotonic() - t0) * 1000)
                 return result
         except Exception as exc:
-            # 所有异常（validate_file_path 的 ValueError、BackupError、OSError 等）统一
-            # 经 to_user_message 翻译为用户友好消息，避免内部消息直接暴露。
+            # 所有异常（validate_file_path 的 ValueError、BackupError、RestoreAbortedError、
+            # OSError 等）统一经 to_user_message 翻译为用户友好消息，避免内部消息直接暴露。
             logger.error("恢复失败: %s", exc, exc_info=True)
             return False, to_user_message(exc, default="操作失败，请检查文件和磁盘。")
 
-    def _restore_current(self, file: IO[bytes], backup_password: str | None) -> tuple[bool, str]:
+    def _restore_current(
+        self,
+        file: IO[bytes],
+        backup_password: str | None,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> tuple[bool, str]:
         """恢复备份当前实现：4 阶段编排（头部+密钥 → 解密校验 → 重建+恢复点 → 收尾）。
 
         各阶段拆为独立私有方法，本方法仅编排阶段顺序与贯穿全程的 try/finally（backup_key
-        清零）。事务边界（``epoch_guarded_transaction`` 在 :meth:`_restore_data` 内）、
+        清零）。面向用户的中止（缺密码/未解锁/备份无效）统一由阶段方法抛
+        :class:`RestoreAbortedError` 携带文案（ARCH-045），经外层 :meth:`restore_backup`
+        的统一翻译兜底转为 ``(False, msg)``，调用方不再 isinstance 判别联合返回类型。
+        事务边界（``epoch_guarded_transaction`` 在 :meth:`_restore_data` 内）、
         清零纪律（backup_key / new_snapshot_key / plaintext）、锁范围（``vault_write_lock``
         包裹解密到 WAL 截断）由各阶段方法与 try/finally 维护（MAINT-001）。
         """
         # 阶段 1：头部解析 + KDF 边界 + PASSWORD 密钥派生（锁外，缩短持锁与 UI 冻结）
         flags, salt, kdf_params = self._read_and_validate_header(file)
-        key_or_abort = self._derive_password_backup_key(
+        backup_key: bytearray | bytes | None = self._derive_password_backup_key(
             flags,
             salt,
             kdf_params,
             backup_password,
         )
-        if isinstance(key_or_abort, tuple):
-            return key_or_abort  # (False, '请输入创建备份时设置的备份密码')
         # SNAPSHOT 路径此处为 None（密钥在锁内经 snapshot_key 解析）。
-        backup_key: bytearray | bytes | None = key_or_abort
         checkpoint_ok = True
         try:
             # 持 vault 写锁串行化恢复与改密/备份：从解密全量明文到写库全程持锁。
             with self._vault.vault_write_lock():
                 # SNAPSHOT 路径借用 snapshot_key，须在锁内读取（消除 is_unlocked 检查与
                 # 读取间主线程 lock() 清零 snapshot_key 的竞态）。
-                snapshot_abort = self._ensure_snapshot_key_locked(flags)
-                if snapshot_abort is not None:
-                    return snapshot_abort
+                self._ensure_snapshot_key_locked(flags)
                 if backup_key is None:
                     backup_key = self._vault.snapshot_key
                 # 显式检查替代 assert（python -O 下 assert 跳过），满足类型 narrow 需求。
@@ -389,13 +436,13 @@ class BackupRestoreManager:
                     kdf_params,
                     backup_key,
                 )
-                if isinstance(payload, tuple):
-                    return payload  # 解密/结构失败的 (False, msg)
+                if progress is not None:
+                    progress(_RESTORE_DECRYPT_DONE, _RESTORE_PROGRESS_TOTAL)
                 # 阶段 3：创建恢复点 + epoch 守卫事务内重建数据（锁内）。
                 # restore_point_skipped：恢复点创建因载荷超限被降级跳过（QL-047），
                 # 恢复本身继续，无回退快照的降级经阶段 4b 拼装为可见警告。
                 new_epoch, new_snapshot_key, restore_point_skipped = (
-                    self._rebuild_with_restore_point_locked(payload)
+                    self._rebuild_with_restore_point_locked(payload, progress)
                 )
                 # 阶段 4a：同步内存状态 + WAL 截断（锁内）
                 checkpoint_ok = self._finalize_restored_state_locked(
@@ -404,7 +451,11 @@ class BackupRestoreManager:
                 )
             # 阶段 4b：清理旧 snapshot_key 加密的快照与恢复点 + 拼装降级警告（锁外）。
             # 仅 unlink 文件，不读取 snapshot_key property，故无需持锁，减少锁持有时间。
-            return self._assemble_restore_result(checkpoint_ok, restore_point_skipped)
+            result = self._assemble_restore_result(checkpoint_ok, restore_point_skipped)
+            if progress is not None:
+                # 终值恒上报（PERF-083，对齐导入/导出契约）：进度条不留悬挂。
+                progress(_RESTORE_PROGRESS_TOTAL, _RESTORE_PROGRESS_TOTAL)
+            return result
         finally:
             # 确保 PASSWORD 派生的 backup_key 在所有退出路径（含密钥派生失败、文件
             # 过大、解密异常）都清零；SNAPSHOT 路径借用 snapshot_key 不清零。
@@ -429,31 +480,29 @@ class BackupRestoreManager:
         salt: bytes,
         kdf_params: KdfParams,
         backup_password: str | None,
-    ) -> bytearray | tuple[bool, str] | None:
+    ) -> bytearray | None:
         """锁外派生 PASSWORD 备份密钥（Argon2id 耗时，移出 vault_write_lock 缩短持锁）。
 
-        SNAPSHOT 路径返回 None（密钥在锁内经 snapshot_key 解析）。PASSWORD 缺密码时返回
-        (False, 提示) 早期中止。派生密钥为本地 bytearray，不涉及 snapshot_key 竞态。
+        SNAPSHOT 路径返回 None（密钥在锁内经 snapshot_key 解析）。PASSWORD 缺密码时
+        抛 :class:`RestoreAbortedError` 早期中止（ARCH-045）。派生密钥为本地
+        bytearray，不涉及 snapshot_key 竞态。
         """
         if flags != BackupFlag.PASSWORD:
             return None
         if not backup_password:
-            return False, "请输入创建备份时设置的备份密码"
+            raise RestoreAbortedError("请输入创建备份时设置的备份密码")
         return MasterKeyManager.derive_backup_key(backup_password, salt, kdf_params)
 
-    def _ensure_snapshot_key_locked(
-        self,
-        flags: BackupFlag,
-    ) -> tuple[bool, str] | None:
+    def _ensure_snapshot_key_locked(self, flags: BackupFlag) -> None:
         """锁内校验 SNAPSHOT 恢复的前置条件（已解锁），PASSWORD 直接放行。
 
-        SNAPSHOT 借用 snapshot_key，须在锁内读取以消除与主线程 lock() 清零的竞态。
+        SNAPSHOT 借用 snapshot_key，须在锁内读取以消除与主线程 lock() 清零的竞态；
+        未解锁时抛 :class:`RestoreAbortedError`（ARCH-045）。
         """
         if flags == BackupFlag.PASSWORD:
-            return None
+            return
         if not self._vault.is_unlocked:
-            return False, "恢复快照备份需要先解锁保险库"
-        return None
+            raise RestoreAbortedError("恢复快照备份需要先解锁保险库")
 
     def _decrypt_and_validate_payload_locked(
         self,
@@ -462,8 +511,8 @@ class BackupRestoreManager:
         salt: bytes,
         kdf_params: KdfParams,
         backup_key: bytearray | bytes,
-    ) -> _DecryptedPayload | tuple[bool, str]:
-        """锁内 TOCTOU 复核 + 解密 + 结构校验，返回载荷或 (False, 用户提示)。
+    ) -> _DecryptedPayload:
+        """锁内 TOCTOU 复核 + 解密 + 结构校验，失败抛 :class:`RestoreAbortedError`。
 
         TOCTOU 防护（备份文件替换窗口）：header 锁外读取后，锁内读 payload 前重读
         header 比对——检测文件在「锁外读 header → 锁内读 payload」窗口内被替换。
@@ -472,13 +521,13 @@ class BackupRestoreManager:
         try:
             file.seek(0)
             if read_backup_header(file) != (flags, salt, kdf_params):
-                return False, "备份文件在读取期间已变更，请重试"
+                raise RestoreAbortedError("备份文件在读取期间已变更，请重试")
             # 内存特征：峰值约 3 倍载荷大小。encrypted 不超过 80MB，plaintext 不超过 40MB
             # （PERF-068 上限联动），外加 JSON 解析树，桌面应用可接受。GCM 认证加密要求
             # 完整密文可用，无法流式解密。
             encrypted = file.read(MAX_BACKUP_FILE_SIZE + 1)
             if len(encrypted) > MAX_BACKUP_FILE_SIZE:
-                return False, "备份文件过大"
+                raise RestoreAbortedError("备份文件过大")
             plaintext = EncryptionEngine.decrypt_bytes(
                 encrypted,
                 backup_key,
@@ -487,22 +536,23 @@ class BackupRestoreManager:
                 cache_key=False,
             )
             if len(plaintext) > MAX_BACKUP_PAYLOAD_SIZE:
-                return False, "备份解密数据过大"
+                raise RestoreAbortedError("备份解密数据过大")
             data = json.loads(plaintext.decode("utf-8"))
         except (OSError, DecryptionError, json.JSONDecodeError):
             # 缩窄为预期的「读文件 / GCM 解密 / JSON 解析」失败，统一提示密码错误或损坏；
             # 编程错误（KeyError/TypeError 等）不在此列，冒泡由上层 restore_backup 的 except
             # 经 to_user_message 兜底，避免把真实 bug 静默归为「备份损坏」而掩盖根因。
             logger.debug("备份读取或解密失败", exc_info=True)
-            return False, "备份密码错误或文件已损坏"
+            raise RestoreAbortedError("备份密码错误或文件已损坏") from None
         if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
-            return False, "备份数据结构无效"
+            raise RestoreAbortedError("备份数据结构无效")
         validate_restore_data(data)
         return _DecryptedPayload(plaintext=plaintext, data=data)
 
     def _rebuild_with_restore_point_locked(
         self,
         payload: _DecryptedPayload,
+        progress: Callable[[int, int], None] | None = None,
     ) -> tuple[str, bytearray, bool]:
         """锁内创建恢复点并在 epoch 守卫事务内重建全部数据。
 
@@ -531,9 +581,25 @@ class BackupRestoreManager:
             # 加密恢复前明文），消除延迟绑定的可变状态。创建步骤亦纳入 try：其异常路径
             # 同样须触发 finally 的明文释放，兑现 docstring「无论成败」契约。
             try:
+                # 恢复点创建进度映射到 5→45 区间（PERF-083）：collector 上报的原始
+                # 条目计数经 _weighted_progress 加权；恢复点被超限降级跳过时该段
+                # 直接跳到重建阶段，进度单调不减。
+                def _point_progress(done: int, total: int) -> None:
+                    if progress is not None:
+                        progress(
+                            _weighted_progress(
+                                _RESTORE_POINT_BASE, _RESTORE_POINT_SPAN, done, total
+                            ),
+                            _RESTORE_PROGRESS_TOTAL,
+                        )
+
                 self._restore_points.create(
                     lambda path: self._create_backup_locked(
-                        path, backup_password=None, use_snapshot_key=True, cancel_check=None
+                        path,
+                        backup_password=None,
+                        use_snapshot_key=True,
+                        cancel_check=None,
+                        progress=_point_progress,
                     )
                 )
             except PayloadTooLargeError:
@@ -545,7 +611,7 @@ class BackupRestoreManager:
                     "恢复点创建因备份数据过大被跳过，本次恢复无回退快照（QL-047）",
                     exc_info=True,
                 )
-            new_epoch, new_snapshot_key = self._restore_data(data)
+            new_epoch, new_snapshot_key = self._restore_data(data, progress)
         finally:
             # 释放明文引用（SEC-027）：调用方 _restore_current 的 payload 引用存活至其
             # 方法返回，仅 del 局部别名时最多 40MB 的全量明文 JSON（含所有密码）仍被
@@ -634,17 +700,42 @@ class BackupRestoreManager:
             "（可能被占用），建议在备份对话框手动清理以收缩泄漏面。"
         )
 
-    def _restore_data(self, data: dict[str, Any]) -> tuple[str, bytearray]:
+    def _restore_data(
+        self,
+        data: dict[str, Any],
+        progress: Callable[[int, int], None] | None = None,
+    ) -> tuple[str, bytearray]:
         """在 epoch 守卫事务内用当前主密钥重建全部数据并轮换 key_epoch 与 snapshot_key。
 
         恢复不改主密码，故用 ``self._key`` 重新加密备份载荷。事务内清空库后重建
         分类/条目/密码历史，同事务写入新的 key_epoch 与 snapshot_key_enc（消除事务外
         崩溃的不一致窗口），并据新 epoch 重算 vault_meta_mac。
+        ``progress``（PERF-083）逐表重建映射到 45→95：条目段 45→80（每条约 8 个加密
+        字段，工作量大头）、密码历史段 80→95（每条单字段加密）；分类表数量级小不细分。
 
         返回 ``(new_epoch, new_snapshot_key)``：调用方在事务提交后、释放锁前经
         :meth:`update_key_epoch` 与 :meth:`apply_snapshot_key` 同步内存状态。
         ``new_snapshot_key`` 为 bytearray 便于失败时原地清零。
         """
+
+        def _entries_progress(done: int, total: int) -> None:
+            if progress is not None:
+                progress(
+                    _weighted_progress(
+                        _RESTORE_REBUILD_ENTRIES_BASE, _RESTORE_REBUILD_ENTRIES_SPAN, done, total
+                    ),
+                    _RESTORE_PROGRESS_TOTAL,
+                )
+
+        def _history_progress(done: int, total: int) -> None:
+            if progress is not None:
+                progress(
+                    _weighted_progress(
+                        _RESTORE_REBUILD_HISTORY_BASE, _RESTORE_REBUILD_HISTORY_SPAN, done, total
+                    ),
+                    _RESTORE_PROGRESS_TOTAL,
+                )
+
         db = self._vault.db
         key = self._key
         # validate_restore_data 已校验载荷结构，cast 为 PortableBackup 使后续 _restore_*
@@ -671,8 +762,10 @@ class BackupRestoreManager:
                     ),
                     backup,
                 )
-                entry_map, crypto_id_map = restore_entries(db, backup, key, category_map)
-                restore_history(db, backup, key, entry_map, crypto_id_map)
+                entry_map, crypto_id_map = restore_entries(
+                    db, backup, key, category_map, _entries_progress
+                )
+                restore_history(db, backup, key, entry_map, crypto_id_map, _history_progress)
                 # 轮换 key_epoch 防止旧会话写入恢复后的数据
                 new_epoch = uuid.uuid4().hex
                 db.set_meta("key_epoch", new_epoch)
@@ -751,7 +844,11 @@ class BackupRestoreManager:
 
         config.set(CFG_LAST_AUTO_BACKUP_AT, utc_now_iso())
         try:
-            config.save()
+            # keep_integrity_warning=True（QL-064）：自动备份时间戳是后台自动写盘，
+            # 不是用户驱动的配置修复——本会话检出过的篡改告警不得因此清零（与
+            # register_security_sentinel 的哨兵登记写盘语义一致），否则抑制
+            # MainWindow 的完整性用户通知。
+            config.save(keep_integrity_warning=True)
         except OSError:
             # save 失败：备份已成功创建，未持久化的时间戳仅会让下次间隔检查失效而
             # 冗余备份，非致命；风格与 settings_dialog 的 config.save() 一致。

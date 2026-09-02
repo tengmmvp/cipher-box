@@ -7,35 +7,24 @@
 """
 
 import dataclasses
-from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
 import pytest
 
+from src.exceptions import VaultError
 from src.models import Category, CustomField, Entry
-from tests.helpers import make_entry_manager, make_vault
+from tests.helpers import decrypt_all_entries, make_entry_manager
 
 
 class TestReEncryptEdgeCases:
     """_re_encrypt_all 边界条件。"""
 
     @pytest.fixture(autouse=True)
-    def setup_vault(self, tmp_path, vault_config):
-        self._tmp_dir = str(tmp_path)
-        self._vault = make_vault(vault_config)
-        self._vault.initialize("original_pwd_123")
-        self._entry_mgr = make_entry_manager(self._vault)
-        yield
-        self._vault.close()
-        db_path = Path(self._tmp_dir) / "vault.db"
-        try:
-            db_path.unlink(missing_ok=True)
-            for suffix in ("-wal", "-shm"):
-                p = Path(str(db_path) + suffix)
-                p.unlink(missing_ok=True)
-        except Exception:
-            pass
+    def setup_vault(self, make_vault_env):
+        env = make_vault_env(master_password="original_pwd_123")
+        self._vault = env.vault
+        self._entry_mgr = env.entry_mgr
 
     def test_re_encrypt_empty_fields(self):
         """空字符串字段在改密后保持空字符串。"""
@@ -52,7 +41,7 @@ class TestReEncryptEdgeCases:
         ok, _ = self._vault.change_master_password("original_pwd_123", "new_password_456")
         assert ok
 
-        entries = self._entry_mgr.get_entries()
+        entries = decrypt_all_entries(self._entry_mgr)
         assert len(entries) == 1
         assert entries[0].username == ""
         assert entries[0].notes == ""
@@ -76,7 +65,7 @@ class TestReEncryptEdgeCases:
         ok, _ = self._vault.change_master_password("original_pwd_123", "new_password_456")
         assert ok
 
-        entries = self._entry_mgr.get_entries()
+        entries = decrypt_all_entries(self._entry_mgr)
         assert len(entries) == 1
         e = entries[0]
         assert e.username == "user@example.com"
@@ -101,7 +90,7 @@ class TestReEncryptEdgeCases:
         ok, _ = self._vault.change_master_password("original_pwd_123", "new_password_456")
         assert ok
 
-        entries = self._entry_mgr.get_entries(include_deleted=True)
+        entries = decrypt_all_entries(self._entry_mgr, include_deleted=True)
         assert len(entries) == 1
         assert entries[0].username == "deleted_user"
         assert entries[0].password == "deleted_pass"
@@ -170,7 +159,7 @@ class TestReEncryptEdgeCases:
         ok, _ = self._vault.change_master_password("original_pwd_123", "new_password_456")
         assert ok
 
-        entries = self._entry_mgr.get_entries()
+        entries = decrypt_all_entries(self._entry_mgr)
         assert len(entries) == 3
 
         by_title = {e.title: e for e in entries}
@@ -199,15 +188,15 @@ class TestReEncryptEdgeCases:
         def failing_batch(rows):
             raise OSError("模拟写入失败")
 
+        # 系统错误经异常通道抛 VaultError（ARCH-042：(False, ...) 仅表认证失败）
         with patch.object(self._vault._db, "update_entries_batch", side_effect=failing_batch):
-            ok, _ = self._vault.change_master_password("original_pwd_123", "new_password_456")
-
-        assert not ok
+            with pytest.raises(VaultError):
+                self._vault.change_master_password("original_pwd_123", "new_password_456")
 
         # 改密失败后旧密钥仍有效，会话保留；事务回滚保障数据完好
         assert self._vault.unlock("original_pwd_123")[0]
         entry_mgr = make_entry_manager(self._vault)
-        entries = entry_mgr.get_entries()
+        entries = decrypt_all_entries(entry_mgr)
         assert len(entries) == 1
         assert entries[0].username == "rollback_user"
         assert entries[0].password == "original_pass"
@@ -226,14 +215,14 @@ class TestReEncryptEdgeCases:
                 )
             )
 
-        originals = self._entry_mgr.get_entries()
+        originals = decrypt_all_entries(self._entry_mgr)
 
         ok, _ = self._vault.change_master_password("original_pwd_123", "new_password_456")
         assert ok
 
         assert self._vault.unlock("new_password_456")[0]
 
-        restored = self._entry_mgr.get_entries()
+        restored = decrypt_all_entries(self._entry_mgr)
         assert len(restored) == len(originals)
         for orig, rest in zip(
             sorted(originals, key=lambda e: e.title),
@@ -258,14 +247,14 @@ class TestReEncryptEdgeCases:
                 )
             )
 
-        originals = {e.title: e for e in self._entry_mgr.get_entries()}
+        originals = {e.title: e for e in decrypt_all_entries(self._entry_mgr)}
         assert len(originals) == 10
 
         ok, _ = self._vault.change_master_password("original_pwd_123", "AnotherPassword!2026")
         assert ok
         assert self._vault.unlock("AnotherPassword!2026")[0]
 
-        restored = {e.title: e for e in self._entry_mgr.get_entries()}
+        restored = {e.title: e for e in decrypt_all_entries(self._entry_mgr)}
         assert len(restored) == 10
         for title, orig in originals.items():
             assert restored[title].password == orig.password
@@ -288,7 +277,7 @@ class TestReEncryptEdgeCases:
         assert ok
         assert self._vault.unlock("new_password_456")[0]
 
-        restored = self._entry_mgr.get_entries()[0]
+        restored = decrypt_all_entries(self._entry_mgr)[0]
         assert isinstance(restored.custom_fields, list)
         assert len(restored.custom_fields) == 2
         field_names = {f.name for f in restored.custom_fields}
@@ -340,7 +329,7 @@ class TestReEncryptEdgeCases:
         # 重新解锁验证旧密钥下正常条目数据完好
         assert self._vault.unlock("original_pwd_123")[0]
         entry_mgr = make_entry_manager(self._vault)
-        entries = {e.title: e for e in entry_mgr.get_entries()}
+        entries = {e.title: e for e in decrypt_all_entries(entry_mgr)}
         assert entries["正常条目"].password == "good_pass"
         # 损坏条目仍存在（旧密钥下其 password 解密失败，容错返回空）
         assert "损坏条目" in entries

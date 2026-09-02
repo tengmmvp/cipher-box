@@ -8,7 +8,7 @@ decrypt_summary 由「build_entry_summary 全字段构造 + replace 覆盖 6 字
 
 import dataclasses
 
-from src.business.services.crypto_utils import build_entry_summary
+from src.business.services.entry_view_decryption import build_entry_summary
 
 
 def _reference_two_step(decryptor, raw_entry):

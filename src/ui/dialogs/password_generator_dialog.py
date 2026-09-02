@@ -86,8 +86,18 @@ class PasswordGeneratorDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.setSpacing(14)
+        # _build_* 分块构建（MAINT-094，对齐 entry_dialog 模式）：密码展示 → 强度 →
+        # 生成选项 → 按钮行，纯机械搬移不改控件树与行为。
+        layout.addLayout(self._build_password_display())
+        self._build_strength_label(layout)
+        layout.addWidget(self._build_settings_group())
+        layout.addSpacerItem(
+            QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
+        )
+        layout.addLayout(self._build_buttons())
 
-        # 生成的密码展示
+    def _build_password_display(self) -> QHBoxLayout:
+        """构建生成的密码展示行（只读框 + 复制按钮）。"""
         pwd_layout = QHBoxLayout()
         self._password_display = QLineEdit()
         self._password_display.setReadOnly(True)
@@ -102,16 +112,17 @@ class PasswordGeneratorDialog(QDialog):
         set_icon_with_text(self._copy_btn, "复制", COPY)
         self._copy_btn.clicked.connect(self._copy_password)
         pwd_layout.addWidget(self._copy_btn)
+        return pwd_layout
 
-        layout.addLayout(pwd_layout)
-
-        # 强度显示
+    def _build_strength_label(self, layout: QVBoxLayout) -> None:
+        """构建居中的强度显示标签。"""
         self._strength_label = QLabel("")
         self._strength_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._strength_label.setStyleSheet("font-size: 14px; font-weight: 600;")
         layout.addWidget(self._strength_label)
 
-        # 设置区域
+    def _build_settings_group(self) -> QGroupBox:
+        """构建生成选项分组：长度滑块与字符类型复选框。"""
         settings_group = QGroupBox("生成选项")
         settings_layout = QGridLayout(settings_group)
         settings_layout.setSpacing(10)
@@ -151,14 +162,10 @@ class PasswordGeneratorDialog(QDialog):
         self._exclude_ambiguous = QCheckBox("排除模糊字符 (I, l, 1, O, 0)")
         self._exclude_ambiguous.setChecked(self._cfg(CFG_DEFAULT_EXCLUDE_AMBIGUOUS, False))
         settings_layout.addWidget(self._exclude_ambiguous, 5, 0, 1, 3)
+        return settings_group
 
-        layout.addWidget(settings_group)
-
-        layout.addSpacerItem(
-            QSpacerItem(0, 0, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding)
-        )
-
-        # 按钮
+    def _build_buttons(self) -> QHBoxLayout:
+        """构建生成密码/使用此密码/关闭按钮行。"""
         btn_layout = QHBoxLayout()
 
         gen_btn = QPushButton()
@@ -179,8 +186,7 @@ class PasswordGeneratorDialog(QDialog):
         close_btn.setFixedSize(*BTN_SECONDARY)
         close_btn.clicked.connect(self.close)
         btn_layout.addWidget(close_btn)
-
-        layout.addLayout(btn_layout)
+        return btn_layout
 
     def _generate(self) -> None:
         uppercase = self._upper_check.isChecked()

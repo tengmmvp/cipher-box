@@ -8,6 +8,7 @@ import pytest
 
 from src.business.managers import entry_cache as entry_cache_module
 from src.database.types import EntryQuery
+from src.exceptions import DecryptionError
 from src.models import Entry
 
 
@@ -328,6 +329,176 @@ class TestTagsCacheValid:
         assert not cache.tags_cache_valid
 
 
+class TestApplyTagDelta:
+    """apply_tag_delta 的差分语义（PERF-079）：缓存有效时原地增减，无效时无操作。
+
+    QL-065 后签名为 ``(old_tags, new_tags)``：一次锁内先减旧再加新（编辑路径原先
+    两次锁调用中间可见撕裂态），空 old/空 new 是合法端点（纯增/纯减）。
+    """
+
+    def _populate(self, entry_mgr, cache) -> None:
+        entry_mgr.add_entry(Entry(title="A", username="u", password="p", tags="工作,社交"))
+        entry_mgr.add_entry(Entry(title="B", username="u", password="p", tags="工作"))
+        cache.get_all_tags()  # 填充 _tags_cache
+
+    def test_add_increments_counts_and_resorts(self, entry_mgr, cache):
+        """新增差分 +1：计数上调且维持「计数降序」出口契约。"""
+        self._populate(entry_mgr, cache)
+        cache.apply_tag_delta("", "工作,新标签")
+        tags = dict(cache.get_all_tags())
+        assert tags == {"工作": 3, "社交": 1, "新标签": 1}
+        # 出口按计数降序（工作 在前）
+        assert cache.get_all_tags()[0] == ("工作", 3)
+
+    def test_remove_decrements_and_drops_zero_counts(self, entry_mgr, cache):
+        """移除差分 -1：计数归零的标签从结果移除。"""
+        self._populate(entry_mgr, cache)
+        cache.apply_tag_delta("社交,工作")
+        assert dict(cache.get_all_tags()) == {"工作": 1}
+
+    def test_combined_rename_single_call(self, entry_mgr, cache):
+        """合并调用一次锁内先减后加（QL-065）：改名净效果正确、总量守恒。
+
+        行为断言原子性：一次调用产出的最终状态与「先减旧、后加新」的语义一致，
+        不存在旧已减而新未加的中间态出口（撕裂态下「工作」会瞬时归零移除）。
+        """
+        self._populate(entry_mgr, cache)
+        before_total = sum(c for _, c in cache.get_all_tags())
+        cache.apply_tag_delta("工作", "临时")
+        # 工作 2→1、临时 0→1：净效果一次到位
+        assert dict(cache.get_all_tags()) == {"工作": 1, "社交": 1, "临时": 1}
+        assert sum(c for _, c in cache.get_all_tags()) == before_total
+
+    def test_identical_old_new_is_idempotent(self, entry_mgr, cache):
+        """old == new 的合并调用幂等（先减后加净零，不改变任何计数）。"""
+        self._populate(entry_mgr, cache)
+        cache.apply_tag_delta("工作", "工作")
+        assert dict(cache.get_all_tags()) == {"工作": 2, "社交": 1}
+
+    def test_noop_when_cache_invalid(self, entry_mgr, cache):
+        """缓存未填充（None）时差分无操作，下次 get_all_tags 全量重算吸收。"""
+        entry_mgr.add_entry(Entry(title="A", username="u", password="p", tags="工作"))
+        assert cache._tags_cache is None
+        cache.apply_tag_delta("", "工作")
+        assert cache._tags_cache is None
+        assert dict(cache.get_all_tags()) == {"工作": 1}
+
+    def test_noop_for_empty_or_blank_tags(self, entry_mgr, cache):
+        """空串/全空白 tags 的差分无操作（不创建空计数条目）。"""
+        self._populate(entry_mgr, cache)
+        cache.apply_tag_delta("", "  ,  ")
+        assert dict(cache.get_all_tags()) == {"工作": 2, "社交": 1}
+
+    def test_roundtrip_matches_full_recalc(self, entry_mgr, cache):
+        """+1/-1 往返后差分结果与全量重算一致（等价守护）。"""
+        self._populate(entry_mgr, cache)
+        cache.apply_tag_delta("", "工作")
+        cache.apply_tag_delta("工作")
+        by_delta = dict(cache.get_all_tags())
+        cache.invalidate_all()
+        assert dict(cache.get_all_tags()) == by_delta
+
+    def test_delta_and_full_recalc_share_parse_with_whitespace(self, entry_mgr, cache):
+        """差分与全量重算共用 models.parse_tag_list（QL-065 守护）。
+
+        带首尾空白/空段/重复标签的 tags（" a , b ,, a " → [a, b, a]）：add_entry
+        走差分口径计数，与失效后的全量重算（解析 db 同一 tags 字符串）逐标签
+        一致——两口径若各持一份解析（漂移即计数分歧）此测试失败。
+        """
+        self._populate(entry_mgr, cache)
+        entry_mgr.add_entry(Entry(title="C", username="u", password="p", tags=" a , b ,, a "))
+        by_delta = dict(cache.get_all_tags())
+        cache.invalidate_all()
+        assert dict(cache.get_all_tags()) == by_delta
+        # 精确口径：工作 2、社交 1、a 2、b 1（重复标签逐次累加）
+        assert by_delta == {"工作": 2, "社交": 1, "a": 2, "b": 1}
+
+    def test_delta_abandoned_when_invalidated_during_window(self, entry_mgr, cache):
+        """差分执行中失效 → 差分被放弃（QL-065 写回世代守卫）。
+
+        场景仿真（并发导入/恢复与单条删除交错）：调用方在写事务前快照
+        ``invalidate_version``，窗口内并发 notify 触发 ``_tags_cache`` 置空并由
+        后续 get_all_tags 基于新库重建（重建已含本条变更）——差分携带过期版本
+        到达时被守卫放弃，不向重建后的缓存叠加旧变更（双扣）。
+        """
+        self._populate(entry_mgr, cache)
+        stale_version = cache.invalidate_version
+        # 窗口内发生失效（并发 notify 的 apply_change 置 None + 推进版本）
+        cache.apply_change(tags_changed=True)
+        assert cache._tags_cache is None
+        # 重建（模拟基于新库的 get_all_tags）
+        rebuilt = dict(cache.get_all_tags())
+        assert rebuilt == {"工作": 2, "社交": 1}
+        # 过期版本的差分被放弃：计数保持重建值而非再扣一次
+        cache.apply_tag_delta("工作", expected_version=stale_version)
+        assert dict(cache.get_all_tags()) == rebuilt
+
+    def test_delta_applied_when_version_matches(self, entry_mgr, cache):
+        """世代一致的差分正常写回（守卫不误伤常规路径）。"""
+        self._populate(entry_mgr, cache)
+        version = cache.invalidate_version
+        cache.apply_tag_delta("", "新标签", expected_version=version)
+        assert dict(cache.get_all_tags()) == {"工作": 2, "社交": 1, "新标签": 1}
+
+    def test_delta_without_version_bypasses_guard(self, entry_mgr, cache):
+        """不传 expected_version 保持无条件写回（测试直调等既有调用方语义）。"""
+        self._populate(entry_mgr, cache)
+        # 推进版本但不触碰标签缓存（tags_changed=False 且单条 pop 不相干条目）
+        cache.apply_change(crypto_id="nonexistent", tags_changed=False, clear_summaries=False)
+        cache.apply_tag_delta("", "新标签")
+        assert dict(cache.get_all_tags()) == {"工作": 2, "社交": 1, "新标签": 1}
+
+
+class TestDecryptTagsForDelta:
+    """decrypt_tags_for_delta 的失败语义（QL-066）：None=解密失败，''=合法空。"""
+
+    def test_returns_empty_for_blank_ciphertext(self, cache):
+        """无 tags 密文（空串）是合法端点：返回 ''（差分 no-op），非 None。"""
+        assert cache.decrypt_tags_for_delta("cid-x", "") == ""
+
+    def test_returns_none_for_corrupted_ciphertext(self, entry_mgr, cache):
+        """tags 密文损坏（GCM 认证失败）：返回 None 哨兵，供调用方保守整表失效。"""
+        entry_mgr.add_entry(Entry(title="A", username="u", password="p", tags="标签"))
+        raw = entry_mgr.db.get_entries(EntryQuery())[0]
+        # 直改 tags 密文为非法载荷（不重签）：GCM 认证必然失败
+        conn = entry_mgr.db._conn  # noqa: SLF001
+        conn.execute("UPDATE entries SET tags_enc=? WHERE id=?", ("cb2:garbage", raw.id))
+        conn.commit()
+
+        assert cache.decrypt_tags_for_delta(raw.crypto_id, "cb2:garbage") is None
+
+    def test_aggregate_view_falls_back_to_empty(self, entry_mgr, cache):
+        """聚合口径（_decrypt_tags_by_crypto_id）对损坏 tags 回退空串不贡献计数。"""
+        entry_mgr.add_entry(Entry(title="A", username="u", password="p", tags="标签"))
+        raw = entry_mgr.db.get_entries(EntryQuery())[0]
+        assert cache._decrypt_tags_by_crypto_id(raw.crypto_id, "cb2:garbage") == ""
+
+    def test_warm_cache_hit_distinguishes_failure_from_empty(self, entry_mgr, cache, monkeypatch):
+        """暖缓存复用（PERF-020）经 _search_metadata_failed 区分失败与合法空（QL-066）。
+
+        摘要缓存的 tags 为「失败回退空串」形态：命中暖缓存时若该字段在失败集
+        中须返回 None（差分保守），否则返回缓存 tags（合法值，含合法空串）。
+        """
+        entry_mgr.add_entry(Entry(title="A", username="u", password="p", tags="工作"))
+
+        real_decrypt = entry_cache_module._decrypt_field_impl
+
+        def _failing_tags_decrypt(encrypted, key, crypto_id, field_name, *, strict):
+            if field_name == "tags":
+                raise DecryptionError("GCM 认证失败（模拟）")
+            return real_decrypt(encrypted, key, crypto_id, field_name, strict=strict)
+
+        monkeypatch.setattr(entry_cache_module, "_decrypt_field_impl", _failing_tags_decrypt)
+        # 列表路径填充摘要缓存：tags 解密失败回退空串并记入 failed 集
+        raw = entry_mgr.db.get_entries(EntryQuery())[0]
+        meta = cache.cached_search_metadata_full(raw)
+        assert meta.tags == ""
+        assert "tags" in cache.get_failed_fields(raw.crypto_id)
+
+        # 暖缓存命中：failed 集含 tags → None（而非把回退空串误当合法空）
+        assert cache.decrypt_tags_for_delta(raw.crypto_id, raw.tags) is None
+
+
 class TestInvalidateAll:
     """invalidate_all 清空全部多级缓存。"""
 
@@ -358,13 +529,14 @@ class TestLruEviction:
 class TestEntryManagerFineGrainedInvalidation:
     """守护 EntryManager 增删/软删除/恢复的精细缓存失效（clear_summaries=False）。
 
-    这三类操作不改变既有条目的 title/username/url/tags 摘要内容，应保留摘要缓存
-    避免全量重解密。防止未来误改回 notify()（默认 clear_summaries=True 全清），
-    导致单条 delete/restore/add 触发整库摘要重解密。
+    这三类操作不改变**其他条目**的 title/username/url/tags 摘要内容，不应触发
+    全量清空（整库摘要重解密）。增删改走 crypto_id 单条增量（PERF-079）后，被删
+    条目自身的摘要会经单条 pop 失效（下次访问重新解密一条），其余条目保留——
+    防止未来误改回 notify()（默认 clear_summaries=True 全清）。
     """
 
     def test_delete_preserves_other_summaries(self, entry_mgr, cache):
-        """软删除一条不应清空其他条目的摘要缓存（仅切换 is_deleted）。"""
+        """软删除一条仅 pop 该条摘要，其他条目的摘要缓存保留。"""
         entry_mgr.add_entry(Entry(title="A", username="u", password="p"))
         entry_mgr.add_entry(Entry(title="B", username="u", password="p"))
         raws = entry_mgr.db.get_entries(EntryQuery())
@@ -372,20 +544,23 @@ class TestEntryManagerFineGrainedInvalidation:
             cache.cached_search_metadata(raw)
         assert len(cache._search_metadata_cache) == 2
         entry_mgr.delete_entry(raws[0].id)
-        # 软删除不清摘要：两条摘要均保留，回收站展示时复用缓存
-        assert len(cache._search_metadata_cache) == 2
+        # 单条增量通知（PERF-079）：被删条目自身摘要 pop，B 的摘要保留
+        assert raws[0].crypto_id not in cache._search_metadata_cache
+        assert raws[1].crypto_id in cache._search_metadata_cache
 
     def test_restore_preserves_other_summaries(self, entry_mgr, cache):
-        """恢复一条不应清空其他条目的摘要缓存。"""
+        """恢复一条不清空其他条目的摘要缓存（恢复通知的 crypto_id 单条 pop 为 no-op）。"""
         entry_mgr.add_entry(Entry(title="A", username="u", password="p"))
         entry_mgr.add_entry(Entry(title="B", username="u", password="p"))
         raws = entry_mgr.db.get_entries(EntryQuery())
         for raw in raws:
             cache.cached_search_metadata(raw)
         entry_mgr.delete_entry(raws[0].id)
-        assert len(cache._search_metadata_cache) == 2
+        assert raws[0].crypto_id not in cache._search_metadata_cache
         entry_mgr.restore_entry(raws[0].id)
-        assert len(cache._search_metadata_cache) == 2
+        # 恢复不触发全清：B 保留（A 已在删除时 pop，重新访问时自然重填）
+        assert raws[1].crypto_id in cache._search_metadata_cache
+        assert len(cache._search_metadata_cache) == 1
 
     def test_add_preserves_existing_summaries(self, entry_mgr, cache):
         """新增条目不应清空既有条目的摘要缓存（新条目摘要自然填充）。"""

@@ -3,6 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- CSP（SEC-051）：esc() 转义之外的第二层 XSS 约束。default-src 'none' 封死一切
+     外联加载（fetch/XHR/外链脚本样式均被拦截，浏览器实测验证）；script 保留
+     'unsafe-inline'（file:// 下全部代码均内嵌）与 'wasm-unsafe-eval'（hash-wasm
+     的 argon2id 以 base64 内嵌 WASM，运行期 WebAssembly.compile 需要 wasm 编译
+     许可——该指令只放行 WASM 不放行 eval，是最小权限形态）；style 同理仅内嵌；
+     img-src data: 仅放行数据 URI 图标；form-action/frame-ancestors 封死表单提交
+     与被嵌入通道。注：frame-ancestors 在 meta 形态被 Chrome 忽略（仅 HTTP 头
+     生效），保留声明作纵深。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; img-src data:; form-action 'none'; frame-ancestors 'none'">
 <title>密匣共享包解密器</title>
 <style>
 *{box-sizing:border-box}

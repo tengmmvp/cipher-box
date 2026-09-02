@@ -9,7 +9,11 @@ import pytest
 
 from src.exceptions import VaultIntegrityError
 from src.models import Entry, RawEntry
-from tests.helpers import make_entry_manager, make_vault  # noqa: F401 复用既有装配 helper
+from tests.helpers import (  # noqa: F401 复用既有装配 helper
+    decrypt_all_entries,
+    make_entry_manager,
+    make_vault,
+)
 
 
 class TestLenientVerify:
@@ -49,7 +53,7 @@ class TestLenientVerify:
         assert summaries[0].integrity_error is True
 
         # 全量 get_entries 同样 LENIENT：签名失败标记 integrity_error
-        decrypted = self._entry_mgr.get_entries()
+        decrypted = decrypt_all_entries(self._entry_mgr)
         assert decrypted[0].integrity_error is True
         assert "完整性" in decrypted[0].integrity_message
 
@@ -68,7 +72,7 @@ class TestLenientVerify:
                 entry_type="login",
             )
         )
-        entry_id = self._entry_mgr.get_entries()[0].id
+        entry_id = decrypt_all_entries(self._entry_mgr)[0].id
         assert entry_id is not None
         # 直接 SQL 写入「合法 cb2: 前缀但 GCM 标签必然失败」的密文，绕过
         # add_entry 的正常加密，模拟密文损坏。
@@ -98,7 +102,7 @@ class TestLenientVerify:
 
         self._vault.db._entry_verifier = bad_verifier
 
-        entries = self._entry_mgr.get_entries()
+        entries = decrypt_all_entries(self._entry_mgr)
         entry_id = entries[0].id
         assert entry_id is not None
 
@@ -216,7 +220,7 @@ class TestSearchPathReverify:
         integrity_error/integrity_message 的结论必须一致——窄投影回查链路与直读
         走同一验签钩子，本测试锚定零语义漂移。
         """
-        entry_id = next(e.id for e in self._entry_mgr.get_entries() if e.username == "alice")
+        entry_id = next(e.id for e in decrypt_all_entries(self._entry_mgr) if e.username == "alice")
         assert entry_id is not None
         conn = self._vault.db._conn
         assert conn is not None
@@ -234,7 +238,7 @@ class TestSearchPathReverify:
     def test_search_ciphertext_corruption_marks_integrity(self):
         """搜索命中行的密文损坏（GCM 失败）仍计入完整性警示。"""
         # 按 username 定位目标行（updated_at 同刻创建时 get_entries()[0] 顺序不定）
-        entry_id = next(e.id for e in self._entry_mgr.get_entries() if e.username == "alice")
+        entry_id = next(e.id for e in decrypt_all_entries(self._entry_mgr) if e.username == "alice")
         assert entry_id is not None
         conn = self._vault.db._conn
         assert conn is not None

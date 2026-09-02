@@ -31,12 +31,6 @@ from ..services.vault_meta_store import VaultMetaStore
 
 logger = logging.getLogger(__name__)
 
-# 改密时旧主密码验证失败的错误消息（跨层契约常量）。供 change_master_dialog 判定
-# 是否计入速率限制——以常量而非硬编码字面量比较，使文案变更不需同步改 dialog。
-# 定义于本 facade 使 UI 经 VaultManager 取用，不穿透到 vault_lifecycle 编排器模块
-# （LifecyclePort 抽象保持 vault ↔ lifecycle 解耦）。
-AUTH_FAILED_MESSAGE = "当前主密码错误"
-
 
 class LifecyclePort(Protocol):
     """保险库生命周期编排协议（初始化/解锁/锁定/改密/关闭）。
@@ -173,9 +167,26 @@ class VaultManager:
         """对外暴露收窄为 VaultDataStore 协议视图（不含 set_write_guard 等装配 setter）。
 
         业务 manager 经此 property 拿到协议视图，收窄暴露面。完整 DatabaseManager 仅
-        作为 ``__init__`` 注入与 orchestrator 构造参数在内部流转，不再经 property 对外暴露。
+        作为 ``__init__`` 注入在内部流转，装配层（orchestrator）经 :attr:`_assembly_db`
+        / :attr:`_assembly_signer` 取用（ARCH-044）。
         """
         return self._db
+
+    @property
+    def _assembly_db(self) -> DatabaseManager:
+        """完整 DatabaseManager 装配视图，仅供生命周期编排器构造取用（ARCH-044）。
+
+        编排器需要 transaction/close/secure_checkpoint 等协议外的完整接口。以单一
+        装配来源（vault 内部实例）提供，杜绝组合根传入与 vault 不同域的 db 实例——
+        那会使编排器绕过 vault 所装配 write_guard 直接写库。单下划线：非公开 API，
+        仅为同包装配层保留。
+        """
+        return self._db
+
+    @property
+    def _assembly_signer(self) -> MetadataSigner:
+        """MetadataSigner 装配视图，语义同 :attr:`_assembly_db`（ARCH-044）。"""
+        return self._signer
 
     @property
     def data_dir(self) -> Path:
@@ -411,12 +422,12 @@ class VaultManager:
         self._ever_unlocked = True
 
     def clear_vault_state(self) -> None:
-        """清除密钥材料和加密缓存，并触发 gc 回收 AESGCM 缓存副本。
+        """清除密钥材料和加密缓存，并同步执行完整 GC 回收 AESGCM 缓存副本。
 
-        用于 lock 与 enforce_key_epoch 等。末尾 gc.collect() 尽快回收 clear_cache 释放的
-        AESGCM 实例（内部 C 层持有密钥拷贝），缩短密钥在内存/swap 的驻留。不触发业务
-        回调（由 invoke_lock_callbacks 单独触发），避免持数据库锁时回调再获取数据库锁
-        死锁。
+        用于 lock 与 enforce_key_epoch 等。末尾在**调用线程**同步执行完整 GC
+        （PERF-084 已撤销，见 :meth:`force_gc`）回收 clear_cache 释放的 AESGCM 实例
+        （内部 C 层持有密钥拷贝），缩短密钥在内存/swap 的驻留。不触发业务回调
+        （由 invoke_lock_callbacks 单独触发），避免持数据库锁时回调再获取数据库锁死锁。
         """
         # 密钥材料由 KeyManager 集中清零，含主密钥、快照密钥与 epoch
         self._key_mgr.clear()
@@ -429,6 +440,20 @@ class VaultManager:
         # 确保 init_tables 在下次访问时重新运行。
         self._db_initialized = False
         EncryptionEngine.clear_cache()
+        self.force_gc()
+
+    def force_gc(self) -> None:
+        """在调用线程同步执行完整 GC（清零后回收 AESGCM C 层密钥拷贝，缩短驻留）。
+
+        PERF-084 曾把本调用改为 threading.Timer 后台延迟执行以消除锁定卡顿，已
+        撤销：gc.collect 可能 finalize 引用循环中的无父 QObject，在非 GUI 线程删除
+        C++ 对象会触发「Timers cannot be stopped from another thread」警告或间歇
+        崩溃（Qt 线程亲和）。锁定低频且窗口已隐藏，同步段的大堆遍历卡顿（大库
+        100-300ms 量级）可接受，线程安全优先。同步 GC 对「GC 前仍有排队未投递的
+        worker 信号」的场景另有投递层崩溃风险，由 UI 层 worker 关闭路径断开信号
+        配套消除（QL-067，见 workers.wait_worker_shutdown）。公开为方法供测试
+        与调用方单独驱动。
+        """
         gc.collect()
 
     # ---- snapshot_key 操作（供恢复流程）----

@@ -124,6 +124,49 @@ def test_payload_overhead_constants_positive():
     assert HISTORY_OVERHEAD_BYTES > 0
 
 
+def test_collect_portable_entries_reports_throttled_progress(tmp_path):
+    """progress 按已解密条目数节流上报、终值恒上报（PERF-083）。
+
+    3 条 < PROGRESS_REPORT_EVERY(100)，仅终值 ``(3, 3)`` 触发；计数从 1 起
+    （done/total 语义），供调用方加权映射到恢复点创建区间。
+    """
+    vault = make_vault(make_test_config(str(tmp_path)))
+    vault.initialize("test_password_12345")
+    try:
+        entry_mgr = make_entry_manager(vault)
+        for i in range(3):
+            entry_mgr.add_entry(Entry(title=f"t{i}", username="u", password="p"))
+        raw_entries = vault.db.get_entries(EntryQuery(verify=VerifyMode.SKIP))
+        key = vault.key
+
+        calls: list[tuple[int, int]] = []
+
+        def _record(done: int, total: int) -> None:
+            calls.append((done, total))
+
+        collect_portable_entries(key, None, 0, raw_entries, _record)
+
+        assert calls == [(3, 3)]
+    finally:
+        vault.close()
+
+
+def test_collect_portable_entries_empty_entries_no_reports(tmp_path):
+    """空条目集不上报（循环不执行），空阶段的区间取满由调用方 _weighted_progress 承担（PERF-083）。"""
+    vault = make_vault(make_test_config(str(tmp_path)))
+    vault.initialize("test_password_12345")
+    try:
+        calls: list[tuple[int, int]] = []
+
+        def _record(done: int, total: int) -> None:
+            calls.append((done, total))
+
+        collect_portable_entries(vault.key, None, 0, [], _record)
+        assert calls == []
+    finally:
+        vault.close()
+
+
 # ======== 明文长度估算与上限联动（PERF-068）========
 
 

@@ -121,6 +121,59 @@ class TestSecuritySentinelWitness:
         # 完整性失败时敏感键回退默认（空），不采信被篡改的登记内容
         assert reloaded.get("security_sentinels") == []
 
+    def test_register_keeps_integrity_warning(self, tmp_path):
+        """告警置位后哨兵登记不清零完整性告警（QL-064 回归）。
+
+        触发链：config 签名校验失败（告警置位）+ 首会话哨兵未登记 + 限流状态文件
+        损坏 → RateLimiter._load_state→_apply_max_lockdown→_save_state→
+        _ensure_sentinel→register_security_sentinel→save()。修复前 save() 无条件
+        清告警，LoginWindow 构造期即清零、抑制 MainWindow 的完整性用户提示；修复后
+        哨兵登记走保留告警的写入变体，会话内告警存活（下个会话加载干净文件自然恢复）。
+        """
+        config = make_test_config(tmp_path)
+        config.register_security_sentinel("login_rate_limit")  # 建立既有干净 config
+        config.save()
+        # 模拟篡改：修改 JSON 保留旧签名 → 重载检出签名失配、告警置位
+        raw = config.config_path.read_text(encoding="utf-8")
+        json_text, sig_line = raw.rsplit("\n", 1)
+        tampered = json_text.replace('"theme": "light"', '"theme": "dark"')
+        config.config_path.write_text(tampered + "\n" + sig_line, encoding="utf-8")
+        tampered_cfg = make_test_config(tmp_path)
+        tampered_cfg.load()
+        assert not tampered_cfg.check_integrity()
+
+        # 限流器在告警置位的会话内登记新哨兵（真实触发链的等价最小化）
+        tampered_cfg.register_security_sentinel("change_master_rate_limit")
+
+        # 告警仍在：用户通知不被后台自动写盘静默清除；登记本身生效
+        assert not tampered_cfg.check_integrity()
+        assert tampered_cfg.integrity_reason == "mismatch"
+        assert tampered_cfg.is_security_sentinel_established("change_master_rate_limit")
+        # 磁盘文件已重签（含新登记）：下个会话加载干净文件后告警自然消失
+        reloaded = make_test_config(tmp_path)
+        reloaded.load()
+        assert reloaded.check_integrity()
+        assert reloaded.is_security_sentinel_established("change_master_rate_limit")
+
+    def test_plain_save_still_clears_integrity_warning(self, tmp_path):
+        """普通 save 仍清零告警（QL-064 不改变用户驱动保存的既有语义）。"""
+        config = make_test_config(tmp_path)
+        config.register_security_sentinel("login_rate_limit")
+        config.save()
+        raw = config.config_path.read_text(encoding="utf-8")
+        json_text, sig_line = raw.rsplit("\n", 1)
+        config.config_path.write_text(
+            json_text.replace('"theme": "light"', '"theme": "dark"') + "\n" + sig_line,
+            encoding="utf-8",
+        )
+        tampered_cfg = make_test_config(tmp_path)
+        tampered_cfg.load()
+        assert not tampered_cfg.check_integrity()
+
+        tampered_cfg.save()
+
+        assert tampered_cfg.check_integrity()  # 普通保存后告警按原语义清零
+
 
 class TestKeyringIntegrityKey:
     """非 Windows 平台经 keyring 存储配置签名密钥（SEC-003）。
@@ -204,25 +257,70 @@ class TestKeyringIntegrityKey:
         assert ("CipherBox", cfg._key_store._keyring_entry_name()) in keyring_store
         assert not cfg._integrity_key_path.exists()
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="DPAPI 迁移仅 Windows")
-    def test_plaintext_integrity_key_migrated_to_dpapi(self, tmp_path):
-        """pre-SEC-003 明文 config.key 首次加载时迁移到 DPAPI 封装（SEC-021）。
+    @pytest.mark.skipif(sys.platform != "win32", reason="DPAPI 分支仅 Windows")
+    def test_plaintext_integrity_key_treated_as_corrupt(self, tmp_path):
+        """非 DPAPI 封装的 config.key（含 32 字节明文形态）按损坏处理（SEC-052）。
 
-        守护升级路径：既有明文密钥不原样保留（窃取可离线重算签名），而是重新经
-        DPAPI 封装原子覆盖写回，值不变但存储形态升级。
+        pre-SEC-003 明文迁移分支（SEC-021）已删除：项目未发布无遗留安装，明文
+        形态不再被特殊接受，一律生成新密钥（旧签名随之失效，走完整性告警与敏感
+        键回退），文件重新以 DPAPI 封装写入新密钥。
         """
         from src.utils.file_security import unprotect_with_dpapi
 
         cfg = make_test_config(tmp_path)  # 初始化生成 DPAPI 封装密钥
         key_path = cfg._integrity_key_path
         plaintext_key = b"\x33" * 32
-        # 模拟 pre-SEC-003 明文 config.key（覆盖为明文）
+        # 模拟非 DPAPI 封装形态（长度合法的明文）
         key_path.write_bytes(plaintext_key)
-        # 重新加载触发迁移
+        # 重新加载触发「损坏 → 生成新密钥」路径
         cfg2 = make_test_config(tmp_path)
-        # 加载返回原明文密钥值（签名连续性）
-        assert cfg2._integrity_key == plaintext_key
-        # 文件已重新封装为 DPAPI（不再是原明文，可经 DPAPI 解封还原）
+        # 旧明文密钥不被采信：生成的新密钥与之不同
+        assert cfg2._integrity_key != plaintext_key
+        assert len(cfg2._integrity_key) == 32
+        # 文件重新以 DPAPI 封装写入（不再是明文，可解封出新密钥）
         blob = key_path.read_bytes()
         assert blob != plaintext_key
-        assert unprotect_with_dpapi(blob) == plaintext_key
+        assert unprotect_with_dpapi(blob) == cfg2._integrity_key
+
+
+class TestDpapiProtectFailureFallback:
+    """win32 下 DPAPI protect 失败的降级语义（SEC-055 回归守护）。
+
+    经 monkeypatch sys.platform 与 protect_with_dpapi 跨平台可跑（Linux CI 同样
+    覆盖 win32 分支逻辑；file_security 的 IS_WINDOWS 常量按真实平台取值，仅影响
+    权限加固方式，不影响本测试断言的写盘行为）。
+    """
+
+    def test_protect_failure_never_writes_plaintext_key_file(self, tmp_path, monkeypatch, caplog):
+        """protect 失败不写明文密钥文件、返回内存密钥并记 CRITICAL（SEC-055）。
+
+        修复前的组合行为：protect 失败回退写明文 32 字节且返回 True——读侧
+        （SEC-052）只认 DPAPI 封装，该文件下次启动必被判损坏，触发假「配置文件
+        完整性校验失败，可能已被篡改」告警 + 敏感键回退 + RateLimiter 签名失配
+        降级到最大锁定。修复后不写任何文件，下次启动走「文件缺失 → 重新生成」
+        的诚实路径。
+        """
+        import logging
+        import sys
+
+        import src.config_key_store as cks
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(cks, "protect_with_dpapi", lambda data: None)
+        caplog.set_level(logging.CRITICAL, logger="src.config_key_store")
+
+        store = cks.ConfigKeyStore(tmp_path / "config.key", tmp_path)
+        key = store.load_or_create()
+
+        # 内存密钥照常可用（绝不阻断启动）
+        assert len(key) == 32
+        # 核心断言：绝不产生「写明文 32 字节 + 下次启动判损坏」的组合行为
+        assert not (tmp_path / "config.key").exists()
+        # 降级可见：CRITICAL 如实暴露「密钥未能安全持久化」
+        assert any(record.levelno == logging.CRITICAL for record in caplog.records)
+
+        # 下次启动（protect 恢复后）走「文件缺失 → 重新生成」，与本会话密钥不同
+        monkeypatch.setattr(cks, "protect_with_dpapi", lambda data: b"dpapi:" + data)
+        key2 = cks.ConfigKeyStore(tmp_path / "config.key", tmp_path).load_or_create()
+        assert key2 != key
+        assert (tmp_path / "config.key").read_bytes() == b"dpapi:" + key2

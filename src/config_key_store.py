@@ -11,8 +11,14 @@ business→config 单向、不反向 import）。
 - **Windows**：DPAPI（当前用户凭据）封装存于 config.key。
 - **macOS / Linux**：经 keyring 存入系统密钥链（Keychain / Secret Service）。
 
-keyring 不可用（headless Linux / CI 无 Secret Service、keyring 未安装或后端失败）
-时回退明文 0600 config.key 并记 ERROR，使安全降级可见。绝不阻断启动。
+降级语义（SEC-055，读侧只认平台安全存储形态）：
+
+- **非 Windows**：keyring 不可用（headless Linux / CI 无 Secret Service、keyring
+  未安装或后端失败）时回退明文 0600 config.key 并记 ERROR，使安全降级可见——读侧
+  ``_load_plaintext_integrity_key`` 接受明文形态，回退链闭环。
+- **Windows**：DPAPI protect 失败时**不落盘**（读侧只认 DPAPI 封装，明文文件下次
+  启动必被判损坏），内存密钥仅本会话有效并记 CRITICAL；下次启动重新生成新密钥。
+  绝不阻断启动。
 """
 
 import base64
@@ -67,8 +73,10 @@ class ConfigKeyStore:
         - **Windows**：DPAPI（当前用户凭据）封装存于 config.key。
         - **macOS / Linux**：经 keyring 存入系统密钥链（Keychain / Secret Service）。
 
-        keyring 不可用（headless Linux / CI 无 Secret Service、keyring 未安装或后端
-        失败）时回退明文 0600 config.key 并记 ERROR，使安全降级可见。绝不阻断启动。
+        平台安全存储失败时的降级（SEC-055）：非 Windows 回退明文 0600 config.key
+        并记 ERROR（读侧接受明文形态，回退链闭环）；Windows 读侧只认 DPAPI 封装
+        （SEC-052），写明文文件 = 下次启动必被判损坏，故不落盘——内存密钥仅本会话
+        有效并记 CRITICAL，下次启动重新生成。绝不阻断启动。
         """
         # strict=False：启动路径绝不阻断。Windows SID 解析失败（EDR/企业策略禁用
         # whoami）时 _restrict_windows_acl 会抛 OSError 致启动崩溃，违背本方法
@@ -79,9 +87,25 @@ class ConfigKeyStore:
             return key
         key = os.urandom(_KEY_SIZE)
         if not self._store_secure_integrity_key(key):
-            # keyring/DPAPI 均不可用：回退明文 0600。本地有读权限者可重算签名伪造
-            # 安全配置（SEC-003）。_write_integrity_key_file 经 atomic_write 创建即 0600，
-            # 消除世界可读窗口（SEC-015）。ERROR 使降级可见，提示启用系统密钥链。
+            if sys.platform == "win32":
+                # win32 明文回退名存实亡（SEC-055）：读侧只认 DPAPI 封装（SEC-052），
+                # 「写明文 32 字节 + 下次判损坏」的组合会使用户看到假「配置文件完整
+                # 性校验失败，可能已被篡改」告警、敏感键回退默认、RateLimiter 状态
+                # 签名失配降级到最大锁定——根因却是本机 DPAPI 不可用而非篡改。改为
+                # 不写任何文件：内存密钥运行本会话，CRITICAL 如实暴露「密钥未能安全
+                # 持久化」；下次启动经「文件缺失 → 重新生成」路径，签名失配告警与
+                # 本条日志共同构成可诊断的诚实信号。
+                logger.critical(
+                    "签名密钥未能经 DPAPI 安全持久化（protect 调用失败）：本次会话"
+                    "以内存密钥运行、config.key 未写入；下次启动将重新生成新密钥，"
+                    "既有 config/限流状态签名会如实报告失配。请检查系统 DPAPI 服务"
+                    "可用性"
+                )
+                return key
+            # keyring 不可用（非 Windows）：回退明文 0600。本地有读权限者可重算签名
+            # 伪造安全配置（SEC-003）。_write_integrity_key_file 经 atomic_write 创建
+            # 即 0600，消除世界可读窗口（SEC-015）。ERROR 使降级可见，提示启用系统
+            # 密钥链。
             self._write_integrity_key_file(key)
             logger.error(
                 "签名密钥回退明文存储（平台安全存储不可用）：本地读权限者可重算"
@@ -96,7 +120,11 @@ class ConfigKeyStore:
         return self._load_keyring_integrity_key()
 
     def _store_secure_integrity_key(self, key: bytes) -> bool:
-        """存入平台安全存储，成功返回 True。Windows DPAPI（文件存储）总成功。"""
+        """存入平台安全存储，成功返回 True。
+
+        失败时调用方按平台降级（SEC-055）：非 Windows 回退明文文件；Windows 保持
+        内存密钥运行本会话、不落盘（见 :meth:`load_or_create`）。
+        """
         if sys.platform == "win32":
             return self._store_dpapi_integrity_key(key)
         return self._store_keyring_integrity_key(key)
@@ -112,24 +140,29 @@ class ConfigKeyStore:
             logger.warning("读取签名密钥失败，将生成新密钥", exc_info=True)
             return None
         key = unprotect_with_dpapi(blob)
-        if key is None and len(blob) == _KEY_SIZE:
-            # 非 DPAPI 封装但长度合法：pre-SEC-003 明文密钥。重新经 DPAPI 封装原子覆盖
-            # 写回，完成一次性升级迁移（SEC-021）——消除明文密钥原样保留的泄漏面（窃取
-            # 明文 config.key 可离线重算签名伪造安全配置）。
-            key = blob
-            self._store_dpapi_integrity_key(key)
-            logger.info("已将明文签名密钥迁移到 DPAPI 封装")
         if key is not None and len(key) == _KEY_SIZE:
             # strict=False：启动路径，权限加固失败降级而非崩溃。
             secure_file(self._key_path, strict=False)
             return key
+        # 非 DPAPI 封装形态（含长度恰为 32 字节的明文）一律按损坏处理（SEC-052，
+        # 退役 SEC-021 的一次性明文迁移分支）：项目未发布不存在 pre-SEC-003 遗留
+        # 安装，「合法长度明文」这一特殊接受形态徒增审计解释成本。返回 None 走
+        # 「生成新密钥 → 旧签名失效 → 完整性告警与敏感键回退」路径，Windows 上
+        # config.key 仅认 DPAPI 封装一种合法形态。
         logger.warning("签名密钥损坏，将生成新密钥")
         return None
 
     def _store_dpapi_integrity_key(self, key: bytes) -> bool:
+        """经 DPAPI 封装写入密钥文件；protect 失败不落盘、返回 False（SEC-055）。
+
+        读侧（:meth:`_load_dpapi_integrity_key`）只认 DPAPI 封装形态（SEC-052），
+        明文文件下次启动必被判损坏。故 protect 失败时绝不写明文兜底——返回 False
+        交由 :meth:`load_or_create` 走显式降级（内存密钥会话级运行 + CRITICAL），
+        而非「返回 True + 落一个下次必被判损坏的文件」的自欺组合。
+        """
         stored = protect_with_dpapi(key)
         if stored is None:
-            stored = key  # DPAPI 调用失败回退明文（不阻断）
+            return False
         self._write_integrity_key_file(stored)
         return True
 

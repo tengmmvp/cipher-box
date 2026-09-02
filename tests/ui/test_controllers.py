@@ -58,6 +58,54 @@ class TestSortEntries:
         assert {e.title for e in result} == {"a", "b"}
 
 
+class TestEntrySortKey:
+    """entry_sort_key 单一事实源守护（MAINT-091）。
+
+    键语义须与旧双实现的任一份逐字段等价（title 小写、password_strength None→0、
+    created_at/updated_at 空串回退、未知字段回退 updated_at）——键漂移会使
+    SQL 下推序 / manager 内存排序 / UI sort_entries 三者不一致。
+    """
+
+    @staticmethod
+    def _src(**overrides):
+        base = dict(title="", password_strength=None, created_at="", updated_at="")
+        base.update(overrides)
+        return SimpleNamespace(**base)
+
+    def test_title_key_lowercases(self):
+        """title 键为小写形式（与 meta.title_lower 同源语义）。"""
+        from src.business.managers.entry_manager import entry_sort_key
+
+        key = entry_sort_key("title")
+        assert key(self._src(title="BaR")) == "bar"
+        assert key(self._src()) == ""
+
+    def test_password_strength_key_defaults_zero(self):
+        """password_strength 键 None/0 统一回退 0，不与 int 混排抛 TypeError。"""
+        from src.business.managers.entry_manager import entry_sort_key
+
+        key = entry_sort_key("password_strength")
+        assert key(self._src(password_strength=None)) == 0
+        assert key(self._src()) == 0
+        assert key(self._src(password_strength=3)) == 3
+
+    def test_timestamp_keys_fallback_empty(self):
+        """created_at/updated_at 键空值回退空串。"""
+        from src.business.managers.entry_manager import entry_sort_key
+
+        assert entry_sort_key("created_at")(self._src(created_at="2026-01-01")) == "2026-01-01"
+        assert entry_sort_key("created_at")(self._src()) == ""
+        assert entry_sort_key("updated_at")(self._src(updated_at="2026-02-02")) == "2026-02-02"
+        assert entry_sort_key("updated_at")(self._src()) == ""
+
+    def test_unknown_field_falls_back_to_updated_at(self):
+        """未知字段回退 updated_at 键（与 manager 内存路径的回退分支一致）。"""
+        from src.business.managers.entry_manager import entry_sort_key
+
+        src = self._src(updated_at="2026-03-03")
+        assert entry_sort_key("nonexistent")(src) == entry_sort_key("updated_at")(src)
+
+
 class TestGetFetcher:
     """EntryListController.get_fetcher 的过滤器键映射与兜底。"""
 
@@ -274,7 +322,7 @@ class TestFetchAll:
 
 
 class TestFetchRecent:
-    """EntryListController.fetch_recent 的 SQL 下推与内存排序分支。"""
+    """EntryListController.fetch_recent 的 SQL 下推与搜索 limit 透传（PERF-081）。"""
 
     def test_no_search_uses_sql_recent_summaries(self):
         """无搜索时下推到 get_recent_summaries（SQL ORDER BY updated_at DESC LIMIT），
@@ -296,28 +344,56 @@ class TestFetchRecent:
         # 无搜索不走全量解密路径
         ctrl._entry_mgr.get_entry_summaries.assert_not_called()
 
-    def test_search_path_sorts_in_memory(self):
-        """有搜索时因加密字段无法 SQL 过滤，全量解密后内存按 updated_at 排序。"""
-        ctrl = _entry_list_controller()
-        entries = [
-            SimpleNamespace(title="旧条目", updated_at="2020-01-01"),
-            SimpleNamespace(title="较新", updated_at="2025-01-01"),
-            SimpleNamespace(title="最新", updated_at="2026-01-01"),
-        ]
-        ctrl._entry_mgr.get_entry_summaries.return_value = entries
-        result, label = ctrl.fetch_recent("关键词")
-        assert label == "近期更新"
-        assert [e.title for e in result] == ["最新", "较新", "旧条目"]
-
-    def test_search_path_truncates_to_limit(self):
-        """搜索路径条目数超过 RECENT_ENTRY_LIMIT 时内存截断到上限。"""
+    def test_search_path_delegates_limit_and_order_to_manager(self):
+        """有搜索时同样透传 limit+order_by（PERF-081）：manager 走 PERF-078 内存路径
+        （窄投影全量匹配 → meta 排序 → 仅前 N 回查宽行），controller 不再全量拉取后
+        内存 sort+截断——原路径全部命中行宽行回查+验签+双份物化后才在 UI 截断。"""
         from src.ui.controllers.entry_list_controller import RECENT_ENTRY_LIMIT
 
         ctrl = _entry_list_controller()
-        entries = [
-            SimpleNamespace(title=f"e{i:03d}", updated_at=f"2020-01-{(i % 28) + 1:02d}")
-            for i in range(RECENT_ENTRY_LIMIT + 5)
-        ]
+        entries = [SimpleNamespace(title="最新", updated_at="2026-01-01")]
         ctrl._entry_mgr.get_entry_summaries.return_value = entries
-        result, _ = ctrl.fetch_recent("关键词")
-        assert len(result) == RECENT_ENTRY_LIMIT
+        result, label = ctrl.fetch_recent("关键词")
+
+        assert label == "近期更新"
+        assert [e.title for e in result] == ["最新"]
+        ctrl._entry_mgr.get_entry_summaries.assert_called_once_with(
+            search="关键词",
+            cancel_check=None,
+            limit=RECENT_ENTRY_LIMIT,
+            order_by="updated_at",
+            order_desc=True,
+        )
+
+    def test_search_with_limit_returns_newest_n(self, tmp_path):
+        """端到端（真实 vault）：搜索 + limit 返回最新 N 条（updated_at 降序），
+        行为与原「全量拉取 + UI sort + [:N]」同构（PERF-081 回归守护）。"""
+        from datetime import UTC, datetime, timedelta
+
+        from src.models import Entry
+        from tests.helpers import make_entry_manager, make_test_config, make_vault
+
+        vault = make_vault(make_test_config(str(tmp_path)))
+        vault.initialize("test_password_12345")
+        try:
+            entry_mgr = make_entry_manager(vault)
+            base = datetime(2026, 8, 20, 10, 0, 0, tzinfo=UTC)
+            for i in range(23):
+                entry_mgr.add_entry(
+                    Entry(
+                        title=f"条目-{i:02d}",
+                        username="u",
+                        password="pass1",
+                        entry_type="login",
+                        created_at=base.isoformat(),
+                        updated_at=(base + timedelta(minutes=i)).isoformat(),
+                    )
+                )
+            ctrl = EntryListController(entry_mgr, MagicMock(), MagicMock())
+            result, _label = ctrl.fetch_recent("条目")
+            # RECENT_ENTRY_LIMIT=20：最新 20 条按 updated_at 降序（条目-22 … 条目-03）
+            assert len(result) == 20
+            assert [e.title for e in result[:3]] == ["条目-22", "条目-21", "条目-20"]
+            assert result[-1].title == "条目-03"
+        finally:
+            vault.close()

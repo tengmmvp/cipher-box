@@ -70,11 +70,13 @@ def patched_modals(monkeypatch):
 
 
 def _make_dialog(tmp_path):
+    from src.business.services.rate_limiter import RateLimiter
     from src.ui.dialogs.change_master_dialog import ChangeMasterDialog
 
     vault = MagicMock()
     vault.data_dir = tmp_path
-    return ChangeMasterDialog(vault)
+    # 限流器经注入（ARCH-043）：内存态实例（无状态文件）即可驱动对话框接线测试
+    return ChangeMasterDialog(vault, RateLimiter())
 
 
 def _fill_and_submit(dlg, old: str, new: str) -> None:
@@ -149,18 +151,37 @@ class TestChangeMasterDialogFlow:
         assert warning in joined
 
     def test_change_done_failure_keeps_retryable(self, qapp, patched_modals, tmp_path, monkeypatch):
-        """业务失败：错误文案透传到状态栏、按钮复位可重试、对话框不关闭。"""
+        """认证失败：错误文案透传到状态栏、计入限流、按钮复位可重试、不关闭。
+
+        ARCH-042 契约下 (False, ...) 唯一语义为认证失败（旧主密码错误），一律计入
+        速率限制；系统/策略错误走 _on_change_error 异常通道（见下个测试）。
+        """
         from PyQt6.QtWidgets import QDialog
 
         dlg = _make_dialog(tmp_path)
         _arm_worker_callback(dlg, monkeypatch)
         dlg._change_btn.setEnabled(False)
 
-        dlg._on_change_done((False, "系统错误：重加密失败"))
+        dlg._on_change_done((False, "当前主密码错误"))
 
-        assert dlg._msg_label.text() == "系统错误：重加密失败"
+        assert dlg._msg_label.text() == "当前主密码错误"
+        assert dlg._rate_limiter._fail_count == 1  # 认证失败计入速率限制
         assert dlg._change_btn.isEnabled()
         assert dlg.result() == QDialog.DialogCode.Rejected.value
+
+    def test_change_error_never_counts_toward_rate_limit(
+        self, qapp, patched_modals, tmp_path, monkeypatch
+    ):
+        """系统/策略错误经异常通道呈现：不计入速率限制，不惩罚遭遇故障的用户。"""
+        dlg = _make_dialog(tmp_path)
+        _arm_worker_callback(dlg, monkeypatch)
+        dlg._change_btn.setEnabled(False)
+
+        dlg._on_change_error("新密码不能与当前主密码相同")
+
+        assert any("新密码不能与当前主密码相同" in str(arg) for arg in patched_modals["critical"])
+        assert dlg._rate_limiter._fail_count == 0
+        assert dlg._change_btn.isEnabled()
 
     def test_change_error_shows_critical_and_reenables(
         self, qapp, patched_modals, tmp_path, monkeypatch

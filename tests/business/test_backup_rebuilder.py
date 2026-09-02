@@ -114,6 +114,29 @@ def test_restore_entries_encrypts_and_maps(tmp_path):
         vault.close()
 
 
+def test_restore_entries_reports_progress_with_final_value(tmp_path):
+    """restore_entries 的 progress 按已构建条目计数节流、终值恒上报（PERF-083）。"""
+    vault = make_vault(make_test_config(str(tmp_path)))
+    vault.initialize("test_password_12345")
+    try:
+        key = vault.key
+        backup = _backup(entries=[_entry(1, "a" * 32), _entry(2, "b" * 32)])
+        db = MagicMock()
+        db.add_entries_batch.return_value = {"a" * 32: 100, "b" * 32: 200}
+
+        calls: list[tuple[int, int]] = []
+
+        def _record(done: int, total: int) -> None:
+            calls.append((done, total))
+
+        restore_entries(db, backup, key, {}, _record)
+
+        # 2 条 < PROGRESS_REPORT_EVERY(100)，仅终值触发
+        assert calls == [(2, 2)]
+    finally:
+        vault.close()
+
+
 def test_restore_history_groups_by_entry_and_encrypts(tmp_path):
     """restore_history 按 entry_id 分组，每组一次 add_password_history_batch 批量写入。"""
     vault = make_vault(make_test_config(str(tmp_path)))
@@ -154,6 +177,33 @@ def test_restore_history_skips_unmapped_entry(tmp_path):
 
         # entry 999 不在 entry_map，无批量写入
         db.add_password_history_batch.assert_not_called()
+    finally:
+        vault.close()
+
+
+def test_restore_history_reports_progress_counting_skipped(tmp_path):
+    """restore_history 的 progress 终值恒上报，跳过项亦计入 done 保持计数单调（PERF-083）。"""
+    vault = make_vault(make_test_config(str(tmp_path)))
+    vault.initialize("test_password_12345")
+    try:
+        key = vault.key
+        backup = _backup(
+            history=[
+                {"entry_id": 1, "password": "old1", "changed_at": "2024-01-01T00:00:00"},
+                {"entry_id": 999, "password": "orphan", "changed_at": "2024-01-01T00:00:00"},
+            ]
+        )
+        db = MagicMock()
+
+        calls: list[tuple[int, int]] = []
+
+        def _record(done: int, total: int) -> None:
+            calls.append((done, total))
+
+        restore_history(db, backup, key, {1: 10}, {1: "a" * 32}, _record)
+
+        # 孤儿项（entry 999）计入总数与进度，终值 (2, 2) 恒上报
+        assert calls == [(2, 2)]
     finally:
         vault.close()
 

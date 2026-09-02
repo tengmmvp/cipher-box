@@ -27,7 +27,9 @@ from ...crypto.password_generator import PasswordGenerator
 from ...database.db_manager import DatabaseManager
 from ...exceptions import (
     CipherBoxError,
+    MasterPasswordPolicyError,
     VaultAlreadyInitializedError,
+    VaultError,
     VaultIntegrityError,
     VaultLockedError,
 )
@@ -45,13 +47,18 @@ from ..services.vault_meta_keys import (
     VAULT_META_ALL_KEYS,
 )
 from ..services.vault_meta_store import VaultMetaStore
-from .vault_manager import AUTH_FAILED_MESSAGE, VaultManager
+from .vault_manager import VaultManager
 
 logger = logging.getLogger(__name__)
 
 
 # unlock 单次批量读取的 vault_meta 键（单一事实源见 vault_meta_keys）。
 _VAULT_META_KEYS = list(VAULT_META_ALL_KEYS)
+
+# 改密认证失败（旧主密码错误）的返回文案（ARCH-042 契约下 (False, ...) 唯一语义即
+# 认证失败）：调用方据「返回 False」这一形态而非文案比对判定计入速率限制，文案仅为
+# 用户展示用途，调整文案不再影响安全行为。
+AUTH_FAILED_MESSAGE = "当前主密码错误"
 
 
 class VaultLifecycleOrchestrator:
@@ -62,17 +69,19 @@ class VaultLifecycleOrchestrator:
     契约在此维护。
     """
 
-    def __init__(
-        self,
-        vault: VaultManager,
-        db: DatabaseManager,
-        signer: MetadataSigner,
-    ) -> None:
+    def __init__(self, vault: VaultManager) -> None:
+        """从 vault 单一装配参数取 db/signer（ARCH-044）。
+
+        构造签名不再接受独立 db/signer：编排器绕过 vault 直接写库时须受 vault 所装配
+        write_guard 保护，传入与 vault 内部不同域的实例（类型合法但实例不一致）会使
+        该保护失效。db/signer 一律经 vault 的装配视图派生，组合根无法构造出「vault
+        与编排器各持一套」的漂移形态。
+        """
         self._vault = vault
-        self._db = db
-        self._signer = signer
+        self._db: DatabaseManager = vault._assembly_db
+        self._signer: MetadataSigner = vault._assembly_signer
         # 重加密服务仅负责纯加解密计算，事务与密钥状态由本类管理
-        self._rotator = ReEncryptionService(db, signer)
+        self._rotator = ReEncryptionService(self._db, self._signer)
         self._meta_store = VaultMetaStore()
 
     @staticmethod
@@ -135,8 +144,11 @@ class VaultLifecycleOrchestrator:
             # 不清除会使 initialize 报失败但保险库处于半解锁状态（持密钥），状态不一致。
             self._vault.clear_vault_state()
             # 系统错误（含密码强度不足的 ValueError）经异常路径传播至 worker.error，
-            # 登录窗按 is_auth_failure=False 处理（不计入速率锁定）。
-            raise VaultLockedError(to_user_message(exc, default="保险库初始化失败")) from exc
+            # 登录窗按 is_auth_failure=False 处理（不计入速率锁定）。包装用无固定
+            # 映射的 VaultError 本体（ARCH-042）：worker error 通道的二次翻译保留
+            # 原文，VaultLockedError 会被 _FIXED_MESSAGES 归一为「保险库已锁定」
+            # 罐头文案、覆盖真实原因。
+            raise VaultError(to_user_message(exc, default="保险库初始化失败")) from exc
 
     def unlock(self, master_password: str) -> tuple[bool, str]:
         """使用主密码解锁保险库。
@@ -160,7 +172,10 @@ class VaultLifecycleOrchestrator:
             verify_token = meta["master_verify"]
 
             if not salt_b64 or not verify_token:
-                raise VaultLockedError("保险库凭据不完整")
+                # 凭据缺失属系统/完整性问题，非认证失败。VaultError 本体而非
+                # VaultLockedError（ARCH-042）：终译保留本消息，罐头「保险库已
+                # 锁定，请先解锁后重试」在登录场景误导用户。
+                raise VaultError("保险库凭据不完整")
 
             salt = base64.b64decode(salt_b64)
             params = self._read_kdf_params(meta)
@@ -222,7 +237,10 @@ class VaultLifecycleOrchestrator:
             logger.warning("解锁失败", exc_info=True)
             # 系统错误（DB 异常/磁盘等）经异常路径传播至 worker.error，登录窗按
             # is_auth_failure=False 处理（不计入速率锁定），区别于"主密码错误"。
-            raise VaultLockedError(to_user_message(exc, default="保险库无法解锁")) from exc
+            # 包装用 VaultError 本体（ARCH-042）：worker error 通道的二次翻译保留
+            # 原文；VaultLockedError 会被归一为「保险库已锁定」罐头文案，磁盘满/
+            # IO 错误时误导用户（保险库明明已在解锁流程中）。
+            raise VaultError(to_user_message(exc, default="保险库无法解锁")) from exc
 
     def lock(self) -> None:
         """锁定保险库，清除内存中的密钥材料。
@@ -241,7 +259,10 @@ class VaultLifecycleOrchestrator:
         finally:
             # 复位取消事件，避免残留影响后续改密
             self._vault.cancel_event.clear()
-        # gc.collect() 已在 clear_vault_state 内执行。
+        # 完整 GC 已在 clear_vault_state 内同步执行（PERF-084 已撤销：GC 移入后台
+        # 线程会破坏 Qt 线程亲和——gc 可能 finalize 引用循环中的无父 QObject，
+        # 非 GUI 线程删除 C++ 对象致跨线程告警或间歇崩溃）。锁定低频且窗口已
+        # 隐藏，同步段的大堆遍历卡顿可接受。
         self._vault.invoke_lock_callbacks()
 
     def close(self) -> None:
@@ -270,6 +291,12 @@ class VaultLifecycleOrchestrator:
 
         获取可重入写锁串行化与重加密的写操作，实际逻辑委托
         :meth:`_change_master_password_locked`。
+
+        返回契约对齐 unlock（ARCH-042）：``(False, ...)`` 唯一语义为旧主密码认证
+        失败（计入速率限制的安全行为）；新密码策略问题抛
+        :class:`MasterPasswordPolicyError`，系统错误抛 :class:`VaultError`（经
+        to_user_message 翻译后的原文随 str 保留至最终呈现）——调用方以返回值
+        形态区分认证失败与系统错误，不比对文案字符串。
         """
         with self._vault.vault_write_lock():
             return self._change_master_password_locked(old_password, new_password)
@@ -283,18 +310,18 @@ class VaultLifecycleOrchestrator:
 
         校验新密码强度与新旧不同（常量时间比较防时序侧信道），经
         :meth:`_re_encrypt_all` 用新密钥重加密全部数据。旧密码错误返回
-        ``(False, AUTH_FAILED_MESSAGE)``；重加密异常向上传播由调用方处理。
+        ``(False, AUTH_FAILED_MESSAGE)``；策略失败与系统错误走异常通道（ARCH-042）。
         """
         try:
             valid, error = PasswordGenerator.validate_master_password(new_password)
             if not valid:
-                return False, error
+                raise MasterPasswordPolicyError(error)
             # 常量时间比较新旧主密码，避免明文密码比较的时序侧信道（短路比较会随首个
             # 不同字符提前返回，泄露前缀信息）。encode('utf-8')：主密码可含 Unicode（如
             # 中文），hmac.compare_digest 对 str 仅接受 ASCII，非 ASCII 直接比较会抛
             # TypeError。
             if hmac.compare_digest(old_password.encode("utf-8"), new_password.encode("utf-8")):
-                return False, "新密码不能与当前主密码相同"
+                raise MasterPasswordPolicyError("新密码不能与当前主密码相同")
             meta = self._db.get_meta_batch(
                 [
                     "master_salt",
@@ -305,7 +332,9 @@ class VaultLifecycleOrchestrator:
             salt_b64 = meta["master_salt"]
             verify_token = meta["master_verify"]
             if not salt_b64 or not verify_token:
-                return False, "保险库凭据不完整"
+                # 与 unlock 的同条件对齐（凭据缺失属系统/完整性问题，非认证失败）；
+                # VaultError 本体保终译原文（ARCH-042），理由见 unlock 同条件处。
+                raise VaultError("保险库凭据不完整")
 
             old_salt = base64.b64decode(salt_b64)
             old_params = self._read_kdf_params(meta)
@@ -343,10 +372,15 @@ class VaultLifecycleOrchestrator:
                 )
             return True, ""
         except CipherBoxError:
-            raise  # 所有 CipherBox 自定义异常向上传播
+            raise  # 所有 CipherBox 自定义异常向上传播（MasterPasswordPolicyError 亦属此类）
         except Exception as exc:
+            # 系统错误（DB/磁盘等）经异常路径传播至 worker.error，改密对话框按
+            # 「非认证失败」处理（不计入速率限制），对齐 unlock 的编码哲学（ARCH-042）。
+            # 包装用 VaultError 本体：worker error 通道的二次翻译保留原文，
+            # VaultLockedError 的罐头文案「保险库已锁定，请先解锁后重试」会在保险库
+            # 明明已解锁时误导用户（磁盘满/sqlite IO 错误场景）。
             logger.warning("修改主密码失败", exc_info=True)
-            return False, to_user_message(exc, default="修改主密码失败")
+            raise VaultError(to_user_message(exc, default="修改主密码失败")) from exc
 
     def _re_encrypt_all(
         self,

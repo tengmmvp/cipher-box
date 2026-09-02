@@ -36,8 +36,15 @@ def _make_category(**overrides) -> Category:
 def test_sign_verify_category_roundtrip():
     signer = _make_signer()
     cat = _make_category()
-    cat = dataclasses.replace(cat, metadata_mac=signer.sign_category(cat))
-    signer.verify_category(cat)  # 不抛即通过
+    mac = signer.sign_category(cat)
+    # 值比对：签名为非空十六进制、同载荷确定性一致、跨载荷互异
+    assert mac != ""
+    assert int(mac, 16) >= 0
+    assert signer.sign_category(cat) == mac
+    other = dataclasses.replace(cat, color="#123456")
+    assert signer.sign_category(other) != mac
+    cat = dataclasses.replace(cat, metadata_mac=mac)
+    signer.verify_category(cat)  # 验签通过（不抛即合法 MAC）
 
 
 def test_verify_category_detects_name_tamper():

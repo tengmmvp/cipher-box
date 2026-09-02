@@ -9,7 +9,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from ...business.services.crypto_utils import matches_search, matches_tag
+from ...business.managers.entry_manager import entry_sort_key
+from ...business.services.entry_search_match import matches_search, matches_tag
 from ...config import CFG_OLD_PASSWORD_WARNING_DAYS
 from ..resources.constants import (
     MAX_SEARCH_RESULTS_DISPLAY,
@@ -53,26 +54,16 @@ class EntryListController:
     def sort_entries(self, entries: list[Entry], sort_index: int) -> list[Entry]:
         """对条目列表排序。
 
+        键函数消费 business 侧导出的 :func:`entry_sort_key`（MAINT-091 单一事实源，
+        与 manager 内存排序路径/SQL 下推共用键语义）——原本地 4 键实现与
+        get_entry_summaries 各一份，漂移会使 UI 重排序与下推序不一致。
+
         Args:
             entries: 待排序条目列表。
             sort_index: 排序下拉框当前索引。
         """
         field, order = self.get_sort_config(sort_index)
-
-        def sort_key(e: Entry) -> str | int:
-            if field == "title":
-                return (e.title or "").lower()
-            elif field == "password_strength":
-                # password_strength 可能为 None（未评估），统一回退 0，
-                # 避免与 int 混排时 Python3 抛 TypeError。
-                return e.password_strength or 0
-            elif field == "created_at":
-                return e.created_at or ""
-            else:  # updated_at
-                return e.updated_at or ""
-
-        reverse = order == "desc"
-        return sorted(entries, key=sort_key, reverse=reverse)
+        return sorted(entries, key=entry_sort_key(field), reverse=(order == "desc"))
 
     # ========== 过滤器数据获取 ==========
 
@@ -163,8 +154,9 @@ class EntryListController:
         """获取近期更新条目，按 updated_at 降序取最近 N 条。
 
         无搜索时下推 ORDER BY updated_at DESC LIMIT 到 SQL（经
-        ``get_recent_summaries``），避免拉全量内存排序再截断的全量解密开销；
-        有搜索时因加密字段无法 SQL 过滤，仍需全量解密后内存过滤、排序再截断。
+        ``get_recent_summaries``）；有搜索时同样传 limit+排序由 manager 走
+        PERF-078 内存路径（窄投影全量匹配 → meta 排序 → 仅前 N 回查宽行），
+        与原「全量回查+UI 内存 sort+截断」同构而免全量物化（PERF-081）。
 
         ``sort_index`` 仅为与 fetch_all/fetch_favorite/fetch_trash 统一调用签名而
         保留（PERF-072）：本视图固定 updated_at↓ 序、不参与排序切换，忽略该值。
@@ -174,9 +166,10 @@ class EntryListController:
             entries = self._entry_mgr.get_entry_summaries(
                 search=search,
                 cancel_check=cancel_check,
+                limit=RECENT_ENTRY_LIMIT,
+                order_by="updated_at",
+                order_desc=True,
             )
-            entries.sort(key=lambda e: e.updated_at or "", reverse=True)
-            entries = entries[:RECENT_ENTRY_LIMIT]
         else:
             entries = self._entry_mgr.get_recent_summaries(limit=RECENT_ENTRY_LIMIT)
         return entries, "近期更新"

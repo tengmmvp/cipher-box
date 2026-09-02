@@ -20,7 +20,8 @@ import pytest
 from src.business.managers import import_export as ie_module
 from src.business.managers.import_export import ImportExportManager
 from src.exceptions import ImportFormatError, ImportSizeError
-from src.models import Entry
+from src.models import CustomField, Entry
+from tests.helpers import decrypt_all_entries
 
 
 def test_import_rejects_oversized_file(entry_mgr, tmp_path, monkeypatch):
@@ -75,7 +76,7 @@ def test_import_skip_action_skips_duplicates(entry_mgr, tmp_path):
     count = mgr.import_file(str(json_path), "json", duplicate_action="skip")
 
     assert count == 1
-    by_title = {e.title: e for e in entry_mgr.get_entries()}
+    by_title = {e.title: e for e in decrypt_all_entries(entry_mgr)}
     assert set(by_title) == {"Existing", "Brand New"}
     # 重复条目保留原密码，未被覆盖（区别于 duplicate_action='overwrite'）
     assert by_title["Existing"].password == "OldPass!1"
@@ -185,8 +186,8 @@ class TestImportSummaryCacheRetention:
         keep_id = entry_mgr.add_entry(Entry(title="Existing", username="u", password="OldPass!1"))
         entry_mgr.get_entry_summaries()  # 预热摘要/分类名缓存
         keep_cid = entry_mgr.db.get_entry(keep_id).crypto_id
-        cache = entry_mgr._cache  # noqa: SLF001 测试取内部缓存断言失效粒度
-        assert keep_cid in cache._search_metadata_cache  # noqa: SLF001
+        cache = entry_mgr.cache  # QL-044 公开缓存视图：断言导入后的失效粒度
+        assert keep_cid in cache.search_metadata_cached_ids
 
         json_path = tmp_path / "new_only.json"
         json_path.write_text(
@@ -204,7 +205,7 @@ class TestImportSummaryCacheRetention:
         assert mgr.import_file(str(json_path), "json") == 1
 
         # 既有条目摘要缓存保留（导入新增不触碰它）
-        assert keep_cid in cache._search_metadata_cache  # noqa: SLF001
+        assert keep_cid in cache.search_metadata_cached_ids
 
         # 计数字段解密：温缓存刷新不应重解密既有条目的摘要字段
         decrypt_calls: list[tuple[str, str]] = []
@@ -231,8 +232,8 @@ class TestImportSummaryCacheRetention:
         keep_cid = entry_mgr.db.get_entry(keep_id).crypto_id
         target_cid = entry_mgr.db.get_entry(target_id).crypto_id
         cache = entry_mgr._cache  # noqa: SLF001
-        assert keep_cid in cache._search_metadata_cache  # noqa: SLF001
-        assert target_cid in cache._search_metadata_cache  # noqa: SLF001
+        assert keep_cid in cache.search_metadata_cached_ids
+        assert target_cid in cache.search_metadata_cached_ids
 
         json_path = tmp_path / "overwrite.json"
         json_path.write_text(
@@ -256,8 +257,8 @@ class TestImportSummaryCacheRetention:
         assert mgr.import_file(str(json_path), "json", duplicate_action="overwrite") == 1
 
         # 被覆盖条目摘要缓存已失效（旧摘要不残留），未覆盖条目保留
-        assert target_cid not in cache._search_metadata_cache  # noqa: SLF001
-        assert keep_cid in cache._search_metadata_cache  # noqa: SLF001
+        assert target_cid not in cache.search_metadata_cached_ids
+        assert keep_cid in cache.search_metadata_cached_ids
 
         # 刷新后摘要反映覆盖后的数据（tags 已更新）
         refreshed = {e.title: e for e in entry_mgr.get_entry_summaries()}
@@ -462,7 +463,7 @@ class TestOverwriteOnlyImportProgress:
             duplicate_action="overwrite",
         )
         assert count == self.ROWS
-        by_title = {e.title: e for e in entry_mgr.get_entries()}
+        by_title = {e.title: e for e in decrypt_all_entries(entry_mgr)}
         assert len(by_title) == self.ROWS
         assert by_title["Entry-0000"].password == "NewPass0000!y"
 
@@ -501,7 +502,7 @@ class TestCustomFieldsFormulaSanitize:
             encoding="utf-8",
         )
         assert mgr.import_file(str(path), "json") == 1
-        return entry_mgr.get_entries()[0]
+        return decrypt_all_entries(entry_mgr)[0]
 
     def test_malicious_text_field_sanitized(self, entry_mgr, tmp_path):
         """text 字段的恶意公式 name/value 均被前置 ``'`` 转义入库。"""
@@ -541,3 +542,226 @@ class TestCustomFieldsFormulaSanitize:
         field = imported.custom_fields[0]
         assert field.name == "邮箱"
         assert field.value == "a@b.com"
+
+
+# ======== 覆盖失败索引对齐（QL-062）========
+
+
+class TestOverwriteFailureIndexAlignment:
+    """覆盖项预处理失败的索引 0 基对齐覆盖计划（QL-062）。
+
+    旧行为：``prepare_overwrite_updates`` 以 1 基索引记录失败项，消费循环
+    ``overwrite_plans[batch_idx]`` 按 0 基取值——末项失败时 IndexError 中止整次
+    导入；非末项失败时警告/日志报告下一条目（source_idx 与条目整体偏移一条）。
+    末项失败真实可达：覆盖合并后 custom_fields 数超上限（导入项 ≤100 项 +
+    库内密码型字段增量，合并侧无计数校验）。
+    """
+
+    def test_last_item_prepare_failure_skips_item_not_import(self, entry_mgr, tmp_path, caplog):
+        """末项覆盖预处理失败：导入整体成功、失败项正确报告、其余条目正常写入。"""
+        mgr = ImportExportManager(entry_mgr)
+        ok_id = entry_mgr.add_entry(Entry(title="Ok Target", username="u1", password="OkOld!1"))
+        # 末项失败触发：secrets_included=False 的合并器保留库内密码型字段，
+        # 98 个导入 text 字段 + 5 个库内 password 字段 = 103 > MAX_CUSTOM_FIELDS_PER_ENTRY
+        bad_id = entry_mgr.add_entry(
+            Entry(
+                title="Bad Target",
+                username="u2",
+                password="BadOld!1",
+                custom_fields=[CustomField(f"pin{i}", f"v{i}", "password") for i in range(5)],
+            )
+        )
+        json_path = tmp_path / "overwrite.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "app": "CipherBox",
+                    "secrets_included": False,
+                    "entries": [
+                        {"title": "Ok Target", "username": "u1", "notes": "updated-ok"},
+                        {
+                            "title": "Bad Target",
+                            "username": "u2",
+                            "custom_fields": [
+                                {"name": f"f{i}", "value": "v", "field_type": "text"}
+                                for i in range(98)
+                            ],
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        with caplog.at_level("WARNING", logger="src.business.managers.import_export"):
+            count = mgr.import_file(str(json_path), "json", duplicate_action="overwrite")
+
+        # 导入整体成功：首项覆盖写入、末项仅逐条跳过（旧行为在此 IndexError）
+        assert count == 1
+        ok = entry_mgr.get_entry(ok_id)
+        assert ok is not None and ok.notes == "updated-ok"
+        bad = entry_mgr.get_entry(bad_id)
+        assert bad is not None
+        assert bad.password == "BadOld!1"  # 失败目标未被覆盖
+        assert len(bad.custom_fields) == 5
+        # 失败报告指向正确的条目：导入数据中第 2 项、失败原因为合并后字段超限
+        warnings = [r for r in caplog.records if "跳过覆盖" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "第 2 个条目" in warnings[0].getMessage()
+        assert "自定义字段过多" in warnings[0].getMessage()
+
+
+# ======== 去重键空白归一（QL-063）========
+
+
+class TestDedupKeyWhitespaceNormalization:
+    """导入去重键两侧对称 strip().casefold()（QL-063）。
+
+    旧行为：导入侧键 strip 后 casefold，库内侧（``get_entry_dedup_index`` 返回的
+    meta.title/username）仅 casefold——JSON 导入路径 ``Entry.from_dict`` 不 strip
+    标题（CSV 与 UI 会），库内可存在带首尾空白的标题，对这类条目 skip/overwrite
+    匹配不上，产生本应被拦截的重复条目。
+    """
+
+    @staticmethod
+    def _seed_padded_title(entry_mgr, tmp_path) -> None:
+        """经 JSON 导入置入带首尾空白的标题条目（from_dict 不 strip，空白原样入库）。"""
+        mgr = ImportExportManager(entry_mgr)
+        path = tmp_path / "padded.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "app": "CipherBox",
+                    "secrets_included": True,
+                    "entries": [
+                        {"title": "  Padded  ", "username": "alice", "password": "OldPass!1"}
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        assert mgr.import_file(str(path), "json") == 1
+        # 守护测试前提：空白标题确实原样入库（若 from_dict 将来开始 strip，此处先失败）
+        assert decrypt_all_entries(entry_mgr)[0].title == "  Padded  "
+
+    @staticmethod
+    def _write_plain_import(tmp_path, name: str) -> str:
+        """构造与库内条目 strip 后同键（title 无空白、username 相同）的导入文件。"""
+        path = tmp_path / name
+        path.write_text(
+            json.dumps(
+                {
+                    "app": "CipherBox",
+                    "secrets_included": True,
+                    "entries": [{"title": "Padded", "username": "alice", "password": "NewPass!2"}],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return str(path)
+
+    def test_skip_matches_after_strip(self, entry_mgr, tmp_path):
+        """skip 策略命中 strip 后同键的库内条目，跳过而非新建重复。"""
+        self._seed_padded_title(entry_mgr, tmp_path)
+        mgr = ImportExportManager(entry_mgr)
+        count = mgr.import_file(
+            self._write_plain_import(tmp_path, "plain_skip.json"), "json", duplicate_action="skip"
+        )
+        assert count == 0
+        entries = decrypt_all_entries(entry_mgr)
+        assert len(entries) == 1  # 未新建重复（旧行为：匹配不上 → 新建第 2 条）
+        assert entries[0].password == "OldPass!1"  # 跳过保留原值
+
+    def test_overwrite_matches_after_strip(self, entry_mgr, tmp_path):
+        """overwrite 策略命中 strip 后同键的库内条目，覆盖而非新建重复。"""
+        self._seed_padded_title(entry_mgr, tmp_path)
+        mgr = ImportExportManager(entry_mgr)
+        count = mgr.import_file(
+            self._write_plain_import(tmp_path, "plain_overwrite.json"),
+            "json",
+            duplicate_action="overwrite",
+        )
+        assert count == 1
+        entries = decrypt_all_entries(entry_mgr)
+        assert len(entries) == 1  # 覆盖而非新建重复（旧行为：匹配不上 → 新建第 2 条）
+        assert entries[0].password == "NewPass!2"
+        assert entries[0].title == "Padded"
+
+    @staticmethod
+    def _seed_blank_title(entry_mgr, tmp_path) -> None:
+        """经 JSON 导入置入纯空白标题条目（from_dict 不 strip，' ' 原样入库）。"""
+        mgr = ImportExportManager(entry_mgr)
+        path = tmp_path / "blank.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "app": "CipherBox",
+                    "secrets_included": True,
+                    "entries": [{"title": " ", "username": "bob", "password": "OldPass!1"}],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        assert mgr.import_file(str(path), "json") == 1
+        # 守护测试前提：纯空白标题确实原样入库
+        assert decrypt_all_entries(entry_mgr)[0].title == " "
+
+    @staticmethod
+    def _write_untitled_import(tmp_path, name: str) -> str:
+        """构造无标题（title 缺省为空串）的同用户名导入文件。"""
+        path = tmp_path / name
+        path.write_text(
+            json.dumps(
+                {
+                    "app": "CipherBox",
+                    "secrets_included": True,
+                    "entries": [{"username": "bob", "password": "NewPass!2"}],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return str(path)
+
+    def test_skip_does_not_match_blank_title_against_untitled(self, entry_mgr, tmp_path):
+        """纯空白标题库内条目不与无标题导入项匹配去重（QL-063 守卫补齐）。
+
+        旧行为：``if title`` 守卫测未 strip 值（' ' 通过），键 strip 后成 ''，
+        与无标题导入项的 ``('', username)`` 键匹配 → skip 丢行；守卫本意是
+        「无标题不入去重」，须按 strip 后判空。
+        """
+        self._seed_blank_title(entry_mgr, tmp_path)
+        mgr = ImportExportManager(entry_mgr)
+        count = mgr.import_file(
+            self._write_untitled_import(tmp_path, "untitled_skip.json"),
+            "json",
+            duplicate_action="skip",
+        )
+        # 无标题导入项不参与去重：正常新建，不因空白标题条目被跳过
+        assert count == 1
+        entries = decrypt_all_entries(entry_mgr)
+        assert len(entries) == 2
+        blank = [e for e in entries if e.title == " "]
+        assert len(blank) == 1
+        assert blank[0].password == "OldPass!1"  # 空白标题条目未被误动
+
+    def test_overwrite_does_not_target_blank_title_entry(self, entry_mgr, tmp_path):
+        """overwrite 策略不把无标题导入项覆盖到纯空白标题条目上（QL-063 守卫补齐）。"""
+        self._seed_blank_title(entry_mgr, tmp_path)
+        mgr = ImportExportManager(entry_mgr)
+        count = mgr.import_file(
+            self._write_untitled_import(tmp_path, "untitled_overwrite.json"),
+            "json",
+            duplicate_action="overwrite",
+        )
+        # 无标题导入项不参与去重：作为新增写入，不覆盖空白标题条目
+        assert count == 1
+        entries = decrypt_all_entries(entry_mgr)
+        assert len(entries) == 2
+        blank = [e for e in entries if e.title == " "]
+        assert len(blank) == 1
+        assert blank[0].password == "OldPass!1"  # 空白标题条目未被覆盖

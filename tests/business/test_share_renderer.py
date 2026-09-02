@@ -27,6 +27,25 @@ def test_render_decrypter_embeds_libs_and_version():
     assert str(SHARE_VERSION) in html
 
 
+def test_rendered_decrypter_contains_csp_meta():
+    """渲染产物含 CSP meta（SEC-051）：esc() 转义之外的第二层 XSS 约束。
+
+    default-src 'none' 封死外联加载通道（脚本/样式/请求，浏览器实测 fetch 与外链
+    img 均被拦截），仅放行内嵌 script/style（file:// 自包含解密器的固有形态）、
+    'wasm-unsafe-eval'（hash-wasm 内嵌 WASM 的运行期 WebAssembly.compile 所需，
+    仅放行 WASM 不放行 eval）与 data: 图标；表单提交与被嵌入通道显式封死。
+    占位符替换不会触碰该 meta（正则仅匹配三个占位名）。
+    """
+    html = render_decrypter()
+    assert 'http-equiv="Content-Security-Policy"' in html
+    assert "default-src 'none'" in html
+    assert "script-src 'unsafe-inline' 'wasm-unsafe-eval'" in html
+    assert "style-src 'unsafe-inline'" in html
+    assert "img-src data:" in html
+    assert "form-action 'none'" in html
+    assert "frame-ancestors 'none'" in html
+
+
 def test_placeholder_in_bundle_not_replaced_second_pass(monkeypatch):
     """第三方 bundle 含 ``{{...}}`` 字面量时不被二次替换（QL-051）。
 

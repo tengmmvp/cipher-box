@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QStatusBar,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -57,7 +58,11 @@ from ..components.detail_panel import DetailPanel
 from ..components.entry_list_widget import EntryItemDelegate, EntryListModel
 from ..components.toast import ToastManager
 from ..components.tray_icon import TrayIcon
-from ..components.widgets import create_plain_text_label, disconnect_all
+from ..components.widgets import (
+    WorkerBackedDialog,
+    create_plain_text_label,
+    disconnect_all,
+)
 from ..controllers.auto_backup_controller import AutoBackupController
 from ..controllers.auto_lock_controller import AutoLockController
 from ..controllers.entry_actions_controller import (
@@ -104,6 +109,13 @@ from ..resources.theme_colors import set_theme
 from ..utils.clipboard import ClipboardManager
 
 logger = logging.getLogger(__name__)
+
+# 不可中断 worker 等待通知文案（PERF-082）：锁定/退出序列会阻塞等待恢复/导入等
+# 有写入副作用的 worker 自然完成（50k 库实测 15-25s，兜底超时 120s），期间主线程
+# 冻结无反馈；窗口此刻已 hide/即将销毁，经托盘系统通知解释等待原因，避免用户
+# 以为应用卡死而强杀进程（QThread running 析构即崩溃，撕裂 sqlite 事务）。
+_WAIT_NOTIFY_TITLE = "CipherBox 正在等待后台任务"
+_WAIT_NOTIFY_MESSAGE = "正在等待不可中断的后台任务（如恢复/导入）完成后继续锁定/退出，请稍候…"
 
 
 class MainWindow(QMainWindow):
@@ -614,6 +626,39 @@ class MainWindow(QMainWindow):
         self._list_refresh.shutdown()
         self._auto_backup.shutdown()
 
+    def _has_irreversible_running_worker(self) -> bool:
+        """检测是否存在运行中的不可中断对话框 worker（恢复/导入等有写入副作用）。"""
+        app = QApplication.instance()
+        if app is None:
+            return False
+        return any(
+            isinstance(widget, WorkerBackedDialog)
+            and widget._worker is not None
+            and widget._worker.isRunning()
+            and not widget._cancel_on_close()
+            for widget in QApplication.topLevelWidgets()
+        )
+
+    def _notify_irreversible_worker_wait(self) -> None:
+        """等待不可中断 worker 前经托盘系统通知用户等待原因（PERF-082）。
+
+        ``prepare_for_lock`` / ``_perform_exit_cleanup`` 的清理-等待序列会阻塞主线程
+        直至恢复/导入 worker 自然完成（不可取消以保数据一致性；等待逻辑本身防
+        QThread 析构崩溃，属有意取舍不改）。50k 库恢复 15-25s 期间界面冻结且无任何
+        提示，用户易误判卡死而强杀进程；此刻窗口已 hide/即将销毁，窗口内 Toast 子
+        控件不可达，经托盘 ``showMessage``（原生系统通知）解释等待原因。无托盘
+        （用户禁用托盘图标）时退化为 info 日志。
+        """
+        if not self._has_irreversible_running_worker():
+            return
+        if self._tray is not None:
+            self._tray.showMessage(
+                _WAIT_NOTIFY_TITLE,
+                _WAIT_NOTIFY_MESSAGE,
+                QSystemTrayIcon.MessageIcon.Information,
+            )
+        logger.info("锁定/退出前存在不可中断后台任务，主线程将阻塞等待其完成（PERF-082）")
+
     def _persist_window_state(self) -> None:
         """持久化窗口几何/分割比例/排序偏好到 config。
 
@@ -629,7 +674,11 @@ class MainWindow(QMainWindow):
             field, order = self._list_refresh.get_sort_config()
             self._config.set(CFG_SORT_FIELD, field)
             self._config.set(CFG_SORT_ORDER, order)
-            self._config.save()
+            # keep_integrity_warning=True（QL-064）：closeEvent/托盘退出的自动写盘
+            # 不是用户驱动的配置修复——本会话检出的篡改告警不因此清零，与哨兵登记
+            # 同语义（窗口几何/排序非安全敏感，保留告警不影响其持久化；下个会话
+            # 加载新签名的干净文件后告警自然消失）。
+            self._config.save(keep_integrity_warning=True)
         except (OSError, ValueError, TypeError):
             logger.debug("保存窗口状态失败", exc_info=True)
 
@@ -647,6 +696,9 @@ class MainWindow(QMainWindow):
             app.removeEventFilter(self)
         # 解除 QApplication 对会话锁屏过滤器闭包（绑定 lock_requested）的引用。
         self._auto_lock.remove_session_filter()
+        # 等待序列可能阻塞数十秒（恢复/导入 worker 不可中断），先经托盘通知解释
+        # 冻结原因再进入等待（PERF-082，托盘退出路径窗口已 hide、通知仍可达）。
+        self._notify_irreversible_worker_wait()
         # 等待后台 worker 退出，清剪贴板明文，再关闭 vault。
         self._shutdown_workers()
         # reject 模态对话框：托盘菜单是原生菜单不受 application-modal 阻拦，故可达；
@@ -829,6 +881,9 @@ class MainWindow(QMainWindow):
         self._detail_panel.secure_clear()
         self._clipboard.clear_now()
         self._auto_backup.stop_timer()
+        # 等待序列可能阻塞数十秒（恢复/导入 worker 不可中断），先经托盘通知解释
+        # 冻结原因再进入等待（PERF-082）。
+        self._notify_irreversible_worker_wait()
         # 取消并等待后台 worker，避免锁定后对已锁定 vault 发信号或继续解密
         self._shutdown_workers()
         # —— 最后关闭对话框：reject 经 wait_worker_shutdown 可能阻塞等待后台 worker ——

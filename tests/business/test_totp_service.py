@@ -84,7 +84,7 @@ class TestGetState:
         assert len(state["code"]) == 6 and state["code"].isdigit()
         assert 1 <= state["remaining"] <= state["period"]
         assert state["period"] == 30  # 默认周期
-        cache.store_totp.assert_called_once_with(9, _VALID_SECRET)
+        cache.store_totp.assert_called_once_with(9, _VALID_SECRET, data_epoch=None)
 
     def test_get_state_without_preloaded_resolves_via_cache(self):
         """无 preloaded_secret 时走 resolve_totp_secret（use_cache=True）。"""
@@ -112,6 +112,57 @@ class TestGetState:
 
         assert state is not None
         cache.resolve_totp_secret.assert_called_once_with(5, use_cache=True)
+
+    def test_get_state_preloaded_forwards_data_epoch(self):
+        """preloaded 预热写入透传写入方世代（SEC-054），由缓存侧复查后落缓存。"""
+        svc, cache = _make_service()
+
+        state = svc.get_state(9, preloaded_secret=_VALID_SECRET, data_epoch="epoch-a")
+
+        assert state is not None
+        cache.store_totp.assert_called_once_with(9, _VALID_SECRET, data_epoch="epoch-a")
+
+
+class TestPreloadedEpochGuard:
+    """preloaded 路径的写入方世代守卫（SEC-054，补 SEC-044 的 preloaded 漏点）。
+
+    经真实 EntryCacheManager（stub vault 仅提供 key_epoch）验证行为语义：
+    「secret 解密于恢复前世代、预热晚于恢复重臂新世代」时旧世代 secret
+    不落新世代缓存；同世代写入正常落缓存。
+    """
+
+    def _make_service_with_real_cache(self, epoch: str):
+        from src.business.managers.entry_cache import EntryCacheManager
+
+        vault = type(
+            "StubVault",
+            (),
+            {"key_epoch": epoch},
+        )()
+        cache = EntryCacheManager(vault)  # type: ignore[arg-type]
+        return TotpService(cache), cache
+
+    def test_stale_epoch_preloaded_write_is_rejected(self):
+        """旧世代 preloaded secret 不写入新世代缓存（跨恢复窗口回归守护）。"""
+        svc, cache = self._make_service_with_real_cache("epoch-new")
+        cache.invalidate_if_epoch_changed()  # 模拟恢复后新读路径重臂缓存世代
+        assert cache._cache_epoch == "epoch-new"
+
+        # secret 解密于恢复前世代（epoch-old），恢复提交后预热：写入被拒
+        state = svc.get_state(11, preloaded_secret=_VALID_SECRET, data_epoch="epoch-old")
+
+        assert state is not None  # 本次展示仍用 preloaded 值（不阻断 UI）
+        assert 11 not in cache._totp_secret_cache  # 但不得污染新世代缓存
+
+    def test_current_epoch_preloaded_write_is_stored(self):
+        """同世代 preloaded secret 正常落缓存（对照：守卫不误伤正常路径）。"""
+        svc, cache = self._make_service_with_real_cache("epoch-cur")
+        cache.invalidate_if_epoch_changed()
+
+        state = svc.get_state(12, preloaded_secret=_VALID_SECRET, data_epoch="epoch-cur")
+
+        assert state is not None
+        assert cache._totp_secret_cache.get(12) == _VALID_SECRET
 
 
 class TestEvictAndRemaining:

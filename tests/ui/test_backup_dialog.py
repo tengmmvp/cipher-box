@@ -66,6 +66,7 @@ def patched_modals(monkeypatch):
         cap["run"] = run
         worker = MagicMock()
         worker.is_cancelled = False
+        cap["worker"] = worker
         return worker
 
     monkeypatch.setattr("src.ui.dialogs.backup_dialog.BackgroundWorker", _fake_worker)
@@ -131,7 +132,7 @@ class TestBackupDialogWiring:
     def test_do_restore_passes_path_and_password_to_manager(
         self, qapp, patched_modals, monkeypatch
     ):
-        """_do_restore 把路径与输入密码传给 restore_backup（password_required 路径）。"""
+        """_do_restore 把路径、输入密码与进度回调传给 restore_backup（password_required 路径）。"""
         from src.ui.dialogs.backup_dialog import BackupDialog
 
         monkeypatch.setattr(
@@ -143,6 +144,42 @@ class TestBackupDialogWiring:
         mgr.restore_backup.return_value = (True, "")
         dlg = BackupDialog(mgr)
         dlg._do_restore("/tmp/backup.cbox")
+        worker = patched_modals["worker"]
         result = patched_modals["run"]()
-        mgr.restore_backup.assert_called_once_with("/tmp/backup.cbox", "RestorePwd!2026")
+        mgr.restore_backup.assert_called_once()
+        call = mgr.restore_backup.call_args
+        assert call.args == ("/tmp/backup.cbox", "RestorePwd!2026")
+        # 进度回调经 worker.emit_progress 注入（PERF-083），供业务层加权上报
+        assert call.kwargs.get("progress") is worker.emit_progress
         assert result == (True, "")
+
+    def test_do_restore_shows_indeterminate_progress_then_updates(
+        self, qapp, patched_modals, monkeypatch
+    ):
+        """恢复启动显示不确定进度条，进度回调切换确定范围并更新值（PERF-083）。"""
+        from src.ui.dialogs.backup_dialog import BackupDialog
+
+        monkeypatch.setattr(
+            "src.ui.dialogs.backup_dialog.QInputDialog.getText",
+            lambda *a, **k: ("RestorePwd!2026", True),
+        )
+        mgr = MagicMock()
+        mgr.inspect_backup.return_value = {"password_required": True}
+        mgr.restore_backup.return_value = (True, "")
+        dlg = BackupDialog(mgr)
+        assert dlg._progress.isHidden()  # 初始隐藏
+
+        dlg._do_restore("/tmp/backup.cbox")
+        # 启动即切换不确定模式（setRange(0,0)）并显示
+        assert not dlg._progress.isHidden()
+        assert dlg._progress.minimum() == 0 and dlg._progress.maximum() == 0
+
+        # 模拟 worker.progress 信号：切换确定范围并更新值
+        dlg._on_restore_progress(45, 100)
+        assert dlg._progress.maximum() == 100
+        assert dlg._progress.value() == 45
+
+        # 完成后进度条隐藏
+        monkeypatch.setattr(dlg, "sender", lambda: dlg._worker)
+        dlg._on_restore_done((True, ""))
+        assert dlg._progress.isHidden()

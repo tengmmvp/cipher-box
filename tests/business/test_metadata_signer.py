@@ -60,7 +60,13 @@ def test_verify_passes_on_untampered_entry():
     signer.set_domain_key(MetadataSigner.compute_domain_key(master_key))
     entry = _make_entry()
 
-    entry = dataclasses.replace(entry, metadata_mac=signer.sign(entry))
+    mac = signer.sign(entry)
+    # 值比对：签名非空、同载荷确定性一致、跨载荷互异（空串会走缺 MAC 拒绝分支）
+    assert mac != ""
+    assert signer.sign(entry) == mac
+    assert signer.sign(dataclasses.replace(entry, title="cb2:other")) != mac
+
+    entry = dataclasses.replace(entry, metadata_mac=mac)
 
     signer.verify(entry)
 

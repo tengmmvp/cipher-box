@@ -20,7 +20,8 @@ from typing import Any
 from ....exceptions import BackupError, DecryptionError, PayloadTooLargeError
 from ....models import PasswordHistory, RawEntry
 from ....utils.format import utc_now_iso
-from ..crypto_utils import STRING_ENCRYPTED_FIELDS, decrypt_entry_to_portable_dict, decrypt_field
+from ..crypto_utils import STRING_ENCRYPTED_FIELDS, decrypt_field, decrypt_string_fields_strict
+from ..entry_batch_writer import should_report_progress
 from .header_codec import BACKUP_FORMAT, BACKUP_VERSION, MAX_BACKUP_PAYLOAD_SIZE
 from .payload import (
     CATEGORY_OVERHEAD_BYTES,
@@ -48,6 +49,61 @@ def check_payload_limit(estimated_size: int) -> None:
     """估算的 payload 字节数超限时抛 PayloadTooLargeError，供采集路径复用。"""
     if estimated_size > MAX_BACKUP_PAYLOAD_SIZE:
         raise PayloadTooLargeError("备份数据过大")
+
+
+def decrypt_entry_to_portable_dict(
+    raw_entry: RawEntry,
+    key: bytes | bytearray,
+    *,
+    include_secrets: bool = True,
+) -> dict[str, Any]:
+    """将原始 Entry 解密为明文字典，任一字段损坏抛异常。供备份/导出等整条解密场景。
+
+    自 crypto_utils 迁入（MAINT-097）：本函数是备份可移植数据采集的专用原语
+    （唯一生产消费方即本模块 collect_portable_data），归位消费域。
+
+    字符串型加密字段经 :func:`crypto_utils.decrypt_string_fields_strict` 统一解密
+    （QL-018 单一事实源），本函数仅组装 portable dict 并单独处理 custom_fields 的
+    JSON 反序列化。
+
+    Args:
+        raw_entry: 数据库层原始 Entry，加密字段为密文字符串。
+        key: AES-256 密钥。
+        include_secrets: 是否包含密码和 TOTP 密钥等敏感字段。
+
+    Raises:
+        DecryptionError: 元数据完整性失败，或任一加密字段解密失败。
+        json.JSONDecodeError: 自定义字段密文解密成功但 JSON 结构损坏。
+    """
+    if raw_entry.integrity_error:
+        raise DecryptionError(f"条目 {raw_entry.crypto_id} 元数据完整性校验失败")
+    # 全部加密字段统一 strict=True：任一字段损坏即抛 DecryptionError。实际触发极少，
+    # 因 metadata_mac 已绑定全部加密字段密文（title/url/tags 直接入签，余者经 _enc_hash），
+    # 损坏会先触发完整性失败。
+    fields = decrypt_string_fields_strict(raw_entry, key, include_secrets=include_secrets)
+    custom_json = decrypt_field(
+        raw_entry.custom_fields_db_value,
+        key,
+        raw_entry.crypto_id,
+        "custom_fields",
+        strict=True,
+    )
+    custom_fields = json.loads(custom_json) if custom_json else []
+    return {
+        "id": raw_entry.id,
+        "crypto_id": raw_entry.crypto_id,
+        **fields,
+        "custom_fields": custom_fields,
+        "category_id": raw_entry.category_id,
+        "password_strength": raw_entry.password_strength,
+        "entry_type": raw_entry.entry_type,
+        "is_favorite": raw_entry.is_favorite,
+        "is_deleted": raw_entry.is_deleted,
+        "created_at": raw_entry.created_at,
+        "updated_at": raw_entry.updated_at,
+        "deleted_at": raw_entry.deleted_at,
+        "password_changed_at": raw_entry.password_changed_at,
+    }
 
 
 def _escape_inflation(value: str) -> int:
@@ -106,6 +162,7 @@ def collect_portable_data(
     raw_entries: list[RawEntry],
     history_rows: list[PasswordHistory],
     categories: list[dict[str, Any]],
+    progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any] | None:
     """收集备份数据：解密所有字段为明文，构建可移植字典。
 
@@ -114,6 +171,8 @@ def collect_portable_data(
     自读 DB 回退以避免与并发写竞态读到部分提交状态——MAINT-015 必传化原则的同款
     应用）。返回嵌套项值类型混合，故标注
     ``dict[str, Any]``（结构由 validate_restore_data 校验）。
+    ``progress``（PERF-083，恢复点创建路径专用）：按已解密条目数上报原始
+    ``(done, total)`` 计数，加权映射由调用方完成；正式备份路径不传（全程无进度 UI）。
     """
     # 基于明文长度的增量估算（PERF-068）：避免逐条 json.dumps 双重序列化开销，
     # 顶层结构开销常量一次性计入。
@@ -126,6 +185,7 @@ def collect_portable_data(
             cancel_check,
             estimated_size,
             raw_entries,
+            progress,
         )
         history = collect_portable_history(
             key,
@@ -151,17 +211,20 @@ def collect_portable_entries(
     cancel_check: Callable[[], bool] | None,
     estimated_size: int,
     raw_entries: list[RawEntry],
+    progress: Callable[[int, int], None] | None = None,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """采集并解密全部条目为可移植字典，增量估算 payload 大小。
 
     返回 ``(entries, entry_count, estimated_size)``（元素含义同参数名）。条目完整性失败
     抛 :class:`BackupError`；``raw_entries`` 锁内预读后必传（见模块头「备份锁外解密
-    契约」），解密循环锁外运行。
+    契约」），解密循环锁外运行。``progress`` 按已解密条目数每 ``PROGRESS_REPORT_EVERY``
+    条节流上报、终值恒上报（PERF-083）。
     """
     if len(raw_entries) > MAX_BACKUP_ENTRIES:
         raise PayloadTooLargeError("备份条目数量超出限制")
+    total = len(raw_entries)
     entries: list[dict[str, Any]] = []
-    for raw in raw_entries:
+    for done, raw in enumerate(raw_entries, start=1):
         if cancel_check and cancel_check():
             raise _BackupCancelled
         try:
@@ -175,7 +238,9 @@ def collect_portable_entries(
         estimated_size += estimate_entry_payload_bytes(portable_item)
         check_payload_limit(estimated_size)
         entries.append(portable_item)
-    return entries, len(raw_entries), estimated_size
+        if progress is not None and should_report_progress(done, total):
+            progress(done, total)
+    return entries, total, estimated_size
 
 
 def collect_portable_history(

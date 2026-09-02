@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from PyQt6.QtCore import QRectF, Qt
@@ -61,6 +62,30 @@ _BADGE_BG_ALPHA = 0.13
 _MAX_ROWS_PER_TAB = 500
 
 
+@dataclass(frozen=True)
+class _TabDef:
+    """单个风险 tab 的创建与分发元数据（MAINT-093）。"""
+
+    attr: str  # 容器/布局属性前缀（_{attr}_container / _{attr}_layout）
+    populate: str  # 懒填充回调的属性名
+    title: str
+    spacing: int  # tab 内行距
+
+
+# tab 元数据（MAINT-093）：驱动 tab 创建、懒填充分发与卡片跳转索引，消除三个
+# _create_*_tab 的复制粘贴与 _populate_tab 的 0/1/2 魔法索引分发。属性前缀与
+# populate 回调名独立声明（既有命名 _dup_* 缩写 vs _populate_duplicate_tab 全称，
+# 保持零改名纯重构）。行距差异：重复组行外层还有分组框（组标签+内边距），组间
+# 12 略宽于普通行 6。
+_TAB_DEFS: tuple[_TabDef, ...] = (
+    _TabDef(attr="weak", populate="_populate_weak_tab", title="弱密码", spacing=6),
+    _TabDef(attr="dup", populate="_populate_duplicate_tab", title="重复密码", spacing=12),
+    _TabDef(attr="old", populate="_populate_old_tab", title="过期密码", spacing=6),
+)
+# 属性前缀 → tab 索引（供统计卡片「查看详情」跳转，替代裸索引字面量）。
+_TAB_INDEX: dict[str, int] = {tab.attr: index for index, tab in enumerate(_TAB_DEFS)}
+
+
 class _HealthScoreWidget(QWidget):
     """以圆环进度形式绘制安全健康评分的自定义组件。"""
 
@@ -82,6 +107,11 @@ class _HealthScoreWidget(QWidget):
     def set_score(self, score: int) -> None:
         self._score = max(0, min(100, score))
         self.update()
+
+    @property
+    def score(self) -> int:
+        """当前健康评分（测试观察用，MAINT-095）：只读视图，渲染值在 paintEvent 内消费。"""
+        return self._score
 
     def paintEvent(self, a0: QPaintEvent | None) -> None:
         painter = QPainter(self)
@@ -161,6 +191,11 @@ class _StatCard(QFrame):
     def update_count(self, count: int) -> None:
         self._count_label.setText(str(count))
 
+    @property
+    def count_text(self) -> str:
+        """当前计数文案（测试观察用，MAINT-095）：只读视图，避免测试穿透 _count_label。"""
+        return self._count_label.text()
+
     def _setup_ui(self, title: str, count: int, color: str, button_text: str) -> None:
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setObjectName("statCard")
@@ -192,6 +227,15 @@ class SecurityDashboard(WorkerBackedDialog):
     后台线程加载报告避免阻塞 UI；关闭前等待 worker 结束，防止对已销毁
     部件发出信号。
     """
+
+    # tab 容器/布局经 _create_list_tab 按元数据 setattr 动态创建（MAINT-093），
+    # 类级注解使后续 ``self._weak_layout.addWidget`` 等引用可静态解析。
+    _weak_container: QWidget
+    _weak_layout: QVBoxLayout
+    _dup_container: QWidget
+    _dup_layout: QVBoxLayout
+    _old_container: QWidget
+    _old_layout: QVBoxLayout
 
     def __init__(
         self,
@@ -248,11 +292,15 @@ class SecurityDashboard(WorkerBackedDialog):
         cards_layout.addWidget(self._weak_card)
 
         self._dup_card = _StatCard("重复密码组", 0, c("warning_orange"), "查看详情", self)
-        self._dup_card.action_button.clicked.connect(lambda: self._tabs.setCurrentIndex(1))
+        self._dup_card.action_button.clicked.connect(
+            lambda: self._tabs.setCurrentIndex(_TAB_INDEX["dup"])
+        )
         cards_layout.addWidget(self._dup_card)
 
         self._old_card = _StatCard("过期密码", 0, c("warning"), "查看详情", self)
-        self._old_card.action_button.clicked.connect(lambda: self._tabs.setCurrentIndex(2))
+        self._old_card.action_button.clicked.connect(
+            lambda: self._tabs.setCurrentIndex(_TAB_INDEX["old"])
+        )
         cards_layout.addWidget(self._old_card)
 
         top_layout.addLayout(cards_layout, stretch=1)
@@ -264,10 +312,10 @@ class SecurityDashboard(WorkerBackedDialog):
         main_layout.addWidget(separator)
 
         # ===== 详细列表区域 =====
+        # tab 创建经元数据表驱动（MAINT-093），卡片跳转索引同源（_TAB_INDEX）。
         self._tabs = QTabWidget()
-        self._tabs.addTab(self._create_weak_tab(), "弱密码")
-        self._tabs.addTab(self._create_duplicate_tab(), "重复密码")
-        self._tabs.addTab(self._create_old_tab(), "过期密码")
+        for tab in _TAB_DEFS:
+            self._tabs.addTab(self._create_list_tab(tab), tab.title)
         # 徽章/截断页脚样式经 objectName + 集中样式表承载（PERF-023）：原实现每行
         # 徽章独立 setStyleSheet，Qt 逐 widget 解析 CSS 是大库下的单价主源；集中到
         # tabs 一份样式表仅解析一次。颜色 token 在构建时按当前主题解析。
@@ -284,54 +332,25 @@ class SecurityDashboard(WorkerBackedDialog):
         btn_layout.addWidget(close_btn)
         main_layout.addLayout(btn_layout)
 
-    def _create_weak_tab(self) -> QWidget:
+    def _create_list_tab(self, tab: _TabDef) -> QWidget:
+        """按元数据创建单个 tab：无边框滚动区 + 顶对齐空容器布局（MAINT-093）。
+
+        容器与布局经 ``setattr`` 按 ``_{tab.attr}_container`` / ``_{tab.attr}_layout``
+        固化到实例属性（类级注解见类头），供懒填充回调与状态提示复用。
+        """
         widget = QWidget()
         scroll = QScrollArea(widget)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
 
-        self._weak_container = QWidget()
-        self._weak_layout = QVBoxLayout(self._weak_container)
-        self._weak_layout.setSpacing(6)
-        self._weak_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        container = QWidget()
+        setattr(self, f"_{tab.attr}_container", container)
+        layout = QVBoxLayout(container)
+        layout.setSpacing(tab.spacing)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        setattr(self, f"_{tab.attr}_layout", layout)
 
-        scroll.setWidget(self._weak_container)
-
-        outer = QVBoxLayout(widget)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
-        return widget
-
-    def _create_duplicate_tab(self) -> QWidget:
-        widget = QWidget()
-        scroll = QScrollArea(widget)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-
-        self._dup_container = QWidget()
-        self._dup_layout = QVBoxLayout(self._dup_container)
-        self._dup_layout.setSpacing(12)
-        self._dup_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-        scroll.setWidget(self._dup_container)
-
-        outer = QVBoxLayout(widget)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
-        return widget
-
-    def _create_old_tab(self) -> QWidget:
-        widget = QWidget()
-        scroll = QScrollArea(widget)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-
-        self._old_container = QWidget()
-        self._old_layout = QVBoxLayout(self._old_container)
-        self._old_layout.setSpacing(6)
-        self._old_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-        scroll.setWidget(self._old_container)
+        scroll.setWidget(container)
 
         outer = QVBoxLayout(widget)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -418,16 +437,16 @@ class SecurityDashboard(WorkerBackedDialog):
         self._populate_tab(index)
 
     def _populate_tab(self, index: int) -> None:
-        """填充指定 tab（幂等：已填充的 tab 直接跳过，防重复建行）。"""
+        """填充指定 tab（幂等：已填充的 tab 直接跳过，防重复建行）。
+
+        分发经 ``_TAB_DEFS`` 元数据按 ``populate`` 属性名定位回调（MAINT-093，
+        替代 0/1/2 魔法索引 if-elif 链）；越界索引静默跳过。
+        """
         if index in self._populated_tabs:
             return
         self._populated_tabs.add(index)
-        if index == 0:
-            self._populate_weak_tab()
-        elif index == 1:
-            self._populate_duplicate_tab()
-        elif index == 2:
-            self._populate_old_tab()
+        if 0 <= index < len(_TAB_DEFS):
+            getattr(self, _TAB_DEFS[index].populate)()
 
     def _on_data_error(self, error_msg: str) -> None:
         """worker.error 信号路径，独立于 _on_data_loaded 的成功/异常出口。"""

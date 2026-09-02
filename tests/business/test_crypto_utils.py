@@ -13,15 +13,13 @@ import pytest
 
 from src.business.managers.vault_manager import VaultManager
 from src.business.services.crypto_utils import (
-    build_entry_summary,
-    copy_entry_fields,
     decrypt_field,
     encrypt_field,
     entry_aad,
-    matches_search,
-    matches_tag,
     require_vault_key,
 )
+from src.business.services.entry_search_match import matches_search, matches_tag
+from src.business.services.entry_view_decryption import build_entry_summary, copy_entry_fields
 from src.exceptions import DecryptionError, VaultLockedError
 from src.models import CustomField, Entry, RawEntry
 
@@ -337,9 +335,7 @@ class TestDecryptEntryToPortableDictStrict:
 
     def test_corrupt_notes_raises_decryption_error(self, aes_key):
         """notes 密文损坏时抛 DecryptionError，而非返回空 notes 的残缺字典。"""
-        from src.business.services.crypto_utils import (
-            decrypt_entry_to_portable_dict,
-        )
+        from src.business.services.backup.collector import decrypt_entry_to_portable_dict
 
         crypto_id = "cid-bad-notes"
         raw = RawEntry(
@@ -359,9 +355,7 @@ class TestDecryptEntryToPortableDictStrict:
 
     def test_corrupt_password_raises_decryption_error(self, aes_key):
         """password 密文损坏时抛 DecryptionError（统一 strict 后不再容错为空）。"""
-        from src.business.services.crypto_utils import (
-            decrypt_entry_to_portable_dict,
-        )
+        from src.business.services.backup.collector import decrypt_entry_to_portable_dict
 
         crypto_id = "cid-bad-pwd"
         raw = RawEntry(
@@ -381,9 +375,7 @@ class TestDecryptEntryToPortableDictStrict:
 
     def test_all_valid_returns_full_dict(self, aes_key):
         """全部字段有效时返回完整字典，notes 正常解密。"""
-        from src.business.services.crypto_utils import (
-            decrypt_entry_to_portable_dict,
-        )
+        from src.business.services.backup.collector import decrypt_entry_to_portable_dict
 
         crypto_id = "cid-ok"
         raw = RawEntry(

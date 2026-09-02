@@ -7,6 +7,7 @@ SidebarController）依赖 Qt 线程亲和性或 UI 配置，仍由 MainWindow �
 此 frozen dataclass。
 """
 
+import weakref
 from dataclasses import dataclass
 
 from ..config import ConfigManager
@@ -20,6 +21,11 @@ from .managers.restore_point_manager import RestorePointManager
 from .managers.vault_lifecycle import VaultLifecycleOrchestrator
 from .managers.vault_manager import VaultManager
 from .services.database_bootstrap import DatabaseBootstrap
+from .services.rate_limiter import (
+    CHANGE_MASTER_RATE_LIMIT_FILENAME,
+    LOGIN_RATE_LIMIT_FILENAME,
+    RateLimiter,
+)
 from .services.security_analyzer import SecurityAnalyzer
 
 
@@ -32,7 +38,8 @@ class BusinessContext:
     本容器即可取得全部业务依赖。缓存（EntryCacheManager）与变更总线（EntryChangeBus）
     仅为业务层内部 cache 失效连线而创建，不对外暴露——UI 经 entry_mgr 间接消费缓存
     派生状态，刷新走显式调用（``_do_refresh_after_entry_change``），避免容器面扩大与
-    「字段存在即暗示应订阅」的误导。
+    「字段存在即暗示应订阅」的误导。``change_master_rate_limiter`` 为改密对话框的
+    依赖（ARCH-043），经容器随 ctx 流转至 MenuController，不在 UI 内构造。
     """
 
     config: ConfigManager
@@ -41,6 +48,22 @@ class BusinessContext:
     security: SecurityAnalyzer
     import_export: ImportExportManager
     backup: BackupRestoreManager
+    change_master_rate_limiter: RateLimiter
+
+
+def build_login_rate_limiter(config: ConfigManager) -> RateLimiter:
+    """创建登录限流器（ARCH-043：组合根显式装配，UI 对话框注入消费）。
+
+    状态文件名常量归 rate_limiter 模块单一事实源；调用方（app.py 登录流程）每次
+    构造 LoginWindow 时调用，限流器生命周期与登录窗口一致（跨会话状态经状态文件
+    恢复）。
+    """
+    return RateLimiter(config.data_dir / LOGIN_RATE_LIMIT_FILENAME, config)
+
+
+def build_change_master_rate_limiter(config: ConfigManager) -> RateLimiter:
+    """创建改密限流器（ARCH-043），状态文件名常量同 rate_limiter 模块单一事实源。"""
+    return RateLimiter(config.data_dir / CHANGE_MASTER_RATE_LIMIT_FILENAME, config)
 
 
 def build_vault(config: ConfigManager, *, test_mode: bool = False) -> VaultManager:
@@ -57,8 +80,14 @@ def build_vault(config: ConfigManager, *, test_mode: bool = False) -> VaultManag
     """
     db, signer = DatabaseBootstrap.bootstrap(config, test_mode=test_mode)
     vault = VaultManager(config, db, signer)
-    vault.attach_lifecycle(VaultLifecycleOrchestrator(vault, db, signer))
+    # ARCH-044：orchestrator 的 db/signer 从 vault 单一装配参数派生——构造签名不再
+    # 接受独立 db/signer，杜绝传入与 vault 内部不同域实例致编排器绕过 vault 写守卫。
+    vault.attach_lifecycle(VaultLifecycleOrchestrator(vault))
     return vault
+
+
+# 已完成业务上下文装配的 vault 弱引用集（ARCH-044 防重入）：弱引用不延长 vault 生命周期。
+_assembled_vaults: "weakref.WeakSet[VaultManager]" = weakref.WeakSet()
 
 
 def build_business_context(config: ConfigManager, vault: VaultManager) -> BusinessContext:
@@ -84,7 +113,17 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
 
     锁定与备份恢复（密钥轮换）失效 entry 缓存，条目变更失效安全分析缓存；两类
     事件经独立回调通道触发（ARCH-003），详见下方注册处注释。
+
+    Raises:
+        RuntimeError: 对同一 VaultManager 重复调用（ARCH-044）——重复注册锁定/轮换
+            回调并泄漏旧 cache 实例，属装配错误而非合法复用路径。
     """
+    if vault in _assembled_vaults:
+        raise RuntimeError(
+            "build_business_context 对同一 VaultManager 重复调用：会重复注册锁定/轮换"
+            "回调并泄漏旧 cache 实例（ARCH-044）。同一会话应复用既有 BusinessContext。"
+        )
+    _assembled_vaults.add(vault)
     cache = EntryCacheManager(vault)
     change_bus = EntryChangeBus(cache)
     # CategoryManager / RestorePointManager 提升为一等依赖，由组合根显式创建并注入
@@ -95,13 +134,20 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
     import_export = ImportExportManager(entry_mgr)
     restore_points = RestorePointManager(vault)
     backup = BackupRestoreManager(vault, entry_mgr, restore_points)
+    # 改密限流器（ARCH-043）：有跨进程持久状态的业务安全模块，经组合根显式创建并
+    # 经 BusinessContext 注入 MenuController→ChangeMasterDialog，UI 不再自行实例化。
+    change_master_rate_limiter = build_change_master_rate_limiter(config)
     # 锁定与密钥版本轮换（备份恢复）是两类语义不同的事件（ARCH-003 拆为独立通道），
     # 但都要求失效全部明文/派生缓存：锁定清明文摘要/分类名/TOTP/标签缓存收缩内存泄漏面；
     # 恢复整体替换数据，按 crypto_id 索引的明文缓存须失效防命中旧明文，安全分析缓存亦
-    # 失效。故两个回调均注册到两个通道以保持行为等价。
+    # 失效。故两个回调均注册到两个通道以保持行为等价。category_mgr.invalidate_caches
+    # 清 CategoryManager 自持的明文分类名会话缓存（SEC-053）——entry_mgr 的
+    # invalidate_caches 只清 EntryCacheManager 五套缓存，不含该份。
     vault.register_on_lock(entry_mgr.invalidate_caches)
+    vault.register_on_lock(category_mgr.invalidate_caches)
     vault.register_on_lock(security.invalidate_cache)
     vault.register_on_epoch_rotated(entry_mgr.invalidate_caches)
+    vault.register_on_epoch_rotated(category_mgr.invalidate_caches)
     vault.register_on_epoch_rotated(security.invalidate_cache)
     # 条目变更回调携带 (password_changed, metadata_changed, crypto_id)：单条更新经
     # crypto_id 触发 SecurityAnalyzer 的单条增量失效（PERF-021，避免每次保存触发
@@ -115,4 +161,5 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
         security=security,
         import_export=import_export,
         backup=backup,
+        change_master_rate_limiter=change_master_rate_limiter,
     )

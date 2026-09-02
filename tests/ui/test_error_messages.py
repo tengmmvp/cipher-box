@@ -17,6 +17,7 @@ from src.exceptions import (
     DecryptionError,
     PayloadTooLargeError,
     SchemaError,
+    VaultError,
     VaultIntegrityError,
     VaultKeyEpochMismatchError,
     VaultLockedError,
@@ -31,6 +32,16 @@ class TestToUserMessage:
         """VaultLockedError → 提示需解锁保险库。"""
         msg = to_user_message(VaultLockedError("locked"))
         assert "解锁" in msg
+
+    def test_plain_vault_error_preserves_message(self):
+        """纯 VaultError 本体保留 str 原文（ARCH-042 系统错误包装通道）。
+
+        vault_lifecycle 把系统错误经 to_user_message 翻译后以 VaultError 包装，
+        worker error 通道的二次翻译须保留该原文——否则磁盘满/IO 错误的准确文案
+        被兜底文案覆盖。子类（如 VaultLockedError）仍走固定映射，先于本体分支。
+        """
+        assert to_user_message(VaultError("磁盘空间不足。")) == "磁盘空间不足。"
+        assert to_user_message(VaultError(""), default="修改主密码失败") == "修改主密码失败"
 
     def test_vault_key_epoch_mismatch(self):
         """采用「操作期间检测到主密码已被修改」文案：准确描述改密/恢复/导入

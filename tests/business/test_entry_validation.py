@@ -34,11 +34,11 @@ class TestValidatePlainEntry:
     """validate_plain_entry 的合法通过与各类非法拒绝。"""
 
     def test_valid_login_entry_passes(self):
-        validate_plain_entry(_make_entry())
+        assert validate_plain_entry(_make_entry()) is None
 
     def test_valid_each_entry_type_passes(self):
         for entry_type in ("login", "card", "identity", "note", "server"):
-            validate_plain_entry(_make_entry(entry_type=entry_type))
+            assert validate_plain_entry(_make_entry(entry_type=entry_type)) is None
 
     def test_invalid_entry_type_rejected(self):
         with pytest.raises(ValueError, match="类型"):
@@ -76,7 +76,7 @@ class TestValidatePlainEntry:
         """恰等于上限应通过（边界守护）。"""
         entry = _make_entry()
         entry = dataclasses.replace(entry, **{field_name: "x" * max_len})
-        validate_plain_entry(entry)
+        assert validate_plain_entry(entry) is None
 
     def test_custom_fields_non_list_rejected(self):
         """custom_fields 非 list 时 assert_decrypted 先拒绝（仍未解密态）。
@@ -128,7 +128,7 @@ def test_validate_plain_entry_accepts_within_limit():
             CustomField(name=f"f{i}", value="v") for i in range(MAX_CUSTOM_FIELDS_PER_ENTRY)
         ],
     )
-    validate_plain_entry(entry)
+    assert validate_plain_entry(entry) is None
 
 
 def test_validate_plain_entry_rejects_custom_field_name_too_long():
@@ -173,4 +173,4 @@ def test_validate_plain_entry_accepts_custom_field_at_length_limit():
             )
         ],
     )
-    validate_plain_entry(entry)
+    assert validate_plain_entry(entry) is None

@@ -394,8 +394,17 @@ class ConfigManager:
         """
         return self._integrity_reason
 
-    def save(self) -> None:
-        """原子保存配置，避免异常退出留下半个 JSON 文件。"""
+    def save(self, *, keep_integrity_warning: bool = False) -> None:
+        """原子保存配置，避免异常退出留下半个 JSON 文件。
+
+        Args:
+            keep_integrity_warning: True 时保留既有完整性告警状态不清零。仅供
+                :meth:`register_security_sentinel` 等安全模块的自动写入使用（QL-064）：
+                哨兵登记触发的 save 不代表「用户确认后的配置修复」——若本会话加载时
+                检出篡改，磁盘虽已重签，会话内仍须保持告警供 MainWindow 完成用户
+                通知；普通调用方保持默认清零语义（save 后磁盘已是本机密钥合法签名，
+                告警粘滞会误钳 get_safe 的 auto_lock 豁免）。
+        """
         with self._lock:
             content = json.dumps(self._config, indent=2, ensure_ascii=False)
             sig = hmac.new(
@@ -411,6 +420,11 @@ class ConfigManager:
                 return True
 
             atomic_write(self._config_path, _write_config, mode="w", encoding="utf-8")
+            if keep_integrity_warning:
+                # 告警保留（QL-064）：本会话检出过的篡改证据不因后台自动写盘而消失，
+                # 用户通知（check_integrity 的消费方）仍可触达；下个会话加载新签名的
+                # 干净文件后自然恢复无告警状态。
+                return
             # 清除会话内完整性告警：避免此前篡改/缺失状态在 save 后粘滞，致 get_safe
             # 的 auto_lock 豁免被误钳或内存与磁盘不一致。
             self._integrity_warning = False
@@ -505,7 +519,11 @@ class ConfigManager:
                 return
             current.append(name)
             self._config[CFG_SECURITY_SENTINELS] = current
-            self.save()
+            # keep_integrity_warning=True（QL-064）：这是限流器持久化触发的后台自动
+            # 写盘，不是用户驱动的配置修复——若置位了篡改告警，save 后必须保留，
+            # 否则 LoginWindow 构造期的哨兵登记会静默清零告警、抑制 MainWindow 的
+            # 完整性用户提示（实质防护——敏感键回退默认——不受影响，仅丢通知）。
+            self.save(keep_integrity_warning=True)
 
     def is_security_sentinel_established(self, name: str) -> bool:
         """哨兵是否已登记。
