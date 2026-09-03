@@ -26,24 +26,24 @@ business→config 单向、不反向 import）。
   启动链此前对该异常全链无捕获，启动即崩。
 
 非 Windows 的明文回退在 keyring 恢复可用后一次性回迁系统密钥链并清理明文文件
-（SEC-003 粘滞修复），使平台安全存储保护对「keyring 曾故障」的安装重新生效。
+（SEC-003 粘滞修复），使平台安全存储保护对「keyring 曾故障」的安装重新生效；
+keyring 记录损坏走新生成并成功写入后，明文残留同款清理覆盖该路径（SEC-070）。
 """
 
 import base64
 import hashlib
 import logging
 import os
-import sys
 from pathlib import Path
 from typing import Any
 
+from .utils._platform import IS_WINDOWS
+from .utils.dpapi import protect_with_dpapi, unprotect_with_dpapi
 from .utils.file_security import (
     atomic_write,
-    protect_with_dpapi,
     secure_delete_file,
     secure_directory,
     secure_file,
-    unprotect_with_dpapi,
 )
 
 logger = logging.getLogger(__name__)
@@ -127,7 +127,7 @@ class ConfigKeyStore:
             )
             return key
         if not stored:
-            if sys.platform == "win32":
+            if IS_WINDOWS:
                 # win32 明文回退名存实亡（SEC-055）：读侧只认 DPAPI 封装（SEC-052），
                 # 「写明文 32 字节 + 下次判损坏」的组合会使用户看到假「配置文件完整
                 # 性校验失败，可能已被篡改」告警、敏感键回退默认、RateLimiter 状态
@@ -161,6 +161,17 @@ class ConfigKeyStore:
                 "签名密钥回退明文存储（平台安全存储不可用）：本地读权限者可重算"
                 "签名篡改安全配置，建议启用系统密钥链（SEC-003）"
             )
+            # 密钥最终形态为明文回退：刚写入的明文文件是其持久载体而非残留，
+            # 清理前置条件（平台安全存储已供应）不成立，不得触发残留清理。
+            return key
+        # 新生成密钥已成功持久化到平台安全存储（stored=True）：明文残留统一清理
+        # （SEC-070）——前置条件「密钥已由平台安全存储有效供应」成立（keyring 命中
+        # 有效密钥或新生成已持久化，SEC-067），旧明文密钥已退役（新密钥生效，旧
+        # 签名本就会失配告警并经下次保存自愈），删除无「销毁可能唯一有效回退」之
+        # 虞。win32 豁免在 _purge_plaintext_key_residue 内评估一次（stored=True 时
+        # key_path 刚被 DPAPI 封装写占、非明文残留，且 win32 无明文回退形态，
+        # SEC-055），调用方不再各自重推导平台条件。
+        self._purge_plaintext_key_residue("新生成密钥已写入系统密钥链，旧明文回退退役")
         return key
 
     def _degrade_to_session_only(self, reason: str) -> None:
@@ -183,7 +194,7 @@ class ConfigKeyStore:
 
     def _load_secure_integrity_key(self) -> bytes | None:
         """从平台安全存储读取签名密钥，损坏或缺失返回 None。"""
-        if sys.platform == "win32":
+        if IS_WINDOWS:
             return self._load_dpapi_integrity_key()
         return self._load_keyring_integrity_key()
 
@@ -193,7 +204,7 @@ class ConfigKeyStore:
         失败时调用方按平台降级（SEC-055）：非 Windows 回退明文文件；Windows 保持
         内存密钥运行本会话、不落盘（见 :meth:`load_or_create`）。
         """
-        if sys.platform == "win32":
+        if IS_WINDOWS:
             return self._store_dpapi_integrity_key(key)
         return self._store_keyring_integrity_key(key)
 
@@ -281,38 +292,51 @@ class ConfigKeyStore:
             # 旧「迁移失败再清理」分支不再进入；b) keyring 记录损坏/重生成后新密钥已
             # 入 keyring，降级期明文文件遗留。密钥既已由 keyring 供应，明文文件只是
             # 「本地读权限者可重算签名」的暴露面（SEC-003），无论来源统一尝试覆写删除
-            # （幂等：不存在即 no-op；失败记 ERROR 不阻断启动，下次启动重试）。
-            if self._key_path.exists():
-                try:
-                    secure_delete_file(self._key_path)
-                    logger.info("检测并清理明文密钥残留文件（密钥已由系统密钥链供应）")
-                except OSError:
-                    logger.error(
-                        "明文密钥残留文件清理失败，建议手动删除该文件（SEC-067）",
-                        exc_info=True,
-                    )
+            # （清理实现与新生成路径共用 _purge_plaintext_key_residue，SEC-070）。
+            self._purge_plaintext_key_residue("密钥已由系统密钥链供应")
             return key
         # keyring 本会话可用但无记录：读明文回退密钥（keyring 故障期写入的形态）。
         # SEC-003 粘滞修复：原实现只回读明文文件、永不回写 keyring——keyring 恢复后
         # SEC-003 保护对该安装持续失效。改为一次性回迁：密钥写入 keyring 成功后
-        # secure_delete 明文 config.key，收缩「本地读权限者可重算签名」的暴露面；
-        # 迁移失败保持明文回退现状并记 ERROR，绝不阻断启动。
+        # 清理明文 config.key（统一走 _purge_plaintext_key_residue chokepoint，
+        # SEC-067/070 的第三处内联 secure_delete 收敛），收缩「本地读权限者可重算
+        # 签名」的暴露面；迁移失败保持明文回退现状并记 ERROR，绝不阻断启动。
         plaintext_key = self._load_plaintext_integrity_key()
         if plaintext_key is None:
             return None
         if not self._store_keyring_integrity_key(plaintext_key):
             logger.error("keyring 已恢复可用但签名密钥回迁失败，继续使用明文回退（SEC-003）")
             return plaintext_key
+        # 回迁成功即「密钥已由平台安全存储有效供应」：明文文件退役清理（失败由
+        # chokepoint 记 ERROR 不阻断启动，下次启动 keyring 命中分支重试）。
+        self._purge_plaintext_key_residue("明文回退密钥已回迁系统密钥链")
+        return plaintext_key
+
+    def _purge_plaintext_key_residue(self, reason: str) -> None:
+        """清理明文密钥残留文件的单一 chokepoint（幂等，失败 ERROR 不阻断启动）。
+
+        前置条件由调用方保证——密钥已由平台安全存储有效供应（keyring 命中有效
+        密钥、明文回退回迁成功，或新生成密钥已成功持久化）。此时同盘的明文
+        config.key 只是「本地读权限者可重算签名」的暴露面（SEC-003）：不存在即
+        no-op；覆写删除失败记 ERROR 不阻断启动，下次启动重试。
+
+        win32 豁免在本 chokepoint 内评估一次（SEC-070 演进：原先各调用方自带
+        ``sys.platform != "win32"`` 前置重推导，且 SEC-003 迁移处存在内联
+        secure_delete 的第三触发点）：win32 下 key_path 是 DPAPI 封装本体而非
+        明文残留（stored=True 时刚被写占），且 win32 无明文回退形态（SEC-055），
+        恒 no-op——平台判定经 IS_WINDOWS 常量（MAINT-012 单一事实源；测试打桩
+        patch 本模块的 IS_WINDOWS 绑定，见 _platform docstring 的约定）。
+        """
+        if IS_WINDOWS or not self._key_path.exists():
+            return
         try:
             secure_delete_file(self._key_path)
+            logger.info("检测并清理明文密钥残留文件（%s）", reason)
         except OSError:
-            # 覆写删除失败（占用/权限）：密钥已在 keyring 生效并将在下次启动命中，
-            # 残留明文文件仅剩取证暴露面；ERROR 可见供手动清理（下次启动 keyring
-            # 命中即不再进入本分支）。
-            logger.error("明文密钥文件迁移后清理失败，建议手动删除该文件", exc_info=True)
-        else:
-            logger.info("签名密钥已从明文回退回迁系统密钥链，SEC-003 保护恢复生效")
-        return plaintext_key
+            logger.error(
+                "明文密钥残留文件清理失败，建议手动删除该文件（SEC-067）",
+                exc_info=True,
+            )
 
     def _store_keyring_integrity_key(self, key: bytes) -> bool:
         try:

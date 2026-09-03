@@ -23,7 +23,7 @@ class TestRateLimiterBackoff:
 
     def test_first_use_not_locked(self, limiter):
         """首次使用（无状态文件、无哨兵）不应被锁定。"""
-        assert limiter._fail_count == 0
+        assert limiter.fail_count == 0
         assert limiter.check() is None
 
     def test_record_failure_locks_at_threshold(self, limiter):
@@ -37,13 +37,13 @@ class TestRateLimiterBackoff:
         """锁定到期后 fail_count 必须保留，使下一轮失败能爬升到更高档位。"""
         for _ in range(RATE_LIMITS[0][0]):
             limiter.record_failure()
-        preserved = limiter._fail_count
+        preserved = limiter.fail_count
         assert limiter._lock_until > 0
 
         # 推进时间到锁定到期之后
         monkeypatch.setattr(time, "monotonic", lambda: limiter._lock_until + 1)
         assert limiter.check() is None  # 到期允许重试
-        assert limiter._fail_count == preserved  # 关键：未清零
+        assert limiter.fail_count == preserved  # 关键：未清零
         assert limiter._lock_until == 0.0
 
     def test_escalation_survives_expiry(self, limiter, monkeypatch):
@@ -67,7 +67,7 @@ class TestRateLimiterBackoff:
         for _ in range(RATE_LIMITS[0][0]):
             limiter.record_failure()
         limiter.record_success()
-        assert limiter._fail_count == 0
+        assert limiter.fail_count == 0
         assert limiter._lock_until == 0.0
 
 
@@ -101,7 +101,7 @@ class TestRateLimiterSentinel:
         state.unlink()  # 模拟攻击者删除状态文件
 
         rl_reloaded = RateLimiter(state, config)
-        assert rl_reloaded._fail_count == RATE_LIMITS[-1][0]
+        assert rl_reloaded.fail_count == RATE_LIMITS[-1][0]
         assert rl_reloaded._lock_until > 0
         assert rl_reloaded.check() is not None  # 仍处于锁定
 
@@ -111,7 +111,7 @@ class TestRateLimiterSentinel:
         assert not state.exists()
         assert not (tmp_path / "rate_limit.json.sentinel").exists()
         rl = RateLimiter(state)
-        assert rl._fail_count == 0
+        assert rl.fail_count == 0
         assert rl.check() is None
 
     def test_corrupt_state_triggers_lockdown(self, tmp_path):
@@ -119,7 +119,7 @@ class TestRateLimiterSentinel:
         state = tmp_path / "rate_limit.json"
         state.write_text("{invalid json", encoding="utf-8")
         rl = RateLimiter(state)
-        assert rl._fail_count == RATE_LIMITS[-1][0]
+        assert rl.fail_count == RATE_LIMITS[-1][0]
         assert rl._lock_until > 0
 
 
@@ -143,7 +143,7 @@ class TestRateLimiterConfigWitness:
         state.unlink()
         (tmp_path / "login_rate_limit.json.sentinel").unlink()
         rl2 = RateLimiter(state, config)
-        assert rl2._fail_count == RATE_LIMITS[-1][0]
+        assert rl2.fail_count == RATE_LIMITS[-1][0]
         assert rl2._lock_until > 0
         assert rl2.check() is not None
 
@@ -154,7 +154,7 @@ class TestRateLimiterConfigWitness:
         config = make_test_config(tmp_path)
         state = tmp_path / "login_rate_limit.json"
         rl = RateLimiter(state, config)
-        assert rl._fail_count == 0
+        assert rl.fail_count == 0
         assert rl.check() is None
 
     def test_config_integrity_failure_lockdown(self, tmp_path):
@@ -168,14 +168,14 @@ class TestRateLimiterConfigWitness:
         assert not config.check_integrity()
         state = tmp_path / "login_rate_limit.json"
         rl = RateLimiter(state, config)
-        assert rl._fail_count == RATE_LIMITS[-1][0]
+        assert rl.fail_count == RATE_LIMITS[-1][0]
 
     def test_no_config_witness_preserves_first_use(self, tmp_path):
         """无 config 见证（config=None）退回哨兵配对行为，不削弱保护。"""
         state = tmp_path / "login_rate_limit.json"
         # 无 config：状态+哨兵均缺失 → 首次使用
         rl = RateLimiter(state)
-        assert rl._fail_count == 0
+        assert rl.fail_count == 0
         assert rl.check() is None
 
 
@@ -211,7 +211,7 @@ class TestRateLimiterStateSignature:
         for _ in range(RATE_LIMITS[0][0]):
             rl.record_failure()
         reloaded = RateLimiter(state, make_test_config(tmp_path))
-        assert reloaded._fail_count == RATE_LIMITS[0][0]
+        assert reloaded.fail_count == RATE_LIMITS[0][0]
 
     def test_tampered_zeroed_state_triggers_lockdown(self, tmp_path):
         """篡改为格式合法的归零状态 → 判定被篡改，降级最高阶梯而非归零计数。"""
@@ -224,7 +224,7 @@ class TestRateLimiterStateSignature:
         # 攻击者改写为格式合法的零计数（无签名行）
         state.write_text('{"fail_count": 0, "remaining_seconds": 0.0}', encoding="utf-8")
         reloaded = RateLimiter(state, make_test_config(tmp_path))
-        assert reloaded._fail_count == RATE_LIMITS[-1][0]
+        assert reloaded.fail_count == RATE_LIMITS[-1][0]
         assert reloaded._lock_until > 0
         assert reloaded.check() is not None  # 仍处于锁定
 
@@ -238,7 +238,7 @@ class TestRateLimiterStateSignature:
         json_part = raw.rsplit("\n", 1)[0]
         state.write_text(json_part, encoding="utf-8")
         reloaded = RateLimiter(state, make_test_config(tmp_path))
-        assert reloaded._fail_count == RATE_LIMITS[-1][0]
+        assert reloaded.fail_count == RATE_LIMITS[-1][0]
         assert reloaded.check() is not None
 
     def test_forged_signature_triggers_lockdown(self, tmp_path):
@@ -254,7 +254,7 @@ class TestRateLimiterStateSignature:
         state.write_text(f"{forged}\n{old_sig_line}", encoding="utf-8")
         reloaded = RateLimiter(state, make_test_config(tmp_path))
         # 不采信伪造的长期锁定：降级为最高阶梯（锁定时长以 RATE_LIMITS[-1] 为准）
-        assert reloaded._fail_count == RATE_LIMITS[-1][0]
+        assert reloaded.fail_count == RATE_LIMITS[-1][0]
         assert reloaded._lock_until - time.monotonic() <= RATE_LIMITS[-1][1] + 1
 
     def test_lockdown_rebuilds_signed_state(self, tmp_path):
@@ -265,11 +265,11 @@ class TestRateLimiterStateSignature:
         rl.record_failure()
         state.write_text('{"fail_count": 0, "remaining_seconds": 0.0}', encoding="utf-8")
         tampered = RateLimiter(state, make_test_config(tmp_path))
-        assert tampered._fail_count == RATE_LIMITS[-1][0]
+        assert tampered.fail_count == RATE_LIMITS[-1][0]
         # 重建后的状态文件带合法签名：再次加载不再走篡改分支，计数为降级值
         assert "#__sig__:" in state.read_text(encoding="utf-8")
         healed = RateLimiter(state, make_test_config(tmp_path))
-        assert healed._fail_count == RATE_LIMITS[-1][0]
+        assert healed.fail_count == RATE_LIMITS[-1][0]
         assert healed.check() is not None
 
     def test_unsigned_mode_without_config_does_not_persist(self, tmp_path):

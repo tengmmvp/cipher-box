@@ -309,12 +309,14 @@ class DetailPanel(QWidget):
                 静默默认落点（SEC-054 关闭的窗口对其重开），类型系统强制显式抉择。
             data_version: **必传**（与 data_epoch 同源）。entry 的 totp_secret 解密
                 时点的 TOTP 域失效版本快照（SEC-063 b 层）：主路径同样从
-                ``get_entry_with_epoch`` 读锁内带出，「解密 → 预热」窗口内发生单条
-                TOTP 失效（pop_totp 不改 epoch，如导入覆盖的 evict / 写事务提交后的
-                统一失效 seam）时旧 secret 被 store 侧版本守卫拒收；force 重建传
-                ``self.current_data_version`` 复用记录快照。必传理由同 data_epoch：
-                漏传会静默落回 get_state 的自采样兜底，其只覆盖微秒窗口、重开
-                SEC-063 关闭的「旧 secret 入缓存」窗口。
+                ``get_entry_with_epoch`` 读锁内带出，「解密 → 预热」窗口内发生本条目
+                的 TOTP 失效（pop_totp 不改 epoch，如导入覆盖的 evict）或整体失效
+                （写事务提交后的统一失效 seam）时旧 secret 被 store 侧版本守卫拒收
+                （守卫按条目粒度判定：TOTP→TOTP 切换时 _prepare_display 对上一条目
+                的 evict 不误伤本条目的预热），拒收时 get_state 丢弃 preloaded 改走
+                DB 重解密计算验证码；force 重建传 ``self.current_data_version`` 复用
+                记录快照。必传理由同 data_epoch：漏传会静默落回 get_state 的自采样
+                兜底，其只覆盖微秒窗口、重开 SEC-063 关闭的「旧 secret 入缓存」窗口。
         """
         if (
             not force

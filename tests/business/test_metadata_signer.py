@@ -86,6 +86,32 @@ def test_verify_detects_tampered_title():
         signer.verify(entry)
 
 
+def test_verify_non_ascii_mac_raises_integrity_error_not_typeerror():
+    """非 ASCII metadata_mac（篡改形态）走「验签失败」抛 VaultIntegrityError（SEC-071）。
+
+    裸 compare_digest 对非 ASCII str 抛 TypeError，会逃出 db 层 _row_to_entry 的
+    except VaultIntegrityError 捕获面（STRICT/LENIENT 双模式）——篡改条目每读必崩、
+    TOTP 定时器每秒冲刷异常日志；共享比较器内置 isascii 守卫使其落入既有验签
+    失败语义。
+    """
+    signer = MetadataSigner(domain_key=MetadataSigner.compute_domain_key(b"test-key-na"))
+    entry = _make_entry()
+    entry = dataclasses.replace(entry, metadata_mac="被篡改的非ASCII签名")
+
+    with pytest.raises(VaultIntegrityError):
+        signer.verify(entry)
+
+
+def test_verify_category_non_ascii_mac_raises_integrity_error_not_typeerror():
+    """分类签名同款：非 ASCII metadata_mac 抛 VaultIntegrityError，不抛 TypeError（SEC-071）。"""
+    signer = MetadataSigner(domain_key=MetadataSigner.compute_domain_key(b"test-key-na"))
+    category = _make_category()
+    category = dataclasses.replace(category, metadata_mac="分类被篡改签名")
+
+    with pytest.raises(VaultIntegrityError):
+        signer.verify_category(category)
+
+
 def test_verify_raises_when_no_key():
     """verify() 无域密钥时抛异常。"""
     signer = MetadataSigner()  # domain_key 为 None

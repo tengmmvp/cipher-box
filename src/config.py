@@ -16,6 +16,7 @@ from typing import Any, Final, Literal, get_args, overload
 from .config_key_store import ConfigKeyStore
 from .models import is_real_int
 from .utils.file_security import atomic_write, secure_directory
+from .utils.secure_compare import constant_time_mac_equals
 
 _CONFIG_SIG_PREFIX = "#__sig__:"
 
@@ -363,7 +364,13 @@ class ConfigManager:
                         hashlib.sha256,
                     ).hexdigest()
                     if stored_sig:
-                        if not hmac.compare_digest(stored_sig, expected_sig):
+                        # 签名行非 ASCII 按「签名不符」处理（SEC-071）：共享比较器
+                        # constant_time_mac_equals 内置 isascii 前置守卫，非 ASCII
+                        # 短路 False 而非抛 TypeError——若让异常穿透会被外层 except
+                        # 捕获走「配置文件无效用默认」，此时 _integrity_warning 尚未
+                        # 置位，篡改的用户通知被静默抑制。
+                        sig_ok = constant_time_mac_equals(stored_sig, expected_sig)
+                        if not sig_ok:
                             logger.warning(
                                 "配置文件完整性校验失败，可能已被篡改。将使用默认配置覆盖异常值。"
                             )

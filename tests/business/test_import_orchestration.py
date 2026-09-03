@@ -83,6 +83,48 @@ def test_import_skip_action_skips_duplicates(entry_mgr, tmp_path):
     assert by_title["Brand New"].password == "FreshPass!3"
 
 
+def test_import_all_skipped_skips_transaction_keeps_totp_cache(entry_mgr, tmp_path):
+    """全判重导入（duplicate_action='skip' 全命中）跳过写事务：seam 不触发（SEC-063 演进）。
+
+    全部条目被判重跳过时 enc_new 与 overwrite_prepared 双空（写入函数对空列表
+    本就是 no-op），原先仍开空事务——提交后统一失效 seam 无条件清空全部 TOTP
+    缓存（churn-only）。现空批次直接跳过事务：明文缓存保持（导入后的批量通知
+    仍推进失效版本，但不驱逐明文 secret——版本推进不删缓存条目，仅守卫拒收
+    旧快照回写）。
+    """
+    mgr = ImportExportManager(entry_mgr)
+    entry_id = entry_mgr.add_entry(
+        Entry(
+            title="Existing", username="alice", password="OldPass!1", totp_secret="JBSWY3DPEHPK3PXP"
+        )
+    )
+    # 经 generate_cached 预热（其先臂住缓存 epoch 再落 secret——直接 store_totp 不臂
+    # epoch，导入内首次读路径的 invalidate_if_epoch_changed 重臂会清缓存，混入无关
+    # 失效源；MAINT-095 台账 C1：TOTP 缓存内容白盒断言豁免）
+    assert entry_mgr.totp.generate_cached(entry_id) is not None
+    assert entry_id in entry_mgr.cache._totp_secret_cache
+
+    json_path = tmp_path / "all_dup.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "app": "CipherBox",
+                "secrets_included": True,
+                "entries": [
+                    {"title": "Existing", "username": "alice", "password": "NewPass!2"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    count = mgr.import_file(str(json_path), "json", duplicate_action="skip")
+
+    assert count == 0  # 全判重跳过：无新增无覆盖
+    # 空写批次未开事务：seam 的 clear_totp 未执行，明文 secret 仍在缓存
+    assert entry_mgr.cache._totp_secret_cache == {entry_id: "JBSWY3DPEHPK3PXP"}
+
+
 def test_import_rejects_non_cipherbox_json(entry_mgr, tmp_path):
     """app 字段非 'CipherBox' 应被拒绝（防误导入其他格式 JSON）。"""
     mgr = ImportExportManager(entry_mgr)

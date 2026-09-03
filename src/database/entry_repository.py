@@ -538,8 +538,10 @@ class EntryRepository:
 
         Note: 不写 is_deleted/deleted_at，删除状态仅由 soft_delete_entry /
         restore_entry 管理。updated_at 恒取当前时间（preserve_updated_at 参数已退役，
-        ARCH-021：唯一 True 调用方是测试，需保留原时间戳的批量覆盖路径走
-        :meth:`update_overwrite_batch`，其 SQL 不写 updated_at 列）。
+        ARCH-021：唯一 True 调用方是测试）。批量覆盖路径走
+        :meth:`update_overwrite_batch`，其 SQL 同样写 updated_at 列——取值由
+        prepare 侧决定（现为导入时刻，entry_batch_writer 以 ``updated_at=now``
+        构造加密条目，涉及过期检测语义的判断在 prepare 侧而非本层 SQL）。
         """
         self._assert_entry_encrypted_fields(entry)
         # 签名载荷（MetadataSigner._payload）含 is_deleted/deleted_at/created_at，但

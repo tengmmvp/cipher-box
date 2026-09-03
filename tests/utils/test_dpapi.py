@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from src.utils.file_security import protect_with_dpapi, unprotect_with_dpapi
+from src.utils.dpapi import protect_with_dpapi, unprotect_with_dpapi
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="DPAPI 仅 Windows 可用")

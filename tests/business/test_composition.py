@@ -195,6 +195,43 @@ def test_build_business_context_allows_retry_after_failed_assembly(make_vault_en
         build_business_context(config, vault)
 
 
+def test_failed_assembly_leaves_no_orphan_callbacks(make_vault_env, monkeypatch):
+    """构造异常时回调零注册，重试后回调列表不翻倍（ARCH-057）。
+
+    原实现 register_on_transaction_committed 与 lock/epoch 回调夹杂在构造链
+    中间：链上构造抛异常时 vault 已永久持有孤儿回调，discard 重试再注册一套
+    （clear 幂等故无功能错误，但「失败回退无回调残留」的声明不变量为假）。
+    重排后构造段零注册。``_on_lock_callbacks`` /
+    ``_on_transaction_committed_callbacks`` 直读属装配不变量白盒守护
+    （MAINT-095 豁免）。
+    """
+    env = make_vault_env()
+    config, vault = env.config, env.vault
+    # make_vault_env 的 EntryManager 已注册 1 个 seam 回调，断言按增量计
+    tx_before = len(vault._on_transaction_committed_callbacks)
+    lock_before = len(vault._on_lock_callbacks)
+
+    from src.business import composition
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("装配中途失败")
+
+    # 构造链末段的 BackupRestoreManager 抛异常——修复前此刻 tx/lock 回调均已注册
+    monkeypatch.setattr(composition, "BackupRestoreManager", _boom)
+    with pytest.raises(RuntimeError, match="装配中途失败"):
+        build_business_context(config, vault)
+    # 失败路径零注册：两类回调列表均未增长（无孤儿残留）
+    assert len(vault._on_transaction_committed_callbacks) == tx_before
+    assert len(vault._on_lock_callbacks) == lock_before
+
+    # 重试成功后回调各注册一套，不翻倍
+    monkeypatch.undo()
+    ctx = build_business_context(config, vault)
+    assert ctx.vault is vault
+    assert len(vault._on_transaction_committed_callbacks) == tx_before + 1
+    assert len(vault._on_lock_callbacks) == lock_before + 3
+
+
 def test_build_vault_orchestrator_uses_vault_assembly(make_vault_env):
     """build_vault 装配的 orchestrator 与 vault 共享同一 db/signer 实例（ARCH-044）。
 

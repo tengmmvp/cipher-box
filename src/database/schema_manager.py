@@ -14,11 +14,35 @@ from .types import ConnectionProvider
 # 索引定义：CREATE INDEX 与 _validate_current_schema 的单一事实源，新增索引只需在此
 # 追加，建表与校验自动跟随，避免两份硬编码漂移。
 # tuple 形式：(索引名, 表名, 列定义, 是否 UNIQUE)
+#
+# PERF-095 索引再平衡（删 4 补 2，净 10→8，50k 库实测）：
+# - 删 idx_entries_favorite / idx_entries_updated / idx_entries_type /
+#   idx_entries_password_changed：前两者被复合索引前缀覆盖（收藏视图的
+#   ``is_deleted=0 AND is_favorite=1`` 恒走 idx_entries_active_favorite_updated
+#   两列等值、全部 updated_at 序恒走 idx_entries_active_updated，EXPLAIN 证实
+#   planner 从不选单列索引），后两者全库零谓词消费（entry_type /
+#   password_changed_at 无 WHERE 查询，过期检测在内存按解密值计算）——四者均为
+#   纯写放大（50k UPDATE 实测 5690→3460ms，−39%；empty_trash DELETE 141→74ms）。
+# - 保留 idx_entries_deleted（原候选删除项）：删除后 planner 对全表回表扫描形态
+#   （标签投影 / 分析扫描 / strength 序 filesort 的源扫描）改选复合索引前缀，
+#   回表行序从 rowid 序（近顺序 IO）变为复合键序（随机 IO），50k 实测标签投影
+#   74→228ms、分析扫描 243→382ms、strength tie-break 64→205ms；而保留它的额外
+#   写成本仅 ~1%（INSERT 50k 1991 vs 2018ms）。回收站视图（is_deleted=1）与
+#   empty_trash 本就不依赖它（planner 恒选复合索引的 is_deleted 前缀）。
+# - 补 idx_entries_active_created / idx_entries_active_category_updated（见下方
+#   各自注释）。
+# - 已知 planner 误选（记录不强改，与 PERF-091 批次「估算行为可接受」口径一致）：
+#   分类视图 + created_at 序会误选 idx_entries_active_created 全扫过滤（50k 实测
+#   24→50ms），而非走 idx_entries_active_category_updated 前缀定位 + filesort；
+#   属非默认排序 × 分类过滤的低频组合形态，绝对值可接受，加第四列索引的写放大
+#   不划算。
 _INDEX_DEFINITIONS: list[tuple[str, str, tuple[str, ...], bool]] = [
     ("idx_entries_category", "entries", ("category_id",), False),
+    # 单列 is_deleted 索引的现役价值不止等值过滤（回收站/计数形态 planner 恒选复合
+    # 索引的 is_deleted 前缀，PERF-095 实测）：它是全表回表扫描形态（标签投影/
+    # 分析扫描/无前缀匹配的 filesort 源扫描）唯一提供 rowid 有序访问的 is_deleted
+    # 索引——复合索引的键序使回表随机化（详见上方 PERF-095 注释），故再平衡中保留。
     ("idx_entries_deleted", "entries", ("is_deleted",), False),
-    ("idx_entries_favorite", "entries", ("is_favorite",), False),
-    ("idx_entries_updated", "entries", ("updated_at",), False),
     # 复合索引：服务 WHERE is_deleted=0 + ORDER BY updated_at DESC，单列索引无法同时
     # 覆盖过滤与排序，组合后让 SQLite 走索引扫描而非全表 + filesort。
     (
@@ -35,8 +59,32 @@ _INDEX_DEFINITIONS: list[tuple[str, str, tuple[str, ...], bool]] = [
         ("is_deleted", "is_favorite DESC", "updated_at DESC"),
         False,
     ),
-    ("idx_entries_type", "entries", ("entry_type",), False),
-    ("idx_entries_password_changed", "entries", ("password_changed_at",), False),
+    # PERF-095：created_at 排序 SQL 直连路径（PERF-090 纯单列序，无并列裁决键）的
+    # 复合索引，与 idx_entries_active_updated 同模式。原无对应索引时 planner 只能
+    # 走 is_deleted 过滤 + USE TEMP B-TREE FOR ORDER BY（50k 实测 68.8ms 全扫排序），
+    # 补后索引序直接满足 ``ORDER BY e.created_at DESC``（4.3ms，16×）——纯单列序与
+    # 本索引前缀完全匹配，不与 PERF-090 的「裁决键会破坏索引前缀」论证冲突。
+    # password_strength 序不补（审查结论：基数仅 0-4 并列极常见，索引收益有限）。
+    (
+        "idx_entries_active_created",
+        "entries",
+        ("is_deleted", "created_at DESC"),
+        False,
+    ),
+    # PERF-095：分类视图查询的复合索引——``WHERE is_deleted=0 AND category_id=?``
+    # 两列等值定位 + updated_at DESC 排序由同一索引前缀满足。原 planner 只能用
+    # (is_deleted) 前缀扫描全部未删除行过滤 category_id（50k 实测分类视图
+    # updated_at 序 42.0ms、分类+搜索 tie-break 窄投影 37.4ms），补后分别 3.9ms
+    # （10.7×）与 2.5ms（15×）；tie-break 形态（首键 updated_at）经本索引前缀
+    # 排序 + RIGHT PART OF ORDER BY 的并列裁决残余排序完成。与 PERF-091 的
+    # idx_entries_deleted_category 共存：后者两列即分类计数 GROUP BY 的覆盖索引
+    # （窄行免回表），本索引第三列的 updated_at 对分组形态是冗余宽度。
+    (
+        "idx_entries_active_category_updated",
+        "entries",
+        ("is_deleted", "category_id", "updated_at DESC"),
+        False,
+    ),
     # 分类计数覆盖索引（PERF-091）：get_category_entry_counts 的
     # ``WHERE is_deleted=0 AND category_id IS NOT NULL GROUP BY category_id``
     # 单一复合索引同时承担过滤与分组（两列连续覆盖谓词列与分组键，免回表免排序）
@@ -159,6 +207,34 @@ class SchemaManager:
         if not is_new_database:
             # 缓存 schema 验证：同一连接生命周期内仅验证一次
             if not self._mgr.schema_validated:
+                # 表结构校验先行：缺表/列篡改的库在此被清晰拒绝（SchemaError），
+                # 不进入下方的索引补建——否则缺表库的 CREATE INDEX 会抛裸
+                # sqlite 错误（no such table）而非既有的结构损坏文案。
+                self._validate_table_structure(cursor)
+                # 索引幂等补建（PERF-095）：索引是查询衍生物（不含数据语义，
+                # CREATE INDEX IF NOT EXISTS 幂等），表结构合法的既有库补齐
+                # _INDEX_DEFINITIONS 的缺失项——与「不做旧格式迁移」约定不冲突
+                # （表结构与 schema_format 标识均不变，属 schema 完善而非数据迁移），
+                # 否则索引演进（如 PERF-091/095 新增）会使既有库重开被
+                # _validate_current_schema 误报「索引结构损坏」，完好数据无从恢复。
+                existing_indexes = {
+                    row["name"]
+                    for row in cursor.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index'"
+                    ).fetchall()
+                }
+                missing = [
+                    (name, table, columns, is_unique)
+                    for name, table, columns, is_unique in _INDEX_DEFINITIONS
+                    if name not in existing_indexes
+                ]
+                for index_name, table, columns, is_unique in missing:
+                    cursor.execute(
+                        f"CREATE {'UNIQUE ' if is_unique else ''}INDEX IF NOT EXISTS "  # nosec B608 - 硬编码常量
+                        f"{index_name} ON {table}({', '.join(columns)})"
+                    )
+                if missing:
+                    self._auto_commit()
                 self._validate_current_schema(cursor)
                 self._mgr.schema_validated = True
             return
@@ -272,13 +348,13 @@ class SchemaManager:
         return False
 
     @staticmethod
-    def _validate_current_schema(cursor: sqlite3.Cursor) -> None:
-        """校验表结构、索引与外键与预期完全一致，不匹配则抛 :class:`SchemaError`。
+    @staticmethod
+    def _validate_table_structure(cursor: sqlite3.Cursor) -> None:
+        """校验全部表结构（列四元组）与预期一致，不符抛 :class:`SchemaError`。
 
-        比对内容：每列四元组（类型/notnull/pk/``dflt_value``，含默认值防篡改如
-        ``entry_type`` DEFAULT）、索引的列序与 UNIQUE 性、外键的 ``ON DELETE`` 动作。
-        任一不符抛 :class:`SchemaError`——本层拒绝打开不兼容/被篡改的库，**不做旧格式
-        迁移**（CLAUDE.md 约定），由调用方提示用户。
+        从 :meth:`_validate_current_schema` 拆出的表校验段（PERF-095 索引补建前置）：
+        缺表/列篡改的库在索引补建**之前**被清晰拒绝，避免补建的 CREATE INDEX
+        对缺表抛裸 sqlite 错误（``no such table``）掩盖真实病因。
         """
         for table, expected_columns in _TABLE_COLUMNS.items():
             # table 来自硬编码字典键，安全无注入风险；SQLite PRAGMA 不支持参数化，
@@ -291,6 +367,17 @@ class SchemaManager:
             }
             if columns != expected_columns:
                 raise SchemaError(f"数据库结构损坏或不是当前格式：{table}")
+
+    @staticmethod
+    def _validate_current_schema(cursor: sqlite3.Cursor) -> None:
+        """校验表结构、索引与外键与预期完全一致，不匹配则抛 :class:`SchemaError`。
+
+        比对内容：每列四元组（类型/notnull/pk/``dflt_value``，含默认值防篡改如
+        ``entry_type`` DEFAULT）、索引的列序与 UNIQUE 性、外键的 ``ON DELETE`` 动作。
+        任一不符抛 :class:`SchemaError`——本层拒绝打开不兼容/被篡改的库，**不做旧格式
+        迁移**（CLAUDE.md 约定），由调用方提示用户。
+        """
+        SchemaManager._validate_table_structure(cursor)
 
         for index_name, table, expected_index_columns, is_unique in _INDEX_DEFINITIONS:
             index_rows = cursor.execute(f"PRAGMA index_list({table})").fetchall()

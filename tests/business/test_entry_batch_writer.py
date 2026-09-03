@@ -480,27 +480,29 @@ class TestOverwriteTotpCacheInvalidation:
 
 class TestStalePreloadedSecretRejected:
     """SEC-063 b 层真实通道：解密时点 TOTP 域版本快照透传，旧 preloaded secret
-    不入缓存。
+    不入缓存且不再参与一次性显示。
 
     复刻审查确认的场景：导入覆盖 worker（evict → 写库 → 提交）后异步刷新恢复
     选中，详情面板持**解密于写库前**的旧 totp_secret 预热——修复前 get_state 的
     自采样取当前（已推进）版本，store 侧比对「自己采的 vs 微秒后的当前」恒等，
     守卫无效果，旧 secret 入缓存生成错误 2FA 码；修复后 data_version 从
     ``get_entry_with_epoch`` 读锁内同刻带出，「解密 → 预热」窗口内的失效使旧
-    secret 被拒收。
+    secret 被拒收，且 get_state 检测到拒收时丢弃 preloaded 改走 resolve（DB
+    重解密）——本次展示的验证码即来自新 secret（拒收出口修复）。
     """
 
     OLD_SECRET = "JBSWY3DPEHPK3PXP"
     NEW_SECRET = "KRSXG5CTMVRXEZLU"
 
     def test_stale_preloaded_rejected_after_overwrite_commit(self, entry_mgr, make_entry):
-        """「解密（旧 secret + 版本快照）→ 覆盖提交 → 预热」交错：旧 secret 不入缓存。"""
+        """「解密（旧 secret + 版本快照）→ 覆盖提交 → 预热」交错：旧 secret 拒收，
+        回退 resolve 取新值计算并预热。"""
         entry_id = entry_mgr.add_entry(
             make_entry(title="选中条目", password="P1!@#", totp_secret=self.OLD_SECRET)
         )
 
         # ---- GUI 线程：异步刷新恢复选中，get_entry_with_epoch 带出旧 secret 与
-        # 解密时点的版本快照（此后任何 TOTP 失效都会使其失配）----
+        # 解密时点的版本快照（此后任何本条目/整体失效都会使其失配）----
         read = entry_mgr.get_entry_with_epoch(entry_id)
         assert read.entry is not None and read.entry.totp_secret == self.OLD_SECRET
 
@@ -526,10 +528,12 @@ class TestStalePreloadedSecretRejected:
             data_epoch=read.data_epoch,
             data_version=read.data_version,
         )
-        assert state is not None  # 本次展示仍用 preloaded 值（不阻断 UI）
-        # 旧 secret 不得入缓存（版本快照失配被拒收；自采样形态在此交错下会放行）
-        assert entry_id not in entry_mgr.cache._totp_secret_cache
+        assert state is not None  # 验证码由回退 resolve 的新 secret 计算
+        # 旧 secret 被守卫拒收（版本/世代快照失配；自采样形态在此交错下会放行
+        # 旧值入缓存），回退 resolve 重解密后缓存即持新 secret——「被拒收的旧
+        # secret 仍参与一次性显示/复制」的出口已封死
+        assert entry_mgr.cache._totp_secret_cache.get(entry_id) == self.NEW_SECRET
 
-        # 下次定时器周期重解密 → 新 secret 生效
+        # 下次定时器周期命中缓存的新 secret
         assert entry_mgr.totp.generate_cached(entry_id) is not None
         assert entry_mgr.cache._totp_secret_cache.get(entry_id) == self.NEW_SECRET

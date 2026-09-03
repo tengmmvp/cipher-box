@@ -37,13 +37,10 @@ from ...exceptions import (
     PayloadTooLargeError,
     RestoreAbortedError,
 )
-from ...utils.file_security import (
-    atomic_write,
-    secure_directory,
-    validate_file_path,
-)
+from ...utils.file_security import atomic_write, secure_directory
 from ...utils.format import utc_now_iso
 from ...utils.memory import secure_zero_buffer
+from ...utils.path_validation import validate_file_path
 from ..services.backup.auto_backup_policy import (
     is_auto_backup_due,
     purge_expired_auto_backups,

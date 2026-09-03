@@ -228,13 +228,18 @@ class TestIrreversibleWorkerWaitNotify:
 
         tray.showMessage.assert_not_called()
 
-    def test_no_tray_falls_back_to_log_without_error(self, qapp, tmp_path, monkeypatch):
-        """托盘禁用（_tray=None）时不抛异常，退化为日志（锁定路径不因此阻断）。"""
+    def test_no_tray_falls_back_to_log_without_error(self, qapp, tmp_path, monkeypatch, caplog):
+        """托盘禁用（_tray=None）时退化为 info 日志，锁定路径不因此阻断。"""
+        import logging
+
         dialog = _busy_dialog(qapp, cancel_on_close=False)
         _patch_qapp(monkeypatch, [dialog])
         mw, _ctx = make_main_window(tmp_path)
 
-        mw._notify_irreversible_worker_wait()  # 不抛即通过
+        with caplog.at_level(logging.INFO, logger=_MW_MODULE):
+            mw._notify_irreversible_worker_wait()
+        # 记录断言（MAINT-111）：日志回退真实发生，区分「退化为日志」与「未做任何事」
+        assert any("不可中断" in r.message for r in caplog.records)
 
     def test_plain_dialog_only_never_notifies(self, qapp, tmp_path, monkeypatch):
         """非 WorkerBackedDialog 的普通 QDialog（无 worker 契约）不触发通知。"""

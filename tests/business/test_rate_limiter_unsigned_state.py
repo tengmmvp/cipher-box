@@ -40,7 +40,7 @@ def test_no_config_instance_does_not_persist_state(tmp_path):
     rl.record_failure()
     rl.record_failure()
 
-    assert rl._fail_count == 2  # 内存限流仍生效
+    assert rl.fail_count == 2  # 内存限流仍生效（公开观察面，MAINT-095）
     assert not state.exists()
     assert not (tmp_path / "login_rate_limit.json.sentinel").exists()
 
@@ -74,7 +74,7 @@ def test_degraded_session_next_session_treated_as_first_use(tmp_path):
     # 下次会话：仍无 config（密钥未恢复），状态缺失按首次使用
     recovered_like = RateLimiter(state)
     assert recovered_like.check() is None
-    assert recovered_like._fail_count == 0
+    assert recovered_like.fail_count == 0  # 公开观察面（MAINT-095）
 
 
 class TestSessionOnlyKeyDoesNotPersist:
@@ -104,16 +104,15 @@ class TestSessionOnlyKeyDoesNotPersist:
     def test_dpapi_failure_end_to_end_does_not_persist_state(self, tmp_path, monkeypatch):
         """端到端：模拟 protect 失败 → session_only 置位 → 状态不落盘、下次按首次使用。
 
-        经真实 ConfigManager + ConfigKeyStore 链路（monkeypatch sys.platform=win32 与
-        protect_with_dpapi 返回 None），跨平台可跑（Linux CI 同样覆盖 win32 分支，
-        参照 tests/config/test_config_integrity.py 的 TestDpapiProtectFailureFallback）。
+        经真实 ConfigManager + ConfigKeyStore 链路（monkeypatch cks.IS_WINDOWS=True
+        与 protect_with_dpapi 返回 None，平台打桩按 _platform docstring 约定 patch
+        消费方模块绑定），跨平台可跑（Linux CI 同样覆盖 win32 分支，参照
+        tests/config/test_config_integrity.py 的 TestDpapiProtectFailureFallback）。
         """
-        import sys
-
         import src.config_key_store as cks
         from tests.helpers import make_test_config
 
-        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(cks, "IS_WINDOWS", True)
         monkeypatch.setattr(cks, "protect_with_dpapi", lambda data: None)
 
         config = make_test_config(tmp_path)

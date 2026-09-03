@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 
 from ....config import CFG_BACKUP_DIRECTORY, ConfigManager
-from ....utils.file_security import validate_file_path
+from ....utils.path_validation import validate_file_path
 from ....utils.purge_files import secure_purge
 from .paths import BACKUPS_DIR_NAME, PRE_RESTORE_GLOB, SNAPSHOT_GLOB
 

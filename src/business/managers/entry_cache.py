@@ -18,10 +18,11 @@
 SEC-063 修复前的批量覆盖路径形态）。本约束经 SEC-063 统一失效 seam（任何
 ``epoch_guarded_transaction`` 提交后自动 clear_totp，接线见 composition）
 结构性兜底——写路径遗漏 per-site 失效不再静默留下旧 secret；但 seam 不覆盖
-非事务写（软删除/物理删除/清空回收站）与「写库 → 提交」间窗口，GUI 线程
-约束与 per-site 前置失效仍是必要纵深。
+非事务写（软删除/物理删除/清空回收站——经写后再清补齐，SEC-072）与
+「写库 → 提交」间窗口，GUI 线程约束与 per-site 前置失效仍是必要纵深。
 """
 
+import logging
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator
@@ -32,8 +33,14 @@ if TYPE_CHECKING:
     from ..managers.vault_manager import VaultManager
 
 from ...database.types import SearchRow
-from ...exceptions import DecryptionError, VaultKeyEpochMismatchError
+from ...exceptions import (
+    DecryptionError,
+    VaultIntegrityError,
+    VaultKeyEpochMismatchError,
+)
 from ...models import MAX_ENTRIES_LIMIT, parse_tag_list
+
+logger = logging.getLogger(__name__)
 
 # SearchMetadata（搜索摘要缓存条目类型）的 home 在 services 的视图解密域
 # （ARCH-053 迁移）：本模块经 managers→services 正向 import 引用。
@@ -42,6 +49,7 @@ from ..services.crypto_utils import (
     decrypt_field as _decrypt_field_impl,
     require_vault_key,
 )
+from ..services.entry_queries import ProjectionCacheKey
 from ..services.entry_view_decryption import SearchMetadata
 
 # 搜索摘要缓存容量上限：与条目数上限（MAX_ENTRIES_LIMIT）对齐，使大库
@@ -59,12 +67,11 @@ _MAX_SEARCH_METADATA_CACHE_SIZE = MAX_ENTRIES_LIMIT
 # （≤5k 条）单键 ~2MB；超限按 LRU 淘汰整键（行集整体失效，粒度即键）。
 _MAX_PROJECTION_CACHE_KEYS = 4
 
-# 投影缓存键（PERF-086）：(deleted_only, category_id, favorite_only, order_by,
-# order_desc)。order_by=None 表示 SQL 复合序（默认序），此时 order_desc 恒规范化
-# 为 True（复合序固定 is_favorite DESC, updated_at DESC，方向参数无意义），避免
-# 同义键重复占用缓存槽；非 None 时行集已按该白名单字段排好序，与无序行集不可
-# 混存同一键（消费方对行序敏感：排序下推分支依赖行序做提前终止）。
-ProjectionCacheKey = tuple[bool, int | None, bool, str | None, bool]
+# 投影缓存键类型（PERF-086）的 home 在 services/entry_queries（MAINT-116 随
+# 查询族迁移，ARCH-053 先例：唯一 services 消费方即键构造函数
+# services.entry_queries.projection_cache_key）——键维度语义与「复合序规范化
+# (None, True)」的注释随定义迁移，本模块经 managers→services 正向 import 引用
+# （见上方 import 块），不再本地定义别名。
 
 
 class SearchRowSource(Protocol):
@@ -222,6 +229,19 @@ class EntryCacheManager:
         # 条目写窗口内 TOTP secret 可能随变更，在飞的 TOTP 解密回写仍须被拒收。
         # 初始值与 _invalidate_version 同刻起步，两者各自单调即可（守卫只比对同域）。
         self._totp_invalidate_version: int = 0
+        # 单条 TOTP 失效的条目粒度水位（SEC-063 守卫粒度演进）：entry_id → 该条目
+        # 最近一次 pop_totp 完成后的 TOTP 域版本。store_totp 的版本拒收据此按
+        # 「本条目自快照后是否被失效过」判定——原守卫比对全局版本，TOTP→TOTP 条目
+        # 切换时 show_entry 对**上一条目**的 evict（pop）必然推进全局版本，使新条目
+        # 携带的解密时点快照恒失配、预热在最常见的 TOTP 条目间浏览场景被结构性
+        # 击穿（正确性无损，_refresh 走 resolve 兜底，仅预热免重解密失效）；改条目
+        # 粒度后其他条目的失效不再误伤本条目。内存语义见 _advance_totp_domain_global。
+        self._totp_invalidated_versions: dict[int, int] = {}
+        # 整体失效水位（SEC-063 守卫粒度演进）：最近一次 TOTP 域整体失效（clear_totp
+        # / _advance_global_invalidation 覆盖的 apply_change、invalidate_all 等全部
+        # 入口）完成后的 TOTP 域版本。store_totp 对「快照早于水位」的写入仍整体
+        # 拒收——条目写窗口内 TOTP secret 可能随变更，全局口径保持。
+        self._totp_global_invalidated_version: int = 0
         # 缓存锁：保护上述缓存及 _cache_epoch 的结构性读写，消除 TOTP 定时器线程
         # 与锁定 invalidate_all 并发时的竞态。锁内不调用数据库方法或变更回调。
         self._cache_lock = threading.RLock()
@@ -234,7 +254,22 @@ class EntryCacheManager:
         在飞的各域解密回写均基于旧数据，须全部拒收。
         """
         self._invalidate_version += 1
+        self._advance_totp_domain_global()
+
+    def _advance_totp_domain_global(self) -> None:
+        """TOTP 域整体失效的统一推进（调用方须持 ``_cache_lock``）。
+
+        推进 TOTP 域版本、前移整体失效水位并清空条目粒度记录（SEC-063 守卫粒度
+        演进）：快照早于水位的 store 由全局守卫整体拒收，粒度记录随整体失效一并
+        归零不损失防护——快照晚于水位的读取已基于失效后的库，失效前的单条 pop
+        记录对其无意义（该读取本身晚于失效，secret 已是新值）。记录的内存驻留以
+        「无写操作的连续浏览会话」为界（任何条目写路径都经 apply_change 触达本
+        方法清空），规模上界 = 会话内被 evict 的条目数（entry_id 键控，受条目数
+        上限封顶，且远小于摘要缓存的每条目 8 字段明文驻留量级）。
+        """
         self._totp_invalidate_version += 1
+        self._totp_global_invalidated_version = self._totp_invalidate_version
+        self._totp_invalidated_versions.clear()
 
     @property
     def _key(self) -> bytes:
@@ -663,10 +698,20 @@ class EntryCacheManager:
         改密 commit 与密钥激活的微秒窗口内裸读会用旧密钥解密新密文致 GCM 认证失败。
         单条解密锁内开销可忽略；epoch 不一致时返回 None，下次定时器周期重新解析。
 
+        条目元数据被篡改（QL-077）时优雅降级返回 None：``db.get_entry`` 默认 STRICT
+        验签抛 :class:`VaultIntegrityError`，此前直通 Qt 槽——TOTP 定时器每秒触发、
+        每次一条异常日志冲刷且条目 TOTP 静默停止。对齐 ARCH-005 对 epoch 失配的
+        优雅处理（返回 None，调用方停表/跳过；定时器随首个 None 即停，warning 每
+        轮展示至多一条，不刷屏），篡改的明细警示由列表路径（LENIENT 标记
+        integrity_error）承担，此处不重复验签。
+
         缓存回写带写入方世代守卫（SEC-044，镜像摘要缓存回写模式）：解密前在读守卫
-        锁内采样缓存世代与失效版本，回写前双重复查——解密完成（退出读守卫）到回写
+        锁内采样缓存世代与失效版本，回写前复查——解密完成（退出读守卫）到回写
         之间若恢复/锁定触发 ``invalidate_all`` 且新读路径重臂新世代，旧世代 secret
         不得写入新世代缓存（TOTP secret 是双因子凭证，跨世代驻留泄漏面更大）。
+        版本复查为两级水位判定（SEC-063 守卫粒度演进的 resolve 侧对齐，与
+        :meth:`store_totp` 同款）：仅**本条目**的 pop 或整体失效拒收，其他条目的
+        pop（如详情切换对上一条目的 evict）不再误拒本条目的回写。
         """
         if use_cache:
             with self._cache_lock:
@@ -694,16 +739,28 @@ class EntryCacheManager:
                 )
         except VaultKeyEpochMismatchError:
             return None
+        except VaultIntegrityError:
+            # QL-077：验签失败时 raw 不可得，日志定位符用 entry_id（同为非明文
+            # 定位符，对齐「只记 id 不记值」的脱敏纪律）。
+            logger.warning("TOTP 解析中止：条目 %d 元数据完整性校验失败", entry_id)
+            return None
         if not secret:
             return None
         if use_cache:
             with self._cache_lock:
-                # epoch + version 双重复查（SEC-044）：语义同 _cached_search_metadata_no_check
-                # （M4/SEC-041）——解密期间发生过任何整体失效（含恢复重臂新世代，两域
-                # 一并推进）或单条 TOTP 失效（pop_totp，仅本域），本次解密结果均不回写。
+                # epoch + 两级水位复查（SEC-044 的版本守卫经 SEC-063 守卫粒度演进，
+                # 与 store_totp 对齐）：epoch 失配（恢复/锁定重臂新世代）拒收；全局
+                # 失效水位高于采样版本（解密期间 clear_totp / 任意条目写路径）拒收；
+                # 本条目水位高于采样版本（解密期间本条目被 pop_totp，含导入覆盖
+                # prepare 的 evict）拒收。原守卫比对全局版本**精确相等**——任意
+                # 其他条目的 pop（如详情切换对上一条目的 evict）也推进全局版本，
+                # 使正在解密的本条目回写被误拒（免重解密目标在 resolve 侧部分失效，
+                # 与 store 侧修复前的自冲突同型）；改两级水位后其他条目的失效不再
+                # 误伤本条目，整体失效与本条目失效仍拒收。
                 if (
                     self._cache_epoch == entry_epoch
-                    and self._totp_invalidate_version == entry_version
+                    and self._totp_global_invalidated_version <= entry_version
+                    and self._totp_invalidated_versions.get(entry_id, 0) <= entry_version
                 ):
                     self._totp_secret_cache[entry_id] = secret
         return secret
@@ -715,12 +772,12 @@ class EntryCacheManager:
         主通道：``EntryManager.get_entry_with_epoch`` 在读锁内与 raw/key/epoch 同刻
         经此快照版本，随 preloaded_secret 沿预热链（detail_panel → TOTPWidget →
         TotpService.get_state）透传至 :meth:`store_totp` 的 ``data_version``——
-        「解密 → 预热落缓存」窗口内发生的任何 TOTP 失效（pop_totp/clear_totp 不改
-        epoch，如导入覆盖 prepare 阶段的 evict 与写事务提交后的统一失效 seam）据此
-        被拒收，镜像 :meth:`resolve_totp_secret` 的 SEC-044 回写守卫对 store 侧补齐
-        的缺口。``TotpService.get_state`` 在调用方未携带快照时的自采样仅是兜底——
-        只覆盖「get_state → store」的微秒窗口（见其 docstring），不构成本属性的
-        生产接线。
+        「解密 → 预热落缓存」窗口内发生的**本条目** TOTP 失效（pop_totp 不改
+        epoch，如导入覆盖 prepare 阶段的 evict）或整体失效（clear_totp / 任意条目
+        写路径，SEC-063 守卫按条目粒度拒收，其他条目的失效不误伤）据此被拒收，
+        镜像 :meth:`resolve_totp_secret` 的 SEC-044 回写守卫对 store 侧补齐的缺口。
+        ``TotpService.get_state`` 在调用方未携带快照时的自采样仅是兜底——只覆盖
+        「get_state → store」的微秒窗口（见其 docstring），不构成本属性的生产接线。
         """
         with self._cache_lock:
             return self._totp_invalidate_version
@@ -732,8 +789,13 @@ class EntryCacheManager:
         *,
         data_epoch: str | None = None,
         data_version: int | None = None,
-    ) -> None:
+    ) -> bool:
         """预热 TOTP secret 缓存（供 TotpService.get_state 首次展示后预热）。
+
+        Returns:
+            是否落缓存：False 为守卫拒收（secret 属「解密后库已变化」的旧值，
+            调用方据此丢弃 preloaded 改走 ``resolve_totp_secret`` 单一解密路径
+            重取，被拒收的旧 secret 不得参与一次性显示/复制）或空串归一跳过。
 
         空串归一：与 :meth:`resolve_totp_secret` 的 ``if not secret: return None`` 对齐——
         空串等价无 secret，不入缓存，避免空串落缓存后 use_cache 命中返回空串绕过归一。
@@ -745,22 +807,37 @@ class EntryCacheManager:
         secret 与缓存世代同线程同世代，无跨世代窗口）。
 
         ``data_version`` 为 TOTP 域版本快照复查（SEC-063，镜像 resolve_totp_secret
-        的 SEC-044 模式补 store 侧缺口）：调用方在解密 totp_secret 的时刻（读锁内
-        与 raw/key/epoch 同刻，经 ``get_entry_with_epoch`` 带出）快照、随 secret 一并
-        传入——「解密 → 预热」窗口内发生过任何 TOTP 失效（pop_totp/clear_totp 仅推进
-        本域、不动 epoch）时，本次 secret 属已被失效的旧值，拒收入缓存。未提供时不
-        比对版本（TotpService.get_state 的兜底自采样传入的是 store 前一刻的当前值，
-        守卫等价仅覆盖「get_state → store」微秒窗口；测试直调等既有调用方保持原
-        语义）。
+        的 SEC-044 模式补 store 侧缺口），拒收判定两级（守卫粒度按条目）：
+
+        - 整体失效：快照后发生过全局失效（clear_totp / 任意条目写路径的
+          apply_change / 锁定改密的 invalidate_all 等，经
+          ``_totp_global_invalidated_version`` 水位判定）——条目写窗口内 TOTP
+          secret 可能随变更，整体拒收；
+        - 单条失效（条目粒度）：仅当**本条目**自快照后被 pop_totp 失效过
+          （``_totp_invalidated_versions`` 的水位高于快照）才拒收。原守卫比对全局
+          版本：TOTP→TOTP 条目切换时 show_entry 对**上一条目**的 evict 必然推进
+          全局版本，新条目快照恒失配，预热在最常见浏览场景被结构性击穿（正确性
+          无损，仅免重解密失效）；改条目粒度后其他条目的失效不再误伤本条目，
+          被覆盖条目自身的旧 secret 仍拒收，快照晚于自身失效的重访读取照常落缓存。
+
+        未提供 data_version 时不比对版本（TotpService.get_state 的兜底自采样传入的
+        是 store 前一刻的当前值，守卫等价仅覆盖「get_state → store」微秒窗口；
+        测试直调等既有调用方保持原语义）。
         """
         if not secret:
-            return
+            return False
         with self._cache_lock:
             if data_epoch is not None and self._cache_epoch != data_epoch:
-                return
-            if data_version is not None and self._totp_invalidate_version != data_version:
-                return
+                return False
+            if data_version is not None:
+                # 整体失效水位（SEC-063）：快照早于最近一次全局失效 → 拒收。
+                if self._totp_global_invalidated_version > data_version:
+                    return False
+                # 单条失效水位（SEC-063 条目粒度）：仅本条目被失效过才拒收。
+                if self._totp_invalidated_versions.get(entry_id, 0) > data_version:
+                    return False
             self._totp_secret_cache[entry_id] = secret
+            return True
 
     def pop_totp(self, entry_id: int) -> None:
         """失效单条 TOTP secret 缓存（条目更新/删除修改 totp_secret，或离开条目时
@@ -771,6 +848,10 @@ class EntryCacheManager:
         只清 dict 不推进版本，守卫的 version 比对检测不到单条失效、防护名存实亡
         （当前主线程串行执行使竞态不可达，属线程模型巧合而非设计保证）。
 
+        同时记录条目粒度水位（SEC-063 守卫粒度演进）：``_totp_invalidated_versions
+        [entry_id]`` 置为失效完成后的版本——store_totp 据此只拒收「本条目在快照后
+        被失效过」的 secret，其他条目的 pop 不再拒收本条目（见该方法 docstring）。
+
         只推进 TOTP 域而不动主域 ``_invalidate_version``（QL-070 分域）：pop 的两个
         高频来源是条目写路径与 detail_panel 的 evict（离开条目即 pop，无任何 DB
         写）——单条 TOTP secret 失效不改变条目表行集/摘要/标签数据，推进主域会使
@@ -780,14 +861,17 @@ class EntryCacheManager:
         with self._cache_lock:
             self._totp_invalidate_version += 1
             self._totp_secret_cache.pop(entry_id, None)
+            self._totp_invalidated_versions[entry_id] = self._totp_invalidate_version
 
     def clear_totp(self) -> None:
-        """清空全部 TOTP secret 缓存（清空回收站）。
+        """清空全部 TOTP secret 缓存（清空回收站、写事务提交 seam）。
 
-        version 推进语义同 :meth:`pop_totp`（QL-070 分域：仅 TOTP 域）。
+        version 推进语义同 :meth:`pop_totp`（QL-070 分域：仅 TOTP 域），并经
+        :meth:`_advance_totp_domain_global` 前移整体失效水位、清空条目粒度记录
+        （SEC-063 守卫粒度演进，清空的安全性论证见该方法 docstring）。
         """
         with self._cache_lock:
-            self._totp_invalidate_version += 1
+            self._advance_totp_domain_global()
             self._totp_secret_cache.clear()
 
     def decrypt_tags_for_delta(

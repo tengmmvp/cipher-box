@@ -53,6 +53,26 @@ class TestConfigIntegrity:
 
         assert config2.check_integrity() is False
 
+    def test_non_ascii_signature_line_triggers_integrity_warning(self, config):
+        """签名行被改写为非 ASCII（SEC-071）→ 按「签名不符」告警，不被 TypeError 吞掉。
+
+        compare_digest 对非 ASCII str 抛 TypeError：修复前异常被 load 的外层 except
+        捕获走「配置文件无效用默认」，_integrity_warning 未置位，篡改的用户通知被
+        静默抑制。修复后镜像 rate_limiter 验签的 isascii 前置守卫，按 mismatch 走
+        既有告警链（对齐 QL-019/SEC-031 同型 bug 的回归面）。
+        """
+        config.save()
+        raw = config._config_path.read_text(encoding="utf-8")
+        json_text, _old_sig = raw.rsplit("\n", 1)
+        # 保留 JSON 主体与签名行前缀，仅把签名值改为非 ASCII（中文）
+        config._config_path.write_text(json_text + "\n#__sig__:被篡改的签名值", encoding="utf-8")
+
+        reloaded = make_test_config(config._data_dir)
+        reloaded.load()
+
+        assert reloaded.check_integrity() is False
+        assert reloaded.integrity_reason == "mismatch"
+
     def test_atomic_write_uses_tmp(self, config):
         """save() 使用随机后缀 .tmp 中间文件再 os.replace，完成后不残留。"""
         config.save()
@@ -240,11 +260,12 @@ class TestKeyringIntegrityKey:
         守护 SEC-003 核心收益——keyring 可用时签名密钥不写明文 config.key，
         使本地读权限者无法获取原始密钥重算签名。
         """
-        import sys
-
         import keyring as keyring_mod
 
-        monkeypatch.setattr(sys, "platform", "linux")
+        import src.config_key_store as cks
+
+        # 平台打桩按 _platform docstring 约定 patch 消费方模块的 IS_WINDOWS 绑定
+        monkeypatch.setattr(cks, "IS_WINDOWS", False)
         keyring_store: dict[tuple[str, str], str] = {}
         monkeypatch.setattr(
             keyring_mod, "set_password", lambda s, u, p: keyring_store.__setitem__((s, u), p)
@@ -262,16 +283,15 @@ class TestKeyringIntegrityKey:
 
         修复前的粘滞形态：keyring 故障期明文 config.key 落地，keyring 恢复后
         _load_keyring_integrity_key 只回读明文文件、永不回写——SEC-003 保护对该
-        安装持续失效。修复后启动即回迁：密钥写入 keyring + secure_delete 明文文件，
-        后续会话直接走 keyring。
+        安装持续失效。修复后启动即回迁：密钥写入 keyring + 清理明文文件（统一走
+        _purge_plaintext_key_residue chokepoint），后续会话直接走 keyring。
         """
-        import sys
-
         import keyring as keyring_mod
 
+        import src.config_key_store as cks
         from src.config_key_store import ConfigKeyStore
 
-        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(cks, "IS_WINDOWS", False)
         keyring_store: dict[tuple[str, str], str] = {}
         monkeypatch.setattr(keyring_mod, "get_password", lambda s, u: keyring_store.get((s, u)))
         monkeypatch.setattr(
@@ -302,13 +322,13 @@ class TestKeyringIntegrityKey:
         后重试回迁。
         """
         import logging
-        import sys
 
         import keyring as keyring_mod
 
+        import src.config_key_store as cks
         from src.config_key_store import ConfigKeyStore
 
-        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(cks, "IS_WINDOWS", False)
         monkeypatch.setattr(keyring_mod, "get_password", lambda s, u: None)
         monkeypatch.setattr(
             keyring_mod,
@@ -334,7 +354,7 @@ class TestKeyringIntegrityKey:
         形态不再被特殊接受，一律生成新密钥（旧签名随之失效，走完整性告警与敏感
         键回退），文件重新以 DPAPI 封装写入新密钥。
         """
-        from src.utils.file_security import unprotect_with_dpapi
+        from src.utils.dpapi import unprotect_with_dpapi
 
         cfg = make_test_config(tmp_path)  # 初始化生成 DPAPI 封装密钥
         key_path = cfg._integrity_key_path
@@ -355,9 +375,10 @@ class TestKeyringIntegrityKey:
 class TestDpapiProtectFailureFallback:
     """win32 下 DPAPI protect 失败的降级语义（SEC-055 回归守护）。
 
-    经 monkeypatch sys.platform 与 protect_with_dpapi 跨平台可跑（Linux CI 同样
-    覆盖 win32 分支逻辑；file_security 的 IS_WINDOWS 常量按真实平台取值，仅影响
-    权限加固方式，不影响本测试断言的写盘行为）。
+    经 monkeypatch cks.IS_WINDOWS 与 protect_with_dpapi 跨平台可跑（Linux CI
+    同样覆盖 win32 分支逻辑；平台打桩按 _platform docstring 约定 patch 消费方
+    模块的绑定；file_security 的 IS_WINDOWS 常量按真实平台取值，仅影响权限
+    加固方式，不影响本测试断言的写盘行为）。
     """
 
     def test_protect_failure_never_writes_plaintext_key_file(self, tmp_path, monkeypatch, caplog):
@@ -370,11 +391,10 @@ class TestDpapiProtectFailureFallback:
         的诚实路径。
         """
         import logging
-        import sys
 
         import src.config_key_store as cks
 
-        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(cks, "IS_WINDOWS", True)
         monkeypatch.setattr(cks, "protect_with_dpapi", lambda data: None)
         caplog.set_level(logging.CRITICAL, logger="src.config_key_store")
 
@@ -416,11 +436,10 @@ class TestKeyPersistenceWriteFailure:
     ):
         """win32：protect 成功但密钥文件写盘 OSError → 不崩、session_only、内存密钥可用。"""
         import logging
-        import sys
 
         import src.config_key_store as cks
 
-        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(cks, "IS_WINDOWS", True)
         monkeypatch.setattr(cks, "protect_with_dpapi", lambda data: b"dpapi:" + data)
         monkeypatch.setattr(cks, "atomic_write", _raise_oserror)
         caplog.set_level(logging.CRITICAL, logger="src.config_key_store")
@@ -438,13 +457,12 @@ class TestKeyPersistenceWriteFailure:
     ):
         """非 Windows：keyring 不可用回退明文，写盘同样 OSError → 同款降级不崩。"""
         import logging
-        import sys
 
         import keyring as keyring_mod
 
         import src.config_key_store as cks
 
-        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(cks, "IS_WINDOWS", False)
         # keyring 不可用（conftest 已全局禁用；显式置 None 记录确保走明文回退分支）
         monkeypatch.setattr(keyring_mod, "get_password", lambda s, u: None)
         monkeypatch.setattr(
@@ -477,20 +495,21 @@ class TestKeyPersistenceWriteFailure:
 
 
 class TestKeyringPlaintextResidueCleanup:
-    """keyring 命中时明文 config.key 残留的统一清理（SEC-067）。
+    """明文 config.key 残留的统一清理（SEC-067 命中分支 + SEC-070 新生成分支）。
 
-    两个残留面：a) keyring 记录损坏返回 None 走新生成，降级期明文文件遗留；
-    b) 回迁时 secure_delete 失败，下次启动 keyring 直接命中、旧分支不再进入。
-    修复后 keyring 命中（密钥有效）且明文文件存在时统一尝试 secure_delete_file
-    （幂等、失败 ERROR 不阻断），两个面一次闭合。
+    残留面：a) keyring 记录损坏返回 None 走新生成，降级期明文文件遗留——新生成
+    密钥成功写入 keyring 后本启动即清理（SEC-070）；b) 回迁时 secure_delete 失败，
+    下次启动 keyring 直接命中时补清理。两分支共用 _purge_plaintext_key_residue
+    （幂等、失败 ERROR 不阻断启动）。清理前置条件统一为「密钥已由平台安全存储
+    有效供应」——读取侧不先行销毁可能唯一有效的明文回退（SEC-067 修复点）。
     """
 
     def _linux_keyring_stub(self, monkeypatch, keyring_store):
-        import sys
-
         import keyring as keyring_mod
 
-        monkeypatch.setattr(sys, "platform", "linux")
+        import src.config_key_store as cks
+
+        monkeypatch.setattr(cks, "IS_WINDOWS", False)
         monkeypatch.setattr(keyring_mod, "get_password", lambda s, u: keyring_store.get((s, u)))
         monkeypatch.setattr(
             keyring_mod, "set_password", lambda s, u, p: keyring_store.__setitem__((s, u), p)
@@ -553,21 +572,46 @@ class TestKeyringPlaintextResidueCleanup:
         assert key2 == plaintext
         assert not (tmp_path / "config.key").exists()  # 上次失败的清理在此重试成功
 
-    def test_wrong_length_keyring_value_preserves_plaintext_fallback(self, tmp_path, monkeypatch):
-        """keyring 值可解码但长度错（SEC-067 修复）：明文回退文件保留。
+    def test_wrong_length_keyring_value_purges_after_regeneration(self, tmp_path, monkeypatch):
+        """keyring 值可解码但长度错（SEC-067 修复点）→ 新生成入 keyring 后本启动即清理。
 
         原实现先 secure_delete 明文文件再由 load_or_create 验长度——keyring 记录
-        损坏（可解码但非 32 字节）时会把可能唯一有效的明文回退密钥一并销毁，K1
-        签名链锁死在断裂态且无自愈路径。修复后长度校验先于清理：损坏记录按损坏
-        处理走新生成，明文文件保留（keyring 记录同时被新密钥覆写自愈，下次启动
-        命中有效密钥时才统一清理残留）。
+        损坏（可解码但非 32 字节）时会把可能唯一有效的明文回退密钥销毁在「新密钥
+        尚未持久化」之前。修复后长度校验先于清理：损坏记录按损坏处理走新生成；
+        新生成密钥成功写入 keyring 后旧明文回退已退役（新密钥生效、旧签名本就
+        失配告警并经下次保存自愈），本启动即统一清理残留（SEC-070），无需等下次
+        启动的 keyring 命中分支。
+
+        顺序见证（回归可观测，SEC-067/070 演进）：终态断言（明文文件不存在）在
+        正确序与「先删后验」的回归形态下收敛到同终态——回归不可观测。此处以
+        spy 记录 keyring 写入与 secure_delete 的调用顺序，锚定 delete 晚于
+        keyring 写入成功（回归形态 delete 先于写入，在此失败）。
         """
         import base64
 
+        import keyring as keyring_mod
+
+        import src.config_key_store as cks
         from src.config_key_store import ConfigKeyStore
 
         keyring_store: dict[tuple[str, str], str] = {}
         self._linux_keyring_stub(monkeypatch, keyring_store)
+        events: list[str] = []
+        real_set = keyring_mod.set_password
+        real_delete = cks.secure_delete_file
+
+        def _witness_set(service, user, password):
+            result = real_set(service, user, password)
+            events.append("keyring-write")
+            return result
+
+        def _witness_delete(path):
+            result = real_delete(path)
+            events.append("secure_delete")
+            return result
+
+        monkeypatch.setattr(keyring_mod, "set_password", _witness_set)
+        monkeypatch.setattr(cks, "secure_delete_file", _witness_delete)
 
         store = ConfigKeyStore(tmp_path / "config.key", tmp_path)
         # 明文回退文件持有有效密钥（可能是最后的有效回退）
@@ -584,9 +628,39 @@ class TestKeyringPlaintextResidueCleanup:
         assert len(key) == 32
         assert key != valid_plaintext
         assert key != b"\x01" * 31
-        # 明文回退文件未被销毁（SEC-067 修复点：清理前置条件是 keyring 命中有效密钥）
-        assert (tmp_path / "config.key").exists()
-        # keyring 记录已被新密钥覆写自愈：下次启动命中有效密钥、统一清理残留
+        # keyring 记录已被新密钥覆写自愈
         assert keyring_store[("CipherBox", store._keyring_entry_name())] == base64.b64encode(
             key
         ).decode("ascii")
+        # 新密钥已成功持久化到 keyring：明文残留本启动即清理（SEC-070）
+        assert not (tmp_path / "config.key").exists()
+        # 顺序见证：清理晚于 keyring 写入成功——「先删后验」的回归形态在此失败
+        assert "secure_delete" in events and "keyring-write" in events
+        assert events.index("secure_delete") > events.index("keyring-write")
+
+    def test_b64_corrupt_keyring_regenerate_cleans_plaintext_residue(self, tmp_path, monkeypatch):
+        """keyring 记录非法 base64（b64 解码失败分支）→ 新生成入 keyring → 残留清理。
+
+        SEC-070 的另一损坏形态：b64 解码失败同样 return None 走新生成，原实现
+        只在 keyring 命中有效密钥时清理明文残留，该路径的暴露面残留至下次启动。
+        """
+        import base64
+
+        from src.config_key_store import ConfigKeyStore
+
+        keyring_store: dict[tuple[str, str], str] = {}
+        self._linux_keyring_stub(monkeypatch, keyring_store)
+
+        store = ConfigKeyStore(tmp_path / "config.key", tmp_path)
+        store._write_integrity_key_file(b"\x66" * 32)  # 降级期遗留的明文残留
+        keyring_store[("CipherBox", store._keyring_entry_name())] = "!!!not base64!!!"
+
+        key = store.load_or_create()
+
+        assert len(key) == 32
+        # 新密钥已成功写入 keyring（平台安全存储就位，自愈覆写损坏记录）
+        assert keyring_store[("CipherBox", store._keyring_entry_name())] == base64.b64encode(
+            key
+        ).decode("ascii")
+        # 明文残留文件被清理（SEC-070）
+        assert not (tmp_path / "config.key").exists()

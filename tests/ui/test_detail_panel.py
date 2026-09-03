@@ -14,6 +14,8 @@
 的 ``qapp`` fixture。
 """
 
+from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -193,17 +195,30 @@ class TestForceRebuildEpochGuard:
     totp_secret 解密于旧世代——若恢复轮换恰发生在「初次解密后→force 重显前」，
     旧实现现时快照 ``key_epoch`` 会得到新世代而把旧 secret 植入新世代缓存；现
     复用初次展示时记录的世代，缓存守卫正确拒收。经真实 EntryCacheManager +
-    TotpService 验证行为语义（stub vault 仅提供可变 key_epoch）。
+    TotpService 验证行为语义（stub vault 提供可变 key_epoch 与最小读路径，
+    拒收后 get_state 回退 resolve 走「无条目」分支——见 _EpochVault 说明）。
     """
 
     _VALID_SECRET = "JBSWY3DPEHPK3PXP"
     _ENTRY_ID = 7
 
     class _EpochVault:
-        """提供可变 key_epoch 的最小 vault stub（恢复轮换即改字段值）。"""
+        """提供可变 key_epoch 与最小读路径的 vault stub（恢复轮换即改字段值）。
+
+        ``db.get_entry`` 恒返回 None：force 重建携带的旧 secret 被守卫拒收后，
+        get_state 回退 resolve 在 stub 上走「条目不存在」分支返回 None（生产
+        路径会 DB 重解密新值计算验证码）——被测的是拒收行为（旧值不落缓存），
+        不依赖回退取值。
+        """
 
         def __init__(self, epoch: str) -> None:
             self.key_epoch = epoch
+            self.db = SimpleNamespace(get_entry=lambda entry_id: None)
+
+        @staticmethod
+        @contextmanager
+        def epoch_guarded_read():
+            yield
 
     def _make_panel_with_real_totp(self, epoch: str):
         """组装真实缓存/TOTP 服务的面板与观察用缓存引用。"""
@@ -267,6 +282,8 @@ class TestForceRebuildEpochGuard:
             )
 
             assert self._ENTRY_ID not in cache._totp_secret_cache  # 旧 secret 被守卫拒收
+            # 拒收出口（SEC-063 演进）：preloaded 已弃用、get_state 回退 resolve，
+            # 在 stub 的「无条目」分支返回 None——TOTP 区域不构建、旧值不参与显示
         finally:
             self._teardown_panel(panel)
 
@@ -319,6 +336,8 @@ class TestForceRebuildEpochGuard:
             )
 
             assert self._ENTRY_ID not in cache._totp_secret_cache  # 版本守卫拒收
+            # 拒收出口（SEC-063 演进）：preloaded 已弃用、get_state 回退 resolve，
+            # 在 stub 的「无条目」分支返回 None——TOTP 区域不构建、旧值不参与显示
         finally:
             self._teardown_panel(panel)
 

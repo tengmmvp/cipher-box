@@ -9,6 +9,7 @@ import managers，由 ``EntryCacheManager`` 实现协议在构造时注入，守
 from typing import Protocol, TypedDict
 
 from ...crypto.totp import TOTPGenerator
+from ...exceptions import VaultLockedError
 
 
 class TotpState(TypedDict):
@@ -46,9 +47,9 @@ class TotpCacheProtocol(Protocol):
         *,
         data_epoch: str | None = None,
         data_version: int | None = None,
-    ) -> None:
+    ) -> bool:
         """预热 TOTP secret 缓存；提供 data_epoch/data_version 时按写入方世代与
-        TOTP 域版本复查后落缓存。"""
+        TOTP 域版本（条目粒度）复查后落缓存。返回是否落缓存（False 为拒收）。"""
         ...
 
     def pop_totp(self, entry_id: int) -> None:
@@ -124,19 +125,21 @@ class TotpService:
         data_version：preloaded_secret 解密时刻的 TOTP 域失效版本快照（SEC-063 b 层
         真实通道，由 ``EntryManager.get_entry_with_epoch`` 在读锁内与 secret 同刻带
         出，经 detail_panel / TOTPWidget 透传至此）。「解密 → 预热」窗口内发生过
-        任何 TOTP 失效（pop_totp/clear_totp——导入覆盖 prepare 的 evict、写事务提交
-        后的统一失效 seam 等）时，旧 secret 被 store_totp 的版本守卫拒收入缓存。
-        未提供时在此兜底自采样**当前**版本：仅覆盖「本方法调用 → store 落缓存」
-        的微秒窗口（自采样与 store 侧比对同源，「解密 → 本方法调用」窗口内的失效
-        检测不到），不能替代调用方快照——生产链路（detail_panel 预热）均应传入。
-        无 preloaded_secret 时忽略。
+        **本条目**的 TOTP 失效（pop_totp——导入覆盖 prepare 的 evict）或整体失效
+        （clear_totp / 任意条目写路径，守卫按条目粒度判定，其他条目的失效不误伤）
+        时，旧 secret 被 store_totp 的版本守卫拒收。拒收时 preloaded 即弃用：本
+        方法改走 ``_resolve_totp_secret``（DB 重解密，自带 SEC-044 回写守卫）取
+        新鲜值计算验证码并顺势重新预热——被拒收的旧 secret 不再参与一次性
+        显示/复制。未提供时在此兜底自采样**当前**版本：仅覆盖「本方法调用 →
+        store 落缓存」的微秒窗口（自采样与 store 侧比对同源，「解密 → 本方法
+        调用」窗口内的失效检测不到），不能替代调用方快照——生产链路
+        （detail_panel 预热）均应传入。无 preloaded_secret 时忽略。
 
         Returns:
             含 code/remaining/period 的字典；条目不存在或无 TOTP 密钥时返回 None。
         """
         self._cache.invalidate_if_epoch_changed()
         if preloaded_secret:
-            secret = preloaded_secret
             # SEC-063 兜底（非主通道）：调用方未携带解密时点快照时自采样当前 TOTP
             # 域版本，仅覆盖「本方法调用 → store 落缓存」窗口内并发的单条失效；
             # 「解密 → 本方法调用」窗口内的失效无法经自采样检测——主通道是
@@ -144,12 +147,35 @@ class TotpService:
             version = (
                 data_version if data_version is not None else self._cache.totp_invalidate_version
             )
-            self._cache.store_totp(
+            stored = self._cache.store_totp(
                 entry_id,
-                secret,
+                preloaded_secret,
                 data_epoch=data_epoch,
                 data_version=version,
             )
+            if stored:
+                secret = preloaded_secret
+            else:
+                # 拒收出口（SEC-063 演进，与安全 P3 合并修复）：被守卫拒收的
+                # preloaded 属「解密后库已变化」的旧值，旧出口仍以其计算验证码
+                # 参与一次性显示/复制；现丢弃改走 resolve 单一解密路径（DB 重解
+                # 密），用新鲜值计算并重新预热缓存。resolve 返回空（条目已删/
+                # 无 secret/篡改降级）时如实返回 None。
+                #
+                # 锁定交错守卫（QL-078）：「store 拒收 → resolve」窗口内发生锁定
+                # 时 require_vault_key 抛 VaultLockedError——get_state 由 Qt 槽
+                # （TOTPWidget._build）同步调用，未捕获异常在 PyQt6 槽内 qFatal；
+                # 旧 preloaded 分支（直接用 preloaded）无此异常面，系拒收回退
+                # 引入。返回 None 与 TOTPWidget 的 ``if not state: return`` 既有
+                # 处理一致。DecryptionError 不捕获：resolve 的解密为非 strict
+                # 容错模式（失败归空串），该异常不可达，捕获面按实际收窄。
+                try:
+                    resolved = self._resolve_totp_secret(entry_id, use_cache=True)
+                except VaultLockedError:
+                    return None
+                if not resolved:
+                    return None
+                secret = resolved
         else:
             # 用临时变量承接 str|None 并收窄后再赋给 secret，避免跨分支类型冲突。
             resolved = self._resolve_totp_secret(entry_id, use_cache=True)

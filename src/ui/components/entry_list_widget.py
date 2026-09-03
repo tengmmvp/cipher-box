@@ -71,7 +71,8 @@ class EntryListModel(QAbstractItemModel):
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
         return 0 if parent.isValid() else len(self._entries)
 
-    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: ARG002
+    # parent 未用：扁平列表无层级（Qt 重写签名固定）
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
         return 1
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
@@ -87,7 +88,8 @@ class EntryListModel(QAbstractItemModel):
             return QModelIndex()
         return self.createIndex(row, column)
 
-    def parent(self, child: QModelIndex) -> QModelIndex:  # type: ignore[override]  # noqa: ARG002
+    # child 未用：扁平模型无父子层级（Qt 重写签名固定）
+    def parent(self, child: QModelIndex) -> QModelIndex:  # type: ignore[override]
         return QModelIndex()
 
 
@@ -174,7 +176,8 @@ class EntryItemDelegate(QStyledItemDelegate):
         """
         return frozenset(self._color_cache)
 
-    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:  # noqa: ARG002
+    # index 未用：行高与具体条目无关（Qt 重写签名固定）
+    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:
         return QSize(option.rect.width(), self.ROW_HEIGHT)
 
     def paint(

@@ -356,9 +356,19 @@ class VaultManager:
         （SEC-063 统一失效 seam）：yield 块抛异常或 epoch 失配回滚时不触发。回调在
         db_lock 释放后执行（事务上下文退出即释放），不与读路径守卫的锁序
         （db_lock → cache 锁）反转。
+
+        **不支持嵌套**（``transaction(require_top_level=True)`` 入口拒绝，ARCH-058）：
+        嵌套调用时 ``transaction()`` 走 SAVEPOINT 分支——RELEASE 并非提交、db_lock
+        仍被外层持有，内层上下文退出即触发回调会使上述两承诺失真（未提交却触发、
+        锁未释放却执行）。当前全部调用点均为顶层事务，顶层断言把该前提从 docstring
+        约定升级为结构保证：违反时响亮失败优于静默漂移。
         """
         snapshot = self.key_epoch if pre_epoch is None else pre_epoch
-        with self.db.transaction():
+        # require_top_level（ARCH-058 演进）：顶层判定收敛进 db_manager.transaction
+        # 的同一 db_lock 临界区（分支选择与检查原子化），本层不再自查 in_transaction
+        # ——原先的「先取锁检查再释放、transaction() 再取锁」双锁往返与跨层等价
+        # 论证注释一并消除。
+        with self.db.transaction(require_top_level=True):
             if self.key_epoch != snapshot:
                 raise VaultKeyEpochMismatchError(f"{operation}期间检测到密钥变更，已中止并回滚")
             yield

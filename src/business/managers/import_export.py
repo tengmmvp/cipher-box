@@ -25,7 +25,8 @@ from ...exceptions import (
     ImportSizeError,
 )
 from ...models import MAX_CATEGORY_NAME, MAX_IMPORT_FILE_SIZE, Category, Entry, RawEntry
-from ...utils.file_security import atomic_write, validate_file_path
+from ...utils.file_security import atomic_write
+from ...utils.path_validation import validate_file_path
 from ..services.entry_batch_writer import (
     BatchUpdateItem,
     PreparedUpdate,
@@ -613,21 +614,28 @@ class ImportExportManager:
         # 纵深防御——加密已移出 db_lock（MAINT-004），复查确保「加密后→写入前」未发生改密。
         # 写入进度经分块上报 70%→100%（PERF-065，事务内分块不破坏原子性）；新增与
         # 覆盖写入合并计量（PERF-069）。
+        # 空批次跳过事务（SEC-063 演进，空事务不触发 seam）：全部条目被跳过/判重的
+        # 导入产出 enc_new 与 overwrite_prepared 双空（两个写入函数对空列表本就是
+        # no-op），无实际写入的空提交只会触发统一失效 seam 清空 TOTP 缓存并推进
+        # 全局水位（churn-only）；epoch 守卫防的是「加密后→写入前」窗口的旧密钥
+        # 密文落库，无写入即无落库风险，跳过事务语义等价。
         write_total = len(enc_new) + len(overwrite_prepared)
-        write_adapter = self._offset_phase_reporter(callbacks, _IMPORT_SEG.write, write_total)
-        with self._entry_mgr.epoch_guarded_transaction(operation="导入", pre_epoch=pre_epoch):
-            write_new_entries(
-                self._entry_mgr,
-                enc_new,
-                preserve=preserve,
-                progress=write_adapter(offset=0, sub_total=len(enc_new)),
-            )
-            overwrite_count = write_overwrite_updates(
-                self._entry_mgr,
-                overwrite_prepared,
-                pre_epoch,
-                progress=write_adapter(offset=len(enc_new), sub_total=len(overwrite_prepared)),
-            )
+        overwrite_count = 0
+        if write_total:
+            write_adapter = self._offset_phase_reporter(callbacks, _IMPORT_SEG.write, write_total)
+            with self._entry_mgr.epoch_guarded_transaction(operation="导入", pre_epoch=pre_epoch):
+                write_new_entries(
+                    self._entry_mgr,
+                    enc_new,
+                    preserve=preserve,
+                    progress=write_adapter(offset=0, sub_total=len(enc_new)),
+                )
+                overwrite_count = write_overwrite_updates(
+                    self._entry_mgr,
+                    overwrite_prepared,
+                    pre_epoch,
+                    progress=write_adapter(offset=len(enc_new), sub_total=len(overwrite_prepared)),
+                )
 
         # 终值上报即 write 段终点（== 总刻度，启动期校验保证）。
         _emit_milestone(callbacks, _IMPORT_PROGRESS_TOTAL)

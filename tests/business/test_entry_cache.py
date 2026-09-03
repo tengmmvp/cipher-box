@@ -381,6 +381,160 @@ class TestTotpSecretCache:
         assert secret == "JBSWY3DPEHPK3PXP"
         assert entry_id not in cache._totp_secret_cache
 
+    def test_resolve_writeback_survives_other_entry_pop(self, entry_mgr, cache, monkeypatch):
+        """resolve 回写守卫按条目粒度（SEC-063 守卫粒度演进的 resolve 侧对齐）。
+
+        时序：详情切换对**上一条目**的 evict（pop A，仅推进全局版本）与正在解密
+        的条目 B 的 TOTP 刷新交错——原守卫比对全局版本精确相等，A 的 pop 使 B 的
+        回写被误拒（V != V+1），「免重解密」目标在 resolve 侧部分失效（store 侧
+        修复前的自冲突同型）；改两级水位后 B 的回写照常落缓存，本条目自身的
+        pop / 整体失效仍拒收（见上下两个测试）。
+        """
+        entry_id = entry_mgr.add_entry(
+            Entry(title="B", username="u", password="p", totp_secret="JBSWY3DPEHPK3PXP")
+        )
+
+        real_decrypt = entry_cache_module._decrypt_field_impl
+        popped_other = {"done": False}
+
+        def _decrypt_then_pop_other(encrypted, key, crypto_id, field_name, *, strict=False):
+            value = real_decrypt(encrypted, key, crypto_id, field_name, strict=strict)
+            if not popped_other["done"] and field_name == "totp_secret":
+                popped_other["done"] = True
+                # 解密完成后、回写前：其他条目的 evict（仅推进全局版本）
+                cache.pop_totp(999)
+            return value
+
+        monkeypatch.setattr(entry_cache_module, "_decrypt_field_impl", _decrypt_then_pop_other)
+
+        secret = cache.resolve_totp_secret(entry_id, use_cache=True)
+
+        # 本条目未被失效：回写照常落缓存（不被其他条目的 pop 误拒）
+        assert secret == "JBSWY3DPEHPK3PXP"
+        assert cache._totp_secret_cache.get(entry_id) == "JBSWY3DPEHPK3PXP"
+
+    def test_soft_delete_reentry_window_rejected_by_post_write_repop(self, cache):
+        """软删重入窗口（SEC-072）：快照恰=前置 pop 水位的写入在写后再清后恒被拒收。
+
+        时序复刻 delete_entry 的并发交错（当前靠 GUI 线程串行不可达，ARCH-054
+        线程模型）：前置 pop(N) → 读者恰在 pop 后快照 data_version=N 并读到尚未
+        删除的活跃行 → 删除提交 → 写后再 pop(N+1) → 读者 store。仅有前置 pop 时
+        水位=N，store 复查 N > N 为 False 放行——软删条目的明文 secret 重入缓存；
+        写后再 pop 把水位推过 N，一切早于提交的快照自此恒拒收。
+        """
+        cache.invalidate_if_epoch_changed()
+        cache.pop_totp(11)  # delete_entry 的前置 pop（QL-070）
+        sampled = cache.totp_invalidate_version  # 读者恰在 pop 后的快照（=pop 水位）
+        cache.pop_totp(11)  # 写后 TOTP 再清（SEC-072）
+
+        stored = cache.store_totp(
+            11, "SECRET-SOFT-DELETED", data_epoch=cache.cache_epoch, data_version=sampled
+        )
+
+        assert stored is False
+        assert 11 not in cache._totp_secret_cache
+
+    def test_totp_to_totp_switch_preload_accepted(self, entry_mgr, cache):
+        """TOTP→TOTP 切换预热落缓存（SEC-063 守卫粒度修复的核心场景）。
+
+        时序复刻 do_select_entry 链路（真实 EntryCacheManager 复现的时序自冲突）：
+        get_entry_with_epoch 锁内快照版本 V → show_entry 的 _prepare_display 对
+        **上一条目** pop_totp（全局版本 → V+1）→ _render_totp_and_history 带旧
+        快照 V 预热新条目。原守卫比对全局版本恒失配，新条目 preloaded secret
+        永远进不了缓存（预热免重解密在最常见的 TOTP 条目间浏览场景被结构性
+        击穿）；改条目粒度后其他条目的失效不再拒收本条目。
+        """
+        entry_mgr.add_entry(Entry(title="T", username="u", password="p"))
+        cache.invalidate_if_epoch_changed()
+        sampled = cache.totp_invalidate_version  # 新条目的解密时点快照
+        cache.pop_totp(99)  # 离开上一条目的 evict：仅推进全局版本，与本条目无关
+
+        stored = cache.store_totp(
+            11, "SECRET-NEW", data_epoch=cache.cache_epoch, data_version=sampled
+        )
+
+        assert stored is True
+        assert cache._totp_secret_cache.get(11) == "SECRET-NEW"
+
+    def test_revisit_after_own_pop_accepted(self, cache):
+        """A→B→A 往返重访：快照晚于自身失效的预热照常落缓存（单条版本水位）。
+
+        pop 记录「该条目失效完成后的版本」：重访读取（快照 ≥ 水位）本身晚于
+        失效、secret 已是新值，须放行——纯 set 记录「曾被失效过」会把 A 的
+        历史失效误判到重访预热上，退回全局版本比对的自冲突形态。
+        """
+        cache.invalidate_if_epoch_changed()
+        cache.pop_totp(11)  # A→B 切换时对 A 的 evict
+        sampled = cache.totp_invalidate_version  # B→A 重访快照（晚于 A 的失效）
+        cache.pop_totp(12)  # 离开 B 的 evict（全局版本再推进）
+
+        stored = cache.store_totp(
+            11, "SECRET-A2", data_epoch=cache.cache_epoch, data_version=sampled
+        )
+
+        assert stored is True
+        assert cache._totp_secret_cache.get(11) == "SECRET-A2"
+
+    def test_own_pop_after_snapshot_still_rejected(self, cache):
+        """被失效条目自身的旧 secret 仍拒收：快照后才失效（导入覆盖 evict 时序）。"""
+        cache.invalidate_if_epoch_changed()
+        sampled = cache.totp_invalidate_version
+        cache.pop_totp(11)  # 快照后本条目被失效
+
+        stored = cache.store_totp(
+            11, "SECRET-OLD", data_epoch=cache.cache_epoch, data_version=sampled
+        )
+
+        assert stored is False
+        assert 11 not in cache._totp_secret_cache
+
+    def test_global_invalidation_after_snapshot_still_rejected(self, cache):
+        """整体失效仍整体拒收（SEC-063 全局口径保持）：任意条目写路径后旧快照失配。"""
+        cache.invalidate_if_epoch_changed()
+        sampled = cache.totp_invalidate_version
+        cache.apply_change(crypto_id="other-entry")  # 整体失效：版本推进 + 水位前移
+
+        stored = cache.store_totp(
+            11, "SECRET-OLD", data_epoch=cache.cache_epoch, data_version=sampled
+        )
+
+        assert stored is False
+        assert 11 not in cache._totp_secret_cache
+        # 整体失效同时清空条目粒度记录（内存驻留以「无写操作的浏览会话」为界）
+        assert cache._totp_invalidated_versions == {}
+
+    def test_store_totp_empty_secret_returns_false(self, cache):
+        """空串归一跳过返回 False（与 resolve 的空串归一口径对齐）。"""
+        assert cache.store_totp(1, "") is False
+        assert 1 not in cache._totp_secret_cache
+
+    def test_resolve_totp_tampered_entry_returns_none(self, entry_mgr, cache, caplog):
+        """元数据被篡改的条目 TOTP 解析优雅降级返回 None，不抛 VaultIntegrityError
+        （QL-077）。
+
+        db.get_entry 默认 STRICT 验签，篡改（改入签元数据不重签）直通抛
+        VaultIntegrityError——此前直达 Qt 槽，TOTP 定时器每秒触发一条异常日志
+        冲刷且条目 TOTP 静默停止；现对齐 ARCH-005 的优雅处理返回 None（定时器
+        随首个 None 停表），单次 warning 记定位符不刷屏。
+        """
+        import logging
+
+        entry_id = entry_mgr.add_entry(
+            Entry(title="T", username="u", password="p", totp_secret="JBSWY3DPEHPK3PXP")
+        )
+        conn = entry_mgr.db._conn
+        assert conn is not None
+        conn.execute("UPDATE entries SET is_favorite = 1 - is_favorite WHERE id=?", (entry_id,))
+        conn.commit()
+
+        with caplog.at_level(logging.WARNING, logger="src.business.managers.entry_cache"):
+            secret = cache.resolve_totp_secret(entry_id, use_cache=True)
+
+        assert secret is None
+        assert entry_id not in cache._totp_secret_cache
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1  # 单次 warning，不随定时器刷屏
+
 
 class TestGetAllTagsBackfillGuard:
     """get_all_tags 回填的 epoch+version 双守卫（QL-069）。"""

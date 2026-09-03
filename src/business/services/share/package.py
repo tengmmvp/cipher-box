@@ -25,9 +25,10 @@ from ....crypto.encryption import EncryptionEngine
 from ....crypto.master_key import DEFAULT_KDF_PARAMS
 from ....exceptions import PayloadTooLargeError, ShareError
 from ....models import Entry
-from ....utils.file_security import atomic_write, validate_file_path
+from ....utils.file_security import atomic_write
 from ....utils.format import utc_now_iso
 from ....utils.memory import secure_zero_buffer
+from ....utils.path_validation import validate_file_path
 from ..password_service import PasswordService
 from ..url_hygiene import sanitize_url_scheme
 from .header_codec import (

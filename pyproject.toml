@@ -99,7 +99,8 @@ ignore = ["UP046", "UP047"]
 "src/ui/components/widgets.py" = ["PERF203"]
 "src/ui/controllers/entry_refresh_coordinator.py" = ["PERF203"]
 "src/utils/purge_files.py" = ["PERF203"]
-"src/utils/file_security.py" = ["S603"]
+# whoami/icacls 子进程回退链随 MAINT-117 拆分自 file_security 迁入 win_acl。
+"src/utils/win_acl.py" = ["S603"]
 # tests 全目录豁免测试固有形态（MAINT-083，随 S/PERF 启用新增）：S101 assert 是测试
 # 本职；S105/S106/S107 测试固件密码（_MASTER_PASSWORD 等假凭据）；S108 测试临时目录
 # 路径；S110 测试容错吞异常；S603/S607 测试内受控 subprocess（node 解密器驱动、

@@ -67,8 +67,11 @@ def test_add_entry_converts_crypto_id_conflict_to_database_error(db):
 
 
 def test_update_entries_batch_noop_on_empty(db):
-    """空列表短路：不执行 SQL、不抛异常（改密重加密无变更条目的边界）。"""
-    db.update_entries_batch([])  # 不应抛异常
+    """空列表短路：不抛异常且既有行不受影响（改密重加密无变更条目的边界）。"""
+    entry_id = db.add_entry(_make_entry(title="Solo"))
+    db.update_entries_batch([])
+    # 记录断言（MAINT-111）：断言既有行不变，区分「真 no-op」与「清空/误写后未察觉」
+    assert [e.id for e in db.get_entries(EntryQuery())] == [entry_id]
 
 
 def test_get_entries_by_ids_returns_empty_for_empty_input(db):

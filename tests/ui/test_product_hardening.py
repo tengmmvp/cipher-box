@@ -326,7 +326,14 @@ def test_existing_vault_cannot_be_initialized_again(make_vault_env):
 
 
 def test_entry_metadata_tampering_is_rejected(make_vault_env):
-    """直接篡改加密字段的元数据 MAC 校验失败被拒。"""
+    """直接篡改加密字段的元数据 MAC 校验失败被检出并以完整性标记浮出。
+
+    详情读路径 LENIENT 化（QL-077 演进）：篡改不抛异常直入 Qt 选择槽（被全局
+    钩子吞掉致详情静默空白），而是返回带 ``integrity_error`` 标记的条目——篡改
+    字段解密失败归空（篡改值不被静默信任），标记由 detail_panel 渲染完整性警示
+    并禁用编辑/共享，与列表路径一致。db 层 STRICT 契约（直接调用抛
+    VaultIntegrityError）由 test_lenient_verify 守护。
+    """
     env = make_vault_env(master_password="MasterPassword!2026")
     root = env.root
     vault = env.vault
@@ -341,12 +348,11 @@ def test_entry_metadata_tampering_is_rejected(make_vault_env):
     connection.commit()
     connection.close()
 
-    try:
-        manager.get_entry(entry_id)
-    except RuntimeError as exc:
-        assert "元数据完整性校验失败" in str(exc)
-    else:
-        raise AssertionError("被篡改的元数据不应被读取")
+    entry = manager.get_entry(entry_id)  # 不抛：异常曾直入 Qt 选择槽被吞
+
+    assert entry is not None
+    assert entry.integrity_error is True  # 篡改被检出并以标记浮出
+    assert entry.title != "Tampered"  # 篡改值不被静默信任（解密失败归空）
 
 
 def test_entry_metadata_is_resigned_after_master_password_change(make_vault_env):
@@ -399,21 +405,26 @@ def test_initialize_system_error_raises_vault_error(monkeypatch, make_vault_env)
 
 
 def test_nested_transaction_uses_savepoint_for_inner_rollback(make_vault_env):
-    """嵌套事务用 savepoint 实现内层独立回滚（外层提交保留）。"""
+    """嵌套事务用 savepoint 实现内层独立回滚（外层提交保留）。
+
+    载荷用 db 层 set_meta 而非 entry_mgr 写方法（ARCH-058）：add_entry 等业务写
+    经 epoch_guarded_transaction，其入口守卫拒绝事务内嵌套调用（外层事务内调用
+    会使 seam「提交后触发 + 锁释放后执行」承诺失真）。本测试的 Subject 是 db 层
+    SAVEPOINT 语义，db 层写入载荷即可忠实覆盖。
+    """
     env = make_vault_env(master_password="MasterPassword!2026")
-    root = env.root
     vault = env.vault
-    manager = env.entry_mgr
     with vault.db.transaction():
-        manager.add_entry(Entry(title="Outer", password="OuterSecret!2026"))
+        vault.db.set_meta("sp_test_outer", "kept")
         try:
             with vault.db.transaction():
-                manager.add_entry(Entry(title="Inner", password="InnerSecret!2026"))
+                vault.db.set_meta("sp_test_inner", "rolled-back")
                 raise RuntimeError("rollback inner")
         except RuntimeError:
             pass
 
-    assert [entry.title for entry in decrypt_all_entries(manager)] == ["Outer"]
+    assert vault.db.get_meta("sp_test_outer") == "kept"
+    assert vault.db.get_meta("sp_test_inner") is None
 
 
 def test_pre_restore_snapshot_purged_on_master_password_change(tmp_path, make_vault_env):

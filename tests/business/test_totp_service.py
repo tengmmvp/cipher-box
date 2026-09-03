@@ -26,15 +26,34 @@ def _make_service() -> tuple[TotpService, MagicMock]:
 
 
 def _make_service_with_real_cache(epoch: str) -> tuple[TotpService, "EntryCacheManager"]:
-    """构造 TotpService + 真实 EntryCacheManager（stub vault 仅提供 key_epoch）。
+    """构造 TotpService + 真实 EntryCacheManager（stub vault 提供最小读路径）。
 
     供写入方世代（SEC-054）与 TOTP 域版本快照（SEC-063）守卫测试共用：拒收
     「旧世代/旧版本值不落缓存」的行为语义须真实缓存才能断言，MagicMock 只能
-    断言委托调用。
+    断言委托调用。stub 的 ``db.get_entry`` 恒返回 None——preloaded 被守卫拒收后
+    get_state 回退 resolve 在 stub 上走「条目不存在」分支返回 None，被测的是
+    拒收行为（旧值不落缓存），不依赖回退取值。
     """
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
     from src.business.managers.entry_cache import EntryCacheManager
 
-    vault = type("StubVault", (), {"key_epoch": epoch})()
+    @contextmanager
+    def _stub_guarded_read():
+        yield
+
+    vault = type(
+        "StubVault",
+        (),
+        {
+            "key_epoch": epoch,
+            # staticmethod 防 type() 类字典中的普通函数被绑定为方法（绑定时实例
+            # 会被作为首参传入 _stub_guarded_read 的 *args 转发链致 TypeError）。
+            "epoch_guarded_read": staticmethod(_stub_guarded_read),
+            "db": SimpleNamespace(get_entry=lambda entry_id: None),
+        },
+    )()
     cache = EntryCacheManager(vault)  # type: ignore[arg-type]
     return TotpService(cache), cache
 
@@ -160,7 +179,7 @@ class TestGetState:
 class TestPreloadedEpochGuard:
     """preloaded 路径的写入方世代守卫（SEC-054，补 SEC-044 的 preloaded 漏点）。
 
-    经真实 EntryCacheManager（stub vault 仅提供 key_epoch）验证行为语义：
+    经真实 EntryCacheManager（stub vault 提供最小读路径）验证行为语义：
     「secret 解密于恢复前世代、预热晚于恢复重臂新世代」时旧世代 secret
     不落新世代缓存；同世代写入正常落缓存。
     """
@@ -171,10 +190,12 @@ class TestPreloadedEpochGuard:
         cache.invalidate_if_epoch_changed()  # 模拟恢复后新读路径重臂缓存世代
         assert cache.cache_epoch == "epoch-new"  # 公开观察面（MAINT-095）
 
-        # secret 解密于恢复前世代（epoch-old），恢复提交后预热：写入被拒
+        # secret 解密于恢复前世代（epoch-old），恢复提交后预热：写入被拒，
+        # preloaded 弃用（拒收出口，SEC-063 演进）——回退 resolve 在 stub 的
+        # 「无条目」分支返回 None（生产路径会 DB 重解密新值计算验证码）
         state = svc.get_state(11, preloaded_secret=_VALID_SECRET, data_epoch="epoch-old")
 
-        assert state is not None  # 本次展示仍用 preloaded 值（不阻断 UI）
+        assert state is None
         assert 11 not in cache._totp_secret_cache  # 但不得污染新世代缓存
 
     def test_current_epoch_preloaded_write_is_stored(self):
@@ -189,11 +210,13 @@ class TestPreloadedEpochGuard:
 
 
 class TestPreloadedVersionGuard:
-    """preloaded 路径的 TOTP 域版本快照守卫（SEC-063，镜像 SEC-044 补 store 侧缺口）。
+    """preloaded 路径的 TOTP 域版本快照守卫（SEC-063，镜像 SEC-044 补 store 侧缺口，
+    守卫粒度按条目）。
 
-    场景：secret 解密时刻采样版本 → 窗口内单条 TOTP 失效（pop_totp，如导入覆盖
-    prepare 阶段 worker 线程的 evict）→ store 携旧快照到达——旧 secret 属已被
-    失效的值，拒收入缓存（epoch 守卫检测不到该失效：pop 不改世代）。
+    场景：secret 解密时刻采样版本 → 窗口内**本条目** TOTP 失效（pop_totp，如
+    导入覆盖 prepare 阶段 worker 线程的 evict）或整体失效 → store 携旧快照到达
+    ——旧 secret 属已被失效的值，拒收入缓存（epoch 守卫检测不到该失效：pop 不改
+    世代）。守卫按条目粒度判定：其他条目的 evict（TOTP→TOTP 切换）不误伤本条目。
     """
 
     def test_stale_version_preloaded_write_is_rejected(self):
@@ -213,7 +236,8 @@ class TestPreloadedVersionGuard:
             data_version=sampled_version,
         )
 
-        assert state is not None  # 本次展示仍用 preloaded 值（不阻断 UI）
+        # 拒收后 preloaded 弃用，回退 resolve 在 stub 的「无条目」分支返回 None
+        assert state is None
         assert 11 not in cache._totp_secret_cache  # 旧值不得回写缓存
 
     def test_current_version_preloaded_write_is_stored(self):
@@ -232,6 +256,67 @@ class TestPreloadedVersionGuard:
         assert state is not None
         assert cache._totp_secret_cache.get(12) == _VALID_SECRET
 
+    def test_totp_to_totp_switch_preload_accepted(self):
+        """TOTP→TOTP 切换：对上一条目的 evict 不再拒收新条目的预热（SEC-063 守卫
+        粒度修复的核心场景）。
+
+        时序复刻 do_select_entry 链路：get_entry_with_epoch 锁内快照版本 →
+        show_entry 的 _prepare_display 对**上一条目** pop_totp（全局版本推进）→
+        _render_totp_and_history 带快照预热新条目。原守卫比对全局版本恒失配
+        （时序自冲突），新条目 preloaded secret 永远进不了缓存；改条目粒度后
+        正常落缓存，_refresh 定时器全程命中免重解密。
+        """
+        svc, cache = _make_service_with_real_cache("epoch-stable")
+        cache.invalidate_if_epoch_changed()
+        sampled_version = cache.totp_invalidate_version
+        cache.pop_totp(99)  # 离开上一条目的 evict（与条目 11 无关）
+
+        state = svc.get_state(
+            11,
+            preloaded_secret=_VALID_SECRET,
+            data_epoch="epoch-stable",
+            data_version=sampled_version,
+        )
+
+        assert state is not None
+        assert cache._totp_secret_cache.get(11) == _VALID_SECRET
+
+    def test_revisit_after_own_pop_accepted(self):
+        """A→B→A 往返重访：快照晚于自身失效的预热被接受（单条版本水位语义）。"""
+        svc, cache = _make_service_with_real_cache("epoch-stable")
+        cache.invalidate_if_epoch_changed()
+        cache.pop_totp(11)  # A→B 切换时对 A 的 evict
+        sampled_version = cache.totp_invalidate_version  # B→A 重访快照（晚于 A 的失效）
+        cache.pop_totp(12)  # 离开 B 的 evict（全局版本再推进）
+
+        state = svc.get_state(
+            11,
+            preloaded_secret=_VALID_SECRET,
+            data_epoch="epoch-stable",
+            data_version=sampled_version,
+        )
+
+        assert state is not None
+        assert cache._totp_secret_cache.get(11) == _VALID_SECRET
+
+    def test_global_invalidation_after_snapshot_still_rejected(self):
+        """整体失效（任意条目写路径）后的旧快照仍被整体拒收（全局口径保持）。"""
+        svc, cache = _make_service_with_real_cache("epoch-stable")
+        cache.invalidate_if_epoch_changed()
+        sampled_version = cache.totp_invalidate_version
+        cache.apply_change(crypto_id="other-entry")  # 整体失效：版本推进 + 水位前移
+
+        state = svc.get_state(
+            11,
+            preloaded_secret=_VALID_SECRET,
+            data_epoch="epoch-stable",
+            data_version=sampled_version,
+        )
+
+        # 拒收 + 回退 resolve（stub 无条目）→ None；旧值不得回写缓存
+        assert state is None
+        assert 11 not in cache._totp_secret_cache
+
     def test_store_without_version_falls_back_to_self_sampling(self):
         """未提供 data_version 时兜底自采样：仅覆盖 get_state→store 微秒窗口。
 
@@ -248,6 +333,66 @@ class TestPreloadedVersionGuard:
 
         assert state is not None
         assert cache._totp_secret_cache.get(13) == _VALID_SECRET
+
+
+class TestPreloadedRejectedFallsBackToResolve:
+    """拒收出口（SEC-063 演进，与安全 P3 合并修复）：被守卫拒收的 preloaded
+    丢弃，改走 resolve 单一解密路径（DB 重解密）计算验证码——修复「被拒收的
+    旧 secret 仍参与一次性显示/复制」的出口。"""
+
+    _FRESH_SECRET = "KRSXG5CTMVRXEZLU"  # 回退 resolve 取到的新值
+
+    def test_rejected_preloaded_re_resolves_fresh_secret(self):
+        """拒收后回退 resolve：验证码由新 secret 计算，resolve 走 use_cache=True。"""
+        from src.crypto.totp import TOTPGenerator
+
+        svc, cache = _make_service()
+        cache.store_totp.return_value = False
+        cache.resolve_totp_secret.return_value = self._FRESH_SECRET
+
+        state = svc.get_state(9, preloaded_secret=_VALID_SECRET, data_epoch="e", data_version=3)
+
+        assert state is not None
+        assert state["code"] == TOTPGenerator.generate(self._FRESH_SECRET)
+        cache.resolve_totp_secret.assert_called_once_with(9, use_cache=True)
+
+    def test_rejected_preloaded_returns_none_when_resolve_empty(self):
+        """回退 resolve 无值（条目已删/无 secret/篡改降级）时如实返回 None。"""
+        svc, cache = _make_service()
+        cache.store_totp.return_value = False
+        cache.resolve_totp_secret.return_value = None
+
+        state = svc.get_state(9, preloaded_secret=_VALID_SECRET, data_epoch="e", data_version=3)
+
+        assert state is None
+
+    def test_rejected_preloaded_lock_during_fallback_returns_none(self):
+        """锁定交错：store 拒收后回退 resolve 抛 VaultLockedError → 返回 None（QL-078）。
+
+        「store 拒收 → resolve」窗口内发生锁定时 require_vault_key 抛
+        VaultLockedError——get_state 由 Qt 槽（TOTPWidget._build）同步调用，未捕获
+        异常在 PyQt6 槽内 qFatal；旧 preloaded 分支（直接用 preloaded）无此异常
+        面，系拒收回退引入。返回 None 与 TOTPWidget 的既有空值处理一致。
+        """
+        from src.exceptions import VaultLockedError
+
+        svc, cache = _make_service()
+        cache.store_totp.return_value = False
+        cache.resolve_totp_secret.side_effect = VaultLockedError("保险库未解锁")
+
+        state = svc.get_state(9, preloaded_secret=_VALID_SECRET, data_epoch="e", data_version=3)
+
+        assert state is None
+
+    def test_accepted_preloaded_skips_resolve(self):
+        """对照：store 成功（正常路径）不触发回退，保留预热免重解密收益。"""
+        svc, cache = _make_service()
+        cache.store_totp.return_value = True
+
+        state = svc.get_state(9, preloaded_secret=_VALID_SECRET)
+
+        assert state is not None
+        cache.resolve_totp_secret.assert_not_called()
 
 
 class TestEvictAndRemaining:

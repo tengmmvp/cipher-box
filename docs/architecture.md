@@ -29,13 +29,17 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
     改密/恢复在其 `vault_write_lock` 下串行化；经薄委托调用 `VaultLifecycleOrchestrator`。
   - `VaultLifecycleOrchestrator`：保险库生命周期编排（初始化/解锁/锁定/改密/关闭），
     使调用方（app/login/dialog/test）无需感知编排层。
-  - `EntryManager`：条目 CRUD，透明加解密；经 property 暴露子服务 `categories`
+  - `EntryManager`：条目 CRUD 写路径（加密、epoch 守卫事务、变更通知与缓存失效
+    差分），公开查询方法薄委托 `EntryQueryService`（查询读族 MAINT-116 下沉
+    services/entry_queries）；经 property 暴露子服务 `categories`
     （`CategoryManager`）/ `totp`（`TotpService`）/ `password_history`
     （`PasswordHistoryService`）。
   - `CategoryManager`：分类的加密 CRUD、名称唯一性与缓存失效编排；组合根显式
     创建并注入 EntryManager（MAINT-015），经其 `categories` property 暴露。
   - `EntryCacheManager`：摘要/分类名/标签/TOTP secret/搜索投影行集多级缓存
-    （LRU + epoch 失效）。
+    （LRU + epoch 失效）。任何写事务成功提交后经 `VaultManager` 的统一失效
+    seam 自动清空 TOTP secret 缓存（SEC-063），写路径遗漏 per-site 失效不再
+    静默留下旧 secret。
   - `EntryChangeBus`：统一「变更→缓存失效→回调」管线，支持 crypto_id 单条精细失效。
   - `ImportExportManager`：CSV/JSON/浏览器导入导出，格式解析拆分至 `managers/importers/`
     策略类（JSON/CSV/KeePass/Bitwarden 各一）；导入写入由 `_import_entries` 把加密移出
@@ -57,9 +61,14 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
     `validate_progress_segments` 供三组加权刻度段表共用（MAINT-112））、
     `entry_search_match`（列表搜索与标签过滤的匹配谓词纯函数，UI 过滤与
     EntryManager 搜索热路径共用）、`entry_sorting`（条目排序键提取器纯函数，
-    UI 重排序与 EntryManager 内存排序共用单一事实源，MAINT-104 迁出 managers）、
+    EntryManager 内存排序的单一事实源——唯一生产消费方（QL-074 删除 UI
+    sort_entries 后），MAINT-104 迁出 managers）、
     `entry_view_decryption`（视图构造原语
     `copy_entry_fields`/`build_entry_summary` + `EntryViewDecryptor` 三视图解密）、
+    `entry_queries`（查询读服务 `EntryQueryService`：详情/列表摘要/近期更新/导入
+    去重/导出读取的锁内外编排与投影缓存键构造，从 EntryManager 下沉，MAINT-116；
+    vault 经 TYPE_CHECKING 具体类锚定 ARCH-039，cache 经 `QueryCacheProtocol`
+    协议注入，view_decryptor 注入宿主共享实例）、
     `entry_type_schema`（5 种条目类型的字段 schema 注册表单一事实源，供
     entry_dialog / custom_fields_renderer / import_export 等消费）。
   - 完整性与重加密：`metadata_signer`（HMAC 签名）、`re_encryption`（改密全量重加密）、

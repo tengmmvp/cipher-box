@@ -204,7 +204,7 @@ class DatabaseManager:
         return self._conn is not None
 
     @contextmanager
-    def transaction(self) -> Iterator[None]:
+    def transaction(self, *, require_top_level: bool = False) -> Iterator[None]:
         """事务上下文；嵌套事务使用 SAVEPOINT 独立回滚。
 
         线程安全契约：
@@ -215,10 +215,24 @@ class DatabaseManager:
           优先于改密/导入期间 UI 读响应性。
         - RLock 可重入，事务内嵌套 @_db_operation 可正常重入；调用方无需自行
           保证无并发写同一表，本方法持锁强制写串行化。
+
+        require_top_level（ARCH-058）：True 时已处事务内则抛 :class:`TransactionError`。
+        「本层是否顶层」的真相就在本方法的分支选择处——检查与分支选择在同一
+        db_lock 临界区内原子完成（ARCH-058 演进：原由调用方 VaultManager 先取
+        db_lock 自查 in_transaction 再释放、transaction() 再取锁，每次写事务双锁
+        往返且跨层维护一段等价论证）。事务全程持 db_lock，故持锁期间 depth>0
+        只可能是同线程重入（跨线程事务在其 db_lock 释放时 depth 已归零）：同线程
+        嵌套被本参数拒绝，跨线程排队等待后照常顶层执行。
         """
         if self._conn is None:
             raise DatabaseError("数据库未连接")
         with self._lock:
+            if require_top_level and self.in_transaction:
+                raise TransactionError(
+                    "本事务要求顶层执行（require_top_level），但当前已处于事务内："
+                    "嵌套进入会走 SAVEPOINT 分支（RELEASE 非提交），使依赖顶层提交"
+                    "语义的调用方失真（ARCH-058）。请在事务边界外调用。"
+                )
             if not self.in_transaction:
                 self.begin_transaction()
                 try:

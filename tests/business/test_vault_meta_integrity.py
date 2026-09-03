@@ -62,3 +62,26 @@ class TestVaultMetaIntegrity:
         vault2 = make_vault_env(root=root, initialize=False).vault
         with pytest.raises(VaultIntegrityError):
             vault2.unlock("TestPassword123!")
+
+    def test_non_ascii_meta_mac_rejected_as_integrity_error(self, make_vault_env, tmp_path):
+        """vault_meta_mac 被改写为非 ASCII → unlock 抛 VaultIntegrityError（SEC-071）。
+
+        裸 compare_digest 对非 ASCII str 抛 TypeError，落入 unlock 的 generic
+        except 被包装为 VaultError——篡改被误分类为「系统错误」（不计速率、终译
+        走系统错误文案），完整性告警语义被稀释；共享常量时间比较器短路 False，
+        使其走既有「校验失败」→ VaultIntegrityError（清零密钥 + lock 后如实上报）。
+        """
+        root = tmp_path / "vault"
+        env = make_vault_env(root=root)
+        conn = env.vault.db._conn
+        assert conn is not None
+        conn.execute(
+            "UPDATE vault_meta SET value=? WHERE key='vault_meta_mac'",
+            ("被篡改的非ASCII签名",),
+        )
+        conn.commit()
+        env.vault.close()
+
+        vault2 = make_vault_env(root=root, initialize=False).vault
+        with pytest.raises(VaultIntegrityError):
+            vault2.unlock("TestPassword123!")

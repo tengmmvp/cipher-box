@@ -7,6 +7,7 @@ import json
 from ...exceptions import VaultIntegrityError, VaultLockedError
 from ...models import Category, RawEntry
 from ...utils.memory import secure_zero_buffer
+from ...utils.secure_compare import constant_time_mac_equals
 from . import vault_meta_keys
 
 # 域分离 info 标签：条目/分类元数据与 vault_meta 完整性各自派生独立域密钥，
@@ -140,7 +141,12 @@ class MetadataSigner:
         if not entry.metadata_mac:
             raise VaultIntegrityError(f"条目 {entry.id} 缺少元数据完整性签名")
         expected = self.sign(entry)
-        if not hmac.compare_digest(entry.metadata_mac, expected):
+        # 经共享常量时间比较器（SEC-071）：非 ASCII metadata_mac 篡改短路 False，
+        # 落入「验签失败」的既有语义——db 层 _row_to_entry 的 STRICT 抛
+        # VaultIntegrityError / LENIENT 标记 integrity_error；裸 compare_digest
+        # 对非 ASCII str 抛 TypeError，会逃出调用方 except VaultIntegrityError
+        # 的捕获面（篡改条目每读必崩、TOTP 定时器每秒冲刷异常日志）。
+        if not constant_time_mac_equals(entry.metadata_mac, expected):
             raise VaultIntegrityError(f"条目 {entry.id} 元数据完整性校验失败")
 
     def sign_category(self, category: Category) -> str:
@@ -189,7 +195,8 @@ class MetadataSigner:
         if not category.metadata_mac:
             raise VaultIntegrityError(f"分类 {category.id} 缺少元数据完整性签名")
         expected = self.sign_category(category)
-        if not hmac.compare_digest(category.metadata_mac, expected):
+        # 非 ASCII 分类签名同款短路处理（SEC-071，理由见 verify）。
+        if not constant_time_mac_equals(category.metadata_mac, expected):
             raise VaultIntegrityError(f"分类 {category.id} 元数据完整性校验失败")
 
     @staticmethod

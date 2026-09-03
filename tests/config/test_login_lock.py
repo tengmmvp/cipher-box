@@ -34,6 +34,8 @@ class TestLoginLockPersistence:
         lock_file = tmp_path / "login_lock.json"
         config = make_test_config(tmp_path)
         limiter = RateLimiter(lock_file, config)
+        # 写播种直改内部态（MAINT-095 注入点豁免）：公开 API 无「预设已过期锁定」
+        # 形态（record_failure 只能制造未到期锁定），此处专注验证到期恢复路径。
         limiter._fail_count = 5
         limiter._lock_until = time.monotonic() - 10
         limiter._save_state()
@@ -43,7 +45,7 @@ class TestLoginLockPersistence:
         # 退避保留：到期后 fail_count 保留以使后续失败爬升退避档位，
         # 仅 lock_until 清零解除锁定。
         assert restarted._lock_until == 0.0
-        assert restarted._fail_count == 5
+        assert restarted.fail_count == 5  # 公开观察面（MAINT-095）
 
     def test_lock_state_survives_simulated_restart(self, tmp_path):
         """未触发锁定的失败计数经重启后保留（fail_count 持久化的最小情形）。"""
@@ -54,7 +56,7 @@ class TestLoginLockPersistence:
         limiter.record_failure()
 
         restarted = RateLimiter(lock_file, config)
-        assert restarted._fail_count == 2
+        assert restarted.fail_count == 2  # 公开观察面（MAINT-095）
 
     def test_corrupt_state_fails_closed(self, tmp_path):
         """状态文件损坏时锁定而非重置（fail-closed），抵抗破坏状态文件绕过限流。"""

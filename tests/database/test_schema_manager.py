@@ -139,7 +139,7 @@ class TestColumnTamperDetection:
 
 
 class TestQueryPlanIndexPushdown:
-    """热路径查询计划守护（PERF-090/091）：ORDER BY/GROUP BY 不得退化为 TEMP B-TREE。
+    """热路径查询计划守护（PERF-090/091/095）：ORDER BY/GROUP BY 不得退化为 TEMP B-TREE。
 
     SQL 经生产构造路径（``EntryRepository._entry_query_clauses``）拼出，计划断言
     锚定「索引序直接满足排序/分组」：一旦 ORDER BY 子句形态或索引定义漂移使计划
@@ -180,24 +180,69 @@ class TestQueryPlanIndexPushdown:
     def _plan_details(conn, sql: str, params: list) -> list[str]:
         return [str(row[-1]) for row in conn.execute("EXPLAIN QUERY PLAN " + sql, params)]
 
-    @pytest.mark.parametrize("limit", [100, 1000])
-    def test_updated_at_order_uses_index(self, db_with_entries, limit):
-        """updated_at DESC LIMIT 的两个调用点：索引序下推，无 TEMP B-TREE（PERF-090）。
+    @pytest.mark.parametrize(
+        ("order_by", "expected_index"),
+        [
+            ("updated_at", "idx_entries_active_updated"),
+            ("created_at", "idx_entries_active_created"),
+        ],
+    )
+    def test_field_order_uses_index(self, db_with_entries, order_by, expected_index):
+        """字段序 SQL 直连路径：索引序下推，无 TEMP B-TREE（PERF-090/095）。
 
         PERF-087 曾无条件在排序列后追加并列裁决键，使 ORDER BY 不再是
         idx_entries_active_updated 的索引前缀、退化为 filesort（50k 库实测
-        81.2ms vs 索引序 0.6ms，且该路径在 UI 线程同步执行）。两个 limit 常量
-        锚定两个真实调用点（近期更新视图 100 / 主列表字段序 1000）；limit 不
-        参与断言，parametrize 仅为两个调用点各留一档守护。
+        81.2ms vs 索引序 0.6ms，且该路径在 UI 线程同步执行）。created_at 序为
+        PERF-095 补的 idx_entries_active_created：原无对应索引时走 is_deleted
+        过滤 + USE TEMP B-TREE FOR ORDER BY（50k 实测 68.8ms 全扫排序），补后
+        索引前缀直接满足纯单列序（4.3ms，16×）。两个 limit 常量锚定两个真实
+        调用点（近期更新视图 100 / 主列表字段序 1000）；limit 不参与断言，
+        parametrize 仅为两个调用点各留一档守护。
+        """
+        for limit in (100, 1000):
+            sql, params = EntryRepository._entry_query_clauses(
+                EntryQuery(order_by=order_by, limit=limit)
+            )
+            details = self._plan_details(
+                db_with_entries.connection, _SELECT_ENTRY_WITH_CATEGORY_SQL + sql, params
+            )
+            assert any(expected_index in d for d in details)
+            assert not any("TEMP B-TREE" in d for d in details)
+
+    def test_category_view_point_query_uses_index(self, db_with_entries):
+        """分类视图点查：两列等值 + updated_at 序走三列复合索引（PERF-095）。
+
+        原 planner 仅能用 (is_deleted) 前缀扫描全部未删除行过滤 category_id
+        （50k 实测分类视图 updated_at 序 42.0ms、分类+搜索 tie-break 窄投影
+        37.4ms），补 idx_entries_active_category_updated 后前缀同时满足过滤与
+        排序（3.9ms / 2.5ms）。默认复合序（is_favorite 优先）分支 planner 仍
+        选 idx_entries_active_favorite_updated 全扫属估算行为（现状可接受），
+        不在守护范围。
         """
         sql, params = EntryRepository._entry_query_clauses(
-            EntryQuery(order_by="updated_at", limit=limit)
+            EntryQuery(category_id=2, order_by="updated_at", limit=1000)
         )
         details = self._plan_details(
             db_with_entries.connection, _SELECT_ENTRY_WITH_CATEGORY_SQL + sql, params
         )
-        assert any("idx_entries_active_updated" in d for d in details)
+        assert any("idx_entries_active_category_updated" in d for d in details)
         assert not any("TEMP B-TREE" in d for d in details)
+
+    def test_category_entry_count_uses_covering_index(self, db_with_entries):
+        """单分类计数：走 (is_deleted, category_id) 覆盖索引（PERF-095 守护）。
+
+        SQL 与 CategoryRepository.get_category_entry_count 同文（该处内联 SQL，
+        此处以注释锚定同步义务）。计数形态由 PERF-091 的两列覆盖索引与 PERF-095
+        三列索引共享前两列前缀服务（planner 实测选更窄的两列索引），断言两者
+        任一的非全扫计划，防索引再平衡漂移使其退化为全表扫描。
+        """
+        sql = "SELECT COUNT(*) FROM entries WHERE category_id=? AND is_deleted=0"
+        details = self._plan_details(db_with_entries.connection, sql, [2])
+        assert any(
+            ("idx_entries_deleted_category" in d or "idx_entries_active_category_updated" in d)
+            and "COVERING INDEX" in d
+            for d in details
+        )
 
     def test_main_list_default_compound_order_uses_index(self, db_with_entries):
         """主列表默认复合序（is_favorite DESC, updated_at DESC）：PERF-011 索引守护。"""
@@ -222,3 +267,43 @@ class TestQueryPlanIndexPushdown:
         details = self._plan_details(db_with_entries.connection, sql, [])
         assert any("idx_entries_deleted_category" in d and "COVERING INDEX" in d for d in details)
         assert not any("TEMP B-TREE" in d for d in details)
+
+
+class TestExistingDatabaseIndexBackfill:
+    """既有库索引幂等补建（PERF-095）：索引演进不使既有库重开被误报「损坏」。
+
+    索引是查询衍生物（不含数据语义），既有库启动时对 _INDEX_DEFINITIONS 缺失项
+    补建 IF NOT EXISTS——schema_format 与表结构不变，属 schema 完善而非旧格式迁移。
+    """
+
+    def test_existing_db_with_missing_new_index_opens_after_backfill(self, tmp_path):
+        """缺新索引（模拟索引演进前的既有库）→ 重开自动补建并验证通过，不抛 SchemaError。"""
+        from src.database.db_manager import DatabaseManager
+
+        db_path = tmp_path / "vault.db"
+        first = DatabaseManager(db_path, test_mode=True)
+        first.open()
+        first.init_tables()
+        try:
+            # 模拟「索引演进前的既有库」：正常建库后删除本轮新增索引之一
+            conn = first.connection
+            conn.execute("DROP INDEX idx_entries_active_created")
+            first.auto_commit()
+        finally:
+            first.close()
+
+        # 修复前：init_tables 的验证直接抛 SchemaError（索引结构损坏）
+        second = DatabaseManager(db_path, test_mode=True)
+        second.open()
+        second.init_tables()  # 幂等补建 + 验证通过
+        try:
+            names = {
+                row["name"]
+                for row in second.connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                ).fetchall()
+            }
+            assert "idx_entries_active_created" in names  # 已被幂等补建
+        finally:
+            second.close()
+            second.close()

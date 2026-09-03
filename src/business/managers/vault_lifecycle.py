@@ -34,6 +34,7 @@ from ...exceptions import (
     VaultLockedError,
 )
 from ...utils.memory import secure_zero_buffer
+from ...utils.secure_compare import constant_time_mac_equals
 from ..services.backup.purge import purge_snapshot_backups
 from ..services.crypto_utils import encrypt_plaintext_category_names
 from ..services.error_messages import to_user_message
@@ -209,7 +210,12 @@ class VaultLifecycleOrchestrator:
             if not stored_meta_mac:
                 raise VaultIntegrityError("保险库元数据完整性签名缺失")
             expected_meta_mac = MetadataSigner.compute_vault_meta_mac(meta, key)
-            if not hmac.compare_digest(stored_meta_mac, expected_meta_mac):
+            # 经共享常量时间比较器（SEC-071）：非 ASCII 的 vault_meta_mac 篡改短路
+            # False，走「校验失败」→ VaultIntegrityError（经 except CipherBoxError
+            # 清零密钥 + lock 后如实上报）；裸 compare_digest 对非 ASCII str 抛
+            # TypeError，会落入下方 generic except 被包装为 VaultError——篡改被
+            # 误分类为系统错误，完整性告警语义被稀释。
+            if not constant_time_mac_equals(stored_meta_mac, expected_meta_mac):
                 raise VaultIntegrityError("保险库元数据完整性校验失败，可能已被篡改")
             self._vault.load_snapshot_key(meta.get("snapshot_key_enc"))
             # 全部密钥材料就位后再标记解锁，缩小「主密钥已写入但 snapshot_key 尚未
@@ -260,7 +266,13 @@ class VaultLifecycleOrchestrator:
             with self._vault.vault_write_lock():
                 self._vault.clear_vault_state()
         finally:
-            # 复位取消事件，避免残留影响后续改密
+            # 复位取消事件，避免残留影响后续改密。已知竞态（ARCH-059，登记不根治）：
+            # lock()/close()/change_master_password 三路径共用同一 Event，各自
+            # 「取写锁前 set → finally clear」——A 路径 finally 的 clear 可能抹掉并发
+            # B 路径刚 set 的取消请求（B 将等满在飞分析全程而非检查点间隔）。单用户
+            # 桌面应用的 lock/close/改密均由 GUI 线程顺序触发，该交错实际不可达、无
+            # 正确性影响；如需根治须改「代次计数」（set 递增代次、消费方比对快照
+            # 代次），对不可达路径的侵入不值，登记备查。
             self._vault.cancel_event.clear()
         # 完整 GC 已在 clear_vault_state 内同步执行（PERF-084 已撤销：GC 移入后台
         # 线程会破坏 Qt 线程亲和——gc 可能 finalize 引用循环中的无父 QObject，
@@ -284,6 +296,8 @@ class VaultLifecycleOrchestrator:
             except Exception:
                 logger.warning("关闭数据库连接失败", exc_info=True)
             self._vault.cancel_event.clear()
+            # 跨路径 clear 竞态（lock/close/change_master_password 共用同一 Event）
+            # 已在 lock() 的 ARCH-059 登记处集中说明，此处同面。
 
     def change_master_password(
         self,
@@ -316,7 +330,7 @@ class VaultLifecycleOrchestrator:
         finally:
             # 兜底清事件：_re_encrypt_all 自身的 finally 已清（正常/异常均覆盖），
             # 此处兜「认证失败/策略异常等未进入重加密」的路径；与 lock() 的 finally
-            # 同款模式，幂等无害。
+            # 同款模式，幂等无害。跨路径 clear 竞态见 lock() 的 ARCH-059 登记处。
             self._vault.cancel_event.clear()
 
     def _change_master_password_locked(

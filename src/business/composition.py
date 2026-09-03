@@ -106,10 +106,11 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
       构造并注入保持替换间隙一致（测试替身/重配置单一改动点，呼应 MAINT-015 的
       必传签名强制）。
     - **宿主内部构造**：纯变换/共享缓存的无状态子服务——TotpService /
-      PasswordHistoryService / EntryViewDecryptor（均无自有缓存或失效状态）。由
-      EntryManager 内部构造并与其共用同一 EntryCacheManager 实例：无独立替换需求，
-      单实例共享缓存避免多份缓存副本漂移（视图解密复用摘要缓存的前提，
-      MAINT-021）。
+      PasswordHistoryService / EntryViewDecryptor / EntryQueryService（均无自有缓存
+      或失效状态）。由 EntryManager 内部构造并与其共用同一 EntryCacheManager
+      实例：无独立替换需求，单实例共享缓存避免多份缓存副本漂移（视图解密复用
+      摘要缓存的前提，MAINT-021；查询读族共享投影行集/摘要缓存与同一解密器，
+      MAINT-116）。
 
     锁定与备份恢复（密钥轮换）失效 entry 缓存，条目变更失效安全分析缓存；两类
     事件经独立回调通道触发（ARCH-003），详见下方注册处注释。
@@ -136,11 +137,11 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
         )
     _assembled_vaults.add(vault)
     try:
+        # 构造段（ARCH-057）：全部 manager 先构造、回调注册统一后置到构造全部成功
+        # 之后——原实现 register_on_transaction_committed 与 lock/epoch 回调夹杂在
+        # 构造链中间，链上构造抛异常时 vault 已永久持有孤儿回调（clear 幂等故无
+        # 功能错误，但「失败回退无回调残留」的声明不变量为假，重试会再注册一套）。
         cache = EntryCacheManager(vault)
-        # 写事务统一失效 seam（SEC-063 结构性根治）：任何 epoch_guarded_transaction
-        # 提交后自动清空 TOTP secret 缓存——写路径不再各自维护失效调用，遗漏时由
-        # seam 兜底（per-site 的 pop-before-write 保留为「写库→提交」间窗口的纵深）。
-        vault.register_on_transaction_committed(cache.clear_totp)
         change_bus = EntryChangeBus(cache)
         # CategoryManager / RestorePointManager 提升为一等依赖，由组合根显式创建并注入
         # （ARCH-033：保持替换间隙一致，便于测试替身与重配置）。
@@ -153,6 +154,12 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
         # 改密限流器（ARCH-043）：有跨进程持久状态的业务安全模块，经组合根显式创建并
         # 经 BusinessContext 注入 MenuController→ChangeMasterDialog，UI 不再自行实例化。
         change_master_rate_limiter = build_change_master_rate_limiter(config)
+        # 注册段（ARCH-057）：构造全部成功后才注册跨 manager 回调——失败回退无回调
+        # 残留；注册本身仅 list.append 不抛异常，异常只可能来自上方构造段。
+        # 写事务统一失效 seam（SEC-063 结构性根治）：任何 epoch_guarded_transaction
+        # 提交后自动清空 TOTP secret 缓存——写路径不再各自维护失效调用，遗漏时由
+        # seam 兜底（per-site 的 pop-before-write 保留为「写库→提交」间窗口的纵深）。
+        vault.register_on_transaction_committed(cache.clear_totp)
         # 锁定与密钥版本轮换（备份恢复）是两类语义不同的事件（ARCH-003 拆为独立通道），
         # 但都要求失效全部明文/派生缓存：锁定清明文摘要/分类名/TOTP/标签缓存收缩内存泄漏面；
         # 恢复整体替换数据，按 crypto_id 索引的明文缓存须失效防命中旧明文，安全分析缓存亦
@@ -181,9 +188,9 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
         )
     except BaseException:
         # 装配中途异常回退防重入登记（ARCH-046）：登记先行的原实现使「上次装配失败」
-        # 的重试被误拒，且报错语义误导（述为「重复调用」）。回调注册仅为 list.append
-        # 不抛异常，实际异常源是 manager 构造（此时尚未注册任何回调、无副作用），
-        # discard 后重试等价全新装配。BaseException 连 KeyboardInterrupt 一并回退，
+        # 的重试被误拒，且报错语义误导（述为「重复调用」）。回调注册已统一后置到
+        # 构造全部成功之后（ARCH-057）：构造异常时回调零注册、无副作用，discard 后
+        # 重试等价全新装配。BaseException 连 KeyboardInterrupt 一并回退，
         # 不给「半登记」态留窗口。
         _assembled_vaults.discard(vault)
         raise

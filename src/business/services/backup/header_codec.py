@@ -7,8 +7,8 @@ from typing import IO, Any
 
 from ....crypto.master_key import DEFAULT_KDF_PARAMS, KdfParams, MasterKeyManager
 from ....exceptions import BackupError, PayloadTooLargeError
-from ....utils.file_security import validate_file_path
 from ....utils.memory import secure_zero_buffer
+from ....utils.path_validation import validate_file_path
 
 BACKUP_MAGIC = b"CipherBoxBackup\x00"
 BACKUP_FORMAT = "CipherBoxBackup"

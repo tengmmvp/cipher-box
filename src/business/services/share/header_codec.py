@@ -15,7 +15,7 @@ from typing import IO, Any
 
 from ....crypto.master_key import KdfParams, MasterKeyManager
 from ....exceptions import PayloadTooLargeError, ShareError
-from ....utils.file_security import validate_file_path
+from ....utils.path_validation import validate_file_path
 
 SHARE_MAGIC = b"CipherBoxShare\x00"
 SHARE_FORMAT = "CipherBoxShare"

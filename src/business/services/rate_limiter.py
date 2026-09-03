@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from ...config import RATE_LIMITS
 from ...utils.file_security import atomic_write, secure_file
+from ...utils.secure_compare import constant_time_mac_equals
 
 if TYPE_CHECKING:
     from ...config import ConfigManager
@@ -284,11 +285,9 @@ class RateLimiter:
                 json_text.encode("utf-8"),
                 hashlib.sha256,
             ).hexdigest()
-            sig_ok = (
-                bool(stored_sig)
-                and stored_sig.isascii()  # compare_digest 对非 ASCII str 抛 TypeError
-                and hmac.compare_digest(stored_sig, expected_sig)
-            )
+            # 非 ASCII 签名经共享比较器短路 False（SEC-071 单一事实源，原内联
+            # isascii 守卫收编），不抛 TypeError 穿透验签分支。
+            sig_ok = bool(stored_sig) and constant_time_mac_equals(stored_sig, expected_sig)
             if not sig_ok:
                 # 状态文件被篡改（SEC-029）：哨兵/见证只防「删除」，不防「改写为格式
                 # 合法内容」——改写 {"fail_count":0,...} 即归零计数绕过退避阶梯，伪造

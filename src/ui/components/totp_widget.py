@@ -75,8 +75,10 @@ class TOTPWidget(QObject):
             data_epoch: secret 的解密世代（SEC-054）：随 secret 从 DetailPanel 透传，
                 预热写入按世代复查，跨恢复窗口的旧世代 secret 不落新世代缓存
             data_version: secret 解密时刻的 TOTP 域失效版本快照（SEC-063 b 层）：
-                随 secret 从 DetailPanel 透传，预热写入按版本复查——「解密 → 预热」
-                窗口内被 pop_totp/clear_totp 失效的旧 secret 拒收入缓存
+                随 secret 从 DetailPanel 透传，预热写入按版本复查（条目粒度）——
+                「解密 → 预热」窗口内本条目被 pop_totp 失效或发生整体失效时旧
+                secret 拒收入缓存（其他条目的 evict 不误伤本条目），拒收时
+                get_state 丢弃 preloaded 改走 DB 重解密计算验证码
         """
         self._entry_mgr = entry_manager
         self._content_layout = content_layout
