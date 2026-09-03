@@ -9,7 +9,8 @@ MAINT-095 豁免说明：本文件对 ``_analysis_cache`` 内部键（``_fingerp
 ``_summaries_with_dates`` / ``_key_epoch`` 等）的直读属**白盒结构守护**——出口契约
 （PERF-062 剥离）、指纹桶对象身份共享（PERF-076/085）、epoch 快照（SEC-040）等
 不变量本身就是「内部缓存结构与出口视图的差异」，公开观察面（get_cached_report
-已剥离内部键）无法表达；有公开等价观测的一律走公开面。
+已剥离内部键）无法表达；有公开等价观测的一律走公开面。豁免类别与数量口径见
+docs/audit_codes.md 的 MAINT-095 豁免台账（本文件属台账 C1 类）。
 """
 
 import dataclasses

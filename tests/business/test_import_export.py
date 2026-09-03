@@ -280,7 +280,7 @@ class TestExportPercentMappers:
         assert export_decrypt_percent(0, 100) == 0
         assert export_decrypt_percent(50, 100) == 35
         assert export_decrypt_percent(100, 100) == 70
-        # 空阶段取满（_phase_progress 语义）：零条目直接到阶段终点
+        # 空阶段取满（segment_progress 语义）：零条目直接到阶段终点
         assert export_decrypt_percent(0, 0) == 70
 
     def test_write_percent(self):
@@ -302,3 +302,37 @@ class TestExportPercentMappers:
         values += [export_write_percent(d, 250) for d in (100, 200, 250)]
         assert all(a <= b for a, b in zip(values, values[1:], strict=False))
         assert values[-1] == 100
+
+
+class TestExportProgressSegmentTable:
+    """导出进度段表契约（PERF-070 段刻度、MAINT-112 结构化收敛）。
+
+    与导入段表（TestImportProgressSegmentTable）/恢复段表
+    （TestRestoreProgressSegmentTable）同形态：相邻性由模块导入期
+    RuntimeError 断言 + 本测试双重守护，后者在手改段表时给出可读的失败定位。
+    """
+
+    def test_segments_seamless_from_zero_to_total(self):
+        """两段无缝：解密 0→70、写文件 70→100，尾段精确止于总刻度。"""
+        from src.business.managers import import_export as ie_module
+
+        cursor = 0
+        marks = [cursor]
+        for seg in ie_module._EXPORT_SEG:
+            assert seg.base == cursor, f"段起点 {seg.base} 与上一段终点 {cursor} 有缝隙/重叠"
+            assert seg.span > 0, "段跨度须为正（零跨度段不上报中间值）"
+            cursor = seg.base + seg.span
+            marks.append(cursor)
+        assert marks == sorted(marks)
+        # 尾段终点精确等于总刻度：导出完成即 write 段终点，无终值跳变
+        assert cursor == ie_module._EXPORT_PROGRESS_TOTAL
+
+    def test_segment_seams_anchor_profiled_weights(self):
+        """段边界锚定 PERF-070 实测权重画像（解密 5.1s/写 1.9s ≈ 73/27 取整 70/30）。"""
+        from src.business.managers import import_export as ie_module
+
+        seg = ie_module._EXPORT_SEG
+        assert (seg.decrypt.base, seg.decrypt.span) == (0, 70)
+        assert (seg.write.base, seg.write.span) == (70, 30)
+        # 两段共享边界 70：解密终点 == 写文件起点（阶段切换无跳变）
+        assert seg.decrypt.base + seg.decrypt.span == seg.write.base

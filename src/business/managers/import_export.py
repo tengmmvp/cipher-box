@@ -29,10 +29,12 @@ from ...utils.file_security import atomic_write, validate_file_path
 from ..services.entry_batch_writer import (
     BatchUpdateItem,
     PreparedUpdate,
+    ProgressSegment,
     encrypt_new_entries,
-    phase_progress,
     prepare_overwrite_updates,
+    segment_progress,
     should_report_progress,
+    validate_progress_segments,
     write_new_entries,
     write_overwrite_updates,
 )
@@ -54,51 +56,93 @@ logger = logging.getLogger(__name__)
 # 装饰器 _validate_import_input 的返回类型透传 TypeVar。
 T = TypeVar("T")
 
-# ======== 导入加权总进度刻度（PERF-065）========
+# ======== 导入加权总进度刻度（PERF-065/069，段表收敛 MAINT-112）========
 # 50k CSV 端到端实测 8.43s 中加密 3.29s + 写入 2.85s 占 ~73%，而原 progress_callback
 # 只在分类阶段（0.61s，7%）逐条上报——进度条先冲 100% 再长冻。改为加权总进度：
 # 各阶段按实测耗时占比映射到 [0,100]，用户感知与实际剩余时间一致。
 _IMPORT_PROGRESS_TOTAL = 100
-# parse 完成里程碑（文件解析，粗粒度单点上报）。
-_PROGRESS_PARSE_DONE = 5
-# sanitize 完成里程碑（公式注入清洗，粗粒度单点上报）。
-_PROGRESS_SANITIZE_DONE = 10
-# 去重计划 + 覆盖目标密文预读完成里程碑（PERF-069：此前该段无任何上报）。
-_PROGRESS_PLAN_DONE = 12
-# classify 阶段跨度：12 → 15（PERF-069：每 PROGRESS_REPORT_EVERY 行节流上报，
-# 终值恒上报——50k 行逐条上报的跨线程信号发射开销反超分类本身）。
-_PROGRESS_CLASSIFY_SPAN = 3
-# encrypt 阶段：15 → 70（耗时主导，行级细粒度；新条目与覆盖条目合并计量，PERF-069）。
-_PROGRESS_ENCRYPT_BASE = 15
-_PROGRESS_ENCRYPT_SPAN = 55
-# write 阶段：70 → 100（次主导，分块细粒度；新增与覆盖写入合并计量，PERF-069）。
-_PROGRESS_WRITE_BASE = 70
-_PROGRESS_WRITE_SPAN = 30
 
-# ======== 导出加权总进度刻度（PERF-070）========
+
+class _ImportMilestones(NamedTuple):
+    """里程碑阶段的单点上报终值（parse/sanitize/plan，I/O 或粗粒度阶段）。
+
+    里程碑仅在阶段终点单点上报，此前与区间段同构打包成 ``ProgressSegment``
+    段行——但 span/base 除 ``base+span`` 求终值外无任何消费方，且每个里程碑的
+    终值恰是下一阶段的起点（可推导冗余）；直接持有终值消除「读
+    ``ProgressSegment(5, 5)`` 再自行相加」的解码层。
+    """
+
+    parse: int
+    sanitize: int
+    plan: int
+
+
+class _ImportSegments(NamedTuple):
+    """区间段子段刻度的具名视图（classify/encrypt/write，调用点按语义名取段）。"""
+
+    classify: ProgressSegment
+    encrypt: ProgressSegment
+    write: ProgressSegment
+
+
+# 刻度（次序即上报次序）：parse 5（文件解析，<1s 单点）→ sanitize 10（公式注入
+# 清洗单点）→ plan 12（去重计划+覆盖预读+分类预扫描，PERF-069 补齐此前无上报段）→
+# classify 12→15（PERF-069 节流，终值恒上报）→ encrypt 15→70（耗时主导，新条目与
+# 覆盖条目合并计量，PERF-069）→ write 70→100（次主导，分块细粒度，段终点即终值）。
+_IMPORT_MILESTONES = _ImportMilestones(parse=5, sanitize=10, plan=12)
+_IMPORT_SEG = _ImportSegments(
+    classify=ProgressSegment(12, 3),
+    encrypt=ProgressSegment(15, 55),
+    write=ProgressSegment(70, 30),
+)
+
+
+# 启动期校验（MAINT-112，对齐 backup_restore MAINT-107 形态）：里程碑终值自 0
+# 严格递增（单点上报的无缝形态），区间段首段承接末里程碑、逐段无缝、尾段精确
+# 止于总刻度——终值上报即 write 段终点，无跳变。刻度契约另有
+# TestImportProgressSegmentTable 测试守护（手改刻度时给出可读的失败定位）。
+def _validate_import_milestones(milestones: "_ImportMilestones") -> int:
+    """校验里程碑终值链自 0 严格递增，返回末值供区间段校验承接。"""
+    cursor = 0
+    for mark in milestones:
+        if mark <= cursor:
+            raise RuntimeError(f"导入进度里程碑终值须严格递增：{mark} <= {cursor}")
+        cursor = mark
+    return cursor
+
+
+validate_progress_segments(
+    _IMPORT_SEG,
+    _validate_import_milestones(_IMPORT_MILESTONES),
+    _IMPORT_PROGRESS_TOTAL,
+)
+
+# ======== 导出加权总进度刻度（PERF-070，段表收敛 MAINT-112）========
 # 50k 实测导出 = 解密 5.1s + 写文件 1.9s（≈ 73%/27%），全程原为不确定旋转。
 # 解密阶段（get_entries_for_export 按条目节流）映射 0 → 70，写文件阶段（export_to_*
 # 按已写条目节流）映射 70 → 100；百分比映射由 UI 调用方（import_export_dialog）完成，
 # 业务函数只上报原始 (done, total) 条目计数。
-_EXPORT_DECRYPT_SPAN = 70
-_EXPORT_WRITE_BASE = 70
-_EXPORT_WRITE_SPAN = 30
+_EXPORT_PROGRESS_TOTAL = 100
 
 
-def _phase_progress(base: int, span: int, done: int, total: int) -> int:
-    """把阶段内进度 ``(done/total)`` 映射为加权总进度百分比。
+class _ExportSegments(NamedTuple):
+    """导出全部子段刻度的具名视图（解密/写文件两区间段）。"""
 
-    薄委托 :func:`entry_batch_writer.phase_progress`（MAINT-099 共享单一事实源，
-    base/span 形态适配 start/end 形态）：``done >= total`` 或 ``total <= 0``（空
-    阶段）取满 ``base + span``，保持进度单调不减；整数下取整使连续上报值单调不降。
-    """
-    return phase_progress(done, total, base, base + span)
+    decrypt: ProgressSegment
+    write: ProgressSegment
 
 
-def _emit_milestone(callbacks: "ImportCallbacks", value: int) -> None:
-    """粗粒度阶段里程碑上报（parse/sanitize/plan/终值）：单点 ``(value, 100)``。"""
+_EXPORT_SEG = _ExportSegments(
+    decrypt=ProgressSegment(0, 70),
+    write=ProgressSegment(70, 30),
+)
+validate_progress_segments(_EXPORT_SEG, 0, _EXPORT_PROGRESS_TOTAL)
+
+
+def _emit_milestone(callbacks: "ImportCallbacks", end: int) -> None:
+    """粗粒度阶段里程碑上报（parse/sanitize/plan/终值）：单点 ``(end, 100)``。"""
     if callbacks.progress_callback is not None:
-        callbacks.progress_callback(value, _IMPORT_PROGRESS_TOTAL)
+        callbacks.progress_callback(end, _IMPORT_PROGRESS_TOTAL)
 
 
 def export_decrypt_percent(done: int, total: int) -> int:
@@ -107,16 +151,16 @@ def export_decrypt_percent(done: int, total: int) -> int:
     供 UI（import_export_dialog）把 ``get_entries_for_export`` 的原始条目计数上报
     映射为总进度；50k 实测解密 5.1s / 写文件 1.9s，按 73/27 取整为 70/30 刻度。
     """
-    return _phase_progress(0, _EXPORT_DECRYPT_SPAN, done, total)
+    return segment_progress(_EXPORT_SEG.decrypt, done, total)
 
 
 def export_write_percent(done: int, total: int) -> int:
     """导出写文件阶段 ``(done, total)`` → 加权总进度百分比 70→100（PERF-070）。
 
-    与 :func:`export_decrypt_percent` 同一刻度连续；``_phase_progress`` 的空阶段
+    与 :func:`export_decrypt_percent` 同一段表连续；``segment_progress`` 的空阶段
     取满语义使零条目导出亦上报 100（进度不留悬挂）。
     """
-    return _phase_progress(_EXPORT_WRITE_BASE, _EXPORT_WRITE_SPAN, done, total)
+    return segment_progress(_EXPORT_SEG.write, done, total)
 
 
 def _sanitize_entry_formula_fields(entry: Entry) -> Entry:
@@ -523,7 +567,7 @@ class ImportExportManager:
         # 入库边界统一清洗公式注入前缀（SEC-008）：对受影响文本字段转义危险前缀，
         # 使后续剪贴板/JSON 导出等外流路径无需各自防护。密码/TOTP 不外流至表格，不清洗。
         entries = [_sanitize_entry_formula_fields(e) for e in entries]
-        _emit_milestone(callbacks, _PROGRESS_SANITIZE_DONE)
+        _emit_milestone(callbacks, _IMPORT_MILESTONES.sanitize)
 
         duplicate_indices, overwrite_map = self._duplicate_plan(
             entries_data, ctx.duplicate_action, ctx.source_label
@@ -535,7 +579,7 @@ class ImportExportManager:
         self._ensure_categories(entries, duplicate_indices, ctx, callbacks.cancel_check)
         # 去重计划 + 覆盖目标预读 + 分类预扫描完成里程碑（PERF-069：该段此前无上报，
         # 与 sanitize 里程碑首尾相接覆盖 10%→12% 档）。
-        _emit_milestone(callbacks, _PROGRESS_PLAN_DONE)
+        _emit_milestone(callbacks, _IMPORT_MILESTONES.plan)
 
         new_entries, overwrite_plans, classify_skipped = self._dedupe_and_classify(
             entries,
@@ -551,9 +595,7 @@ class ImportExportManager:
         # 加密预处理是耗时主导，此前全程冻结在 15%。
         pre_epoch = self._entry_mgr.key_epoch
         encrypt_total = len(new_entries) + len(overwrite_plans)
-        encrypt_adapter = self._offset_phase_reporter(
-            callbacks, _PROGRESS_ENCRYPT_BASE, _PROGRESS_ENCRYPT_SPAN, encrypt_total
-        )
+        encrypt_adapter = self._offset_phase_reporter(callbacks, _IMPORT_SEG.encrypt, encrypt_total)
         enc_new, preserve, new_skipped = self._encrypt_new_batch(
             new_entries,
             ctx.source_label,
@@ -572,9 +614,7 @@ class ImportExportManager:
         # 写入进度经分块上报 70%→100%（PERF-065，事务内分块不破坏原子性）；新增与
         # 覆盖写入合并计量（PERF-069）。
         write_total = len(enc_new) + len(overwrite_prepared)
-        write_adapter = self._offset_phase_reporter(
-            callbacks, _PROGRESS_WRITE_BASE, _PROGRESS_WRITE_SPAN, write_total
-        )
+        write_adapter = self._offset_phase_reporter(callbacks, _IMPORT_SEG.write, write_total)
         with self._entry_mgr.epoch_guarded_transaction(operation="导入", pre_epoch=pre_epoch):
             write_new_entries(
                 self._entry_mgr,
@@ -589,6 +629,7 @@ class ImportExportManager:
                 progress=write_adapter(offset=len(enc_new), sub_total=len(overwrite_prepared)),
             )
 
+        # 终值上报即 write 段终点（== 总刻度，启动期校验保证）。
         _emit_milestone(callbacks, _IMPORT_PROGRESS_TOTAL)
 
         # 批量导入统一通知一次（写入已传 notify=False 避免逐条回调）。
@@ -642,10 +683,10 @@ class ImportExportManager:
             # 进度按 PROGRESS_REPORT_EVERY 节流上报、终值恒上报（PERF-069：50k 行
             # 逐条上报的跨线程信号发射开销反超分类本身，与 entry_batch_writer 的
             # 加密/写入阶段同款节流纪律；进度语义不变——total 含全部条目，单调不减，
-            # 后续阶段不突跳）。加权映射到总进度 12%→15%。
+            # 后续阶段不突跳）。加权映射到总进度 classify 段（12%→15%）。
             if callbacks.progress_callback is not None and should_report_progress(i + 1, total):
                 callbacks.progress_callback(
-                    _phase_progress(_PROGRESS_PLAN_DONE, _PROGRESS_CLASSIFY_SPAN, i + 1, total),
+                    segment_progress(_IMPORT_SEG.classify, i + 1, total),
                     _IMPORT_PROGRESS_TOTAL,
                 )
             if i in duplicate_indices:
@@ -818,18 +859,17 @@ class ImportExportManager:
     @staticmethod
     def _offset_phase_reporter(
         callbacks: ImportCallbacks,
-        base: int,
-        span: int,
+        segment: ProgressSegment,
         grand_total: int,
     ) -> Callable[..., Callable[[int, int], None] | None]:
-        """构造带偏移的阶段进度适配器工厂（PERF-069）。
+        """构造带偏移的阶段进度适配器工厂（PERF-069，段表化 MAINT-112）。
 
         一个阶段（encrypt/write）由两个子批构成（新条目 + 覆盖条目），各自上报
         子批内 ``(done, sub_total)``；本工厂按 ``_make(offset, sub_total)`` 生成子批
         适配器，把子批进度折算为 ``offset + done``（子批 done 即子批条目数，与全阶段
-        ``grand_total`` 同单位）后经 ``_phase_progress`` 映射到加权总进度。空子批返回
-        None（下游跳过上报）；用户未提供 progress_callback 或 grand_total<=0 时工厂
-        恒返回 None 适配器（下游保持原单次批量路径）。
+        ``grand_total`` 同单位）后经 ``segment_progress`` 映射到 ``segment`` 加权
+        刻度。空子批返回 None（下游跳过上报）；用户未提供 progress_callback 或
+        grand_total<=0 时工厂恒返回 None 适配器（下游保持原单次批量路径）。
         """
 
         def _make(offset: int, sub_total: int) -> Callable[[int, int], None] | None:
@@ -841,7 +881,7 @@ class ImportExportManager:
                 # min 钳制防 offset+done 溢出 grand_total 致阶段刻度越界。
                 overall = min(offset + done, grand_total)
                 user_callback(
-                    _phase_progress(base, span, overall, grand_total), _IMPORT_PROGRESS_TOTAL
+                    segment_progress(segment, overall, grand_total), _IMPORT_PROGRESS_TOTAL
                 )
 
             return _report
@@ -876,9 +916,9 @@ class ImportExportManager:
         except (json.JSONDecodeError, RecursionError, csv.Error) as exc:
             raise ImportFormatError(f"文件解析失败，文件可能已损坏：{exc}") from exc
         # parse 完成里程碑（PERF-065）：解析阶段无行级回调（I/O 密集且通常 <1s），
-        # 单点上报 5% 后进入清洗/分类/加密/写入的细粒度阶段。
+        # 单点上报 parse 里程碑终值（5%）后进入清洗/分类/加密/写入的细粒度阶段。
         if progress_callback is not None:
-            progress_callback(_PROGRESS_PARSE_DONE, _IMPORT_PROGRESS_TOTAL)
+            progress_callback(_IMPORT_MILESTONES.parse, _IMPORT_PROGRESS_TOTAL)
         categories = self._categories_by_folded_name()
         ctx = ImportContext(
             categories=categories,

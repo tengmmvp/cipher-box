@@ -467,13 +467,14 @@ _WINDOWS_RESERVED_DEVICE_NAMES = frozenset(
     | {f"LPT{i}" for i in range(1, 10)}
 )
 
-# 设备命名空间（`\\.\`）下唯一放行的首组件形态：单盘符（`C:`）——其后必须还有
-# 路径组件（`\\.\C:\data\file.txt`），设备对象本体（裸 `\\.\C:`）不放行。
+# 设备命名空间（`\\.\` 与 `\\?\`，SEC-066）下唯一放行的首组件形态：单盘符（`C:`）——
+# 其后必须还有路径组件（`\\.\C:\data\file.txt`/`\\?\C:\data\file.txt`），设备对象
+# 本体（裸 `\\.\C:`/`\\?\C:`）不放行。
 _DRIVE_LETTER_COMPONENT = re.compile(r"^[A-Za-z]:$")
 
 
 def _reject_windows_device_names_and_ads(path_text: str) -> None:
-    """拒绝 Windows 保留设备名组件、NTFS 备用数据流（ADS）冒号与 ``\\\\.\\`` 设备对象（SEC-061）。
+    """拒绝 Windows 保留设备名组件、NTFS 备用数据流（ADS）冒号与 ``\\\\.\\``/``\\\\?\\`` 设备对象（SEC-061）。
 
     仅 Windows 语义（经 ``IS_WINDOWS`` 分支调用，非 Windows 不检查：保留名是 DOS
     概念、冒号在 POSIX 是合法文件名字符）。字符串级分析而非依赖 Path 分段——宿主
@@ -486,12 +487,16 @@ def _reject_windows_device_names_and_ads(path_text: str) -> None:
     - **ADS 冒号**：剥离合法前缀（``\\\\?\\``/``\\\\.\\``/``\\\\?\\UNC\\``）与盘符
       首个冒号（``X:``）后，任何残留 ``:`` 均拒绝——``file.txt:stream`` 是 NTFS
       备用数据流语法，可借道把数据挂载到既有文件或设备名上。
-    - **``\\\\.\\`` 设备命名空间**（SEC-061 补强）：该前缀直接寻址 Win32 设备对象
-      （无冒号形态 ``\\\\.\\PhysicalDrive0``/``\\\\.\\Serial0``，裸卷 ``\\\\.\\C:``
-      亦为卷设备本体），剥前缀后仅残留冒号/保留名检查全数放行——仅放行首组件为
-      盘符且带后续路径的文件系统形态（``\\\\.\\C:\\data\\file.txt`` 有意放行），
-      其余设备对象一律拒绝；``\\\\?\\`` 文件系统 verbatim 前缀与 ``\\\\?\\UNC\\``
-      不受此检查影响。
+    - **设备命名空间内容形态**（SEC-061 补强 + SEC-066 扩展到 ``\\\\?\\``）：
+      ``\\\\.\\`` 前缀直接寻址 Win32 设备对象（无冒号形态 ``\\\\.\\PhysicalDrive0``/
+      ``\\\\.\\Serial0``，裸卷 ``\\\\.\\C:`` 亦为卷设备本体），剥前缀后仅残留
+      冒号/保留名检查全数放行——仅放行首组件为盘符且带后续路径的文件系统形态
+      （``\\\\.\\C:\\data\\file.txt`` 有意放行），其余设备对象一律拒绝。
+      ``\\\\?\\`` 文件系统 verbatim 前缀同样适用（SEC-066）：Win32 对象管理器把
+      ``\\\\?\\`` 解析为 ``\\??\\``，后者与 ``\\\\.\\``（``\\??\\`` 的别名）一样查
+      DOS 设备目录——``\\\\?\\PhysicalDrive0``/``\\\\?\\Serial0``/裸卷 ``\\\\?\\C:``
+      同为可达的设备对象，此前仅 ``\\\\.\\`` 分支检查致三者放行。``\\\\?\\UNC\\``
+      剥除前缀后是纯文件系统共享路径，豁免本检查。
 
     错误消息为固定文案，不回显用户输入原文（防路径形态本身经日志外泄）。
     """
@@ -504,6 +509,9 @@ def _reject_windows_device_names_and_ads(path_text: str) -> None:
         colon_scope = colon_scope[8:]
     elif lowered.startswith("\\\\?\\"):
         colon_scope = colon_scope[4:]
+        # \\?\ 同样进入设备内容形态检查（SEC-066）：\\?\ 经 \??\ 同样解析 DOS 设备
+        # 目录，\\?\UNC\ 剥除后豁免（纯文件系统共享路径，无设备对象形态）。
+        device_scope = colon_scope
     elif lowered.startswith("\\\\.\\"):
         colon_scope = colon_scope[4:]
         # 设备命名空间内容形态检查在其上进行（盘符冒号剥离会重绑 colon_scope，
@@ -515,8 +523,9 @@ def _reject_windows_device_names_and_ads(path_text: str) -> None:
         raise ValueError("文件路径包含非法冒号（NTFS 备用数据流或非法盘符形态）")
     # ---- 设备命名空间内容形态 ----
     if device_scope is not None:
-        # 首组件必须为盘符（^X:$）且存在后续路径组件（`\\.\C:` 裸卷是卷设备
-        # 本体、`\\.\PhysicalDrive0`/`\\.\Serial0` 是无冒号设备对象，均拒绝）。
+        # 首组件必须为盘符（^X:$）且存在后续路径组件（`\\.\C:`/`\\?\C:` 裸卷是卷
+        # 设备本体、`\\.\PhysicalDrive0`/`\\?\Serial0` 等无冒号首组件是设备对象，
+        # 均拒绝）。
         sep = device_scope.find("\\")
         first_component = device_scope if sep < 0 else device_scope[:sep]
         if sep < 0 or _DRIVE_LETTER_COMPONENT.fullmatch(first_component) is None:

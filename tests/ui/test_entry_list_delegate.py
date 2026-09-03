@@ -1,9 +1,10 @@
 """EntryItemDelegate.paint 离屏渲染冒烟测试（152 行核心视觉路径的零覆盖补齐）。
 
 不构造真实 QListView：QPixmap 画布 + QPainter 直接调 ``paint``，断言不抛异常且
-关键分支可触发。分支触达经 delegate 的颜色缓存键（``_color_cache``）作观测面——
-强度圆点会请求 ``strength_N``、完整性警示请求 ``danger``、删除徽章请求
-``danger_light``、选中态请求 ``accent_light``，各分支执行与否由缓存键的出现证明。
+关键分支可触发。分支触达经 delegate 的公开只读观察面 ``cached_color_keys``
+（MAINT-095）作证据——强度圆点会请求 ``strength_N``、完整性警示请求 ``danger``、
+删除徽章请求 ``danger_light``、选中态请求 ``accent_light``，各分支执行与否由缓存
+键的出现证明；观察面为 frozenset 键快照，delegate 更换缓存实现时断言不碎。
 """
 
 import dataclasses
@@ -113,39 +114,39 @@ class TestPaintSmoke:
     def test_plain_login_entry_paints_without_error(self, delegate):
         """普通条目（有密码 + 有用户名/分类/netloc 副标题）渲染不抛异常。"""
         _paint_one(delegate, _entry(), selected=False)
-        assert "bg_card" in delegate._color_cache
+        assert "bg_card" in delegate.cached_color_keys
 
     def test_strength_dot_branch_uses_strength_color(self, delegate):
         """password_present 的条目绘制强度圆点（请求 strength_3 颜色）。"""
         entry = _entry(password_strength=3)
         _paint_one(delegate, entry, selected=False)
-        assert "strength_3" in delegate._color_cache
+        assert "strength_3" in delegate.cached_color_keys
 
     def test_strength_clamped_to_token_range(self, delegate):
         """超范围强度（5）钳制到 strength_4 档，不抛异常。"""
         _paint_one(delegate, _entry(password_strength=5), selected=False)
-        assert "strength_4" in delegate._color_cache
+        assert "strength_4" in delegate.cached_color_keys
 
     def test_no_password_skips_strength_dot(self, delegate):
         """无密码条目（password_present=False）不绘制强度圆点（无 strength 键）。"""
         _paint_one(delegate, _entry(password_present=False, password_strength=0), selected=False)
-        assert not any(key.startswith("strength_") for key in delegate._color_cache)
+        assert not any(key.startswith("strength_") for key in delegate.cached_color_keys)
 
     def test_integrity_warning_branch_uses_danger(self, delegate):
         """integrity_error 条目绘制完整性警示符（请求 danger 颜色）。"""
         _paint_one(delegate, _entry(integrity_error=True), selected=False)
-        assert "danger" in delegate._color_cache
+        assert "danger" in delegate.cached_color_keys
 
     def test_deleted_badge_branch_uses_danger_light(self, delegate):
         """回收站条目绘制「已删除」徽章（请求 danger_light 底色）。"""
         _paint_one(delegate, _entry(is_deleted=True), selected=False)
-        assert "danger_light" in delegate._color_cache
+        assert "danger_light" in delegate.cached_color_keys
 
     def test_selected_state_uses_accent_light(self, delegate):
         """选中态用 accent_light 卡片底色 + accent 左侧高亮条。"""
         _paint_one(delegate, _entry(), selected=True)
-        assert "accent_light" in delegate._color_cache
-        assert "accent" in delegate._color_cache
+        assert "accent_light" in delegate.cached_color_keys
+        assert "accent" in delegate.cached_color_keys
 
     def test_favorite_marker_prefixed_in_title(self, delegate):
         """收藏条目标题带 ★ 前缀（行为断言：星标真实进入 drawText 的标题文本）。
@@ -160,15 +161,18 @@ class TestPaintSmoke:
         star = FAVORITE_MARKER[0]
         assert any(text.startswith(star) for text in favorite.texts)
         assert not any(text.startswith(star) for text in plain.texts)
-        assert "bg_card" in delegate._color_cache  # 两次渲染均真实执行
+        # 两次渲染均真实执行：缓存键跨两次 paint 共享，无法证明各自执行过
+        # （QL-076）；spy 文本是各次 paint 的独立产物，空列表会使上方 not any(...)
+        # 空洞成立，故显式断言两侧均产出绘制文本。
+        assert favorite.texts and plain.texts
 
     def test_minimal_entry_paints_without_error(self, delegate):
         """空字段条目（无标题/无副标题素材）走「(无标题)/无额外信息」兜底，不抛。"""
         entry = Entry(password_present=False)
         _paint_one(delegate, entry, selected=False)
         # 兜底路径仍完成整卡绘制（背景与两级文字颜色均被请求）
-        assert "bg_card" in delegate._color_cache
-        assert "text_secondary" in delegate._color_cache
+        assert "bg_card" in delegate.cached_color_keys
+        assert "text_secondary" in delegate.cached_color_keys
 
     def test_missing_entry_falls_back_to_parent_paint(self, delegate, qapp):
         """index 取不到 Entry（data 为 None）时回退父类绘制，不抛异常。"""
@@ -182,7 +186,7 @@ class TestPaintSmoke:
         finally:
             painter.end()
         # 父类绘制不经 delegate 的颜色缓存——零键证明未误入自绘分支
-        assert not delegate._color_cache
+        assert not delegate.cached_color_keys
 
     def test_none_painter_is_early_return(self, delegate, qapp):
         """painter 为 None 时早退（Qt 信号形态防御），不抛异常。"""
@@ -191,13 +195,13 @@ class TestPaintSmoke:
         model.set_entries([_entry()])
         delegate.paint(None, option, model.index(0, 0))
         # 早退发生在任何绘制请求之前——零键证明
-        assert not delegate._color_cache
+        assert not delegate.cached_color_keys
 
     def test_narrow_width_keeps_minimum_text_width(self, delegate):
         """极窄行宽触发 text_width 下限 40px 分支，不抛异常。"""
         _paint_one(delegate, _entry(), selected=False, width=12)
         # 40px 下限不阻断整卡绘制（背景/文字照常请求）
-        assert "bg_card" in delegate._color_cache
+        assert "bg_card" in delegate.cached_color_keys
 
 
 class TestColorFontCache:
@@ -206,9 +210,9 @@ class TestColorFontCache:
     def test_clear_color_cache_empties(self, delegate):
         """clear_color_cache 清空颜色缓存（主题切换入口）。"""
         _paint_one(delegate, _entry(), selected=False)
-        assert delegate._color_cache
+        assert delegate.cached_color_keys
         delegate.clear_color_cache()
-        assert not delegate._color_cache
+        assert not delegate.cached_color_keys
 
     def test_get_color_caches_qcolor(self, delegate):
         """_get_color 命中缓存返回同一 QColor 实例。"""

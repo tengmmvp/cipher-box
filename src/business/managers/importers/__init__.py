@@ -7,10 +7,15 @@
 单一 dispatch 导入，无需为每格式编写独立方法。
 """
 
-from .base import FormatImporter, ParsedImport
+from .base import FormatImporter
 from .bitwarden_importer import BitwardenImporter
 from .csv_importer import CsvImporter, KeePassCsvImporter
 from .json_importer import JsonImporter
+
+# 包级 re-export 仅保留经包级导入消费的名字（MAINT-085 先例，MAINT-109 复核）：
+# FormatImporter 与四个策略类由 import_export 经 ``from .importers import ...``
+# 消费；ParsedImport 的消费方（各策略类）均直接从 ``.base`` 导入，包级
+# re-export 为零消费孤儿，已删（MAINT-109）。
 
 __all__ = [
     "BitwardenImporter",
@@ -18,5 +23,4 @@ __all__ = [
     "FormatImporter",
     "JsonImporter",
     "KeePassCsvImporter",
-    "ParsedImport",
 ]

@@ -750,15 +750,18 @@ class MainWindow(QMainWindow):
             # 不刷新，需重建。统一委托 list_refresh。
             self._list_refresh.rebuild_for_theme()
             # 仅在有内容时 force 刷新详情面板，避免恢复用户已取消选择的条目；
-            # data_epoch 复用面板记录的世代（SEC-054）：current_entry 是面板已
-            # 持有的旧条目，若恰在其初次解密后发生恢复轮换，现时快照 key_epoch
-            # 会把旧 secret 误植入新世代缓存——复用旧世代使缓存守卫正确拒收。
+            # data_epoch/data_version 复用面板记录的世代与版本快照（SEC-054/063）：
+            # current_entry 是面板已持有的旧条目，若恰在其初次解密后发生恢复轮换
+            # （epoch 失配）或单条 TOTP 失效（pop_totp 不改 epoch），现时快照会把
+            # 旧 secret 误植入新世代/新版本缓存——复用初次解密时点的快照使缓存
+            # 守卫正确拒收。
             current_entry = self._detail_panel.current_entry
             if current_entry:
                 self._detail_panel.show_entry(
                     current_entry,
                     force=True,
                     data_epoch=self._detail_panel.current_data_epoch,
+                    data_version=self._detail_panel.current_data_version,
                 )
             else:
                 self._detail_panel.show_empty()

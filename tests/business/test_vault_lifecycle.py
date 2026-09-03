@@ -211,6 +211,34 @@ class TestChangeMasterPassword:
         ok_orig, err_orig = fresh_vault.unlock(_MASTER_PASSWORD)
         assert ok_orig, f"旧密码错误改密被拒后，原主密码应仍可用: {err_orig}"
 
+    def test_change_master_requests_cancel_and_clears_event(self, fresh_vault):
+        """改密取写锁前对称 request_cancel，退出时不残留置位（PERF-092）。
+
+        修复前 change_master_password 取 vault_write_lock 不 request_cancel——
+        在飞的全量安全分析（全程持写锁，50k 库 ~5s）会阻塞改密至其自然跑完。
+        修复后与 lock()/close() 同款：进入前置取消事件通知分析在下一检查点让出
+        写锁；同时 finally 兜底清事件（认证失败等未进入重加密的路径不得残留
+        置位——残留会使后续 full_analysis 一启动即被误取消）。
+        """
+        fresh_vault.initialize(_MASTER_PASSWORD)
+        calls: list[str] = []
+        real_request_cancel = fresh_vault.request_cancel
+
+        def _recording_cancel():
+            calls.append("request_cancel")
+            real_request_cancel()
+
+        fresh_vault.request_cancel = _recording_cancel  # type: ignore[method-assign]
+
+        # 认证失败路径（不进入 _re_encrypt_all）：同样先取消，且事件被 finally 清掉
+        ok, _ = fresh_vault.change_master_password("WrongOldPassword!999", "NewMasterPassword!2026")
+
+        assert not ok
+        assert calls == ["request_cancel"]  # 对称取消确已发生
+        assert not fresh_vault.is_cancel_requested()  # 不残留置位
+        # 残留置位的实际危害面：后续全量分析不应被误取消（首条即检查取消请求）
+        assert fresh_vault.cancel_event.is_set() is False
+
     def test_weak_new_password_raises_policy_error(self, fresh_vault):
         """新密码强度不足抛 MasterPasswordPolicyError，而非返回 (False, 文案)（ARCH-042）。
 

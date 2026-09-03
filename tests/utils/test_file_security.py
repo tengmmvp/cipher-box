@@ -142,9 +142,10 @@ class TestSecureDirectory:
         assert target.is_dir()
 
     def test_existing_directory_no_error(self, tmp_path):
-        """已存在的目录不应报错。"""
+        """已存在的目录不应报错（重复调用幂等，记录断言补强 MAINT-111）。"""
         secure_directory(tmp_path)
-        secure_directory(tmp_path)  # 再次调用不应抛异常
+        # 再次调用幂等：不抛异常且同样返回目标路径（重复调用返回契约成立）
+        assert secure_directory(tmp_path) == tmp_path
 
     def test_sets_unix_permissions(self, tmp_path):
         """非 Windows 下应设置 0o700 权限。"""
@@ -638,6 +639,50 @@ class TestValidateFilePathWindowsReservedNames:
         # POSIX 下 "CON.txt" 与含冒号名是合法文件名；validate_file_path 不因保留名拒绝
         ok = file_security.validate_file_path(str(tmp_path / "CON.txt"))
         assert ok.is_absolute()
+
+
+class TestVerbatimPrefixDeviceForms:
+    r"""``\\?\`` verbatim 前缀的设备对象形态拒绝（SEC-066）。
+
+    Win32 对象管理器把 ``\\?\`` 解析为 ``\??\``，与 ``\\.\`` 一样查 DOS 设备
+    目录——``\\?\PhysicalDrive0``/``\\?\Serial0``/裸卷 ``\\?\C:`` 同为可达的
+    设备对象，此前设备内容形态检查只挂 ``\\.\`` 分支致三者放行（SEC-061 的
+    残留缺口）。修复后 ``\\?\`` 非 UNC 分支同样进入设备形态检查，仅放行
+    「首组件盘符 + 后续路径」的文件系统形态；``\\?\UNC\`` 剥除后豁免。
+    """
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            r"\\?\PhysicalDrive0",  # 物理磁盘设备（verbatim 形态）
+            r"\\?\Serial0",  # 串口设备对象
+            r"\\?\C:",  # 裸卷设备本体（无后续路径组件）
+            r"\\?\CdRom0",  # 光驱设备对象
+            r"\\?\GlobalRoot",  # 内核对象命名空间形态（无冒号首组件）
+        ],
+        ids=["physical-drive", "serial", "bare-volume", "cdrom", "globalroot"],
+    )
+    def test_verbatim_device_forms_rejected(self, path):
+        r"""``\\?\`` 设备对象本体（无冒号/裸卷/内核对象）一律拒绝。"""
+        from src.utils import file_security
+
+        with pytest.raises(ValueError, match="设备命名空间"):
+            file_security._reject_windows_device_names_and_ads(path)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            r"\\?\C:\data\file.txt",  # 文件系统 verbatim 形态（长路径支持）
+            r"\\?\C:" + "\\",  # 盘符根目录（同 \\.\C:\ 既有放行口径，拼接避开尾反斜杠转义）
+            r"\\?\UNC\server\share\file.bin",  # UNC verbatim（剥前缀后纯共享路径，豁免）
+        ],
+        ids=["verbatim-fs", "verbatim-drive-root", "verbatim-unc"],
+    )
+    def test_verbatim_filesystem_forms_allowed(self, path):
+        r"""``\\?\`` 的文件系统形态（盘符+路径 / UNC verbatim）不受影响。"""
+        from src.utils import file_security
+
+        file_security._reject_windows_device_names_and_ads(path)  # 不抛即通过
 
 
 class TestAtomicWritePermissions:

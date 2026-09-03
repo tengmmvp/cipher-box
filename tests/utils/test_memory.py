@@ -19,10 +19,14 @@ class TestSecureZeroBuffer:
         secure_zero_buffer(buf)
         assert bytes(buf) == b"\x00" * len(buf)
 
-    def test_empty_input_short_circuits(self):
-        """空 bytearray / bytes 短路返回，不抛异常。"""
-        secure_zero_buffer(bytearray())
-        secure_zero_buffer(b"")
+    def test_empty_input_short_circuits(self, caplog):
+        """空 bytearray / bytes 短路返回，不抛异常（记录断言补强，MAINT-111）。"""
+        with caplog.at_level(logging.WARNING, logger="src.utils.memory"):
+            secure_zero_buffer(bytearray())
+            secure_zero_buffer(b"")
+        # 空输入走 ``if not data`` 短路分支，不落入 bytes 误传告警分支
+        # （非空 bytes 才告警，见 test_bytes_not_zeroed_but_warns）。
+        assert caplog.records == []
 
     def test_bytes_not_zeroed_but_warns(self, caplog):
         data = b"secret_value"

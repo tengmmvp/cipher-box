@@ -139,8 +139,11 @@ class TestPurgeExpiredAutoBackups:
         assert keep2.exists()
 
     def test_missing_directory_is_noop(self, tmp_path):
-        """目录不存在时不抛异常（secure_purge 跳过缺失目录）。"""
-        purge_expired_auto_backups(tmp_path / "no-such-dir", retention=2)
+        """目录不存在时不抛异常（secure_purge 跳过缺失目录；记录断言补强 MAINT-111）。"""
+        missing = tmp_path / "no-such-dir"
+        purge_expired_auto_backups(missing, retention=2)
+        # 跳过缺失目录而非误建（purge 只清理、不创建）
+        assert not missing.exists()
 
     def test_empty_directory_is_noop(self, tmp_path):
         """空目录清理为无操作。"""

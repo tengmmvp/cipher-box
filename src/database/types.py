@@ -68,6 +68,18 @@ class EntryQuery:
     # 与 entry_repository._ORDER_BY_COLUMN_SQL（后者的键集断言守护联动）。
     order_by: str | None = None
     order_desc: bool = True
+    # 并列裁决开关（PERF-090）：True 时排序列后追加并列裁决键（is_favorite DESC,
+    # updated_at DESC），使带 LIMIT 的 SQL 下推序与「全量收集→内存稳定排序→截断」
+    # 在排序键并列的截断边界上等价（PERF-087，搜索的排序下推分支专用）。首键为
+    # updated_at 时第三裁决键与首键同列、恒 no-op，SQL 拼接处省略（见
+    # entry_repository），语义不变。
+    # False（默认）为纯单列序——无内存对等路径的 SQL 直连路径（主列表字段序/
+    # 近期更新视图）不为裁决键付 filesort 成本：首键为 updated_at 的序一旦追加
+    # 裁决键，ORDER BY 不再是 idx_entries_active_updated 的索引前缀，计划退化为
+    # SEARCH + USE TEMP B-TREE FOR ORDER BY（50k 库 recent LIMIT 100 实测
+    # 0.6ms→81.2ms）。裁决键对带 LIMIT 的 SQL 直连路径同样「无害但也无益」：
+    # 该路径没有与之对齐的内存排序路径，并列序选哪种都无等价性诉求。
+    tie_break_order: bool = False
     verify: VerifyMode = VerifyMode.LENIENT
 
     def __post_init__(self) -> None:

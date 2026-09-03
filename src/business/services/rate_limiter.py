@@ -117,11 +117,13 @@ class RateLimiter:
         防篡改降级（与哨兵 config 见证的降级语义一致）。
 
         会话级临时密钥同样返回 None（SEC-057）：``config.session_only`` 表示密钥
-        来自 DPAPI protect 失败的降级（SEC-055）——本会话签名落盘的状态文件下次
-        启动必因密钥重新生成而验签失配，按 SEC-029 保守分支降级最高阶梯锁定
-        （15 次 / 600 秒），DPAPI 持续故障时用户每次启动都误锁 10 分钟。返回 None
+        来自持久化失败的会话级降级（DPAPI protect 失败 SEC-055 或密钥文件写盘
+        OSError SEC-065）——本会话签名落盘的状态文件下次启动必因密钥重新生成而
+        验签失配，按 SEC-029 保守分支降级最高阶梯锁定（15 次 / 600 秒）。返回 None
         走 SEC-042 既有不落盘路径（仅内存限流、不建哨兵，状态/哨兵成对缺失下次
-        按首次使用处理）。
+        按首次使用处理）；配合读侧对「密钥降级而文件存在」形态按面值采信的
+        SEC-064 权衡，诚实降级会话既不产生失配签名、也不被叠加误锁，兑现
+        「避免每次启动误锁」的承诺。
         """
         if self._config is None:
             return None
@@ -264,7 +266,19 @@ class RateLimiter:
             self._apply_max_lockdown()
             return
         json_text, stored_sig = _split_state_signature(raw_text)
-        if self._signing_key is not None:
+        if self._signing_key is None:
+            # 无法验签时的读侧行为（SEC-064 权衡修正）：session_only（DPAPI protect
+            # 失败 SEC-055 / 密钥文件写盘 OSError SEC-065 的会话级降级）、密钥获取
+            # 异常或无 config 时，磁盘上的状态文件无法验签。原「无法验证即不信任、
+            # 降级最高阶梯锁定」会**确定性**误伤诚实降级会话——磁盘上留有上次正常
+            # 会话的合法签名状态文件，而 _save_state 在无签名密钥时不落盘（SEC-042），
+            # 文件永不重签，每次启动都重复 600 秒零失败锁定，打破 SEC-057「避免每次
+            # 启动误锁」的承诺。SEC-064 的原始关切（篡改文件被采信）需要「签名密钥
+            # 故障 + 文件被篡改」双条件同时成立，前者不可由攻击者诱发（既有审查
+            # 结论）——确定性误伤诚实用户 > 低概率理论窗口，采信文件内容并记
+            # WARNING；内容损坏仍走下方损坏分支的保守锁定（自愈路径不变）。
+            logger.warning("状态文件无法验签（签名密钥降级），内容按面值采信（SEC-064 权衡）")
+        else:
             expected_sig = hmac.new(
                 self._signing_key,
                 json_text.encode("utf-8"),

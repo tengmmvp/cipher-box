@@ -1,4 +1,4 @@
-"""``SchemaManager._validate_current_schema`` 列篡改检测测试。
+"""``SchemaManager._validate_current_schema`` 列篡改检测与查询计划守护测试。
 
 覆盖 ``src/database/schema_manager.py`` 的表结构校验：``_validate_current_schema``
 对每张表读 ``PRAGMA table_info`` 并比对 ``(type, notnull, pk, dflt_value)`` 四元组
@@ -16,6 +16,11 @@ import sqlite3
 import pytest
 
 from src.database.db_manager import DatabaseManager
+from src.database.entry_repository import (
+    _SELECT_ENTRY_WITH_CATEGORY_SQL,
+    EntryRepository,
+)
+from src.database.types import EntryQuery
 from src.exceptions import SchemaError
 
 
@@ -131,3 +136,89 @@ class TestColumnTamperDetection:
         with pytest.raises(SchemaError, match="结构损坏"):
             db.init_tables()
         db.close()
+
+
+class TestQueryPlanIndexPushdown:
+    """热路径查询计划守护（PERF-090/091）：ORDER BY/GROUP BY 不得退化为 TEMP B-TREE。
+
+    SQL 经生产构造路径（``EntryRepository._entry_query_clauses``）拼出，计划断言
+    锚定「索引序直接满足排序/分组」：一旦 ORDER BY 子句形态或索引定义漂移使计划
+    退化（如 PERF-087 并列裁决键无条件追加导致 SEARCH + USE TEMP B-TREE FOR
+    ORDER BY 的回归），此处在 CI 即失败，无需 50k 行基准才能发现。
+    """
+
+    @pytest.fixture
+    def db_with_entries(self, tmp_path):
+        """建库并撒少量行（计划选择与行数无关，覆盖索引/排序下推判定即可）。"""
+        db = DatabaseManager(tmp_path / "plan.db", test_mode=True)
+        db.open()
+        db.init_tables()
+        conn = db.connection
+        conn.executemany(
+            "INSERT INTO entries (crypto_id, title_enc, category_id, is_deleted,"
+            " is_favorite, updated_at, created_at, metadata_mac)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    f"cid-{i}",
+                    "cb2:t",
+                    (i % 3) + 1,
+                    int(i % 4 == 0),
+                    int(i % 2 == 0),
+                    f"2026-01-01T00:00:{i:02d}+00:00",
+                    "2026-01-01T00:00:00+00:00",
+                    "mac",
+                )
+                for i in range(12)
+            ],
+        )
+        conn.commit()
+        yield db
+        db.close()
+
+    @staticmethod
+    def _plan_details(conn, sql: str, params: list) -> list[str]:
+        return [str(row[-1]) for row in conn.execute("EXPLAIN QUERY PLAN " + sql, params)]
+
+    @pytest.mark.parametrize("limit", [100, 1000])
+    def test_updated_at_order_uses_index(self, db_with_entries, limit):
+        """updated_at DESC LIMIT 的两个调用点：索引序下推，无 TEMP B-TREE（PERF-090）。
+
+        PERF-087 曾无条件在排序列后追加并列裁决键，使 ORDER BY 不再是
+        idx_entries_active_updated 的索引前缀、退化为 filesort（50k 库实测
+        81.2ms vs 索引序 0.6ms，且该路径在 UI 线程同步执行）。两个 limit 常量
+        锚定两个真实调用点（近期更新视图 100 / 主列表字段序 1000）；limit 不
+        参与断言，parametrize 仅为两个调用点各留一档守护。
+        """
+        sql, params = EntryRepository._entry_query_clauses(
+            EntryQuery(order_by="updated_at", limit=limit)
+        )
+        details = self._plan_details(
+            db_with_entries.connection, _SELECT_ENTRY_WITH_CATEGORY_SQL + sql, params
+        )
+        assert any("idx_entries_active_updated" in d for d in details)
+        assert not any("TEMP B-TREE" in d for d in details)
+
+    def test_main_list_default_compound_order_uses_index(self, db_with_entries):
+        """主列表默认复合序（is_favorite DESC, updated_at DESC）：PERF-011 索引守护。"""
+        sql, params = EntryRepository._entry_query_clauses(EntryQuery(limit=1000))
+        details = self._plan_details(
+            db_with_entries.connection, _SELECT_ENTRY_WITH_CATEGORY_SQL + sql, params
+        )
+        assert any("idx_entries_active_favorite_updated" in d for d in details)
+        assert not any("TEMP B-TREE" in d for d in details)
+
+    def test_category_counts_group_by_uses_covering_index(self, db_with_entries):
+        """分类计数 GROUP BY：覆盖索引免排序分组，无 TEMP B-TREE（PERF-091）。
+
+        SQL 与 CategoryRepository.get_category_entry_counts 同文（该处私有常量，
+        此处以注释锚定同步义务）。修复前仅 idx_entries_deleted 覆盖过滤，分组走
+        USE TEMP B-TREE FOR GROUP BY（50k 库实测 49.8ms，UI 线程防抖刷新内执行）。
+        """
+        sql = (
+            "SELECT category_id, COUNT(*) AS entry_count FROM entries "
+            "WHERE is_deleted=0 AND category_id IS NOT NULL GROUP BY category_id"
+        )
+        details = self._plan_details(db_with_entries.connection, sql, [])
+        assert any("idx_entries_deleted_category" in d and "COVERING INDEX" in d for d in details)
+        assert not any("TEMP B-TREE" in d for d in details)

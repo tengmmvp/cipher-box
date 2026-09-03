@@ -14,14 +14,11 @@ asmcrypto.js（MIT, (c) Ágoston Pör）选用理据：解密器在 ``file://`` 
 实现替代 WebCrypto，使 ``decrypt.html`` 双击即用、无需联网或本地服务。
 """
 
-import logging
 import re
 from importlib.resources import files
 
 from ....exceptions import ShareError
 from .header_codec import SHARE_VERSION
-
-logger = logging.getLogger(__name__)
 
 # 单遍占位符替换（QL-051）：模板内占位符 → 替换值的分派表。原实现按序多次
 # str.replace——后替换的占位符会扫描先注入的第三方 JS bundle，若 bundle 恰含同形

@@ -6,10 +6,12 @@
 """
 
 import logging
+import os
 import re
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import TracebackType
+from typing import IO, Any
 
 from .models import CIPHERTEXT_PREFIX
 from .utils.file_security import secure_directory, secure_file
@@ -96,18 +98,43 @@ class RedactingFormatter(logging.Formatter):
 
 
 class SecureRotatingFileHandler(RotatingFileHandler):
-    """轮转后重新收紧文件权限的 RotatingFileHandler（SEC-059）。
+    """轮转后重新收紧文件权限的 RotatingFileHandler（SEC-059；落地即 0600 见 SEC-068）。
 
     标准实现 ``doRollover`` 以进程 umask 重建新的 ``baseFilename``（POSIX 默认
     0644 世界可读），启动时的一次 :func:`secure_file` 只覆盖首个文件——轮转产生
     的每个新文件都回退宽松权限。覆写 ``doRollover`` 在轮转完成后对当前文件与
     全部轮转备份重新 :func:`secure_file`；``strict=False`` 降级告警不抛出，日志
     轮转绝不因权限收紧失败而中断记录（与启动路径的降级语义一致）。
+
+    覆写 ``_open`` 以 0600 opener 创建/打开当前文件（SEC-068，对齐 SEC-015 为
+    atomic_write 建立的「落地即 0600」标准）：``super().doRollover()`` 内部经
+    ``_open()`` 重建 baseFilename，此前以 umask（POSIX 典型 0644）创建、其后的
+    :func:`secure_file` 收紧存在毫秒级世界可读窗口——轮转是日志含敏感行（脱敏
+    过滤器为纵深防御、非保证）时可被并发的本地进程读取的时点。opener 方式使
+    创建那一刻即 0600，窗口归零；doRollover 的 secure_file 保留（幂等，覆盖
+    既有备份与升级前遗留的宽松文件）。Windows 忽略 POSIX mode 位（靠父目录
+    ACL），覆写无行为差异。
     """
+
+    def _open(self) -> IO[Any]:  # type: ignore[override]
+        # 以 os.open 0600 opener 打开（SEC-068）：mode='a' 的 flags 已含
+        # O_WRONLY|O_CREAT|O_APPEND，opener 的第三参在创建时刻生效——umask 只会
+        # 再收紧不会放宽，落地权限恒 ≤0600。ignore 说明：基类 FileHandler._open
+        # 的 typeshed 标注为具体 TextIOWrapper[_WrappedBuffer]（_WrappedBuffer 是
+        # typeshed 私有名，用户代码无法可移植引用），本实现的 encoding 可为 None
+        # 形态用宽化的 IO[Any] 标注，与内置 logging.handlers 实现的实际行为一致
+        # （仅 encoding=str 时产出 TextIOWrapper）。
+        return open(
+            self.baseFilename,
+            self.mode,
+            encoding=self.encoding,
+            opener=lambda name, flags: os.open(name, flags, 0o600),
+        )
 
     def doRollover(self) -> None:
         super().doRollover()
-        # 当前文件：doRollover 内 _open() 以默认 umask 重建，须重新收紧
+        # 当前文件：_open() 已落地即 0600（SEC-068），此处收紧保留为幂等纵深
+        # （覆盖升级前遗留的宽松备份被滚动改名等形态）
         secure_file(Path(self.baseFilename), strict=False)
         # 轮转备份：正常路径保留既有权限，但重收紧幂等且覆盖「升级前权限宽松的
         # 既有备份被滚动改名后仍宽松」的形态

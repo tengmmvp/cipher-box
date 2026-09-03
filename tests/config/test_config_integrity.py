@@ -393,3 +393,200 @@ class TestDpapiProtectFailureFallback:
         key2 = cks.ConfigKeyStore(tmp_path / "config.key", tmp_path).load_or_create()
         assert key2 != key
         assert (tmp_path / "config.key").read_bytes() == b"dpapi:" + key2
+
+
+def _raise_oserror(*args, **kwargs):
+    """atomic_write 失败桩：无条件抛 OSError（模拟磁盘满/只读介质）。"""
+    raise OSError("磁盘已满（模拟）")
+
+
+class TestKeyPersistenceWriteFailure:
+    """密钥文件写盘失败的会话级降级（SEC-065）。
+
+    ``_write_integrity_key_file`` 的 atomic_write（secure_file strict=True）在磁盘
+    满/只读介质抛 OSError，沿 ``_store_secure_integrity_key → load_or_create →
+    ConfigManager.__init__`` 全链无捕获 → 启动即崩，违背「绝不阻断启动」契约。
+    修复后两个写盘分支（Windows DPAPI 封装写盘 / 非 Windows 明文回退写盘）均
+    降级 session_only 语义：内存密钥 + CRITICAL，与 protect 失败分支（SEC-055）
+    对称。
+    """
+
+    def test_win32_dpapi_write_failure_degrades_to_session_only(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """win32：protect 成功但密钥文件写盘 OSError → 不崩、session_only、内存密钥可用。"""
+        import logging
+        import sys
+
+        import src.config_key_store as cks
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(cks, "protect_with_dpapi", lambda data: b"dpapi:" + data)
+        monkeypatch.setattr(cks, "atomic_write", _raise_oserror)
+        caplog.set_level(logging.CRITICAL, logger="src.config_key_store")
+
+        store = cks.ConfigKeyStore(tmp_path / "config.key", tmp_path)
+        key = store.load_or_create()  # 修复前此处直接抛 OSError 崩启动
+
+        assert len(key) == 32  # 内存密钥照常可用
+        assert store.session_only is True  # SEC-057 会话级降级可见
+        assert not (tmp_path / "config.key").exists()
+        assert any(record.levelno == logging.CRITICAL for record in caplog.records)
+
+    def test_non_windows_plaintext_fallback_write_failure_degrades(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """非 Windows：keyring 不可用回退明文，写盘同样 OSError → 同款降级不崩。"""
+        import logging
+        import sys
+
+        import keyring as keyring_mod
+
+        import src.config_key_store as cks
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        # keyring 不可用（conftest 已全局禁用；显式置 None 记录确保走明文回退分支）
+        monkeypatch.setattr(keyring_mod, "get_password", lambda s, u: None)
+        monkeypatch.setattr(
+            keyring_mod, "set_password", lambda *a, **k: (_ for _ in ()).throw(OSError("x"))
+        )
+        monkeypatch.setattr(cks, "atomic_write", _raise_oserror)
+        caplog.set_level(logging.CRITICAL, logger="src.config_key_store")
+
+        store = cks.ConfigKeyStore(tmp_path / "config.key", tmp_path)
+        key = store.load_or_create()
+
+        assert len(key) == 32
+        assert store.session_only is True
+        assert not (tmp_path / "config.key").exists()
+        assert any(record.levelno == logging.CRITICAL for record in caplog.records)
+
+    def test_config_manager_init_survives_key_write_failure(self, tmp_path, monkeypatch):
+        """端到端：ConfigManager.__init__（启动链）经写盘失败不抛异常、config 可用。
+
+        平台真实值即可：win32 走 DPAPI 封装写盘、非 win32 走明文回退写盘
+        （keyring 不可用，conftest 全局禁用），两个分支的 atomic_write 均被拦截。
+        """
+        import src.config_key_store as cks
+
+        monkeypatch.setattr(cks, "atomic_write", _raise_oserror)
+
+        cfg = make_test_config(tmp_path)
+        assert len(cfg.integrity_key) == 32
+        assert cfg.session_only is True
+
+
+class TestKeyringPlaintextResidueCleanup:
+    """keyring 命中时明文 config.key 残留的统一清理（SEC-067）。
+
+    两个残留面：a) keyring 记录损坏返回 None 走新生成，降级期明文文件遗留；
+    b) 回迁时 secure_delete 失败，下次启动 keyring 直接命中、旧分支不再进入。
+    修复后 keyring 命中（密钥有效）且明文文件存在时统一尝试 secure_delete_file
+    （幂等、失败 ERROR 不阻断），两个面一次闭合。
+    """
+
+    def _linux_keyring_stub(self, monkeypatch, keyring_store):
+        import sys
+
+        import keyring as keyring_mod
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(keyring_mod, "get_password", lambda s, u: keyring_store.get((s, u)))
+        monkeypatch.setattr(
+            keyring_mod, "set_password", lambda s, u, p: keyring_store.__setitem__((s, u), p)
+        )
+
+    def test_keyring_hit_cleans_stale_plaintext_file(self, tmp_path, monkeypatch):
+        """keyring 有效命中 + 盘中明文残留 → 加载即清理（场景 a 的下次启动形态）。"""
+        import base64
+
+        from src.config_key_store import ConfigKeyStore
+
+        keyring_store: dict[tuple[str, str], str] = {}
+        self._linux_keyring_stub(monkeypatch, keyring_store)
+
+        store = ConfigKeyStore(tmp_path / "config.key", tmp_path)
+        # 降级期遗留的明文文件（值与 keyring 无关，属待清理暴露面）
+        store._write_integrity_key_file(b"\x66" * 32)
+        # keyring 中已有有效密钥（此前会话存入）
+        good_key = b"\x77" * 32
+        keyring_store[("CipherBox", store._keyring_entry_name())] = base64.b64encode(
+            good_key
+        ).decode("ascii")
+
+        key = store.load_or_create()
+
+        assert key == good_key  # 密钥来自 keyring（非明文残留值）
+        assert not (tmp_path / "config.key").exists()  # 残留已清理（SEC-067）
+
+    def test_migration_delete_failure_retried_on_next_startup(self, tmp_path, monkeypatch):
+        """回迁成功但 secure_delete 失败 → 下次启动 keyring 命中时补清理（场景 b）。"""
+        import src.config_key_store as cks
+        from src.config_key_store import ConfigKeyStore
+
+        keyring_store: dict[tuple[str, str], str] = {}
+        self._linux_keyring_stub(monkeypatch, keyring_store)
+
+        # 会话 1：keyring 无记录、明文回退文件存在 → 回迁 keyring 成功、覆写删除失败
+        calls = {"count": 0}
+        real_delete = cks.secure_delete_file
+
+        def _fail_first_then_real(path):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise OSError("文件被占用（模拟）")
+            return real_delete(path)
+
+        monkeypatch.setattr(cks, "secure_delete_file", _fail_first_then_real)
+
+        store = ConfigKeyStore(tmp_path / "config.key", tmp_path)
+        plaintext = b"\x88" * 32
+        store._write_integrity_key_file(plaintext)
+        key = store.load_or_create()
+
+        assert key == plaintext  # 回迁后密钥值不变
+        assert (tmp_path / "config.key").exists()  # 删除失败，残留保留
+        assert ("CipherBox", store._keyring_entry_name()) in keyring_store
+
+        # 会话 2：keyring 直接命中 + 残留文件存在 → 统一清理补上（SEC-067）
+        key2 = ConfigKeyStore(tmp_path / "config.key", tmp_path).load_or_create()
+        assert key2 == plaintext
+        assert not (tmp_path / "config.key").exists()  # 上次失败的清理在此重试成功
+
+    def test_wrong_length_keyring_value_preserves_plaintext_fallback(self, tmp_path, monkeypatch):
+        """keyring 值可解码但长度错（SEC-067 修复）：明文回退文件保留。
+
+        原实现先 secure_delete 明文文件再由 load_or_create 验长度——keyring 记录
+        损坏（可解码但非 32 字节）时会把可能唯一有效的明文回退密钥一并销毁，K1
+        签名链锁死在断裂态且无自愈路径。修复后长度校验先于清理：损坏记录按损坏
+        处理走新生成，明文文件保留（keyring 记录同时被新密钥覆写自愈，下次启动
+        命中有效密钥时才统一清理残留）。
+        """
+        import base64
+
+        from src.config_key_store import ConfigKeyStore
+
+        keyring_store: dict[tuple[str, str], str] = {}
+        self._linux_keyring_stub(monkeypatch, keyring_store)
+
+        store = ConfigKeyStore(tmp_path / "config.key", tmp_path)
+        # 明文回退文件持有有效密钥（可能是最后的有效回退）
+        valid_plaintext = b"\x99" * 32
+        store._write_integrity_key_file(valid_plaintext)
+        # keyring 记录可解码但长度错（损坏形态）
+        keyring_store[("CipherBox", store._keyring_entry_name())] = base64.b64encode(
+            b"\x01" * 31
+        ).decode("ascii")
+
+        key = store.load_or_create()
+
+        # 损坏记录不被采信：新生成合法长度密钥（随机值，非明文回退亦非损坏记录值）
+        assert len(key) == 32
+        assert key != valid_plaintext
+        assert key != b"\x01" * 31
+        # 明文回退文件未被销毁（SEC-067 修复点：清理前置条件是 keyring 命中有效密钥）
+        assert (tmp_path / "config.key").exists()
+        # keyring 记录已被新密钥覆写自愈：下次启动命中有效密钥、统一清理残留
+        assert keyring_store[("CipherBox", store._keyring_entry_name())] == base64.b64encode(
+            key
+        ).decode("ascii")

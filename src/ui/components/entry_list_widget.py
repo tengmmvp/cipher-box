@@ -163,6 +163,17 @@ class EntryItemDelegate(QStyledItemDelegate):
         """清空颜色缓存，主题切换时调用。"""
         self._color_cache.clear()
 
+    @property
+    def cached_color_keys(self) -> frozenset[str]:
+        """颜色缓存当前持有的主题键集合（测试观察用，MAINT-095）。
+
+        只读快照：测试经此断言 ``paint`` 各视觉分支的触达（分支会请求对应
+        主题键：强度圆点 → ``strength_N``、警示符 → ``danger`` 等），不再直读
+        ``_color_cache`` 内部 dict——delegate 更换缓存实现（如 LRU/双层结构）时
+        断言不受实现形态影响。
+        """
+        return frozenset(self._color_cache)
+
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:  # noqa: ARG002
         return QSize(option.rect.width(), self.ROW_HEIGHT)
 

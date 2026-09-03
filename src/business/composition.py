@@ -137,6 +137,10 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
     _assembled_vaults.add(vault)
     try:
         cache = EntryCacheManager(vault)
+        # 写事务统一失效 seam（SEC-063 结构性根治）：任何 epoch_guarded_transaction
+        # 提交后自动清空 TOTP secret 缓存——写路径不再各自维护失效调用，遗漏时由
+        # seam 兜底（per-site 的 pop-before-write 保留为「写库→提交」间窗口的纵深）。
+        vault.register_on_transaction_committed(cache.clear_totp)
         change_bus = EntryChangeBus(cache)
         # CategoryManager / RestorePointManager 提升为一等依赖，由组合根显式创建并注入
         # （ARCH-033：保持替换间隙一致，便于测试替身与重配置）。

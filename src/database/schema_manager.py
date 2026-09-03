@@ -37,6 +37,20 @@ _INDEX_DEFINITIONS: list[tuple[str, str, tuple[str, ...], bool]] = [
     ),
     ("idx_entries_type", "entries", ("entry_type",), False),
     ("idx_entries_password_changed", "entries", ("password_changed_at",), False),
+    # 分类计数覆盖索引（PERF-091）：get_category_entry_counts 的
+    # ``WHERE is_deleted=0 AND category_id IS NOT NULL GROUP BY category_id``
+    # 单一复合索引同时承担过滤与分组（两列连续覆盖谓词列与分组键，免回表免排序）
+    # ——原仅 idx_entries_deleted 覆盖过滤，分组走 USE TEMP B-TREE FOR GROUP BY
+    # （50k 库实测 49.8ms，且增删后防抖刷新在 UI 线程同步执行）。
+    # 兼容性注意：索引集属 _validate_current_schema 校验范围，本索引纳入定义后
+    # 缺失它的既有库（旧版本创建）重开时按「不做旧格式迁移」约定被拒绝
+    # （SchemaError），开发期直接重建库即可（项目未发布、无迁移承诺）。
+    (
+        "idx_entries_deleted_category",
+        "entries",
+        ("is_deleted", "category_id"),
+        False,
+    ),
     ("idx_entries_crypto_id", "entries", ("crypto_id",), True),
     ("idx_pw_history_entry", "password_history", ("entry_id",), False),
     # 复合索引：加速密码历史截断子查询 ORDER BY changed_at DESC

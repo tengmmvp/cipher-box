@@ -101,3 +101,53 @@ def test_password_field_row_appends_mask_timer(qapp):
     assert layout is not None
     assert layout.count() == 1
     assert len(timers) == 1
+
+
+class TestRowValueStore:
+    """共享间接引用 holder（MAINT-115）：行号分配、store 暴露与安全清零复位。
+
+    detail_panel 与 renderer 的「dict + 计数器 + mark_secret_discarded 清理块」
+    三件套收敛于此；clear 后行号复位（两轮渲染的键不跨轮次累积）与 store 字典
+    引用共享（行构建环境写入即 holder 可见）是两类消费方的行为契约。
+    """
+
+    def test_next_key_monotonic_then_reset_by_clear(self):
+        """行号单调递增；clear 清空值并复位行号（下一轮从 0 重新分配）。"""
+        from src.ui.components.secret_field import RowValueStore
+
+        holder = RowValueStore()
+        holder.store[holder.next_key()] = "a"
+        holder.store[holder.next_key()] = "b"
+
+        assert holder.store == {0: "a", 1: "b"}
+        assert len(holder) == 2
+
+        holder.clear()
+
+        assert holder.store == {}
+        assert len(holder) == 0
+        assert holder.next_key() == 0  # 计数随清零复位
+
+    def test_store_dict_is_shared_reference(self):
+        """store property 暴露内部字典本体：行构建环境写入即 holder 可见（清零收口前提）。"""
+        from src.ui.components.secret_field import RowValueStore
+
+        holder = RowValueStore()
+        exposed = holder.store
+        exposed[holder.next_key()] = "plain"
+
+        assert holder.store is exposed
+        assert holder.store == {0: "plain"}
+
+    def test_renderer_clear_resets_both_holders(self, qapp):
+        """renderer.clear 经 holder 收口：敏感/普通两个 store 一并清零复位。"""
+        renderer = _make_renderer()
+        renderer._plain_rows.store[renderer._plain_rows.next_key()] = "plain"
+        renderer._secret_rows.store[renderer._secret_rows.next_key()] = "secret"
+
+        renderer.clear()
+
+        assert not renderer._plain_rows
+        assert not renderer._secret_rows
+        assert renderer._plain_rows.next_key() == 0
+        assert renderer._secret_rows.next_key() == 0

@@ -6,7 +6,7 @@
 
 import logging
 from dataclasses import dataclass, field, fields
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from .exceptions import EntryError
@@ -24,19 +24,32 @@ def is_real_int(value: object) -> bool:
 
 
 def normalized_iso_timestamp(value: str) -> str:
-    """解析 ISO 8601 时间戳并归一化为 ``datetime.isoformat()`` 标准形态（QL-060）。
+    """解析 ISO 8601 时间戳并归一化为 UTC 的 ``datetime.isoformat()`` 标准形态。
 
     可解析变体统一归一（``2026-01-02 03:04:05`` → ``T`` 分隔、``03:04`` → 补全秒、
-    ``03:04:05,123`` → ``.123``、``Z`` 后缀 → ``+00:00``、基本格式 → 扩展格式），
-    使入库时间戳形态唯一、字符串排序==时间排序**绝对**成立。导入
-    （:meth:`Entry.from_dict`）与备份恢复（backup/validator）两路径共用此单一
-    事实源——QL-042/053 的拒绝式校验分别存在「可解析但不规范变体漏网」与
-    「恢复路径绕过导入侧约束」的缺口，归一化不拒任何可解析输入且天然对称。
+    ``03:04:05,123`` → ``.123``、基本格式 → 扩展格式）；带时区偏移的输入
+    （``Z``/``+00:00``/``+08:00`` 等）统一 ``astimezone(UTC)`` 落为 ``+00:00``
+    后缀——偏移原样保留时「字符串排序==时间排序」仅在全库统一偏移下成立，
+    导入/恢复混入非零偏移会使 SQL 与内存排序按本地钟面字面比较、与真实时间
+    序错位数小时（QL-073；如 ``03:04+02:00`` 实为 01:04Z，却按字面排在
+    ``02:04+00:00`` 之后）。转 UTC 后全库 aware 时间戳形态唯一（``...+00:00``），
+    字符串排序==时间排序对 aware 输入**绝对**成立；本地生成（``utc_now_iso``
+    恒 ``+00:00``）转换幂等、存量值零变化。
+
+    naive 输入（无时区偏移）保持 naive 形态落库：无偏移信息，臆断按 UTC 或本地
+    解释都会引入无依据的小时级改写；消费侧对 naive 统一按 UTC 解释（见
+    :func:`src.utils.format.format_datetime` 与 security_analyzer 的时间认知），
+    naive 与 aware 混存时排序等价仅在同形态内成立——导入源通常全库同源，属可
+    接受边界。导入（:meth:`Entry.from_dict`）与备份恢复（backup/validator）
+    两路径共用此单一事实源（QL-060 形态归一 + 偏移归零的收严）。
 
     Raises:
         ValueError: 值不可解析为 ISO 8601。
     """
-    return datetime.fromisoformat(value).isoformat()
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(UTC)
+    return parsed.isoformat()
 
 
 # 字段最大长度常量。约束加密前的明文输入；密文经 base64+nonce+tag 后显著更长，
@@ -503,10 +516,11 @@ class Entry:
         ):
             if not isinstance(value, str):
                 raise EntryError(f"{key}类型无效，必须为字符串")
-            # 时间戳校验+归一化（QL-042 拒绝不可解析 → QL-053 形态约束 → QL-060 归一化）：
-            # 非空时间戳经 :func:`normalized_iso_timestamp` 解析并归一为标准形态后落值，
-            # 与恢复路径 backup/validator 共用同一函数——字符串排序==时间排序由形态
-            # 唯一保证，此前仅校验时 'not-a-date' 入库破坏排序且使过期检测静默失效。
+            # 时间戳校验+归一化（QL-042 拒绝不可解析 → QL-053 形态约束 → QL-060 归一化
+            # → QL-073 偏移归零）：非空时间戳经 :func:`normalized_iso_timestamp`
+            # 解析并归一为 UTC 标准形态后落值，与恢复路径 backup/validator 共用同一
+            # 函数——字符串排序==时间排序由形态唯一保证，此前仅校验时 'not-a-date'
+            # 入库破坏排序且使过期检测静默失效。
             if value:
                 try:
                     normalized = normalized_iso_timestamp(value)

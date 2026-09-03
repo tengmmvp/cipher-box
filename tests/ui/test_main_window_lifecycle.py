@@ -426,9 +426,13 @@ class TestApplyTheme:
 
         mw._apply_theme()
 
-        # data_epoch 回传面板记录的世代（SEC-054 必传签名，force 重建复用路径）
+        # data_epoch/data_version 回传面板记录的世代与版本快照（SEC-054/063
+        # 必传签名，force 重建复用路径）
         mw._detail_panel.show_entry.assert_called_once_with(
-            current, force=True, data_epoch=mw._detail_panel.current_data_epoch
+            current,
+            force=True,
+            data_epoch=mw._detail_panel.current_data_epoch,
+            data_version=mw._detail_panel.current_data_version,
         )
         mw._detail_panel.show_empty.assert_not_called()
 

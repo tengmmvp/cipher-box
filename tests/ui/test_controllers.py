@@ -43,27 +43,13 @@ class TestGetSortConfig:
         assert order in ("asc", "desc")
 
 
-class TestSortEntries:
-    """EntryListController.sort_entries 排序结果的不变量守护。"""
-
-    def test_preserves_length(self):
-        """排序不应改变条目集合大小与成员。"""
-        ctrl = _entry_list_controller()
-        entries = [
-            SimpleNamespace(title="b", updated_at="1", created_at="1", password_strength=0),
-            SimpleNamespace(title="a", updated_at="2", created_at="2", password_strength=0),
-        ]
-        result = ctrl.sort_entries(entries, 0)
-        assert len(result) == 2
-        assert {e.title for e in result} == {"a", "b"}
-
-
 class TestEntrySortKey:
     """entry_sort_key 单一事实源守护（MAINT-091，模块归属 MAINT-104 迁 services/entry_sorting）。
 
     键语义须与旧双实现的任一份逐字段等价（title 小写、password_strength None→0、
     created_at/updated_at 空串回退、未知字段回退 updated_at）——键漂移会使
-    SQL 下推序 / manager 内存排序 / UI sort_entries 三者不一致。
+    SQL 下推序与 manager 内存排序不一致。UI 侧重排入口 sort_entries 已删除
+    （QL-074 死代码：全仓生产零调用），键函数唯一生产消费方为 manager 内存排序。
     """
 
     @staticmethod

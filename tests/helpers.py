@@ -36,9 +36,12 @@ def make_entry_manager(vault: VaultManager) -> EntryManager:
     """构造 EntryManager 测试实例，绑定独立的缓存与变更总线。
 
     EntryManager 需 (vault, cache, change_bus, category_mgr) 四参（MAINT-015：
-    category_mgr 必传注入）；集中此工厂避免各测试文件复制装配步骤。
+    category_mgr 必传注入）；集中此工厂避免各测试文件复制装配步骤。写事务统一
+    失效 seam（SEC-063）与组合根 build_business_context 同款接线，保持测试与
+    生产装配一致。
     """
     cache = EntryCacheManager(vault)
+    vault.register_on_transaction_committed(cache.clear_totp)
     change_bus = EntryChangeBus(cache)
     category_mgr = CategoryManager(vault, cache, change_bus)
     return EntryManager(vault, cache, change_bus, category_mgr)

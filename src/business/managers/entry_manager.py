@@ -54,7 +54,7 @@ from ..services.password_history_service import PasswordHistoryService
 from ..services.password_service import PasswordService
 from ..services.totp_service import TotpService
 from .category_manager import CategoryManager
-from .entry_cache import EntryCacheManager, SearchMetadata
+from .entry_cache import EntryCacheManager, ProjectionCacheKey, SearchMetadata
 from .entry_change_bus import EntryChangeBus
 
 logger = logging.getLogger(__name__)
@@ -72,6 +72,72 @@ class _SummaryRead(NamedTuple):
     raw_entries: list[RawEntry]
     key: bytes
     data_epoch: str | None
+
+
+class EntryRead(NamedTuple):
+    """详情读路径的锁内同刻快照载荷（SEC-063 b 层）：entry 与解密世代、TOTP 域版本。
+
+    ``data_epoch`` 语义见 :meth:`EntryManager.get_entry_with_epoch`（SEC-054）；
+    ``data_version`` 为 totp_secret 解密时点（读锁内与 raw/key/epoch 同刻快照）的
+    TOTP 域失效版本，随 preloaded secret 沿预热链（detail_panel → TOTPWidget →
+    TotpService.get_state → store_totp）透传——「解密 → 预热」窗口内发生过任何
+    单条 TOTP 失效（pop_totp 不改 epoch，如导入覆盖 prepare 的 evict）时，旧
+    secret 被 store 侧版本守卫拒收入缓存（SEC-063 b 层真实通道）。entry 为 None
+    （条目不存在 / epoch 失配）时 epoch 与 version 均为 None，调用方先判 entry
+    再消费。
+    """
+
+    entry: Entry | None
+    data_epoch: str | None
+    data_version: int | None
+
+
+def _projection_cache_key(query: EntryQuery) -> ProjectionCacheKey:
+    """从 EntryQuery 构造投影行集缓存键（ARCH-052，键构造单一事实源）。
+
+    此前 ``get_entry_summaries`` 手工拼五元组、与 EntryQuery 的维度声明双源——
+    未来加过滤维度漏改键则不同行集共享同键静默错数据，收敛为本函数显式提取。
+
+    键维度 ↔ query 维度契约（键形态见 ``entry_cache.ProjectionCacheKey``）：
+
+    - ``(deleted_only, category_id, favorite_only)`` ↔ 同名三维过滤条件；
+    - ``(order_by, order_desc)`` ↔ 行集实际下推的排序规格；``order_by=None``
+      （SQL 复合序）时规范化为 ``(None, True)``——复合序固定方向、方向参数无
+      意义，避免同义键占多个缓存槽（PERF-086 键语义）。
+
+    不参与键的维度及理由（入口校验升格为运行期拒绝，防「行集不同而键相同」）：
+
+    - ``include_deleted``/``after_id``/``limit``：影响行集，但当前投影缓存的全部
+      消费方（get_entry_summaries 内存路径、get_entry_dedup_index）恒传默认值
+      （内存路径 limit 恒 None——截断由排序后/循环提前终止承担；after_id 无
+      投影消费方）。传入非默认值须经新键维度（或显式论证）后再放行。
+    - ``order_by`` 非 None 而 ``tie_break_order=False``：tie_break 只改行序不改
+      行集，键的 order 段不区分两形态——当前消费方带显式排序时恒
+      ``tie_break_order=True``（PERF-087 等价性诉求），混入 False 形态会使同键
+      缓存两种并列序的行集，故拒绝。
+    - ``verify``：投影查询本身无验签（``get_entries_search_projection``），
+      对行集零影响，任意取值同键。
+
+    Raises:
+        ValueError: 上述「影响行集/行序但未入键」的维度被传入非默认形态。
+    """
+    if query.include_deleted or query.after_id is not None or query.limit is not None:
+        raise ValueError(
+            "投影缓存键不含 include_deleted/after_id/limit 维度，"
+            "当前消费方须以默认值调用（见 _projection_cache_key 契约）"
+        )
+    if query.order_by is not None and not query.tie_break_order:
+        raise ValueError("投影缓存键不区分并列裁决形态：order_by 非 None 时须 tie_break_order=True")
+    order: tuple[str | None, bool] = (
+        (None, True) if query.order_by is None else (query.order_by, query.order_desc)
+    )
+    return (
+        query.deleted_only,
+        query.category_id,
+        query.favorite_only,
+        order[0],
+        order[1],
+    )
 
 
 class EntryManager:
@@ -155,7 +221,8 @@ class EntryManager:
         """epoch 守卫事务，委托 vault。
 
         供 ImportExportManager 等跨管理器操作做带 epoch 守卫的事务包裹，避免直接
-        穿透 ``_vault``。语义与 ``VaultManager.epoch_guarded_transaction`` 一致。
+        穿透 ``_vault``。语义与 ``VaultManager.epoch_guarded_transaction`` 一致
+        （含事务成功提交后的 TOTP 缓存统一失效 seam，SEC-063 结构性根治）。
         pre_epoch 透传供导入路径锁外加密后传入（MAINT-004）。
         """
         with self._vault.epoch_guarded_transaction(
@@ -415,8 +482,10 @@ class EntryManager:
         # 下次 TotpService.get_state / generate_cached 重新解密。须在写库**前**
         # 执行（QL-070）：「写库 → pop」窗口内 TOTP 定时器会命中缓存的旧 secret
         # 生成过期验证码；pop 只推进 TOTP 域失效版本（QL-070 分域，见 entry_cache），
-        # 不影响紧随其后的差分世代快照（expected_version 读主域版本）。时序由
-        # TestTotpInvalidateOrdering 以调用顺序 spy 守护。
+        # 不影响紧随其后的差分世代快照（expected_version 读主域版本）。事务提交后
+        # 由统一失效 seam 再 clear_totp 一轮（SEC-063 结构性根治，见
+        # VaultManager.epoch_guarded_transaction），前置 pop 覆盖「写库 → 提交」间
+        # 窗口，语义互补。时序由 TestTotpInvalidateOrdering 以调用顺序 spy 守护。
         self._cache.pop_totp(entry.id)
         # 差分世代快照同刻捕获（QL-065）：提交后的标签差分不得应用于「并发失效+
         # 重建」后的缓存（重建已含编辑后的 tags，再减旧加新即双扣）。
@@ -723,8 +792,15 @@ class EntryManager:
         并刷新 -wal/-shm 文件权限，避免每条 DELETE 各自 checkpoint 的 O(n) 次
         TRUNCATE+fsync。
         """
-        self._vault.db.empty_trash()
+        # TOTP 缓存清空先于物理删除（QL-075，pop-before-write 纪律对齐 update_entry/
+        # delete_entry 的 QL-070 时序）：原「db.empty_trash() 在前、clear_totp() 在后」
+        # 在 db 抛异常时已物理删除条目的 TOTP secret 残留缓存（条目已不存在而明文
+        # secret 仍在内存缓存，违反自家失效纪律）。clear_totp 幂等（清空已空缓存无
+        # 副作用，仅推进 TOTP 域失效版本），先行清空不改变成功路径行为。本路径不经
+        # epoch_guarded_transaction（db.empty_trash 各自隐式提交），SEC-063 统一失效
+        # seam 不覆盖，前置清空是唯一失效点。
         self._cache.clear_totp()
+        self._vault.db.empty_trash()
         # 通知降级为纯旁路语义（PERF-088）：回收站条目不在活跃分析集合——软删除时
         # 已按 PERF-079 增量差分移出 SecurityAnalyzer 缓存与标签计数，物理清空不
         # 改变活跃集合，故 password_changed/metadata_changed=False：
@@ -750,20 +826,21 @@ class EntryManager:
         读路径经 :meth:`epoch_guarded_read` 守卫（ARCH-005）：with 块内仅读 raw、解密移
         锁外（与摘要路径 PERF-001 一致）；epoch 不一致时返回 None，调用方据此跳过。
 
-        实现（SEC-054 闭合）委托 :meth:`get_entry_with_epoch` 后丢弃世代。
+        实现（SEC-054 闭合）委托 :meth:`get_entry_with_epoch` 后丢弃世代与版本。
         """
-        entry, _data_epoch = self.get_entry_with_epoch(entry_id)
-        return entry
+        return self.get_entry_with_epoch(entry_id).entry
 
-    def get_entry_with_epoch(self, entry_id: int) -> tuple[Entry | None, str | None]:
-        """获取并解密单个条目，随行携带解密世代 ``(entry, data_epoch)``。
+    def get_entry_with_epoch(self, entry_id: int) -> EntryRead:
+        """获取并解密单个条目，随行携带解密世代与 TOTP 域版本（:class:`EntryRead`）。
 
         与 :meth:`get_entry` 同一读路径（epoch 守卫 + 锁内快照 key/世代 + 锁外解密），
-        区别仅在于把锁内快照的 ``data_epoch`` 一并返回（SEC-054 残余窗口闭合）：
-        消费方（detail_panel 的 TOTP 预热）需要「entry 敏感字段解密时所处世代」——
-        世代从锁内带出后，「解密后→预热前」窗口内发生恢复轮换时，旧世代 secret
-        被缓存守卫拒收；在 show_entry 调用点另行快照 ``key_epoch`` 会把该窗口
-        误判为零间隙。其余不消费世代的调用方继续用 :meth:`get_entry`。
+        区别仅在于把锁内快照的 ``data_epoch``（SEC-054 残余窗口闭合）与
+        ``data_version``（SEC-063 b 层：TOTP 域失效版本的解密时点快照）一并返回：
+        消费方（detail_panel 的 TOTP 预热）需要「entry 敏感字段解密时所处世代/版本」
+        ——世代与版本从锁内带出后，「解密后→预热前」窗口内发生恢复轮换（改 epoch）
+        或单条 TOTP 失效（pop_totp 不改 epoch、仅推进 TOTP 域版本）时，旧 secret
+        分别被 store_totp 的世代/版本守卫拒收；在 show_entry 调用点另行快照会把
+        该窗口误判为零间隙。其余不消费世代/版本的调用方继续用 :meth:`get_entry`。
         """
         try:
             with self._vault.epoch_guarded_read():
@@ -774,11 +851,16 @@ class EntryManager:
                 # get_entry_summaries 处注释）——此前仅搜索分支接入，详情的摘要/
                 # 分类名缓存回写退回缓存侧采样，跨世代后旧明文可植入新 epoch 缓存。
                 data_epoch = self._vault.key_epoch
+                # SEC-063 b 层：TOTP 域版本与 raw/key/epoch 同刻快照——store_totp 的
+                # 版本守卫据此拒收「解密 → 预热」窗口内被 pop_totp 失效的旧 secret
+                # （pop 不改 epoch，SEC-054 的世代守卫对该失效盲）。
+                data_version = self._cache.totp_invalidate_version
         except VaultKeyEpochMismatchError:
-            return None, None
+            return EntryRead(None, None, None)
         if raw is None:
-            return None, None
-        return self.decrypt_entry(raw, key=key, data_epoch=data_epoch), data_epoch
+            return EntryRead(None, None, None)
+        entry = self.decrypt_entry(raw, key=key, data_epoch=data_epoch)
+        return EntryRead(entry, data_epoch, data_version)
 
     def get_entry_summaries(
         self,
@@ -797,7 +879,10 @@ class EntryManager:
         Note:
             ``limit`` 的生效方式（PERF-078 后统一）：
             - 无搜索且排序为 SQL 白名单字段/默认复合序：``limit`` 经
-              ``ORDER BY ... LIMIT`` 下推 SQL（PERF-073）。
+              ``ORDER BY ... LIMIT`` 下推 SQL（PERF-073）。字段序为纯单列序，
+              不附加并列裁决键（PERF-090）：该路径无内存对等路径，裁决键只会在
+              updated_at 序上破坏 idx_entries_active_updated 的索引下推
+              （退化为 TEMP B-TREE filesort）而无等价性收益。
             - 搜索非空或不可 SQL 下推的排序（内存路径）：匹配/收集必须全量（加密字段
               不可先截断后过滤），排序在内存按 meta/窄行键完成后取前 ``limit``——
               仅这前 N 条回查宽行与构建摘要，语义与 SQL「ORDER BY ... LIMIT`` 同构；
@@ -877,6 +962,12 @@ class EntryManager:
                     # （同键条目的相对序继承复合序，与 SQL 字段序的稳定语义一致）。
                     order_by=order_by if (sql_pushdown or order_pushdown) else None,
                     order_desc=order_desc,
+                    # 并列裁决键仅搜索的排序下推分支需要（PERF-090）：该分支依赖
+                    # 「行集序 == 内存稳定排序序」的等价性（PERF-087）；SQL 直连
+                    # 路径（sql_pushdown，与 order_pushdown 互斥）无内存对等路径，
+                    # 追加裁决键只会在 updated_at 序上破坏索引下推、纯付 filesort
+                    # 成本。
+                    tie_break_order=order_pushdown,
                     verify=VerifyMode.LENIENT,
                 )
                 if in_memory_path:
@@ -887,22 +978,13 @@ class EntryManager:
                     # get_entries_by_ids 的 LENIENT 验签补偿；未命中/未截断行不验签的
                     # 取舍与 PERF-019 声明一致（篡改检测由无搜索词的全量列表刷新覆盖）。
                     # 行集经投影缓存复用（PERF-086）：行集仅取决于过滤三元组与排序
-                    # 规格、与搜索词无关，暖态重复搜索免重拉；键的排序段与查询实际
-                    # 下推的排序一致（未下推时规范化为 (None, True) 复合序，避免同义
-                    # 键占多个缓存槽），有序行集与无序行集因消费方对行序敏感（排序
-                    # 下推分支依赖行序提前终止）不可混存同一键。
-                    projection_order: tuple[str | None, bool] = (
-                        (order_by, order_desc) if order_pushdown else (None, True)
-                    )
-                    projection_key = (
-                        deleted_only,
-                        category_id,
-                        favorite_only,
-                        projection_order[0],
-                        projection_order[1],
-                    )
+                    # 规格、与搜索词无关，暖态重复搜索免重拉。键构造收敛至
+                    # _projection_cache_key（ARCH-052）单一函数：从本 query 显式提取
+                    # 影响行集/行序的维度（未下推排序已在 query 构造点规范化为
+                    # order_by=None 的复合序），有序行集与无序行集因消费方对行序敏感
+                    # （排序下推分支依赖行序提前终止）不可混存同一键。
                     search_rows = self._cache.search_projection_rows(
-                        projection_key,
+                        _projection_cache_key(query),
                         lambda: self.db.get_entries_search_projection(query),
                     )
                     raw_entries = []
@@ -1005,10 +1087,10 @@ class EntryManager:
         # 排好，跳过重排。
         if order_by is not None and not pre_sorted:
             # 键函数单一事实源（MAINT-091，模块归属 MAINT-104 迁 services/entry_sorting）：
-            # 窄投影行+meta 经 SortKeySource 适配为 Entry 同名属性形态，与 UI 的
-            # sort_entries 共用 entry_sort_key——此前 4 键逻辑在本方法与 UI 各一份
-            # （title 键直接取 meta.title_lower 已小写，经 entry_sort_key 再 .lower()
-            # 幂等，语义等价）。
+            # 窄投影行+meta 经 SortKeySource 适配为 Entry 同名属性形态，经
+            # entry_sort_key 取键——此前 4 键逻辑在本方法与 UI 各一份（UI 重排入口
+            # 已随 QL-074 删除死代码，本路径为键函数唯一生产消费方；title 键直接取
+            # meta.title_lower 已小写，经 entry_sort_key 再 .lower() 幂等，语义等价）。
             key_of = entry_sort_key(order_by)
 
             def sort_key(item: tuple[SearchRow, SearchMetadata]) -> str | int:
@@ -1107,11 +1189,20 @@ class EntryManager:
         """
         if limit <= 0:
             return []
+        # 进读块前先固定本批缓存 epoch（ARCH-056 对齐 get_entry_summaries 的位置
+        # 模式，原在锁外解密前）：本路径虽不消费投影行集缓存，但摘要构建的
+        # decrypt_summary 回写（分类名缓存等）与其它读路径共用同一 epoch 臂，
+        # 「读块后 invalidate」的模式分裂会误导后来者在新读路径复制旧位置——
+        # 前移统一后，任何读路径首次调用的重臂（清空+推进 version）都发生在其
+        # 拉取/解密之前，不废自己刚回填的缓存（PERF-086 的前移论证同源）。
+        self._cache.invalidate_if_epoch_changed()
         try:
             with self._vault.epoch_guarded_read():
                 raw_entries = self.db.get_entries(
                     # 字段序下推（PERF-073）：updated_at DESC 明文表达，替代原
-                    # sort_by_updated 布尔单字段特例。
+                    # sort_by_updated 布尔单字段特例。纯单列序不附加并列裁决键
+                    # （PERF-090）：本路径无内存对等路径，裁决键只会把
+                    # idx_entries_active_updated 的索引序下推退化为 filesort。
                     EntryQuery(
                         order_by="updated_at",
                         limit=limit,
@@ -1123,8 +1214,8 @@ class EntryManager:
                 # SEC-043 写入方世代：近期更新视图同样快照世代传入缓存回写（语义见
                 # get_entry_summaries 处注释），补齐 SEC-041 仅接搜索分支的遗留漏点。
                 data_epoch = self._vault.key_epoch
-            # 解密移出 db_lock（PERF-001），与 get_entry_summaries 一致；用锁内快照 key 解密。
-            self._cache.invalidate_if_epoch_changed()
+            # 解密移出 db_lock（PERF-001），与 get_entry_summaries 一致；用锁内快照 key
+            # 解密。epoch 已在读块前固定（见上方 ARCH-056 注释），此处不再重复校验。
             return [
                 self._view_decryptor.decrypt_summary(
                     entry,
@@ -1148,15 +1239,30 @@ class EntryManager:
         与 summary Entry。title 解密失败的条目摘要为空串，被调用方的
         ``if entry.title`` 前置过滤天然排除（与原摘要路径语义一致）。
 
+        行集拉取接投影行集缓存（ARCH-055）：键为「未删除全量 + 复合序」
+        （``(False, None, False, None, True)``，经 :func:`_projection_cache_key`
+        构造），与搜索路径的无排序投影同键复用——原直连
+        ``get_entries_search_projection`` 与 PERF-086 缓存路径并行，50k ~160ms
+        全量拉取每次重复支付、导入去重与前后脚的列表/搜索刷新无法互相摊销。
+        去重对照取「未删除」条目（与原实现一致）：回收站条目不参与覆盖判定，
+        导入同名条目仍走新增而非覆盖已删条目。invalidate_if_epoch_changed
+        前移至读块前（对齐 get_entry_summaries 的 PERF-086 前移论证：首次调用
+        的 epoch 重臂若发生在投影拉取之后，会把本次刚回填的投影行集一并清掉）。
+
         读路径经 :meth:`epoch_guarded_read` 守卫，语义与 :meth:`get_entry_summaries`
         一致（改密窗口内 epoch 不一致时返回空列表）。
         """
+        # 进读块前先固定本批缓存 epoch（PERF-086 前移，语义见 docstring）。
+        self._cache.invalidate_if_epoch_changed()
         try:
             with self._vault.epoch_guarded_read():
-                rows = self.db.get_entries_search_projection(EntryQuery(include_deleted=False))
+                query = EntryQuery(include_deleted=False)
+                rows = self._cache.search_projection_rows(
+                    _projection_cache_key(query),
+                    lambda: self.db.get_entries_search_projection(query),
+                )
                 key = self._key
                 data_epoch = self._vault.key_epoch
-            self._cache.invalidate_if_epoch_changed()
             result: list[tuple[str, str, int]] = []
             for row in rows:
                 if row.id is None:

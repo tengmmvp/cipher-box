@@ -52,7 +52,9 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
   - 条目子域：`totp_service`、`password_history_service`、`entry_batch_writer`（导入
     批量写入加密/落库编排，从 EntryManager 下沉，经 entry_mgr 参数注入加密原语；兼
     进度契约单一事实源：`phase_progress`/`should_report_progress` 供导入/导出/恢复
-    各 worker 消费，MAINT-099）、
+    各 worker 消费（MAINT-099），`write_chunks` 分块写入共享原语供覆盖写入/恢复重建
+    复用（MAINT-106），段表件 `ProgressSegment`/`segment_progress`/
+    `validate_progress_segments` 供三组加权刻度段表共用（MAINT-112））、
     `entry_search_match`（列表搜索与标签过滤的匹配谓词纯函数，UI 过滤与
     EntryManager 搜索热路径共用）、`entry_sorting`（条目排序键提取器纯函数，
     UI 重排序与 EntryManager 内存排序共用单一事实源，MAINT-104 迁出 managers）、
@@ -71,7 +73,8 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
     （恢复前载荷校验）、`paths`（备份文件命名约定）、`payload`（Portable
     系列 TypedDict 与 PreparedBackup 载荷类型）、`collector`（可移植数据采集 +
     `decrypt_entry_to_portable_dict` 整条解密 + 载荷大小校验）、`rebuilder`
-    （恢复重建纯变换：载荷→加密行逐表回写）、
+    （恢复重建纯变换：载荷→加密行逐表回写，条目写入经 `entry_batch_writer.
+    write_chunks` 分块上报（MAINT-106））、
     `auto_backup_policy`（自动备份间隔判定/retention 清理纯策略）、`purge`
     （备份目录策略与 snapshot/恢复点文件清理，下沉自 VaultManager）。
   - 限时加密共享子包 `share/`：`header_codec`（.cboxshare 二进制头编解码/密钥派生，头纳入
@@ -93,11 +96,12 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
 - **盐**：每个保险库 32 字节随机盐，存于 `vault_meta.master_salt`。
 - **密码验证**：不存哈希。加密一段已知明文（`VERIFY_PLAINTEXT`）作为验证令牌
   （`master_verify`），用 `hmac.compare_digest` 常数时间比对解密结果。
-- **HKDF 域分离**：主密钥与备份密钥共享同一 Argon2id 主材料（同 password+salt），
-  经不同 HKDF-Expand info（`_DOMAIN_INFO_MASTER` / `_DOMAIN_INFO_BACKUP`）派生，
-  域分离由 HKDF info 显式保证（不同 info → 输出独立），消除原先用 salt 字符串前缀
-  `b'backup:'` 做域分离的隐式碰撞假设。新增密钥域只需追加 info 常量并复用
-  `_hkdf_expand`。
+- **HKDF 域分离**：主密钥、备份密钥与共享包密钥共享同一 Argon2id 主材料（同
+  password+salt），经不同 HKDF-Expand info（`_DOMAIN_INFO_MASTER` /
+  `_DOMAIN_INFO_BACKUP` / `_DOMAIN_INFO_SHARE`，末者为限时加密共享包 `.cboxshare`
+  的派生域）派生，域分离由 HKDF info 显式保证（不同 info → 输出独立），消除原先
+  用 salt 字符串前缀 `b'backup:'` 做域分离的隐式碰撞假设。新增密钥域只需追加
+  info 常量并复用 `_hkdf_expand`。
 - **KDF 参数校验**：`MasterKeyManager._validate_params` 在派生前强制参数下限
   （`MIN_ARGON2_*`），防止 `vault_meta` 被篡改为弱参数。**注意**：即便参数被篡改，
   派生密钥会随之改变，导致 `master_verify` 解密失败 → 用户无法解锁（DoS），

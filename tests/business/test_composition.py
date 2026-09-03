@@ -8,6 +8,11 @@ build_business_context 注册三条安全相关不变量回调：
 三者若在重构中漏注册一行，会导致锁定后缓存残留明文（安全属性）。本测试以
 行为方式守护：填充缓存后触发 lock / change，断言对应缓存已清空。
 另守护装配约束（ARCH-043/044）：限流器组合根装配与防重入守卫。
+
+MAINT-095 豁免：本文件对装配内部形态（``_on_lock_callbacks`` /
+``_lifecycle/_assembly_db/_assembly_signer`` / ``_signing_key``）的直读属装配
+不变量白盒守护（守护对象即内部装配形态本身，无公开观察面），豁免类别与数量
+口径见 docs/audit_codes.md 的 MAINT-095 豁免台账（本文件属台账 C1 类）。
 """
 
 import pytest

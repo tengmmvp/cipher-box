@@ -14,8 +14,8 @@ from src.models import Entry
 
 @pytest.fixture
 def cache(entry_mgr):
-    """EntryManager 持有的 EntryCacheManager。"""
-    return entry_mgr._cache
+    """EntryManager 持有的 EntryCacheManager（公开只读 property，MAINT-095）。"""
+    return entry_mgr.cache
 
 
 class TestSearchMetadataCache:
@@ -140,7 +140,7 @@ class TestWriterEpochGuard:
         cache.invalidate_all()
         cache._vault.set_epoch("restored-e2")
         cache.invalidate_if_epoch_changed()
-        assert cache._cache_epoch == "restored-e2"
+        assert cache.cache_epoch == "restored-e2"  # 公开观察面（MAINT-095）
 
         # 旧 worker 回写（携带 E1 快照世代）：结果本身可正确解密，但守卫拒收入缓存
         meta = cache._cached_search_metadata_no_check(raw, key=key, data_epoch=old_epoch)
@@ -533,7 +533,7 @@ class TestSearchProjectionCache:
         entry_mgr.get_entry_summaries(search="alp")  # 冷：拉一次并回填缓存
         assert len(spy) == 1
 
-        entry_mgr._cache.pop_totp(1)  # 离开条目的 evict（entry_id 与库内条目无关）
+        entry_mgr.cache.pop_totp(1)  # 离开条目的 evict（entry_id 与库内条目无关）
         entry_mgr.get_entry_summaries(search="alp")
 
         assert len(spy) == 1  # 投影缓存仍命中，零重拉
@@ -547,7 +547,7 @@ class TestSearchProjectionCache:
         """
         entry_mgr.add_entry(Entry(title="Alpha", username="u", password="p"))
         entry_mgr.add_entry(Entry(title="Beta", username="u", password="p"))
-        cache = entry_mgr._cache
+        cache = entry_mgr.cache
         key = (False, None, False, None, True)
 
         def _fetch():
@@ -759,7 +759,7 @@ class TestDecryptTagsForDelta:
         entry_mgr.add_entry(Entry(title="A", username="u", password="p", tags="标签"))
         raw = entry_mgr.db.get_entries(EntryQuery())[0]
         # 直改 tags 密文为非法载荷（不重签）：GCM 认证必然失败
-        conn = entry_mgr.db._conn  # noqa: SLF001
+        conn = entry_mgr.db._conn
         conn.execute("UPDATE entries SET tags_enc=? WHERE id=?", ("cb2:garbage", raw.id))
         conn.commit()
 

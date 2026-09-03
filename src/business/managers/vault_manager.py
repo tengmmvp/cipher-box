@@ -89,6 +89,11 @@ class VaultManager:
         # 密钥版本轮换（备份恢复后）回调列表，与锁定回调分离（ARCH-003）：两类事件
         # 语义不同，拆为独立通道使注册方明确订阅意图。
         self._on_epoch_rotated_callbacks: list[Callable[[], None]] = []
+        # 写事务提交回调列表（SEC-063 统一失效 seam）：epoch_guarded_transaction
+        # 成功提交后触发。组合根注入缓存失效方（EntryCacheManager.clear_totp），
+        # 使任何写事务自动失效 TOTP secret 缓存，不再依赖各写路径散布的
+        # per-site 失效调用的「GUI 线程亲和」纪律（见 entry_cache ARCH-054）。
+        self._on_transaction_committed_callbacks: list[Callable[[], None]] = []
         self._cancel_event = threading.Event()  # close()/lock() 时设置，通知长操作提前终止
         # 生命周期编排器，经 attach_lifecycle 由组合根注入（创建 orchestrator 后立即
         # 调用）。以 LifecyclePort 协议持有，不依赖具体编排器类型。生命周期方法委托给它。
@@ -147,6 +152,24 @@ class VaultManager:
         分离，使注册方明确订阅意图。
         """
         self._on_epoch_rotated_callbacks.append(callback)
+
+    def register_on_transaction_committed(self, callback: Callable[[], None]) -> None:
+        """注册写事务成功提交后自动调用的回调（SEC-063 统一失效 seam）。
+
+        消费方为派生明文缓存的失效方（组合根注入 ``EntryCacheManager.clear_totp``）：
+        任何经 :meth:`epoch_guarded_transaction` 的写路径（单条更新/导入/恢复等）
+        提交后自动失效 TOTP secret 缓存，写路径遗漏 per-site 失效不再静默留下旧
+        secret 生成错误 2FA 码——此前五处失效形态各自正确仅靠线程模型纪律，下一个
+        移出 GUI 线程的写路径会静默复发（SEC-063 类 bug）。per-site 的
+        pop-before-write 保留为纵深：覆盖「写库 → 提交」间窗口（该窗口内定时器
+        命中缓存的旧 secret 生成过期码，seam 尚未触发）。
+
+        副作用评估：旁路写事务（如 toggle_favorite，不改 totp_secret）同样触发
+        clear_totp——展示中条目的 TOTP 下个定时器周期重解密一次（单字段 GCM
+        解密，低频交互下可接受；TOTP 缓存实践只有当前展示条目一条，O(缓存大小)
+        廉价）。错误 2FA 码的正确性代价远高于一次冗余失效。
+        """
+        self._on_transaction_committed_callbacks.append(callback)
 
     def invoke_epoch_rotated_callbacks(self) -> None:
         """触发全部密钥版本轮换回调（失效恢复后过期的明文/派生缓存）。"""
@@ -328,12 +351,21 @@ class VaultManager:
         则进入本上下文时快照。导入路径把加密移出 db_lock 后，须在加密前快照 pre_epoch
         并传入——若「加密后→开事务前」发生改密（epoch 已变），此处复查 snapshot（旧）
         与当前 key_epoch（新）不等而中止，避免旧密钥密文落到新 epoch 库。
+
+        事务**成功提交后**触发 ``register_on_transaction_committed`` 注册的回调
+        （SEC-063 统一失效 seam）：yield 块抛异常或 epoch 失配回滚时不触发。回调在
+        db_lock 释放后执行（事务上下文退出即释放），不与读路径守卫的锁序
+        （db_lock → cache 锁）反转。
         """
         snapshot = self.key_epoch if pre_epoch is None else pre_epoch
         with self.db.transaction():
             if self.key_epoch != snapshot:
                 raise VaultKeyEpochMismatchError(f"{operation}期间检测到密钥变更，已中止并回滚")
             yield
+        # 统一失效 seam（SEC-063 结构性根治）：提交成功且 db_lock 释放后触发——任何
+        # 写事务自动失效 TOTP secret 缓存，写路径遗漏 per-site 失效由 seam 兜底。回调
+        # 异常不中断后续回调（QL-014 同款），亦不影响调用方（事务已提交）。
+        self._invoke_callbacks(self._on_transaction_committed_callbacks, "事务提交回调")
 
     @contextmanager
     def epoch_guarded_read(self) -> Iterator[None]:

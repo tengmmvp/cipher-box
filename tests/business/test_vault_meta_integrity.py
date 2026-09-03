@@ -5,7 +5,8 @@
 
 双保险库形态（建库会话 + 重开会话）经 make_vault_env 两次调用同一 root 构造：
 第一个 env 初始化并 close 后，第二个 env 以 ``initialize=False`` 仅装配，凭主密码
-unlock。``db._conn`` 直写 SQL 属篡改注入点（MAINT-095 豁免）。
+unlock。``db._conn`` 直写 SQL 属篡改注入点（MAINT-095 豁免）；豁免类别与数量
+口径见 docs/audit_codes.md 的 MAINT-095 豁免台账（本文件属台账 C1 类）。
 """
 
 import pytest

@@ -6,12 +6,17 @@
 导入策略包对称）。新增导出格式只需新增策略函数并在 manager 增加薄编排方法。
 """
 
-from .base import CSV_SECRET_COLUMNS, csv_safe
+from .base import csv_safe
 from .csv_exporter import write_csv_entries
 from .json_exporter import write_json_entries
 
+# 包级 re-export 仅保留经包级导入消费的名字（MAINT-085 先例，MAINT-109 复核）：
+# write_csv_entries/write_json_entries 由 import_export 与 test_export_progress 经
+# ``from .exporters import ...`` 消费，csv_safe 由 test_csv_safe 经包级导入消费；
+# CSV_SECRET_COLUMNS 的唯一消费方（csv_exporter）直接从 ``.base`` 导入，包级
+# re-export 为零消费孤儿，已删（MAINT-109）。
+
 __all__ = [
-    "CSV_SECRET_COLUMNS",
     "csv_safe",
     "write_csv_entries",
     "write_json_entries",

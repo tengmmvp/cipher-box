@@ -81,7 +81,7 @@ from ..services.backup.validator import (
     validate_restore_data,
 )
 from ..services.crypto_utils import require_vault_key
-from ..services.entry_batch_writer import phase_progress
+from ..services.entry_batch_writer import ProgressSegment, segment_progress
 from ..services.error_messages import to_user_message
 from ..services.metadata_signer import VAULT_META_SIGNED_KEYS, MetadataSigner
 from ..services.password_service import PasswordService
@@ -105,40 +105,39 @@ logger = logging.getLogger(__name__)
 # - 重建历史段 80→95 拆加密 80→90 / 分组批量写入 90→95（加密逐条单字段为主导，
 #   写入按 entry 分组批量、组数远小于历史行数）。
 # MAINT-107：六段的 base/span 常量对（跨段相邻性 45+17==62 等纯手工维护）收敛为
-# 结构化段表 + 启动期相邻性校验 + 单一闭包工厂（见 _segment_progress_reporter）。
+# 结构化段表 + 启动期相邻性校验 + 单一闭包工厂（见 _segment_progress_reporter）；
+# MAINT-112 将段表行类型与段内映射下沉 entry_batch_writer 共享（导入/导出段表
+# 同型，见 ProgressSegment/segment_progress），本模块仅保留恢复特有的段表与校验。
 _RESTORE_PROGRESS_TOTAL = 100
 # 头部解析 + PASSWORD Argon2id 派生 + GCM 解密 + 结构校验完成（粗粒度单点上报）。
 _RESTORE_DECRYPT_DONE = 5
 
 
-class _ProgressSegment(NamedTuple):
-    """恢复加权进度的一个子段刻度（``base → base+span``，段表行）。"""
-
-    base: int
-    span: int
-
-
 class _RestoreSegments(NamedTuple):
-    """恢复全部子段刻度的具名视图（调用点按语义名取段，替代魔法索引）。"""
+    """恢复全部子段刻度的具名视图（调用点按语义名取段，替代魔法索引）。
 
-    point_entries: _ProgressSegment
-    point_history: _ProgressSegment
-    entries_encrypt: _ProgressSegment
-    entries_write: _ProgressSegment
-    history_encrypt: _ProgressSegment
-    history_write: _ProgressSegment
+    行类型用共享 :class:`entry_batch_writer.ProgressSegment`（MAINT-112 自本模块
+    下沉公开，与导入/导出段表同型）。
+    """
+
+    point_entries: ProgressSegment
+    point_history: ProgressSegment
+    entries_encrypt: ProgressSegment
+    entries_write: ProgressSegment
+    history_encrypt: ProgressSegment
+    history_write: ProgressSegment
 
 
 # 段表（次序即刻度次序，语义见上方 PERF-089 说明）：恢复点创建两段（条目/历史解密）、
 # 重建条目两段（加密/分块写入）、重建历史两段（加密/分组写入）；95→100 的事务后收尾
 # 段（WAL 截断/purge）由 _restore_current 的终值上报直接补足，不在表内。
 _RESTORE_SEG = _RestoreSegments(
-    point_entries=_ProgressSegment(5, 28),
-    point_history=_ProgressSegment(33, 12),
-    entries_encrypt=_ProgressSegment(45, 17),
-    entries_write=_ProgressSegment(62, 18),
-    history_encrypt=_ProgressSegment(80, 10),
-    history_write=_ProgressSegment(90, 5),
+    point_entries=ProgressSegment(5, 28),
+    point_history=ProgressSegment(33, 12),
+    entries_encrypt=ProgressSegment(45, 17),
+    entries_write=ProgressSegment(62, 18),
+    history_encrypt=ProgressSegment(80, 10),
+    history_write=ProgressSegment(90, 5),
 )
 
 
@@ -166,32 +165,24 @@ def _validate_restore_segments(
 _validate_restore_segments(_RESTORE_SEG, _RESTORE_DECRYPT_DONE, _RESTORE_PROGRESS_TOTAL)
 
 
-def _weighted_progress(base: int, span: int, done: int, total: int) -> int:
-    """把阶段内进度 ``(done/total)`` 映射为恢复加权总进度百分比。
-
-    薄委托 :func:`entry_batch_writer.phase_progress`（MAINT-099 共享单一事实源，
-    base/span 形态适配 start/end 形态）：与 import_export 的导入/导出刻度共用
-    同一映射语义（``total <= 0`` 空阶段取满、终值取满、整数下取整单调不降）。
-    """
-    return phase_progress(done, total, base, base + span)
-
-
 def _segment_progress_reporter(
     progress: Callable[[int, int], None] | None,
-    segment: _ProgressSegment,
+    segment: ProgressSegment,
 ) -> Callable[[int, int], None]:
     """构造把阶段内 ``(done, total)`` 映射到 ``segment`` 加权刻度的上报闭包（MAINT-107）。
 
     恢复点两段与重建四段的进度闭包 ~66 行复制体（仅 base/span 不同）收敛为
-    partial over base/span 的单一工厂（import_export._offset_phase_reporter 同型）；
-    ``progress`` 为 None 时闭包内跳过上报，与收敛前各闭包首行的 ``if progress
-    is not None`` 守卫逐点等价（无进度路径的下游回调形态不变）。
+    partial over segment 的单一工厂（import_export._offset_phase_reporter 同型）；
+    段内映射经共享 :func:`entry_batch_writer.segment_progress`（本模块原
+    ``_weighted_progress`` 薄委托随 MAINT-112 下沉，与 import_export 的
+    ``_phase_progress`` 收敛为同一实现）。``progress`` 为 None 时闭包内跳过上报，
+    与收敛前各闭包首行的 ``if progress is not None`` 守卫逐点等价（无进度路径的
+    下游回调形态不变）。
     """
-    base, span = segment
 
     def _report(done: int, total: int) -> None:
         if progress is not None:
-            progress(_weighted_progress(base, span, done, total), _RESTORE_PROGRESS_TOTAL)
+            progress(segment_progress(segment, done, total), _RESTORE_PROGRESS_TOTAL)
 
     return _report
 

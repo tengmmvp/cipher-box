@@ -7,7 +7,6 @@ CipherBox、无需联网。后台 worker 执行加密打包，无 vault 写入�
 
 from __future__ import annotations
 
-import logging
 import time
 from pathlib import Path
 from typing import cast
@@ -51,8 +50,6 @@ from ..resources.constants import (
 from ..resources.icons import GENERATE, set_icon_with_text
 from ..resources.strings import DLG_TITLE_INFO, DLG_TITLE_SUCCESS
 from ..resources.theme_colors import c
-
-logger = logging.getLogger(__name__)
 
 # 过期预设：(显示名, 相对秒数)；offset=0 表示永不过期（EXPIRE_NEVER）。
 _EXPIRY_OPTIONS: list[tuple[str, int]] = [

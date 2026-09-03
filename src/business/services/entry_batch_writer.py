@@ -74,6 +74,53 @@ def phase_progress(done: int, total: int, start: int, end: int) -> int:
     return start + (end - start) * done // total
 
 
+class ProgressSegment(NamedTuple):
+    """加权进度的一个子段刻度（``base → base+span``，段表行）。
+
+    MAINT-112 自 backup_restore 下沉公开（MAINT-107 首创私有形态）：恢复/导入/
+    导出三组加权刻度段表共用同一行类型，与 :func:`segment_progress`、
+    :func:`validate_progress_segments` 配套消费。
+    """
+
+    base: int
+    span: int
+
+
+def segment_progress(segment: ProgressSegment, done: int, total: int) -> int:
+    """把段内进度 ``(done/total)`` 映射为 ``[base, base+span]`` 的加权总进度值。
+
+    backup_restore._weighted_progress 与 import_export._phase_progress 两份逐字符
+    相同的薄委托（base/span 形态适配 :func:`phase_progress` 的 start/end 形态，
+    MAINT-099）随段表化收敛至此单一实现（MAINT-112）：空阶段/终值取段终点、
+    ``done <= 0`` 钳制段起点、整数下取整单调不降的语义均由 phase_progress 保证。
+    """
+    return phase_progress(done, total, segment.base, segment.base + segment.span)
+
+
+def validate_progress_segments(
+    segments: tuple[ProgressSegment, ...],
+    start: int,
+    end: int,
+) -> None:
+    """启动期校验段表契约：首段承接 ``start``、逐段无缝衔接、尾段精确止于 ``end``。
+
+    if+RuntimeError 形式（-O 存活，对齐 strings.py ARCH-040 形式，MAINT-112 随
+    导入/导出段表化自 backup_restore 的模块内校验推广共享）：跨段相邻性（如导入表
+    12+3==15）纯手工维护时一处手改即静默留缝隙（进度卡在缝隙点）或重叠（进度
+    回退），尾段不精确到达总刻度则终值跳变。恢复段表（backup_restore）尾段止于
+    95 < 100、须给收尾段留区间的不同语义不适用本函数，保留其模块内校验。
+    """
+    cursor = start
+    for seg in segments:
+        if seg.base != cursor:
+            raise RuntimeError(f"进度段表相邻刻度出现缝隙/重叠：{seg.base} != {cursor}")
+        if seg.span <= 0:
+            raise RuntimeError("进度段表段跨度须为正（零跨度段不上报中间值）")
+        cursor = seg.base + seg.span
+    if cursor != end:
+        raise RuntimeError(f"进度段表尾段终点 {cursor} 未精确到达终值 {end}")
+
+
 _RowT = TypeVar("_RowT")
 _ResultT = TypeVar("_ResultT")
 
@@ -220,7 +267,10 @@ def prepare_overwrite_updates(
     failures 仅收集验证/解密阶段的 EntryError / EntryIntegrityError / DecryptionError
     （数据问题，逐条跳过），元素为 ``(items 的 0 基索引, 异常)``（QL-062：消费方以其
     直接索引同序构建的覆盖计划列表）；写阶段错误由 :func:`write_overwrite_updates`
-    向上传播中止。pop_totp 在此阶段（加密前）失效缓存。
+    向上传播中止。pop_totp 在此阶段（加密前）失效缓存（SEC-063 前置清：本函数在
+    worker 线程锁外执行、与主线程 TOTP 定时器真实并发，须先失效使在飞解密回写被
+    版本守卫拒收）；写库提交后的失效由 ``VaultManager.epoch_guarded_transaction``
+    的统一 seam 承担（SEC-063 结构性根治，见 write_overwrite_updates 尾注释）。
 
     ``progress``（PERF-069）：提供时按已处理条目数（含失败项）上报 ``(done, total)``，
     每 ``PROGRESS_REPORT_EVERY`` 条节流、终值恒上报——纯覆盖导入（duplicate_action=
@@ -243,7 +293,11 @@ def prepare_overwrite_updates(
                 )
             if entry.id is None:
                 raise EntryError("覆盖条目缺少 id")
-            # 失效该条目的 TOTP secret 缓存，下次 TotpService 重新解密。
+            # 失效该条目的 TOTP secret 缓存（SEC-063 前置清，pop 先于写库对齐单条路径
+            # QL-070 时序）：本函数在 worker 线程锁外执行、与主线程 TOTP 定时器真实
+            # 并发，前置 pop 推进 TOTP 域版本使「窗口内重解密旧 secret 回写」被
+            # resolve/store 回写守卫拒收；写库提交后的失效由 epoch_guarded_transaction
+            # 的统一 seam 承担（SEC-063 结构性根治），此处不再后置逐条清。
             entry_mgr.totp.evict(entry.id)
             new_pwd_enc, password_changed = entry_mgr.prepare_password_update(
                 entry,
@@ -301,6 +355,14 @@ def write_overwrite_updates(
     update_overwrite_batch 并逐块上报 ``(done, total)``（与 write_new_entries 同款，
     分块仍处调用方事务内，原子性不变，循环体经 :func:`write_chunks` 共享——
     MAINT-106）；密码历史分组写入计入终值。
+
+    TOTP 缓存失效（SEC-063）：本函数不在写库后逐条 evict——提交后的失效由调用方
+    ``epoch_guarded_transaction`` 的统一 seam（VaultManager 事务提交回调清空 TOTP
+    缓存）承担，替代原「写库后对全部覆盖条目再 pop 一轮」的持锁 O(n) 循环
+    （PERF-093：50k 覆盖即 50k 次持锁 pop，实测 30-50ms 纯耗）。事务持 db_lock 期间
+    重解密读者阻塞至提交后见新行，seam 在提交后清空缓存使「prepare evict → 提交」
+    窗口内回写的旧 secret 必被逐出或被版本守卫拒收（论证见 prepare_overwrite_updates
+    与 VaultManager.epoch_guarded_transaction 注释）。
     """
     if not prepared:
         return 0
@@ -330,11 +392,14 @@ __all__ = [
     "BatchUpdateItem",
     "PreparedUpdate",
     "PROGRESS_REPORT_EVERY",
+    "ProgressSegment",
     "WRITE_PROGRESS_CHUNK",
     "encrypt_new_entries",
     "phase_progress",
     "prepare_overwrite_updates",
+    "segment_progress",
     "should_report_progress",
+    "validate_progress_segments",
     "write_chunks",
     "write_new_entries",
     "write_overwrite_updates",

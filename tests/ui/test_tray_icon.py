@@ -32,10 +32,18 @@ class TestTrayIcon:
         unlocked_image = _icon_image(tray.icon())
         tray.set_locked(True)
         assert tray.toolTip() == "CipherBox（已锁定）"
-        # 图标真实切换：与解锁态像素不同，且等于 LOCK（灰底 L）规格图标
+        # 图标真实切换：与解锁态像素不同，且等于 LOCK（灰底 L）规格图标。
+        # 期望值经 _create_icon 重建的半镜像独立性论证（QL-076）：期望侧的
+        # 颜色（text_muted）与文字（LOCK）由本测试独立选定，与 set_locked 的
+        # 实现来源不同——若 set_locked 改用其它颜色/文字，等值断言失败；已知
+        # 局限是 _create_icon 的绘制格式整体变化（尺寸/绘制库）时两侧同步漂移，
+        # 该风险由前两个不等/tooltip 断言（不经 _create_icon）独立兜底。
         locked_image = _icon_image(tray.icon())
         assert locked_image != unlocked_image
         assert locked_image == _icon_image(TrayIcon._create_icon(QColor(c("text_muted")), "LOCK"))
+        # 差分断言：锁定图标确按 text_muted（而非 brand 或其它）着色——与
+        # brand 色同文字产物不同，证明颜色真实参与且不是恒等比较
+        assert locked_image != _icon_image(TrayIcon._create_icon(QColor(c("brand")), "LOCK"))
 
     def test_set_locked_false_restores(self, qapp):
         """解锁态恢复默认图标与提示。"""
@@ -64,7 +72,9 @@ class TestTrayIcon:
         """color 参数兼容 str 形态（历史调用路径）。"""
         icon = TrayIcon._create_icon(QColor(c("brand")).name(), "C")
         assert not icon.isNull()
-        # str 与 QColor 入参产物一致（历史路径等价性）
+        # str 与 QColor 入参产物一致（历史路径等价性）。两侧同经 _create_icon
+        # 是本断言的目的本身（等价性契约，QL-076 独立性论证）：被测对象就是
+        # 「同一函数对两种入参形态的归一」，不存在不经该函数的独立期望构造。
         assert _icon_image(icon) == _icon_image(TrayIcon._create_icon(QColor(c("brand")), "C"))
 
     def test_double_click_emits_show_window(self, qapp):

@@ -298,22 +298,17 @@ class TestInMemorySortPath:
         assert [r.title for r in full] == ["alpha", "middle", "zebra"]
 
     def test_title_order_matches_legacy_full_path(self):
-        """标题序新路径与「全量拉取 + UI sort_entries」结果等价（PERF-078 核心声明）。
+        """标题序新路径与「全量拉取 + entry_sort_key 内存排序」等价（PERF-078 核心声明）。
 
-        UI 的排序键 (e.title or "").lower() 与 manager 的 meta.title_lower 同源
-        （同一解密缓存），两路径对同一数据的前 N 集合与顺序一致。
+        对照组复现旧 UI 路径的键语义 ``(e.title or "").lower()``（原
+        EntryListController.sort_entries 的实现，已随 QL-074 删除；键函数
+        entry_sort_key 与 manager 的 meta.title_lower 同源——同一解密缓存），
+        两路径对同一数据的前 N 集合与顺序一致。
         """
-        from unittest.mock import MagicMock
-
-        from src.ui.controllers.entry_list_controller import EntryListController
+        from src.business.services.entry_sorting import entry_sort_key
 
         legacy_full = self._entry_mgr.get_entry_summaries()
-        legacy_sorted = EntryListController(
-            MagicMock(), MagicMock(), MagicMock()
-        ).sort_entries(
-            list(legacy_full),
-            3,  # sort_index 3 = 标题 Z→A
-        )[:2]
+        legacy_sorted = sorted(list(legacy_full), key=entry_sort_key("title"), reverse=True)[:2]
 
         new_path = self._entry_mgr.get_entry_summaries(order_by="title", order_desc=True, limit=2)
         assert [r.id for r in new_path] == [r.id for r in legacy_sorted]

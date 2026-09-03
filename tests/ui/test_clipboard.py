@@ -3,12 +3,12 @@
 覆盖剪贴板复制与读取、自动清空计时器启停、取消清空、仅清空匹配内容以避免
 误清用户后续复制，以及空字符串不触发清空等核心行为。
 
-MAINT-095 豁免说明：``_last_text_hash`` / ``_timer.isActive`` 的直读属**白盒安全
-属性守护**——「复制后 hash 已设置（仅清本会话写入内容）/ 定时器已启动（密码不会
-无限期驻留）/ 空串不设置 hash」是明文残留防护的内部不变量，无公开观察面；为观测
-而暴露 hash 本体或定时器会扩大敏感状态暴露面，故保留私有直读（豁免于「测试断言
-内部状态须走观察 property」判据）。可走公开面的操作（teardown 停表 → cancel、
-主动清空 → clear_now）一律用公开 API。
+MAINT-095 豁免说明：定时器启停观测走公开只读 ``clear_scheduled``（布尔观察面，
+与暴露 QTimer 本体相比不扩大敏感状态暴露面）；``_last_text_hash`` 的直读仍属
+**白盒安全属性守护**——「复制后 hash 已设置（仅清本会话写入内容）/ 空串不设置
+hash」是明文残留防护的内部不变量，hash 本体无公开观察面且不应外露。其余豁免
+类别与数量口径见 docs/audit_codes.md 的 MAINT-095 豁免台账。可走公开面的操作
+（teardown 停表 → cancel、主动清空 → clear_now）一律用公开 API。
 """
 
 import hmac
@@ -94,8 +94,8 @@ class TestClipboardManager:
         self.mgr.clear_seconds = 5
         self.mgr.copy_text("secret")
 
-        # 白盒豁免（见模块 docstring）：定时器启动是「密码不会无限期驻留」的守护
-        assert self.mgr._timer.isActive(), "Timer should be active after copy"
+        # 公开观察面 clear_scheduled（MAINT-095）：定时器启动是「密码不会无限期驻留」的守护
+        assert self.mgr.clear_scheduled, "Timer should be active after copy"
         self.mgr.cancel()
 
     # ---- 取消清空 ----
@@ -105,10 +105,10 @@ class TestClipboardManager:
         self.mgr.clear_seconds = 10
         self.mgr.copy_text("secret")
 
-        # 白盒豁免（见模块 docstring）：定时器启停状态无公开观察面
-        assert self.mgr._timer.isActive()
+        # 公开观察面 clear_scheduled（MAINT-095）
+        assert self.mgr.clear_scheduled
         self.mgr.cancel()
-        assert not self.mgr._timer.isActive(), "Timer should be stopped after cancel"
+        assert not self.mgr.clear_scheduled, "Timer should be stopped after cancel"
 
     # ---- 仅清空匹配内容 ----
 
@@ -137,7 +137,7 @@ class TestClipboardManager:
         # _last_text_hash 应保持初始空值，未被设置（白盒豁免，见模块 docstring：
         # 「空串不设 hash」是后续 clear 判定的安全前提）
         assert self.mgr._last_text_hash == b""
-        assert not self.mgr._timer.isActive()
+        assert not self.mgr.clear_scheduled
 
     # ---- fail-safe：text() 抛错时强制清空 ----
 

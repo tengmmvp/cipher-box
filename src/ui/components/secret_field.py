@@ -1,10 +1,11 @@
-"""敏感字段行的共享构建逻辑。
+"""字段行（敏感/普通）的共享构建逻辑。
 
-DetailPanel 的敏感字段（含主密码）、CustomFieldsRenderer 的自定义字段与
-PasswordHistoryWidget 的历史密码行共用此模块，消除三处重复的掩码标签、
+DetailPanel 的敏感字段（含主密码）与普通字段、CustomFieldsRenderer 的自定义
+字段与 PasswordHistoryWidget 的历史密码行共用此模块，消除多处重复的掩码标签、
 显示/隐藏按钮、复制按钮与间接引用闭包逻辑（MAINT-103 收敛：掩码常量与
 ``sip.isdeleted`` 竞态守卫此前在 detail_panel 主密码分支与 password_history
-各自平行实现）。
+各自平行实现；MAINT-113 收敛：普通字段行的复制按钮四件套此前在 detail_panel
+与 custom_fields_renderer 近逐行双胞胎，且 renderer 侧复制闭包缺失守卫）。
 
 两种自动掩码定时器模式：
 
@@ -25,6 +26,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QObject, QTimer
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QWidget
 
+from ...utils.memory import mark_secret_discarded
 from ..resources.constants import BTN_COPY, PWD_MASK
 from ..resources.icons import COPY, EYE, LOCK, set_icon
 from .widgets import create_plain_text_label
@@ -32,28 +34,93 @@ from .widgets import create_plain_text_label
 _StoreKey = TypeVar("_StoreKey")
 
 
+class RowValueStore:
+    """int 行号键控的间接引用明文 holder（MAINT-115）：行号分配、存取与安全清零。
+
+    detail_panel 的主条目普通字段与 custom_fields_renderer 的敏感/普通自定义字段
+    此前各持「dict + 计数器 + mark_secret_discarded 清理块」三件套逐字重复——安全
+    纪律（明文丢弃与计数复位须成对）的双份漂移面；收敛为单一 holder 后一处维护。
+    行构建环境（PlainFieldEnv/SecretFieldEnv）经 :attr:`store` 持字典引用，清零仍
+    须经 :meth:`clear` 收口（含计数复位）。
+    """
+
+    def __init__(self) -> None:
+        self._values: dict[int, str] = {}
+        self._next_row = 0
+
+    @property
+    def store(self) -> dict[int, str]:
+        """间接引用字典本体（行构建环境注入用；清零须经 clear 收口，勿直改）。"""
+        return self._values
+
+    def next_key(self) -> int:
+        """分配下一个行号（会话内单调递增，clear 后复位）。"""
+        key = self._next_row
+        self._next_row += 1
+        return key
+
+    def clear(self) -> None:
+        """逐值 mark_secret_discarded 后清空并复位行号（切换条目/锁定时调用）。"""
+        for key in list(self._values):
+            mark_secret_discarded(self._values[key])
+        self._values.clear()
+        self._next_row = 0
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+
+def _make_icon_btn(tooltip: str, icon_name: str = COPY) -> QPushButton:
+    """构造字段行的图标按钮（iconBtn + BTN_COPY 尺寸 + 图标 + 提示，MAINT-115）。
+
+    敏感行的显示/隐藏与复制按钮、普通字段行的复制按钮三处同配方收敛（原三份
+    逐字拷贝）；返回未连接 clicked 信号的按钮，由调用方按需连接。
+    """
+    btn = QPushButton()
+    set_icon(btn, icon_name)
+    btn.setObjectName("iconBtn")
+    btn.setFixedSize(*BTN_COPY)
+    btn.setToolTip(tooltip)
+    return btn
+
+
+def _make_guarded_copy(
+    copy_btn: QPushButton,
+    on_copy: Callable[[QPushButton, str], None],
+    get_value: Callable[[], str],
+) -> Callable[[], None]:
+    """构造带 ``sip.isdeleted`` 竞态守卫的复制点击处理闭包（守卫单一事实源）。
+
+    守卫对齐同工厂 ``_mask_row``/``_toggle`` 的形态：点击复制后同事件循环周期内
+    按钮可能已被 ``deleteLater``（切换条目 force 重建/锁定清理），销毁窗口期内
+    投递的挂起 ``clicked`` 事件仍会触发本处理函数——对已删 C++ 对象调用
+    ``on_copy``（其内 ``set_icon`` 写反馈图标）抛 ``RuntimeError``，PyQt6 槽内
+    未捕获异常直接 qFatal 中止应用。敏感行与普通字段行的复制按钮共用本工厂
+    （MAINT-113：普通字段行原两份平行闭包中 renderer 侧缺失此守卫）。模块级
+    工厂而非行内闭包：守卫行为需要测试直接驱动（按钮销毁后调用闭包不抛），
+    行内闭包无外部引用不可达。
+    """
+
+    def _copy(_checked: bool = False) -> None:
+        # 控件可能已被 `deleteLater`，挂起点击事件触发时用 `sip.isdeleted` 守卫跳过
+        if sip.isdeleted(copy_btn):
+            return
+        on_copy(copy_btn, get_value())
+
+    return _copy
+
+
 def _make_copy_secret(
     env: SecretFieldEnv[_StoreKey],
     store_key: _StoreKey,
     copy_btn: QPushButton,
 ) -> Callable[[], None]:
-    """构造复制按钮的点击处理闭包（含 ``sip.isdeleted`` 竞态守卫，MAINT-103）。
+    """构造敏感字段行复制按钮的点击处理闭包（MAINT-103，委托 :func:`_make_guarded_copy`）。
 
-    守卫对齐同工厂 ``_mask_row``/``_toggle`` 的形态：点击复制后同事件循环周期内
-    按钮可能已被 ``deleteLater``（切换条目 force 重建/锁定清理），销毁窗口期内
-    投递的挂起 ``clicked`` 事件仍会触发本处理函数——对已删 C++ 对象调用
-    ``env.on_copy``（其内 ``set_icon`` 写反馈图标）抛 ``RuntimeError``，PyQt6 槽内
-    未捕获异常直接 qFatal 中止应用。模块级工厂而非行内闭包：守卫行为需要测试
-    直接驱动（按钮销毁后调用闭包不抛），行内闭包无外部引用不可达。
+    模块级工厂而非行内闭包：守卫行为需要测试直接驱动（按钮销毁后调用闭包
+    不抛），行内闭包无外部引用不可达。
     """
-
-    def _copy_secret(_checked: bool = False) -> None:
-        # 控件可能已被 `deleteLater`，挂起点击事件触发时用 `sip.isdeleted` 守卫跳过
-        if sip.isdeleted(copy_btn):
-            return
-        env.on_copy(copy_btn, env.store.get(store_key, ""))
-
-    return _copy_secret
+    return _make_guarded_copy(copy_btn, env.on_copy, lambda: env.store.get(store_key, ""))
 
 
 class SharedHideTimer:
@@ -179,11 +246,7 @@ def make_secret_field_row(
         val_label.setObjectName("secretValue")
     row_layout.addWidget(val_label, 1)
 
-    show_btn = QPushButton()
-    set_icon(show_btn, EYE)
-    show_btn.setObjectName("iconBtn")
-    show_btn.setFixedSize(*BTN_COPY)
-    show_btn.setToolTip("显示/隐藏")
+    show_btn = _make_icon_btn("显示/隐藏", EYE)
 
     env.store[store_key] = value
 
@@ -243,14 +306,76 @@ def make_secret_field_row(
     show_btn.clicked.connect(_toggle)
     row_layout.addWidget(show_btn)
 
-    copy_btn = QPushButton()
-    set_icon(copy_btn, COPY)
-    copy_btn.setObjectName("iconBtn")
-    copy_btn.setFixedSize(*BTN_COPY)
-    copy_btn.setToolTip("复制密码")
+    copy_btn = _make_icon_btn("复制密码")
 
     copy_btn.clicked.connect(_make_copy_secret(env, store_key, copy_btn))
     copy_btn.clicked.connect(env.on_copy_feedback)
     row_layout.addWidget(copy_btn)
+
+    return name_label, row_widget
+
+
+@dataclass(frozen=True)
+class PlainFieldEnv:
+    """普通字段行构建的共享环境（间接引用字典/复制回调，MAINT-113）。
+
+    与 :class:`SecretFieldEnv` 同构的最小聚合：``store`` 由调用方持有（两个构造点
+    均为 :class:`RowValueStore` 的行号键控字典，MAINT-115），以便切换条目/锁定时
+    统一 ``mark_secret_discarded`` 清零；``on_copy_feedback`` 为 None 时复制按钮
+    不连线反馈信号（custom_fields_renderer 的普通自定义字段保持原「复制不提示」
+    行为，detail_panel 主条目普通字段传入经状态栏提示）。不泛型化键型（MAINT-115）：
+    两个构造点均为 ``dict[int, str]``，TypeVar 暗示的键型多样性不存在；敏感行
+    :class:`SecretFieldEnv` 保持泛型（detail_panel 用 str 标签名键控）。
+    """
+
+    store: dict[int, str]
+    on_copy: Callable[[QPushButton, str], None]
+    on_copy_feedback: Callable[[], None] | None = None
+
+
+def make_plain_field_row(
+    env: PlainFieldEnv,
+    label_text: str,
+    value: str,
+    store_key: int,
+    *,
+    copyable: bool = True,
+) -> tuple[QLabel, QWidget]:
+    """构建一个普通字段行：名称标签 + 明文值标签 + 可选复制按钮（MAINT-113）。
+
+    原两份近逐行相同的实现（detail_panel 的账号行与 custom_fields_renderer 的
+    非密码自定义字段行）收敛于此：明文经 ``env.store[store_key]`` 间接引用
+    （与敏感字段行同构），复制处理闭包经 :func:`_make_guarded_copy` 带
+    ``sip.isdeleted`` 竞态守卫——renderer 侧原闭包缺失守卫，按钮销毁窗口期内
+    挂起 ``clicked`` 投递会直达 ``on_copy`` 内的反馈图标写入。
+
+    Args:
+        env: 跨行共享的环境（间接引用字典、复制回调）。
+        label_text: 字段显示名称。
+        value: 字段明文值。
+        store_key: ``env.store`` 中存储 value 的行号键，调用方保证唯一。
+        copyable: 是否附带复制按钮；仅 ``copyable and value`` 时写 store 并建按钮。
+    """
+    # 名称与值均可能承载用户/导入数据（字段名 / username 等明文），PlainText
+    # 防富文本注入（SEC-030）
+    name_label = create_plain_text_label(f"{label_text}：", "fieldLabel")
+
+    row_widget = QWidget()
+    row_layout = QHBoxLayout(row_widget)
+    row_layout.setContentsMargins(0, 0, 0, 0)
+
+    val_label = create_plain_text_label(value, "fieldValue", word_wrap=True)
+    row_layout.addWidget(val_label, 1)
+
+    if copyable and value:
+        env.store[store_key] = value
+        copy_btn = _make_icon_btn("复制")
+
+        copy_btn.clicked.connect(
+            _make_guarded_copy(copy_btn, env.on_copy, lambda: env.store.get(store_key, ""))
+        )
+        if env.on_copy_feedback is not None:
+            copy_btn.clicked.connect(env.on_copy_feedback)
+        row_layout.addWidget(copy_btn)
 
     return name_label, row_widget

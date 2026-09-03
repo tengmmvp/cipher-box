@@ -334,7 +334,9 @@ class TestTOTPWidget:
         assert (w._bar.minimum(), w._bar.maximum()) == (0, 30)
         assert w._timer.isActive()
         assert layout.count() == 1
-        mgr.totp.get_state.assert_called_once_with(9, preloaded_secret=None, data_epoch=None)
+        mgr.totp.get_state.assert_called_once_with(
+            9, preloaded_secret=None, data_epoch=None, data_version=None
+        )
 
     def test_start_forwards_preloaded_secret(self, qapp):
         """调用方已解密的 secret 经 preloaded_secret 透传，避免二次解密。"""
@@ -345,7 +347,7 @@ class TestTOTPWidget:
         w.start(3, mgr, layout, secret="JBSWY3DPEHPK3PXP")  # type: ignore[arg-type]
 
         mgr.totp.get_state.assert_called_once_with(
-            3, preloaded_secret="JBSWY3DPEHPK3PXP", data_epoch=None
+            3, preloaded_secret="JBSWY3DPEHPK3PXP", data_epoch=None, data_version=None
         )
 
     def test_start_forwards_data_epoch_snapshot(self, qapp):
@@ -363,7 +365,27 @@ class TestTOTPWidget:
         )
 
         mgr.totp.get_state.assert_called_once_with(
-            3, preloaded_secret="JBSWY3DPEHPK3PXP", data_epoch="epoch-abc"
+            3, preloaded_secret="JBSWY3DPEHPK3PXP", data_epoch="epoch-abc", data_version=None
+        )
+
+    def test_start_forwards_data_version_snapshot(self, qapp):
+        """secret 解密时点的 TOTP 域版本经 data_version 透传（SEC-063 b 层），
+        预热写入按版本复查。"""
+        _parent, layout = _make_container(qapp)
+        w = TOTPWidget()
+        mgr = _make_totp_mgr(_valid_state())
+
+        w.start(
+            3,
+            mgr,
+            layout,
+            secret="JBSWY3DPEHPK3PXP",  # type: ignore[arg-type]
+            data_epoch="epoch-abc",
+            data_version=7,
+        )
+
+        mgr.totp.get_state.assert_called_once_with(
+            3, preloaded_secret="JBSWY3DPEHPK3PXP", data_epoch="epoch-abc", data_version=7
         )
 
     def test_refresh_updates_code_and_countdown(self, qapp):

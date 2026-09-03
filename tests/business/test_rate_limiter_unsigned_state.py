@@ -137,3 +137,77 @@ class TestSessionOnlyKeyDoesNotPersist:
         recovered = RateLimiter(state, recovered_config)
         assert recovered.check() is None
         assert recovered.fail_count == 0  # 公开观察面（MAINT-095）
+
+
+class TestUnsignedStateFileTrustedAtFaceValue:
+    """读侧对无法验签状态文件的按面值采信（SEC-064 权衡修正）。
+
+    ``_signing_key is None``（session_only / 密钥获取异常 / 无 config）而磁盘状态
+    文件存在时，文件内容无法验签。曾按「无法验证即不信任」降级最高阶梯锁定
+    （600 秒），但这会**确定性**误伤诚实降级会话——磁盘上留有上次正常会话的
+    合法签名状态文件，而 ``_save_state`` 无签名密钥时不落盘（SEC-042），文件
+    永不重签，每次启动都重复零失败锁定，打破 SEC-057「避免每次启动误锁」承诺。
+    篡改被采信需要「签名密钥故障 + 文件被篡改」双条件同时成立，前者不可由
+    攻击者诱发——权衡后采信内容并记 WARNING；内容损坏仍走损坏分支保守锁定。
+    """
+
+    def test_unsigned_state_file_with_no_config_trusted_at_face_value(self, tmp_path):
+        """无 config + 磁盘存在（上次正常会话遗留）状态文件 → 内容按面值采信，不误锁。"""
+        state = tmp_path / "login_rate_limit.json"
+        # 上次正常会话遗留形态：格式合法 JSON（本会话无法验签其签名）
+        state.write_text('{"fail_count": 2, "remaining_seconds": 0}', encoding="utf-8")
+
+        rl = RateLimiter(state)  # 无 config → _signing_key None
+        assert rl._signing_key is None
+        # 内容按面值采信：计数照常恢复、不叠加误锁
+        assert rl.fail_count == 2
+        assert rl.check() is None  # 无锁定
+        # SEC-042：无签名密钥不落盘——文件保持原样（不产生无签名新形态）
+        assert state.read_text(encoding="utf-8").startswith("{")
+        assert "#__sig__:" not in state.read_text(encoding="utf-8")
+
+    def test_unsigned_state_file_with_broken_key_config_trusted(self, tmp_path):
+        """config 注入但取密钥异常（瞬时故障）+ 磁盘存在状态文件 → 同样按面值采信。"""
+        state = tmp_path / "login_rate_limit.json"
+        state.write_text('{"fail_count": 3, "remaining_seconds": 0}', encoding="utf-8")
+
+        rl = RateLimiter(state, config=_BrokenKeyConfig())  # type: ignore[arg-type]
+        assert rl._signing_key is None
+        assert rl.fail_count == 3
+        assert rl.check() is None
+
+    def test_unsigned_corrupt_content_still_degrades_to_max_lockdown(self, tmp_path):
+        """按面值采信不豁免损坏分支：内容非法 JSON → 保守降级最高阶梯锁定。"""
+        from src.config import RATE_LIMITS
+
+        state = tmp_path / "login_rate_limit.json"
+        state.write_text("not-a-json{{{", encoding="utf-8")
+
+        rl = RateLimiter(state)  # 无 config → 无法验签，内容损坏走损坏分支
+
+        assert rl.fail_count == RATE_LIMITS[-1][0]
+        assert rl.check() is not None
+
+    def test_signed_state_with_valid_key_still_trusted(self, tmp_path, monkeypatch):
+        """对照：签名密钥可用时，合法签名的既有状态照常加载（守卫不误伤正常路径）。"""
+        import hashlib
+        import hmac as hmac_mod
+
+        from tests.helpers import make_test_config
+
+        # 真实 ConfigManager + 健康密钥链（win32 上 DPAPI、其他平台视 keyring 可用性）
+        # 简化：直接用内存签名密钥构造已签名文件（签名/验签路径单测见 test_rate_limiter）。
+        state = tmp_path / "login_rate_limit.json"
+        payload = '{"fail_count": 2, "remaining_seconds": 0}'
+        key = b"k" * 32
+        sig = hmac_mod.new(key, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        state.write_text(f"{payload}\n#__sig__:{sig}", encoding="utf-8")
+
+        cfg = make_test_config(tmp_path)
+        # 注入已知签名密钥（绕过平台密钥链，专注读侧验签分支的行为对照）
+        monkeypatch.setattr(type(cfg), "integrity_key", property(lambda self: key))
+
+        rl = RateLimiter(state, config=cfg)
+        assert rl._signing_key == key
+        assert rl.fail_count == 2  # 合法签名内容被采信
+        assert rl.check() is None

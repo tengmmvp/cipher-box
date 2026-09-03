@@ -20,6 +20,10 @@ business→config 单向、不反向 import）。
   启动必被判损坏），内存密钥仅本会话有效并记 CRITICAL；下次启动重新生成新密钥。
   绝不阻断启动。该会话级降级经 ``session_only`` 标记对外可见（SEC-057）：签名方
   （如 RateLimiter）据此拒绝以临时密钥签名落盘，避免下次启动签名失配误判。
+- **写盘失败**（SEC-065）：密钥文件写入抛 OSError（磁盘满/只读介质——Windows 的
+  DPAPI 封装写盘与非 Windows 的明文回退写盘两个分支）同样降级会话级（内存密钥 +
+  CRITICAL + ``session_only``），绝不阻断启动——经 ``ConfigManager.__init__`` 的
+  启动链此前对该异常全链无捕获，启动即崩。
 
 非 Windows 的明文回退在 keyring 恢复可用后一次性回迁系统密钥链并清理明文文件
 （SEC-003 粘滞修复），使平台安全存储保护对「keyring 曾故障」的安装重新生效。
@@ -63,7 +67,9 @@ class ConfigKeyStore:
     def __init__(self, key_path: Path, data_dir: Path) -> None:
         self._key_path = key_path
         self._data_dir = data_dir
-        # 会话级临时密钥标记（SEC-057）：仅 Windows DPAPI protect 失败分支置位。
+        # 会话级临时密钥标记（SEC-057）：三处持久化失败分支置位——Windows DPAPI
+        # protect 失败（SEC-055）、平台安全存储写盘 OSError（SEC-065）、非 Windows
+        # 明文回退写盘 OSError（SEC-065），统一经 _degrade_to_session_only 收口。
         self._session_only = False
 
     @property
@@ -75,10 +81,12 @@ class ConfigKeyStore:
     def session_only(self) -> bool:
         """当前密钥是否为平台安全存储不可用时的会话级临时密钥（SEC-057）。
 
-        True 表示 DPAPI protect 失败、密钥未能持久化（SEC-055 降级）——本会话签名
-        的任何内容下次启动都会因密钥重新生成而失配。签名落盘方（如 RateLimiter 状态
-        文件）应据此拒绝落盘，改走仅内存路径；经 :class:`src.config.ConfigManager`
-        的 ``session_only`` property 透出。
+        True 表示密钥未能持久化到任何持久位置——Windows DPAPI protect 失败
+        （SEC-055 降级）或密钥文件写盘 OSError（SEC-065 的 DPAPI 封装写盘 /
+        非 Windows 明文回退写盘两个分支）——本会话签名的任何内容下次启动都会
+        因密钥重新生成而失配。签名落盘方（如 RateLimiter 状态文件）应据此拒绝
+        落盘，改走仅内存路径；经 :class:`src.config.ConfigManager` 的
+        ``session_only`` property 透出。
         """
         return self._session_only
 
@@ -105,7 +113,20 @@ class ConfigKeyStore:
         if key is not None and len(key) == _KEY_SIZE:
             return key
         key = os.urandom(_KEY_SIZE)
-        if not self._store_secure_integrity_key(key):
+        try:
+            stored = self._store_secure_integrity_key(key)
+        except OSError:
+            # 平台安全存储写盘抛 OSError（SEC-065）：Windows 上 protect 成功但
+            # _write_integrity_key_file 的 atomic_write（secure_file strict=True）
+            # 在磁盘满/只读介质上抛出——沿调用链（ConfigManager.__init__ → 本方法）
+            # 此前全链无捕获，启动即崩，违背「绝不阻断启动」契约。与 protect 失败
+            # 同款降级：内存密钥本会话运行 + session_only 置位（签名落盘方拒以临时
+            # 密钥签名，SEC-057），CRITICAL 如实暴露持久化失败。
+            self._degrade_to_session_only(
+                "签名密钥安全持久化写盘失败（磁盘满/只读介质），config.key 未写入"
+            )
+            return key
+        if not stored:
             if sys.platform == "win32":
                 # win32 明文回退名存实亡（SEC-055）：读侧只认 DPAPI 封装（SEC-052），
                 # 「写明文 32 字节 + 下次判损坏」的组合会使用户看到假「配置文件完整
@@ -118,24 +139,47 @@ class ConfigKeyStore:
                 # 据此拒绝以临时密钥签名落盘——本会话落盘的状态文件下次启动必因密钥
                 # 重新生成而验签失配，按 SEC-029 保守分支降级最高阶梯锁定（15 次 /
                 # 600 秒），DPAPI 持续故障时用户每次启动都要白等 10 分钟。
-                self._session_only = True
-                logger.critical(
+                self._degrade_to_session_only(
                     "签名密钥未能经 DPAPI 安全持久化（protect 调用失败）：本次会话"
-                    "以内存密钥运行、config.key 未写入；下次启动将重新生成新密钥，"
-                    "既有 config/限流状态签名会如实报告失配。请检查系统 DPAPI 服务"
-                    "可用性"
+                    "以内存密钥运行、config.key 未写入。请检查系统 DPAPI 服务可用性"
                 )
                 return key
             # keyring 不可用（非 Windows）：回退明文 0600。本地有读权限者可重算签名
             # 伪造安全配置（SEC-003）。_write_integrity_key_file 经 atomic_write 创建
             # 即 0600，消除世界可读窗口（SEC-015）。ERROR 使降级可见，提示启用系统
             # 密钥链。
-            self._write_integrity_key_file(key)
+            try:
+                self._write_integrity_key_file(key)
+            except OSError:
+                # 明文回退同样写盘失败（SEC-065，磁盘满/只读介质）：与平台安全存储
+                # 写盘失败同款会话级降级，绝不因密钥持久化失败阻断启动。
+                self._degrade_to_session_only(
+                    "签名密钥明文回退写盘失败（磁盘满/只读介质），config.key 未写入"
+                )
+                return key
             logger.error(
                 "签名密钥回退明文存储（平台安全存储不可用）：本地读权限者可重算"
                 "签名篡改安全配置，建议启用系统密钥链（SEC-003）"
             )
         return key
+
+    def _degrade_to_session_only(self, reason: str) -> None:
+        """密钥未能持久化时的会话级降级（SEC-055/057/065 统一收口）。
+
+        三处降级共用：Windows protect 失败（SEC-055）、平台安全存储写盘 OSError
+        （SEC-065）、非 Windows 明文回退写盘 OSError（SEC-065）——共同语义是密钥
+        未落到任何持久位置、仅本会话有效。置位 ``session_only`` 使签名落盘方（如
+        RateLimiter 状态文件）拒以临时密钥签名落盘（SEC-057：本会话签名的内容下次
+        启动必因密钥重新生成而验签失配，按 SEC-029 保守分支降级最高阶梯锁定）；
+        CRITICAL 如实暴露「密钥未能持久化」，下次启动重新生成，既有签名失配告警
+        与本条日志共同构成可诊断的诚实信号。
+        """
+        self._session_only = True
+        logger.critical(
+            "%s：本次会话以内存密钥运行；下次启动将重新生成新密钥，既有 config/"
+            "限流状态签名会如实报告失配",
+            reason,
+        )
 
     def _load_secure_integrity_key(self) -> bytes | None:
         """从平台安全存储读取签名密钥，损坏或缺失返回 None。"""
@@ -217,11 +261,37 @@ class ConfigKeyStore:
             return self._load_plaintext_integrity_key()
         if value:
             try:
-                return base64.b64decode(value, validate=True)
+                key = base64.b64decode(value, validate=True)
             except ValueError:
                 # binascii.Error IS-A ValueError
                 logger.warning("keyring 中签名密钥损坏，将生成新密钥")
                 return None
+            if len(key) != _KEY_SIZE:
+                # 可解码但长度错（SEC-067 修复）：按损坏记录处理走新生成——且清理
+                # 明文残留文件的前置条件是「keyring 命中**有效**密钥」（长度校验须
+                # 先于 secure_delete）。原实现先删明文文件再由 load_or_create 验长度，
+                # keyring 值损坏（可解码但非 32 字节）时会把可能唯一有效的明文回退
+                # 密钥一并销毁——K1 签名链锁死在断裂态（config 完整性告警 + 限流状态
+                # 失配），且明文文件已删无自愈路径。
+                logger.warning("keyring 中签名密钥长度异常，将生成新密钥")
+                return None
+            # keyring 命中（密钥有效）时的明文残留统一清理（SEC-067）：keyring 故障
+            # 降级期写入的明文 config.key 在两个形态下残留——a) 降级期后 keyring 恢复、
+            # 回迁成功但 secure_delete 失败（占用/权限），下次启动 keyring 直接命中，
+            # 旧「迁移失败再清理」分支不再进入；b) keyring 记录损坏/重生成后新密钥已
+            # 入 keyring，降级期明文文件遗留。密钥既已由 keyring 供应，明文文件只是
+            # 「本地读权限者可重算签名」的暴露面（SEC-003），无论来源统一尝试覆写删除
+            # （幂等：不存在即 no-op；失败记 ERROR 不阻断启动，下次启动重试）。
+            if self._key_path.exists():
+                try:
+                    secure_delete_file(self._key_path)
+                    logger.info("检测并清理明文密钥残留文件（密钥已由系统密钥链供应）")
+                except OSError:
+                    logger.error(
+                        "明文密钥残留文件清理失败，建议手动删除该文件（SEC-067）",
+                        exc_info=True,
+                    )
+            return key
         # keyring 本会话可用但无记录：读明文回退密钥（keyring 故障期写入的形态）。
         # SEC-003 粘滞修复：原实现只回读明文文件、永不回写 keyring——keyring 恢复后
         # SEC-003 保护对该安装持续失效。改为一次性回迁：密钥写入 keyring 成功后

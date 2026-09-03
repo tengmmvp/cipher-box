@@ -373,13 +373,14 @@ class TestFetchForFilterSortContract:
     原实现对 all/favorite/trash 的结果再调 ``_sort_entries``——该调用在异步
     worker 线程执行时读 ``sort_combo.currentIndex()``（绕过 _build_entry_fetch
     的快照，QComboBox 不可跨线程访问），且对 fetcher 已按同键排序的结果属稳定
-    空操作。删除后：结果原样透传，sort_entries 零调用。
+    空操作。删除后：结果原样透传（UI 侧重排入口 sort_entries 亦已随 QL-074
+    删除死代码，列表排序统一由 manager 分流）。
     """
 
     def test_no_resort_after_fetcher(self, qapp):
-        """fetcher 返回的条目顺序原样透传，EntryListController.sort_entries 不被调用。"""
+        """fetcher 返回的条目顺序原样透传，不做任何二次重排。"""
         ctrl = _make_controller()
-        view = _setup(ctrl)
+        _setup(ctrl)
         order = ["c", "a", "b"]
         ctrl._entry_list_ctrl.get_fetcher.return_value = lambda *a, **k: (
             [MagicMock(title=t) for t in order],
@@ -387,7 +388,6 @@ class TestFetchForFilterSortContract:
         )
         entries, _title = ctrl._fetch_for_filter("all")
         assert [e.title for e in entries] == order
-        ctrl._entry_list_ctrl.sort_entries.assert_not_called()
 
     def test_weak_duplicate_do_not_participate_in_sort(self, qapp):
         """weak/duplicate 视图有意不参与排序切换：fetcher 零参调用、不透传 sort_index。"""
@@ -403,7 +403,6 @@ class TestFetchForFilterSortContract:
         assert entries is weak_entries
         # fetcher 以零参数调用（安全摘要序固定，不透传 sort_index）
         fetcher_mock.assert_called_once_with()
-        ctrl._entry_list_ctrl.sort_entries.assert_not_called()
 
 
 class TestStatusBarWorkerDirtyRestart:

@@ -205,14 +205,20 @@ class EntryActionsController:
                 and current.updated_at == summary.updated_at
             ):
                 return
-            # 主路径改用携带世代的获取（SEC-054 窗口闭合）：data_epoch 从
-            # epoch_guarded_read 锁内与 raw/密钥同刻带出，随 entry 透传给
-            # show_entry→TOTP 预热——「解密后→预热前」窗口内恢复轮换世代时，
-            # 旧世代 secret 被缓存守卫拒收（在 show_entry 时点另行快照 key_epoch
-            # 会把窗口误判为零间隙）。
-            entry, data_epoch = self._entry_mgr.get_entry_with_epoch(summary.id)
-            if entry:
-                self._detail_panel.show_entry(entry, data_epoch=data_epoch)
+            # 主路径改用携带世代/版本的获取（SEC-054/063）：data_epoch/data_version
+            # 从 epoch_guarded_read 锁内与 raw/密钥同刻带出，随 entry 透传给
+            # show_entry→TOTP 预热——「解密后→预热前」窗口内发生恢复轮换世代
+            # （epoch）或单条 TOTP 失效（pop_totp 不改 epoch、仅推进 TOTP 域版本，
+            # 如导入覆盖的 evict / 写事务提交后的统一失效 seam）时，旧 secret 分别
+            # 被缓存的世代/版本守卫拒收（在 show_entry 时点另行快照会把窗口误判为
+            # 零间隙）。
+            read = self._entry_mgr.get_entry_with_epoch(summary.id)
+            if read.entry:
+                self._detail_panel.show_entry(
+                    read.entry,
+                    data_epoch=read.data_epoch,
+                    data_version=read.data_version,
+                )
 
     # ======== 条目右键菜单 ========
 

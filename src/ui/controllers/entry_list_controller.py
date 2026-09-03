@@ -1,6 +1,6 @@
 """条目列表控制器：纯数据操作。
 
-负责排序配置读取、条目排序、各过滤器数据获取及搜索/标签过滤，
+负责排序配置读取、各过滤器数据获取及搜索/标签过滤，
 不导入任何 PyQt6 控件、不操作 UI。
 """
 
@@ -10,7 +10,6 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from ...business.services.entry_search_match import matches_search, matches_tag
-from ...business.services.entry_sorting import entry_sort_key
 from ...config import CFG_OLD_PASSWORD_WARNING_DAYS
 from ..resources.constants import (
     MAX_SEARCH_RESULTS_DISPLAY,
@@ -39,6 +38,8 @@ class EntryListController:
         self._config = config
 
     # ========== 排序 ==========
+    # UI 侧无独立重排路径（QL-074）：列表排序统一由 manager 分流（SQL 字段序下推
+    # 或 PERF-078 内存路径），本控制器只提供排序配置读取（get_sort_config）。
 
     def get_sort_config(self, sort_index: int) -> tuple[str, str]:
         """根据排序下拉框索引返回排序字段与方向。
@@ -50,21 +51,6 @@ class EntryListController:
             _, field, order = SORT_OPTIONS[sort_index]
             return field, order
         return "updated_at", "desc"
-
-    def sort_entries(self, entries: list[Entry], sort_index: int) -> list[Entry]:
-        """对条目列表排序。
-
-        键函数消费 services 层导出的 :func:`entry_sort_key`（MAINT-091 单一事实源，
-        MAINT-104 迁 services/entry_sorting；与 manager 内存排序路径/SQL 下推共用
-        键语义）——原本地 4 键实现与 get_entry_summaries 各一份，漂移会使 UI 重排序
-        与下推序不一致。
-
-        Args:
-            entries: 待排序条目列表。
-            sort_index: 排序下拉框当前索引。
-        """
-        field, order = self.get_sort_config(sort_index)
-        return sorted(entries, key=entry_sort_key(field), reverse=(order == "desc"))
 
     # ========== 过滤器数据获取 ==========
 

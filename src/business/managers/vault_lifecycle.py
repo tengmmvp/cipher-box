@@ -300,9 +300,24 @@ class VaultLifecycleOrchestrator:
         :class:`MasterPasswordPolicyError`，系统错误抛 :class:`VaultError`（经
         to_user_message 翻译后的原文随 str 保留至最终呈现）——调用方以返回值
         形态区分认证失败与系统错误，不比对文案字符串。
+
+        取消对称（PERF-092）：取写锁前 request_cancel，与 lock()/close() 同款——
+        在飞的安全分析（full_analysis 全程持 vault_write_lock，50k 库 ~5s）会阻塞
+        本方法取锁至其自然跑完；置取消事件后分析在下一个检查点（每 64 条）抛
+        VaultLockedError 让出写锁，改密的取锁等待由「分析全程」缩短到「检查点间隔
+        + unwind」。事件由 _re_encrypt_all 开头的 clear 复位（其自身重加密循环
+        消费同一事件，须从干净态起步）+ 本方法 finally 兜底（认证失败等未进入
+        _re_encrypt_all 的路径不得残留置位，否则后续分析一启动即误取消）。
         """
-        with self._vault.vault_write_lock():
-            return self._change_master_password_locked(old_password, new_password)
+        self._vault.request_cancel()
+        try:
+            with self._vault.vault_write_lock():
+                return self._change_master_password_locked(old_password, new_password)
+        finally:
+            # 兜底清事件：_re_encrypt_all 自身的 finally 已清（正常/异常均覆盖），
+            # 此处兜「认证失败/策略异常等未进入重加密」的路径；与 lock() 的 finally
+            # 同款模式，幂等无害。
+            self._vault.cancel_event.clear()
 
     def _change_master_password_locked(
         self,

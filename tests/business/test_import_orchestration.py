@@ -231,7 +231,7 @@ class TestImportSummaryCacheRetention:
         entry_mgr.get_entry_summaries()  # 预热
         keep_cid = entry_mgr.db.get_entry(keep_id).crypto_id
         target_cid = entry_mgr.db.get_entry(target_id).crypto_id
-        cache = entry_mgr._cache  # noqa: SLF001
+        cache = entry_mgr.cache  # 公开只读 property（MAINT-095）
         assert keep_cid in cache.search_metadata_cached_ids
         assert target_cid in cache.search_metadata_cached_ids
 
@@ -466,6 +466,50 @@ class TestOverwriteOnlyImportProgress:
         by_title = {e.title: e for e in decrypt_all_entries(entry_mgr)}
         assert len(by_title) == self.ROWS
         assert by_title["Entry-0000"].password == "NewPass0000!y"
+
+
+# ======== 导入进度段表契约（MAINT-112）========
+
+
+class TestImportProgressSegmentTable:
+    """导入进度刻度契约（PERF-065/069 段刻度、MAINT-112 结构化收敛）。
+
+    刻度相邻性（上一段终点 == 下一段起点，如 12+3==15）此前散在 8 组常量手工
+    维护、无任何校验，一处手改即静默留缝隙（进度卡在缝隙点）或重叠（进度
+    回退）；现由模块导入期 RuntimeError 断言 + 本测试双重守护，后者在手改刻度
+    时给出可读的失败定位（对齐 TestRestoreProgressSegmentTable 形态）。里程碑
+    （parse/sanitize/plan）持单点上报终值，区间段（classify/encrypt/write）为
+    ``ProgressSegment`` 段行——里程碑只上报终点，包成段行后 base/span 无消费方。
+    """
+
+    def test_segments_seamless_monotonic_to_total(self):
+        """全刻度单调递增且无缝隙：里程碑自 0 严格递增，区间段承接末里程碑、尾段止于总刻度。"""
+        cursor = 0
+        marks = [cursor]
+        for mark in ie_module._IMPORT_MILESTONES:
+            assert mark > cursor, f"里程碑终值 {mark} 未越过前一刻度 {cursor}（缝隙/重叠）"
+            cursor = mark
+            marks.append(cursor)
+        for seg in ie_module._IMPORT_SEG:
+            assert seg.base == cursor, f"段起点 {seg.base} 与上一段终点 {cursor} 有缝隙/重叠"
+            assert seg.span > 0, "段跨度须为正（零跨度段不上报中间值）"
+            cursor = seg.base + seg.span
+            marks.append(cursor)
+        assert marks == sorted(marks)  # 单调不减（每段 span>0 时严格递增）
+        # 尾段终点精确等于总刻度：终值上报即 write 段终点（无跳变）
+        assert cursor == ie_module._IMPORT_PROGRESS_TOTAL
+
+    def test_segment_scales_anchor_profiled_weights(self):
+        """段刻度锚定 PERF-065/069 的实测权重画像：里程碑 5/10/12，区间 12→15/15→70/70→100。"""
+        milestones = ie_module._IMPORT_MILESTONES
+        seg = ie_module._IMPORT_SEG
+        # 里程碑终值即单点上报值（parse/sanitize/plan；终值上报用 write 段终点）
+        assert (milestones.parse, milestones.sanitize, milestones.plan) == (5, 10, 12)
+        assert seg.write.base + seg.write.span == ie_module._IMPORT_PROGRESS_TOTAL
+        # 区间段：classify 12→15、encrypt 15→70（耗时主导 73% 的主体）、write 70→100
+        assert (seg.classify.base, seg.classify.span) == (12, 3)
+        assert (seg.encrypt.base, seg.encrypt.span) == (15, 55)
+        assert (seg.write.base, seg.write.span) == (70, 30)
 
 
 # ======== 自定义字段公式清洗（SEC-045）========

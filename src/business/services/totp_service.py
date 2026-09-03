@@ -45,12 +45,19 @@ class TotpCacheProtocol(Protocol):
         secret: str,
         *,
         data_epoch: str | None = None,
+        data_version: int | None = None,
     ) -> None:
-        """预热 TOTP secret 缓存；提供 data_epoch 时按写入方世代复查后落缓存。"""
+        """预热 TOTP secret 缓存；提供 data_epoch/data_version 时按写入方世代与
+        TOTP 域版本复查后落缓存。"""
         ...
 
     def pop_totp(self, entry_id: int) -> None:
         """失效单条 TOTP secret 缓存。"""
+        ...
+
+    @property
+    def totp_invalidate_version(self) -> int:
+        """当前 TOTP 域失效版本号（解密时点快照通道 + get_state 兜底自采样，SEC-063）。"""
         ...
 
 
@@ -99,6 +106,7 @@ class TotpService:
         *,
         preloaded_secret: str | None = None,
         data_epoch: str | None = None,
+        data_version: int | None = None,
     ) -> TotpState | None:
         """获取指定条目的 TOTP 完整状态（验证码、倒计时、周期）。
 
@@ -113,13 +121,35 @@ class TotpService:
         快照世代传入，锁内解密与预热间隔越短守卫越严。无 preloaded_secret 时本
         参数无意义（resolve 路径自带 SEC-044 守卫），忽略。
 
+        data_version：preloaded_secret 解密时刻的 TOTP 域失效版本快照（SEC-063 b 层
+        真实通道，由 ``EntryManager.get_entry_with_epoch`` 在读锁内与 secret 同刻带
+        出，经 detail_panel / TOTPWidget 透传至此）。「解密 → 预热」窗口内发生过
+        任何 TOTP 失效（pop_totp/clear_totp——导入覆盖 prepare 的 evict、写事务提交
+        后的统一失效 seam 等）时，旧 secret 被 store_totp 的版本守卫拒收入缓存。
+        未提供时在此兜底自采样**当前**版本：仅覆盖「本方法调用 → store 落缓存」
+        的微秒窗口（自采样与 store 侧比对同源，「解密 → 本方法调用」窗口内的失效
+        检测不到），不能替代调用方快照——生产链路（detail_panel 预热）均应传入。
+        无 preloaded_secret 时忽略。
+
         Returns:
             含 code/remaining/period 的字典；条目不存在或无 TOTP 密钥时返回 None。
         """
         self._cache.invalidate_if_epoch_changed()
         if preloaded_secret:
             secret = preloaded_secret
-            self._cache.store_totp(entry_id, secret, data_epoch=data_epoch)
+            # SEC-063 兜底（非主通道）：调用方未携带解密时点快照时自采样当前 TOTP
+            # 域版本，仅覆盖「本方法调用 → store 落缓存」窗口内并发的单条失效；
+            # 「解密 → 本方法调用」窗口内的失效无法经自采样检测——主通道是
+            # get_entry_with_epoch 的同刻快照透传（SEC-063 b 层）。
+            version = (
+                data_version if data_version is not None else self._cache.totp_invalidate_version
+            )
+            self._cache.store_totp(
+                entry_id,
+                secret,
+                data_epoch=data_epoch,
+                data_version=version,
+            )
         else:
             # 用临时变量承接 str|None 并收窄后再赋给 secret，避免跨分支类型冲突。
             resolved = self._resolve_totp_secret(entry_id, use_cache=True)

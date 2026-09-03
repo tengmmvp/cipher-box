@@ -17,8 +17,14 @@ from PyQt6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
 from src.models import Entry
 from src.ui.components.custom_fields_renderer import CustomFieldsRenderer
 from src.ui.components.detail_panel import DetailPanel
-from src.ui.components.secret_field import SecretFieldEnv, make_secret_field_row
+from src.ui.components.secret_field import (
+    PlainFieldEnv,
+    SecretFieldEnv,
+    make_plain_field_row,
+    make_secret_field_row,
+)
 from src.ui.components.widgets import create_plain_text_label
+from src.ui.resources.constants import PWD_MASK
 
 
 class TestCreatePlainTextLabel:
@@ -169,6 +175,68 @@ class TestCopySecretRaceGuard:
         assert len(copied) == 1
 
 
+class TestPlainFieldCopyRaceGuard:
+    """普通字段行复制路径的 ``sip.isdeleted`` 竞态守卫（MAINT-113 回归）。
+
+    普通字段行的复制闭包原为 detail_panel / custom_fields_renderer 两份平行实现，
+    其中 renderer 侧缺失守卫（MAINT-103 收敛敏感行时的同型遗漏）：点击复制后
+    同事件循环周期内按钮被 ``deleteLater`` 而挂起 ``clicked`` 事件仍投递时，回调
+    链直达 ``detail_panel._copy_with_feedback`` 内的 ``set_icon(btn, CHECK)``——
+    对已删 C++ 对象写图标抛 ``RuntimeError``，PyQt6 槽内未捕获异常 qFatal 中止。
+    两处现收敛至 ``secret_field._make_guarded_copy`` 单一事实源（守卫单一实现）。
+    """
+
+    def test_plain_field_copy_skips_deleted_button(self, qapp):
+        """按钮 C++ 对象销毁后触发普通字段复制闭包：静默跳过，不抛 RuntimeError。"""
+        from PyQt6 import sip
+
+        from src.ui.components import secret_field
+
+        host = QWidget()
+        copied: list = []
+        env = PlainFieldEnv(
+            store={0: "plain-value"},
+            on_copy=lambda btn, text: copied.append((btn, text)),
+        )
+        _name, row = make_plain_field_row(env, "备注字段", "plain-value", 0)
+
+        # 正常路径经真实信号连线触发：行内复制按钮已连接带守卫的处理闭包
+        copy_btn = next(btn for btn in row.findChildren(QPushButton) if btn.toolTip() == "复制")
+        copy_btn.click()
+        assert copied == [(copy_btn, "plain-value")]
+
+        # 确定性销毁按钮 C++ 对象（QL-032 先例：sip.delete 等价父窗口直接销毁子控件）
+        sip.delete(copy_btn)
+        assert sip.isdeleted(copy_btn)
+
+        # 行工厂实际连线的守卫闭包经同一模块级工厂构造，此处直接驱动同工厂产物
+        handler = secret_field._make_guarded_copy(
+            copy_btn, env.on_copy, lambda: env.store.get(0, "")
+        )
+        handler()  # 不应抛 RuntimeError / 崩溃
+
+        # 守卫跳过：销毁后不再触达 on_copy（反馈图标写入随守卫一并跳过）
+        assert len(copied) == 1
+
+    def test_renderer_plain_row_uses_shared_factory(self, qapp):
+        """CustomFieldsRenderer 的普通字段行接线共享工厂：复制反馈回调可达。"""
+        copied: list = []
+        renderer = CustomFieldsRenderer(
+            copy_callback=lambda btn, text: copied.append((btn, text)),
+            copy_feedback_callback=lambda: None,
+            hide_timer_callback=lambda: 60_000,
+        )
+        _name, row = renderer._make_plain_field_row("邮箱", "a@b.c")
+
+        copy_btn = next(btn for btn in row.findChildren(QPushButton) if btn.toolTip() == "复制")
+        copy_btn.click()
+
+        # 值经间接引用字典读取（clear 后闭包读到空串，不再触达已失效明文）
+        assert copied == [(copy_btn, "a@b.c")]
+        renderer.clear()
+        assert not renderer._plain_rows  # MAINT-115 holder（__len__ 观察残留）
+
+
 class TestCustomFieldsPlainText:
     """自定义字段渲染器的字段名/字段值 PlainText 契约。"""
 
@@ -203,8 +271,14 @@ class TestPasswordHistoryPlainText:
 
         pwd_label = widget._pwd_labels[0]
         assert pwd_label.textFormat() == Qt.TextFormat.PlainText
-        # 揭示路径经间接引用列表读取，直接模拟 toggle 显示分支
-        pwd_label.setText(widget._history_passwords[0])
+        # 经真实交互路径揭示（QL-076）：点击行内显示按钮触发 toggle 闭包（间接
+        # 引用列表读取 + setText），绕过闭包直接 setText 会漏掉「揭示路径按
+        # PlainText 渲染」的真实链路。初始为掩码，点击后展示完整 markup 前缀。
+        assert pwd_label.text() == PWD_MASK
+        show_btn = next(
+            btn for btn in host.findChildren(QPushButton) if btn.toolTip() == "显示/隐藏"
+        )
+        show_btn.click()
         assert pwd_label.text() == "<svg/onload=x>old"
 
     def test_history_timestamp_label_is_plain_text(self, qapp):

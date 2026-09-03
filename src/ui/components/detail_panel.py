@@ -41,7 +41,6 @@ if TYPE_CHECKING:
     from ...config import ConfigManager
     from ..utils.clipboard import ClipboardManager
 from ..resources.constants import (
-    BTN_COPY,
     MAX_TAG_DISPLAY,
     MS_FEEDBACK,
     PWD_VISIBLE_SECONDS_DEFAULT,
@@ -61,7 +60,14 @@ from ..resources.strings import entry_type_icon, entry_type_label
 from ..resources.theme_colors import c, get_strength_color
 from .custom_fields_renderer import CustomFieldsRenderer
 from .password_history_widget import PasswordHistoryWidget
-from .secret_field import SecretFieldEnv, SharedHideTimer, make_secret_field_row
+from .secret_field import (
+    PlainFieldEnv,
+    RowValueStore,
+    SecretFieldEnv,
+    SharedHideTimer,
+    make_plain_field_row,
+    make_secret_field_row,
+)
 from .totp_widget import TOTPWidget
 from .widgets import clear_layout, create_icon_button, create_plain_text_label, disconnect_all
 
@@ -77,7 +83,9 @@ class DetailPanel(QWidget):
     安全说明，受 CPython 运行时限制：
     - 敏感字段明文（含主密码）以 Python `str` 形式存储在间接引用字典
       `self._secret_values_main` 及字段行闭包中（MAINT-103：主密码原独立的
-      `self._current_password` 引用收编入同一字典）。
+      `self._current_password` 引用收编入同一字典）；主条目普通字段（如账号）
+      的明文存于共享 holder `self._plain_rows`（MAINT-115：int 行号键控的
+      store/分配/清零三件套，与 custom_fields_renderer 同一实现）。
     - Python 字符串不可变，`mark_secret_discarded` 无法覆写原始对象内存。
     - `_clear_content` 通过清空间接引用字典缩短敏感数据的驻留时间；字段行
       闭包经字典读取，清空后闭包读到空值。
@@ -114,6 +122,11 @@ class DetailPanel(QWidget):
         # 时由调用方回传 show_entry 复用——entry 的敏感字段解密于该世代，
         # TOTP 预热写入据此复查。
         self._current_data_epoch: str | None = None
+        # 当前展示条目的 TOTP 域失效版本（SEC-063 b 层）：与 data_epoch 同刻记录、
+        # 同款透传复用——TOTP secret 解密时点的版本快照，force 重建的预热写入据此
+        # 复查（「初次解密 → force 重显」窗口内被 pop/事务 seam 失效的旧 secret
+        # 被拒收入缓存；epoch 守卫对该失效盲——pop 不改世代）。
+        self._current_data_version: int | None = None
         # 主密码字段的共享单定时器显隐协调器（MAINT-103）：全局一个 QTimer、
         # 同屏单显式，替代原 _pwd_hide_timer + _pwd_label_ref/_show_btn_ref 专属
         # 实现；切换条目/锁定时经 stop() 掩码当前显式行并停止计时。
@@ -121,6 +134,10 @@ class DetailPanel(QWidget):
         # 主条目敏感字段（含主密码，按标签名键控）的间接引用字典，自定义字段由
         # `renderer` 管理
         self._secret_values_main: dict[str, str] = {}
+        # 主条目普通字段（如账号，按行号键控）的间接引用 holder（MAINT-115）：行号
+        # 分配与 mark_secret_discarded 清零收口在 RowValueStore，与 renderer 共用
+        # 同一实现（原「dict + 计数器 + 清理块」三件套双份漂移面收敛）。
+        self._plain_rows = RowValueStore()
         # 非主密码敏感字段与自定义字段的自动掩码定时器，持久且可取消，
         # 便于 `_clear_content` 统一停止并清空（历史密码定时器由 `PasswordHistoryWidget` 自管）。
         self._field_hide_timers: list[QTimer] = []
@@ -259,25 +276,45 @@ class DetailPanel(QWidget):
         """
         return self._current_data_epoch
 
+    @property
+    def current_data_version(self) -> int | None:
+        """当前展示条目的 TOTP 域失效版本快照（SEC-063 b 层），只读访问。
+
+        与 :attr:`current_data_epoch` 同刻记录、同款复用语义：force 重建回传
+        ``show_entry`` 的 ``data_version``，使 TOTP 预热写入的版本守卫据「初次
+        解密时点」的快照复查——「初次解密 → force 重显」窗口内被 pop_totp 或
+        写事务 seam 失效的旧 secret 被拒收入缓存（epoch 守卫对 pop 失效盲）。
+        """
+        return self._current_data_version
+
     def show_entry(
         self,
         entry: Entry,
         *,
         force: bool = False,
         data_epoch: str | None,
+        data_version: int | None,
     ) -> None:
         """显示条目详情。
 
         Args:
             entry: 要显示的条目
             force: 强制重建，主题切换时需要刷新内联样式
-            data_epoch: **必传**。entry 敏感字段的解密世代（SEC-054 窗口闭合）：
-                主路径由 entry_actions_controller 经 ``get_entry_with_epoch`` 从
-                读锁内带出，「解密后→预热前」窗口内发生恢复轮换时旧世代 secret
-                被 TOTP 预热守卫拒收；force 重建同一条目时传
-                ``self.current_data_epoch`` 复用初次展示记录的世代。无默认值是
-                有意的：回退「现时快照 key_epoch」的最弱分支曾是漏传调用方的
+            data_epoch: **必传**（与 data_version 同源）。entry 敏感字段的解密世代
+                （SEC-054 窗口闭合）：主路径由 entry_actions_controller 经
+                ``get_entry_with_epoch`` 从读锁内带出，「解密后→预热前」窗口内
+                发生恢复轮换时旧世代 secret 被 TOTP 预热守卫拒收；force 重建同一
+                条目时传 ``self.current_data_epoch`` 复用初次展示记录的世代。无默认
+                值是有意的：回退「现时快照 key_epoch」的最弱分支曾是漏传调用方的
                 静默默认落点（SEC-054 关闭的窗口对其重开），类型系统强制显式抉择。
+            data_version: **必传**（与 data_epoch 同源）。entry 的 totp_secret 解密
+                时点的 TOTP 域失效版本快照（SEC-063 b 层）：主路径同样从
+                ``get_entry_with_epoch`` 读锁内带出，「解密 → 预热」窗口内发生单条
+                TOTP 失效（pop_totp 不改 epoch，如导入覆盖的 evict / 写事务提交后的
+                统一失效 seam）时旧 secret 被 store 侧版本守卫拒收；force 重建传
+                ``self.current_data_version`` 复用记录快照。必传理由同 data_epoch：
+                漏传会静默落回 get_state 的自采样兜底，其只覆盖微秒窗口、重开
+                SEC-063 关闭的「旧 secret 入缓存」窗口。
         """
         if (
             not force
@@ -287,15 +324,16 @@ class DetailPanel(QWidget):
         ):
             return
         logger.debug("显示条目详情: id=%d", entry.id)
-        # 世代由调用方显式传入并随条目同刻记录（SEC-054）；「未传时现时快照
-        # key_epoch」的最弱分支已随必传签名删除（见 current_data_epoch 说明）。
+        # 世代与版本由调用方显式传入并随条目同刻记录（SEC-054/063）；「未传时
+        # 现时快照」的最弱分支已随必传签名删除（见 current_data_epoch 说明）。
         self._current_data_epoch = data_epoch
+        self._current_data_version = data_version
         self._prepare_display(entry)
         self._update_header_and_actions(entry)
         self._content_layout.addLayout(self._build_tags_section(entry))
         self._render_integrity_warning(entry)
         self._render_core_form(entry)
-        self._render_totp_and_history(entry, data_epoch=data_epoch)
+        self._render_totp_and_history(entry, data_epoch=data_epoch, data_version=data_version)
         self._build_meta_section(entry)
         self._render_notes(entry)
         self._render_custom_fields(entry)
@@ -396,11 +434,18 @@ class DetailPanel(QWidget):
             url_label.setOpenExternalLinks(True)
         return url_label
 
-    def _render_totp_and_history(self, entry: Entry, *, data_epoch: str | None) -> None:
+    def _render_totp_and_history(
+        self,
+        entry: Entry,
+        *,
+        data_epoch: str | None,
+        data_version: int | None,
+    ) -> None:
         """启动 TOTP 显示与密码历史延迟加载 stub。
 
-        data_epoch 为 show_entry 收到的数据世代（SEC-054，调用方必传），随
-        preloaded secret 透传给 TOTP 预热写入做世代复查。
+        data_epoch/data_version 为 show_entry 收到的数据世代与 TOTP 域版本快照
+        （SEC-054/063 b 层，调用方必传），随 preloaded secret 透传给 TOTP 预热
+        写入做世代/版本复查。
         """
         if entry.has_totp and entry.id and self._entry_mgr is not None:
             self._totp_widget.start(
@@ -408,7 +453,8 @@ class DetailPanel(QWidget):
                 self._entry_mgr,
                 self._content_layout,
                 entry.totp_secret,
-                data_epoch,
+                data_epoch=data_epoch,
+                data_version=data_version,
             )
         if entry.id and self._entry_mgr:
             self._history_widget.build_stub(entry.id, self._entry_mgr, self._content_layout)
@@ -534,39 +580,24 @@ class DetailPanel(QWidget):
         *,
         copyable: bool = False,
     ) -> tuple[QLabel, QWidget]:
-        """创建普通字段行，明文显示并可选附带复制按钮。"""
-        name_label = QLabel(f"{label}：")
-        name_label.setObjectName("fieldLabel")
+        """创建普通字段行，明文显示并可选附带复制按钮。
 
-        row_widget = QWidget()
-        row_layout = QHBoxLayout(row_widget)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-
-        # 字段值（如 username）为用户/导入数据，PlainText（SEC-030）
-        val_label = create_plain_text_label(value, "fieldValue", word_wrap=True)
-        row_layout.addWidget(val_label, 1)
-
-        if copyable and value:
-            copy_btn = QPushButton()
-            set_icon(copy_btn, COPY)
-            copy_btn.setObjectName("iconBtn")
-            copy_btn.setFixedSize(*BTN_COPY)
-            copy_btn.setToolTip("复制")
-
-            # 使用闭包捕获当前值，主条目字段无需间接引用，其生命周期与面板同步
-            def _copy_value(
-                _checked: bool = False, v: str = value, btn: QPushButton = copy_btn
-            ) -> None:
-                if sip.isdeleted(btn):
-                    return
-                self._copy_with_feedback(btn, v)
-
-            copy_btn.clicked.connect(_copy_value)
-            # 与敏感字段复制按钮一致：复制后发 copy_feedback，经主窗口在状态栏提示。
-            copy_btn.clicked.connect(self.copy_feedback.emit)
-            row_layout.addWidget(copy_btn)
-
-        return name_label, row_widget
+        共享工厂薄委托（MAINT-113）：行构造与复制闭包的 ``sip.isdeleted`` 竞态
+        守卫收敛在 ``secret_field.make_plain_field_row`` 单一事实源（原与
+        custom_fields_renderer 近逐行双胞胎）。复制后发 copy_feedback，经主窗口
+        在状态栏提示。行号分配与清零经共享 holder（MAINT-115）。
+        """
+        return make_plain_field_row(
+            PlainFieldEnv(
+                store=self._plain_rows.store,
+                on_copy=self._copy_with_feedback,
+                on_copy_feedback=self.copy_feedback.emit,
+            ),
+            label,
+            value,
+            self._plain_rows.next_key(),
+            copyable=copyable,
+        )
 
     def _make_secret_field_row(
         self,
@@ -651,6 +682,8 @@ class DetailPanel(QWidget):
         for k in list(self._secret_values_main):
             mark_secret_discarded(self._secret_values_main[k])
         self._secret_values_main.clear()
+        # 主条目普通字段（如账号）间接引用同刻清零（MAINT-115 holder 收口）
+        self._plain_rows.clear()
         # 清除子组件状态
         self._totp_widget.clear()
         self._history_widget.clear()
@@ -689,9 +722,11 @@ class DetailPanel(QWidget):
         self._evict_current_totp()
         self._clear_content()
         self._current_entry = None
-        # 世代随条目一同清空（SEC-054）：空状态无「当前条目的解密世代」可言，
-        # 残留旧值会在下一次 show_entry 的 force 复用判定前形成无主状态。
+        # 世代与版本随条目一同清空（SEC-054/063）：空状态无「当前条目的解密世代/
+        # 版本快照」可言，残留旧值会在下一次 show_entry 的 force 复用判定前形成
+        # 无主状态。
         self._current_data_epoch = None
+        self._current_data_version = None
         self._title_label.setText("选择一个条目查看详情")
         self._edit_btn.hide()
         self._share_btn.hide()

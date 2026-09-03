@@ -14,7 +14,6 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
-    QHBoxLayout,
     QLabel,
     QPushButton,
     QVBoxLayout,
@@ -22,12 +21,15 @@ from PyQt6.QtWidgets import (
 )
 
 from ...business.services.entry_type_schema import all_special_fields_by_storage
-from ...utils.memory import mark_secret_discarded
-from ..resources.constants import BTN_COPY, FONT_FAMILY_MONOSPACE
-from ..resources.icons import COPY, set_icon
+from ..resources.constants import FONT_FAMILY_MONOSPACE
 from ..resources.theme_colors import c
-from .secret_field import SecretFieldEnv, make_secret_field_row
-from .widgets import create_plain_text_label
+from .secret_field import (
+    PlainFieldEnv,
+    RowValueStore,
+    SecretFieldEnv,
+    make_plain_field_row,
+    make_secret_field_row,
+)
 
 if TYPE_CHECKING:
     from ...models import Entry
@@ -69,10 +71,11 @@ class CustomFieldsRenderer:
         self._copy_callback = copy_callback
         self._copy_feedback_callback = copy_feedback_callback
         self._get_pwd_visible_ms = hide_timer_callback
-        self._secret_values: dict[int, str] = {}
-        self._plain_values: dict[int, str] = {}
-        self._plain_row_counter: int = 0
-        self._secret_row_counter: int = 0
+        # 间接引用明文 holder（MAINT-115）：敏感/普通自定义字段各一份，行号分配
+        # 与 mark_secret_discarded 清零由共享 RowValueStore 收口（原与 detail_panel
+        # 逐字重复的「dict + 计数器 + 清理块」三件套）。
+        self._secret_rows = RowValueStore()
+        self._plain_rows = RowValueStore()
 
     # ---- 公开接口 ----
 
@@ -123,15 +126,9 @@ class CustomFieldsRenderer:
         return timers
 
     def clear(self) -> None:
-        """安全清除所有值。"""
-        for k in list(self._plain_values):
-            mark_secret_discarded(self._plain_values[k])
-        self._plain_values.clear()
-        self._plain_row_counter = 0
-        for k in list(self._secret_values):
-            mark_secret_discarded(self._secret_values[k])
-        self._secret_values.clear()
-        self._secret_row_counter = 0
+        """安全清除所有值（mark_secret_discarded 清零 + 行号复位，MAINT-115 holder 收口）。"""
+        self._plain_rows.clear()
+        self._secret_rows.clear()
 
     # ---- 内部方法 ----
 
@@ -142,39 +139,20 @@ class CustomFieldsRenderer:
         *,
         copyable: bool = True,
     ) -> tuple[QLabel, QWidget]:
-        """创建普通字段行，明文显示并可选附带复制按钮。"""
-        # 自定义字段名与值均为用户/导入数据，PlainText 防富文本注入（SEC-030）
-        name_label = create_plain_text_label(f"{label}：", "fieldLabel")
+        """创建普通字段行，明文显示并可选附带复制按钮。
 
-        row_widget = QWidget()
-        row_layout = QHBoxLayout(row_widget)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-
-        val_label = create_plain_text_label(value, "fieldValue", word_wrap=True)
-        row_layout.addWidget(val_label, 1)
-
-        if copyable and value:
-            # 将明文存入间接引用字典，闭包通过 row_id 读取
-            row_id = self._plain_row_counter
-            self._plain_row_counter += 1
-            self._plain_values[row_id] = value
-
-            copy_btn = QPushButton()
-            set_icon(copy_btn, COPY)
-            copy_btn.setObjectName("iconBtn")
-            copy_btn.setFixedSize(*BTN_COPY)
-            copy_btn.setToolTip("复制")
-
-            def _copy_value(
-                _checked: bool = False, rid: int = row_id, btn: QPushButton = copy_btn
-            ) -> None:
-                v = self._plain_values.get(rid, "")
-                self._copy_callback(btn, v)
-
-            copy_btn.clicked.connect(_copy_value)
-            row_layout.addWidget(copy_btn)
-
-        return name_label, row_widget
+        共享工厂薄委托（MAINT-113）：行构造与复制闭包的 ``sip.isdeleted`` 竞态
+        守卫收敛在 ``secret_field.make_plain_field_row`` 单一事实源（原内联实现
+        缺失守卫——按钮销毁窗口期内挂起 ``clicked`` 投递直达复制反馈图标写入）。
+        行号分配与清零经共享 holder（MAINT-115）。
+        """
+        return make_plain_field_row(
+            PlainFieldEnv(store=self._plain_rows.store, on_copy=self._copy_callback),
+            label,
+            value,
+            self._plain_rows.next_key(),
+            copyable=copyable,
+        )
 
     def _make_secret_field_row(
         self,
@@ -185,13 +163,12 @@ class CustomFieldsRenderer:
     ) -> tuple[QLabel, QWidget]:
         """创建敏感字段行，默认掩码，附带显示/隐藏与复制按钮。
 
-        复用共享构建逻辑，明文按行索引（row_id）存入间接引用字典避免重名键覆盖。
+        复用共享构建逻辑，明文按行号键存入间接引用 holder 避免重名键覆盖
+        （行号分配与清零经共享 holder，MAINT-115）。
         """
-        row_id = self._secret_row_counter
-        self._secret_row_counter += 1
         return make_secret_field_row(
             SecretFieldEnv(
-                store=self._secret_values,
+                store=self._secret_rows.store,
                 timers=timers,
                 parent_widget=parent_widget,
                 get_pwd_visible_ms=self._get_pwd_visible_ms,
@@ -200,7 +177,7 @@ class CustomFieldsRenderer:
             ),
             label,
             value,
-            store_key=row_id,
+            store_key=self._secret_rows.next_key(),
             name_label_style=f"font-weight: 600; color: {c('text_secondary')};",
             val_label_style=(
                 f"font-family: {FONT_FAMILY_MONOSPACE}; font-size: 13px;"

@@ -809,11 +809,28 @@ class SecurityAnalyzer:
 
         警告：执行 O(n) 解密，调用方**必须**在 BackgroundWorker 中执行，不得在 UI 线程。
 
-        线程安全：``get_entries`` 在 _cache_lock 外，并发下缓存可能在读取期间失效。
-        单用户桌面应用无此问题；若未来引入后台定期分析，需在调用方加锁或方法内持读锁。
+        线程安全：``get_entries_for_analysis`` 在 _cache_lock 外，并发下缓存可能在
+        读取期间失效（MAINT-114：docstring 引用自不存在的 ``get_entries`` 更正为
+        实际调用的窄投影入口）。单用户桌面应用无此问题；若未来引入后台定期分析，
+        需在调用方加锁或方法内持读锁。
         """
         # 全量分析持有主密钥并逐条解密，整个敏感生命周期持 vault_write_lock，
         # 使 lock() 须等分析释放密钥后才能清零，避免后台 Worker 超时后仍持密钥。
+        #
+        # 持锁取舍（PERF-092，评估后维持全程持锁）：曾评估「锁内快照 entries+key、
+        # 锁外分类」的锁拆分——正确性守卫确已齐备（_cached_analysis 写回的 epoch+
+        # 失效世代双守卫拒收陈旧结果，_make_summary 的 SEC-043 data_epoch 守卫拒收
+        # 跨世代摘要回写，陈旧报告仅一次性返回渲染不污染缓存），且增量差分路径
+        # （_apply_reclassified_entry）本就在 epoch_guarded_read 快照后锁外解密。
+        # 但全程持锁承载的是**安全**不变量而非正确性：lock()/close() 的
+        # clear_vault_state 清零密钥并 gc.collect，须等本 worker 解完密、释放全部
+        # 密钥与明文引用后再执行，密钥材料才真正可回收——拆分后 lock() 无需等待，
+        # 清零与 GC 在 worker 仍持 vault_key 副本与在途明文时进行，「后台 Worker
+        # 超时后仍持密钥」的窗口（本持锁设计要关闭的）重开。持锁代价已由取消机制
+        # 封顶：lock()/close()/change_master_password（PERF-092 补齐对称取消）取锁
+        # 前均 request_cancel，本循环每 64 条检查一次取消，等待上界 = 检查点间隔 +
+        # unwind 而非分析全程；唯一不取消的持锁竞争方是 password_history_service
+        # .decrypt（UI 线程短操作），阻塞上界为在飞分析的剩余时长，接受。
         with self._vault.vault_write_lock():
             # PERF-010：逐条解密已含 GCM 认证，_classify_entry 双重判定损坏，
             # 故跳过 HMAC 验签省去全量重算。PERF-020：窄投影扫描——分析仅消费摘要

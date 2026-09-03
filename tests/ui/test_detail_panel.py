@@ -244,8 +244,9 @@ class TestForceRebuildEpochGuard:
             cache.invalidate_if_epoch_changed()  # 初次展示前缓存臂到旧世代
             entry = self._totp_entry()
 
-            # 主路径：携带锁内带出的世代展示（entry_actions_controller 同款）
-            panel.show_entry(entry, data_epoch="epoch-old")
+            # 主路径：携带锁内带出的世代与版本展示（entry_actions_controller 同款）
+            version = cache.totp_invalidate_version
+            panel.show_entry(entry, data_epoch="epoch-old", data_version=version)
             assert cache._totp_secret_cache.get(self._ENTRY_ID) == self._VALID_SECRET
 
             # 模拟恢复提交：轮换世代 + 整体失效 + 新读路径重臂
@@ -255,10 +256,15 @@ class TestForceRebuildEpochGuard:
             entry_mgr_epoch.key_epoch = "epoch-new"
             cache.invalidate_all()
             cache.invalidate_if_epoch_changed()
-            assert cache._cache_epoch == "epoch-new"
+            assert cache.cache_epoch == "epoch-new"  # 公开观察面（MAINT-095）
 
-            # 主题切换 force 重建（main_window 同款：传 current_data_epoch 复用记录世代）
-            panel.show_entry(entry, force=True, data_epoch=panel.current_data_epoch)
+            # 主题切换 force 重建（main_window 同款：传记录世代/版本复用）
+            panel.show_entry(
+                entry,
+                force=True,
+                data_epoch=panel.current_data_epoch,
+                data_version=panel.current_data_version,
+            )
 
             assert self._ENTRY_ID not in cache._totp_secret_cache  # 旧 secret 被守卫拒收
         finally:
@@ -271,10 +277,48 @@ class TestForceRebuildEpochGuard:
             cache.invalidate_if_epoch_changed()
             entry = self._totp_entry()
 
-            panel.show_entry(entry, data_epoch="epoch-cur")
-            panel.show_entry(entry, force=True, data_epoch=panel.current_data_epoch)
+            panel.show_entry(
+                entry,
+                data_epoch="epoch-cur",
+                data_version=cache.totp_invalidate_version,
+            )
+            panel.show_entry(
+                entry,
+                force=True,
+                data_epoch=panel.current_data_epoch,
+                data_version=panel.current_data_version,
+            )
 
             assert cache._totp_secret_cache.get(self._ENTRY_ID) == self._VALID_SECRET
+        finally:
+            self._teardown_panel(panel)
+
+    def test_force_rebuild_with_stale_version_rejected(self, qapp):
+        """force 重建的版本守卫（SEC-063 b 层）：世代未变但 TOTP 域版本已推进时，
+        旧 secret 被拒收——pop/seam 失效不改 epoch，世代守卫对该失效盲。"""
+        panel, cache, _vault = self._make_panel_with_real_totp("epoch-stable")
+        try:
+            cache.invalidate_if_epoch_changed()
+            entry = self._totp_entry()
+
+            # 初次展示（携带解密时点版本快照），随后模拟「初次解密 → force 重显」
+            # 窗口内的单条 TOTP 失效（pop 不改 epoch）
+            panel.show_entry(
+                entry,
+                data_epoch="epoch-stable",
+                data_version=cache.totp_invalidate_version,
+            )
+            assert cache._totp_secret_cache.get(self._ENTRY_ID) == self._VALID_SECRET
+            cache.pop_totp(self._ENTRY_ID)
+
+            panel.show_entry(
+                entry,
+                force=True,
+                data_epoch=panel.current_data_epoch,
+                data_version=panel.current_data_version,
+            )
+
+            assert self._ENTRY_ID not in cache._totp_secret_cache  # 版本守卫拒收
         finally:
             self._teardown_panel(panel)
 
@@ -290,4 +334,17 @@ class TestForceRebuildEpochGuard:
 
         param = inspect.signature(DetailPanel.show_entry).parameters["data_epoch"]
         assert param.default is inspect.Parameter.empty, "data_epoch 不得带默认值"
+        assert param.kind is inspect.Parameter.KEYWORD_ONLY
+
+    def test_show_entry_data_version_is_required_keyword(self):
+        """show_entry 的 data_version 同为必传 keyword（无默认值）——签名级守护。
+
+        SEC-063 b 层的漏传落点是 get_state 的自采样兜底（只覆盖微秒窗口，
+        「解密 → 预热」窗口内的失效检测不到），必传签名防后续无意恢复默认值
+        重开该窗口。
+        """
+        import inspect
+
+        param = inspect.signature(DetailPanel.show_entry).parameters["data_version"]
+        assert param.default is inspect.Parameter.empty, "data_version 不得带默认值"
         assert param.kind is inspect.Parameter.KEYWORD_ONLY

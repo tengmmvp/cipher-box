@@ -13,7 +13,8 @@
 「清零了 bytearray 但未释放引用」的回归会返回全零 bytes（非 None）被本测试捕获。
 ``vault._key_mgr`` 单层私有访问保留：密钥清零是 KeyManager 的白盒安全属性，
 VaultManager 无等价公开观测面（is_unlocked 无法区分标志清零与密钥清零）——
-MAINT-095 判据下的白盒安全属性守护豁免。
+MAINT-095 判据下的白盒安全属性守护豁免（类别与数量口径见 docs/audit_codes.md
+的 MAINT-095 豁免台账，本文件属台账 C1 类）。
 
 建库经 make_vault_env 工厂（conftest autouse 弱 KDF 加速派生，初始化后各测试
 自行 unlock/lock/close 驱动阶段，teardown 幂等 close 由工厂统一承担）。

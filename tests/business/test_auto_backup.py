@@ -108,7 +108,7 @@ def test_maybe_auto_backup_preserves_integrity_warning(vault, vault_config):
     mgr = make_backup_manager(vault)
     vault_config.set("auto_backup_enabled", True)
     # 模拟本会话加载时检出篡改：告警置位（save 默认语义会将其清零）
-    vault_config._integrity_warning = True  # noqa: SLF001
+    vault_config._integrity_warning = True
 
     ok, err = mgr.maybe_auto_backup(force=True)
 

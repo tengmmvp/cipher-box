@@ -160,6 +160,16 @@ class ClipboardManager(QObject):
     def clear_seconds(self, value: int) -> None:
         self._clear_seconds = max(0, value)
 
+    @property
+    def clear_scheduled(self) -> bool:
+        """自动清空定时器是否计时中（测试观察用，MAINT-095）。
+
+        只读布尔而非透出 QTimer 本体（与 ``SharedHideTimer.is_active`` 同款观察
+        面形态）：「复制后定时器已启动/取消后已停止」是明文驻留防护的前提条件，
+        测试据此断言，不再直读 ``_timer.isActive()``。
+        """
+        return self._timer.isActive()
+
     def copy_text(self, text: str) -> None:
         """复制文本到剪贴板，并设置自动清空定时器。
 

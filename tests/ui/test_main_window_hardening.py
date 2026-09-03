@@ -6,7 +6,8 @@
 
 观察面纪律（MAINT-095）：面板当前条目/敏感值驻留走 DetailPanel 公开观察
 property（current_entry / holds_secret_values）；标题标签文本渲染无公开面，
-保留 ``_title_label`` 单点白盒观测（豁免于观察 property 判据）。
+保留 ``_title_label`` 单点白盒观测（豁免于观察 property 判据；豁免类别与
+数量口径见 docs/audit_codes.md 的 MAINT-095 豁免台账，本文件属台账 B 类）。
 """
 
 from collections.abc import Callable

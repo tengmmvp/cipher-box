@@ -25,13 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, Protocol, TypedDict, Unpack
-
-if TYPE_CHECKING:
-    # SearchMetadata 仅为共享类型标注（decrypt_summary 的 meta 参数），TYPE_CHECKING
-    # 引用类型名、运行时零导入——services→managers 的类型标注引用在
-    # security_analyzer / entry_batch_writer 已有先例（ARCH-032）。
-    from ..managers.entry_cache import SearchMetadata
+from typing import NamedTuple, Protocol, TypedDict, Unpack
 
 from ...exceptions import DecryptionError, EntryIntegrityError
 from ...models import CustomField, Entry, RawEntry, Sensitive
@@ -43,6 +37,30 @@ from .crypto_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class SearchMetadata(NamedTuple):
+    """搜索摘要缓存条目：title/username/url/tags 明文原形及对应小写形式。
+
+    前 4 项为明文原形（列表展示），后 4 项为小写形式（供 matches_search 跳过每条目
+    4 字段实时 .lower()）。两者一同解密一次并缓存，消费方按字段名访问取代位置切片。
+
+    home 落在 services 视图解密域（ARCH-053，MAINT-104 纪律收尾）：原定义在
+    managers/entry_cache，本模块（decrypt_summary 的 ``meta`` 参数）经 TYPE_CHECKING
+    反向引用 managers 的纯数据类型——services→managers 的引用应收敛为经 ARCH-039
+    论证的具体 manager 依赖。本类为纯数据 NamedTuple（零 managers 依赖），唯一的
+    services 消费方在此，entry_cache / entry_manager 经 managers→services 正向
+    import 引用。
+    """
+
+    title: str
+    username: str
+    url: str
+    tags: str
+    title_lower: str
+    username_lower: str
+    url_lower: str
+    tags_lower: str
 
 
 class EntryOverrides(TypedDict, total=False):

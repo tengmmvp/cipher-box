@@ -288,3 +288,57 @@ class TestSecureRotatingFileHandler:
         names = {str(Path(name).name) for name in secured}
         assert "cipherbox.log" in names
         assert "cipherbox.log.1" in names
+
+    def test_rollover_new_file_created_0600_even_without_resecure(self, tmp_path, monkeypatch):
+        """轮转新建文件落地即 0600（SEC-068）：即便 secure_file 全程缺席也不出现窗口。
+
+        以 no-op 掉 doRollover 的 secure_file（排除事后收紧的贡献），POSIX 下以
+        umask 022 断言新 baseFilename 的创建 mode 位即 0600——修复前 _open 以
+        umask 创建为 0644，「创建 → secure_file 收紧」间存在世界可读窗口。
+        """
+        import sys
+
+        if sys.platform == "win32":
+            pytest.skip("POSIX mode 位断言（Windows 忽略 mode 位，靠父目录 ACL）")
+        import os
+        import stat
+
+        import src.logging_config as logging_config
+        from src.logging_config import SecureRotatingFileHandler
+
+        monkeypatch.setattr(logging_config, "secure_file", lambda path, **kwargs: path)
+        old_umask = os.umask(0o022)
+        try:
+            handler = SecureRotatingFileHandler(
+                tmp_path / "cipherbox.log", maxBytes=100, backupCount=3, encoding="utf-8"
+            )
+            try:
+                big = "z" * 200
+                handler.emit(_make_record(big))
+                handler.emit(_make_record(big))  # 触发轮转：_open 重建 baseFilename
+            finally:
+                handler.close()
+        finally:
+            os.umask(old_umask)
+
+        mode = stat.S_IMODE((tmp_path / "cipherbox.log").stat().st_mode)
+        assert mode == 0o600, f"落地即 0600 失败（umask 022 下创建为 {oct(mode)}）"
+
+    def test_rollover_works_on_windows_no_regression(self, tmp_path):
+        """Windows 不回归：opener 覆写 _open 后轮转/写入/备份链路照常（mode 位忽略）。"""
+        from src.logging_config import SecureRotatingFileHandler
+
+        handler = SecureRotatingFileHandler(
+            tmp_path / "cipherbox.log", maxBytes=100, backupCount=3, encoding="utf-8"
+        )
+        try:
+            big = "w" * 200
+            handler.emit(_make_record(big))
+            handler.emit(_make_record(big))
+            handler.flush()
+        finally:
+            handler.close()
+
+        # 当前文件可读回（写入链路正常），轮转备份存在
+        assert (tmp_path / "cipherbox.log").stat().st_size > 0
+        assert (tmp_path / "cipherbox.log.1").exists()

@@ -63,6 +63,7 @@ class TOTPWidget(QObject):
         content_layout: QVBoxLayout,
         secret: str | None = None,
         data_epoch: str | None = None,
+        data_version: int | None = None,
     ) -> None:
         """启动 TOTP 刷新。
 
@@ -73,10 +74,13 @@ class TOTPWidget(QObject):
             secret: 调用方已解密的 totp_secret 明文（可选，避免 get_state 二次解密）
             data_epoch: secret 的解密世代（SEC-054）：随 secret 从 DetailPanel 透传，
                 预热写入按世代复查，跨恢复窗口的旧世代 secret 不落新世代缓存
+            data_version: secret 解密时刻的 TOTP 域失效版本快照（SEC-063 b 层）：
+                随 secret 从 DetailPanel 透传，预热写入按版本复查——「解密 → 预热」
+                窗口内被 pop_totp/clear_totp 失效的旧 secret 拒收入缓存
         """
         self._entry_mgr = entry_manager
         self._content_layout = content_layout
-        self._build(entry_id, secret, data_epoch=data_epoch)
+        self._build(entry_id, secret, data_epoch=data_epoch, data_version=data_version)
 
     def stop(self) -> None:
         self._timer.stop()
@@ -113,14 +117,20 @@ class TOTPWidget(QObject):
         secret: str | None = None,
         *,
         data_epoch: str | None = None,
+        data_version: int | None = None,
     ) -> None:
-        """构建 TOTP 区域并启动刷新。secret 为调用方已解密的 totp_secret（可选）。"""
+        """构建 TOTP 区域并启动刷新。secret 为调用方已解密的 totp_secret（可选）。
+
+        data_epoch/data_version 为 secret 的解密世代与 TOTP 域版本快照
+        （SEC-054/063 b 层），透传 get_state 的预热写入守卫。
+        """
         if not self._entry_mgr:
             return
         state = self._entry_mgr.totp.get_state(
             entry_id,
             preloaded_secret=secret,
             data_epoch=data_epoch,
+            data_version=data_version,
         )
         if not state:
             return

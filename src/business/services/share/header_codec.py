@@ -35,7 +35,9 @@ MAX_SHARE_PAYLOAD_SIZE = 2 * 1024 * 1024
 
 # 解密器（浏览器 JS）解析不可信共享包时的 KDF 紧上界倍数，防恶意极大参数致 OOM/冻结 DoS。
 # Python 创建端恒以默认参数写入、不从不可信头派生 share key，故本常量无 Python 消费方；
-# 保留为 decrypter_template.html 的 doDecrypt 内联校验（D.time*2 等）的契约锚点。
+# 保留为 decrypter_template.html 的 doDecrypt 内联校验（``header.time > D.time * 2`` 等
+# 三处 ``* 2`` 字面量，无跨语言共享常量通道）的契约锚点（MAINT-110 核实两端对应：JS 侧
+# 字面量 2 与本常量同值，篡改任一端上界即两端防护面分叉）。
 MAX_SHARE_KDF_MULTIPLIER = 2
 
 # 永不过期标记值（expire_at 字段）。
@@ -79,7 +81,14 @@ def write_share_header(
 
 
 def read_share_header(file: IO[bytes]) -> tuple[int, bytes, KdfParams, int, int]:
-    """读取共享包头，返回 ``(version, salt, params, expire_at, created_at)``。"""
+    """读取共享包头，返回 ``(version, salt, params, expire_at, created_at)``。
+
+    生产链 src 零消费（MAINT-110 复核后有意保留）：Python 端只写包（write_share_header）
+    不读包——解密在浏览器 decrypt.html。保留理由：与 write_share_header 构成头格式的
+    编解码对称（本模块职责「二进制头编解码/检视」的两半），往返测试据此在 CI 守护写头
+    字节布局（magic/struct 字段序/salt 长度/版本门）——删除后写头正确性只剩 JS 端运行期
+    解密失败的隐式验证，格式漂移无人拦截。
+    """
     file.seek(0)
     if file.read(len(SHARE_MAGIC)) != SHARE_MAGIC:
         raise ShareError("无效的共享包文件格式")
@@ -130,7 +139,13 @@ def header_aad(
 
 
 def inspect_share(filepath: str) -> dict[str, Any]:
-    """读取共享包头，不解密内容。返回混合类型故标注 ``dict[str, Any]``。"""
+    """读取共享包头，不解密内容。返回混合类型故标注 ``dict[str, Any]``。
+
+    当前无 UI 消费（MAINT-110 复核后有意保留，git 可找回但往返契约随之丢失）：
+    预留共享包检视 UI（展示过期时间/KDF 参数，接收方解密前确认包元数据）——
+    备份侧 ``inspect_backup`` 已有 UI 消费先例，共享包检视为对称演进方向；
+    且 ``read_share_header`` 的模块级消费方仅本函数，二者共进退。
+    """
     filepath = str(validate_file_path(filepath))
     if Path(filepath).stat().st_size > MAX_SHARE_FILE_SIZE:
         raise PayloadTooLargeError("共享包文件过大")

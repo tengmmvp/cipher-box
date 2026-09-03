@@ -14,7 +14,6 @@ host 生命周期（锁定/关闭/隐藏到托盘/紧急取消）经 ``shutdown`
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
@@ -69,8 +68,6 @@ if TYPE_CHECKING:
     from ..components.entry_list_widget import EntryListModel
     from ..controllers.entry_list_controller import EntryListController
     from ..controllers.sidebar_controller import SidebarController
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -415,7 +412,8 @@ class ListRefreshController:
         过滤器→方法的映射复用 EntryListController.get_fetcher。各 fetcher 所需的当前
         分类、搜索等参数在此按 filter_key 统一绑定。排序契约（MAINT-091）：all/
         favorite/trash 的排序由 fetcher 透传 order_by 给 manager 完成（SQL 下推或
-        PERF-078 内存路径，键函数与 UI 的 sort_entries 同一事实源），本方法不再对
+        PERF-078 内存路径，键函数统一为 services/entry_sorting 的 entry_sort_key，
+        UI 侧重排入口已随死代码删除），本方法不再对
         结果二次重排——原重排在 worker 线程读 sort_combo（绕过 _build_entry_fetch
         的快照）且属稳定空操作；weak/duplicate/recent 视图**有意不参与排序切换**
         （安全摘要序/固定 updated_at↓ 序），不透传排序参数。

@@ -4,8 +4,9 @@
 同属「条目查询域纯函数」，按 services 归属约定与 MAINT-097 的拆分先例归位——此前
 驻留 managers 使 UI（entry_list_controller）为消费 4 键逻辑 import
 managers.entry_manager，与同性质纯函数的归属不一致。消费方：EntryManager 内存
-排序路径（窄投影行经 :class:`SortKeySource` 适配）与 UI 的
-``EntryListController.sort_entries``（MAINT-091 单一事实源）。
+排序路径（窄投影行经 :class:`SortKeySource` 适配）。UI 侧的
+``EntryListController.sort_entries`` 重排入口已随死代码删除（QL-074）——列表排序
+统一由 manager 分流，本模块不再有 UI 直接调用方。
 """
 
 from __future__ import annotations
@@ -49,11 +50,11 @@ class SortKeySource(NamedTuple):
 def entry_sort_key(field: str) -> Callable[[EntrySortKeySource], str | int]:
     """按字段返回条目排序键提取器（单一事实源，MAINT-091）。
 
-    消费方：EntryManager 内存排序路径（窄投影经 :class:`SortKeySource` 适配）与 UI 的
-    ``EntryListController.sort_entries``——此前同一套 4 键逻辑在两处各一份，键语义
-    漂移会使 SQL 下推序与 UI 重排序不一致。未知字段回退 ``updated_at``，与
-    ``get_entry_summaries`` 内存路径的原回退分支一致；``title`` 键为小写形式
-    （与 meta.title_lower 同源）。
+    消费方：EntryManager 内存排序路径（窄投影经 :class:`SortKeySource` 适配；
+    UI 的重排入口已随 QL-074 删除，列表排序不经 UI 二次重排）——此前同一套
+    4 键逻辑在 business/UI 两处各一份，键语义漂移会使 SQL 下推序与内存排序序
+    不一致。未知字段回退 ``updated_at``，与 ``get_entry_summaries`` 内存路径的
+    原回退分支一致；``title`` 键为小写形式（与 meta.title_lower 同源）。
     """
     if field == "title":
         return lambda e: (e.title or "").lower()

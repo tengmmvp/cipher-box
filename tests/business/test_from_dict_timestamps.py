@@ -73,26 +73,60 @@ def test_valid_iso_timestamps_pass(good_value):
 @pytest.mark.parametrize(
     "parseable_variant,normalized",
     [
-        ("2026-01-02 03:04:05", "2026-01-02T03:04:05"),  # 空格分隔 → T 分隔
+        ("2026-01-02 03:04:05", "2026-01-02T03:04:05"),  # 空格分隔 → T 分隔（naive 保持 naive）
         ("2026-01-02", "2026-01-02T00:00:00"),  # 纯日期 → 补全时间
         ("20260102T030405", "2026-01-02T03:04:05"),  # 基本格式 → 扩展格式
         ("2026-01-02T03:04", "2026-01-02T03:04:00"),  # 截断时间 → 补全秒
         ("2026-01-02T03:04:05,123456", "2026-01-02T03:04:05.123456"),  # 逗号小数秒 → 点
         ("2026-01-02T03:04:05Z", "2026-01-02T03:04:05+00:00"),  # Z 后缀 → +00:00
+        # 非零偏移统一转 UTC（QL-073）：钟面字面量随偏移归零改写为真实 UTC 时刻
+        ("2026-01-02T11:04:05+08:00", "2026-01-02T03:04:05+00:00"),  # 东八区 → UTC
+        ("2026-01-01T22:04:05-05:00", "2026-01-02T03:04:05+00:00"),  # 西五区 → UTC（跨日）
+        ("2026-01-02T03:04:05+00:00", "2026-01-02T03:04:05+00:00"),  # 零偏移幂等
     ],
 )
 @pytest.mark.parametrize("field", ["created_at", "updated_at", "password_changed_at"])
 def test_parseable_variants_normalized(field, parseable_variant, normalized):
-    """可解析变体归一化为 isoformat() 标准形态后落值（QL-060 守护）。
+    """可解析变体归一化为 UTC isoformat() 标准形态后落值（QL-060/073 守护）。
 
     fromisoformat 亦接受空格分隔/纯日期/基本格式/截断时间/逗号小数秒/Z 后缀等
     变体，与项目 isoformat() 产物混存时字符串排序不等于时间排序（空格 0x20 <
     'T' 0x54、',' 0x2C < '.' 0x2E、'Z' 与 '+00:00' 同刻异串）——QL-042/053 的
     拒绝式校验分别存在变体漏网与恢复路径绕过缺口，QL-060 改为归一化：不拒
-    任何可解析输入，形态唯一使排序等价绝对成立。
+    任何可解析输入，形态唯一使排序等价绝对成立；QL-073 进一步把非零偏移统一
+    astimezone(UTC)——偏移原样保留时排序等价仅在全库统一偏移下成立（+08:00 的
+    03:04 实为 UTC 前一日 19:04，字面序却排在 +00:00 的 02:04 之后）。
     """
     entry = Entry.from_dict(_base_dict(**{field: parseable_variant}))
     assert getattr(entry, field) == normalized
+
+
+def test_utc_normalization_makes_string_order_absolute():
+    """归一化后字符串排序==真实时间排序（QL-073 核心声明）。
+
+    两时刻真实先后：01:04:05Z（源自 +02:00 的 03:04:05）早于 02:04:05Z。偏移
+    原样保留的旧归一化按钟面字面比较得 03:04 > 02:04（错序，小时级）；转 UTC
+    后字符串比较与真实时间序一致。
+    """
+    from src.models import normalized_iso_timestamp
+
+    earlier = normalized_iso_timestamp("2026-01-02T03:04:05+02:00")
+    later = normalized_iso_timestamp("2026-01-02T02:04:05+00:00")
+    assert earlier < later
+    assert earlier == "2026-01-02T01:04:05+00:00"
+
+
+def test_naive_timestamp_kept_naive():
+    """naive 输入（无偏移）保持 naive 形态落库（既有语义锁定）。
+
+    无偏移信息不可转换（臆断 UTC/本地都会引入无依据的小时级改写）；消费侧对
+    naive 统一按 UTC 解释（utils.format.format_datetime / security_analyzer），
+    见 normalized_iso_timestamp 的 QL-073 注释。
+    """
+    from src.models import normalized_iso_timestamp
+
+    assert normalized_iso_timestamp("2026-01-02T03:04:05") == "2026-01-02T03:04:05"
+    assert normalized_iso_timestamp("2026-01-02T03:04:05.5") == "2026-01-02T03:04:05.500000"
 
 
 def test_empty_and_missing_timestamps_pass():

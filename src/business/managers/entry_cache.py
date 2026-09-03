@@ -5,13 +5,28 @@
 整体失效。搜索投影行集（PERF-086）为密文行缓存，无明文驻留顾虑。
 
 约定：锁内不调用数据库方法或变更回调，避免与 db 事务锁构成顺序反转死锁。
+
+线程模型约束（ARCH-054，跨模块集中声明）：**TOTP secret 的解密与缓存回写
+（TotpService.generate_cached / get_state 经 resolve_totp_secret / store_totp）
+必须留在 GUI 线程**（TOTPWidget 的 QTimer 驱动）。理由：pop_totp 的失效防护
+（QL-070 推进 TOTP 域版本）与 resolve/store 回写守卫（SEC-044）防的是
+「解密采样 → 回写」窗口内的并发失效，其对手方是 worker 线程的写路径
+（导入覆盖 prepare 的 evict，SEC-063）；若 TOTP 刷新被移入后台线程，它与
+写 worker 的交错空间扩大（回写与 pop 的间隙不再由 GIL 级短临界区约束），
+且 UI 侧 QTimer 与后台线程双重读者会放大旧 secret 的可见窗口。违反后果：
+旧 totp_secret 经缓存回写持续生成错误 2FA 验证码（P1 正确性缺陷，对齐
+SEC-063 修复前的批量覆盖路径形态）。本约束经 SEC-063 统一失效 seam（任何
+``epoch_guarded_transaction`` 提交后自动 clear_totp，接线见 composition）
+结构性兜底——写路径遗漏 per-site 失效不再静默留下旧 secret；但 seam 不覆盖
+非事务写（软删除/物理删除/清空回收站）与「写库 → 提交」间窗口，GUI 线程
+约束与 per-site 前置失效仍是必要纵深。
 """
 
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from ..managers.vault_manager import VaultManager
@@ -19,11 +34,15 @@ if TYPE_CHECKING:
 from ...database.types import SearchRow
 from ...exceptions import DecryptionError, VaultKeyEpochMismatchError
 from ...models import MAX_ENTRIES_LIMIT, parse_tag_list
+
+# SearchMetadata（搜索摘要缓存条目类型）的 home 在 services 的视图解密域
+# （ARCH-053 迁移）：本模块经 managers→services 正向 import 引用。
 from ..services.crypto_utils import (
     category_crypto_id,
     decrypt_field as _decrypt_field_impl,
     require_vault_key,
 )
+from ..services.entry_view_decryption import SearchMetadata
 
 # 搜索摘要缓存容量上限：与条目数上限（MAX_ENTRIES_LIMIT）对齐，使大库
 # （上限内）的 title/username/url/tags 摘要全部驻留缓存、避免每次列表刷新
@@ -46,23 +65,6 @@ _MAX_PROJECTION_CACHE_KEYS = 4
 # 同义键重复占用缓存槽；非 None 时行集已按该白名单字段排好序，与无序行集不可
 # 混存同一键（消费方对行序敏感：排序下推分支依赖行序做提前终止）。
 ProjectionCacheKey = tuple[bool, int | None, bool, str | None, bool]
-
-
-class SearchMetadata(NamedTuple):
-    """搜索摘要缓存条目：title/username/url/tags 明文原形及对应小写形式。
-
-    前 4 项为明文原形（列表展示），后 4 项为小写形式（供 matches_search 跳过每条目
-    4 字段实时 .lower()）。两者一同解密一次并缓存，消费方按字段名访问取代位置切片。
-    """
-
-    title: str
-    username: str
-    url: str
-    tags: str
-    title_lower: str
-    username_lower: str
-    url_lower: str
-    tags_lower: str
 
 
 class SearchRowSource(Protocol):
@@ -706,12 +708,30 @@ class EntryCacheManager:
                     self._totp_secret_cache[entry_id] = secret
         return secret
 
+    @property
+    def totp_invalidate_version(self) -> int:
+        """当前 TOTP 域失效版本号（调用方快照用，SEC-063 b 层）。
+
+        主通道：``EntryManager.get_entry_with_epoch`` 在读锁内与 raw/key/epoch 同刻
+        经此快照版本，随 preloaded_secret 沿预热链（detail_panel → TOTPWidget →
+        TotpService.get_state）透传至 :meth:`store_totp` 的 ``data_version``——
+        「解密 → 预热落缓存」窗口内发生的任何 TOTP 失效（pop_totp/clear_totp 不改
+        epoch，如导入覆盖 prepare 阶段的 evict 与写事务提交后的统一失效 seam）据此
+        被拒收，镜像 :meth:`resolve_totp_secret` 的 SEC-044 回写守卫对 store 侧补齐
+        的缺口。``TotpService.get_state`` 在调用方未携带快照时的自采样仅是兜底——
+        只覆盖「get_state → store」的微秒窗口（见其 docstring），不构成本属性的
+        生产接线。
+        """
+        with self._cache_lock:
+            return self._totp_invalidate_version
+
     def store_totp(
         self,
         entry_id: int,
         secret: str,
         *,
         data_epoch: str | None = None,
+        data_version: int | None = None,
     ) -> None:
         """预热 TOTP secret 缓存（供 TotpService.get_state 首次展示后预热）。
 
@@ -723,11 +743,22 @@ class EntryCacheManager:
         grafting——本方法自身无解密窗口（无可复查的采样-回写间隙），世代来源只能
         是调用方随 secret 一并传递的快照。未提供保持无条件落缓存（既有调用方的
         secret 与缓存世代同线程同世代，无跨世代窗口）。
+
+        ``data_version`` 为 TOTP 域版本快照复查（SEC-063，镜像 resolve_totp_secret
+        的 SEC-044 模式补 store 侧缺口）：调用方在解密 totp_secret 的时刻（读锁内
+        与 raw/key/epoch 同刻，经 ``get_entry_with_epoch`` 带出）快照、随 secret 一并
+        传入——「解密 → 预热」窗口内发生过任何 TOTP 失效（pop_totp/clear_totp 仅推进
+        本域、不动 epoch）时，本次 secret 属已被失效的旧值，拒收入缓存。未提供时不
+        比对版本（TotpService.get_state 的兜底自采样传入的是 store 前一刻的当前值，
+        守卫等价仅覆盖「get_state → store」微秒窗口；测试直调等既有调用方保持原
+        语义）。
         """
         if not secret:
             return
         with self._cache_lock:
             if data_epoch is not None and self._cache_epoch != data_epoch:
+                return
+            if data_version is not None and self._totp_invalidate_version != data_version:
                 return
             self._totp_secret_cache[entry_id] = secret
 

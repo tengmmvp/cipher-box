@@ -15,8 +15,11 @@ teardown ``v.close()`` 释放 Windows 文件锁；fixture teardown 比逐测试 
 
 import dataclasses
 
-from src.business.managers.entry_manager import EntryManager
+import pytest
+
+from src.business.managers.entry_manager import EntryManager, _projection_cache_key
 from src.crypto.password_generator import PasswordGenerator
+from src.database.types import EntryQuery, VerifyMode
 from src.models import CIPHERTEXT_PREFIX, CustomField
 from tests.helpers import decrypt_all_entries
 
@@ -57,21 +60,28 @@ class TestAddEntry:
         assert read.custom_fields[0].value == "code-123"
 
     def test_get_entry_with_epoch_carries_current_epoch(self, entry_mgr, make_entry):
-        """get_entry_with_epoch 随 entry 携带读锁内快照的数据世代（SEC-054 闭合）。
+        """get_entry_with_epoch 随 entry 携带读锁内快照的数据世代与 TOTP 域版本。
 
-        世代供 detail_panel 的 TOTP 预热守卫消费；与 get_entry 同一读路径，
-        未知 id 返回 (None, None)。
+        世代（SEC-054 闭合）与 TOTP 域版本（SEC-063 b 层）供 detail_panel 的 TOTP
+        预热守卫消费；与 get_entry 同一读路径，未知 id 返回三元组全 None。
         """
         entry_id = entry_mgr.add_entry(
             make_entry(title="带世代", username="u", password="S3cret-Pass-2024!")
         )
+        # 预先臂住缓存世代：decrypt_entry 复用摘要缓存时首次 invalidate_if_epoch_changed
+        # 会重臂并推进两域版本，隔离该交互后「锁内快照 == 当前版本」精确成立
+        entry_mgr.cache.invalidate_if_epoch_changed()
 
-        entry, data_epoch = entry_mgr.get_entry_with_epoch(entry_id)
-        assert entry is not None
-        assert entry.title == "带世代"
-        assert data_epoch == entry_mgr.key_epoch  # 锁内快照即当前世代（无并发轮换）
+        read = entry_mgr.get_entry_with_epoch(entry_id)
+        assert read.entry is not None
+        assert read.entry.title == "带世代"
+        assert read.data_epoch == entry_mgr.key_epoch  # 锁内快照即当前世代（无并发轮换）
+        assert read.data_version == entry_mgr.cache.totp_invalidate_version
 
-        assert entry_mgr.get_entry_with_epoch(99999) == (None, None)
+        empty = entry_mgr.get_entry_with_epoch(99999)
+        assert empty.entry is None
+        assert empty.data_epoch is None
+        assert empty.data_version is None
 
     def test_stores_encrypted_not_plaintext(self, entry_mgr, make_entry):
         """验证敏感字段以密文（cb2: 前缀）入库，而非明文落库。"""
@@ -321,13 +331,13 @@ class TestViewDecryptionDelegation:
         assert raw is not None
 
         detail = entry_mgr.decrypt_entry(raw)
-        direct = entry_mgr._view_decryptor.decrypt_entry(raw)  # noqa: SLF001
+        direct = entry_mgr._view_decryptor.decrypt_entry(raw)
         assert detail == direct
 
         exported = entry_mgr.decrypt_entry_for_export(raw, include_secrets=True)
         direct_export = entry_mgr._view_decryptor.decrypt_entry_for_export(
             raw, include_secrets=True
-        )  # noqa: SLF001
+        )
         assert exported == direct_export
         assert exported.notes == "n1"
         assert exported.totp_secret == "JBSWY3DPEHPK3PXP"
@@ -335,7 +345,7 @@ class TestViewDecryptionDelegation:
     def test_view_decryptor_shares_cache_instance(self, entry_mgr):
         """解密器与 EntryManager 共用同一 EntryCacheManager（详情路径复用摘要缓存的前提）。"""
         # cache 观察面（MAINT-095）：两侧均为公开只读 property
-        assert entry_mgr._view_decryptor.cache is entry_mgr.cache  # noqa: SLF001
+        assert entry_mgr._view_decryptor.cache is entry_mgr.cache
 
 
 class TestListLimitPushdown:
@@ -463,7 +473,7 @@ class TestAddDeleteIncrementalNotify:
 
         spy = self._tags_projection_calls(
             entry_mgr._vault,
-            monkeypatch,  # noqa: SLF001
+            monkeypatch,
         )
         # 新增：工作 → 3（差分，无全量重算）
         entry_id_c = entry_mgr.add_entry(make_entry(title="C", tags="工作"))
@@ -511,7 +521,7 @@ class TestAddDeleteIncrementalNotify:
         抛 EntryIntegrityError）——删除损坏条目是清理路径，不得因验签失败而不可用。
         """
         entry_id = entry_mgr.add_entry(make_entry(title="被篡改", tags="篡改标签"))
-        conn = entry_mgr.db._conn  # noqa: SLF001
+        conn = entry_mgr.db._conn
         assert conn is not None
         # 改写入签载荷的非加密元数据且不重签：metadata_mac 比对必然失配
         conn.execute("UPDATE entries SET is_favorite = 1 - is_favorite WHERE id=?", (entry_id,))
@@ -534,7 +544,7 @@ class TestAddDeleteIncrementalNotify:
         """
         entry_mgr.add_entry(make_entry(title="好条目", tags="正常标签"))
         entry_id = entry_mgr.add_entry(make_entry(title="损坏", tags="损坏标签"))
-        conn = entry_mgr.db._conn  # noqa: SLF001
+        conn = entry_mgr.db._conn
         assert conn is not None
         # 直改 tags 密文为非法载荷（不重签）：GCM 认证必然失败
         conn.execute("UPDATE entries SET tags_enc='cb2:garbage' WHERE id=?", (entry_id,))
@@ -552,7 +562,7 @@ class TestAddDeleteIncrementalNotify:
     def test_restore_corrupted_tags_entry_invalidates_tags_cache(self, entry_mgr, make_entry):
         """恢复路径同款保守失效（QL-066）：损坏 tags 条目恢复不残留陈旧计数。"""
         entry_id = entry_mgr.add_entry(make_entry(title="损坏", tags="损坏标签"))
-        conn = entry_mgr.db._conn  # noqa: SLF001
+        conn = entry_mgr.db._conn
         conn.execute("UPDATE entries SET tags_enc='cb2:garbage' WHERE id=?", (entry_id,))
         conn.commit()
         assert entry_mgr.delete_entry(entry_id) is True
@@ -575,16 +585,16 @@ class TestAddDeleteIncrementalNotify:
         """
         entry_mgr.add_entry(make_entry(title="A", tags="工作"))
         assert dict(entry_mgr.get_all_tags()) == {"工作": 1}  # 惰性填充 _tags_cache
-        assert entry_mgr._cache._tags_cache is not None
+        assert entry_mgr.cache._tags_cache is not None
 
         # 拦截 apply_tag_delta：固定「放弃」出口（真实竞态窗口在写事务与差分
         # 之间，此处以替身隔离验证调用方的回退分支本身）
-        monkeypatch.setattr(entry_mgr._cache, "apply_tag_delta", lambda *a, **k: False)
+        monkeypatch.setattr(entry_mgr.cache, "apply_tag_delta", lambda *a, **k: False)
 
         entry_mgr.add_entry(make_entry(title="B", tags="新标签"))
 
         # 差分被放弃 → 保守整表失效：_tags_cache 置 None，下次 get_all_tags 全量重算
-        assert entry_mgr._cache._tags_cache is None
+        assert entry_mgr.cache._tags_cache is None
         assert dict(entry_mgr.get_all_tags()) == {"工作": 1, "新标签": 1}
 
 
@@ -753,7 +763,7 @@ class TestEmptyTrashBypassNotification:
         """清空回收站后安全分析缓存不失效（软删除时已增量移出，物理清空无增量可算）。"""
         from src.business.services.security_analyzer import SecurityAnalyzer
 
-        analyzer = SecurityAnalyzer(entry_mgr._vault, entry_mgr._cache)
+        analyzer = SecurityAnalyzer(entry_mgr._vault, entry_mgr.cache)
         entry_mgr.register_on_change(analyzer.invalidate_cache)
 
         entry_id = entry_mgr.add_entry(make_entry(title="待清理", password="weak"))
@@ -790,7 +800,7 @@ class TestTotpInvalidateOrdering:
     def _install_order_spy(entry_mgr, monkeypatch, db_write_method: str) -> list[str]:
         """记录 pop_totp 与指定 db 写方法的调用顺序（先 pop 后写为正确序）。"""
         events: list[str] = []
-        cache = entry_mgr._cache  # noqa: SLF001
+        cache = entry_mgr.cache  # 公开只读 property（MAINT-095）
         real_pop = cache.pop_totp
 
         def _pop(entry_id: int) -> None:
@@ -829,3 +839,233 @@ class TestTotpInvalidateOrdering:
         entry_mgr.permanent_delete_entry(entry_id)
 
         assert events == ["pop_totp", "db.permanent_delete_entry"]
+
+
+class TestEmptyTrashTotpClearOrdering:
+    """empty_trash 的 TOTP 缓存清空时序守护（QL-075）：clear_totp 先于物理删除。
+
+    原「db.empty_trash() 在前、clear_totp() 在后」在 db 抛异常时已物理删除条目的
+    TOTP secret 残留缓存（违反自家 pop-before-write 纪律）。以调用顺序 spy 与
+    异常路径双测试锁定。
+    """
+
+    def test_clear_totp_precedes_db_empty_trash(self, entry_mgr, make_entry, monkeypatch):
+        """成功路径：clear_totp 先于 db.empty_trash 执行。"""
+        events: list[str] = []
+        cache = entry_mgr.cache
+        real_clear = cache.clear_totp
+
+        def _clear() -> None:
+            events.append("clear_totp")
+            real_clear()
+
+        monkeypatch.setattr(cache, "clear_totp", _clear)
+        db = entry_mgr.db
+        real_write = db.empty_trash
+
+        def _write() -> None:
+            events.append("db.empty_trash")
+            real_write()
+
+        monkeypatch.setattr(db, "empty_trash", _write)
+
+        entry_mgr.empty_trash()
+
+        assert events == ["clear_totp", "db.empty_trash"]
+
+    def test_totp_cache_cleared_when_db_empty_trash_fails(self, entry_mgr, make_entry, monkeypatch):
+        """异常路径：db.empty_trash 抛异常时 TOTP 缓存已清空（QL-075 修复点）。"""
+        from src.exceptions import DatabaseError
+
+        entry_id = entry_mgr.add_entry(make_entry(title="待清理", totp_secret="JBSWY3DPEHPK3PXP"))
+        # 直接预热 TOTP secret 缓存（store_totp 无解密窗口，等价于定时器已缓存形态）
+        entry_mgr.cache.store_totp(entry_id, "JBSWY3DPEHPK3PXP")
+        # MAINT-095 台账 C1：TOTP 缓存内容无公开观察面，白盒状态断言豁免
+        assert entry_mgr.cache._totp_secret_cache == {entry_id: "JBSWY3DPEHPK3PXP"}
+
+        def _boom() -> None:
+            raise DatabaseError("empty_trash 写失败")
+
+        monkeypatch.setattr(entry_mgr.db, "empty_trash", _boom)
+        with pytest.raises(DatabaseError):
+            entry_mgr.empty_trash()
+
+        # 条目已被物理删除（DELETE 已提交）而写失败冒泡——TOTP 缓存不得残留
+        # （MAINT-095 台账 C1：同上白盒豁免）
+        assert entry_mgr.cache._totp_secret_cache == {}
+
+
+class TestWriteTransactionClearsTotpCache:
+    """写事务统一失效 seam（SEC-063 结构性根治）：epoch_guarded_transaction 成功
+    提交后自动 clear_totp。
+
+    TOTP 写失效此前散布五处形态（update/delete/permanent_delete 的 pop-before-write、
+    empty_trash 的 clear-before-write、write_overwrite_updates 的前后双清），各自
+    正确仅靠「GUI 线程亲和」纪律；seam 使任何提交后的写事务自动失效，per-site
+    失效降级为纵深。含旁路写（toggle_favorite 不改 totp_secret 也触发，代价仅一次
+    重解密）；回滚路径不触发（提交成功是 seam 的语义边界）。
+    """
+
+    def _warm_totp_cache(self, entry_mgr, make_entry) -> int:
+        """写入带 TOTP 的条目并预热缓存，返回 entry_id。"""
+        entry_id = entry_mgr.add_entry(
+            make_entry(title="TOTP 条目", totp_secret="JBSWY3DPEHPK3PXP")
+        )
+        assert entry_mgr.totp.generate_cached(entry_id) is not None
+        assert entry_id in entry_mgr.cache._totp_secret_cache  # MAINT-095 台账 C1 白盒豁免
+        return entry_id
+
+    def test_bypass_write_transaction_clears_totp_cache(self, entry_mgr, make_entry):
+        """旁路写事务（toggle_favorite）提交后 TOTP 缓存被清（seam 覆盖全部写事务）。"""
+        entry_id = self._warm_totp_cache(entry_mgr, make_entry)
+
+        entry_mgr.toggle_favorite(entry_id)
+
+        # toggle_favorite 无任何 per-site TOTP 失效调用——缓存被清只能来自 seam
+        assert entry_mgr.cache._totp_secret_cache == {}
+
+    def test_update_entry_transaction_clears_totp_cache(self, entry_mgr, make_entry):
+        """常规写事务（update_entry）提交后 seam 再清一轮（与前置 pop 语义互补）。"""
+        entry_id = self._warm_totp_cache(entry_mgr, make_entry)
+
+        entry = entry_mgr.get_entry(entry_id)
+        assert entry is not None
+        # 预热间隔模拟定时器重新缓存（update_entry 的前置 pop 会先清一次）
+        entry_mgr.cache.store_totp(entry_id, "JBSWY3DPEHPK3PXP")
+        entry_mgr.update_entry(dataclasses.replace(entry, title="已更新"))
+
+        assert entry_mgr.cache._totp_secret_cache == {}
+
+    def test_rolled_back_transaction_keeps_totp_cache(self, entry_mgr, make_entry):
+        """事务体抛异常回滚：seam 不触发（提交成功才失效，回滚无数据变更）。"""
+        entry_id = self._warm_totp_cache(entry_mgr, make_entry)
+        version_before = entry_mgr.cache.totp_invalidate_version
+
+        with pytest.raises(RuntimeError):
+            with entry_mgr.epoch_guarded_transaction(operation="测试回滚"):
+                raise RuntimeError("事务体失败")
+
+        # 回滚路径不触发 seam：缓存与 TOTP 域版本保持（数据未变，失效无必要）
+        assert entry_id in entry_mgr.cache._totp_secret_cache
+        assert entry_mgr.cache.totp_invalidate_version == version_before
+
+
+class TestProjectionCacheKeyContract:
+    """_projection_cache_key 键构造契约守护（ARCH-052）。
+
+    键构造从「get_entry_summaries 手工拼五元组」收敛为单一函数：本测试锚定
+    「键维度 ↔ EntryQuery 维度」映射与「不入键维度」的既定语义——EntryQuery
+    未来增删过滤维度时，此处失败提示同步审视键构造（漏改键则不同行集共享同键
+    静默错数据）。
+    """
+
+    def test_default_query_maps_to_compound_order_key(self):
+        """全默认 query → 复合序键（order 段规范化为 (None, True)）。"""
+        assert _projection_cache_key(EntryQuery()) == (False, None, False, None, True)
+
+    def test_filter_dimensions_map_to_key(self):
+        """三个过滤维度逐一映射到键的对应位。"""
+        assert _projection_cache_key(EntryQuery(deleted_only=True)) == (
+            True,
+            None,
+            False,
+            None,
+            True,
+        )
+        assert _projection_cache_key(EntryQuery(category_id=5)) == (False, 5, False, None, True)
+        assert _projection_cache_key(EntryQuery(favorite_only=True)) == (
+            False,
+            None,
+            True,
+            None,
+            True,
+        )
+
+    def test_explicit_order_maps_with_direction(self):
+        """显式排序（须 tie_break_order=True，PERF-087 等价形态）：order 段带方向。"""
+        query = EntryQuery(order_by="updated_at", order_desc=False, tie_break_order=True)
+        assert _projection_cache_key(query) == (False, None, False, "updated_at", False)
+
+    def test_compound_order_normalized_ignores_order_desc(self):
+        """order_by=None 时 order_desc 无意义（复合序固定方向），同义键归一。"""
+        assert _projection_cache_key(EntryQuery(order_desc=False)) == _projection_cache_key(
+            EntryQuery(order_desc=True)
+        )
+
+    def test_non_rowset_dimensions_do_not_affect_key(self):
+        """不影响行集/行序的维度不参与键：verify（投影无验签）与复合序下的
+        tie_break_order（无显式排序可裁决，追加键不改变复合序行序）。"""
+        assert _projection_cache_key(EntryQuery(verify=VerifyMode.SKIP)) == (
+            _projection_cache_key(EntryQuery())
+        )
+        assert _projection_cache_key(EntryQuery(tie_break_order=True)) == (
+            _projection_cache_key(EntryQuery())
+        )
+
+    @pytest.mark.parametrize(
+        "kwargs,label",
+        [
+            ({"limit": 5}, "limit 截断行集（消费方恒传 None，截断由排序后/循环终止承担）"),
+            ({"after_id": 1}, "after_id 收窄 WHERE 行集（投影消费方不使用）"),
+            ({"include_deleted": True}, "include_deleted 含回收站，与同键默认行集不同"),
+        ],
+    )
+    def test_rowset_dimensions_not_in_key_rejected(self, kwargs, label):
+        """影响行集但未入键的维度以非默认值传入时显式拒绝（静默错数据 → 响亮失败）。"""
+        del label  # 仅用于用例说明
+        with pytest.raises(ValueError, match="投影缓存键"):
+            _projection_cache_key(EntryQuery(**kwargs))
+
+    def test_explicit_order_without_tie_break_rejected(self):
+        """键的 order 段不区分并列裁决形态：显式排序消费方恒 tie_break_order=True。"""
+        with pytest.raises(ValueError, match="tie_break_order"):
+            _projection_cache_key(EntryQuery(order_by="created_at"))
+
+
+class TestDedupIndexProjectionCache:
+    """get_entry_dedup_index 接投影行集缓存（ARCH-055）：与搜索路径同键复用。"""
+
+    def test_dedup_after_search_reuses_projection_rows(self, entry_mgr, make_entry, monkeypatch):
+        """搜索（无排序下推）回填投影缓存后，去重索引命中同键不再拉取。"""
+        id_a = entry_mgr.add_entry(make_entry(title="Alpha", username="u1"))
+        entry_mgr.add_entry(make_entry(title="Beta", username="u2"))
+
+        calls: list[EntryQuery] = []
+        original = entry_mgr.db.get_entries_search_projection
+
+        def _spy(query):
+            calls.append(query)
+            return original(query)
+
+        monkeypatch.setattr(entry_mgr.db, "get_entries_search_projection", _spy)
+
+        # 非空搜索词触发内存路径（空串走 SQL 直连），投影行集按复合序键回填
+        assert len(entry_mgr.get_entry_summaries(search="a")) == 2
+        index = entry_mgr.get_entry_dedup_index()
+
+        # 去重对照含全部未删除条目（与搜索词命中数无关：行集与搜索词解耦）
+        assert sorted((title, username) for title, username, _id in index) == [
+            ("Alpha", "u1"),
+            ("Beta", "u2"),
+        ]
+        assert {id for _t, _u, id in index} >= {id_a}
+        # 搜索回填 + 去重命中：合计仅 1 次投影拉取
+        assert len(calls) == 1
+
+    def test_dedup_cold_then_search_reuses(self, entry_mgr, make_entry, monkeypatch):
+        """反向顺序：去重冷启动回填后，紧随的搜索同样命中（导入后列表刷新摊销）。"""
+        entry_mgr.add_entry(make_entry(title="Only", username="u"))
+
+        calls = []
+        original = entry_mgr.db.get_entries_search_projection
+
+        def _spy(query):
+            calls.append(query)
+            return original(query)
+
+        monkeypatch.setattr(entry_mgr.db, "get_entries_search_projection", _spy)
+
+        assert entry_mgr.get_entry_dedup_index() != []
+        assert len(entry_mgr.get_entry_summaries(search="only")) == 1
+
+        assert len(calls) == 1
