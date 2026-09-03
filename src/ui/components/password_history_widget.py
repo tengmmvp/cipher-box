@@ -1,8 +1,10 @@
 """密码历史区域组件。
 
 以折叠摘要形式展示密码历史，点击展开后才解密完整记录并渲染每一项的
-时间、显示/隐藏切换与复制按钮。历史密码通过间接引用列表持有，闭包按索引
-读取，清除时统一释放明文。
+时间、显示/隐藏切换与复制按钮。历史密码通过间接引用字典持有，闭包按行号
+读取，清除时统一释放明文。行三件套（掩码标签/显隐/复制按钮）复用 secret_field
+共享工厂（MAINT-103：掩码常量与竞态守卫收敛单处），每行独立掩码定时器——
+历史行可同时揭示多行，与主密码的共享单定时器模式语义不同。
 """
 
 from __future__ import annotations
@@ -20,9 +22,9 @@ from PyQt6.QtWidgets import (
 )
 
 from ...utils.memory import mark_secret_discarded
-from ..resources.constants import BTN_COPY, FONT_FAMILY_MONOSPACE, MAX_HISTORY_DISPLAY, PWD_MASK
-from ..resources.icons import COPY, EYE, LOCK, set_icon
+from ..resources.constants import FONT_FAMILY_MONOSPACE, MAX_HISTORY_DISPLAY, PWD_MASK
 from ..resources.theme_colors import c
+from .secret_field import SecretFieldEnv, make_secret_field_row
 from .widgets import create_plain_text_label
 
 if TYPE_CHECKING:
@@ -32,8 +34,8 @@ if TYPE_CHECKING:
 class PasswordHistoryWidget(QObject):
     """密码历史折叠区组件（纯控制器，无可视自身）。
 
-    构建的折叠区控件加入外部传入的 ``content_layout``，自身从不 ``show``，故继承 ``QObject``
-    而非 ``QWidget``。通过注入的 ``EntryManager`` 引用获取密码历史，采用延迟加载：先显示
+    构建的折叠区控件加入外部传入的 ``content_layout``，自身从不 ``show``，故继承 QObject
+    而非 QWidget。通过注入的 ``EntryManager`` 引用获取密码历史，采用延迟加载：先显示
     摘要，点击展开后才解密记录。
     """
 
@@ -41,12 +43,14 @@ class PasswordHistoryWidget(QObject):
 
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
-        self._history_passwords: list[str] = []
+        # 历史密码间接引用字典（行号 → 明文），闭包按行号读取，
+        # `clear()` 时清空字典即可释放明文。
+        self._history_passwords: dict[int, str] = {}
         # 已渲染的密码 `QLabel` 引用：`clear()` 时先 `setText` 掩码再销毁，
         # 避免 `deleteLater` 异步销毁前明文驻留 Qt 对象（锁定时内存转储可读）。
         self._pwd_labels: list[QLabel] = []
         self._entry_mgr: EntryManager | None = None
-        # 本组件自管的密码显示超时定时器，`clear()` 时统一停止，所有权清晰。
+        # 本组件自管的密码显示超时定时器（每行独立），`clear()` 时统一停止。
         self._own_timers: list[QTimer] = []
         # 回调：获取密码可见毫秒数
         self._get_pwd_visible_ms: Callable[[], int] | None = None
@@ -125,12 +129,30 @@ class PasswordHistoryWidget(QObject):
         for lbl in self._pwd_labels:
             lbl.setText(PWD_MASK)
         self._pwd_labels.clear()
-        for p in self._history_passwords:
+        for p in self._history_passwords.values():
             mark_secret_discarded(p)
         self._history_passwords.clear()
         self._entry_mgr = None
 
     # ---- 内部方法 ----
+
+    def _make_env(self) -> SecretFieldEnv[int]:
+        """按当前回调就位情况构造共享工厂环境。
+
+        回调未注入（`set_callbacks` 前构建）时降级：``get_pwd_visible_ms`` 返回
+        None 表示不启动自动掩码、``on_copy`` 为 no-op——与原手写实现的防御分支
+        行为一致（揭示仍显示明文、复制无操作、不抛异常）。
+        """
+        get_ms = self._get_pwd_visible_ms
+        copy_fn = self._copy_with_feedback
+        return SecretFieldEnv(
+            store=self._history_passwords,
+            timers=self._own_timers,
+            parent_widget=self,
+            get_pwd_visible_ms=get_ms if get_ms is not None else (lambda: None),
+            on_copy=copy_fn if copy_fn is not None else (lambda btn, text: None),
+            on_copy_feedback=self.copy_feedback.emit,
+        )
 
     def _build_history(self, history: list[dict[str, str]], content_layout: QVBoxLayout) -> None:
         """构建密码历史折叠区。"""
@@ -149,79 +171,27 @@ class PasswordHistoryWidget(QObject):
             time_label.setStyleSheet(f"color: {c('text_muted')}; font-size: 12px;")
             row.addWidget(time_label)
 
-            # 密码，初始隐藏。揭示后的历史密码可能以 `<` 开头，PlainText 保证
-            # 显示与复制一致（SEC-030）。
+            # 密码行复用共享工厂（MAINT-103）：掩码/显隐/复制三件套与竞态守卫收敛
+            # 单处，历史行保持每行独立定时器（可同时揭示多行）。名称标签弃用——
+            # 行首位置由时间标签占据。
             pwd_text = record.get("password", "")
-            pwd_label = create_plain_text_label(PWD_MASK)
-            pwd_label.setStyleSheet(
-                f"font-family: {FONT_FAMILY_MONOSPACE}; font-size: 12px; color: {c('text_primary')};"
-            )
-            row.addWidget(pwd_label, 1)
-            self._pwd_labels.append(pwd_label)
-
-            # 历史密码存入间接引用列表，闭包通过索引读取，
-            # `clear()` 时清空列表即可释放明文。
             hist_idx = len(self._history_passwords)
-            self._history_passwords.append(pwd_text)
-
-            show_btn = QPushButton()
-            set_icon(show_btn, EYE)
-            show_btn.setObjectName("iconBtn")
-            show_btn.setFixedSize(*BTN_COPY)
-            show_btn.setToolTip("显示/隐藏")
-
-            # 历史密码显示超时定时器，持久且可取消
-            hist_timer = QTimer(self)
-            hist_timer.setSingleShot(True)
-            self._own_timers.append(hist_timer)
-
-            def _on_hist_timeout(lbl: QLabel = pwd_label, btn: QPushButton = show_btn) -> None:
-                # 仅重置显示，不清空槽位：历史密码需支持显示→隐藏→再显示，
-                # 与主密码字段一致；明文释放统一交给 `clear()` 的 `mark_secret_discarded`。
-                lbl.setText(PWD_MASK)
-                set_icon(btn, EYE)
-
-            hist_timer.timeout.connect(_on_hist_timeout)
-
-            def toggle_pwd(
-                _checked: bool = False,
-                lbl: QLabel = pwd_label,
-                btn: QPushButton = show_btn,
-                idx: int = hist_idx,
-                timer: QTimer = hist_timer,
-            ) -> None:
-                pwd = self._history_passwords[idx] if idx < len(self._history_passwords) else ""
-                if lbl.text() == PWD_MASK:
-                    lbl.setText(pwd)
-                    set_icon(btn, LOCK)
-                    if self._get_pwd_visible_ms is None:
-                        return
-                    timer.start(self._get_pwd_visible_ms())
-                else:
-                    lbl.setText(PWD_MASK)
-                    set_icon(btn, EYE)
-                    timer.stop()
-
-            show_btn.clicked.connect(toggle_pwd)
-            row.addWidget(show_btn)
-
-            copy_btn = QPushButton()
-            set_icon(copy_btn, COPY)
-            copy_btn.setObjectName("iconBtn")
-            copy_btn.setFixedSize(*BTN_COPY)
-            copy_btn.setToolTip("复制密码")
-
-            def do_copy(
-                _checked: bool = False, idx: int = hist_idx, btn: QPushButton = copy_btn
-            ) -> None:
-                pwd = self._history_passwords[idx] if idx < len(self._history_passwords) else ""
-                if self._copy_with_feedback is None:
-                    return
-                self._copy_with_feedback(btn, pwd)
-
-            copy_btn.clicked.connect(do_copy)
-            copy_btn.clicked.connect(self.copy_feedback.emit)
-            row.addWidget(copy_btn)
+            _name, secret_row = make_secret_field_row(
+                self._make_env(),
+                "",
+                pwd_text,
+                hist_idx,
+                val_label_style=(
+                    f"font-family: {FONT_FAMILY_MONOSPACE}; font-size: 12px;"
+                    f" color: {c('text_primary')};"
+                ),
+            )
+            # 行内唯一 QLabel 即掩码值标签（名称标签未入布局）：持引用供 clear()
+            # 时先掩码再销毁。
+            pwd_label = secret_row.findChild(QLabel)
+            if pwd_label is not None:
+                self._pwd_labels.append(pwd_label)
+            row.addWidget(secret_row, 1)
 
             group_layout.addLayout(row)
 

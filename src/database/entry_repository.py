@@ -328,8 +328,18 @@ class EntryRepository:
         elif query.order_by is not None:
             # 字段序下推（PERF-073）：列表达式经 _ORDER_BY_COLUMN_SQL 硬编码映射，
             # 方向经字面量二选一——query.order_by 已在 EntryQuery 构造点校验白名单。
+            # 并列裁决键（PERF-087）：排序列同值时按复合序尾部裁决（is_favorite
+            # DESC, updated_at DESC，与下方默认复合序一致）。搜索的排序下推分支依赖
+            # 「行集序 == 内存稳定排序序（继承复合序）」的等价性在排序键并列 + limit
+            # 截断边界上成立（强度刻度 0-4 并列常见、批量导入 created_at 同刻）——
+            # 不带裁决键时并列行序是引擎内序，截断入选集合会与「全量收集→稳定排序
+            # →截断」分叉。尾部子句列名硬编码，无注入面；对带 LIMIT 的 SQL 下推路径
+            # 同样生效，仅把并列序从不确定的引擎序固化为复合序，无正确性影响。
             column = _ORDER_BY_COLUMN_SQL[query.order_by]
-            sql += f" ORDER BY {column} {'DESC' if query.order_desc else 'ASC'}"
+            sql += (
+                f" ORDER BY {column} {'DESC' if query.order_desc else 'ASC'},"
+                " e.is_favorite DESC, e.updated_at DESC"
+            )
         else:
             sql += " ORDER BY e.is_favorite DESC, e.updated_at DESC"
 
@@ -342,8 +352,10 @@ class EntryRepository:
         """获取密码条目列表，过滤/排序/limit/verify 经 ``EntryQuery`` 单一传入。
 
         ``query.order_by`` 指定白名单明文字段（PERF-073）时按该列排序（方向由
-        ``order_desc`` 决定），供列表视图按用户所选排序下推 LIMIT 到 SQL；
-        ``None``（默认）走复合序（is_favorite DESC, updated_at DESC）。
+        ``order_desc`` 决定；排序列同值时按复合序并列裁决，见
+        :meth:`_entry_query_clauses` 的 PERF-087 注释），供列表视图按用户所选排序
+        下推 LIMIT 到 SQL；``None``（默认）走复合序（is_favorite DESC,
+        updated_at DESC）。
 
         ``query.verify`` 完整性校验模式：默认 LENIENT（逐行 HMAC 验签并标记异常，
         不抛异常），列表/搜索/标签等只读路径沿用默认以检测篡改；SKIP 仅用于签名

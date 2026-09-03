@@ -5,6 +5,9 @@
 """
 
 import logging
+from pathlib import Path
+
+import pytest
 
 from src.logging_config import RedactingFormatter, SensitiveDataFilter
 
@@ -118,6 +121,34 @@ class TestSensitiveDataFilter:
         assert "123" not in message
         assert "[REDACTED]" in message
 
+    def test_redacts_crypto_and_metadata_keywords(self):
+        """nonce/salt/title/url/notes/tags 赋值打码（SEC-060，防未来误写纵深）。
+
+        六个关键词均为加密列对应明文或其派生输入（nonce/salt 是密文/密钥派生参数，
+        title/url/notes/tags 是条目元数据），误写日志时与 password 同级敏感。
+        """
+        cases = (
+            ("encrypt nonce=aGVsbG8gd29ybGQxMjM=", "aGVsbG8gd29ybGQxMjM="),
+            ("kdf salt=c2FsdHktc2FsdC12YWx1ZQ==", "c2FsdHktc2FsdC12YWx1ZQ=="),
+            ("entry title=我的银行账号", "我的银行账号"),
+            ("login url=https://bank.example.com/login", "bank.example.com"),
+            ("notes=内部主机 10.0.0.1 的凭据", "内部主机"),
+            ("tags=工作,银行", "银行"),
+        )
+        for text, secret in cases:
+            record = _make_record(text)
+            SensitiveDataFilter().filter(record)
+            message = record.getMessage()
+            assert secret not in message, f"未打码：{text}"
+            assert "[REDACTED]" in message, f"缺少 REDACTED 标记：{text}"
+
+    def test_does_not_redact_normal_words_containing_new_keywords(self):
+        """新关键词作为普通单词的一部分时不误打码（如 result=/salts=/titling=）。"""
+        original = "step result=ok totals=3 titling=auto"
+        record = _make_record(original)
+        SensitiveDataFilter().filter(record)
+        assert record.getMessage() == original
+
 
 class TestRedactingFormatter:
     """验证异常 traceback 中的敏感模式被打码（闭合 exc_info=True 的缺口）。
@@ -156,3 +187,104 @@ class TestRedactingFormatter:
         secret = "supersecret_value_99"
         output = self._format_with_exception(ValueError(f"auth failed password={secret}"))
         assert secret not in output
+
+
+class TestSecureRotatingFileHandler:
+    """轮转后重新收紧文件权限（SEC-059）。
+
+    标准 ``doRollover`` 以进程 umask 重建新的 ``baseFilename``（POSIX 默认 0644），
+    启动时的一次 secure_file 只覆盖首个文件——轮转后的新文件回退世界可读。守护
+    覆写 doRollover 对当前文件与轮转备份的重收紧；POSIX 分支经 mode 位断言，任意
+    平台经 secure_file 调用桩断言（Windows 下至少验证不回归）。
+    """
+
+    def test_rollover_resecures_current_and_backup(self, tmp_path, monkeypatch):
+        """emit 触发轮转后，secure_file 被调用于新 baseFilename 与 .1 备份。"""
+        import src.logging_config as logging_config
+        from src.logging_config import SecureRotatingFileHandler
+
+        secured: list[str] = []
+        real_secure_file = logging_config.secure_file
+
+        def _spy(path, **kwargs):
+            secured.append(str(path))
+            return real_secure_file(path, **kwargs)
+
+        monkeypatch.setattr(logging_config, "secure_file", _spy)
+
+        handler = SecureRotatingFileHandler(
+            tmp_path / "cipherbox.log", maxBytes=100, backupCount=3, encoding="utf-8"
+        )
+        try:
+            big = "x" * 200  # 单条即超 maxBytes，第二次 emit 触发轮转
+            handler.emit(_make_record(big))
+            handler.emit(_make_record(big))
+        finally:
+            handler.close()
+
+        names = {str(Path(name).name) for name in secured}
+        assert "cipherbox.log" in names
+        assert "cipherbox.log.1" in names
+        assert (tmp_path / "cipherbox.log.1").exists()
+
+    def test_rolled_files_are_owner_only_on_posix(self, tmp_path):
+        """POSIX：轮转产生的新文件与备份均为 0600（无世界可读回退）。"""
+        import sys
+
+        if sys.platform == "win32":
+            pytest.skip("POSIX mode 位断言")
+        import stat
+
+        from src.logging_config import SecureRotatingFileHandler
+
+        handler = SecureRotatingFileHandler(
+            tmp_path / "cipherbox.log", maxBytes=100, backupCount=3, encoding="utf-8"
+        )
+        try:
+            big = "y" * 200
+            handler.emit(_make_record(big))
+            handler.emit(_make_record(big))
+        finally:
+            handler.close()
+
+        for name in ("cipherbox.log", "cipherbox.log.1"):
+            mode = stat.S_IMODE((tmp_path / name).stat().st_mode)
+            assert mode == 0o600, f"{name} 应为 0600，实际 {oct(mode)}"
+
+    def test_configure_logging_uses_secure_handler_and_secures_backups(self, tmp_path, monkeypatch):
+        """configure_logging 挂载 SecureRotatingFileHandler，且启动即收紧既有轮转备份。
+
+        既有备份（升级前权限宽松的遗留文件）在启动 glob 中一并 secure_file，
+        不等下次轮转才恢复受限权限。
+        """
+        import src.logging_config as logging_config
+
+        (tmp_path / "logs").mkdir()
+        legacy_backup = tmp_path / "logs" / "cipherbox.log.1"
+        legacy_backup.write_text("legacy", encoding="utf-8")
+
+        secured: list[str] = []
+        real_secure_file = logging_config.secure_file
+
+        def _spy(path, **kwargs):
+            secured.append(str(path))
+            return real_secure_file(path, **kwargs)
+
+        monkeypatch.setattr(logging_config, "secure_file", _spy)
+
+        root = logging.getLogger()
+        saved_handlers = root.handlers[:]
+        try:
+            logging_config.configure_logging(tmp_path)
+            assert root.handlers, "configure_logging 应挂载 root handler"
+            assert isinstance(root.handlers[0], logging_config.SecureRotatingFileHandler)
+        finally:
+            for h in root.handlers[:]:
+                root.removeHandler(h)
+                h.close()
+            for h in saved_handlers:
+                root.addHandler(h)
+
+        names = {str(Path(name).name) for name in secured}
+        assert "cipherbox.log" in names
+        assert "cipherbox.log.1" in names

@@ -193,7 +193,10 @@ class CategoryRepository:
             ).fetchone()
         ):
             # 同「分类重名」用户可见条件统一抛 EntryError（QL-043）：见 add_category 处注释。
-            raise EntryError(f"分类名称「{category.name}」已被其他分类占用")
+            # 文案为固定文本不内嵌名称（QL-071，对齐 add_category 的示范）：本层
+            # category.name 在生产路径为密文、测试路径为明文分类名，直接调 db 层的
+            # 调用方异常若被 logger.error 落盘，内嵌明文名会绕过日志脱敏过滤器。
+            raise EntryError("分类名称已被其他分类占用（明文查重见 CategoryManager）")
         # created_at 创建后不可变（SQL 不写该列）：签名须用 DB 现有值，否则调用方传
         # 空/不一致值会使签名与持久化行错配、重载验签失败（与 add_category 回填对称）。
         existing = self._conn.execute(

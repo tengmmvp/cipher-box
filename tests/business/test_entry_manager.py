@@ -56,6 +56,23 @@ class TestAddEntry:
         assert read.custom_fields[0].name == "recover"
         assert read.custom_fields[0].value == "code-123"
 
+    def test_get_entry_with_epoch_carries_current_epoch(self, entry_mgr, make_entry):
+        """get_entry_with_epoch 随 entry 携带读锁内快照的数据世代（SEC-054 闭合）。
+
+        世代供 detail_panel 的 TOTP 预热守卫消费；与 get_entry 同一读路径，
+        未知 id 返回 (None, None)。
+        """
+        entry_id = entry_mgr.add_entry(
+            make_entry(title="带世代", username="u", password="S3cret-Pass-2024!")
+        )
+
+        entry, data_epoch = entry_mgr.get_entry_with_epoch(entry_id)
+        assert entry is not None
+        assert entry.title == "带世代"
+        assert data_epoch == entry_mgr.key_epoch  # 锁内快照即当前世代（无并发轮换）
+
+        assert entry_mgr.get_entry_with_epoch(99999) == (None, None)
+
     def test_stores_encrypted_not_plaintext(self, entry_mgr, make_entry):
         """验证敏感字段以密文（cb2: 前缀）入库，而非明文落库。"""
         entry_id = entry_mgr.add_entry(
@@ -544,3 +561,271 @@ class TestAddDeleteIncrementalNotify:
         assert entry_mgr.restore_entry(entry_id) is True
         # 恢复的差分解密失败 → 保守整表失效，不引入陈旧计数
         assert entry_mgr.get_all_tags() == []
+
+    def test_abandoned_tag_delta_falls_back_to_full_invalidation(
+        self, entry_mgr, make_entry, monkeypatch
+    ):
+        """差分被世代守卫放弃后保守整表失效（QL-070 回归）。
+
+        时序仿真（写事务前快照 vs 窗口内并发失效）：调用方在写事务前快照
+        ``invalidate_version``，窗口内并发失效推进版本——差分到达时被守卫放弃。
+        旧行为放弃后仍 tags_changed=False（「既未差分也未失效」第三态），缓存
+        正确性靠后续 apply_change 的未声明行为巧合收敛；现 apply_tag_delta 返回
+        False，_notify_entry_structure_changed 保守置 tags_changed=True 整表失效。
+        """
+        entry_mgr.add_entry(make_entry(title="A", tags="工作"))
+        assert dict(entry_mgr.get_all_tags()) == {"工作": 1}  # 惰性填充 _tags_cache
+        assert entry_mgr._cache._tags_cache is not None
+
+        # 拦截 apply_tag_delta：固定「放弃」出口（真实竞态窗口在写事务与差分
+        # 之间，此处以替身隔离验证调用方的回退分支本身）
+        monkeypatch.setattr(entry_mgr._cache, "apply_tag_delta", lambda *a, **k: False)
+
+        entry_mgr.add_entry(make_entry(title="B", tags="新标签"))
+
+        # 差分被放弃 → 保守整表失效：_tags_cache 置 None，下次 get_all_tags 全量重算
+        assert entry_mgr._cache._tags_cache is None
+        assert dict(entry_mgr.get_all_tags()) == {"工作": 1, "新标签": 1}
+
+
+class TestSearchOrderPushdown:
+    """搜索 + SQL 白名单排序 + limit 的排序下推（PERF-087）——结果与全量内存排序一致。
+
+    分支条件：内存路径（搜索非空）且 order_by 属 ORDER_BY_FIELDS 且 limit 非 None，
+    投影查询下推 ORDER BY，匹配循环按序扫描凑满 limit 即 break。守护：与
+    「全量收集 → 内存排序 → 截断」选出同一集合与同一序、命中数不足/恰好等于
+    limit 的边界、升序方向。
+    """
+
+    def _setup_entries(self, entry_mgr, make_entry):
+        """5 条同前缀条目，updated_at 单调递增（最旧条目是收藏：复合序与序不同）。"""
+        from datetime import UTC, datetime, timedelta
+
+        base = datetime(2026, 8, 20, 10, 0, 0, tzinfo=UTC)
+        for i in range(5):
+            entry_mgr.add_entry(
+                make_entry(
+                    title=f"item-{i}",
+                    created_at=base.isoformat(),
+                    updated_at=(base + timedelta(minutes=i)).isoformat(),
+                    is_favorite=(i == 0),
+                )
+            )
+
+    def test_desc_pushdown_matches_full_sort(self, entry_mgr, make_entry):
+        """降序：凑满 limit 即停的结果 == 全量命中按 updated_at 倒序的前 3。"""
+        self._setup_entries(entry_mgr, make_entry)
+
+        results = entry_mgr.get_entry_summaries(
+            search="item", order_by="updated_at", order_desc=True, limit=3
+        )
+
+        assert [r.title for r in results] == ["item-4", "item-3", "item-2"]
+        # 收藏条目（item-0，最旧）不因复合序挤进前 3：下推序即纯 updated_at 序
+        assert all(r.title != "item-0" for r in results)
+
+    def test_asc_pushdown(self, entry_mgr, make_entry):
+        """升序：order_desc=False 的下推方向正确（最旧匹配在前）。"""
+        self._setup_entries(entry_mgr, make_entry)
+        results = entry_mgr.get_entry_summaries(
+            search="item", order_by="updated_at", order_desc=False, limit=2
+        )
+        assert [r.title for r in results] == ["item-0", "item-1"]
+
+    def test_hits_fewer_than_limit_returns_all_sorted(self, entry_mgr, make_entry):
+        """边界：命中数（1）< limit（10）——全部命中按序返回，无截断放大。"""
+        self._setup_entries(entry_mgr, make_entry)
+        results = entry_mgr.get_entry_summaries(
+            search="item-4", order_by="updated_at", order_desc=True, limit=10
+        )
+        # "item-4" 仅命中 1 条（其余条目不含该前缀）
+        assert [r.title for r in results] == ["item-4"]
+
+    def test_hits_exactly_equal_limit(self, entry_mgr, make_entry):
+        """边界：命中数恰好 == limit——全部命中按序返回。"""
+        self._setup_entries(entry_mgr, make_entry)
+        results = entry_mgr.get_entry_summaries(
+            search="item", order_by="updated_at", order_desc=True, limit=5
+        )
+        assert [r.title for r in results] == [
+            "item-4",
+            "item-3",
+            "item-2",
+            "item-1",
+            "item-0",
+        ]
+
+    def test_tie_break_pushdown_selects_same_set_as_full_sort(self, entry_mgr, make_entry):
+        """并列裁决（PERF-087 回归）：排序键同刻并列 + limit 截断边界，下推路径与
+        全量内存排序选出同一集合与同一序。
+
+        6 条 created_at 同刻并列（批量导入的常见形态），名次由并列裁决键决定：
+        SQL 序带 tie-breaker（is_favorite DESC, updated_at DESC，与复合序一致），
+        与内存稳定排序继承的复合序逐层等价。不带裁决键时 SQL 并列行为引擎内序
+        （rowid 序），凑满 limit 即 break 选出的集合与「全量收集→稳定排序→截断」
+        分叉——对照组为 limit=None 强制走内存排序路径后手动取前 N（旧路径语义）。
+        """
+        from datetime import UTC, datetime, timedelta
+
+        base = datetime(2026, 8, 20, 10, 0, 0, tzinfo=UTC)
+        # 后三条为收藏（裁决第一层），updated_at 三档递增（裁决第二层）
+        for i in range(6):
+            entry_mgr.add_entry(
+                make_entry(
+                    title=f"tie-{i}",
+                    created_at=base.isoformat(),
+                    updated_at=(base + timedelta(minutes=(i % 3) * 10)).isoformat(),
+                    is_favorite=i >= 3,
+                )
+            )
+
+        pushed = entry_mgr.get_entry_summaries(
+            search="tie", order_by="created_at", order_desc=True, limit=3
+        )
+        # 对照组：limit=None → 不走排序下推，全量收集 + 内存稳定排序（继承复合序）
+        full = entry_mgr.get_entry_summaries(search="tie", order_by="created_at", order_desc=True)
+
+        assert [r.id for r in pushed] == [r.id for r in full[:3]]
+        # 具体序锚定：并列集内收藏优先、再按 updated_at 倒序（tie-5 > tie-4 > tie-3）
+        assert [r.title for r in pushed] == ["tie-5", "tie-4", "tie-3"]
+
+    def test_tie_break_on_strength_scale_matches_full_sort(self, entry_mgr, make_entry):
+        """强度刻度并列（0-4 档位天然并列常见）：同款等价守护（PERF-087）。
+
+        三条同形态短数字密码（score 恒同）构成排序键并列，limit=2 的截断边界
+        与全量内存排序对照——裁决键（复合序）保证两路径选出同一集合与同一序。
+        """
+        from datetime import UTC, datetime, timedelta
+
+        base = datetime(2026, 8, 20, 10, 0, 0, tzinfo=UTC)
+        for i, pwd in enumerate(("111", "222", "333")):
+            entry_mgr.add_entry(
+                make_entry(
+                    title=f"weak-{i}",
+                    password=pwd,
+                    updated_at=(base + timedelta(minutes=i)).isoformat(),
+                    is_favorite=i == 2,
+                )
+            )
+        # 前提锚定：三条密码的 strength 刻度确实并列
+        strengths = {e.password_strength for e in entry_mgr.get_entry_summaries(search="weak-")}
+        assert len(strengths) == 1
+
+        pushed = entry_mgr.get_entry_summaries(
+            search="weak-", order_by="password_strength", order_desc=True, limit=2
+        )
+        full = entry_mgr.get_entry_summaries(
+            search="weak-", order_by="password_strength", order_desc=True
+        )
+
+        assert [r.id for r in pushed] == [r.id for r in full[:2]]
+        # 并列集内收藏优先（weak-2），再按 updated_at 倒序（weak-1 > weak-0）
+        assert [r.title for r in pushed] == ["weak-2", "weak-1"]
+
+
+class TestLimitZeroSemantics:
+    """limit=0 两路径语义统一（QL-072）：均返回空集。
+
+    旧行为：SQL 路径 LIMIT 0 返回空，内存路径 ``if limit`` 视 0 为 falsy 跳过
+    截断返回全部——同参数不同路径结果分叉。
+    """
+
+    def test_limit_zero_sql_path(self, entry_mgr, make_entry):
+        """SQL 下推路径 limit=0 → 空集（既有语义锁定）。"""
+        entry_mgr.add_entry(make_entry(title="A"))
+        assert entry_mgr.get_entry_summaries(limit=0) == []
+
+    def test_limit_zero_memory_path_no_order(self, entry_mgr, make_entry):
+        """内存路径（无排序下推）limit=0 → 空集（修复点：原返回全部）。"""
+        entry_mgr.add_entry(make_entry(title="A"))
+        assert entry_mgr.get_entry_summaries(search="a", limit=0) == []
+
+    def test_limit_zero_memory_path_with_order_pushdown(self, entry_mgr, make_entry):
+        """排序下推分支 limit=0 → 循环首轮即 break，返回空集。"""
+        entry_mgr.add_entry(make_entry(title="A"))
+        assert entry_mgr.get_entry_summaries(search="a", order_by="updated_at", limit=0) == []
+
+
+class TestEmptyTrashBypassNotification:
+    """empty_trash 的通知降级（PERF-088）：回收站条目不在活跃分析集合。"""
+
+    def test_empty_trash_preserves_security_cache(self, entry_mgr, make_entry):
+        """清空回收站后安全分析缓存不失效（软删除时已增量移出，物理清空无增量可算）。"""
+        from src.business.services.security_analyzer import SecurityAnalyzer
+
+        analyzer = SecurityAnalyzer(entry_mgr._vault, entry_mgr._cache)
+        entry_mgr.register_on_change(analyzer.invalidate_cache)
+
+        entry_id = entry_mgr.add_entry(make_entry(title="待清理", password="weak"))
+        entry_mgr.delete_entry(entry_id)  # 软删除：增量差分移出分析集合
+        analyzer.get_or_compute_report()  # 填充安全分析缓存
+        assert analyzer.get_cached_counts() is not None
+
+        entry_mgr.empty_trash()
+
+        # 双 False 旁路通知：缓存保留，不触发整库 O(n) 重算
+        assert analyzer.get_cached_counts() is not None
+
+    def test_empty_trash_still_invalidates_rowset_caches(self, entry_mgr, make_entry):
+        """降级不影响行集/摘要失效：清空后回收站视图为空（apply_change 照常执行）。"""
+        entry_id = entry_mgr.add_entry(make_entry(title="待清理"))
+        entry_mgr.delete_entry(entry_id)
+        assert entry_mgr.get_entry_summaries(deleted_only=True, search="清理") != []
+
+        entry_mgr.empty_trash()
+
+        assert entry_mgr.get_entry_summaries(deleted_only=True, search="清理") == []
+
+
+class TestTotpInvalidateOrdering:
+    """写路径的 TOTP 缓存失效时序守护（QL-070）：pop_totp 必须先于写库。
+
+    「写库 → pop」窗口内 TOTP 定时器命中缓存的旧 secret 生成过期验证码；把
+    pop 挪回写库后的回退重构无行为失败信号（仅竞态窗口复活），此处以调用
+    顺序 spy 锁定。update_entry 与 permanent_delete_entry 两路径守护
+    （delete_entry 为同型路径）。
+    """
+
+    @staticmethod
+    def _install_order_spy(entry_mgr, monkeypatch, db_write_method: str) -> list[str]:
+        """记录 pop_totp 与指定 db 写方法的调用顺序（先 pop 后写为正确序）。"""
+        events: list[str] = []
+        cache = entry_mgr._cache  # noqa: SLF001
+        real_pop = cache.pop_totp
+
+        def _pop(entry_id: int) -> None:
+            events.append("pop_totp")
+            real_pop(entry_id)
+
+        monkeypatch.setattr(cache, "pop_totp", _pop)
+
+        db = entry_mgr.db
+        real_write = getattr(db, db_write_method)
+
+        def _record_write(*args, **kwargs):
+            events.append(f"db.{db_write_method}")
+            return real_write(*args, **kwargs)
+
+        monkeypatch.setattr(db, db_write_method, _record_write)
+        return events
+
+    def test_update_entry_pops_totp_before_db_write(self, entry_mgr, make_entry, monkeypatch):
+        """update_entry：旧 TOTP secret 缓存在新密文落库前已清除。"""
+        events = self._install_order_spy(entry_mgr, monkeypatch, "update_entry")
+        entry_id = entry_mgr.add_entry(make_entry(title="A"))
+
+        entry = entry_mgr.get_entry(entry_id)
+        entry_mgr.update_entry(dataclasses.replace(entry, title="B"))
+
+        assert events == ["pop_totp", "db.update_entry"]
+
+    def test_permanent_delete_entry_pops_totp_before_db_write(
+        self, entry_mgr, make_entry, monkeypatch
+    ):
+        """permanent_delete_entry：pop 先于物理删除写库（条目不存在时亦保持先 pop）。"""
+        events = self._install_order_spy(entry_mgr, monkeypatch, "permanent_delete_entry")
+        entry_id = entry_mgr.add_entry(make_entry(title="A"))
+
+        entry_mgr.permanent_delete_entry(entry_id)
+
+        assert events == ["pop_totp", "db.permanent_delete_entry"]

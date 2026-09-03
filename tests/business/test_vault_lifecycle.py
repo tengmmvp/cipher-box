@@ -22,25 +22,19 @@ conftest 的 autouse ``_weak_kdf_for_tests`` 已 patch
 import pytest
 
 from src.exceptions import VaultLockedError
-from tests.helpers import make_vault
 
 # 与 conftest.vault fixture 同主密码，仅供本文件 fresh_vault 自驱初始化使用。
 _MASTER_PASSWORD = "TestPassword123!"
 
 
 @pytest.fixture
-def fresh_vault(vault_config):
-    """未初始化的全新 vault（经 build_vault 完整装配 db+signer+orchestrator）。
+def fresh_vault(make_vault_env):
+    """未初始化的全新 vault（make_vault_env(initialize=False)：完整装配不初始化）。
 
-    每个测试自此空白状态自行驱动 initialize/unlock/lock 等阶段，互不干扰。
-    teardown 防御性 close：保证 Windows 临时目录清理不受文件锁阻碍（幂等，不抛异常）。
+    每个测试自此空白状态自行驱动 initialize/unlock/lock 等阶段，互不干扰；
+    teardown 幂等 close 由 make_vault_env 工厂统一承担。
     """
-    v = make_vault(vault_config, test_mode=True)
-    yield v
-    try:
-        v.close()
-    except Exception:
-        pass
+    return make_vault_env(initialize=False).vault
 
 
 class TestInitialize:
@@ -136,9 +130,10 @@ class TestLock:
             _ = fresh_vault.key
         with pytest.raises(VaultLockedError):
             _ = fresh_vault.snapshot_key
-        # KeyManager 内部 bytearray 槽位置 None：secure_zero_buffer 已原地清零
-        assert fresh_vault._key_mgr._key is None
-        assert fresh_vault._key_mgr._snapshot_key is None
+        # KeyManager 公开 property 观测内部 bytearray 槽位回落 None（secure_zero_buffer
+        # 已原地清零；property 在槽位为 None 时才返回 None，见 test_lock_clear_chain 模块说明）
+        assert fresh_vault._key_mgr.key is None
+        assert fresh_vault._key_mgr.snapshot_key is None
 
 
 class TestClose:
@@ -156,8 +151,8 @@ class TestClose:
         fresh_vault.close()
 
         assert fresh_vault.is_unlocked is False
-        assert fresh_vault._key_mgr._key is None
-        assert fresh_vault._key_mgr._snapshot_key is None
+        assert fresh_vault._key_mgr.key is None
+        assert fresh_vault._key_mgr.snapshot_key is None
         # close 经 self._db.close() 关闭连接：is_open 回落 False
         assert fresh_vault._db.is_open is False
 
@@ -197,8 +192,8 @@ class TestChangeMasterPassword:
         """错误旧密码改密被拒绝，凭据未变、原主密码仍可用。
 
         守护不变量：MasterKeyManager.change_password 校验旧密码失败返回 None，
-        _change_master_password_locked 返回 (False, AUTH_FAILED_MESSAGE) 且不触达
-        重加密，key_epoch 与凭据保持原状。
+        _change_master_password_locked 返回 (False, CHANGE_AUTH_FAILED_MESSAGE) 且
+        不触达重加密，key_epoch 与凭据保持原状。
         """
         fresh_vault.initialize(_MASTER_PASSWORD)
         original_epoch = fresh_vault.key_epoch
@@ -335,3 +330,19 @@ class TestUnlockFailureNoHalfState:
         assert ok_right, f"错误密码失败后正确密码应仍能解锁: {error}"
         assert fresh_vault.is_unlocked
         assert fresh_vault.key is not None
+
+
+def test_auth_failed_messages_contract():
+    """认证失败文案常量按场景单源（ARCH-049）：登录/改密各自显式常量。
+
+    原改密常量与 unlock 内联字面量双源，语义有别（登录/改密措辞不同）。UI 的
+    空文案兜底默认值与各对话框测试断言均锚定这两个字面量——值变更属用户可见
+    契约变化，须有意识地经本守护同步。
+    """
+    from src.business.managers.vault_lifecycle import (
+        CHANGE_AUTH_FAILED_MESSAGE,
+        LOGIN_AUTH_FAILED_MESSAGE,
+    )
+
+    assert LOGIN_AUTH_FAILED_MESSAGE == "主密码错误"
+    assert CHANGE_AUTH_FAILED_MESSAGE == "当前主密码错误"

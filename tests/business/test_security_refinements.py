@@ -163,21 +163,18 @@ class TestGetCachedCounts:
         from datetime import datetime, timedelta
 
         now = datetime.now(UTC)
+        # _summaries_with_dates 为 dict 形态（PERF-085）：crypto_id → (Entry, changed_utc)。
+        old_entry = Entry(title="old", username="u", password="p", entry_type="login")
+        recent_entry = Entry(title="recent", username="u", password="p", entry_type="login")
         cache = {
             "total": 5,
             "weak_count": 0,
             "duplicate_count": 0,
             "old": 0,
-            "_summaries_with_dates": [
-                (
-                    Entry(title="old", username="u", password="p", entry_type="login"),
-                    now - timedelta(days=200),
-                ),
-                (
-                    Entry(title="recent", username="u", password="p", entry_type="login"),
-                    now - timedelta(days=10),
-                ),
-            ],
+            "_summaries_with_dates": {
+                "crypto-old": (old_entry, now - timedelta(days=200)),
+                "crypto-recent": (recent_entry, now - timedelta(days=10)),
+            },
         }
         analyzer = self._analyzer(cache, days=90)
         # days=365：cutoff=now-365d，两条目(200d/10d前)均晚于 cutoff → 不过期

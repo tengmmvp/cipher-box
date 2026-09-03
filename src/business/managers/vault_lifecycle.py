@@ -55,10 +55,13 @@ logger = logging.getLogger(__name__)
 # unlock 单次批量读取的 vault_meta 键（单一事实源见 vault_meta_keys）。
 _VAULT_META_KEYS = list(VAULT_META_ALL_KEYS)
 
-# 改密认证失败（旧主密码错误）的返回文案（ARCH-042 契约下 (False, ...) 唯一语义即
-# 认证失败）：调用方据「返回 False」这一形态而非文案比对判定计入速率限制，文案仅为
-# 用户展示用途，调整文案不再影响安全行为。
-AUTH_FAILED_MESSAGE = "当前主密码错误"
+# 认证失败的返回文案按场景拆两个显式常量（ARCH-049，原单常量 + unlock 内联字面量
+# 双源）：登录场景面向「正在解锁的用户」，改密场景面向「已解锁、正在验证旧密码的
+# 用户」，语义与措辞均有别，各自显式。ARCH-042 契约下 (False, ...) 唯一语义即认证
+# 失败：调用方据「返回 False」这一形态而非文案比对判定计入速率限制，文案仅为用户
+# 展示用途（UI 兜底默认值同引此常量），调整文案不再影响安全行为。
+LOGIN_AUTH_FAILED_MESSAGE = "主密码错误"
+CHANGE_AUTH_FAILED_MESSAGE = "当前主密码错误"
 
 
 class VaultLifecycleOrchestrator:
@@ -155,8 +158,8 @@ class VaultLifecycleOrchestrator:
 
         经 Argon2id 派生主密钥并校验验证令牌，通过后完成 vault_meta 完整性
         （MAC）校验、加载 snapshot_key、标记解锁，并截断 WAL 清除上次运行残留
-        旧明文页。主密码错误返回 ``(False, "主密码错误")``；格式/完整性校验
-        失败经 lock() 兜底清零密钥后抛 :class:`VaultLockedError`/
+        旧明文页。主密码错误返回 ``(False, LOGIN_AUTH_FAILED_MESSAGE)``；格式/
+        完整性校验失败经 lock() 兜底清零密钥后抛 :class:`VaultLockedError`/
         :class:`VaultIntegrityError`。
         """
         # 预声明 key：verify 未执行（凭据校验前异常）时，except 仍需引用它清零。
@@ -182,7 +185,7 @@ class VaultLifecycleOrchestrator:
             key = MasterKeyManager.verify(master_password, salt, verify_token, params)
 
             if key is None:
-                return False, "主密码错误"
+                return False, LOGIN_AUTH_FAILED_MESSAGE
 
             # 先完成全部元数据格式校验，再持有密钥，遵循最小暴露原则：格式校验失败时
             # key 仅作局部变量，不写入 KeyManager 也不触发加密缓存。
@@ -310,7 +313,8 @@ class VaultLifecycleOrchestrator:
 
         校验新密码强度与新旧不同（常量时间比较防时序侧信道），经
         :meth:`_re_encrypt_all` 用新密钥重加密全部数据。旧密码错误返回
-        ``(False, AUTH_FAILED_MESSAGE)``；策略失败与系统错误走异常通道（ARCH-042）。
+        ``(False, CHANGE_AUTH_FAILED_MESSAGE)``；策略失败与系统错误走异常通道
+        （ARCH-042）。
         """
         try:
             valid, error = PasswordGenerator.validate_master_password(new_password)
@@ -347,7 +351,7 @@ class VaultLifecycleOrchestrator:
                 DEFAULT_KDF_PARAMS,
             )
             if result is None:
-                return False, AUTH_FAILED_MESSAGE
+                return False, CHANGE_AUTH_FAILED_MESSAGE
 
             new_salt, new_verify_token, new_key = result
 

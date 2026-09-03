@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ...business.managers.vault_lifecycle import CHANGE_AUTH_FAILED_MESSAGE
 from ...business.managers.vault_manager import VaultManager
 from ...business.services.password_service import PasswordService
 from ...business.services.rate_limiter import RateLimiter
@@ -256,8 +257,9 @@ class ChangeMasterDialog(WorkerBackedDialog):
             # (False, ...) 契约下唯一语义为认证失败（ARCH-042 对齐 unlock）：一律计入
             # 速率限制；新密码策略问题与系统错误走 worker.error 异常通道（
             # _on_change_error），不惩罚用户——不再比对文案字符串，文案调整/i18n 不会
-            # 使改密暴力尝试脱离限流。
-            display_msg = error_msg or "当前主密码错误"
+            # 使改密暴力尝试脱离限流。空文案兜底同引业务层常量（ARCH-049 收编：原第四处
+            # 同值字面量，双源漂移面消除）。
+            display_msg = error_msg or CHANGE_AUTH_FAILED_MESSAGE
             lock_seconds = self._rate_limiter.record_failure()
             if lock_seconds > 0:
                 self._msg_label.setText(

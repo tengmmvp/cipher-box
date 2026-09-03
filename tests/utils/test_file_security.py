@@ -491,6 +491,155 @@ class TestValidateFilePathStrictAncestors:
         assert result.is_absolute()
 
 
+class TestValidateFilePathWindowsReservedNames:
+    """Windows 保留设备名与 NTFS 备用数据流（ADS）冒号拒绝（SEC-061）。
+
+    当前所有到达路径为程序生成或用户经文件对话框自选（不可利用），但
+    validate_file_path 是中央路径安全边界——「按条目名命名导出文件」类未来功能
+    会经此缺口把条目数据变成设备名/数据流路径。字符串级分析使任意平台经
+    monkeypatch ``IS_WINDOWS`` 即可验证 Windows 语义（参照 TestRejectReparseBranches）。
+    """
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "CON",
+            "con",
+            "CON.txt",
+            "NUL.bin",
+            "COM1",
+            "com9.log",
+            "LPT1",
+            "aux.dat",
+            "CON .txt",  # 尾随空格在 Windows 设备名判定中被忽略
+            "NUL.",  # 尾随点同上
+            "prn",  # 纯小写裸设备名
+        ],
+        ids=[
+            "CON",
+            "lower",
+            "with-ext",
+            "NUL-ext",
+            "COM1",
+            "com9",
+            "LPT1",
+            "aux",
+            "trailing-space",
+            "trailing-dot",
+            "bare-lower",
+        ],
+    )
+    def test_reserved_device_name_rejected(self, name):
+        """任一路径组件的 stem 命中保留设备名（含带扩展名/大小写/尾随空格点形态）即拒绝。"""
+        from src.utils import file_security
+
+        with pytest.raises(ValueError, match="保留设备名"):
+            file_security._reject_windows_device_names_and_ads(rf"C:\data\{name}")
+
+    def test_reserved_name_in_intermediate_component_rejected(self):
+        """保留名出现在中间目录组件同样拒绝（C:\\data\\CON\\file.txt）。"""
+        from src.utils import file_security
+
+        with pytest.raises(ValueError, match="保留设备名"):
+            file_security._reject_windows_device_names_and_ads(r"C:\data\CON\file.txt")
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            r"C:\data\file.txt:hidden",
+            r"C:\data\file.txt:$DATA",
+            r"relative:stream",
+            r"C:\data\sub\file:ads",
+        ],
+        ids=["ads", "ads-named-stream", "relative", "nested"],
+    )
+    def test_ads_colon_rejected(self, path):
+        """盘符首个冒号之外的冒号（NTFS 备用数据流语法）即拒绝。"""
+        from src.utils import file_security
+
+        with pytest.raises(ValueError, match="非法冒号"):
+            file_security._reject_windows_device_names_and_ads(path)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            r"\\.\PhysicalDrive0",  # 物理磁盘设备（写即裸写整盘）
+            r"\\.\Serial0",  # 串口设备对象
+            r"\\.\C:",  # 裸卷设备本体（无后续路径组件）
+            r"\\.\CdRom0",  # 光驱设备对象
+            r"\\.\CON",  # 经设备命名空间寻址的保留设备名
+        ],
+        ids=["physical-drive", "serial", "bare-volume", "cdrom", "reserved-via-device"],
+    )
+    def test_device_namespace_object_rejected(self, path):
+        """``\\\\.\\`` 设备命名空间下非「盘符+路径」形态即拒绝（SEC-061 补强）。
+
+        该前缀直接寻址 Win32 设备对象：``\\\\.\\PhysicalDrive0``/``\\\\.\\\\Serial0``
+        是无冒号设备名（剥前缀后残留冒号与保留名检查全放行）、``\\\\.\\\\C:``
+        是卷设备本体——三者此前均通过全部检查；现要求首组件为盘符且带后续
+        路径组件（``\\\\.\\\\C:\\data\\file.txt`` 文件系统形态有意放行）。
+        """
+        from src.utils import file_security
+
+        with pytest.raises(ValueError, match="设备命名空间"):
+            file_security._reject_windows_device_names_and_ads(path)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            r"C:\Users\alice\config.json",
+            r"C:\logs\cipherbox.log",
+            r"C:\data\my.url",  # .url 扩展名的普通文件（stem 非保留名）
+            r"C:\data\console_notes.txt",  # 含 "con" 子串但 stem 非整词保留名
+            r"C:relative\config.json",  # 盘符相对路径（合法形态）
+            "plain.txt",
+            r"\\?\C:\data\file.txt",
+            r"\\.\C:\data\file.txt",
+            r"\\?\UNC\server\share\file.bin",
+            r"\\server\share\backup.cbox",
+        ],
+        ids=[
+            "drive",
+            "drive-logs",
+            "url-ext",
+            "substring-not-word",
+            "drive-relative",
+            "bare-relative",
+            "verbatim",
+            "device-namespace",
+            "verbatim-unc",
+            "unc",
+        ],
+    )
+    def test_legitimate_windows_paths_allowed(self, path):
+        """合法 Windows 形态（盘符/UNC/verbatim 前缀/盘符相对）不误伤。"""
+        from src.utils import file_security
+
+        file_security._reject_windows_device_names_and_ads(path)  # 不抛即通过
+
+    def test_validate_file_path_integrates_windows_branch(self, tmp_path, monkeypatch):
+        """validate_file_path 集成：IS_WINDOWS=True 时经主入口拒绝保留名与 ADS 形态。"""
+        from src.utils import file_security
+
+        monkeypatch.setattr(file_security, "IS_WINDOWS", True)
+        with pytest.raises(ValueError, match="保留设备名"):
+            file_security.validate_file_path(str(tmp_path / "CON.txt"))
+        with pytest.raises(ValueError, match="非法冒号"):
+            file_security.validate_file_path(str(tmp_path / "file.txt") + ":ads")
+        # 同目录合法文件不受影响
+        ok = file_security.validate_file_path(str(tmp_path / "notes.txt"))
+        assert ok.is_absolute()
+
+    def test_non_windows_branch_skips_reserved_name_checks(self, tmp_path, monkeypatch):
+        """非 Windows 分支不检查保留名/冒号（POSIX 合法文件名字符，跨平台语义分支）。"""
+        from src.utils import file_security
+
+        monkeypatch.setattr(file_security, "IS_WINDOWS", False)
+        # POSIX 下 "CON.txt" 与含冒号名是合法文件名；validate_file_path 不因保留名拒绝
+        ok = file_security.validate_file_path(str(tmp_path / "CON.txt"))
+        assert ok.is_absolute()
+
+
 class TestAtomicWritePermissions:
     """atomic_write 临时文件落地即 0600，消除明文临时文件世界可读窗口（SEC-015）。"""
 

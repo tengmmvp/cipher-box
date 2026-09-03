@@ -96,6 +96,48 @@ def test_tampered_backup_directory_falls_back_to_default():
         assert reloaded.get("backup_directory") == ""
 
 
+def test_tampered_backup_schedule_keys_fall_back_to_default():
+    """篡改自动备份调度键（SEC-058）致签名失配后回退默认，备份调度恢复运行。
+
+    last_auto_backup_at 被改为远期合法 ISO（如 9999-12-31）会使 is_auto_backup_due
+    恒 False——自动备份静默停摆；auto_backup_interval_hours 拉满 168h 同样大幅拉长
+    间隔。三键均属 _INTEGRITY_SENSITIVE_KEYS：完整性失败回退默认（last 为空、
+    interval 为 24h）即恢复调度，配合用户可见的完整性告警构成可诊断信号。
+    """
+    with tempfile.TemporaryDirectory() as root:
+        manager = _manager(root)
+        manager.set("last_auto_backup_at", "2026-08-01T00:00:00+00:00")
+        manager.set("auto_backup_interval_hours", 12)
+        manager.set("auto_backup_retention", 20)
+        manager.save()
+
+        # 篡改：改写三个调度键的值，保留旧签名行 → 签名失配（mismatch）
+        raw = manager.config_path.read_text(encoding="utf-8")
+        json_text, sig_line = raw.rsplit("\n", 1)
+        tampered = json_text.replace(
+            '"last_auto_backup_at": "2026-08-01T00:00:00+00:00"',
+            '"last_auto_backup_at": "9999-12-31T23:59:59+00:00"',
+        ).replace('"auto_backup_interval_hours": 12', '"auto_backup_interval_hours": 168')
+        manager.config_path.write_text(tampered + "\n" + sig_line, encoding="utf-8")
+
+        # 重新加载：完整性失败，调度键回退默认值
+        reloaded = _manager(root)
+        reloaded.load()
+        assert not reloaded.check_integrity()
+        assert reloaded.get("last_auto_backup_at") == DEFAULT_CONFIG["last_auto_backup_at"]
+        assert reloaded.get("last_auto_backup_at") == ""
+        assert (
+            reloaded.get("auto_backup_interval_hours")
+            == DEFAULT_CONFIG["auto_backup_interval_hours"]
+        )
+        assert reloaded.get("auto_backup_retention") == DEFAULT_CONFIG["auto_backup_retention"]
+
+        # 回退空时间戳后调度恢复：is_auto_backup_due 重新返回 True（无记录即到期）
+        from src.business.services.backup.auto_backup_policy import is_auto_backup_due
+
+        assert is_auto_backup_due(reloaded, force=False) is True
+
+
 def test_set_rejects_unknown_or_invalid_values():
     """set 拒绝未知键（KeyError）与越界值（ValueError）。"""
     with tempfile.TemporaryDirectory() as root:

@@ -79,7 +79,11 @@ class TestSecurityAnalyzerSkipCorrupt:
         assert result["total"] == 1
 
     def test_normal_analysis_returns_dict(self):
-        """正常分析应返回包含预期键的 dict。"""
+        """正常分析应返回包含预期键的 dict。
+
+        full_analysis 返回内部形态（PERF-085 收口：本体只持计数 + 内部 map），
+        公开列表键经 _export_report 派生——出口键集与计数在此一并验证。
+        """
         vault = MagicMock()
         vault.key = b"\x00" * 32
         vault.is_unlocked = True
@@ -92,9 +96,14 @@ class TestSecurityAnalyzerSkipCorrupt:
         assert isinstance(result, dict)
         assert "total" in result
         assert "weak_count" in result
-        assert "weak_entries" in result
-        assert "duplicate_groups" in result
-        assert "old_entries" in result
+        assert "_weak_map" in result  # 内部形态事实源
+        assert "_duplicate_groups_map" in result
+        assert "_old_map" in result
+        # 出口形态（PERF-062 契约）：公开列表键从 map 派生
+        exported = SecurityAnalyzer._export_report(result)
+        assert "weak_entries" in exported
+        assert "duplicate_groups" in exported
+        assert "old_entries" in exported
         assert result["total"] == 0
         assert result["weak_count"] == 0
 

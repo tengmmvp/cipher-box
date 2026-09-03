@@ -3,14 +3,11 @@
 import hashlib
 import hmac
 import json
-import logging
 
 from ...exceptions import VaultIntegrityError, VaultLockedError
 from ...models import Category, RawEntry
 from ...utils.memory import secure_zero_buffer
 from . import vault_meta_keys
-
-logger = logging.getLogger(__name__)
 
 # 域分离 info 标签：条目/分类元数据与 vault_meta 完整性各自派生独立域密钥，
 # 与主密钥/备份密钥域分离原则一致。

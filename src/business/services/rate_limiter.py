@@ -98,6 +98,16 @@ class RateLimiter:
         self._signing_key: bytes | None = self._resolve_signing_key()
         self._load_state()
 
+    @property
+    def fail_count(self) -> int:
+        """当前累计失败次数（测试观察用只读面，MAINT-095；生产消费 check/record API）。"""
+        return self._fail_count
+
+    @property
+    def state_path(self) -> Path | None:
+        """限流状态文件路径（测试观察用只读面，MAINT-095；None 表示仅内存限流）。"""
+        return self._state_path
+
     def _resolve_signing_key(self) -> bytes | None:
         """解析状态文件 HMAC 签名密钥（与 config.json 同一安装级密钥体系，SEC-029）。
 
@@ -105,10 +115,20 @@ class RateLimiter:
         密钥，MAINT-020），不直接感知密钥链。无 config（调用方未注入）或取密钥
         异常时退化为无签名旧格式——内存限流与哨兵删除检测仍生效，仅状态文件
         防篡改降级（与哨兵 config 见证的降级语义一致）。
+
+        会话级临时密钥同样返回 None（SEC-057）：``config.session_only`` 表示密钥
+        来自 DPAPI protect 失败的降级（SEC-055）——本会话签名落盘的状态文件下次
+        启动必因密钥重新生成而验签失配，按 SEC-029 保守分支降级最高阶梯锁定
+        （15 次 / 600 秒），DPAPI 持续故障时用户每次启动都误锁 10 分钟。返回 None
+        走 SEC-042 既有不落盘路径（仅内存限流、不建哨兵，状态/哨兵成对缺失下次
+        按首次使用处理）。
         """
         if self._config is None:
             return None
         try:
+            if self._config.session_only:
+                logger.warning("签名密钥为会话级临时密钥（DPAPI 降级），限流状态不落盘、仅内存生效")
+                return None
             key = self._config.integrity_key
         except Exception:
             logger.warning("限流状态签名密钥获取失败，状态文件防篡改降级", exc_info=True)

@@ -11,6 +11,7 @@ import csv
 import io
 import logging
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -457,13 +458,85 @@ def secure_directory(path: Path, *, strict: bool = False) -> Path:
     return path
 
 
+# Windows 保留设备名（大小写不敏感）：CON/PRN/AUX/NUL/COM1-9/LPT1-9。作为路径任一
+# 组件的 stem（首个 '.' 之前的部分，含 CON.txt 带扩展名形态）出现时，Win32 文件 API
+# 会将其重定向到设备而非磁盘文件——写路径静默落到设备、读路径读到设备内容。
+_WINDOWS_RESERVED_DEVICE_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{i}" for i in range(1, 10)}
+    | {f"LPT{i}" for i in range(1, 10)}
+)
+
+# 设备命名空间（`\\.\`）下唯一放行的首组件形态：单盘符（`C:`）——其后必须还有
+# 路径组件（`\\.\C:\data\file.txt`），设备对象本体（裸 `\\.\C:`）不放行。
+_DRIVE_LETTER_COMPONENT = re.compile(r"^[A-Za-z]:$")
+
+
+def _reject_windows_device_names_and_ads(path_text: str) -> None:
+    """拒绝 Windows 保留设备名组件、NTFS 备用数据流（ADS）冒号与 ``\\\\.\\`` 设备对象（SEC-061）。
+
+    仅 Windows 语义（经 ``IS_WINDOWS`` 分支调用，非 Windows 不检查：保留名是 DOS
+    概念、冒号在 POSIX 是合法文件名字符）。字符串级分析而非依赖 Path 分段——宿主
+    平台的 Path 按 POSIX 规则解析 Windows 形态（反斜杠是普通字符），跨平台测试经
+    monkeypatch ``IS_WINDOWS`` 亦可验证本函数。
+
+    - **保留设备名**：逐组件（按 ``\\``/``/`` 分隔）取 stem（首个 ``.`` 前、剥尾部
+      空格与点，Windows 对设备名的判定在首个扩展点截断且忽略尾随空格/点）做大小写
+      不敏感的整词匹配，覆盖 ``CON``/``con.txt``/``NUL.``/``COM1 `` 等形态。
+    - **ADS 冒号**：剥离合法前缀（``\\\\?\\``/``\\\\.\\``/``\\\\?\\UNC\\``）与盘符
+      首个冒号（``X:``）后，任何残留 ``:`` 均拒绝——``file.txt:stream`` 是 NTFS
+      备用数据流语法，可借道把数据挂载到既有文件或设备名上。
+    - **``\\\\.\\`` 设备命名空间**（SEC-061 补强）：该前缀直接寻址 Win32 设备对象
+      （无冒号形态 ``\\\\.\\PhysicalDrive0``/``\\\\.\\Serial0``，裸卷 ``\\\\.\\C:``
+      亦为卷设备本体），剥前缀后仅残留冒号/保留名检查全数放行——仅放行首组件为
+      盘符且带后续路径的文件系统形态（``\\\\.\\C:\\data\\file.txt`` 有意放行），
+      其余设备对象一律拒绝；``\\\\?\\`` 文件系统 verbatim 前缀与 ``\\\\?\\UNC\\``
+      不受此检查影响。
+
+    错误消息为固定文案，不回显用户输入原文（防路径形态本身经日志外泄）。
+    """
+    text = path_text.replace("/", "\\")
+    # ---- ADS 冒号 ----
+    colon_scope = text
+    lowered = colon_scope.lower()
+    device_scope: str | None = None
+    if lowered.startswith("\\\\?\\unc\\"):
+        colon_scope = colon_scope[8:]
+    elif lowered.startswith("\\\\?\\"):
+        colon_scope = colon_scope[4:]
+    elif lowered.startswith("\\\\.\\"):
+        colon_scope = colon_scope[4:]
+        # 设备命名空间内容形态检查在其上进行（盘符冒号剥离会重绑 colon_scope，
+        # 故在剥离前留存剥前缀后的范围）。
+        device_scope = colon_scope
+    if len(colon_scope) >= 2 and colon_scope[0].isalpha() and colon_scope[1] == ":":
+        colon_scope = colon_scope[2:]
+    if ":" in colon_scope:
+        raise ValueError("文件路径包含非法冒号（NTFS 备用数据流或非法盘符形态）")
+    # ---- 设备命名空间内容形态 ----
+    if device_scope is not None:
+        # 首组件必须为盘符（^X:$）且存在后续路径组件（`\\.\C:` 裸卷是卷设备
+        # 本体、`\\.\PhysicalDrive0`/`\\.\Serial0` 是无冒号设备对象，均拒绝）。
+        sep = device_scope.find("\\")
+        first_component = device_scope if sep < 0 else device_scope[:sep]
+        if sep < 0 or _DRIVE_LETTER_COMPONENT.fullmatch(first_component) is None:
+            raise ValueError("文件路径包含非法的 Windows 设备命名空间形态")
+    # ---- 保留设备名 ----
+    for component in text.split("\\"):
+        if not component:
+            continue
+        stem = component.split(".", 1)[0].rstrip(" .").upper()
+        if stem in _WINDOWS_RESERVED_DEVICE_NAMES:
+            raise ValueError("文件路径包含 Windows 保留设备名")
+
+
 def validate_file_path(
     path: str | Path,
     base_dir: Path | None = None,
     *,
     check_ancestors: bool = False,
 ) -> Path:
-    """验证文件路径，拒绝目录遍历与路径重定向（符号链接/Windows reparse point）。
+    """验证文件路径，拒绝目录遍历、路径重定向与 Windows 保留名/ADS 形态。
 
     调用方必须使用返回的 resolved 路径而非原始 path，以缩小 TOCTOU 竞态窗口。
 
@@ -486,6 +559,11 @@ def validate_file_path(
     raw = Path(path)
     if ".." in raw.parts:
         raise ValueError("文件路径包含非法遍历组件")
+    # Windows 保留设备名与 ADS 冒号（SEC-061）：当前所有到达路径为程序生成或用户
+    # 经文件对话框自选（不可利用），但本函数是中央路径安全边界——「按条目名命名
+    # 导出文件」类未来功能会经此缺口把条目数据变成设备名/数据流路径。
+    if IS_WINDOWS:
+        _reject_windows_device_names_and_ads(str(raw))
     # 必须在 resolve() 之前对原始路径逐级检测：resolve() 会展开并跟随符号链接与
     # junction，若先 resolve 再检测，原始输入中经由 junction 的重定向在解析后路径
     # 上 is_symlink() 恒为 False，检测将静默失效（该控制曾因此长期无效）。

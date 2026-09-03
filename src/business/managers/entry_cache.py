@@ -1,21 +1,22 @@
-"""条目明文缓存管理 — 搜索摘要、分类名、TOTP secret、标签计数。
+"""条目明文缓存管理 — 搜索摘要、分类名、TOTP secret、标签计数、搜索投影行集。
 
-集中 5 套明文缓存与统一失效矩阵，由 ``_cache_lock`` 保护，消除 TOTP 定时器
+集中 6 套缓存与统一失效矩阵，由 ``_cache_lock`` 保护，消除 TOTP 定时器
 与锁定失效的并发竞态。缓存填充需主密钥解密；``key_epoch`` 变化（改密/锁定）
-整体失效。
+整体失效。搜索投影行集（PERF-086）为密文行缓存，无明文驻留顾虑。
 
 约定：锁内不调用数据库方法或变更回调，避免与 db 事务锁构成顺序反转死锁。
 """
 
-import logging
 import threading
 from collections import OrderedDict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 if TYPE_CHECKING:
     from ..managers.vault_manager import VaultManager
 
+from ...database.types import SearchRow
 from ...exceptions import DecryptionError, VaultKeyEpochMismatchError
 from ...models import MAX_ENTRIES_LIMIT, parse_tag_list
 from ..services.crypto_utils import (
@@ -24,13 +25,27 @@ from ..services.crypto_utils import (
     require_vault_key,
 )
 
-logger = logging.getLogger(__name__)
-
 # 搜索摘要缓存容量上限：与条目数上限（MAX_ENTRIES_LIMIT）对齐，使大库
 # （上限内）的 title/username/url/tags 摘要全部驻留缓存、避免每次列表刷新
 # 全量重解密。明文驻留面由锁定/改密时 invalidate_all 清零兜底。LRU 仅在
 # 超出上限（理论上仅极端入库规模）时淘汰最久未访问项。
 _MAX_SEARCH_METADATA_CACHE_SIZE = MAX_ENTRIES_LIMIT
+
+# 搜索投影缓存键容量上限（PERF-086）：键=(deleted_only, category_id,
+# favorite_only, order_by, order_desc) 组合。典型常驻组合为主视图当前排序 +
+# 近期更新视图（updated_at DESC）+ 回收站视图各占一键，上限 4 覆盖工作集。
+# 内存依据：单键最坏 = 条目数上限（50k）行 SearchRow，全密文 + 5 个明文定位/
+# 排序列，实测规模 ~20MB/50k 行——密文行无明文驻留顾虑（AES-GCM 密文不可检索，
+# 泄漏面等价于 db 文件本身），且仅在接近条目数上限的库才达到该量级，常规库
+# （≤5k 条）单键 ~2MB；超限按 LRU 淘汰整键（行集整体失效，粒度即键）。
+_MAX_PROJECTION_CACHE_KEYS = 4
+
+# 投影缓存键（PERF-086）：(deleted_only, category_id, favorite_only, order_by,
+# order_desc)。order_by=None 表示 SQL 复合序（默认序），此时 order_desc 恒规范化
+# 为 True（复合序固定 is_favorite DESC, updated_at DESC，方向参数无意义），避免
+# 同义键重复占用缓存槽；非 None 时行集已按该白名单字段排好序，与无序行集不可
+# 混存同一键（消费方对行序敏感：排序下推分支依赖行序做提前终止）。
+ProjectionCacheKey = tuple[bool, int | None, bool, str | None, bool]
 
 
 class SearchMetadata(NamedTuple):
@@ -75,11 +90,102 @@ class SearchRowSource(Protocol):
     def tags(self) -> str: ...
 
 
+def _decrypt_search_metadata(
+    raw_entry: SearchRowSource,
+    decrypt_key: bytes,
+) -> tuple[SearchMetadata, set[str]]:
+    """解密单行摘要四字段，返回 (原形+小写的 SearchMetadata, 失败字段集)。
+
+    :meth:`EntryCacheManager._cached_search_metadata_no_check`（单条路径）与
+    ``_SearchMetadataBatch.get``（批量会话，PERF-086）共用的解密核心单一事实源：
+    失败字段回退空串并记入 ``failed`` 集（LENIENT 容错口径，调用方据此展示完整性
+    警示/区分合法空）。小写形式与原形一同产出，供 matches_search 跳过每条目
+    4 字段实时 ``.lower()``。
+    """
+    values: list[str] = []
+    failed: set[str] = set()
+    for field_name, encrypted in (
+        ("title", raw_entry.title),
+        ("username", raw_entry.username),
+        ("url", raw_entry.url),
+        ("tags", raw_entry.tags),
+    ):
+        try:
+            value = _decrypt_field_impl(
+                encrypted,
+                decrypt_key,
+                raw_entry.crypto_id,
+                field_name,
+                strict=True,
+            )
+        except DecryptionError:
+            value = ""
+            failed.add(field_name)
+        values.append(value)
+    return (
+        SearchMetadata(
+            values[0],
+            values[1],
+            values[2],
+            values[3],
+            values[0].lower(),
+            values[1].lower(),
+            values[2].lower(),
+            values[3].lower(),
+        ),
+        failed,
+    )
+
+
+class _SearchMetadataBatch:
+    """批量摘要读取会话（PERF-086）：一次持锁快照命中集 + 锁外解密 + 一次持锁回写。
+
+    搜索热路径逐行经 ``_cached_search_metadata_no_check`` 取 meta 时每行两次
+    RLock 往返（命中读 + move_to_end），50k 行规模是可测成本（实测 ~78ms）。本会话
+    把锁开销摊销为三次：进入时快照 ``_search_metadata_cache`` 的 dict 拷贝，循环内
+    零锁（命中查快照 / 缺失锁外解密入 pending），退出时一次回写全部 pending。
+
+    回写守卫（epoch + version 整批双比对）：批量解密窗口比单条长，窗口内任何失效
+    （并发写 notify / 恢复重臂）都会使整批丢弃——比单条路径「失效前行已回写」更
+    保守（失效是低频事件，丢弃只损失缓存填充、下次重解密，正确性无损）。
+
+    LRU 语义取舍：批量命中**不**推进 recency（不 move_to_end）。LRU 仅在缓存超出
+    ``_MAX_SEARCH_METADATA_CACHE_SIZE``（= 条目数上限）时才产生淘汰，应用自身以
+    该上限约束入库，超限仅理论场景；其最坏后果是超限库中批量扫描命中的行提前被
+    淘汰（下次重解密），无正确性影响——不值得为推进 recency 重引逐行锁。
+    """
+
+    def __init__(
+        self,
+        snapshot: dict[str, SearchMetadata],
+        entry_epoch: str | None,
+        entry_version: int,
+        decrypt_key: bytes,
+    ):
+        self._snapshot = snapshot
+        self._entry_epoch = entry_epoch
+        self._entry_version = entry_version
+        self._decrypt_key = decrypt_key
+        self._pending: list[tuple[str, SearchMetadata, set[str]]] = []
+
+    def get(self, raw_entry: SearchRowSource) -> SearchMetadata:
+        """取单行摘要 meta：命中快照直接返回，缺失则锁外解密并入 pending 待回写。"""
+        cached = self._snapshot.get(raw_entry.crypto_id)
+        if cached is not None:
+            return cached
+        meta, failed = _decrypt_search_metadata(raw_entry, self._decrypt_key)
+        self._pending.append((raw_entry.crypto_id, meta, failed))
+        return meta
+
+
 class EntryCacheManager:
     """条目明文缓存的存储、填充与失效。
 
-    持有搜索摘要 / 失败字段 / 分类名 / TOTP secret / 标签计数 5 套缓存，
-    统一 ``_cache_lock`` 保护。
+    持有搜索摘要 / 失败字段 / 分类名 / TOTP secret / 标签计数 / 搜索投影行集
+    6 套缓存，统一 ``_cache_lock`` 保护。失效版本分域（QL-070）：主域
+    ``_invalidate_version`` 守卫投影行集/摘要回写/标签差分，TOTP 域
+    ``_totp_invalidate_version`` 守卫 TOTP secret 回写——单条 TOTP 失效不击穿
+    主域缓存（详见 ``__init__`` 注释），全局失效两域一并推进。
     """
 
     def __init__(self, vault: "VaultManager"):
@@ -91,15 +197,42 @@ class EntryCacheManager:
         self._category_name_cache: dict[int, str] = {}
         self._totp_secret_cache: dict[int, str] = {}
         self._tags_cache: list[tuple[str, int]] | None = None
+        # 搜索投影行集缓存（PERF-086）：键/容量语义见 ProjectionCacheKey 与
+        # _MAX_PROJECTION_CACHE_KEYS；以 _invalidate_version 失效（全部写路径
+        # 均经 apply_change / invalidate_all 推进版本，见 search_projection_rows）。
+        self._projection_cache: OrderedDict[ProjectionCacheKey, tuple[int, list[SearchRow]]] = (
+            OrderedDict()
+        )
         self._cache_epoch: str | None = None
         # 失效版本号（M4）：单调递增，任何 apply_change / invalidate 都推进。与
         # _cache_epoch（改密/锁定整体失效）正交——单条 apply_change 只 pop 个别条目
         # 不改 epoch，但锁外解密回写仍会基于旧密文重新污染已 pop 的条目；解密回写时
         # 复查 version 未变，确保「解密开始 → 回写」期间发生过任何失效则丢弃结果。
         self._invalidate_version: int = 0
+        # TOTP 域失效版本号（QL-070 分域）：与 _invalidate_version 平行的独立计数器，
+        # 仅 resolve_totp_secret 的回写守卫消费。pop_totp/clear_totp 只推进本域——
+        # 单条 TOTP secret 失效不改变条目表行集与摘要/标签数据，若推进主域，UI 每次
+        # 离开带 TOTP 的条目（detail_panel 的 evict → pop_totp，无任何 DB 写）都会
+        # 作废全部 4 个投影缓存键（PERF-086），50k 行集重取 ~160ms 的目标交互被无关
+        # 失效击穿；主域的摘要批回写/标签差分/投影缓存守卫均不受 TOTP 域失效影响。
+        # 全局失效（apply_change / pop_search_metadata_batch / invalidate_all /
+        # invalidate_if_epoch_changed）经 _advance_global_invalidation 同时推进两域：
+        # 条目写窗口内 TOTP secret 可能随变更，在飞的 TOTP 解密回写仍须被拒收。
+        # 初始值与 _invalidate_version 同刻起步，两者各自单调即可（守卫只比对同域）。
+        self._totp_invalidate_version: int = 0
         # 缓存锁：保护上述缓存及 _cache_epoch 的结构性读写，消除 TOTP 定时器线程
         # 与锁定 invalidate_all 并发时的竞态。锁内不调用数据库方法或变更回调。
         self._cache_lock = threading.RLock()
+
+    def _advance_global_invalidation(self) -> None:
+        """全局失效同时推进主域与 TOTP 域版本（调用方须持 ``_cache_lock``）。
+
+        QL-070 分域后的整体失效入口：主域（投影行集/摘要回写/标签差分守卫）与
+        TOTP 域（TOTP secret 回写守卫）一并推进——整体失效意味着条目数据已变，
+        在飞的各域解密回写均基于旧数据，须全部拒收。
+        """
+        self._invalidate_version += 1
+        self._totp_invalidate_version += 1
 
     @property
     def _key(self) -> bytes:
@@ -122,19 +255,23 @@ class EntryCacheManager:
                     self._category_name_cache.clear()
                     self._totp_secret_cache.clear()
                     self._tags_cache = None
+                    # 投影行集随 epoch 轮换整体清空（PERF-086）：改密/恢复会重写
+                    # 全部密文，旧密文行集对新密钥不可解密。
+                    self._projection_cache.clear()
                     self._cache_epoch = current
-                    self._invalidate_version += 1
+                    self._advance_global_invalidation()
 
     def invalidate_all(self) -> None:
-        """外部调用：锁定或改密后显式清空全部明文缓存。"""
+        """外部调用：锁定或改密后显式清空全部明文缓存与投影行集。"""
         with self._cache_lock:
             self._search_metadata_cache.clear()
             self._search_metadata_failed.clear()
             self._category_name_cache.clear()
             self._totp_secret_cache.clear()
             self._tags_cache = None
+            self._projection_cache.clear()
             self._cache_epoch = None
-            self._invalidate_version += 1
+            self._advance_global_invalidation()
 
     def apply_change(
         self,
@@ -156,8 +293,8 @@ class EntryCacheManager:
         with self._cache_lock:
             # 推进失效版本号（M4）：apply_change 必因条目/分类/tags 变更调用，使进行中的
             # 锁外解密回写丢弃结果——单条 pop 不改 epoch，若无 version 守卫，并发解密会
-            # 基于旧密文重新污染刚 pop 的条目摘要/分类名。
-            self._invalidate_version += 1
+            # 基于旧密文重新污染刚 pop 的条目摘要/分类名。两域一并推进（QL-070 分域）。
+            self._advance_global_invalidation()
             if crypto_id is not None:
                 self._search_metadata_cache.pop(crypto_id, None)
                 self._search_metadata_failed.pop(crypto_id, None)
@@ -180,7 +317,7 @@ class EntryCacheManager:
         （M4：进行中的锁外解密回写据此丢弃结果）。
         """
         with self._cache_lock:
-            self._invalidate_version += 1
+            self._advance_global_invalidation()
             for crypto_id in crypto_ids:
                 self._search_metadata_cache.pop(crypto_id, None)
                 self._search_metadata_failed.pop(crypto_id, None)
@@ -209,8 +346,9 @@ class EntryCacheManager:
         ``data_epoch`` 语义见 :meth:`_cached_search_metadata_no_check`（SEC-041 写入方
         世代守卫）。
 
-        返回明文原形 4 元组；小写形式经 :meth:`search_lower_no_check` 取得，
-        两者一同缓存以避免 matches_search 每条目实时 .lower()。
+        返回明文原形 4 元组；小写形式与原形一同缓存在 :class:`SearchMetadata`
+        （经 :meth:`cached_search_metadata_full` 一次取用），避免 matches_search
+        每条目实时 .lower()。
         """
         self.invalidate_if_epoch_changed()
         meta = self._cached_search_metadata_no_check(raw_entry, key=key, data_epoch=data_epoch)
@@ -256,38 +394,8 @@ class EntryCacheManager:
         # PERF-001 并发修补（M3）：用调用方传入的锁内快照密钥，避免锁外解密期间
         # 改密 activate 致 self._key 轮换为新密钥、本批 raw 仍旧密文引发 GCM 失败。
         decrypt_key = key if key is not None else self._key
-        values: list[str] = []
-        failed: set[str] = set()
-        for field_name, encrypted in (
-            ("title", raw_entry.title),
-            ("username", raw_entry.username),
-            ("url", raw_entry.url),
-            ("tags", raw_entry.tags),
-        ):
-            try:
-                value = _decrypt_field_impl(
-                    encrypted,
-                    decrypt_key,
-                    cid,
-                    field_name,
-                    strict=True,
-                )
-            except DecryptionError:
-                value = ""
-                failed.add(field_name)
-            values.append(value)
-        # 小写形式与原形一同缓存：一次 .lower()（远廉价于 AES-GCM 解密）换取
-        # matches_search 每次搜索跳过 4 字段实时 .lower() 的 N 倍开销。
-        result = SearchMetadata(
-            values[0],
-            values[1],
-            values[2],
-            values[3],
-            values[0].lower(),
-            values[1].lower(),
-            values[2].lower(),
-            values[3].lower(),
-        )
+        # 解密核心（PERF-086 抽出）：单条与批量会话共用，失败回退空串 + failed 集。
+        result, failed = _decrypt_search_metadata(raw_entry, decrypt_key)
         with self._cache_lock:
             # epoch 守卫（改密/锁定整体失效）+ version 守卫（M4：单条 apply_change 未改
             # epoch 但已 pop 本条目，须丢弃基于旧密文的解密结果避免回写污染）。
@@ -296,15 +404,113 @@ class EntryCacheManager:
             if self._cache_epoch == entry_epoch and self._invalidate_version == entry_version:
                 self._search_metadata_cache[cid] = result
                 self._search_metadata_cache.move_to_end(cid)
-                if len(self._search_metadata_cache) > _MAX_SEARCH_METADATA_CACHE_SIZE:
-                    # LRU 淘汰与 failed 字典容量联动（QL-058）：被淘汰条目的 failed
-                    # 记录同步清理，否则「解密失败 + 缓存超上限」同现时 failed 字典
-                    # 随时间无界驻留（epoch 失效外的另一泄漏面）。
-                    evicted_cid, _ = self._search_metadata_cache.popitem(last=False)
-                    self._search_metadata_failed.pop(evicted_cid, None)
-                if failed:
-                    self._search_metadata_failed[cid] = failed
+                self._writeback_failed_and_evict(cid, failed)
         return result
+
+    def _writeback_failed_and_evict(self, cid: str, failed: set[str]) -> None:
+        """回写失败字段集并执行超容量 LRU 淘汰（调用方须持 ``_cache_lock``）。
+
+        单条回写与批量会话回写共用的收尾步骤（PERF-086 抽出）：failed 记录与
+        LRU 淘汰联动（QL-058：被淘汰条目的 failed 记录同步清理，否则「解密失败 +
+        缓存超上限」同现时 failed 字典随时间无界驻留）。
+        """
+        if len(self._search_metadata_cache) > _MAX_SEARCH_METADATA_CACHE_SIZE:
+            evicted_cid, _ = self._search_metadata_cache.popitem(last=False)
+            self._search_metadata_failed.pop(evicted_cid, None)
+        if failed:
+            self._search_metadata_failed[cid] = failed
+
+    @contextmanager
+    def search_metadata_batch(
+        self,
+        *,
+        key: bytes | None = None,
+        data_epoch: str | None = None,
+    ) -> Iterator[_SearchMetadataBatch]:
+        """批量循环路径的摘要读取会话（PERF-086）。
+
+        搜索/去重等批量循环改经 :class:`_SearchMetadataBatch` 取 meta：进入时一次
+        持锁快照命中集（dict 拷贝）替代逐行 RLock + move_to_end（50k 行实测 ~78ms），
+        退出时一次持锁回写 pending（epoch + version 整批守卫，语义同
+        :meth:`_cached_search_metadata_no_check` 的单条双守卫；try/finally 包 yield，
+        正常退出、循环 break/return 与 with 体抛异常退出均执行回写）。
+        ``key``/``data_epoch`` 语义与单条路径一致（PERF-001/SEC-041）；调用方须在
+        进入前调用 ``invalidate_if_epoch_changed`` 固定本批世代。
+        """
+        with self._cache_lock:
+            snapshot = dict(self._search_metadata_cache)
+            entry_epoch = data_epoch if data_epoch is not None else self._cache_epoch
+            entry_version = self._invalidate_version
+        batch = _SearchMetadataBatch(
+            snapshot,
+            entry_epoch,
+            entry_version,
+            key if key is not None else self._key,
+        )
+        try:
+            yield batch
+        finally:
+            # 回写（含循环 break/return 与 with 体抛异常退出的场景，PERF-086）：
+            # 异常路径同样回写——已解密的 pending 是正确结果（基于采样世代密钥的
+            # 自洽解密），丢弃只损失缓存填充；回写内的 epoch + version 整批守卫在
+            # 异常时刻依然安全（版本比对的是「采样 → 回写」窗口内的失效，与退出
+            # 原因无关）。finally 内不得 return/raise（会吞掉/替换原异常）：pending
+            # 为空时跳过回写块自然结束；回写段为纯 dict/list 操作，若极端情况下再
+            # 抛异常，Python 隐式异常链（__context__）会保留原异常上下文。
+            if batch._pending:
+                with self._cache_lock:
+                    # epoch + version 整批守卫：批量解密窗口内的任何失效使整批丢弃
+                    # （见 _SearchMetadataBatch 类 docstring 的保守性论证）。
+                    if (
+                        self._cache_epoch == entry_epoch
+                        and self._invalidate_version == entry_version
+                    ):
+                        for cid, meta, failed in batch._pending:
+                            self._search_metadata_cache[cid] = meta
+                            self._search_metadata_cache.move_to_end(cid)
+                            self._writeback_failed_and_evict(cid, failed)
+
+    def search_projection_rows(
+        self,
+        key: ProjectionCacheKey,
+        fetch: Callable[[], list[SearchRow]],
+    ) -> list[SearchRow]:
+        """搜索窄投影行集的会话缓存（PERF-086）：行集仅取决于过滤三元组与排序规格。
+
+        行集内容与搜索词无关（过滤/匹配在内存进行），暖态重复搜索（逐字符输入、
+        视图切换）每次重拉投影行集（fetchall + SearchRow 构造，50k 行实测 ~160ms）
+        是主导成本之一，此处按键缓存密文行集。行内容全部为密文与明文定位/排序列，
+        无明文驻留顾虑；以 ``_invalidate_version`` 失效——全部写路径（增删改/
+        导入/恢复/锁定/改密）都经 apply_change / pop_search_metadata_batch /
+        invalidate_all 推进版本，任何写后本缓存必然失配重取。
+
+        ``fetch`` 由调用方在 ``epoch_guarded_read`` 内构造执行（行集一致性由调用方
+        持 db_lock 保证）；本方法遵守「锁内不调用数据库」约定，fetch 在
+        ``_cache_lock`` 外调用。回填守卫：fetch 期间版本推进（并发写已 notify）则
+        拒收——行集相对新库已陈旧，下次重取吸收，当前调用方仍使用本次 fetch 结果
+        （与无缓存时的读视图语义一致）。
+
+        出口浅拷贝（PERF-086）：命中与回填两条路径均返回 ``list(rows)`` 新容器，
+        不外泄缓存内部 list 引用——消费方（EntryManager 匹配循环）虽只读，返回
+        引用会让任何未来调用方的就地变异（sort/append）直接污染缓存行集且无失败
+        信号，属本文件防御性拷贝纪律（对齐 get_failed_fields 的 QL-056）的潜伏
+        破口。成本：仅拷贝引用的容器分配，50k 行实测 ~0.4ms，相对命中省下的
+        fetchall ~160ms 可忽略；SearchRow 为不可变 NamedTuple，行对象本身无隔离面。
+        """
+        with self._cache_lock:
+            cached = self._projection_cache.get(key)
+            if cached is not None and cached[0] == self._invalidate_version:
+                self._projection_cache.move_to_end(key)
+                return list(cached[1])
+            observed_version = self._invalidate_version
+        rows = fetch()
+        with self._cache_lock:
+            if self._invalidate_version == observed_version:
+                self._projection_cache[key] = (observed_version, rows)
+                self._projection_cache.move_to_end(key)
+                while len(self._projection_cache) > _MAX_PROJECTION_CACHE_KEYS:
+                    self._projection_cache.popitem(last=False)
+        return list(rows)
 
     def search_metadata_for_analysis(
         self,
@@ -329,25 +535,6 @@ class EntryCacheManager:
         meta = self._cached_search_metadata_no_check(raw_entry, key=key, data_epoch=data_epoch)
         return (meta.title, meta.username, meta.url, meta.tags)
 
-    def search_lower_no_check(
-        self,
-        raw_entry: SearchRowSource,
-        *,
-        key: bytes | None = None,
-        data_epoch: str | None = None,
-    ) -> tuple[str, str, str, str]:
-        """返回摘要字段的小写形式 (title, username, url, tags)，供搜索匹配复用。
-
-        直接复用 :meth:`_cached_search_metadata_no_check` 已填充的缓存取后 4 项
-        （命中缓存时为纯锁内 dict 查询），跳过 :func:`matches_search` 每条目 4 字段
-        实时 ``.lower()``。调用方须在循环外已调用 ``invalidate_if_epoch_changed``。
-
-        ``key`` 语义见 :meth:`cached_search_metadata`（PERF-001 并发修补）；
-        ``data_epoch`` 语义见 :meth:`_cached_search_metadata_no_check`（SEC-041）。
-        """
-        meta = self._cached_search_metadata_no_check(raw_entry, key=key, data_epoch=data_epoch)
-        return (meta.title_lower, meta.username_lower, meta.url_lower, meta.tags_lower)
-
     def cached_search_metadata_full(
         self,
         raw_entry: SearchRowSource,
@@ -358,8 +545,10 @@ class EntryCacheManager:
         """返回完整 :class:`SearchMetadata`（原形 + 小写），供调用方一次取用复用。
 
         搜索热路径经此一次取完整 meta，摘要构建（原形 4 字段）与搜索匹配（小写 4 字段）
-        共用，省去分别调 :meth:`search_metadata_for_analysis` 与 :meth:`search_lower_no_check`
-        的第二次缓存查询（PERF-016）。调用方须在循环外已调用 ``invalidate_if_epoch_changed``。
+        共用，省去分别调 :meth:`search_metadata_for_analysis` 与独立小写入口的第二次
+        缓存查询（PERF-016；独立小写入口 search_lower_no_check 已随 MAINT-102 删除，
+        全库零调用且其能力为本方法后 4 字段的子集）。调用方须在循环外已调用
+        ``invalidate_if_epoch_changed``。
 
         ``key`` 语义见 :meth:`cached_search_metadata`（PERF-001 并发修补）；
         ``data_epoch`` 语义见 :meth:`_cached_search_metadata_no_check`（SEC-041）——
@@ -489,9 +678,12 @@ class EntryCacheManager:
                     return None
                 # 解密前锁内采样世代与版本（SEC-044）：读守卫持有 db_lock，恢复/
                 # 改密 commit 无法插入采样与解密之间，故此处缓存侧采样即调用方世代。
+                # version 取 TOTP 域（QL-070 分域）：本守卫只关心 TOTP secret 缓存的
+                # 失效（pop_totp/clear_totp 与全局失效两域均覆盖本域），主域版本（投影
+                # 行集/摘要/标签）与本 secret 的有效性无关。
                 with self._cache_lock:
                     entry_epoch = self._cache_epoch
-                    entry_version = self._invalidate_version
+                    entry_version = self._totp_invalidate_version
                 secret = _decrypt_field_impl(
                     raw.totp_secret,
                     self._key,
@@ -505,9 +697,12 @@ class EntryCacheManager:
         if use_cache:
             with self._cache_lock:
                 # epoch + version 双重复查（SEC-044）：语义同 _cached_search_metadata_no_check
-                # （M4/SEC-041）——解密期间发生过任何整体失效（含恢复重臂新世代）或
-                # 单条失效（pop_totp），本次解密结果均不回写。
-                if self._cache_epoch == entry_epoch and self._invalidate_version == entry_version:
+                # （M4/SEC-041）——解密期间发生过任何整体失效（含恢复重臂新世代，两域
+                # 一并推进）或单条 TOTP 失效（pop_totp，仅本域），本次解密结果均不回写。
+                if (
+                    self._cache_epoch == entry_epoch
+                    and self._totp_invalidate_version == entry_version
+                ):
                     self._totp_secret_cache[entry_id] = secret
         return secret
 
@@ -537,13 +732,31 @@ class EntryCacheManager:
             self._totp_secret_cache[entry_id] = secret
 
     def pop_totp(self, entry_id: int) -> None:
-        """失效单条 TOTP secret 缓存（条目更新/删除修改 totp_secret）。"""
+        """失效单条 TOTP secret 缓存（条目更新/删除修改 totp_secret，或离开条目时
+        的驻留面收缩 evict）。
+
+        持锁推进 ``_totp_invalidate_version``（QL-070）：:meth:`resolve_totp_secret`
+        的回写守卫须能检测「解密前采样 → pop → 回写」窗口内的单条失效——此前 pop
+        只清 dict 不推进版本，守卫的 version 比对检测不到单条失效、防护名存实亡
+        （当前主线程串行执行使竞态不可达，属线程模型巧合而非设计保证）。
+
+        只推进 TOTP 域而不动主域 ``_invalidate_version``（QL-070 分域）：pop 的两个
+        高频来源是条目写路径与 detail_panel 的 evict（离开条目即 pop，无任何 DB
+        写）——单条 TOTP secret 失效不改变条目表行集/摘要/标签数据，推进主域会使
+        上述交互每次作废全部投影缓存键（PERF-086）与摘要批回写守卫；TOTP 域独立
+        计数后，两域守卫各查各的版本，互不击穿。
+        """
         with self._cache_lock:
+            self._totp_invalidate_version += 1
             self._totp_secret_cache.pop(entry_id, None)
 
     def clear_totp(self) -> None:
-        """清空全部 TOTP secret 缓存（清空回收站）。"""
+        """清空全部 TOTP secret 缓存（清空回收站）。
+
+        version 推进语义同 :meth:`pop_totp`（QL-070 分域：仅 TOTP 域）。
+        """
         with self._cache_lock:
+            self._totp_invalidate_version += 1
             self._totp_secret_cache.clear()
 
     def decrypt_tags_for_delta(
@@ -609,6 +822,13 @@ class EntryCacheManager:
         with self._cache_lock:
             cached = self._tags_cache
             observed_epoch = self._cache_epoch
+            # 失效版本同刻快照（QL-069）：聚合在 db_lock 内进行，「聚合出锁 → 回填」
+            # 窗口内主线程的写入 + notify 只推进 version 不动 epoch（单条 apply_change
+            # 不改 epoch）——若回填仅比 epoch，基于旧库的快照会落入 _tags_cache 且
+            # 无自愈（标签缓存无 TTL，仅锁定/改密/恢复/写路径可纠正），与本文件
+            # 摘要（_cached_search_metadata_no_check）与分类名（decrypt_category_name）
+            # 的 epoch+version 双守卫对齐。
+            observed_version = self._invalidate_version
         if cached is not None:
             return cached
         tag_count: dict[str, int] = {}
@@ -638,13 +858,19 @@ class EntryCacheManager:
         result = sorted(tag_count.items(), key=lambda x: -x[1])
         with self._cache_lock:
             # 双重检查：期间可能已被并发填充，或 epoch 已变化（改密/锁定清空了缓存）。
-            # 比对 observed_epoch 避免返回跨 epoch 的脏缓存。
+            # 比对 observed_epoch 避免返回跨 epoch 的脏缓存。并发填充分支不比 version：
+            # 此时 _tags_cache 内是比本快照更新的数据（填充者晚于本快照采样），返回它
+            # 恒优于本 result。
             if self._tags_cache is not None and self._cache_epoch == observed_epoch:
                 return self._tags_cache
-            # 仅当 epoch 未变才回填（SEC-010）：epoch 变化时 result 为旧密钥解密的旧明文，
-            # 而 _cache_epoch 已被 invalidate 更新为新值，此时回填会令下次命中返回跨 epoch
-            # 脏缓存。当前调用方返回 result（旧 epoch 上下文可接受），下次调用重新解密。
-            if self._cache_epoch == observed_epoch:
+            # 仅当 epoch 且 version 均未变才回填（SEC-010 + QL-069）：epoch 变化时
+            # result 为旧密钥解密的旧明文，而 _cache_epoch 已被 invalidate 更新为新值，
+            # 此时回填会令下次命中返回跨 epoch 脏缓存；version 变化说明聚合窗口内
+            # 发生过任何失效（写入 notify / 并发差分），result 相对新库已陈旧，回填
+            # 会使标签缓存永久停留在旧快照（下次 get_all_tags 命中缓存不再重算）。
+            # 两种失配均丢弃（下次调用重算吸收），当前调用方返回 result（旧上下文
+            # 可接受，与仅比 epoch 时的既有语义一致）。
+            if self._cache_epoch == observed_epoch and self._invalidate_version == observed_version:
                 self._tags_cache = result
             return result
 
@@ -664,13 +890,12 @@ class EntryCacheManager:
         new_tags: str = "",
         *,
         expected_version: int | None = None,
-    ) -> None:
-        """单条条目的标签计数差分（PERF-079），一次锁内先减旧再加新。
+    ) -> bool:
+        """单条条目的标签计数差分（PERF-079），一次锁内先减旧再加新，返回是否应用。
 
         增删/恢复/编辑 tags 路径以此原地增减该条 tags 的各标签计数（重排保持
         「计数降序」出口契约、清零标签移除），免去 ``tags_changed=True`` 触发的
-        下次 get_all_tags 全量重解密重算。缓存未填充/已失效（None）时无操作——
-        下次全量重算天然吸收；old/new 任一为空是合法端点（纯增或纯减）。
+        下次 get_all_tags 全量重解密重算。old/new 任一为空是合法端点（纯增或纯减）。
 
         单次锁内完成「减旧+加新」（QL-065）：此前编辑路径两次锁调用（先 removed
         后 added），中间并发 get_all_tags 可见「旧已减、新未加」的撕裂态。
@@ -682,22 +907,33 @@ class EntryCacheManager:
         重建结果已含本条变更，再扣即双扣。不传时保持无条件写回（测试直调等
         既有调用方语义不变）。
 
-        有意不推进 ``_invalidate_version``：差分仅触碰 ``_tags_cache``（无锁外
-        解密-回写窗口，get_all_tags 亦不消费 version），推进会使在飞的摘要/分类名
-        解密回写被无谓丢弃。
+        Returns:
+            是否应用：True 为差分已应用，或 old/new 解析后均为空（本就无需变更，
+            缓存状态正确）；False 为差分被放弃（缓存未填充，或 ``expected_version``
+            世代失配）——调用方（``_notify_entry_structure_changed``）据此保守置
+            ``tags_changed=True`` 走整表失效（QL-070），消除「既未差分也未失效」
+            的第三态：旧行为放弃后仍 tags_changed=False，缓存正确性依赖
+            apply_change 恰好整表失效的未声明不变量巧合收敛。
+
+        应用即推进 ``_invalidate_version``（QL-069）：get_all_tags 的回填守卫接入
+        version 后，差分是唯一「改变 ``_tags_cache`` 却不推进 version」的路径——
+        不推进时，在飞聚合的旧快照（不含差分对应的写入）会通过 version 比对回填，
+        覆盖已差分的正确缓存。推进的副作用（丢弃在飞的摘要/分类名解密回写）可
+        忽略：差分后紧随的 change_bus.notify → apply_change 本就会推进，额外丢弃
+        窗口仅微秒级。
         """
         removed = parse_tag_list(old_tags)
         added = parse_tag_list(new_tags)
         if not removed and not added:
-            return
+            return True
         with self._cache_lock:
             cached = self._tags_cache
             if cached is None:
-                return
+                return False
             # 写回世代守卫：快照版本与当前不一致说明差分窗口内发生过失效，
             # 放弃本次差分（下次全量重算吸收），不向重建后的缓存叠加旧变更。
             if expected_version is not None and self._invalidate_version != expected_version:
-                return
+                return False
             counts = dict(cached)
             for tag in removed:
                 counts[tag] = counts.get(tag, 0) - 1
@@ -707,3 +943,7 @@ class EntryCacheManager:
                 ((tag, count) for tag, count in counts.items() if count > 0),
                 key=lambda item: -item[1],
             )
+            # 推进失效版本（QL-069，理由见 docstring）：使在飞 get_all_tags 聚合的
+            # 回填守卫拒收旧快照。
+            self._invalidate_version += 1
+            return True

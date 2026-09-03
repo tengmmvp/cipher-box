@@ -1,23 +1,21 @@
-"""正式交付前的关键业务与 UI 回归测试。
+"""跨主题端到端回归防线（原万能桶文件收敛后的留存面）。
 
-覆盖保险库生命周期、密码历史、可移植备份、加密与完整性校验、导入导出、
-锁定清理、登录窗口渲染等端到端场景，作为发布前的整体回归防线。
+覆盖保险库生命周期、密码历史、可移植备份、加密与完整性校验、登录窗口渲染等
+跨主题端到端场景。**准入规则**：新主题测试优先建专门测试文件（主题块已按
+「导入导出 → tests/business/test_import_export_hardening.py」「主窗口锁定/交互 →
+tests/ui/test_main_window_hardening.py」拆出）；本文件仅收跨主题、无处安放的
+端到端回归，防止再度膨胀为万能桶。
 """
 
 import dataclasses
-import json
 import sqlite3
-from collections.abc import Callable
 from pathlib import Path
 from typing import cast
-from unittest.mock import patch
 
 import pytest
-from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QLabel, QWidget
 
-from src.business.composition import build_business_context
-from src.business.managers.import_export import ImportExportManager
+from src.business.managers.vault_lifecycle import LOGIN_AUTH_FAILED_MESSAGE
 from src.business.services.rate_limiter import RateLimiter
 from src.crypto.encryption import EncryptionEngine
 from src.crypto.totp import TOTPGenerator
@@ -26,7 +24,6 @@ from src.models import CustomField, Entry
 from src.ui.dialogs.entry_dialog import EntryDialog
 from src.ui.dialogs.login_window import LoginWindow
 from src.ui.resources.styles import get_style
-from src.ui.windows.main_window import MainWindow
 from tests.helpers import (
     decrypt_all_entries,
     make_backup_manager,
@@ -141,102 +138,6 @@ def test_entry_dialog_restores_type_specific_fields(make_vault_env):
     dialog.close()
 
 
-def test_lock_preparation_clears_decrypted_ui_and_clipboard(make_vault_env):
-    """锁定前清理清空 UI 解密数据与剪贴板残留。"""
-    env = make_vault_env(master_password="MasterPassword!2026")
-    root = env.root
-    config = env.config
-    vault = env.vault
-    manager = env.entry_mgr
-    manager.add_entry(Entry(title="Secret", password="VisibleSecret!2026"))
-    window = MainWindow(build_business_context(config, vault))
-    assert window._entry_model.rowCount() == 1
-    window._clipboard.copy_text("VisibleSecret!2026")
-
-    window.prepare_for_lock()
-    vault.lock()
-
-    assert window._entry_model.rowCount() == 0
-    assert window._detail_panel._current_entry is None
-    assert window._detail_panel._current_password == ""
-    clipboard = QApplication.clipboard()
-    assert clipboard is not None
-    assert clipboard.text() != "VisibleSecret!2026"
-    window.close()
-
-
-def test_change_master_success_triggers_force_backup(monkeypatch, make_vault_env):
-    """改密成功触发强制快照（force=True）。
-
-    回归守护 P0：``show_change_master`` 应委托 ``AutoBackupController.trigger_check``。
-    """
-    from src.ui.components.toast import Toast
-    from src.ui.dialogs.change_master_dialog import ChangeMasterDialog
-
-    env = make_vault_env(master_password="MasterPassword!2026")
-    root = env.root
-    config = env.config
-    vault = env.vault
-    make_entry_manager(vault).add_entry(Entry(title="t", password="p"))
-    # MenuSlots.refresh_all_data 在 MainWindow 构造时捕获 list_refresh.refresh_all_data
-    # 的绑定方法；实例级 monkeypatch 不影响已持有 bound method，故构造前打类级桩。
-    from src.ui.controllers.list_refresh_controller import ListRefreshController
-
-    monkeypatch.setattr(ListRefreshController, "refresh_all_data", lambda self: None)
-    window = MainWindow(build_business_context(config, vault))
-    try:
-        # mock 改密对话框直接返回 Accepted，跳过真实改密 UI 与 Argon2id 派生
-        monkeypatch.setattr(
-            ChangeMasterDialog,
-            "exec",
-            lambda self: ChangeMasterDialog.DialogCode.Accepted,
-        )
-        # 屏蔽改密成功路径的 UI 副作用，聚焦 trigger_check 调用断言
-        monkeypatch.setattr(Toast, "show", lambda *args, **kwargs: None)
-        monkeypatch.setattr(window._detail_panel, "show_empty", lambda: None)
-        called: list[bool] = []
-        monkeypatch.setattr(
-            window._auto_backup,
-            "trigger_check",
-            lambda force=False: called.append(force),
-        )
-
-        window._menu.show_change_master()
-
-        assert called == [True]
-    finally:
-        window.close()
-
-
-def test_lock_closes_and_scrubs_open_entry_dialog(make_vault_env):
-    """锁定关闭已打开的条目编辑对话框并擦除其中明文字段。"""
-    env = make_vault_env(master_password="MasterPassword!2026")
-    root = env.root
-    config = env.config
-    vault = env.vault
-    manager = env.entry_mgr
-    entry_id = manager.add_entry(Entry(title="Secret", password="DialogSecret!2026"))
-    window = MainWindow(build_business_context(config, vault))
-    window.show()
-    dialog = EntryDialog(
-        manager,
-        manager.categories.get_categories(),
-        entry=manager.get_entry(entry_id),
-        parent=window,
-        config=config,
-    )
-    dialog.show()
-    _APP.processEvents()
-
-    window.prepare_for_lock()
-    vault.lock()
-    _APP.processEvents()
-
-    assert not dialog.isVisible()
-    assert dialog._password_edit.text() == ""
-    window.close()
-
-
 def test_stale_key_session_cannot_write_after_master_password_change(make_vault_env):
     """改密后旧密钥会话写入被拒并锁定（密钥轮换一致性回归）。"""
     first = make_vault_env(master_password="OldMasterPassword!2026").vault
@@ -310,30 +211,6 @@ def test_vault_persists_kdf_parameters_and_ciphertext_format(make_vault_env):
     )
 
 
-def test_selecting_first_entry_opens_detail_panel_without_crash(make_vault_env):
-    """深色主题下选中首条目经防抖触发详情面板渲染不崩溃。"""
-    env = make_vault_env(master_password="MasterPassword!2026")
-    root = env.root
-    config = env.config
-    config.set("theme", "dark")
-    vault = env.vault
-    manager = env.entry_mgr
-    entry_id = manager.add_entry(Entry(title="Selectable", password="Strong!2026Password"))
-    window = MainWindow(build_business_context(config, vault))
-    window._entry_list.setCurrentIndex(window._entry_model.index(0))
-    # 等待 150ms 选择防抖定时器触发并处理事件
-    # PyQt6 QtTest.pyi 将 qWait 误标为实例方法，首个形参为 self，
-    # 导致 pyright 把位置实参绑定到 self 而报 ms 缺失；此处将 qWait
-    # cast 为接受单一 int 的可调用对象，消除类型误差，运行时行为不变。
-    cast(Callable[[int], None], QTest.qWait)(150)
-    _APP.processEvents()
-    current_entry = window._detail_panel._current_entry
-    assert current_entry is not None
-    assert current_entry.id == entry_id
-    assert window._detail_panel._title_label.text().endswith("Selectable")
-    window.close()
-
-
 def test_first_time_login_password_fields_have_matching_dimensions(tmp_path):
     """首次初始化登录窗口密码与确认框尺寸一致且可见（布局回归）。"""
     app_widget = cast(QWidget, _APP)
@@ -397,7 +274,7 @@ def test_login_failure_clears_password_input(tmp_path):
     )()
     dialog = LoginWindow(vault, RateLimiter())  # pyright: ignore[reportArgumentType]
     dialog._password_edit.setText("user-typed-secret")
-    dialog._on_auth_result(False, "主密码错误")
+    dialog._on_auth_result(False, LOGIN_AUTH_FAILED_MESSAGE)
     assert dialog._password_edit.text() == ""
     dialog.close()
 
@@ -411,146 +288,6 @@ def test_totp_accepts_standard_otpauth_uri():
     assert TOTPGenerator.validate_secret(uri)
     assert len(TOTPGenerator.generate(uri)) == 6
     assert TOTPGenerator.get_period(uri) == 60
-
-
-def test_bitwarden_import_preserves_folder_totp_and_custom_fields(make_vault_env):
-    """Bitwarden 导入保留文件夹分类、TOTP 与自定义字段。"""
-    env = make_vault_env(master_password="MasterPassword!2026")
-    root = env.root
-    vault = env.vault
-    manager = env.entry_mgr
-    importer = ImportExportManager(manager)
-    payload = {
-        "folders": [{"id": "folder-1", "name": "Work"}],
-        "items": [
-            {
-                "type": 1,
-                "name": "Imported login",
-                "folderId": "folder-1",
-                "favorite": True,
-                "login": {
-                    "username": "user@example.com",
-                    "password": "ImportedPassword!2026",
-                    "totp": "JBSWY3DPEHPK3PXP",
-                    "uris": [{"uri": "https://example.com"}],
-                },
-                "fields": [{"name": "PIN", "value": "1234", "type": 1}],
-            }
-        ],
-    }
-    path = Path(root) / "bitwarden.json"
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    assert importer.import_file(str(path), "bitwarden_json") == 1
-    entry = decrypt_all_entries(manager)[0]
-    assert entry.category_name == "Work"
-    assert entry.totp_secret == "JBSWY3DPEHPK3PXP"
-    assert entry.is_favorite is True
-    bitwarden_fields = entry.custom_fields
-    assert isinstance(bitwarden_fields, list)
-    assert bitwarden_fields[0].name == "PIN"
-    assert bitwarden_fields[0].field_type == "password"
-
-
-def test_import_rolls_back_when_any_entry_fails(make_vault_env):
-    """导入遇异常经 epoch 守卫事务回滚，不留部分写入数据。"""
-    env = make_vault_env(master_password="MasterPassword!2026")
-    root = env.root
-    vault = env.vault
-    manager = env.entry_mgr
-    importer = ImportExportManager(manager)
-    path = Path(root) / "entries.json"
-    path.write_text(
-        json.dumps(
-            {
-                "app": "CipherBox",
-                "secrets_included": True,
-                "entries": [
-                    {"title": "First", "password": "a"},
-                    {"title": "Second", "password": "b"},
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    # 导入经 entry_batch_writer.write_new_entries 批量写入（executemany）。模拟写入
-    # 失败：RuntimeError 不在导入容错捕获内，异常冒泡使 epoch 守卫事务回滚，不留部分写入。
-    with patch(
-        "src.business.managers.import_export.write_new_entries",
-        side_effect=RuntimeError("simulated import failure"),
-    ):
-        try:
-            importer.import_file(str(path), "json")
-        except RuntimeError:
-            pass
-    assert manager.get_entry_count() == 0
-
-
-def test_export_without_password_excludes_secret_custom_fields(make_vault_env):
-    """不含密码导出时剔除敏感自定义字段（如卡号/CVV）。"""
-    env = make_vault_env(master_password="MasterPassword!2026")
-    root = env.root
-    vault = env.vault
-    manager = env.entry_mgr
-    manager.add_entry(
-        Entry(
-            title="Card",
-            password="LoginSecret!2026",
-            totp_secret="JBSWY3DPEHPK3PXP",
-            custom_fields=[
-                CustomField("Display name", "Public value"),
-                CustomField("_card_number", "4111111111111111", "password"),
-                CustomField("_card_cvv", "123", "password"),
-            ],
-        )
-    )
-    path = Path(root) / "safe-export.json"
-    ImportExportManager(manager).export_to_json(
-        str(path), decrypt_all_entries(manager), include_password=False
-    )
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    exported = payload["entries"][0]
-
-    assert payload["secrets_included"] is False
-    assert "password" not in exported
-    assert "totp_secret" not in exported
-    assert exported["custom_fields"] == [
-        {"name": "Display name", "value": "Public value", "field_type": "text"}
-    ]
-
-
-def test_passwordless_overwrite_import_preserves_existing_secrets(make_vault_env):
-    """无密码覆盖导入保留既有密码、TOTP 与敏感字段。"""
-    env = make_vault_env(master_password="MasterPassword!2026")
-    root = env.root
-    vault = env.vault
-    manager = env.entry_mgr
-    entry_id = manager.add_entry(
-        Entry(
-            title="Account",
-            username="user@example.com",
-            password="ExistingPassword!2026",
-            totp_secret="JBSWY3DPEHPK3PXP",
-            custom_fields=[CustomField("PIN", "1234", "password")],
-        )
-    )
-    exporter = ImportExportManager(manager)
-    path = Path(root) / "without-secrets.json"
-    exporter.export_to_json(str(path), decrypt_all_entries(manager), include_password=False)
-
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["entries"][0]["notes"] = "updated"
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    assert exporter.import_file(str(path), "json", duplicate_action="overwrite") == 1
-
-    restored = manager.get_entry(entry_id)
-    assert restored is not None
-    assert restored.password == "ExistingPassword!2026"
-    assert restored.totp_secret == "JBSWY3DPEHPK3PXP"
-    restored_fields = restored.custom_fields
-    assert isinstance(restored_fields, list)
-    assert restored_fields[0].value == "1234"
-    assert restored.notes == "updated"
 
 
 def test_favorite_change_does_not_reset_password_age(make_vault_env):
@@ -568,27 +305,6 @@ def test_favorite_change_does_not_reset_password_age(make_vault_env):
     assert after_entry is not None
     after = after_entry.password_changed_at
     assert after == before
-
-
-def test_main_window_filters_entries_by_tag(make_vault_env):
-    """MainWindow 按标签筛选条目（端到端验证标签过滤管线）。"""
-    env = make_vault_env(master_password="MasterPassword!2026")
-    root = env.root
-    config = env.config
-    vault = env.vault
-    manager = env.entry_mgr
-    manager.add_entry(Entry(title="Work", tags="工作,重要"))
-    manager.add_entry(Entry(title="Personal", tags="个人"))
-    window = MainWindow(build_business_context(config, vault))
-    index = window._tag_combo.findData("工作")
-    assert index >= 0
-    window._tag_combo.setCurrentIndex(index)
-    _APP.processEvents()
-    assert window._entry_model.rowCount() == 1
-    first_entry = window._entry_model.data(window._entry_model.index(0), 256)
-    assert first_entry is not None
-    assert first_entry.title == "Work"
-    window.close()
 
 
 def test_existing_vault_cannot_be_initialized_again(make_vault_env):
@@ -698,35 +414,6 @@ def test_nested_transaction_uses_savepoint_for_inner_rollback(make_vault_env):
             pass
 
     assert [entry.title for entry in decrypt_all_entries(manager)] == ["Outer"]
-
-
-def test_import_all_does_not_decrypt_existing_vault(make_vault_env):
-    """import_all 模式导入不扫描解密既有条目（性能与隔离保证）。"""
-    env = make_vault_env(master_password="MasterPassword!2026")
-    root = env.root
-    vault = env.vault
-    manager = env.entry_mgr
-    manager.add_entry(Entry(title="Existing", password="ExistingSecret!2026"))
-    path = Path(root) / "entries.json"
-    path.write_text(
-        json.dumps(
-            {
-                "app": "CipherBox",
-                "secrets_included": True,
-                "entries": [{"title": "Imported", "password": "ImportedSecret!2026"}],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    importer = ImportExportManager(manager)
-    with patch.object(
-        manager,
-        "get_entry_summaries",
-        side_effect=AssertionError("import_all 不应扫描现有条目"),
-    ):
-        assert importer.import_file(str(path), "json", duplicate_action="import_all") == 1
-    assert manager.get_entry_count() == 2
 
 
 def test_pre_restore_snapshot_purged_on_master_password_change(tmp_path, make_vault_env):

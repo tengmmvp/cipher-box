@@ -20,6 +20,7 @@ from src.business.services.entry_batch_writer import (
     phase_progress,
     prepare_overwrite_updates,
     should_report_progress,
+    write_chunks,
     write_new_entries,
     write_overwrite_updates,
 )
@@ -54,6 +55,59 @@ class TestProgressContractHelpers:
         assert should_report_progress(PROGRESS_REPORT_EVERY + 1, 250) is False
         assert should_report_progress(250, 250) is True  # 终值（非整间隔也上报）
         assert should_report_progress(7, 7) is True  # 小批量终值同样上报
+
+
+class TestWriteChunks:
+    """write_chunks 共享分块原语（MAINT-106）：三处分块写入循环的单一事实源语义。
+
+    write_new_entries / write_overwrite_updates / rebuilder.restore_entries 的
+    分块循环收敛于此，分块行为等价性（块边界、逐块 (done,total) 上报、无进度
+    单批路径、各块结果按序返回）在此直测。
+    """
+
+    def test_without_progress_single_call(self):
+        """未提供 on_progress：整批单次调用（既有调用方的原路径，不分块）。"""
+        seen: list[list[int]] = []
+
+        def _write(chunk: list[int]) -> int:
+            seen.append(chunk)
+            return len(chunk)
+
+        assert write_chunks([1, 2, 3], _write) == [3]
+        assert seen == [[1, 2, 3]]
+
+    def test_chunked_calls_and_progress_reports(self, monkeypatch):
+        """提供 on_progress：按 WRITE_PROGRESS_CHUNK 分块调用并逐块上报终值。"""
+        import src.business.services.entry_batch_writer as ebw_module
+
+        monkeypatch.setattr(ebw_module, "WRITE_PROGRESS_CHUNK", 2)
+        seen: list[list[int]] = []
+        reports: list[tuple[int, int]] = []
+
+        def _write(chunk: list[int]) -> int:
+            seen.append(chunk)
+            return len(chunk)
+
+        results = write_chunks(
+            [1, 2, 3, 4, 5], _write, on_progress=lambda d, t: reports.append((d, t))
+        )
+
+        assert seen == [[1, 2], [3, 4], [5]]  # 尾块为剩余行数
+        assert reports == [(2, 5), (4, 5), (5, 5)]  # 终值恒达 total
+        assert results == [2, 2, 1]  # 各块结果按序返回，合并策略留在调用方
+
+    def test_empty_rows_with_progress_zero_calls(self):
+        """空批次 + on_progress：零调用零上报（调用方空集语义不变）。"""
+        seen: list[list[int]] = []
+        reports: list[tuple[int, int]] = []
+
+        def _write(chunk: list[int]) -> int:
+            seen.append(chunk)
+            return len(chunk)
+
+        assert write_chunks([], _write, on_progress=reports.append) == []
+        assert seen == []
+        assert reports == []
 
 
 class TestEncryptNewEntries:

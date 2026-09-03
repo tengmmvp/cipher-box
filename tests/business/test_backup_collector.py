@@ -3,6 +3,10 @@
 覆盖 collect_portable_data / collect_portable_entries 的解密正确性、payload 上限
 校验、cancel_check 中止路径，以及 payload 开销常量。直接测纯函数（不经
 BackupRestoreManager 编排），补齐 MAINT-004 / ARCH-002 SRP 拆分后遗留的单元测试缺口。
+
+需要真实密钥/库的用例经 make_vault_env 工厂建库（teardown 幂等 close 由工厂
+统一承担）；节流分支经 monkeypatch ``PROGRESS_REPORT_EVERY``（定义于
+entry_batch_writer，collector 经 should_report_progress 函数引用共享）真实触达。
 """
 
 import json
@@ -14,6 +18,7 @@ from src.business.services.backup.collector import (
     check_payload_limit,
     collect_portable_data,
     collect_portable_entries,
+    collect_portable_history,
     estimate_entry_payload_bytes,
 )
 from src.business.services.backup.payload import (
@@ -25,7 +30,6 @@ from src.business.services.backup.payload import (
 from src.database.types import EntryQuery, VerifyMode
 from src.exceptions import PayloadTooLargeError
 from src.models import Entry
-from tests.helpers import make_entry_manager, make_test_config, make_vault
 
 
 def test_check_payload_limit_under_limit_no_raise():
@@ -40,81 +44,69 @@ def test_check_payload_limit_over_limit_raises():
         check_payload_limit(header_codec.MAX_BACKUP_PAYLOAD_SIZE + 1)
 
 
-def test_collect_portable_entries_decrypts_fields(tmp_path):
+def test_collect_portable_entries_decrypts_fields(make_vault_env):
     """采集正确解密条目全部字段为 portable dict，返回 (entries, count, estimated_size)。"""
-    vault = make_vault(make_test_config(str(tmp_path)))
-    vault.initialize("test_password_12345")
-    try:
-        entry_mgr = make_entry_manager(vault)
-        entry_mgr.add_entry(Entry(title="标题", username="user1", password="pass123"))
-        raw_entries = vault.db.get_entries(EntryQuery(verify=VerifyMode.SKIP))
-        key = vault.key
+    env = make_vault_env()
+    entry_mgr, vault = env.entry_mgr, env.vault
+    entry_mgr.add_entry(Entry(title="标题", username="user1", password="pass123"))
+    raw_entries = vault.db.get_entries(EntryQuery(verify=VerifyMode.SKIP))
+    key = vault.key
 
-        entries, count, _estimated = collect_portable_entries(key, None, 0, raw_entries)
+    entries, count, _estimated = collect_portable_entries(key, None, 0, raw_entries)
 
-        assert count == 1
-        assert len(entries) == 1
-        item = entries[0]
-        assert item["title"] == "标题"
-        assert item["username"] == "user1"
-        assert item["password"] == "pass123"
-    finally:
-        vault.close()
+    assert count == 1
+    assert len(entries) == 1
+    item = entries[0]
+    assert item["title"] == "标题"
+    assert item["username"] == "user1"
+    assert item["password"] == "pass123"
 
 
-def test_collect_portable_data_cancel_returns_none(tmp_path):
+def test_collect_portable_data_cancel_returns_none(make_vault_env):
     """cancel_check 触发时返回 None（不产出残缺备份）。
 
     守护采集的取消契约：备份期间收到取消信号须中止且不返回部分载荷，编排层据此
     不写出残缺备份文件。
     """
-    vault = make_vault(make_test_config(str(tmp_path)))
-    vault.initialize("test_password_12345")
-    try:
-        entry_mgr = make_entry_manager(vault)
-        entry_mgr.add_entry(Entry(title="t", username="u", password="p"))
-        raw_entries = vault.db.get_entries(EntryQuery(verify=VerifyMode.SKIP))
-        key = vault.key
+    env = make_vault_env()
+    entry_mgr, vault = env.entry_mgr, env.vault
+    entry_mgr.add_entry(Entry(title="t", username="u", password="p"))
+    raw_entries = vault.db.get_entries(EntryQuery(verify=VerifyMode.SKIP))
+    key = vault.key
 
-        result = collect_portable_data(key, lambda: True, raw_entries, [], [])
+    result = collect_portable_data(key, lambda: True, raw_entries, [], [])
 
-        assert result is None
-    finally:
-        vault.close()
+    assert result is None
 
 
-def test_collect_portable_data_returns_full_portable_dict(tmp_path):
+def test_collect_portable_data_returns_full_portable_dict(make_vault_env):
     """正常采集返回含 format/version/categories/entries/password_history 的完整载荷。"""
-    vault = make_vault(make_test_config(str(tmp_path)))
-    vault.initialize("test_password_12345")
-    try:
-        entry_mgr = make_entry_manager(vault)
-        entry_mgr.add_entry(Entry(title="t", username="u", password="p"))
-        raw_entries = vault.db.get_entries(EntryQuery(verify=VerifyMode.SKIP))
-        key = vault.key
-        categories = [
-            {
-                "id": 1,
-                "name": "工作",
-                "icon_char": "[DIR]",
-                "color": "#666",
-                "sort_order": 0,
-                "created_at": "2024-01-01T00:00:00",
-            }
-        ]
+    env = make_vault_env()
+    entry_mgr, vault = env.entry_mgr, env.vault
+    entry_mgr.add_entry(Entry(title="t", username="u", password="p"))
+    raw_entries = vault.db.get_entries(EntryQuery(verify=VerifyMode.SKIP))
+    key = vault.key
+    categories = [
+        {
+            "id": 1,
+            "name": "工作",
+            "icon_char": "[DIR]",
+            "color": "#666",
+            "sort_order": 0,
+            "created_at": "2024-01-01T00:00:00",
+        }
+    ]
 
-        result = collect_portable_data(key, None, raw_entries, [], categories)
+    result = collect_portable_data(key, None, raw_entries, [], categories)
 
-        assert result is not None
-        assert result["format"] == header_codec.BACKUP_FORMAT
-        assert result["version"] == header_codec.BACKUP_VERSION
-        assert "created_at" in result
-        assert result["categories"] == categories
-        assert len(result["entries"]) == 1
-        assert result["entries"][0]["title"] == "t"
-        assert result["password_history"] == []
-    finally:
-        vault.close()
+    assert result is not None
+    assert result["format"] == header_codec.BACKUP_FORMAT
+    assert result["version"] == header_codec.BACKUP_VERSION
+    assert "created_at" in result
+    assert result["categories"] == categories
+    assert len(result["entries"]) == 1
+    assert result["entries"][0]["title"] == "t"
+    assert result["password_history"] == []
 
 
 def test_payload_overhead_constants_positive():
@@ -124,47 +116,79 @@ def test_payload_overhead_constants_positive():
     assert HISTORY_OVERHEAD_BYTES > 0
 
 
-def test_collect_portable_entries_reports_throttled_progress(tmp_path):
+def test_collect_portable_entries_reports_throttled_progress(make_vault_env, monkeypatch):
     """progress 按已解密条目数节流上报、终值恒上报（PERF-083）。
 
-    3 条 < PROGRESS_REPORT_EVERY(100)，仅终值 ``(3, 3)`` 触发；计数从 1 起
-    （done/total 语义），供调用方加权映射到恢复点创建区间。
+    monkeypatch 节流间隔为 2（锚点见模块 docstring）使 3 条载荷真实触达节流分支：
+    done=2 命中 ``% EVERY == 0`` 中间上报、done=3 走终值恒上报——两条分支均执行
+    （默认 EVERY=100 时 3 条只能覆盖终值分支）；计数从 1 起（done/total 语义），
+    供调用方加权映射到恢复点创建区间。
     """
-    vault = make_vault(make_test_config(str(tmp_path)))
-    vault.initialize("test_password_12345")
-    try:
-        entry_mgr = make_entry_manager(vault)
-        for i in range(3):
-            entry_mgr.add_entry(Entry(title=f"t{i}", username="u", password="p"))
-        raw_entries = vault.db.get_entries(EntryQuery(verify=VerifyMode.SKIP))
-        key = vault.key
+    monkeypatch.setattr("src.business.services.entry_batch_writer.PROGRESS_REPORT_EVERY", 2)
+    env = make_vault_env()
+    entry_mgr, vault = env.entry_mgr, env.vault
+    for i in range(3):
+        entry_mgr.add_entry(Entry(title=f"t{i}", username="u", password="p"))
+    raw_entries = vault.db.get_entries(EntryQuery(verify=VerifyMode.SKIP))
+    key = vault.key
 
-        calls: list[tuple[int, int]] = []
+    calls: list[tuple[int, int]] = []
 
-        def _record(done: int, total: int) -> None:
-            calls.append((done, total))
+    def _record(done: int, total: int) -> None:
+        calls.append((done, total))
 
-        collect_portable_entries(key, None, 0, raw_entries, _record)
+    collect_portable_entries(key, None, 0, raw_entries, _record)
 
-        assert calls == [(3, 3)]
-    finally:
-        vault.close()
+    # EVERY=2：done=2 走节流分支上报中间值，done=3 走终值恒上报分支
+    assert calls == [(2, 3), (3, 3)]
 
 
-def test_collect_portable_entries_empty_entries_no_reports(tmp_path):
+def test_collect_portable_entries_empty_entries_no_reports(make_vault_env):
     """空条目集不上报（循环不执行），空阶段的区间取满由调用方 _weighted_progress 承担（PERF-083）。"""
-    vault = make_vault(make_test_config(str(tmp_path)))
-    vault.initialize("test_password_12345")
-    try:
-        calls: list[tuple[int, int]] = []
+    key = make_vault_env().vault.key
+    calls: list[tuple[int, int]] = []
 
-        def _record(done: int, total: int) -> None:
-            calls.append((done, total))
+    def _record(done: int, total: int) -> None:
+        calls.append((done, total))
 
-        collect_portable_entries(vault.key, None, 0, [], _record)
-        assert calls == []
-    finally:
-        vault.close()
+    collect_portable_entries(key, None, 0, [], _record)
+    assert calls == []
+
+
+def test_collect_portable_history_reports_throttled_progress(make_vault_env, monkeypatch):
+    """历史解密段按已解密条数节流上报、终值恒上报（PERF-089）。
+
+    此前 collect_portable_history 整段无上报，恢复点创建的进度在条目解密终值后
+    冻结至序列化。monkeypatch 节流间隔为 2（锚点见模块 docstring）使 3 条历史
+    真实触达节流分支：done=2 中间上报 + done=3 终值恒上报。
+    """
+    from src.business.services.crypto_utils import encrypt_field
+    from src.models import PasswordHistory
+
+    monkeypatch.setattr("src.business.services.entry_batch_writer.PROGRESS_REPORT_EVERY", 2)
+    key = make_vault_env().vault.key
+    crypto_id = "a" * 32
+    history_rows = [
+        PasswordHistory(
+            id=i,
+            entry_id=1,
+            entry_crypto_id=crypto_id,
+            old_password_enc=encrypt_field(f"old{i}", key, crypto_id, "password"),
+            changed_at="2024-01-01T00:00:00",
+        )
+        for i in range(3)
+    ]
+
+    calls: list[tuple[int, int]] = []
+
+    def _record(done: int, total: int) -> None:
+        calls.append((done, total))
+
+    history = collect_portable_history(key, None, 3, 0, history_rows, _record)
+
+    assert len(history) == 3
+    # EVERY=2：done=2 走节流分支上报中间值，done=3 走终值恒上报分支
+    assert calls == [(2, 3), (3, 3)]
 
 
 # ======== 明文长度估算与上限联动（PERF-068）========

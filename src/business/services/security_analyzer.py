@@ -97,37 +97,59 @@ class AnalysisCacheProtocol(Protocol):
         ...
 
 
-class _SecurityReportBase(TypedDict):
-    """安全分析报告的公开字段（生产/消费契约，required）。"""
+class _SecurityReportCounts(TypedDict):
+    """安全分析报告的聚合计数（内部形态与出口形态共有的 required 键）。"""
 
     total: int
     weak_count: int
-    weak_entries: list[Entry]
-    duplicate_groups: list[list[Entry]]
     duplicate_count: int
-    old_entries: list[Entry]
     old: int
 
 
-class SecurityReport(_SecurityReportBase, total=False):
-    """安全分析报告结构（full_analysis / get_cached_report 返回值的类型契约）。
+class _SecurityReportInternal(_SecurityReportCounts, total=False):
+    """安全分析报告的内部形态：缓存本体（``_analysis_cache``）与
+    :meth:`SecurityAnalyzer.full_analysis` 生产结果的类型契约。
 
-    生产者与消费者共享此 TypedDict，键集漂移由类型检查捕获。``_summaries_with_dates``
-    ``_fingerprint_map`` ``_crypto_id_to_fp`` 与 ``_key_epoch`` 为缓存分层内部键
-    （total=False 可选）：第一个供不同 days 重过滤，第二个是含单例桶的完整指纹分桶
-    （PERF-021 增量失效据此移动单条条目桶位——duplicate_groups 仅含 >1 的桶，
-    不足以支撑增量更新），第三个是 crypto_id→指纹的反向索引（PERF-076 增量更新
-    O(1) 定位旧指纹桶，替代逐桶 any() 全扫描，与 _fingerprint_map 平行构建/同步
-    维护），第四个供 epoch 失效判定（仅缓存层填充 _key_epoch）。出口契约
-    （PERF-062）：``get_cached_report`` / ``get_or_compute_report`` 的返回副本
-    **不含**这四个内部键（无外部消费方，深拷贝是纯开销）；仅内部缓存本体与
-    :meth:`full_analysis` 的生产结果持全键。
+    七个下划线内部键为缓存分层私有（total=False 可选）：
+
+    - ``_summaries_with_dates``（dict[crypto_id → (Entry, changed_utc)]，PERF-085
+      dict 化）：供 days 重过滤与增量差分 O(1) 定位；dict 保插入序，days 重过滤的
+      输出序与列表时代一致。
+    - ``_fingerprint_map``：含单例桶的完整指纹分桶（PERF-021 增量失效据此移动
+      单条条目桶位——duplicate_groups 仅含 >1 的桶，不足以支撑增量更新）。
+    - ``_crypto_id_to_fp``（PERF-085 值可 None）：crypto_id→指纹反向索引，值 None
+      是「条目无指纹」的**常态哨兵**（无密码/密码解密失败，note/identity 等），
+      命中哨兵即知无旧指纹桶可移除；**键缺失**才是异常缓存形态（索引与桶撕裂），
+      差分回退逐桶扫描兜底。
+    - ``_weak_map`` / ``_old_map`` / ``_duplicate_groups_map``（PERF-085）：weak/
+      old/重复分组的 dict 形态**唯一事实源**——出口公开列表键
+      （weak_entries/old_entries/duplicate_groups）经 :meth:`_export_report` 从
+      它们派生，缓存本体不再持有同名公开列表键（PERF-085 收口：双表示中列表键
+      自首次增量差分起即陈旧，无内部读方，纯维护陷阱）。
+    - ``_key_epoch``：epoch 失效判定（仅缓存层填充）。
     """
 
-    _summaries_with_dates: list[tuple[Entry, datetime | None]]
+    _summaries_with_dates: dict[str, tuple[Entry, datetime | None]]
     _fingerprint_map: dict[bytes, list[Entry]]
-    _crypto_id_to_fp: dict[str, bytes]
+    _crypto_id_to_fp: dict[str, bytes | None]
+    _weak_map: dict[str, Entry]
+    _old_map: dict[str, Entry]
+    _duplicate_groups_map: dict[bytes, list[Entry]]
     _key_epoch: str | None
+
+
+class SecurityReport(_SecurityReportCounts):
+    """安全分析报告的出口形态（PERF-062 契约）：计数 + 公开列表键。
+
+    ``get_cached_report`` / ``get_or_compute_report`` 的返回值为此形态——公开
+    列表键从内部 map 派生（PERF-085），**不含**任何下划线内部键（无外部消费方，
+    携带是纯开销）；列表容器经 :meth:`_export_report` 拷贝隔离（防调用方就地变异
+    污染增量更新基准）。
+    """
+
+    weak_entries: list[Entry]
+    duplicate_groups: list[list[Entry]]
+    old_entries: list[Entry]
 
 
 class SecurityCounts(NamedTuple):
@@ -177,7 +199,7 @@ class SecurityAnalyzer:
         # 副本，收缩驻留面。
         self._cache = entry_cache
         self._cache_ttl_seconds = cache_ttl_seconds
-        self._analysis_cache: SecurityReport | None = None
+        self._analysis_cache: _SecurityReportInternal | None = None
         self._analysis_cache_time: float = 0
         self._analysis_cache_days: int = 0
         # 失效世代计数（PERF-080 补全）：invalidate_cache 的全量失效路径在清缓存
@@ -257,66 +279,78 @@ class SecurityAnalyzer:
         )
 
     def _refilter_cache(
-        self, cache: SecurityReport, days: int, *, now: datetime | None = None
+        self, cache: _SecurityReportInternal, days: int, *, now: datetime | None = None
     ) -> SecurityReport:
         """从缓存按 days 重新过滤过期条目，返回剥离内部键的出口副本（PERF-062）。
 
         须持 _cache_lock 调用。顺序：先 ``dict()`` 浅拷贝并在副本上完成 days 重过滤
         与 QL-001 实例回写（依赖内部键 ``_summaries_with_dates``，须在剥离前），再
-        经 :meth:`_export_report` 剥离出口副本的全部下划线内部键——
-        ``_fingerprint_map``/``_summaries_with_dates`` 仅缓存分层内部消费（增量失效/
-        days 重过滤），无任何外部读方，此前出口深拷贝在 50k 库温态 get_cached_report
-        实测占 2/3 耗时，是纯浪费。出口仅公开字段；weak/old 列表浅拷贝容器并直接
-        共享 Entry 引用（Entry 为 frozen 且无可变容器，逐条 ``dataclasses.replace``
-        重建 24-kwarg 实例无变异面可防）；duplicate_groups 内层 list 仍复制，防消费方
-        经出口引用就地变异桶成员污染增量更新基准。内部缓存本体
+        经 :meth:`_export_report` 从内部 map 派生公开列表键并剥离全部下划线内部键
+        ——``_fingerprint_map``/``_summaries_with_dates`` 仅缓存分层内部消费（增量
+        失效/days 重过滤），无任何外部读方，此前出口深拷贝在 50k 库温态
+        get_cached_report 实测占 2/3 耗时，是纯浪费。内部缓存本体
         （``_analysis_cache``）仍持全键。
         """
         # dict(TypedDict) 退化为 dict[str, object]，cast 标注此复制边界。
-        result = cast("SecurityReport", dict(cache))
+        result = cast("_SecurityReportInternal", dict(cache))
         if days != self._analysis_cache_days:
             cutoff = (now if now is not None else datetime.now(UTC)) - timedelta(days=days)
-            new_old_entries = [
-                s
-                for s, dt in cache.get("_summaries_with_dates", [])
+            # days 重过滤从 _summaries_with_dates（dict 形态）派生新的 _old_map，
+            # 计数统一经 _recompute_aggregates 重算（MAINT-101 单一事实源）。
+            new_old_map = {
+                cid: s
+                for cid, (s, dt) in cache.get("_summaries_with_dates", {}).items()
                 if dt is not None and dt < cutoff
-            ]
-            result["old_entries"] = new_old_entries
-            result["old"] = len(new_old_entries)
-            # 同步回写实例缓存（QL-001）：_analysis_cache_days 与 old/old_entries 必须一致，
-            # 否则 get_cached_counts 快路径（days == _analysis_cache_days）会读实例中旧 days
-            # 的 old 计数（多报过期）。此前仅改副本致实例与 days 脱钩。
+            }
+            result["_old_map"] = new_old_map
+            self._recompute_aggregates(result)
+            # 同步回写实例缓存（QL-001）：_analysis_cache_days 与实例的 old 计数必须
+            # 一致，否则 get_cached_counts 快路径（days == _analysis_cache_days）会读
+            # 实例中旧 days 的 old 计数（多报过期）。此前仅改副本致实例与 days 脱钩。
             if self._analysis_cache is not None:
-                self._analysis_cache["old_entries"] = list(new_old_entries)
-                self._analysis_cache["old"] = len(new_old_entries)
+                self._analysis_cache["_old_map"] = dict(new_old_map)
+                self._recompute_aggregates(self._analysis_cache)
             # 更新 days 使后续相同 days 命中跳过重复 O(n) 过滤。
             self._analysis_cache_days = days
         return self._export_report(result)
 
     @staticmethod
-    def _export_report(report: SecurityReport) -> SecurityReport:
-        """剥离内部键并拷贝列表容器，产出出口副本（PERF-062 契约）。
+    def _export_report(report: _SecurityReportInternal) -> SecurityReport:
+        """内部形态转出口副本（PERF-062 契约 + PERF-085 派生）。
 
         供 :meth:`_refilter_cache` 尾段与失效世代守卫的拒收路径
         （:meth:`_cached_analysis`）共用：后者返回的报告不入缓存，仍须遵守出口
         契约——不含内部键（无外部消费方）、列表容器隔离（防调用方就地变异）。
+
+        公开列表键从内部 map 派生（PERF-085）：weak_entries/old_entries/
+        duplicate_groups 分别取自 ``_weak_map``/``_old_map``/
+        ``_duplicate_groups_map`` 的 values——map 是唯一事实源（缓存本体不持同名
+        公开列表键，收口双表示）；map 缺失的退化形态（手工构造的报告 dict）以空
+        map 兜底派生空列表。list(map.values()) 浅拷贝容器、共享 Entry 引用
+        （Entry 为 frozen 且无可变容器，无变异面）；duplicate_groups 内层 list
+        复制，防消费方经出口引用就地变异桶成员污染增量更新基准。
         """
-        # dict(TypedDict) 退化为 dict[str, object]，cast 标注此复制边界。
-        result = cast("SecurityReport", dict(report))
-        # 剥离内部键（PERF-062）：出口不含 _fingerprint_map/_crypto_id_to_fp/
-        # _summaries_with_dates/_key_epoch，缓存本体不受影响（副本与内部 dict 为
-        # 不同容器）。
-        result.pop("_summaries_with_dates", None)
-        result.pop("_fingerprint_map", None)
-        result.pop("_crypto_id_to_fp", None)
-        result.pop("_key_epoch", None)
-        # 列表容器浅拷贝（共享 Entry 引用）：隔离调用方对列表结构的就地变异。
-        if "weak_entries" in result:
-            result["weak_entries"] = list(result["weak_entries"])
-        if "old_entries" in result:
-            result["old_entries"] = list(result["old_entries"])
-        if "duplicate_groups" in result:
-            result["duplicate_groups"] = [list(group) for group in result["duplicate_groups"]]
+        # dict(TypedDict) 退化为 dict[str, object]：剥离在通用 dict 副本上完成
+        # （出口 TypedDict 已不含内部键，逐键 pop 于类型不通），cast 标注此边界。
+        internal = dict(report)
+        # 剥离内部键（PERF-062）：出口不含任何下划线键，缓存本体不受影响（副本与
+        # 内部 dict 为不同容器）。
+        for key in (
+            "_summaries_with_dates",
+            "_fingerprint_map",
+            "_crypto_id_to_fp",
+            "_weak_map",
+            "_old_map",
+            "_duplicate_groups_map",
+            "_key_epoch",
+        ):
+            internal.pop(key, None)
+        result = cast("SecurityReport", internal)
+        result["weak_entries"] = list(report.get("_weak_map", {}).values())
+        result["old_entries"] = list(report.get("_old_map", {}).values())
+        result["duplicate_groups"] = [
+            list(group) for group in report.get("_duplicate_groups_map", {}).values()
+        ]
         return result
 
     def _cached_analysis(
@@ -422,9 +456,10 @@ class SecurityAnalyzer:
                 old = cached.get("old", 0)
             else:
                 cutoff = (now if now is not None else datetime.now(UTC)) - timedelta(days=days)
+                # _summaries_with_dates 为 dict 形态（PERF-085），按 values 迭代。
                 old = sum(
                     1
-                    for _s, dt in cached.get("_summaries_with_dates", [])
+                    for _s, dt in cached.get("_summaries_with_dates", {}).values()
                     if dt is not None and dt < cutoff
                 )
             return SecurityCounts(
@@ -446,10 +481,10 @@ class SecurityAnalyzer:
 
     def _cache_valid_locked(
         self,
-        cached: SecurityReport | None,
+        cached: _SecurityReportInternal | None,
         *,
         expected_epoch: str | None = None,
-    ) -> TypeGuard[SecurityReport]:
+    ) -> TypeGuard[_SecurityReportInternal]:
         """缓存有效性判定（TTL + key_epoch，SEC-002），须持 ``_cache_lock`` 调用。
 
         TypeGuard：返回 True 时调用方分支内 ``cached`` 收窄为非 None，免去逐调用点
@@ -581,9 +616,25 @@ class SecurityAnalyzer:
             self._apply_reclassified_entry(cached, crypto_id, result, now=now)
         return True
 
+    @staticmethod
+    def _recompute_aggregates(cached: _SecurityReportInternal) -> None:
+        """从容器状态重算三项聚合计数，就地写回 ``cached``（MAINT-101 单一事实源）。
+
+        聚合公式（weak_count==len(_weak_map)、old==len(_old_map)、
+        duplicate_count==Σ(len(group)-1)）此前在增量差分与 full_analysis 各维护
+        一份，对不齐时静默分叉（无报错，仅增量与全量计数漂移）。提取为单一函数
+        供两路消费后，公式只有一处可改。输入容器须已由调用方建好键
+        （full_analysis 构建 / _apply_reclassified_entry 差分维护 /
+        _refilter_cache 的 days 重过滤）。
+        """
+        groups_map = cached.get("_duplicate_groups_map", {})
+        cached["duplicate_count"] = sum(len(group) - 1 for group in groups_map.values())
+        cached["weak_count"] = len(cached.get("_weak_map", {}))
+        cached["old"] = len(cached.get("_old_map", {}))
+
     def _apply_reclassified_entry(
         self,
-        cached: SecurityReport,
+        cached: _SecurityReportInternal,
         crypto_id: str,
         result: _ClassifyResult,
         *,
@@ -591,112 +642,134 @@ class SecurityAnalyzer:
     ) -> None:
         """持锁把单条条目的旧分类替换为新分类并重算聚合计数。须持 ``_cache_lock``。
 
-        全量差分（PERF-076）：单条编辑仅触碰该条目相关的容器位置，替代此前每次
-        保存的三类 O(n) 整表操作——weak/_summaries_with_dates 两轮 50k 列表推导
-        重建、old_entries 全量日期重过滤、旧指纹逐桶 any() 全扫描（50k 库实测
-        单次 41-126ms 且在 UI 线程；差分后 20k 库实测 median 8.8ms / max 13.3ms，
-        且 5k→20k 仅增 3ms，规模增长近似常数）。就地修改的列表均为缓存私有容器
-        （出口经 _refilter_cache 浅拷贝隔离，PERF-062），不会外泄。指纹桶的局部
-        copy-on-write（PERF-062）保持：仅重建「旧指纹桶」与「新指纹桶」，其余桶
-        原样共享；``_crypto_id_to_fp`` 反向索引同步维护（O(1) 定位旧桶，索引缺失
-        时回退逐桶扫描兜底）。索引的会话驻留量级：50k 库 ≈7.5MB（dict + str 键 +
-        bytes 值），随 ``_fingerprint_map`` 平行驻留至 TTL 失效/缓存清空，换取
-        增量路径 O(1) 定位，量级可接受。
+        全 O(1) 差分（PERF-085）：容器全部 dict 化（_summaries_with_dates/
+        _weak_map/_old_map/_crypto_id_to_fp）+ duplicate_groups 增量维护
+        （_duplicate_groups_map 仅在旧/新指纹桶跨越 len>1 边界时增删组），消除
+        PERF-076 时代残留的 O(n) 段——weak/summaries/old 三处线性定位、fp_map/
+        fp_index 全量 dict 拷贝、duplicate_groups 全量重建（50k 有密码库单次编辑
+        实测 16-19ms，差分后亚毫秒级）。无密码条目（note/identity 等常态）经反向
+        索引的 None 哨兵直达无指纹分支，不再落入逐桶 any() 全扫描（50k 库实测
+        每次差分 8.8ms 纯浪费）。就地修改的容器均为缓存私有（出口经
+        _refilter_cache/_export_report 从内部 map 派生并隔离，PERF-062/085），
+        不会外泄。指纹桶的局部 copy-on-write 保持：仅重建「旧指纹桶」与「新指纹
+        桶」，其余桶原样共享。
 
-        old 差分的正确性依赖 old_entries 与 _summaries_with_dates 此前一致
+        读/写两阶段（QL-068）：全部读取与判定（get/in/比较）先于任何就地修改完成，
+        写阶段仅剩 dict 基本操作——change_bus 回调吞异常（EntryChangeBus.notify
+        except Exception 后缓存继续被出口消费），此前「先就地改 weak/summaries、
+        后访问指纹桶可 KeyError」的中途异常会留下撕裂缓存；两阶段化后读阶段无
+        KeyError 面（索引/桶不一致经本方法读阶段的兜底分支吸收），写阶段无数据
+        依赖型异常。
+
+        old 差分的正确性依赖 _old_map 与 _summaries_with_dates 此前一致
         （full_analysis 构建 / _refilter_cache 的 days 重过滤 / 本方法的同步维护
-        三方保证）：先移除旧条目的 old 成员资格（按 crypto_id 定位），再按新
-        changed_utc 判定加入，与「以当前时刻与缓存 days 过滤」语义一致。
-        result.summary 为 None（条目移除/损坏）时仅移除不插入，与 full_analysis
-        的跳过语义一致；此时 total 按缓存成员资格下调（PERF-079 增删差分）。
+        三方保证）：先移除旧条目的 old 成员资格，再按新 changed_utc 判定加入，
+        与「以当前时刻与缓存 days 过滤」语义一致。result.summary 为 None（条目
+        移除/损坏）时仅移除不插入，与 full_analysis 的跳过语义一致；此时 total
+        按缓存成员资格下调（PERF-079 增删差分）。
 
         ``now`` 缺省实时（QL-057）：此前的硬编码 ``datetime.now(UTC)`` 使测试注入
         时钟时增量路径与全量路径行为分叉（full_analysis/_refilter_cache 均可注入）。
         """
-        # 1) 移除旧分类：weak 与 summaries 就地单点移除（线性定位 + del，PERF-076
-        # 免两轮整表重建分配）。条目至多出现一次（按 crypto_id 唯一）。summaries
-        # 的定位结果兼作 total 差分的成员资格判定（PERF-079，见 3)）。
-        weak_entries = cached.get("weak_entries", [])
-        for i, e in enumerate(weak_entries):
-            if e.crypto_id == crypto_id:
-                del weak_entries[i]
-                break
-        summaries = cached.get("_summaries_with_dates", [])
-        was_in_summaries = False
-        for i, (s, _dt) in enumerate(summaries):
-            if s.crypto_id == crypto_id:
-                del summaries[i]
-                was_in_summaries = True
-                break
-        # 旧指纹 O(1) 定位（PERF-076）：反向索引先行，缺失（异常缓存形态）时回退
-        # 逐桶扫描兜底，保证任意来源缓存的行为与原实现一致。
-        old_map = cached.get("_fingerprint_map", {})
-        fp_index = dict(cached.get("_crypto_id_to_fp", {}))
-        old_fingerprint = fp_index.pop(crypto_id, None)
-        if old_fingerprint is None:
-            for fingerprint, group in old_map.items():
+        # ═══ 读阶段（QL-068）：完成全部读取与判定，不修改任何容器 ═══
+        weak_map = cached.get("_weak_map", {})
+        summaries = cached.get("_summaries_with_dates", {})
+        old_map = cached.get("_old_map", {})
+        fp_map = cached.get("_fingerprint_map", {})
+        fp_index = cached.get("_crypto_id_to_fp", {})
+        groups_map = cached.get("_duplicate_groups_map", {})
+        # total 差分（PERF-079）的成员资格判定：summaries dict 化后 O(1)。
+        was_in_summaries = crypto_id in summaries
+        # 旧指纹 O(1) 定位（PERF-085 三态）：键存在且值为 bytes→旧指纹；值为 None→
+        # 哨兵（条目无指纹的常态，无旧桶可移除）；键缺失→异常缓存形态（索引与桶
+        # 撕裂），回退逐桶扫描兜底，保证任意来源缓存的行为与原实现一致。
+        old_fingerprint: bytes | None = None
+        if crypto_id in fp_index:
+            old_fingerprint = fp_index[crypto_id]
+        else:
+            for fingerprint, group in fp_map.items():
                 if any(e.crypto_id == crypto_id for e in group):
                     old_fingerprint = fingerprint
                     break
-        fp_map: dict[bytes, list[Entry]] = dict(old_map)
-        if old_fingerprint is not None:
-            kept = [e for e in old_map[old_fingerprint] if e.crypto_id != crypto_id]
+        # 反向一致性兜底（QL-068）：索引有旧指纹但指纹桶缺失（撕裂）时视同无旧桶
+        # 可移除而非 KeyError——与上方「键缺失回退逐桶扫描」的正向兜底对称，撕裂
+        # 形态仅记日志不中断差分。
+        old_bucket = fp_map.get(old_fingerprint) if old_fingerprint is not None else None
+        if old_fingerprint is not None and old_bucket is None:
+            logger.debug("安全分析缓存索引与指纹桶不一致（crypto_id=%s），跳过旧桶移除", crypto_id)
+            old_fingerprint = None
+        # 新分类的过期判定（QL-057：now 可注入）在读阶段完成。
+        join_old = (
+            result.summary is not None
+            and result.changed_utc is not None
+            and result.changed_utc
+            < (datetime.now(UTC) if now is None else now)
+            - timedelta(days=self._analysis_cache_days)
+        )
+
+        # ═══ 写阶段：就地单点修改（全 O(1)，容器均为缓存私有）═══
+        weak_map.pop(crypto_id, None)
+        summaries.pop(crypto_id, None)
+        old_map.pop(crypto_id, None)
+        fp_index.pop(crypto_id, None)
+        if old_fingerprint is not None and old_bucket is not None:
+            kept = [e for e in old_bucket if e.crypto_id != crypto_id]
             if kept:
                 fp_map[old_fingerprint] = kept
+                if len(kept) > 1:
+                    # 桶仍重复：组内成员同步换新桶引用。
+                    groups_map[old_fingerprint] = kept
+                else:
+                    # 桶跌出重复边界（len 2→1）：移除组。
+                    groups_map.pop(old_fingerprint, None)
             else:
                 del fp_map[old_fingerprint]
-        # 2) 插入新分类（索引同步：无指纹的条目不入索引，与 full_analysis 构建一致）
-        if result.summary is not None:
-            summaries.append((result.summary, result.changed_utc))
+                # 单例桶本就不在组内，pop 幂等。
+                groups_map.pop(old_fingerprint, None)
+        summary = result.summary
+        if summary is not None:
+            summaries[crypto_id] = (summary, result.changed_utc)
             if result.is_weak:
-                weak_entries.append(result.summary)
+                weak_map[crypto_id] = summary
+            # 哨兵收录（PERF-085）：无指纹条目也入索引（值 None），下次差分免逐桶
+            # 扫描；与 full_analysis 的构建口径一致（键集==summaries 键集）。
+            fp_index[crypto_id] = result.fingerprint
             if result.fingerprint is not None:
-                fp_index[crypto_id] = result.fingerprint
                 bucket = fp_map.get(result.fingerprint)
                 # copy-on-write：目标桶可能与其余未触及桶共享同一 list 引用，插入前
                 # 复制以防污染共享桶。
-                fp_map[result.fingerprint] = (
-                    [*bucket, result.summary] if bucket is not None else [result.summary]
-                )
-        # 3) 重算聚合。weak/summaries/old 容器同引用回写：就地修改时零成本，且在
-        # 键缺失的异常缓存形态下补建键（对齐原实现的赋值语义）。
-        cached["weak_entries"] = weak_entries
-        cached["_summaries_with_dates"] = summaries
-        cached["_fingerprint_map"] = fp_map
-        cached["_crypto_id_to_fp"] = fp_index
+                new_bucket = [*bucket, summary] if bucket is not None else [summary]
+                fp_map[result.fingerprint] = new_bucket
+                if len(new_bucket) > 1:
+                    # 桶跨入/保持重复边界：入组（新键 append 尾部，与全量重建的
+                    # fp_map 迭代序仅相对位置可能不同，组序无正确性语义）。
+                    groups_map[result.fingerprint] = new_bucket
+                else:
+                    groups_map.pop(result.fingerprint, None)
+            if join_old:
+                old_map[crypto_id] = summary
         # total 差分（PERF-079）：按「缓存成员资格」调节——插入此前不在缓存的条目
         # （新增/恢复/外部新条目）+1，移除此前在缓存的条目（删除）-1，原位替换
         # （编辑/改密）不变，与 full_analysis 的 total==分析集行数语义保持一致。
-        # 成员资格以 _summaries_with_dates 为准（复用 1) 的线性定位，零额外开销）；
-        # 已知取舍：损坏条目（summary 为 None，full_analysis 计 total 但不入
-        # summaries）的增删在 total 上最多滞后一个 TTL 窗口，由任何后续全量失效
-        # 自愈——损坏态条目本不可正常编辑，属可接受边界。
-        if result.summary is not None and not was_in_summaries:
+        # 成员资格以 _summaries_with_dates 为准；已知取舍：损坏条目（summary 为
+        # None，full_analysis 计 total 但不入 summaries）的增删在 total 上最多滞后
+        # 一个 TTL 窗口，由任何后续全量失效自愈——损坏态条目本不可正常编辑，属可
+        # 接受边界。
+        if summary is not None and not was_in_summaries:
             cached["total"] = cached.get("total", 0) + 1
-        elif result.summary is None and was_in_summaries:
+        elif summary is None and was_in_summaries:
             cached["total"] = max(0, cached.get("total", 0) - 1)
-        groups = [list(g) for g in fp_map.values() if len(g) > 1]
-        cached["duplicate_groups"] = groups
-        cached["duplicate_count"] = sum(len(g) - 1 for g in groups)
-        cached["weak_count"] = len(weak_entries)
-        # now 可注入（QL-057）：缺省实时，语义同 _refilter_cache 的 cutoff 计算。
-        current = datetime.now(UTC) if now is None else now
-        cutoff = current - timedelta(days=self._analysis_cache_days)
-        # old 差分（PERF-076）：移除旧成员资格（old_entries 通常远小于全库，线性
-        # 定位开销有限）+ 按新 changed_utc 单点判定加入，免 O(n) 全量日期重过滤。
-        old_entries = cached.get("old_entries", [])
-        for i, e in enumerate(old_entries):
-            if e.crypto_id == crypto_id:
-                del old_entries[i]
-                break
-        if (
-            result.summary is not None
-            and result.changed_utc is not None
-            and result.changed_utc < cutoff
-        ):
-            old_entries.append(result.summary)
-        cached["old_entries"] = old_entries
-        cached["old"] = len(old_entries)
+        # 容器同引用回写：就地修改时零成本，且在键缺失的异常缓存形态下补建键
+        # （对齐原实现的赋值语义）。公开列表键（weak_entries/old_entries/
+        # duplicate_groups）不在此维护——出口统一从 map 派生（PERF-085）。
+        cached["_weak_map"] = weak_map
+        cached["_summaries_with_dates"] = summaries
+        cached["_old_map"] = old_map
+        cached["_fingerprint_map"] = fp_map
+        cached["_crypto_id_to_fp"] = fp_index
+        cached["_duplicate_groups_map"] = groups_map
+        # 聚合计数重算（MAINT-101 单一事实源，公式与 full_analysis 共享）。
+        self._recompute_aggregates(cached)
 
     def _parse_changed_utc(self, raw: RawEntry) -> datetime | None:
         """解析条目密码变更时间为 UTC datetime，供过期检测。
@@ -713,7 +786,9 @@ class SecurityAnalyzer:
                 return changed_utc.replace(tzinfo=UTC)
             return changed_utc.astimezone(UTC)
         except (ValueError, TypeError):
-            logger.debug("条目 %s 日期解析失败: %s", raw.id, changed_at_str)
+            # 日志纪律（SEC-056）：只记条目标识不记解密后的字段值——changed_at_str
+            # 是解密后明文，虽仅时间戳，仍对齐项目「日志只记 id」纪律。
+            logger.debug("条目 %s 密码变更时间解析失败", raw.crypto_id)
             return None
 
     def full_analysis(
@@ -722,8 +797,12 @@ class SecurityAnalyzer:
         *,
         cancel_check: Callable[[], bool] | None = None,
         now: datetime | None = None,
-    ) -> SecurityReport:
+    ) -> _SecurityReportInternal:
         """一次性完成所有安全分析（弱/重复/过期），避免重复解密。结果由 _cached_analysis 缓存。
+
+        返回值为**内部形态**（计数 + 内部 map，PERF-085 收口）：生产调用链仅
+        :meth:`_cached_analysis`（其出口经 :meth:`_export_report` 派生公开列表键），
+        直接调用方（测试等）须自行经 map/计数消费，公开列表键不在本形态上。
 
         有意始终执行全部三项并解密所有密码算 HMAC 指纹；days 变化仅重过滤
         过期条目，避免重新解密（重复检测的 HMAC 是瓶颈）。
@@ -742,15 +821,20 @@ class SecurityAnalyzer:
             # 三个大列不进入扫描（宽 SELECT 物化后即弃是温态分析的主导开销之一）。
             entries = self._vault.db.get_entries_for_analysis()
             total = len(entries)
-            weak_entries = []
+            weak_map: dict[str, Entry] = {}
             password_map: dict[bytes, list[Entry]] = {}
-            # crypto_id→指纹反向索引（PERF-076）：与 password_map 平行构建，增量
-            # 更新据此 O(1) 定位旧指纹桶，替代逐桶 any() 全扫描（50k 库桶数可达
-            # 数万）。仅持有指纹的条目入索引，与桶成员一一对应。
-            fp_index: dict[str, bytes] = {}
+            # crypto_id→指纹反向索引（PERF-076/085）：与 password_map 平行构建，
+            # 增量更新据此 O(1) 定位旧指纹桶，替代逐桶 any() 全扫描（50k 库桶数
+            # 可达数万）。值 None 为「无指纹」哨兵（PERF-085）：入索引条件是
+            # summary 非 None（即进入 _summaries_with_dates 的全部条目），无密码
+            # 条目（note/identity 等）也收录，键集与 summaries 一致——否则常态
+            # 无密码条目的每次差分都因 pop miss 落入逐桶全扫描。
+            fp_index: dict[str, bytes | None] = {}
             cutoff = (now if now is not None else datetime.now(UTC)) - timedelta(days=days)
-            # 保存所有条目的 summary + changed_at_utc，供缓存后不同 days 重新过滤
-            _summaries_with_dates: list[tuple[Entry, datetime | None]] = []
+            # 保存所有条目的 summary + changed_at_utc（dict 形态，PERF-085：增量
+            # 差分 O(1) 定位；保插入序使 days 重过滤输出序稳定），供缓存后不同
+            # days 重新过滤。
+            _summaries_with_dates: dict[str, tuple[Entry, datetime | None]] = {}
 
             skipped_count = 0
             # 循环外取一次主密钥副本，供重复检测的 HMAC 指纹复用。
@@ -775,36 +859,50 @@ class SecurityAnalyzer:
                     skipped_count += 1
                 if result.summary is None:
                     continue
-                _summaries_with_dates.append((result.summary, result.changed_utc))
+                _summaries_with_dates[result.summary.crypto_id] = (
+                    result.summary,
+                    result.changed_utc,
+                )
                 if result.is_weak:
-                    weak_entries.append(result.summary)
+                    weak_map[result.summary.crypto_id] = result.summary
                 if result.fingerprint is not None:
                     password_map.setdefault(result.fingerprint, []).append(result.summary)
-                    fp_index[result.summary.crypto_id] = result.fingerprint
+                fp_index[result.summary.crypto_id] = result.fingerprint
 
-            old_entries = [s for s, dt in _summaries_with_dates if dt is not None and dt < cutoff]
-            duplicate_groups = [g for g in password_map.values() if len(g) > 1]
-            duplicate_count = sum(len(g) - 1 for g in duplicate_groups)
+            old_map = {
+                cid: s
+                for cid, (s, dt) in _summaries_with_dates.items()
+                if dt is not None and dt < cutoff
+            }
+            # 重复分组 dict 形态事实源（PERF-085）：仅含 >1 的桶，值与指纹桶同引用，
+            # 增量差分据此在桶跨越 len>1 边界时增删组，免全量重建。
+            groups_map = {fp: g for fp, g in password_map.items() if len(g) > 1}
             del vault_key
 
         if skipped_count:
             logger.warning("安全分析共跳过 %d 条损坏条目", skipped_count)
 
-        return {
+        # 报告为内部形态（PERF-085 收口）：计数 + 内部 map，公开列表键不入本体——
+        # 出口（_cached_analysis 的各返回点）统一经 _export_report 从 map 派生，消除
+        # 「同名公开列表键自首次增量差分起陈旧」的双表示；聚合计数经
+        # _recompute_aggregates 统一产出（MAINT-101）。
+        report: _SecurityReportInternal = {
             "total": total,
-            "weak_count": len(weak_entries),
-            "weak_entries": weak_entries,
-            "duplicate_groups": duplicate_groups,
-            "duplicate_count": duplicate_count,
-            "old_entries": old_entries,
-            "old": len(old_entries),
+            "weak_count": 0,
+            "duplicate_count": 0,
+            "old": 0,
             "_summaries_with_dates": _summaries_with_dates,  # 缓存分层：供不同 days 重过滤
             # 指纹桶全集（含单例桶，PERF-021）：增量失效据此移动单条条目桶位并重算
             # 重复分组；duplicate_groups 仅含 >1 的桶，不足以支撑增量更新。
             "_fingerprint_map": password_map,
-            # 反向索引（PERF-076）：增量更新 O(1) 定位旧桶，与指纹桶平行维护。
+            # 反向索引（PERF-076/085）：增量更新 O(1) 定位旧桶，与指纹桶平行维护。
             "_crypto_id_to_fp": fp_index,
+            "_weak_map": weak_map,
+            "_old_map": old_map,
+            "_duplicate_groups_map": groups_map,
         }
+        self._recompute_aggregates(report)
+        return report
 
     def _classify_entry(
         self,

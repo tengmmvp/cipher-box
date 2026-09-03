@@ -95,6 +95,26 @@ class TestSearchMetadataCache:
         # version 守卫丢弃回写：缓存不含本条目（旧密文摘要未污染）
         assert cid not in cache._search_metadata_cache
 
+    def test_batch_writeback_survives_exception_exit(self, entry_mgr, cache):
+        """with 体抛异常时 pending 仍回写缓存（PERF-086 回归）。
+
+        @contextmanager 此前无 try/finally：with 体抛非 DecryptionError 异常时
+        yield 后的全部回写被跳过（含 _search_metadata_failed 完整性标记），
+        与 docstring「含循环 break/异常退出的场景」不符。已解密的 pending 是
+        采样世代密钥下的自洽结果，异常退出同样应入缓存（version 守卫仍在）。
+        """
+        entry_mgr.add_entry(Entry(title="A", username="u", password="p"))
+        raw = entry_mgr.db.get_entries(EntryQuery())[0]
+        cache.invalidate_if_epoch_changed()
+
+        with pytest.raises(RuntimeError, match="boom"):
+            with cache.search_metadata_batch() as batch:
+                batch.get(raw)  # 锁外解密并入 pending
+                raise RuntimeError("boom")
+
+        # 异常路径的回写未被跳过：pending 可见于缓存
+        assert raw.crypto_id in cache._search_metadata_cache
+
 
 class TestWriterEpochGuard:
     """摘要缓存回写的写入方世代守卫（SEC-041 接入搜索分支 / SEC-043 全读路径接入）。
@@ -306,6 +326,244 @@ class TestTotpSecretCache:
         cache.store_totp(8, "NEW-SECRET", data_epoch="restored-e2")
         assert cache._totp_secret_cache.get(8) == "NEW-SECRET"
 
+    def test_pop_and_clear_advance_totp_domain_version(self, cache):
+        """pop_totp/clear_totp 只推进 TOTP 域失效版本，不动主域（QL-070 分域）。
+
+        回写守卫的注释一直承诺「单条失效（pop_totp）不回写」，此前 pop 只清 dict
+        不推进版本，防护名存实亡；推进 TOTP 域后守卫真实覆盖（下一个测试）。
+        主域版本不动使 pop 不击穿投影行集/摘要/标签缓存——pop 的高频来源是
+        detail_panel 离开条目的 evict（无任何 DB 写）；全局失效（apply_change）
+        两域一并推进，整体失效仍阻止在飞的 TOTP 解密回写。
+        """
+        main_before = cache._invalidate_version
+        totp_before = cache._totp_invalidate_version
+        cache.store_totp(1, "SECRET")
+        cache.pop_totp(1)
+        assert cache._totp_invalidate_version == totp_before + 1
+        assert cache._invalidate_version == main_before  # 主域不动
+        cache.clear_totp()
+        assert cache._totp_invalidate_version == totp_before + 2
+        assert cache._invalidate_version == main_before
+        # 全局失效两域一并推进：整体失效窗口内 TOTP 回写同样被拒收
+        cache.apply_change(crypto_id="nonexistent")
+        assert cache._invalidate_version == main_before + 1
+        assert cache._totp_invalidate_version == totp_before + 3
+
+    def test_pop_totp_during_decrypt_window_blocks_writeback(self, entry_mgr, cache, monkeypatch):
+        """解密窗口内 pop_totp：旧 secret 不回写（QL-070，守卫真实覆盖单条失效）。
+
+        时序仿真（条目更新路径与 TOTP 定时器并发）：定时器在 E1 读守卫内采样
+        世代/TOTP 域版本并解密 → 解密完成、回写前，主线程 update_entry 的
+        pop_totp 失效该条（totp_secret 已变）→ 定时器回写。pop 不推进版本时
+        守卫放行，**旧 secret** 重新落入缓存并持续命中（展示过期验证码）；现
+        pop 推进 TOTP 域版本（QL-070 分域后回写守卫比对 TOTP 域），守卫拒收。
+        """
+        entry_id = entry_mgr.add_entry(
+            Entry(title="T", username="u", password="p", totp_secret="JBSWY3DPEHPK3PXP")
+        )
+
+        real_decrypt = entry_cache_module._decrypt_field_impl
+        popped = {"done": False}
+
+        def _decrypt_then_pop(encrypted, key, crypto_id, field_name, *, strict=False):
+            value = real_decrypt(encrypted, key, crypto_id, field_name, strict=strict)
+            if not popped["done"] and field_name == "totp_secret":
+                popped["done"] = True
+                # 解密完成后、缓存回写前插入条目更新的单条失效
+                cache.pop_totp(entry_id)
+            return value
+
+        monkeypatch.setattr(entry_cache_module, "_decrypt_field_impl", _decrypt_then_pop)
+
+        secret = cache.resolve_totp_secret(entry_id, use_cache=True)
+
+        # 明文照常返回（解密本身成功），但旧 secret 不回写缓存
+        assert secret == "JBSWY3DPEHPK3PXP"
+        assert entry_id not in cache._totp_secret_cache
+
+
+class TestGetAllTagsBackfillGuard:
+    """get_all_tags 回填的 epoch+version 双守卫（QL-069）。"""
+
+    def test_stale_aggregation_rejected_after_concurrent_invalidation(
+        self, entry_mgr, cache, monkeypatch
+    ):
+        """「聚合出锁 → 回填」窗口内写入失效：陈旧快照被拒，下次重算吸收。
+
+        时序仿真（后台 tag worker 与主线程写入交错）：worker 聚合得快照 S1
+        （不含并发条目）→ 出锁后主线程 add_entry + notify（此刻 _tags_cache 为
+        None，apply_tag_delta no-op，version+1）→ worker 回填。旧实现回填只比
+        epoch（单条 notify 不动 epoch），陈旧 S1 落入 _tags_cache 且无自愈
+        （标签缓存无 TTL，仅锁定/改密/恢复/写路径可纠正）；现回填须 epoch+
+        version 双比对，陈旧快照被拒（下次重算吸收）。
+        """
+        entry_mgr.add_entry(Entry(title="A", username="u", password="p", tags="工作"))
+
+        real_projection = entry_mgr.db.get_entries_tags_projection
+        injected = {"done": False}
+
+        def _projection_with_concurrent_write():
+            rows = real_projection()
+            if not injected["done"]:
+                injected["done"] = True
+                # 模拟主线程在 worker 聚合出锁后的写入 + notify（测试单线程内
+                # 重入 epoch_guarded_read 的 db_lock：RLock 可重入）
+                entry_mgr.add_entry(Entry(title="并发", username="u", password="p", tags="新标签"))
+            return rows
+
+        monkeypatch.setattr(
+            entry_mgr.db, "get_entries_tags_projection", _projection_with_concurrent_write
+        )
+
+        # 第一次调用：返回旧快照的聚合值（旧上下文可接受），但不得落入缓存
+        assert dict(cache.get_all_tags()) == {"工作": 1}
+        assert cache._tags_cache is None  # 陈旧快照被拒（旧实现在此落入 S1）
+
+        # 下次调用无并发窗口：重算吸收并发条目并正常回填
+        assert dict(cache.get_all_tags()) == {"工作": 1, "新标签": 1}
+        assert cache._tags_cache is not None
+
+    def test_epoch_mismatch_still_rejects_backfill(self, entry_mgr, cache, monkeypatch):
+        """epoch 失配（改密/锁定）拒收回填的既有语义保持（SEC-010 不回归）。"""
+        entry_mgr.add_entry(Entry(title="A", username="u", password="p", tags="工作"))
+        assert dict(cache.get_all_tags()) == {"工作": 1}
+
+        # 模拟锁定：整体失效 + 世代清零，缓存侧不再接收本快照
+        cache.invalidate_all()
+        assert cache._tags_cache is None
+
+
+class TestSearchProjectionCache:
+    """搜索投影行集缓存（PERF-086）：命中免重拉、写路径失效、键隔离与行为等价。"""
+
+    def _spy_projection(self, vault, monkeypatch) -> "list[int]":
+        """spy db.get_entries_search_projection 的调用次数（投影重拉的标志）。"""
+        calls: list[int] = []
+        original = vault.db.get_entries_search_projection
+
+        def _spy(query):
+            calls.append(1)
+            return original(query)
+
+        monkeypatch.setattr(vault.db, "get_entries_search_projection", _spy)
+        return calls
+
+    def test_warm_search_hits_projection_cache(self, entry_mgr, monkeypatch):
+        """同键（过滤三元组+排序规格）重复搜索命中缓存，投影零重拉。"""
+        entry_mgr.add_entry(Entry(title="Alpha", username="u", password="p"))
+        spy = self._spy_projection(entry_mgr._vault, monkeypatch)
+
+        entry_mgr.get_entry_summaries(search="alp")  # 冷：拉一次
+        assert len(spy) == 1
+        entry_mgr.get_entry_summaries(search="alp")  # 暖：行集与搜索词无关，命中
+        entry_mgr.get_entry_summaries(search="alph")  # 搜索词变化仍命中
+        assert len(spy) == 1
+
+    def test_write_path_invalidates_projection_cache(self, entry_mgr, monkeypatch):
+        """任意写路径（notify 推进 version）后投影缓存失效，下次搜索重拉。"""
+        entry_mgr.add_entry(Entry(title="Alpha", username="u", password="p"))
+        spy = self._spy_projection(entry_mgr._vault, monkeypatch)
+        entry_mgr.get_entry_summaries(search="alp")
+        assert len(spy) == 1
+
+        entry_mgr.add_entry(Entry(title="Beta", username="u", password="p"))
+        results = entry_mgr.get_entry_summaries(search="alp")
+        # 写后重拉（version 失配），且结果不残留陈旧行集
+        assert len(spy) == 2
+        assert {r.title for r in results} == {"Alpha"}
+
+    def test_invalidate_all_clears_projection_cache(self, entry_mgr, monkeypatch):
+        """锁定/改密（invalidate_all）清空投影缓存：下次重拉。"""
+        entry_mgr.add_entry(Entry(title="Alpha", username="u", password="p"))
+        spy = self._spy_projection(entry_mgr._vault, monkeypatch)
+        entry_mgr.get_entry_summaries(search="alp")
+        assert len(spy) == 1
+        entry_mgr.invalidate_caches()
+        entry_mgr.get_entry_summaries(search="alp")
+        assert len(spy) == 2
+
+    def test_projection_key_isolation(self, entry_mgr, monkeypatch):
+        """不同过滤/排序规格各占一键：互不串用、各自命中。"""
+        from src.models import Category
+
+        cat_id = entry_mgr.categories.add_category(Category(name="分类"))
+        a_id = entry_mgr.add_entry(
+            Entry(title="Alpha", username="u", password="p", category_id=cat_id)
+        )
+        entry_mgr.add_entry(Entry(title="Beta", username="u", password="p"))
+        entry_mgr.delete_entry(a_id)  # Alpha 入回收站
+        spy = self._spy_projection(entry_mgr._vault, monkeypatch)
+
+        # 主视图（复合序键）
+        assert {r.title for r in entry_mgr.get_entry_summaries(search="a")} == {"Beta"}
+        # 回收站（deleted_only 键）：分别拉取
+        assert {r.title for r in entry_mgr.get_entry_summaries(deleted_only=True, search="a")} == {
+            "Alpha"
+        }
+        assert len(spy) == 2
+        # 近期更新序（排序下推键）：与复合序键不同，再拉一次
+        entry_mgr.get_entry_summaries(search="a", order_by="updated_at", limit=5)
+        assert len(spy) == 3
+        # 三个键各自重复调用均命中
+        entry_mgr.get_entry_summaries(search="a")
+        entry_mgr.get_entry_summaries(deleted_only=True, search="a")
+        entry_mgr.get_entry_summaries(search="a", order_by="updated_at", limit=5)
+        assert len(spy) == 3
+
+    def test_cached_search_results_match_uncached(self, entry_mgr):
+        """行为等价：暖缓存（投影+摘要命中）与冷路径的搜索结果一致。"""
+        for title in ("zebra", "alpha", "middle"):
+            entry_mgr.add_entry(Entry(title=title, username="u", password="p"))
+
+        cold = entry_mgr.get_entry_summaries(search="a", order_by="title", order_desc=True)
+        warm = entry_mgr.get_entry_summaries(search="a", order_by="title", order_desc=True)
+        assert [r.id for r in warm] == [r.id for r in cold]
+        assert [r.title for r in warm] == [r.title for r in cold]
+
+    def test_pop_totp_keeps_projection_cache(self, entry_mgr, monkeypatch):
+        """pop_totp 只推进 TOTP 域版本：投影行集缓存不受单条 TOTP 失效影响。
+
+        QL-070 分域回归：detail_panel 离开带 TOTP 的条目时经 evict → pop_totp
+        （无任何 DB 写），此前 pop 推进主域 ``_invalidate_version`` 使该高频交互
+        每次作废全部 4 个投影缓存键，PERF-086 的暖态命中（免 50k 行重取
+        ~160ms）被无关失效击穿；分域后主域版本不动，投影缓存照常命中。
+        """
+        entry_mgr.add_entry(Entry(title="Alpha", username="u", password="p"))
+        spy = self._spy_projection(entry_mgr._vault, monkeypatch)
+        entry_mgr.get_entry_summaries(search="alp")  # 冷：拉一次并回填缓存
+        assert len(spy) == 1
+
+        entry_mgr._cache.pop_totp(1)  # 离开条目的 evict（entry_id 与库内条目无关）
+        entry_mgr.get_entry_summaries(search="alp")
+
+        assert len(spy) == 1  # 投影缓存仍命中，零重拉
+
+    def test_projection_rows_exit_isolated_from_cache(self, entry_mgr):
+        """search_projection_rows 出口为隔离副本：调用方变异不污染缓存行集。
+
+        命中与未命中两条路径均不外泄缓存内部 list 引用（对齐 get_failed_fields
+        的 QL-056 防御性拷贝纪律）——返回引用时任何未来调用方的就地变异
+        （sort/append/reverse）会直接改写缓存行集且无失败信号。
+        """
+        entry_mgr.add_entry(Entry(title="Alpha", username="u", password="p"))
+        entry_mgr.add_entry(Entry(title="Beta", username="u", password="p"))
+        cache = entry_mgr._cache
+        key = (False, None, False, None, True)
+
+        def _fetch():
+            return entry_mgr.db.get_entries_search_projection(EntryQuery())
+
+        # 未命中路径：fetch 回填缓存后出口变异不影响缓存
+        first = cache.search_projection_rows(key, _fetch)
+        original_ids = [row.id for row in first]
+        first.reverse()  # 模拟调用方就地变异
+        second = cache.search_projection_rows(key, _fetch)  # 命中路径
+        assert [row.id for row in second] == original_ids  # 缓存行集未被污染
+        # 命中路径：出口变异同样不回写缓存
+        second.reverse()
+        third = cache.search_projection_rows(key, _fetch)
+        assert [row.id for row in third] == original_ids
+
 
 class TestTagsCacheValid:
     """tags_cache_valid 在填充与失效前后的状态迁移。"""
@@ -334,6 +592,7 @@ class TestApplyTagDelta:
 
     QL-065 后签名为 ``(old_tags, new_tags)``：一次锁内先减旧再加新（编辑路径原先
     两次锁调用中间可见撕裂态），空 old/空 new 是合法端点（纯增/纯减）。
+    QL-070 起返回是否应用：False 时调用方保守置 tags_changed=True 走整表失效。
     """
 
     def _populate(self, entry_mgr, cache) -> None:
@@ -447,6 +706,45 @@ class TestApplyTagDelta:
         cache.apply_change(crypto_id="nonexistent", tags_changed=False, clear_summaries=False)
         cache.apply_tag_delta("", "新标签")
         assert dict(cache.get_all_tags()) == {"工作": 2, "社交": 1, "新标签": 1}
+
+    def test_returns_true_when_applied(self, entry_mgr, cache):
+        """缓存有效且世代一致：差分应用并返回 True（QL-070 返回值契约）。"""
+        self._populate(entry_mgr, cache)
+        version = cache.invalidate_version
+        assert cache.apply_tag_delta("", "新标签", expected_version=version) is True
+        assert dict(cache.get_all_tags()) == {"工作": 2, "社交": 1, "新标签": 1}
+
+    def test_returns_false_when_cache_absent(self, entry_mgr, cache):
+        """缓存未填充（None）：差分无操作并返回 False，供调用方保守整表失效。"""
+        entry_mgr.add_entry(Entry(title="A", username="u", password="p", tags="工作"))
+        assert cache._tags_cache is None
+        assert cache.apply_tag_delta("", "工作") is False
+
+    def test_returns_false_when_version_mismatch(self, entry_mgr, cache):
+        """世代失配：差分被放弃并返回 False（旧实现静默放弃且调用方不知情）。"""
+        self._populate(entry_mgr, cache)
+        stale_version = cache.invalidate_version
+        cache.apply_change(crypto_id="nonexistent", tags_changed=False, clear_summaries=False)
+        assert cache.apply_tag_delta("工作", expected_version=stale_version) is False
+        # 缓存保持失效前的计数（差分未叠加）
+        assert dict(cache.get_all_tags()) == {"工作": 2, "社交": 1}
+
+    def test_returns_true_for_empty_delta(self, entry_mgr, cache):
+        """old/new 解析后均为空：本就无需变更，返回 True（非「放弃」）。"""
+        self._populate(entry_mgr, cache)
+        assert cache.apply_tag_delta("  ,  ", "") is True
+
+    def test_applied_delta_advances_invalidate_version(self, entry_mgr, cache):
+        """应用差分推进 _invalidate_version（QL-069）：在飞 get_all_tags 聚合的
+        回填守卫据此拒收不含本次变更的旧快照（否则旧快照覆盖已差分的缓存）。"""
+        self._populate(entry_mgr, cache)
+        before = cache.invalidate_version
+        assert cache.apply_tag_delta("", "新标签") is True
+        assert cache.invalidate_version == before + 1
+        # 空差分（未触碰缓存）不推进
+        before = cache.invalidate_version
+        assert cache.apply_tag_delta("", "  ") is True
+        assert cache.invalidate_version == before
 
 
 class TestDecryptTagsForDelta:

@@ -426,7 +426,10 @@ class TestApplyTheme:
 
         mw._apply_theme()
 
-        mw._detail_panel.show_entry.assert_called_once_with(current, force=True)
+        # data_epoch 回传面板记录的世代（SEC-054 必传签名，force 重建复用路径）
+        mw._detail_panel.show_entry.assert_called_once_with(
+            current, force=True, data_epoch=mw._detail_panel.current_data_epoch
+        )
         mw._detail_panel.show_empty.assert_not_called()
 
     def test_theme_change_without_selection_shows_empty(self, qapp, tmp_path, monkeypatch):

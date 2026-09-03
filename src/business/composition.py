@@ -116,50 +116,70 @@ def build_business_context(config: ConfigManager, vault: VaultManager) -> Busine
 
     Raises:
         RuntimeError: 对同一 VaultManager 重复调用（ARCH-044）——重复注册锁定/轮换
-            回调并泄漏旧 cache 实例，属装配错误而非合法复用路径。
+            回调并泄漏旧 cache 实例，属装配错误而非合法复用路径；或传入未装配
+            生命周期编排器的 vault（ARCH-047）——须经 ``build_vault`` 取得完整装配
+            的 vault 再组装上下文。
     """
     if vault in _assembled_vaults:
         raise RuntimeError(
             "build_business_context 对同一 VaultManager 重复调用：会重复注册锁定/轮换"
             "回调并泄漏旧 cache 实例（ARCH-044）。同一会话应复用既有 BusinessContext。"
         )
+    # 装配前置校验（ARCH-047）：未挂编排器的 vault 手工构造后直接传入时，生命周期
+    # 方法（initialize/unlock/lock/close/change_master_password）会推迟到首次调用才
+    # 抛「attach_lifecycle 未调用」——此处显式拒绝使错误前置且报错指向装配代码。
+    if not vault.lifecycle_attached:
+        raise RuntimeError(
+            "build_business_context 接受的 VaultManager 未装配生命周期编排器"
+            "（attach_lifecycle 未调用）：请经 build_vault 创建完整装配的 vault"
+            "（ARCH-047），勿手工构造后直接传入。"
+        )
     _assembled_vaults.add(vault)
-    cache = EntryCacheManager(vault)
-    change_bus = EntryChangeBus(cache)
-    # CategoryManager / RestorePointManager 提升为一等依赖，由组合根显式创建并注入
-    # （ARCH-033：保持替换间隙一致，便于测试替身与重配置）。
-    category_mgr = CategoryManager(vault, cache, change_bus)
-    entry_mgr = EntryManager(vault, cache, change_bus, category_mgr)
-    security = SecurityAnalyzer(vault, cache)
-    import_export = ImportExportManager(entry_mgr)
-    restore_points = RestorePointManager(vault)
-    backup = BackupRestoreManager(vault, entry_mgr, restore_points)
-    # 改密限流器（ARCH-043）：有跨进程持久状态的业务安全模块，经组合根显式创建并
-    # 经 BusinessContext 注入 MenuController→ChangeMasterDialog，UI 不再自行实例化。
-    change_master_rate_limiter = build_change_master_rate_limiter(config)
-    # 锁定与密钥版本轮换（备份恢复）是两类语义不同的事件（ARCH-003 拆为独立通道），
-    # 但都要求失效全部明文/派生缓存：锁定清明文摘要/分类名/TOTP/标签缓存收缩内存泄漏面；
-    # 恢复整体替换数据，按 crypto_id 索引的明文缓存须失效防命中旧明文，安全分析缓存亦
-    # 失效。故两个回调均注册到两个通道以保持行为等价。category_mgr.invalidate_caches
-    # 清 CategoryManager 自持的明文分类名会话缓存（SEC-053）——entry_mgr 的
-    # invalidate_caches 只清 EntryCacheManager 五套缓存，不含该份。
-    vault.register_on_lock(entry_mgr.invalidate_caches)
-    vault.register_on_lock(category_mgr.invalidate_caches)
-    vault.register_on_lock(security.invalidate_cache)
-    vault.register_on_epoch_rotated(entry_mgr.invalidate_caches)
-    vault.register_on_epoch_rotated(category_mgr.invalidate_caches)
-    vault.register_on_epoch_rotated(security.invalidate_cache)
-    # 条目变更回调携带 (password_changed, metadata_changed, crypto_id)：单条更新经
-    # crypto_id 触发 SecurityAnalyzer 的单条增量失效（PERF-021，避免每次保存触发
-    # 整库密码解密+HMAC 重算）；增删/批量（crypto_id=None）与上方锁定/轮换通道的
-    # 零参调用保持全量失效。
-    entry_mgr.register_on_change(security.invalidate_cache)
-    return BusinessContext(
-        config=config,
-        vault=vault,
-        entry_mgr=entry_mgr,
-        security=security,
-        import_export=import_export,
-        backup=backup,
-        change_master_rate_limiter=change_master_rate_limiter,
-    )
+    try:
+        cache = EntryCacheManager(vault)
+        change_bus = EntryChangeBus(cache)
+        # CategoryManager / RestorePointManager 提升为一等依赖，由组合根显式创建并注入
+        # （ARCH-033：保持替换间隙一致，便于测试替身与重配置）。
+        category_mgr = CategoryManager(vault, cache, change_bus)
+        entry_mgr = EntryManager(vault, cache, change_bus, category_mgr)
+        security = SecurityAnalyzer(vault, cache)
+        import_export = ImportExportManager(entry_mgr)
+        restore_points = RestorePointManager(vault)
+        backup = BackupRestoreManager(vault, entry_mgr, restore_points)
+        # 改密限流器（ARCH-043）：有跨进程持久状态的业务安全模块，经组合根显式创建并
+        # 经 BusinessContext 注入 MenuController→ChangeMasterDialog，UI 不再自行实例化。
+        change_master_rate_limiter = build_change_master_rate_limiter(config)
+        # 锁定与密钥版本轮换（备份恢复）是两类语义不同的事件（ARCH-003 拆为独立通道），
+        # 但都要求失效全部明文/派生缓存：锁定清明文摘要/分类名/TOTP/标签缓存收缩内存泄漏面；
+        # 恢复整体替换数据，按 crypto_id 索引的明文缓存须失效防命中旧明文，安全分析缓存亦
+        # 失效。故两个回调均注册到两个通道以保持行为等价。category_mgr.invalidate_caches
+        # 清 CategoryManager 自持的明文分类名会话缓存（SEC-053）——entry_mgr 的
+        # invalidate_caches 只清 EntryCacheManager 五套缓存，不含该份。
+        vault.register_on_lock(entry_mgr.invalidate_caches)
+        vault.register_on_lock(category_mgr.invalidate_caches)
+        vault.register_on_lock(security.invalidate_cache)
+        vault.register_on_epoch_rotated(entry_mgr.invalidate_caches)
+        vault.register_on_epoch_rotated(category_mgr.invalidate_caches)
+        vault.register_on_epoch_rotated(security.invalidate_cache)
+        # 条目变更回调携带 (password_changed, metadata_changed, crypto_id)：单条更新经
+        # crypto_id 触发 SecurityAnalyzer 的单条增量失效（PERF-021，避免每次保存触发
+        # 整库密码解密+HMAC 重算）；增删/批量（crypto_id=None）与上方锁定/轮换通道的
+        # 零参调用保持全量失效。
+        entry_mgr.register_on_change(security.invalidate_cache)
+        return BusinessContext(
+            config=config,
+            vault=vault,
+            entry_mgr=entry_mgr,
+            security=security,
+            import_export=import_export,
+            backup=backup,
+            change_master_rate_limiter=change_master_rate_limiter,
+        )
+    except BaseException:
+        # 装配中途异常回退防重入登记（ARCH-046）：登记先行的原实现使「上次装配失败」
+        # 的重试被误拒，且报错语义误导（述为「重复调用」）。回调注册仅为 list.append
+        # 不抛异常，实际异常源是 manager 构造（此时尚未注册任何回调、无副作用），
+        # discard 后重试等价全新装配。BaseException 连 KeyboardInterrupt 一并回退，
+        # 不给「半登记」态留窗口。
+        _assembled_vaults.discard(vault)
+        raise

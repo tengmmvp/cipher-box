@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 from ....models import Category, RawEntry
 from ....utils.format import utc_now_iso
 from ..crypto_utils import build_encrypted_entry_fields, encrypt_field
-from ..entry_batch_writer import should_report_progress
+from ..entry_batch_writer import should_report_progress, write_chunks
 from .payload import PortableBackup
 
 if TYPE_CHECKING:
@@ -49,15 +49,20 @@ def restore_entries(
     backup: PortableBackup,
     key: bytes,
     category_map: dict[int, int],
-    progress: Callable[[int, int], None] | None = None,
+    encrypt_progress: Callable[[int, int], None] | None = None,
+    write_progress: Callable[[int, int], None] | None = None,
 ) -> tuple[dict[int, int], dict[int, str]]:
     """重建条目，加密敏感字段，返回 (entry_map, crypto_id_map)。
 
-    全部条目先在内存构建再经 ``add_entries_batch`` 一次性 executemany 写入，
+    全部条目先在内存构建再经 ``add_entries_batch`` 分块 executemany 写入，
     避免逐条 INSERT+commit 的 N 次 fsync 拖长 vault_write_lock 持锁（UI 冻结窗口）。
     item 经 validator 校验，直接索引字段，无 .get(default) 死分支。
-    ``progress``（PERF-083）按已加密构建条目数每 ``PROGRESS_REPORT_EVERY`` 条节流
-    上报原始 ``(done, total)`` 计数、终值恒上报，加权映射由调用方完成。
+    ``encrypt_progress``（PERF-083）按已加密构建条目数每 ``PROGRESS_REPORT_EVERY`` 条
+    节流上报原始 ``(done, total)`` 计数、终值恒上报；``write_progress``（PERF-089）
+    按 ``WRITE_PROGRESS_CHUNK`` 分块写入并逐块上报（单次 executemany 50k 实测
+    ~2.85s，此前该段无上报使进度在加密终值后冻结），分块循环经
+    :func:`entry_batch_writer.write_chunks` 共享原语（MAINT-106，与导入侧
+    write_new_entries/write_overwrite_updates 同一份），加权映射由调用方完成。
     """
     items = backup["entries"]
     total = len(items)
@@ -96,9 +101,20 @@ def restore_entries(
                 **encrypted,
             )
         )
-        if progress is not None and should_report_progress(done, total):
-            progress(done, total)
-    crypto_id_to_new_id = db.add_entries_batch(entries, preserve_metadata=True)
+        if encrypt_progress is not None and should_report_progress(done, total):
+            encrypt_progress(done, total)
+    # 批量写入分块（PERF-089，write_new_entries 同款）：write_chunks 按块调用
+    # add_entries_batch 并逐块上报（MAINT-106 共享原语），各块返回的
+    # crypto_id→新 id 映射随后合并（键为 crypto_id，无碰撞）；分块间仍处调用方
+    # epoch_guarded_transaction 内，全有或全无语义不变。未提供 write_progress
+    # 时 write_chunks 保持单次 executemany 原路径。
+    crypto_id_to_new_id: dict[str, int] = {}
+    for mapping in write_chunks(
+        entries,
+        lambda chunk: db.add_entries_batch(chunk, preserve_metadata=True),
+        on_progress=write_progress,
+    ):
+        crypto_id_to_new_id.update(mapping)
     entry_map: dict[int, int] = {}
     crypto_id_map: dict[int, str] = {}  # 旧 entry_id 到 crypto_id 的映射
     for item, entry in zip(items, entries, strict=True):
@@ -114,12 +130,15 @@ def restore_history(
     key: bytes,
     entry_map: dict[int, int],
     crypto_id_map: dict[int, str],
-    progress: Callable[[int, int], None] | None = None,
+    encrypt_progress: Callable[[int, int], None] | None = None,
+    write_progress: Callable[[int, int], None] | None = None,
 ) -> None:
     """重建密码历史，按 entry_id 分组批量写入并统一截断。
 
-    ``progress``（PERF-083）按已加密历史条数节流上报原始 ``(done, total)`` 计数
-    （总数按载荷内全部历史计，未命中 entry_map 的跳过项亦计入 done 保持单调）。
+    ``encrypt_progress``（PERF-083）按已加密历史条数节流上报原始 ``(done, total)``
+    计数（总数按载荷内全部历史计，未命中 entry_map 的跳过项亦计入 done 保持单调）；
+    ``write_progress``（PERF-089）覆盖其后的分组批量写入段（按写入的历史行数累计——
+    组数不反映工作量，单组的行数才是），节流与终值语义同 ``should_report_progress``。
     """
     history_by_entry: dict[int, list[tuple[str, str]]] = {}
     total = len(backup["password_history"])
@@ -128,8 +147,8 @@ def restore_history(
         done += 1
         new_entry_id = entry_map.get(item["entry_id"])
         if not new_entry_id:
-            if progress is not None and should_report_progress(done, total):
-                progress(done, total)
+            if encrypt_progress is not None and should_report_progress(done, total):
+                encrypt_progress(done, total)
             continue
         # entry_map 命中则 crypto_id_map 必存在（同填充），直接取避免空 crypto_id 致 AAD 不一致。
         crypto_id = crypto_id_map[item["entry_id"]]
@@ -137,7 +156,15 @@ def restore_history(
         # encrypt_field 经 EncryptionEngine.encrypt 总返回非空密文（空明文亦产 cb2: 前缀），
         # 无需 if 守卫；保留恒真分支会暗示 encrypt_field 可能返回空串的错误心智模型。
         history_by_entry.setdefault(new_entry_id, []).append((ciphertext, item["changed_at"]))
-        if progress is not None and should_report_progress(done, total):
-            progress(done, total)
+        if encrypt_progress is not None and should_report_progress(done, total):
+            encrypt_progress(done, total)
+    # 分组批量写入段（PERF-089）单循环：progress None 判断内联（对齐上方加密段
+    # 风格），未提供 write_progress 时跳过上报仅写入——两分支此前各持一份逐行
+    # 相同的循环体，仅差三行计数上报。
+    write_total = sum(len(rows) for rows in history_by_entry.values())
+    write_done = 0
     for entry_id, items in history_by_entry.items():
         db.add_password_history_batch(entry_id, items)
+        write_done += len(items)
+        if write_progress is not None and should_report_progress(write_done, write_total):
+            write_progress(write_done, write_total)

@@ -324,6 +324,56 @@ class TestBackupCorruption:
         assert not success
 
 
+class TestRestoreProgressSegmentTable:
+    """恢复进度段表契约（PERF-083/089 段刻度、MAINT-107 结构化收敛）。
+
+    段表相邻性（上一段 base+span == 下一段 base，如 45+17==62）此前散在 6 组
+    常量对手工维护、无任何校验，一处手改即静默留缝隙（进度卡在缝隙点）或重叠
+    （进度回退）；现由模块导入期 RuntimeError 断言 + 本测试双重守护，后者在
+    手改段表时给出可读的失败定位。
+    """
+
+    def test_segments_seamless_monotonic_within_total(self):
+        """全段刻度单调不减且无缝隙：首段承接解密点 5、尾段止于 95（<100 留收尾段）。"""
+        from src.business.managers import backup_restore as br
+
+        cursor = br._RESTORE_DECRYPT_DONE
+        marks = [cursor]
+        for seg in br._RESTORE_SEG:
+            assert seg.base == cursor, f"段起点 {seg.base} 与上一段终点 {cursor} 有缝隙/重叠"
+            assert seg.span > 0, "段跨度须为正（零跨度段不上报中间值）"
+            cursor = seg.base + seg.span
+            marks.append(cursor)
+        assert marks == sorted(marks)  # 单调不减（每段 span>0 时严格递增）
+        # 尾段终点小于总刻度：95→100 收尾段由 _restore_current 的终值上报补足
+        assert 0 < cursor < br._RESTORE_PROGRESS_TOTAL
+
+    def test_segment_reporter_maps_into_segment_range(self):
+        """闭包工厂把段内 (done,total) 线性映射到 [base, base+span]，total 恒 100。"""
+        from src.business.managers import backup_restore as br
+
+        reports: list[tuple[int, int]] = []
+        reporter = br._segment_progress_reporter(
+            lambda cur, total: reports.append((cur, total)),
+            br._RESTORE_SEG.entries_encrypt,  # 45→62
+        )
+
+        reporter(0, 10)
+        reporter(5, 10)
+        reporter(10, 10)
+
+        # 45 + 17*5//10 = 53（整数下取整）；终值取段终点
+        assert [cur for cur, _total in reports] == [45, 53, 62]
+        assert all(total == 100 for _cur, total in reports)
+
+    def test_segment_reporter_skips_without_progress(self):
+        """progress=None 时闭包静默跳过（无进度路径的下游回调形态不变，MAINT-107）。"""
+        from src.business.managers import backup_restore as br
+
+        reporter = br._segment_progress_reporter(None, br._RESTORE_SEG.history_write)
+        reporter(5, 10)  # 不抛、不上报
+
+
 class TestRestorePlaintextRelease:
     """恢复载荷明文释放契约（SEC-027）：恢复退出后 payload 明文字段被置空。
 

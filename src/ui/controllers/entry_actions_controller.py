@@ -205,9 +205,14 @@ class EntryActionsController:
                 and current.updated_at == summary.updated_at
             ):
                 return
-            entry = self._entry_mgr.get_entry(summary.id)
+            # 主路径改用携带世代的获取（SEC-054 窗口闭合）：data_epoch 从
+            # epoch_guarded_read 锁内与 raw/密钥同刻带出，随 entry 透传给
+            # show_entry→TOTP 预热——「解密后→预热前」窗口内恢复轮换世代时，
+            # 旧世代 secret 被缓存守卫拒收（在 show_entry 时点另行快照 key_epoch
+            # 会把窗口误判为零间隙）。
+            entry, data_epoch = self._entry_mgr.get_entry_with_epoch(summary.id)
             if entry:
-                self._detail_panel.show_entry(entry)
+                self._detail_panel.show_entry(entry, data_epoch=data_epoch)
 
     # ======== 条目右键菜单 ========
 

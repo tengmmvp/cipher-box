@@ -10,101 +10,83 @@ LoginWindow/MainWindow 的 GUI 交互，难以在无头测试中端到端驱动�
 """
 
 import logging
-import tempfile
 from unittest.mock import MagicMock
 
 import pytest
 
 import src.app as app_module
 from src.app import CipherBoxApp, main
-from tests.helpers import make_test_config, make_vault
 
 
-def test_emergency_cleanup_noop_when_vault_locked(monkeypatch):
+def test_emergency_cleanup_noop_when_vault_locked(monkeypatch, make_vault_env):
     """保险库未解锁时 _emergency_cleanup 应短路，不触碰任何清理路径。
 
     用 lock spy 验证短路：若误删首个 ``if not is_unlocked: return``，lock 会被
     再次调用（尽管幂等），spy 计数即暴露回归——单纯断言 is_unlocked 无法区分。
     """
-    with tempfile.TemporaryDirectory() as root:
-        config = make_test_config(root)
-        vault = make_vault(config)
-        assert vault.initialize("MasterPassword!2026")[0]
-        vault.lock()
-        lock_calls: list[int] = []
-        original_lock = vault.lock
+    vault = make_vault_env(master_password="MasterPassword!2026").vault
+    vault.lock()
+    lock_calls: list[int] = []
+    original_lock = vault.lock
 
-        def _spy_lock():
-            lock_calls.append(1)
-            return original_lock()
+    def _spy_lock():
+        lock_calls.append(1)
+        return original_lock()
 
-        monkeypatch.setattr(vault, "lock", _spy_lock)
-        app = CipherBoxApp.__new__(CipherBoxApp)
-        app._vault = vault
-        app._main_window = None
-        # 未解锁：短路返回，不应抛异常，lock 不应被再次调用
-        app._emergency_cleanup(full=True)
-        assert lock_calls == []
-        assert not vault.is_unlocked
-        vault.close()
+    monkeypatch.setattr(vault, "lock", _spy_lock)
+    app = CipherBoxApp.__new__(CipherBoxApp)
+    app._vault = vault
+    app._main_window = None
+    # 未解锁：短路返回，不应抛异常，lock 不应被再次调用
+    app._emergency_cleanup(full=True)
+    assert lock_calls == []
+    assert not vault.is_unlocked
 
 
-def test_emergency_cleanup_locks_unlocked_vault():
+def test_emergency_cleanup_locks_unlocked_vault(make_vault_env):
     """保险库解锁时 _emergency_cleanup 应尽力调用 lock() 收缩明文残留面。"""
-    with tempfile.TemporaryDirectory() as root:
-        config = make_test_config(root)
-        vault = make_vault(config)
-        assert vault.initialize("MasterPassword!2026")[0]
-        assert vault.is_unlocked
-        app = CipherBoxApp.__new__(CipherBoxApp)
-        app._vault = vault
-        app._main_window = None
-        # 解锁态：兜底应 lock()，使密钥材料清零、is_unlocked 变 False
-        app._emergency_cleanup(full=False)
-        assert not vault.is_unlocked
-        vault.close()
+    vault = make_vault_env(master_password="MasterPassword!2026").vault
+    assert vault.is_unlocked
+    app = CipherBoxApp.__new__(CipherBoxApp)
+    app._vault = vault
+    app._main_window = None
+    # 解锁态：兜底应 lock()，使密钥材料清零、is_unlocked 变 False
+    app._emergency_cleanup(full=False)
+    assert not vault.is_unlocked
 
 
-def test_emergency_cleanup_idempotent_across_repeated_calls():
+def test_emergency_cleanup_idempotent_across_repeated_calls(make_vault_env):
     """_emergency_cleanup 幂等：closeEvent/aboutToQuit/excepthook 多路径可能重复
     调用，重复清理不应抛异常（vault 已锁定时再次短路）。"""
-    with tempfile.TemporaryDirectory() as root:
-        config = make_test_config(root)
-        vault = make_vault(config)
-        assert vault.initialize("MasterPassword!2026")[0]
-        app = CipherBoxApp.__new__(CipherBoxApp)
-        app._vault = vault
-        app._main_window = None
-        app._emergency_cleanup(full=False)
-        app._emergency_cleanup(full=True)
-        app._emergency_cleanup(full=False)
-        assert not vault.is_unlocked
-        vault.close()
+    vault = make_vault_env(master_password="MasterPassword!2026").vault
+    app = CipherBoxApp.__new__(CipherBoxApp)
+    app._vault = vault
+    app._main_window = None
+    app._emergency_cleanup(full=False)
+    app._emergency_cleanup(full=True)
+    app._emergency_cleanup(full=False)
+    assert not vault.is_unlocked
 
 
-def test_emergency_cleanup_swallows_main_window_errors():
+def test_emergency_cleanup_swallows_main_window_errors(make_vault_env):
     """main_window.prepare_for_lock/emergency_clear_clipboard 抛异常时，兜底路径
     仍须继续执行 vault.lock()——崩溃兜底绝不能因清理再次抛出。"""
-    with tempfile.TemporaryDirectory() as root:
-        config = make_test_config(root)
-        vault = make_vault(config)
-        assert vault.initialize("MasterPassword!2026")[0]
+    vault = make_vault_env(master_password="MasterPassword!2026").vault
 
-        class _BoomWindow:
-            """替代 MainWindow 的桩，prepare_for_lock 与 clear_clipboard 抛异常以验证兜底容错。"""
+    class _BoomWindow:
+        """替代 MainWindow 的桩，prepare_for_lock 与 clear_clipboard 抛异常以验证兜底容错。"""
 
-            def prepare_for_lock(self):
-                raise RuntimeError("prepare_for_lock 模拟失败")
+        def prepare_for_lock(self):
+            raise RuntimeError("prepare_for_lock 模拟失败")
 
-            def emergency_clear_clipboard(self):
-                raise RuntimeError("clear_clipboard 模拟失败")
+        def emergency_clear_clipboard(self):
+            raise RuntimeError("clear_clipboard 模拟失败")
 
-        app = CipherBoxApp.__new__(CipherBoxApp)
-        app._vault = vault
-        app._main_window = _BoomWindow()  # type: ignore[assignment]
-        app._emergency_cleanup(full=True)
-        assert not vault.is_unlocked
-        vault.close()
+    app = CipherBoxApp.__new__(CipherBoxApp)
+    app._vault = vault
+    app._main_window = _BoomWindow()  # type: ignore[assignment]
+    app._emergency_cleanup(full=True)
+    assert not vault.is_unlocked
 
 
 def test_main_window_construction_failure_rolls_back(monkeypatch):

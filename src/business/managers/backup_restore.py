@@ -15,10 +15,9 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, cast
+from typing import IO, TYPE_CHECKING, Any, NamedTuple, cast
 
 if TYPE_CHECKING:
-    from ...config import ConfigManager
     from .entry_manager import EntryManager
     from .vault_manager import VaultManager
 
@@ -90,7 +89,7 @@ from .restore_point_manager import RestorePointManager
 
 logger = logging.getLogger(__name__)
 
-# ======== 恢复加权总进度刻度（PERF-083）========
+# ======== 恢复加权总进度刻度（PERF-083，子段细化 PERF-089，段表收敛 MAINT-107）========
 # 50k 库恢复实测 15-25s 全程模态无反馈，比照导入（PERF-065）/导出（PERF-070）的加权
 # 刻度方法：按各阶段耗时画像映射到 [0,100]。两段 CPU 主导大头是「恢复点创建」（恢复
 # 前全量库的逐条解密 collect_portable_data + 整体重加密落盘）与「逐表重建」
@@ -98,18 +97,73 @@ logger = logging.getLogger(__name__)
 # 中条目（每条约 8 个加密字段）远重于密码历史（每条 1 个），区间按 35:15 分配；
 # 头部+KDF 派生+解密为固定成本（Argon2id t3/m64MiB + GCM 解密 ~1-2s），收尾
 # （WAL 截断 + 旧快照 purge）为快速 IO 段，合并占首尾 5+5。
+# PERF-089 子段细化（消除段内长无上报冻结窗口）：
+# - 恢复点创建段 5→45 按同款「条目远重于历史」7:3 比例拆条目解密 5→33 / 历史解密
+#   33→45（历史解密此前整段无上报）；
+# - 重建条目段 45→80 拆加密 45→62 / 批量写入 62→80（写入单次 executemany 50k 实测
+#   ~2.85s，加密逐字段 CPU 同量级，近似各半）；
+# - 重建历史段 80→95 拆加密 80→90 / 分组批量写入 90→95（加密逐条单字段为主导，
+#   写入按 entry 分组批量、组数远小于历史行数）。
+# MAINT-107：六段的 base/span 常量对（跨段相邻性 45+17==62 等纯手工维护）收敛为
+# 结构化段表 + 启动期相邻性校验 + 单一闭包工厂（见 _segment_progress_reporter）。
 _RESTORE_PROGRESS_TOTAL = 100
 # 头部解析 + PASSWORD Argon2id 派生 + GCM 解密 + 结构校验完成（粗粒度单点上报）。
 _RESTORE_DECRYPT_DONE = 5
-# 恢复点创建阶段：5 → 45。
-_RESTORE_POINT_BASE = 5
-_RESTORE_POINT_SPAN = 40
-# 重建条目阶段：45 → 80。
-_RESTORE_REBUILD_ENTRIES_BASE = 45
-_RESTORE_REBUILD_ENTRIES_SPAN = 35
-# 重建密码历史阶段：80 → 95；事务后收尾（WAL 截断/purge）占 95 → 100。
-_RESTORE_REBUILD_HISTORY_BASE = 80
-_RESTORE_REBUILD_HISTORY_SPAN = 15
+
+
+class _ProgressSegment(NamedTuple):
+    """恢复加权进度的一个子段刻度（``base → base+span``，段表行）。"""
+
+    base: int
+    span: int
+
+
+class _RestoreSegments(NamedTuple):
+    """恢复全部子段刻度的具名视图（调用点按语义名取段，替代魔法索引）。"""
+
+    point_entries: _ProgressSegment
+    point_history: _ProgressSegment
+    entries_encrypt: _ProgressSegment
+    entries_write: _ProgressSegment
+    history_encrypt: _ProgressSegment
+    history_write: _ProgressSegment
+
+
+# 段表（次序即刻度次序，语义见上方 PERF-089 说明）：恢复点创建两段（条目/历史解密）、
+# 重建条目两段（加密/分块写入）、重建历史两段（加密/分组写入）；95→100 的事务后收尾
+# 段（WAL 截断/purge）由 _restore_current 的终值上报直接补足，不在表内。
+_RESTORE_SEG = _RestoreSegments(
+    point_entries=_ProgressSegment(5, 28),
+    point_history=_ProgressSegment(33, 12),
+    entries_encrypt=_ProgressSegment(45, 17),
+    entries_write=_ProgressSegment(62, 18),
+    history_encrypt=_ProgressSegment(80, 10),
+    history_write=_ProgressSegment(90, 5),
+)
+
+
+# 启动期校验（if+RuntimeError，-O 存活，对齐 strings.py ARCH-040 形式）：段表相邻
+# 无缝隙/无重叠——首段起点承接解密完成里程碑、每段 base+span == 下一段 base。
+# 45+17==62 等相邻性此前散在 6 组常量对手工维护、无任何校验，一处手改即静默
+# 留缝隙（进度条卡在缝隙点）或重叠（进度回退）；尾段终点（95）须小于总刻度，
+# 给收尾段留出区间。段表契约另有可读失败定位的测试守护
+# （TestRestoreProgressSegmentTable）。
+def _validate_restore_segments(
+    segments: _RestoreSegments,
+    start: int,
+    total: int,
+) -> None:
+    """校验段表相邻性：首段起点承接 ``start``、逐段无缝衔接、尾段终点 < ``total``。"""
+    cursor = start
+    for seg in segments:
+        if seg.base != cursor:
+            raise RuntimeError(f"恢复进度段表相邻刻度出现缝隙/重叠：{seg.base} != {cursor}")
+        cursor = seg.base + seg.span
+    if cursor >= total:
+        raise RuntimeError("恢复进度段表尾段越过总刻度，收尾段无区间可用")
+
+
+_validate_restore_segments(_RESTORE_SEG, _RESTORE_DECRYPT_DONE, _RESTORE_PROGRESS_TOTAL)
 
 
 def _weighted_progress(base: int, span: int, done: int, total: int) -> int:
@@ -120,6 +174,26 @@ def _weighted_progress(base: int, span: int, done: int, total: int) -> int:
     同一映射语义（``total <= 0`` 空阶段取满、终值取满、整数下取整单调不降）。
     """
     return phase_progress(done, total, base, base + span)
+
+
+def _segment_progress_reporter(
+    progress: Callable[[int, int], None] | None,
+    segment: _ProgressSegment,
+) -> Callable[[int, int], None]:
+    """构造把阶段内 ``(done, total)`` 映射到 ``segment`` 加权刻度的上报闭包（MAINT-107）。
+
+    恢复点两段与重建四段的进度闭包 ~66 行复制体（仅 base/span 不同）收敛为
+    partial over base/span 的单一工厂（import_export._offset_phase_reporter 同型）；
+    ``progress`` 为 None 时闭包内跳过上报，与收敛前各闭包首行的 ``if progress
+    is not None`` 守卫逐点等价（无进度路径的下游回调形态不变）。
+    """
+    base, span = segment
+
+    def _report(done: int, total: int) -> None:
+        if progress is not None:
+            progress(_weighted_progress(base, span, done, total), _RESTORE_PROGRESS_TOTAL)
+
+    return _report
 
 
 @dataclass
@@ -229,18 +303,19 @@ class BackupRestoreManager:
         backup_password: str | None,
         use_snapshot_key: bool,
         cancel_check: Callable[[], bool] | None,
-        progress: Callable[[int, int], None] | None = None,
+        entries_progress: Callable[[int, int], None] | None = None,
+        history_progress: Callable[[int, int], None] | None = None,
     ) -> tuple[bool, str]:
         """备份全流程；调用方须已持有 ``vault_write_lock``。
 
         持锁顺序执行 prepare + finalize，供 :class:`RestorePointManager.create` 经
         ``creator`` 参数在已持锁上下文复用以创建恢复点。亦为测试 monkeypatch 拦截恢复点
         创建的桩点（见 test_restore_point_cleaned_on_creation_exception）。
-        ``progress``（PERF-083）仅恢复点创建路径传入（经 collector 按条目上报）；
-        正式备份路径无进度 UI，恒 None。
+        ``entries_progress``/``history_progress``（PERF-083/089）仅恢复点创建路径传入
+        （经 collector 按条目/历史上报）；正式备份路径无进度 UI，恒 None。
         """
         prepared = self._prepare_backup_locked(filepath, backup_password, use_snapshot_key)
-        return self._finalize_backup(prepared, cancel_check, progress)
+        return self._finalize_backup(prepared, cancel_check, entries_progress, history_progress)
 
     def _prepare_backup_locked(
         self,
@@ -295,7 +370,8 @@ class BackupRestoreManager:
         self,
         prepared: PreparedBackup,
         cancel_check: Callable[[], bool] | None,
-        progress: Callable[[int, int], None] | None = None,
+        entries_progress: Callable[[int, int], None] | None = None,
+        history_progress: Callable[[int, int], None] | None = None,
     ) -> tuple[bool, str]:
         """锁外完成密钥派生、全量解密、加密与落盘（缩短 vault_write_lock 持有，
         锁内 prepare → 锁外 finalize 拆分，见 :meth:`create_backup` 的决策说明）。
@@ -304,7 +380,8 @@ class BackupRestoreManager:
         副本。``cancel_check`` 在解密循环中及时中止。AAD、header 写入、payload/数量上限
         校验与持锁全流程路径（:meth:`_create_backup_locked`）一致，备份格式不变。backup_key
         的清零在 finally 完成，PASSWORD 路径派生密钥在所有退出路径均被清零；SNAPSHOT 路径
-        借用 snapshot_key 不清零。
+        借用 snapshot_key 不清零。``entries_progress``/``history_progress``
+        （PERF-083/089）透传 collector 的条目/历史解密上报，正式备份路径恒 None。
         """
         t0 = time.monotonic()
         backup_key: bytes | bytearray
@@ -329,7 +406,8 @@ class BackupRestoreManager:
                 raw_entries=prepared.raw_entries,
                 history_rows=prepared.history_rows,
                 categories=prepared.categories,
-                progress=progress,
+                entries_progress=entries_progress,
+                history_progress=history_progress,
             )
             if data is None:
                 return False, "备份已取消"
@@ -371,9 +449,10 @@ class BackupRestoreManager:
     ) -> tuple[bool, str]:
         """恢复备份；任何步骤失败都会回滚当前数据库。
 
-        ``progress``（PERF-083）按加权总进度上报 ``(current, 100)``，覆盖解密完成
-        里程碑、恢复点创建（5→45）、逐表重建（45→95）与终值 100；大库恢复实测
-        15-25s，此前全程模态无反馈。None 时不上报（调用方无进度 UI 的路径不变）。
+        ``progress``（PERF-083，子段细化 PERF-089）按加权总进度上报 ``(current, 100)``，
+        覆盖解密完成里程碑、恢复点创建（条目 5→33 / 历史 33→45）、逐表重建（条目加密
+        45→62 / 条目写入 62→80 / 历史加密 80→90 / 历史写入 90→95）与终值 100；大库恢复
+        实测 15-25s，此前全程模态无反馈。None 时不上报（调用方无进度 UI 的路径不变）。
         """
         try:
             t0 = time.monotonic()
@@ -581,25 +660,22 @@ class BackupRestoreManager:
             # 加密恢复前明文），消除延迟绑定的可变状态。创建步骤亦纳入 try：其异常路径
             # 同样须触发 finally 的明文释放，兑现 docstring「无论成败」契约。
             try:
-                # 恢复点创建进度映射到 5→45 区间（PERF-083）：collector 上报的原始
-                # 条目计数经 _weighted_progress 加权；恢复点被超限降级跳过时该段
-                # 直接跳到重建阶段，进度单调不减。
-                def _point_progress(done: int, total: int) -> None:
-                    if progress is not None:
-                        progress(
-                            _weighted_progress(
-                                _RESTORE_POINT_BASE, _RESTORE_POINT_SPAN, done, total
-                            ),
-                            _RESTORE_PROGRESS_TOTAL,
-                        )
-
+                # 恢复点创建进度映射到 5→45 区间（PERF-083/089 拆条目/历史两个子段，
+                # 闭包工厂收敛 MAINT-107）：collector 上报的原始计数经
+                # _segment_progress_reporter 加权；恢复点被超限降级跳过时该段直接
+                # 跳到重建阶段，进度单调不减。
                 self._restore_points.create(
                     lambda path: self._create_backup_locked(
                         path,
                         backup_password=None,
                         use_snapshot_key=True,
                         cancel_check=None,
-                        progress=_point_progress,
+                        entries_progress=_segment_progress_reporter(
+                            progress, _RESTORE_SEG.point_entries
+                        ),
+                        history_progress=_segment_progress_reporter(
+                            progress, _RESTORE_SEG.point_history
+                        ),
                     )
                 )
             except PayloadTooLargeError:
@@ -710,32 +786,15 @@ class BackupRestoreManager:
         恢复不改主密码，故用 ``self._key`` 重新加密备份载荷。事务内清空库后重建
         分类/条目/密码历史，同事务写入新的 key_epoch 与 snapshot_key_enc（消除事务外
         崩溃的不一致窗口），并据新 epoch 重算 vault_meta_mac。
-        ``progress``（PERF-083）逐表重建映射到 45→95：条目段 45→80（每条约 8 个加密
-        字段，工作量大头）、密码历史段 80→95（每条单字段加密）；分类表数量级小不细分。
+        ``progress``（PERF-083，子段细化 PERF-089）逐表重建映射到 45→95：条目段
+        45→80（加密 45→62 每条约 8 个加密字段、批量写入 62→80 单次 executemany 50k
+        实测 ~2.85s）、密码历史段 80→95（加密 80→90、分组批量写入 90→95）；分类表
+        数量级小不细分。
 
         返回 ``(new_epoch, new_snapshot_key)``：调用方在事务提交后、释放锁前经
         :meth:`update_key_epoch` 与 :meth:`apply_snapshot_key` 同步内存状态。
         ``new_snapshot_key`` 为 bytearray 便于失败时原地清零。
         """
-
-        def _entries_progress(done: int, total: int) -> None:
-            if progress is not None:
-                progress(
-                    _weighted_progress(
-                        _RESTORE_REBUILD_ENTRIES_BASE, _RESTORE_REBUILD_ENTRIES_SPAN, done, total
-                    ),
-                    _RESTORE_PROGRESS_TOTAL,
-                )
-
-        def _history_progress(done: int, total: int) -> None:
-            if progress is not None:
-                progress(
-                    _weighted_progress(
-                        _RESTORE_REBUILD_HISTORY_BASE, _RESTORE_REBUILD_HISTORY_SPAN, done, total
-                    ),
-                    _RESTORE_PROGRESS_TOTAL,
-                )
-
         db = self._vault.db
         key = self._key
         # validate_restore_data 已校验载荷结构，cast 为 PortableBackup 使后续 _restore_*
@@ -762,10 +821,25 @@ class BackupRestoreManager:
                     ),
                     backup,
                 )
+                # 四个重建子段的上报闭包经 _segment_progress_reporter 工厂构造
+                # （MAINT-107，替代四份仅 base/span 不同的复制体）。
                 entry_map, crypto_id_map = restore_entries(
-                    db, backup, key, category_map, _entries_progress
+                    db,
+                    backup,
+                    key,
+                    category_map,
+                    _segment_progress_reporter(progress, _RESTORE_SEG.entries_encrypt),
+                    _segment_progress_reporter(progress, _RESTORE_SEG.entries_write),
                 )
-                restore_history(db, backup, key, entry_map, crypto_id_map, _history_progress)
+                restore_history(
+                    db,
+                    backup,
+                    key,
+                    entry_map,
+                    crypto_id_map,
+                    _segment_progress_reporter(progress, _RESTORE_SEG.history_encrypt),
+                    _segment_progress_reporter(progress, _RESTORE_SEG.history_write),
+                )
                 # 轮换 key_epoch 防止旧会话写入恢复后的数据
                 new_epoch = uuid.uuid4().hex
                 db.set_meta("key_epoch", new_epoch)
@@ -791,14 +865,18 @@ class BackupRestoreManager:
 
     def maybe_auto_backup(
         self,
-        config: "ConfigManager",
         force: bool = False,
         cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[bool, str]:
         """按配置创建当前保险库的本地快速快照。
 
+        配置读取统一经 ``self._vault.config`` 单一通道（ARCH-048）：与同类
+        ``create_backup`` 的 purge 清理（``purge_snapshot_backups(self._vault.config)``）
+        一致，不留「调用方传参」的第二通道——vault 构造注入的 ConfigManager 即
+        全类配置的唯一来源，参数传入的另一实例（即便当前恰好同对象）构成双源
+        漂移面。
+
         Args:
-            config: ConfigManager 实例，用于读取备份设置。
             force: 是否强制创建，忽略时间间隔检查。
             cancel_check: 可选取消探针，透传给 create_backup，使后台快照
                 在隐藏到托盘或锁定时能尽快退出。
@@ -806,6 +884,7 @@ class BackupRestoreManager:
         Returns:
             由是否成功与错误信息组成的二元组，成功时错误信息为空字符串。
         """
+        config = self._vault.config
         if not force and not config.get(CFG_AUTO_BACKUP_ENABLED, False):
             return True, ""
 

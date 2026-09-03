@@ -96,8 +96,9 @@ class AutoBackupController:
             # 此时 worker 已赋值。cancel_check 直接用 BackgroundWorker 提供的绑定方法，
             # 消除 holder 列表与 lambda 包装。锁定/隐藏到托盘时 wait_worker_shutdown
             # 设置取消标志，maybe_auto_backup 的全量解密循环据此及时退出。
+            # 配置不随调用传参：maybe_auto_backup 经 self._vault.config 单一通道读取
+            # （ARCH-048），本控制器的 self._config 仅用于启用开关的 UI 侧预判。
             return self._backup.maybe_auto_backup(
-                self._config,
                 force=force,
                 cancel_check=worker.cancel_check,
             )

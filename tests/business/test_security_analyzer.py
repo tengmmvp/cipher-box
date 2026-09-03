@@ -4,12 +4,19 @@
 边界（空库、满分、各档累加、clamp）与 ``src/business/services/entry_search_match.py``
 的 ``matches_search`` / ``matches_search_lower`` 在相同输入下结果等价（后者复用预
 计算小写字段，是前者的批量优化版，匹配语义须完全一致）。
+
+MAINT-095 豁免说明：本文件对 ``_analysis_cache`` 内部键（``_fingerprint_map`` /
+``_summaries_with_dates`` / ``_key_epoch`` 等）的直读属**白盒结构守护**——出口契约
+（PERF-062 剥离）、指纹桶对象身份共享（PERF-076/085）、epoch 快照（SEC-040）等
+不变量本身就是「内部缓存结构与出口视图的差异」，公开观察面（get_cached_report
+已剥离内部键）无法表达；有公开等价观测的一律走公开面。
 """
 
 import dataclasses
 
 import pytest
 
+from src.business.composition import build_business_context
 from src.business.services.entry_search_match import matches_search, matches_search_lower
 from src.business.services.security_analyzer import SecurityAnalyzer
 from src.models import Entry
@@ -115,17 +122,11 @@ class TestIncrementalCacheInvalidation:
     """
 
     @pytest.fixture
-    def ctx_vault(self, tmp_path):
+    def ctx_vault(self, make_vault_env):
         """组装生产接线的 BusinessContext（change_bus → security 增量失效）。"""
-        from src.business.composition import build_business_context
-        from tests.helpers import make_test_config, make_vault
-
-        config = make_test_config(str(tmp_path))
-        vault = make_vault(config)
-        vault.initialize("TestIncremental!2026")
-        ctx = build_business_context(config, vault)
-        yield ctx, vault
-        vault.close()
+        env = make_vault_env(master_password="TestIncremental!2026")
+        ctx = build_business_context(env.config, env.vault)
+        yield ctx, env.vault
 
     @staticmethod
     def _forbid_full_analysis():
@@ -263,9 +264,10 @@ class TestIncrementalCacheInvalidation:
         """缓存缺失时增删通知回退全量失效语义（无缓存可增量，行为不变）。"""
         ctx, _vault = ctx_vault
         ctx.entry_mgr.add_entry(Entry(title="t", username="u", password="pw123456"))
-        # 未曾 get_or_compute_report → _analysis_cache 为 None，增量路径返回 False
-        # 后的全量失效对 None 缓存是无操作，随后首次计算正常覆盖新条目。
-        assert ctx.security._analysis_cache is None
+        # 未曾 get_or_compute_report → 缓存为 None（公开观察面 get_cached_report
+        # 同样返回 None），增量路径返回 False 后的全量失效对 None 缓存是无操作，
+        # 随后首次计算正常覆盖新条目。
+        assert ctx.security.get_cached_report() is None
         report = ctx.security.get_or_compute_report()
         assert report["total"] == 1
 
@@ -281,17 +283,11 @@ class TestInflightInvalidationGenerationGuard:
     """
 
     @pytest.fixture
-    def ctx_vault(self, tmp_path):
+    def ctx_vault(self, make_vault_env):
         """组装生产接线的 BusinessContext（change_bus → security 增量失效）。"""
-        from src.business.composition import build_business_context
-        from tests.helpers import make_test_config, make_vault
-
-        config = make_test_config(str(tmp_path))
-        vault = make_vault(config)
-        vault.initialize("TestGenerationGuard!2026")
-        ctx = build_business_context(config, vault)
-        yield ctx, vault
-        vault.close()
+        env = make_vault_env(master_password="TestGenerationGuard!2026")
+        ctx = build_business_context(env.config, env.vault)
+        yield ctx, env.vault
 
     def test_midflight_invalidation_discards_stale_writeback(self, ctx_vault, monkeypatch):
         """读库后失效、完成后写回：缓存不被过期报告污染，重启轮重新全量。"""
@@ -335,24 +331,18 @@ class TestReportExitContract:
     """缓存报告出口剥离内部键（PERF-062）+ 增量更新指纹桶局部重建验证。
 
     出口契约：get_cached_report / get_or_compute_report 返回的报告仅含公开字段
-    （_SecurityReportBase 的键集），不含 ``_fingerprint_map`` /
+    （SecurityReport 出口形态的键集），不含 ``_fingerprint_map`` /
     ``_summaries_with_dates`` / ``_key_epoch`` 内部键——这些仅缓存分层内部消费，
     剥离后出口深拷贝消失、增量更新的桶共享变安全。行为回归：days 重过滤与增量
     更新语义须与剥离前一致（仍基于内部缓存本体完成）。
     """
 
     @pytest.fixture
-    def ctx_vault(self, tmp_path):
+    def ctx_vault(self, make_vault_env):
         """组装生产接线的 BusinessContext（change_bus → security 增量失效）。"""
-        from src.business.composition import build_business_context
-        from tests.helpers import make_test_config, make_vault
-
-        config = make_test_config(str(tmp_path))
-        vault = make_vault(config)
-        vault.initialize("TestExitContract!2026")
-        ctx = build_business_context(config, vault)
-        yield ctx, vault
-        vault.close()
+        env = make_vault_env(master_password="TestExitContract!2026")
+        ctx = build_business_context(env.config, env.vault)
+        yield ctx, env.vault
 
     _PUBLIC_KEYS = {
         "total",
@@ -376,7 +366,9 @@ class TestReportExitContract:
         assert set(cached) == self._PUBLIC_KEYS
 
     def test_exit_internal_cache_retains_full_keys(self, ctx_vault):
-        """内部缓存本体仍持全键，供 days 重过滤与增量更新使用。"""
+        """内部缓存本体仍持内部键（供 days 重过滤与增量更新），且不再持有公开
+        列表键（PERF-085 收口：map 是唯一事实源，出口经 _export_report 派生，
+        消除「同名公开列表键自首次增量差分起陈旧」的双表示）。"""
         ctx, _vault = ctx_vault
         ctx.entry_mgr.add_entry(Entry(title="t", username="u", password="Str0ngPass!2026"))
         ctx.security.get_or_compute_report()
@@ -385,6 +377,10 @@ class TestReportExitContract:
         assert "_fingerprint_map" in internal
         assert "_summaries_with_dates" in internal
         assert "_key_epoch" in internal
+        # 收口守护：公开列表键不在缓存本体（出口从 map 派生）
+        assert "weak_entries" not in internal
+        assert "old_entries" not in internal
+        assert "duplicate_groups" not in internal
 
     def test_days_refilter_still_works_after_stripping(self, ctx_vault):
         """days 重过滤行为不变：days 变化时按 _summaries_with_dates（内部键）重算 old。"""
@@ -447,17 +443,11 @@ class TestIncrementalUpdateEpochSnapshot:
     """增量更新二次校验比对快照 epoch 而非实时 epoch（SEC-040，防跨 epoch grafting）。"""
 
     @pytest.fixture
-    def ctx_vault(self, tmp_path):
+    def ctx_vault(self, make_vault_env):
         """组装生产接线的 BusinessContext（change_bus → security 增量失效）。"""
-        from src.business.composition import build_business_context
-        from tests.helpers import make_test_config, make_vault
-
-        config = make_test_config(str(tmp_path))
-        vault = make_vault(config)
-        vault.initialize("TestEpochGuard!2026")
-        ctx = build_business_context(config, vault)
-        yield ctx, vault
-        vault.close()
+        env = make_vault_env(master_password="TestEpochGuard!2026")
+        ctx = build_business_context(env.config, env.vault)
+        yield ctx, env.vault
 
     def test_cross_epoch_refill_aborts_incremental_grafting(self, ctx_vault):
         """锁外重分类期间 epoch 轮换且缓存被新 epoch 重填时，增量结果不得并入。
@@ -499,37 +489,36 @@ class TestIncrementalUpdateEpochSnapshot:
 
 
 class TestIncrementalFingerprintIndex:
-    """_crypto_id_to_fp 反向索引与指纹桶的一致性守护（PERF-076）。
+    """_crypto_id_to_fp 反向索引与指纹桶的一致性守护（PERF-076/085）。
 
     索引是增量更新 O(1) 定位旧桶的依据，与 ``_fingerprint_map`` 平行维护
     （full_analysis 构建 / 增量更新同步）。两者失同步会使增量路径定位错桶——
     索引指向的桶不含该条目（误删/漏删桶成员）或桶内条目不在索引（回退扫描
-    兜底但 O(桶数) 退化）。本类锚定三条不变量在全量与增量路径后均成立。
+    兜底但 O(桶数) 退化）。PERF-085 起无指纹条目以 None 哨兵入索引（键集与
+    ``_summaries_with_dates`` 一致），本类锚定三条不变量在全量与增量路径后均成立。
     """
 
     @pytest.fixture
-    def ctx_vault(self, tmp_path):
+    def ctx_vault(self, make_vault_env):
         """组装生产接线的 BusinessContext（change_bus → security 增量失效）。"""
-        from src.business.composition import build_business_context
-        from tests.helpers import make_test_config, make_vault
-
-        config = make_test_config(str(tmp_path))
-        vault = make_vault(config)
-        vault.initialize("TestFpIndex!20260828")
-        ctx = build_business_context(config, vault)
-        yield ctx, vault
-        vault.close()
+        env = make_vault_env(master_password="TestFpIndex!20260828")
+        ctx = build_business_context(env.config, env.vault)
+        yield ctx, env.vault
 
     @staticmethod
     def _assert_index_consistent(ctx):
-        """三条不变量：索引键==桶成员集；索引值==成员所在桶；无指纹条目不入索引。"""
+        """三条不变量：索引键==summaries 键集；有指纹条目指向的桶含该条目；
+        None 哨兵条目不在任何桶。"""
         internal = ctx.security._analysis_cache
         assert internal is not None
         fp_map = internal["_fingerprint_map"]
         index = internal["_crypto_id_to_fp"]
-        bucket_members = {e.crypto_id for group in fp_map.values() for e in group}
-        assert set(index) == bucket_members, "索引键集须与指纹桶全体成员一致"
+        summaries = internal["_summaries_with_dates"]
+        assert set(index) == set(summaries), "索引键集须与 summaries 键集一致"
         for crypto_id, fingerprint in index.items():
+            if fingerprint is None:
+                continue
+            assert fingerprint in fp_map, f"哨兵外索引值 {crypto_id} 须指向真实指纹桶"
             group = fp_map[fingerprint]
             assert any(e.crypto_id == crypto_id for e in group), (
                 f"索引 {crypto_id} 指向的桶不含该条目"
@@ -566,13 +555,132 @@ class TestIncrementalFingerprintIndex:
         # 行为回归：三条同密码 → duplicate_count == 2
         assert ctx.security.get_or_compute_report()["duplicate_count"] == 2
 
-        # 增量三：改为无密码（NOTE 语义——指纹移除，索引须同步清除）
+        # 增量三：改为无密码（NOTE 语义——指纹移除，索引须换回 None 哨兵）
         entry = ctx.entry_mgr.get_entry(id_c)
         ctx.entry_mgr.update_entry(dataclasses.replace(entry, password=""))
         self._assert_index_consistent(ctx)
         internal = ctx.security._analysis_cache
         assert internal is not None
-        assert raw_c.crypto_id not in internal["_crypto_id_to_fp"]
+        assert internal["_crypto_id_to_fp"][raw_c.crypto_id] is None
+
+
+class TestIncrementalNoFingerprintSentinel:
+    """无指纹条目经索引 None 哨兵直达差分分支，不触发逐桶全扫描（PERF-085）。
+
+    原缺陷：索引仅收录有指纹条目，无密码条目（note/identity/未填密码等常态）
+    每次 add/update/delete/restore 差分的 ``fp_index.pop`` 必 miss，落入逐桶
+    ``any(e.crypto_id == ...)`` 全扫描且注定失败——50k 库实测每次 8.8ms 纯浪费。
+    守护：无指纹条目差分期间 ``_fingerprint_map.items()`` 不得被迭代（回退扫描
+    的唯一入口），且行为与全量等价。
+    """
+
+    @pytest.fixture
+    def ctx_vault(self, make_vault_env):
+        """组装生产接线的 BusinessContext（change_bus → security 增量失效）。"""
+        env = make_vault_env(master_password="TestNoFpSentinel!20260903")
+        ctx = build_business_context(env.config, env.vault)
+        yield ctx, env.vault
+
+    @staticmethod
+    def _install_counting_fp_map(ctx) -> None:
+        """把缓存本体的 _fingerprint_map 换成 items() 计数子类，返回计数器。"""
+        internal = ctx.security._analysis_cache
+        assert internal is not None
+
+        class _CountingFpMap(dict):
+            """dict 子类：仅对 items() 迭代（回退扫描入口）计数。"""
+
+            items_calls = 0
+
+            def items(self):
+                type(self).items_calls += 1
+                return super().items()
+
+        original = internal["_fingerprint_map"]
+        internal["_fingerprint_map"] = _CountingFpMap(original)
+        assert _CountingFpMap.items_calls == 0
+
+    def test_passwordless_edit_and_delete_skip_bucket_scan(self, ctx_vault, monkeypatch):
+        """无密码条目的编辑与软删除差分均不逐桶扫描，报告与全量等价。"""
+        import dataclasses
+
+        from src.business.managers.entry_cache import EntryCacheManager
+        from src.business.services.security_analyzer import SecurityAnalyzer
+
+        ctx, _vault = ctx_vault
+        id_note = ctx.entry_mgr.add_entry(
+            Entry(title="笔记", username="u", entry_type="note", password="")
+        )
+        # 无密码条目创建后先行全量（缓存就位，条目以哨兵入索引）
+        ctx.security.get_or_compute_report()
+        self._install_counting_fp_map(ctx)
+
+        def _forbid_full(*_args, **_kwargs):
+            raise AssertionError("无指纹差分不应触发整库 full_analysis 重算")
+
+        monkeypatch.setattr(ctx.security, "full_analysis", _forbid_full)
+
+        # 编辑（改标题）与删除均为无指纹差分：哨兵命中，不迭代任何桶
+        entry = ctx.entry_mgr.get_entry(id_note)
+        ctx.entry_mgr.update_entry(dataclasses.replace(entry, title="新标题"))
+        ctx.entry_mgr.delete_entry(id_note)
+        refreshed = ctx.security.get_or_compute_report()
+        assert refreshed["total"] == 0
+
+        internal = ctx.security._analysis_cache
+        assert internal is not None
+        assert type(internal["_fingerprint_map"]).items_calls == 0, (
+            "无指纹条目差分不得触发逐桶全扫描（PERF-085 哨兵回归）"
+        )
+        # 行为等价守护：与新鲜全量一致
+        fresh = SecurityAnalyzer(ctx.vault, EntryCacheManager(ctx.vault)).full_analysis()
+        for key in ("total", "weak_count", "duplicate_count", "old"):
+            assert refreshed[key] == fresh[key], f"增量与全量在 {key} 上分叉"
+
+    def test_index_bucket_tear_tolerated_without_keyerror(self, ctx_vault):
+        """索引与桶的两种撕裂形态（QL-068）差分不抛 KeyError、结果仍收敛。
+
+        - 反向撕裂：索引有旧指纹但指纹桶缺失——兜底视同无旧桶，不 KeyError；
+        - 正向撕裂：索引缺键但条目实际在某桶——回退逐桶扫描定位。
+        """
+        import dataclasses
+
+        ctx, _vault = ctx_vault
+        shared = "TornIndex!2026"
+        id_a = ctx.entry_mgr.add_entry(Entry(title="A", username="a", password=shared))
+        ctx.security.get_or_compute_report()
+
+        # 反向撕裂：从指纹桶删除 A 所在桶（索引仍指向该指纹）
+        internal = ctx.security._analysis_cache
+        assert internal is not None
+        raw_a = ctx.entry_mgr.db.get_entry(id_a)
+        assert raw_a is not None
+        fp_a = internal["_crypto_id_to_fp"][raw_a.crypto_id]
+        del internal["_fingerprint_map"][fp_a]
+        entry = ctx.entry_mgr.get_entry(id_a)
+        ctx.entry_mgr.update_entry(dataclasses.replace(entry, password="FreshTorn!2026"))
+        # 不抛 KeyError 即通过；结果与全量一致（差分视同无旧桶，A 以新指纹重建）
+        self._assert_matches_fresh(ctx)
+
+        # 正向撕裂：索引删除 A 新键（桶里仍有 A）——回退逐桶扫描定位旧桶
+        internal = ctx.security._analysis_cache
+        assert internal is not None
+        del internal["_crypto_id_to_fp"][raw_a.crypto_id]
+        ctx.entry_mgr.update_entry(
+            dataclasses.replace(ctx.entry_mgr.get_entry(id_a), password="FreshTorn2!2026")
+        )
+        self._assert_matches_fresh(ctx)
+
+    @staticmethod
+    def _assert_matches_fresh(ctx) -> None:
+        """增量后的缓存报告与新鲜全量分析在四项计数上一致（等价守护）。"""
+        from src.business.managers.entry_cache import EntryCacheManager
+        from src.business.services.security_analyzer import SecurityAnalyzer
+
+        refreshed = ctx.security.get_or_compute_report()
+        fresh = SecurityAnalyzer(ctx.vault, EntryCacheManager(ctx.vault)).full_analysis()
+        for key in ("total", "weak_count", "duplicate_count", "old"):
+            assert refreshed[key] == fresh[key], f"增量与全量在 {key} 上分叉"
 
 
 class TestIncrementalClockInjection:
@@ -584,17 +692,11 @@ class TestIncrementalClockInjection:
     """
 
     @pytest.fixture
-    def ctx_vault(self, tmp_path):
+    def ctx_vault(self, make_vault_env):
         """组装生产接线的 BusinessContext（同 TestIncrementalFingerprintIndex）。"""
-        from src.business.composition import build_business_context
-        from tests.helpers import make_test_config, make_vault
-
-        config = make_test_config(str(tmp_path))
-        vault = make_vault(config)
-        vault.initialize("TestClockInj!20260828")
-        ctx = build_business_context(config, vault)
-        yield ctx, vault
-        vault.close()
+        env = make_vault_env(master_password="TestClockInj!20260828")
+        ctx = build_business_context(env.config, env.vault)
+        yield ctx, env.vault
 
     def test_injected_clock_drives_incremental_old_reclassification(self, ctx_vault):
         """注入未来时钟的增量更新把未过期条目重判为过期。"""

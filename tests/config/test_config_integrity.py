@@ -257,6 +257,75 @@ class TestKeyringIntegrityKey:
         assert ("CipherBox", cfg._key_store._keyring_entry_name()) in keyring_store
         assert not cfg._integrity_key_path.exists()
 
+    def test_keyring_recovery_migrates_plaintext_key_back(self, tmp_path, monkeypatch):
+        """keyring 恢复可用后明文回退密钥一次性回迁 keyring 并清理明文文件（SEC-003）。
+
+        修复前的粘滞形态：keyring 故障期明文 config.key 落地，keyring 恢复后
+        _load_keyring_integrity_key 只回读明文文件、永不回写——SEC-003 保护对该
+        安装持续失效。修复后启动即回迁：密钥写入 keyring + secure_delete 明文文件，
+        后续会话直接走 keyring。
+        """
+        import sys
+
+        import keyring as keyring_mod
+
+        from src.config_key_store import ConfigKeyStore
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        keyring_store: dict[tuple[str, str], str] = {}
+        monkeypatch.setattr(keyring_mod, "get_password", lambda s, u: keyring_store.get((s, u)))
+        monkeypatch.setattr(
+            keyring_mod, "set_password", lambda s, u, p: keyring_store.__setitem__((s, u), p)
+        )
+
+        store = ConfigKeyStore(tmp_path / "config.key", tmp_path)
+        plaintext = b"\x44" * 32
+        store._write_integrity_key_file(plaintext)  # keyring 故障期写入的明文回退形态
+
+        key = store.load_or_create()
+        # 密钥值不变（既有 config 签名连续性保持），但已回迁 keyring、明文文件清除
+        assert key == plaintext
+        assert ("CipherBox", store._keyring_entry_name()) in keyring_store
+        assert not (tmp_path / "config.key").exists()
+
+        # 后续启动：直接命中 keyring，同一密钥，不再产生明文文件
+        key2 = ConfigKeyStore(tmp_path / "config.key", tmp_path).load_or_create()
+        assert key2 == plaintext
+        assert not (tmp_path / "config.key").exists()
+
+    def test_keyring_migration_failure_keeps_plaintext_fallback(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """回迁失败（set_password 抛异常）保持明文回退现状、密钥照常可用、ERROR 可见。
+
+        迁移失败不阻断启动（与密钥链「绝不阻断启动」契约一致），下次 keyring 恢复
+        后重试回迁。
+        """
+        import logging
+        import sys
+
+        import keyring as keyring_mod
+
+        from src.config_key_store import ConfigKeyStore
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(keyring_mod, "get_password", lambda s, u: None)
+        monkeypatch.setattr(
+            keyring_mod,
+            "set_password",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("keyring 只读")),
+        )
+        caplog.set_level(logging.ERROR, logger="src.config_key_store")
+
+        store = ConfigKeyStore(tmp_path / "config.key", tmp_path)
+        plaintext = b"\x55" * 32
+        store._write_integrity_key_file(plaintext)
+
+        key = store.load_or_create()
+        assert key == plaintext  # 密钥照常可用，绝不阻断启动
+        assert (tmp_path / "config.key").exists()  # 明文回退现状保持
+        assert any("回迁失败" in record.message for record in caplog.records)
+
     @pytest.mark.skipif(sys.platform != "win32", reason="DPAPI 分支仅 Windows")
     def test_plaintext_integrity_key_treated_as_corrupt(self, tmp_path):
         """非 DPAPI 封装的 config.key（含 32 字节明文形态）按损坏处理（SEC-052）。

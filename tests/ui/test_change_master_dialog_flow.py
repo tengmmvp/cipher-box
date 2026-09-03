@@ -158,14 +158,16 @@ class TestChangeMasterDialogFlow:
         """
         from PyQt6.QtWidgets import QDialog
 
+        from src.business.managers.vault_lifecycle import CHANGE_AUTH_FAILED_MESSAGE
+
         dlg = _make_dialog(tmp_path)
         _arm_worker_callback(dlg, monkeypatch)
         dlg._change_btn.setEnabled(False)
 
-        dlg._on_change_done((False, "当前主密码错误"))
+        dlg._on_change_done((False, CHANGE_AUTH_FAILED_MESSAGE))
 
-        assert dlg._msg_label.text() == "当前主密码错误"
-        assert dlg._rate_limiter._fail_count == 1  # 认证失败计入速率限制
+        assert dlg._msg_label.text() == CHANGE_AUTH_FAILED_MESSAGE
+        assert dlg._rate_limiter.fail_count == 1  # 认证失败计入速率限制
         assert dlg._change_btn.isEnabled()
         assert dlg.result() == QDialog.DialogCode.Rejected.value
 
@@ -180,7 +182,7 @@ class TestChangeMasterDialogFlow:
         dlg._on_change_error("新密码不能与当前主密码相同")
 
         assert any("新密码不能与当前主密码相同" in str(arg) for arg in patched_modals["critical"])
-        assert dlg._rate_limiter._fail_count == 0
+        assert dlg._rate_limiter.fail_count == 0
         assert dlg._change_btn.isEnabled()
 
     def test_change_error_shows_critical_and_reenables(

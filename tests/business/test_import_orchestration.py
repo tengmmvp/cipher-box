@@ -393,7 +393,7 @@ class TestOverwriteOnlyImportProgress:
     加权刻度（15→70 / 70→100）。
     """
 
-    # 600 行 > _WRITE_PROGRESS_CHUNK(500)：覆盖写入分 2 块产生 (70,100) 开区间中间值；
+    # 600 行 > WRITE_PROGRESS_CHUNK(500)：覆盖写入分 2 块产生 (70,100) 开区间中间值；
     # 加密子批按 100 节流产生 (15,70) 开区间中间值。
     ROWS = 600
 

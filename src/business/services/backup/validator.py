@@ -1,6 +1,5 @@
 """备份数据校验：恢复前对可移植载荷做结构、键完整性与长度上限校验。所有函数无状态。"""
 
-import logging
 from collections.abc import Set
 from typing import Any
 
@@ -27,8 +26,6 @@ from ....models import (
 )
 from ..crypto_utils import STRING_ENCRYPTED_FIELDS
 from .header_codec import BACKUP_FORMAT, BACKUP_VERSION
-
-logger = logging.getLogger(__name__)
 
 # 备份语境别名（指向 models 单一事实源），非独立的第二份上限。
 MAX_BACKUP_ENTRIES = MAX_ENTRIES_LIMIT

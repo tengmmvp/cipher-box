@@ -83,3 +83,62 @@ def test_card_and_server_visible_fields_order():
     server_visible = ENTRY_TYPE_SCHEMAS[ENTRY_TYPE_SERVER].visible_fields
     assert "server_host" in server_visible
     assert "username" in server_visible and "password" in server_visible
+
+
+def test_visible_fields_registry_driven_snapshot():
+    """visible_fields 注册表驱动组装后的逐类型快照（MAINT-105）。
+
+    与改造前 if/elif 链的产物逐字段等价——数据化重构（title + 专用字段 + 通用尾部）
+    不得改变任何类型的可见字段集与顺序；新增类型漏登记 common_tail 时也会在此暴露
+    （意外落到 LOGIN 兜底尾部）。
+    """
+    from src.models import (
+        ENTRY_TYPE_CARD,
+        ENTRY_TYPE_IDENTITY,
+        ENTRY_TYPE_LOGIN,
+        ENTRY_TYPE_NOTE,
+        ENTRY_TYPE_SERVER,
+    )
+
+    assert ENTRY_TYPE_SCHEMAS[ENTRY_TYPE_LOGIN].visible_fields == (
+        "title",
+        "username",
+        "password",
+        "url",
+    )
+    assert ENTRY_TYPE_SCHEMAS[ENTRY_TYPE_CARD].visible_fields == (
+        "title",
+        "card_holder",
+        "card_number",
+        "card_expiry",
+        "card_cvv",
+    )
+    assert ENTRY_TYPE_SCHEMAS[ENTRY_TYPE_IDENTITY].visible_fields == (
+        "title",
+        "id_fullname",
+        "id_email",
+        "id_phone",
+        "id_address",
+    )
+    assert ENTRY_TYPE_SCHEMAS[ENTRY_TYPE_NOTE].visible_fields == ("title",)
+    assert ENTRY_TYPE_SCHEMAS[ENTRY_TYPE_SERVER].visible_fields == (
+        "title",
+        "server_host",
+        "server_port",
+        "server_protocol",
+        "username",
+        "password",
+    )
+
+
+def test_visible_fields_follow_special_field_order():
+    """visible_fields 的专用字段段与 special_fields 声明序一致（注册表驱动的联动）。
+
+    MAINT-105 数据化后专用字段在 visible 中的顺序由 special_fields 元组派生——
+    调整 _CARD_FIELDS 等声明顺序时 visible 自动跟随，不再存在第二份手抄顺序。
+    """
+    for schema in ENTRY_TYPE_SCHEMAS.values():
+        special_keys = [s.field_key for s in schema.special_fields]
+        assert list(schema.visible_fields[1 : 1 + len(special_keys)]) == special_keys
+        # title 恒为首个可见字段（组装公式的公共头）
+        assert schema.visible_fields[0] == "title"

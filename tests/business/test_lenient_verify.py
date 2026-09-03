@@ -9,23 +9,17 @@ import pytest
 
 from src.exceptions import VaultIntegrityError
 from src.models import Entry, RawEntry
-from tests.helpers import (  # noqa: F401 复用既有装配 helper
-    decrypt_all_entries,
-    make_entry_manager,
-    make_vault,
-)
+from tests.helpers import decrypt_all_entries
 
 
 class TestLenientVerify:
     """验证 get_entries 宽容模式与 get_entry 严格模式的差异。"""
 
     @pytest.fixture(autouse=True)
-    def setup_vault(self, vault_config):
-        self._vault = make_vault(vault_config)
-        self._vault.initialize("test_password_12345")
-        self._entry_mgr = make_entry_manager(self._vault)
-        yield
-        self._vault.close()
+    def setup_vault(self, make_vault_env):
+        env = make_vault_env()
+        self._vault = env.vault
+        self._entry_mgr = env.entry_mgr
 
     def test_get_entries_lenient_marks_integrity_error(self):
         """列表摘要路径与全量 get_entries 均 LENIENT，签名失败标记 integrity_error。
@@ -127,10 +121,10 @@ class TestSearchPathReverify:
     """
 
     @pytest.fixture(autouse=True)
-    def setup_vault(self, vault_config):
-        self._vault = make_vault(vault_config)
-        self._vault.initialize("test_password_12345")
-        self._entry_mgr = make_entry_manager(self._vault)
+    def setup_vault(self, make_vault_env):
+        env = make_vault_env()
+        self._vault = env.vault
+        self._entry_mgr = env.entry_mgr
         self._entry_mgr.add_entry(
             Entry(title="GitHub 首页", username="alice", password="pass1", entry_type="login")
         )
@@ -140,8 +134,6 @@ class TestSearchPathReverify:
         self._entry_mgr.add_entry(
             Entry(title="邮箱", username="carol", password="pass3", entry_type="login")
         )
-        yield
-        self._vault.close()
 
     def _tamper_all_rows(self):
         """SQL 改写全部行的非加密元数据（入签载荷），使 metadata_mac 比对必然失配。"""
@@ -283,17 +275,15 @@ class TestInMemorySortPath:
     """
 
     @pytest.fixture(autouse=True)
-    def setup_vault(self, vault_config):
-        self._vault = make_vault(vault_config)
-        self._vault.initialize("test_password_12345")
-        self._entry_mgr = make_entry_manager(self._vault)
+    def setup_vault(self, make_vault_env):
+        env = make_vault_env()
+        self._vault = env.vault
+        self._entry_mgr = env.entry_mgr
         # 标题字母序与插入序刻意不同，检验排序真实生效
         for title in ("zebra", "alpha", "middle"):
             self._entry_mgr.add_entry(
                 Entry(title=title, username="u", password="pass1", entry_type="login")
             )
-        yield
-        self._vault.close()
 
     def test_title_order_sorts_by_meta_and_truncates(self):
         """无搜索标题序：按 meta.title_lower 排序后截断，与全量路径排序等价。"""

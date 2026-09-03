@@ -129,19 +129,26 @@ def _build_schemas() -> dict[str, EntryTypeSchema]:
         ENTRY_TYPE_NOTE: {"uses_password": False, "notes_expanded": True},
         ENTRY_TYPE_SERVER: {"composes_url": True},
     }
+    # 专用字段之后的通用尾部字段（MAINT-105 数据化）：visible_fields 统一按
+    # 「title + 专用字段 + 通用尾部」组装，替代原 CARD/IDENTITY…elif SERVER…elif
+    # NOTE…else LOGIN 四分支硬编码——新增类型只需登记本表（缺省沿用 LOGIN 尾部），
+    # 与模块「新增类型只需扩展注册表」的承诺一致。
+    common_tail_by_type: dict[str, tuple[str, ...]] = {
+        ENTRY_TYPE_LOGIN: ("username", "password", "url"),
+        ENTRY_TYPE_CARD: (),
+        ENTRY_TYPE_IDENTITY: (),
+        ENTRY_TYPE_NOTE: (),
+        ENTRY_TYPE_SERVER: ("username", "password"),
+    }
     schemas: dict[str, EntryTypeSchema] = {}
     # ENTRY_TYPES 已收敛为类型键集合（ARCH-037），遍历注册全部类型；注册表消费方
     # 经 get_schema 按 type_id 查询，不依赖遍历顺序。
     for type_id in ENTRY_TYPES:
         special = special_by_type.get(type_id, ())
-        if type_id in (ENTRY_TYPE_CARD, ENTRY_TYPE_IDENTITY):
-            visible = ("title", *(s.field_key for s in special))
-        elif type_id == ENTRY_TYPE_SERVER:
-            visible = ("title", *(s.field_key for s in special), "username", "password")
-        elif type_id == ENTRY_TYPE_NOTE:
-            visible = ("title",)
-        else:  # LOGIN 及未知类型
-            visible = ("title", "username", "password", "url")
+        # 未登记尾部的类型（ENTRY_TYPES 之外的兜底路径）沿用 LOGIN 尾部，与原 else
+        # 分支及 get_schema 的 login 回退语义一致。
+        common_tail = common_tail_by_type.get(type_id, common_tail_by_type[ENTRY_TYPE_LOGIN])
+        visible = ("title", *(s.field_key for s in special), *common_tail)
         schemas[type_id] = EntryTypeSchema(
             type_id=type_id,
             visible_fields=visible,

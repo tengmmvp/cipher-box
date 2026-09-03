@@ -496,14 +496,16 @@ def test_full_analysis(security_analyzer_env):
 
     result = analyzer.full_analysis()
 
-    # 验证返回结构完整
+    # 验证返回结构完整：full_analysis 返回内部形态（PERF-085 收口：计数 + 内部
+    # map），公开列表键经 _export_report 派生——出口键集与计数在此一并验证。
     assert "total" in result
     assert "weak_count" in result
-    assert "weak_entries" in result
-    assert "duplicate_groups" in result
     assert "duplicate_count" in result
-    assert "old_entries" in result
     assert "old" in result
+    exported = SecurityAnalyzer._export_report(result)
+    assert "weak_entries" in exported
+    assert "duplicate_groups" in exported
+    assert "old_entries" in exported
 
     assert result["total"] == 3
     assert result["weak_count"] >= 1

@@ -3,7 +3,6 @@
 职责单一：数据库表结构的初始化与校验，经 DatabaseManager 委托提供统一数据访问接口。
 """
 
-import logging
 import sqlite3
 import threading
 
@@ -11,9 +10,6 @@ from ..exceptions import DatabaseError, SchemaError
 from ..models import ENTRY_TYPE_LOGIN
 from ..utils.format import utc_now_iso
 from .types import ConnectionProvider
-
-logger = logging.getLogger(__name__)
-
 
 # 索引定义：CREATE INDEX 与 _validate_current_schema 的单一事实源，新增索引只需在此
 # 追加，建表与校验自动跟随，避免两份硬编码漂移。

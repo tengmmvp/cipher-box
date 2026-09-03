@@ -70,6 +70,34 @@ _IMPORT_FORMAT_KEYS = {
 }
 
 
+def export_warning_text(fmt: str) -> str:
+    """构造「包含密码导出」的确认警告文案；CSV 格式附加公式注入豁免提示。
+
+    CSV 的 password/totp_secret 列为密钥保真不做公式前缀转义（exporters.base 的
+    CSV_SECRET_COLUMNS 豁免，SEC-039/SEC-009 已声明取舍——转义会破坏密钥往返），
+    以 = + - @ 开头的密码在 Excel 等表格软件中可能被解析为公式执行。该有意豁免
+    在用户确认导出前明示（提示仅 CSV + 包含密码时附加，其他格式不触发）。
+
+    Args:
+        fmt: UI 格式名（"JSON" / "CSV"）。
+
+    Returns:
+        拼接后的警告正文（含结尾确认问句）。
+    """
+    text = (
+        "您选择导出包含密码的文件！\n\n"
+        "导出的文件将以明文形式保存所有密码，存在严重的安全风险。\n"
+        "请确保妥善保管导出文件，使用后立即删除。"
+    )
+    if fmt == "CSV":
+        text += (
+            "\n\n注意：为保持密码完整，CSV 中以 = + - @ 等符号开头的密码不做公式"
+            "转义（有意豁免），在 Excel 等表格软件中可能被解析为公式，请勿在不受"
+            "信任的软件中打开该文件。"
+        )
+    return text + "\n\n确定要继续吗？"
+
+
 class ImportExportDialog(WorkerBackedDialog):
     """导入与导出统一对话框，按模式切换可见选项与可用格式。"""
 
@@ -284,7 +312,8 @@ class ImportExportDialog(WorkerBackedDialog):
     def _do_export(self, path: str) -> None:
         """启动后台导出任务（无写入副作用，可安全取消）。
 
-        包含密码的导出先经二次确认警告明文风险；任务内采集与写入均传 cancel_check，
+        包含密码的导出先经二次确认警告明文风险（CSV 格式附加公式注入豁免提示，
+        见 :func:`export_warning_text`）；任务内采集与写入均传 cancel_check，
         取消时业务层清理 temp 文件且不生成目标文件。
         """
         include_pwd = self._include_pwd_radio.isChecked()
@@ -294,10 +323,7 @@ class ImportExportDialog(WorkerBackedDialog):
             reply = QMessageBox.warning(
                 self,
                 "安全警告",
-                "您选择导出包含密码的文件！\n\n"
-                "导出的文件将以明文形式保存所有密码，存在严重的安全风险。\n"
-                "请确保妥善保管导出文件，使用后立即删除。\n\n"
-                "确定要继续吗？",
+                export_warning_text(fmt),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:

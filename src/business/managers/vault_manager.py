@@ -500,6 +500,17 @@ class VaultManager:
     # ---- 生命周期门面委托 ----
     # 薄委托使调用方（app/login/dialog/test）无需感知 orchestrator。orchestrator 经
     # attach_lifecycle 由组合根紧接 VaultManager 构造之后注入，故委托时必已就位。
+    @property
+    def lifecycle_attached(self) -> bool:
+        """生命周期编排器是否已注入（经 :meth:`attach_lifecycle`）。
+
+        供组合根在装配 ``BusinessContext`` 前显式校验（ARCH-047）：绕过
+        ``build_vault`` 手工构造的 vault 若未挂编排器，生命周期方法会推迟到首次
+        调用才抛 ``attach_lifecycle 未调用``——装配期检查使该错误前置且报错指向
+        装配代码而非下游调用点。
+        """
+        return self._lifecycle is not None
+
     def attach_lifecycle(self, lifecycle: LifecyclePort) -> None:
         """注入生命周期编排器，使本类的生命周期方法委托给它。
 

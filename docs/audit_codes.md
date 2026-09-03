@@ -8,7 +8,7 @@
 - **维度前缀**：`ARCH`（架构）/ `MAINT`（维护·可维护性）/ `PERF`（性能）/ `QL`（质量·可读性）/ `SEC`（安全）。
 - **编号分配**：新编号 = 该维度当前最大已用号 +1；历史断档（如 ARCH-012→021、
   MAINT-041→071）是批次审查的既成事实，**不回填**。当前下一可用：
-  `ARCH-046 / MAINT-101 / PERF-085 / QL-068 / SEC-056`（由
+  `ARCH-052 / MAINT-108 / PERF-090 / QL-073 / SEC-062`（由
   `scripts/verify_audit_codes.py` 校验，登记新编号后同步前移；CI 持续把关索引-代码一致性）。
 - **新增编号**须在本文件对应维度表登记，避免跨文件漂移与编号复用。
 - **双向引用**：新编号除登记索引外，须在对应代码注释以 ``（XXX-NNN）`` 引用，保证索引-代码一致（MAINT-014）。纯约定/已放弃编号（处数=0）豁免。
@@ -27,7 +27,7 @@
 
 ## 映射表（新编号为主序）
 
-### ARCH — 架构（28 项）
+### ARCH — 架构（34 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
@@ -53,14 +53,20 @@
 | `ARCH-037` | — | 9 | 条目类型展示属性下沉 UI：models.ENTRY_TYPES 收敛为 frozenset 类型键集合（仅合法性判定），中文 label 与图标占位符移 ui/resources/strings.py（ENTRY_TYPE_LABELS/ICONS + 带 login 回退的查表函数），Entry/RawEntry 的 type_icon/type_label property 与 EntryTypeSchema 的 label/icon 转发字段删除（后者无生产消费方）。 |
 | `ARCH-038` | — | 8 | 导出格式策略包：export_to_json/export_to_csv 的序列化内联块拆 managers/exporters/（json_exporter/csv_exporter 写回调 + base 的 csv_safe 与密钥列豁免），manager 收窄为路径校验+原子写编排骨架，与 importers/ 对称；_sanitize_formula_prefix 随之下沉 services/url_hygiene（公共名 sanitize_formula_prefix，避免 manager↔exporters 循环）。与 importers 的差异为显式取舍：exporters 无策略协议/注册表——导出为用户显式选格式直调对应方法，无 dispatch 场景，2 格式下强行对称为过度抽象；格式≥3 或需按扩展名 dispatch 时再引入 FormatExporter 协议。 |
 | `ARCH-039` | — | 11 | services 对 managers 具体类依赖的「一删三协议两锚定」：TotpService 删除零读取的 vault 死依赖（单参构造）；crypto_utils 定义 KeyProvider 两成员协议（require_vault_key/entry_view_decryption 共用）；password_history_service 的 PasswordHistoryVaultProtocol（KeyProvider+db+vault_write_lock）；security_analyzer 的 AnalysisCacheProtocol 四成员协议。security_analyzer 的 vault 依赖与 entry_batch_writer 整体**维持** TYPE_CHECKING 具体类并锚定理由（成员面与 VaultManager/EntryManager 核心同构，协议是影子类无净收益）。 |
-| `ARCH-040` | — | 3 | strings.py 展示键集常量化+完备性自检：ENTRY_TYPE_LABELS/ICONS 键改用 models 的 ENTRY_TYPE_* 常量（消除与 frozenset 的字面量双源），模块加载期 if+RuntimeError 断言键集==ENTRY_TYPES（对齐 _ENTRY_COLUMNS 启动自检形式，-O 存活）——新增类型漏更新表时启动即炸，优于 UI 静默回退 login 文案。 |
+| `ARCH-040` | — | 4 | strings.py 展示键集常量化+完备性自检：ENTRY_TYPE_LABELS/ICONS 键改用 models 的 ENTRY_TYPE_* 常量（消除与 frozenset 的字面量双源），模块加载期 if+RuntimeError 断言键集==ENTRY_TYPES（对齐 _ENTRY_COLUMNS 启动自检形式，-O 存活）——新增类型漏更新表时启动即炸，优于 UI 静默回退 login 文案。（backup_restore 的恢复进度段表启动期校验援引同一 if+RuntimeError 形式。） |
 | `ARCH-041` | — | 1 | DEFAULT_RECENT_SUMMARIES_LIMIT 移入 models 共享层，解开 ui/resources/constants 对业务栈的模块级依赖。 |
 | `ARCH-042` | — | 12 | change_master_password 返回契约对齐 unlock——(False,...) 仅认证失败，策略失败抛 MasterPasswordPolicyError、系统错误走异常通道，UI 不再文案字符串比对。补全：系统错误包装改用无固定映射的 VaultError 本体（to_user_message 增纯 VaultError 保留 str 分支），worker error 通道二次翻译不再被 VaultLockedError 罐头文案「保险库已锁定，请先解锁后重试」覆盖（磁盘满/IO 错误时误导）；unlock/initialize 同款接入，「保险库凭据不完整」终译保留原文。 |
 | `ARCH-043` | — | 9 | RateLimiter 状态文件名常量归业务模块、实例经组合根工厂创建注入 UI 对话框（ARCH-033 纪律回归）。 |
 | `ARCH-044` | — | 8 | VaultLifecycleOrchestrator 改从 vault 单一装配参数取 db/signer；build_business_context 加 WeakSet 防重入守卫。 |
 | `ARCH-045` | — | 5 | 恢复阶段方法以 RestoreAbortedError（BackupError 子类）替代 result-or-tuple 联合返回。 |
+| `ARCH-046` | — | 1 | build_business_context 装配体异常回退 `_assembled_vaults` 登记：原登记先行使「上次装配失败」的重试被误拒、报错述为「重复调用」（ARCH-044 语义误伤）；回调注册纯 append 不抛，实际异常源是 manager 构造（无副作用），discard 后重试等价全新装配。 |
+| `ARCH-047` | — | 4 | 组合根装配前置校验 vault.lifecycle_attached（VaultManager 新增公开 property）：绕过 build_vault 手工构造、未挂编排器的 vault 被即时拒绝，生命周期错误前置到装配期而非推迟到首次调用才抛「attach_lifecycle 未调用」。 |
+| `ARCH-048` | — | 2 | maybe_auto_backup 的 config 参数删除，配置读取统一经 self._vault.config 单一通道（与同类 create_backup 的 purge 路径一致）：消灭「调用方传参另一 ConfigManager 实例（即便当前同对象）」的双源漂移面，AutoBackupController 与测试同步。 |
+| `ARCH-049` | — | 3 | 认证失败文案拆 LOGIN_AUTH_FAILED_MESSAGE / CHANGE_AUTH_FAILED_MESSAGE 两个显式常量（原改密单常量 + unlock 内联「主密码错误」字面量双源）：登录/改密场景语义与措辞有别，各自单源；值由契约测试锚定。UI 空文案兜底收编：改密对话框 ``error_msg or CHANGE_AUTH_FAILED_MESSAGE`` 与登录窗口 ``error_default = LOGIN_AUTH_FAILED_MESSAGE`` 同引常量，第四处同值字面量消除。 |
+| `ARCH-050` | — | 2 | matches_search 签名收窄为仅 Entry（原 Entry \| RawEntry 联合签名暗示密文态是合法输入，docstring 却声明生产不应传）：RawEntry 可搜索字段是密文，明文子串匹配无意义；matches_tag 核查本就仅 Entry。 |
+| `ARCH-051` | — | 1 | get_entry_summaries 排序分流白名单驱动：「不可下推」判定由硬编码 ``order_by == "title"`` 改为 ORDER_BY_FIELDS 否定式（``in_memory_path = bool(search) or (order_by is not None and order_by not in ORDER_BY_FIELDS)``），白名单增删字段时分流自动跟随单一事实源（原双源：新增可下推字段时硬编码判定不跟随）；UI SORT_OPTIONS 字段集 ⊆ 白名单 ∪ {title} 由测试守护。 |
 
-### MAINT — 维护/可维护性（38 项）
+### MAINT — 维护/可维护性（45 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
@@ -92,18 +98,25 @@
 | `MAINT-088` | — | 0 | 第五轮守护测试补齐：QL-055 导出进度终值（test_export_progress，跳过条目 processed==total 可达 + 取消语义）；QL-056 get_failed_fields 拷贝与 QL-058 LRU 淘汰联动（test_username_cache，monkeypatch 解密与容量构造）；QL-057 now 注入增量时钟（test_security_analyzer，注入未来时钟重判过期）。「修复了但没锁」缺口的收口。（守护测试经 QL-055/056/057 各自编号锚定；tests 内 MAINT-088 标注已随后续测试重构移除。） |
 | `MAINT-089` | — | 1 | update_entry 手写 epoch 事务样板收敛至 epoch_guarded_transaction(pre_epoch=)。 |
 | `MAINT-090` | — | 1 | update_entry 的 preloaded_raw/preloaded_old_password 死参数删除。 |
-| `MAINT-091` | — | 6 | 排序键单一事实源 entry_sort_key；删除 _fetch_for_filter 冗余重排（worker 线程读 QComboBox 一并消除）。 |
+| `MAINT-091` | — | 7 | 排序键单一事实源 entry_sort_key；删除 _fetch_for_filter 冗余重排（worker 线程读 QComboBox 一并消除）。 |
 | `MAINT-092` | — | 4 | get_entry_summaries 190 行单体拆分（_SummaryRead 快照 + 搜索投影/SQL 下推两个私有构建方法）。 |
 | `MAINT-093` | — | 6 | security_dashboard tab 元数据表驱动创建与懒填充分发，消除三方法复制与魔法索引。 |
 | `MAINT-094` | — | 6 | 5 个对话框 _setup_ui 对齐 entry_dialog 的 _build_* 分块模式。 |
-| `MAINT-095` | — | 9 | 测试观察用只读 property（QL-044 先例推广）：_HealthScoreWidget.score、_StatCard.count_text、EntryRefreshCoordinator.entry/tag_refresh_generation、EntryCacheManager.cache_epoch/search_metadata_cached_ids、EntryViewDecryptor.cache——测试对内部态的直读/直改收敛为公开观察面，生产行为零变化。 |
+| `MAINT-095` | — | 13 | 测试观察用只读 property（QL-044 先例推广）：_HealthScoreWidget.score、_StatCard.count_text、EntryRefreshCoordinator.entry/tag_refresh_generation、EntryCacheManager.cache_epoch/search_metadata_cached_ids、EntryViewDecryptor.cache、RateLimiter.fail_count/state_path、DetailPanel.holds_secret_values——测试对内部态的直读/直改收敛为公开观察面，生产行为零变化。判据：测试断言内部状态须走观察 property（docstring 注明测试观察用）；monkeypatch 注入点与白盒安全属性守护（密钥清零、装配不变量）除外。 |
 | `MAINT-096` | — | 3 | _restrict_windows_acl_via_api 127 行单体按「取 SID→构造 ACL→应用」三步拆私有函数 + 编排壳，ctypes 调用序列与 LocalFree 释放语义逐路径等价（Win32 直读测试守护）。 |
-| `MAINT-097` | — | 4 | crypto_utils 名实相符收窄：搜索谓词拆出 entry_search_match、视图构造并入 entry_view_decryption、decrypt_entry_to_portable_dict 归位 backup/collector，原模块仅留加密单一事实源。 |
+| `MAINT-097` | — | 5 | crypto_utils 名实相符收窄：搜索谓词拆出 entry_search_match、视图构造并入 entry_view_decryption、decrypt_entry_to_portable_dict 归位 backup/collector，原模块仅留加密单一事实源（entry_sorting 迁出 managers 时援引本先例，MAINT-104）。 |
 | `MAINT-098` | — | 1 | EntryManager.get_entries 退役（src 零调用、测试 40+ 处的「一次性解密全部密码」入口）：方法删除，等价测试助手移 tests/helpers.decrypt_all_entries（经 db.get_entries + decrypt_entry 公开 API 组装），防回退守护断言方法不存在。 |
 | `MAINT-099` | — | 4 | 进度契约收敛至 entry_batch_writer（进度契约的家）：phase_progress(done,total,start,end) 加权映射（import_export._phase_progress 与 backup_restore._weighted_progress 字节级重复，改为薄委托）+ should_report_progress(done,total) 节流谓词（`% EVERY == 0 or done == total` 的 10 处手抄全库替换，含 exporters/entry_manager/rebuilder/collector）。 |
 | `MAINT-100` | — | 1 | PERF-079 五处失效咒语收敛：add/update/delete/restore/permanent_delete 各自手写的「apply_tag_delta + invalidate_entry_counts_cache + notify kwargs」组合统一为 EntryManager._notify_entry_structure_changed 私有 helper（old_tags=None 表解密失败保守整表失效；EntryChangeBus 协议不动）。 |
+| `MAINT-101` | — | 4 | SecurityAnalyzer 聚合公式提取 _recompute_aggregates 单一函数（weak_count==len(_weak_map)、old==len(_old_map)、duplicate_count==Σ(len(g)-1)），full_analysis 与 _apply_reclassified_entry 两路共用——此前各维护一份，对不齐时增量与全量静默分叉；「线性扫描找 crypto_id 后 del」的四连写随 PERF-085 的 dict 化定位一并消失。 |
+| `MAINT-102` | — | 1 | 删除零调用死代码 EntryCacheManager.search_lower_no_check（docstring 自述被 cached_search_metadata_full 取代，全库零调用，能力为 full 后 4 字段子集）；cached_search_metadata/cached_search_metadata_full docstring 中对它的过时引用同步修正。 |
+| `MAINT-103` | — | 12 | 敏感字段行三件套三份平行实现收敛共享工厂：secret_field 新增 SharedHideTimer 共享单定时器模式（同屏单显式、任一揭示先掩码上一显式行、stop 掩码当前显式行），detail_panel 主密码分支（原 _pwd_hide_timer+_current_password+_pwd_label_ref 专属实现）回归工厂，password_history 每行复用工厂（保持每行独立定时器语义不变）；PWD_MASK 掩码动作与 sip.isdeleted 竞态守卫收敛单处（原共享工厂超时回调无守卫一并补齐）。复制路径收敛时守卫一度丢失（同工厂 _mask_row/_toggle 均有），回归补齐为 _make_copy_secret 模块级工厂（销毁窗口期挂起 clicked 事件触发时静默跳过，不触反馈图标写入）。 |
+| `MAINT-104` | — | 4 | entry_sort_key 排序键域迁出 managers：键函数 + EntrySortKeySource 协议 + _SortKeySource 适配 NamedTuple（随迁去下划线公开为 SortKeySource）迁 services/entry_sorting.py，与 entry_search_match（MAINT-097）同属「条目查询域纯函数」的 services 归属对齐——UI 的 entry_list_controller 不再为消费 4 键逻辑 import managers.entry_manager。 |
+| `MAINT-105` | — | 1 | entry_type_schema 的 visible_fields 组装数据化：原 if CARD/IDENTITY…elif SERVER…elif NOTE…else LOGIN 四分支硬编码改「title + 专用字段 + common_tail_by_type 注册表尾段」统一公式，兑现模块「新增类型只需扩展注册表」承诺；未登记类型沿用 LOGIN 尾部（原 else 语义），逐类型快照测试守护与 elif 链时代等价。 |
+| `MAINT-106` | — | 5 | entry_batch_writer.write_chunks 分块写入共享原语：write_new_entries/write_overwrite_updates/backup rebuilder.restore_entries 三份逐字节相同的「按 WRITE_PROGRESS_CHUNK 分块调用 + 逐块 (done,total) 上报」循环收敛为单一函数（write_fn 参数化，各块结果按序返回、合并策略留在调用方；无 on_progress 保持整批单次原路径），直接行为测试 + monkeypatch 锚点迁移守护。 |
+| `MAINT-107` | — | 5 | 恢复加权进度六闭包收敛：_point_entries/_point_history 与四个 rebuild 段的 ~66 行复制闭包（仅 base/span 不同）收敛为 backup_restore._segment_progress_reporter 单一闭包工厂（import_export._offset_phase_reporter 同型）；六组 base/span 常量对改结构化段表（_ProgressSegment/_RestoreSegments NamedTuple），跨段相邻性（45+17==62 等）由模块导入期 if+RuntimeError 断言 + 段表契约测试双重守护（此前纯手工维护无校验）。 |
 
-### PERF — 性能（47 项）
+### PERF — 性能（52 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
@@ -131,7 +144,7 @@
 | `PERF-022` | — | 4 | 导入统一通知改 ``clear_summaries=False``，含覆盖时先对被覆盖 crypto_id 批量 pop 再通知，兑现「导入新增保留既有摘要缓存」的设计声明。 |
 | `PERF-023` | — | 7 | 安全仪表盘：徽章改 objectName+集中 QSS（消除每行 setStyleSheet）、tab 懒填充（切换才 populate）、单 tab 500 行上限+截断页脚；500 行填充 175ms→120ms。 |
 | `PERF-032` | — | 0 | （已退役，实现随 PERF-074 移除）搜索补验签改对全部命中行（删除 1000 上界截断）：验签集合与 UI 重排后的渲染集合错位（SQL 序 vs 排序序）；命中行验签现随 PERF-074 回查架构在 get_entries_by_ids 中完成，src 无引用（tests 留 1 处历史性引用）。 |
-| `PERF-062` | — | 7 | 分析缓存出口剥离内部键（_fingerprint_map/_summaries_with_dates 无消费方却每次出口深拷贝，50k 库 13ms/次）+ 增量重建改局部 copy-on-write（仅旧/新指纹桶）。 |
+| `PERF-062` | — | 6 | 分析缓存出口剥离内部键（_fingerprint_map/_summaries_with_dates 无消费方却每次出口深拷贝，50k 库 13ms/次）+ 增量重建改局部 copy-on-write（仅旧/新指纹桶）。 |
 | `PERF-063` | — | 1 | decrypt_summary 六覆盖字段并入单次 copy_entry_fields（原 build_entry_summary+replace 双重 24-kwarg 构造，50k 次省 ~300ms）。 |
 | `PERF-064` | — | 7 | 分类条目计数会话缓存（CategoryManager 持有，epoch 守卫 + change_bus 结构性变更自订阅 + 条目改分类显式失效；50k 库省 24.6ms/次的 UI 线程 GROUP BY）。 |
 | `PERF-065` | — | 12 | 导入进度回调覆盖全阶段加权刻度（parse 5%/sanitize 10%/classify 15%/encrypt 70%/write 100%，每 100 行节流），替代只覆盖 7% 时长的先冲满后冻结。 |
@@ -145,17 +158,22 @@
 | `PERF-073` | — | 12 | 排序下推字段化（PERF-072「非默认序一律全量」过度保守的修正）：EntryQuery 的 sort_by_updated 布尔退役为 order_by/order_desc（ORDER_BY_FIELDS 白名单防注入，ORDER BY 列映射硬编码），8 种排序中 6 种（updated_at/password_strength/created_at 双向）下推 ``ORDER BY 字段 LIMIT``——50k 库标题序全量 1756ms vs 字段序下推 ~50ms；标题 2 种因密文列固有限制全量并注释声明；fetcher 下推判定从魔法索引 0 改字段化，UI 集↔db 白名单一致性由测试锚定。 |
 | `PERF-074` | — | 13 | 搜索路径窄投影 SearchRow：db 层新增 get_entries_search_projection（6 列：id/crypto_id/4 摘要密文，行集与 get_entries 经共用子句构造一致），EntryCacheManager 摘要解密签名收窄为 SearchRowSource 最小协议（RawEntry/SearchRow 双满足），命中行经 get_entries_by_ids LENIENT 回查完整行做摘要构建+验签（PERF-067 就地验签随宽行不再物化而退役）；实测 2k 条宽行 94.2ms → 窄投影 10.1ms（~9×），50k 温态搜索 681→~250ms。 |
 | `PERF-075` | — | 3 | 导入去重窄投影：_duplicate_plan 从 get_entry_summaries() 全量摘要（50k 冷缓存 1834ms）改 get_entry_dedup_index() 窄投影（title/username/id 三元组 + 摘要缓存解密 + epoch 守卫），_prepare_overwrite_map 的 existing 由回查 raw 解密（语义零变化）；预计 1834→~900ms。 |
-| `PERF-076` | — | 7 | 单条编辑增量分析差分：weak/_summaries_with_dates 两轮 O(n) 列表推导改就地单点移除；旧指纹 O(桶数) 全扫描改 _crypto_id_to_fp 反向索引缓存内部键（full/增量平行维护，出口剥离保持 PERF-062；缺失回退扫描兜底）；old_entries O(n) 重过滤改差分。实测 20k 库 median 8.8ms（旧实现同比例约 17-50ms），5k→20k 仅增 3ms 近似常数。 |
+| `PERF-076` | — | 3 | 单条编辑增量分析差分：weak/_summaries_with_dates 两轮 O(n) 列表推导改就地单点移除；旧指纹 O(桶数) 全扫描改 _crypto_id_to_fp 反向索引缓存内部键（full/增量平行维护，出口剥离保持 PERF-062；缺失回退扫描兜底）；old_entries O(n) 重过滤改差分。实测 20k 库 median 8.8ms（旧实现同比例约 17-50ms），5k→20k 仅增 3ms 近似常数。 |
 | `PERF-077` | — | 10 | Windows ACL 子进程链 ctypes 化：SID 经 OpenProcessToken→GetTokenInformation→ConvertSidToStringSidW 免 whoami；ACL 经 TRUSTEE_W/EXPLICIT_ACCESS_W→SetEntriesInAclW→SetNamedSecurityInfoW(PROTECTED_DACL) 一次调用等价 icacls 两次子进程，子进程路径保留为失败回退。实测收紧 41.5ms→0.36-0.40ms/文件（~100×）、SID 28.7ms→亚毫秒；icacls 读回验证 ACL 等价（单显式 ACE 无继承标记）；消除 whoami 受限环境脆弱性。 |
 | `PERF-078` | — | 13 | 排序/搜索统一「内存 meta 排序 + 仅前 N 回查宽行」路径（推翻 PERF-073「标题序固有限制」声明）：SearchRow 补 password_strength/created_at/updated_at 明文列（内存排序键完备），get_entry_summaries 的 order_by 扩展 "title" 语义（密文列不可 SQL 排序但 meta.title_lower 可内存排序），三 fetcher 统一透传 limit+排序由 manager 分流（fetcher 层路径判断退役）；搜索命中行按排序键取前 limit 回查（全量命中回查悬崖 187.7→50.6ms@5k，3.7×）。实测标题序 165.9→53.8ms@5k（3.1×，50k 等比 ~1750→~500ms）。附带修复：搜索分支 decrypt_summary 补 data_epoch（PERF-074 重写时掉落的 SEC-043 守卫回归）、回查段补 cancel_check。 |
-| `PERF-079` | — | 19 | 增删恢复路径扩展增量框架：crypto_id 通知 + 分析器移除/插入差分 + 标签计数差分。 |
+| `PERF-079` | — | 20 | 增删恢复路径扩展增量框架：crypto_id 通知 + 分析器移除/插入差分 + 标签计数差分。 |
 | `PERF-080` | — | 10 | 状态栏 worker 单飞守卫改「在飞置脏+完成回调消费重启」，消除失效被吞致计数陈旧。补全：SecurityAnalyzer 增失效世代计数（invalidate_cache 全量失效路径递增），full_analysis 启动时快照、写回缓存前在 _cache_lock 临界区内比对，读库后失效过的结果拒收写回（报告照常返回）——原「读库后删除（缓存为 None 时增量 no-op）→ 完成写回 fresh TTL 过期报告 → 重启轮 fast path 命中」链使脏标记重启无效，现重启轮走新全量。 |
 | `PERF-081` | — | 1 | fetch_recent 搜索分支下推 limit+排序（复用 PERF-078 内存路径），删 UI 冗余 sort+截断。 |
 | `PERF-082` | — | 5 | 锁定/退出前检测不可中断 worker 并经托盘系统通知等待原因。 |
-| `PERF-083` | — | 14 | 恢复全程加权进度刻度（5/5-45/45-80/80-95/100），每 100 条节流。 |
+| `PERF-083` | — | 15 | 恢复全程加权进度刻度（5/5-45/45-80/80-95/100），每 100 条节流。 |
 | `PERF-084` | — | 3 | clear_vault_state 的 gc.collect 延迟至后台 daemon Timer，消除锁定 UI 卡顿。（已撤销：GC 移入后台线程破坏 Qt 线程亲和——gc 可能 finalize 引用循环中的无父 QObject，非 GUI 线程删除 C++ 对象致「Timers cannot be stopped from another thread」或间歇崩溃；锁定时 gc 恢复 GUI 线程同步执行，配套 QL-067 消除同步 GC 与排队未投递 worker 信号的投递层崩溃窗口。） |
+| `PERF-085` | — | 17 | 安全分析增量差分全 O(1) 化：_summaries_with_dates dict 化（crypto_id→(Entry,changed_utc)）+ 新增 _weak_map/_old_map/_duplicate_groups_map 内部键作 weak/old/重复分组的事实源（出口公开列表键经 _export_report 从 map 派生；后续收口：缓存本体只持内部形态计数+map，公开列表键不入本体——双表示中列表键自首次差分起陈旧且无内部读方，纯维护陷阱，full_analysis 返回内部形态、SecurityReport TypedDict 拆为内部/出口两型，_export_report 的 map 缺失回退分支删除）；_crypto_id_to_fp 反向索引以 None 哨兵收录无指纹条目（键集==summaries 键集），无密码条目（note/identity 等常态）差分不再因 pop miss 落入逐桶 any() 全扫描；fp_map/fp_index 撤销每轮 dict() 全量拷贝改就地修改（出口已隔离）；duplicate_groups 增量维护（旧/新指纹桶跨越 len>1 边界时增删组）。实测 50k+25k 混合库：有密码编辑 13.2→0.042ms、无密码编辑/删除 ~37→0.03ms。 |
+| `PERF-086` | — | 20 | 搜索暖缓存两件套：a) EntryCacheManager 投影行集缓存 search_projection_rows——键=(deleted_only, category_id, favorite_only, order_by, order_desc)（复合序规范化为 (None,True) 防同义键占槽；有序行集因消费方依赖行序不可与无序混存），容量 4 键 LRU（单键最坏 50k 行 SearchRow ~20MB，全密文+明文定位/排序列，无明文驻留顾虑），以主域 _invalidate_version 失效（增删改/导入/恢复/锁定/改密全路径经 apply_change/invalidate_all 推进；QL-070 分域后单条 TOTP 失效不再击穿本缓存）；出口浅拷贝隔离（命中/回填两路径均返回 list 新容器，调用方变异不污染缓存，50k 行引用拷贝 ~0.4ms 可忽略）；b) search_metadata_batch 批量摘要会话：循环外一次持锁快照命中集（dict 拷贝）+ 锁外解密 + 一次持锁整批 epoch+version 守卫回写（try/finally 包 yield，with 体抛异常退出同样回写 pending），替代逐行 RLock+move_to_end（50k 行 ~78ms）；批量命中不推进 LRU recency（仅超条目数上限的理论场景产生淘汰、无正确性影响）。get_entry_summaries 的 invalidate_if_epoch_changed 前移至读块前（原在块后，首次调用的 epoch 重臂会把刚回填的投影缓存清掉）。实测 5k 暖态：search+limit 44.3→5.1ms、全量搜索 349.8→231.5ms。 |
+| `PERF-087` | — | 7 | 内存路径排序下推：搜索非空 + order_by 属 SQL 白名单 + limit 非 None 时投影查询下推 ORDER BY（entry_repository 的投影查询经 _entry_query_clauses 本就支持 order_by，无需增参），行集即目标序——匹配循环按序扫描凑满 limit 即 break，跳过 O(n log n) 全量收集+内存排序（50k ~100ms）。语义与「全量收集→内存排序→取前 N」同构，含并列裁决（后续补齐）：SQL 序带固定 tie-breaker（ORDER BY <列> <方向>, is_favorite DESC, updated_at DESC，见 _entry_query_clauses 的尾部子句），与内存稳定排序继承的复合序逐层一致——排序键同值并列（强度刻度 0-4、批量导入 created_at 同刻）时，limit 截断边界上的入选集合与「全量收集→稳定排序→截断」完全相同（原单列 SQL 序的并列行为引擎内序，边界选集分叉）；cancel_check 语义保持。实测 5k 暖态：recent+search 46.4→1.7ms（27×，20k 库 5.2ms）。 |
+| `PERF-088` | — | 1 | empty_trash 通知降级为 password_changed=metadata_changed=False：回收站条目软删除时已按 PERF-079 增量差分移出 SecurityAnalyzer 缓存与标签计数，物理清空不改变活跃集合——分析器对双 False 直接返回（跳过整库 O(n) 重算），category_mgr 计数订阅同跳过（get_category_entry_counts 过滤 is_deleted=0）；摘要/标签/投影行集缓存仍经 apply_change（默认 tags_changed/clear_summaries=True + version 推进）全量失效，回收站视图行集正确性保持。 |
+| `PERF-089` | — | 12 | 恢复进度段内长无上报冻结窗口消除：restore_entries 批量写入段按 WRITE_PROGRESS_CHUNK（原 _WRITE_PROGRESS_CHUNK，随 backup/rebuilder 复用转公开）分块上报（单次 executemany 50k 实测 ~2.85s 冻结）、restore_history 分组写入段按行数累计上报、collector.collect_portable_history 解密段节流上报；权重并入 PERF-083 刻度按比例细分（恢复点条目 5→33/历史 33→45 按条目:历史 7:3 同重建段、条目重建加密 45→62/写入 62→80 按各半、历史加密 80→90/写入 90→95）。 |
 
-### QL — 质量/可读性（52 项）
+### QL — 质量/可读性（57 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
@@ -199,7 +217,7 @@
 | `QL-053` | — | 1 | Entry.from_dict 时间戳强制 T 分隔扩展格式（``^\d{4}-\d{2}-\d{2}T`` 锚 + 可解析性）：fromisoformat 亦接受空格分隔/纯日期/基本格式/周日期等可解析变体，与 isoformat() 产物混存时字符串排序不再等于时间排序（空格 0x20 < 'T' 0x54），QL-042 注释声称的排序等价修复存在缺口。 |
 | `QL-054` | — | 1 | Entry.from_dict 的 custom_fields 非 list 形态显式抛 EntryError：原 ``if isinstance(..., list)`` 使 dict/str 静默置空，导入方丢字段无感知，与相邻字段「类型无效即拒绝」范式不对称。 |
 | `QL-055` | — | 1 | CSV 导出进度改度量「遍历位置」（processed）而非「成功写出数」：两个防御性 continue（当前类型系统下不可达）使 ``processed == total`` 终值永不可达，PERF-070「终值恒上报」契约 silently 失效且与 JSON 导出不对称。 |
-| `QL-056` | — | 2 | EntryCacheManager.get_failed_fields 返回内部 set 的拷贝：原 ``dict.get`` 返回存储引用，调用方原地修改即污染缓存；API 语义收口与「锁内采样」docstring 一致，新调用方无需自防。 |
+| `QL-056` | — | 3 | EntryCacheManager.get_failed_fields 返回内部 set 的拷贝：原 ``dict.get`` 返回存储引用，调用方原地修改即污染缓存；API 语义收口与「锁内采样」docstring 一致，新调用方无需自防。search_projection_rows 出口同纪律（命中/回填两路径返回 list 浅拷贝，不外泄缓存内部行集引用）。 |
 | `QL-057` | — | 4 | 增量安全分析链（invalidate_cache→_try_incremental_update→_apply_reclassified_entry）补 now 注入透传：原硬编码 ``datetime.now(UTC)`` 使测试注入时钟时增量路径与全量路径（full_analysis/_refilter_cache 均可注入）行为分叉。 |
 | `QL-058` | — | 1 | 摘要缓存 LRU 淘汰与 _search_metadata_failed 容量联动：popitem 淘汰条目时同步清理 failed 记录，堵「解密失败 + 缓存超上限」同现时的无界驻留。 |
 | `QL-059` | — | 1 | add_categories_batch 空列表分支 notify 补 ``metadata_changed=False`` 与非空分支对齐：缺省 True 触发 SecurityAnalyzer 整库重算与分类计数缓存无谓失效（同方法两分支参数漂移）。 |
@@ -211,20 +229,25 @@
 | `QL-065` | — | 11 | 标签计数差分一致性三件套：apply_tag_delta 合并为 (old_tags, new_tags) 单次锁内先减后加（消编辑路径两段锁撕裂态）；expected_version 写回世代守卫（写事务前快照 invalidate_version，差分窗口内并发失效+重建则放弃，堵双扣）；逗号标签解析收敛 models.parse_tag_list 公开单一事实源（delta 与全量聚合共用）。 |
 | `QL-066` | — | 8 | tags 解密失败语义显式化与收敛：EntryCacheManager.decrypt_tags_for_delta 单一事实源（None=解密失败保守整表失效 / ''=合法空差分 no-op，暖缓存经 _search_metadata_failed 区分），删除/恢复路径不再对损坏 tags 静默 no-op 致 _tags_cache 陈旧；EntryManager 两处消费与聚合口径包装共用。 |
 | `QL-067` | — | 3 | wait_worker_shutdown 等待线程退出后断开 worker 全部信号（finished/error/cancelled/progress），丢弃仍排队未投递的延迟回调：worker 线程退出前发射的队列信号要到下次事件循环才送达，等待方在投递前执行完整 gc.collect()（锁定清零链 clear_vault_state 的同步 GC，PERF-084 撤销后恢复）会回收 PyQt 闭包槽连接的内部代理，其后投递该排队事件解引用悬挂指针 → access violation（实测进入槽函数体之前即崩溃，_locked/identity 守卫不可达）。 |
+| `QL-068` | — | 3 | _apply_reclassified_entry 反向索引不一致兜底与读/写两阶段化：索引有旧指纹但指纹桶缺失（撕裂）时 fp_map.get 判空视同无旧桶，不再 KeyError（与键缺失回退逐桶扫描的正向兜底对称）；全部读取/判定先于就地修改完成——change_bus 回调吞异常后缓存继续被出口消费，此前「先改 weak/summaries、后访问指纹桶」的中途异常会停留撕裂态，两阶段化后写阶段仅剩 dict 基本操作、无数据依赖型异常。 |
+| `QL-069` | — | 4 | get_all_tags 回填守卫升级 epoch+version 双比对（对齐摘要/分类名回填的同款双守卫）：「聚合出锁→回填」窗口内主线程写入+notify 只推进 version 不动 epoch，旧行为基于旧库的快照落入 _tags_cache 且无自愈（标签缓存无 TTL）；配套 apply_tag_delta 应用即推进 _invalidate_version（否则差分成为唯一「改缓存不推进版本」的路径，在飞聚合的旧快照可经 version 比对覆盖已差分的正确缓存），推进的额外代价（丢弃在飞摘要回写）可忽略——差分后紧随的 notify→apply_change 本就会推进。 |
+| `QL-070` | — | 14 | 标签差分与 TOTP 失效的「第三态」收口：apply_tag_delta 返回是否应用，被世代守卫放弃（或缓存未填充）时 _notify_entry_structure_changed 保守置 tags_changed=True 整表失效——旧行为放弃后仍 tags_changed=False，缓存正确性靠 apply_change 的未声明不变量巧合收敛；pop_totp/clear_totp 持锁推进失效版本，使 resolve_totp_secret 回写守卫的「单条失效不回写」承诺真实生效（原 pop 只清 dict 不推进版本，防护名存实亡）。后续分域迭代：失效版本拆主域 _invalidate_version（守卫投影行集/摘要回写/标签差分）与 TOTP 域 _totp_invalidate_version（守卫 TOTP secret 回写）——pop 只推进 TOTP 域（detail_panel 离开带 TOTP 条目的 evict 是高频无 DB 写交互，推进主域会击穿 PERF-086 投影缓存），resolve 回写比对 TOTP 域，全局失效（apply_change/invalidate_all 等）经 _advance_global_invalidation 两域一并推进；update/delete/permanent_delete 的 pop_totp 保持先于写库（「写库→pop」窗口内定时器命中旧 secret；分域后不再影响差分世代快照，时序由 TestTotpInvalidateOrdering 的调用顺序 spy 守护）。 |
+| `QL-071` | — | 1 | category_repository.update_category 重名异常文案去内嵌明文分类名（对齐同文件 add_category 的固定文案示范）：本层 category.name 生产路径为密文、测试路径为明文分类名，直接调 db 层的调用方异常若经 logger.error 落盘，内嵌明文名会绕过日志脱敏过滤器。 |
+| `QL-072` | — | 3 | get_entry_summaries 的 limit=0 两路径语义统一为空集：内存路径原 ``if limit`` 视 0 为 falsy 跳过截断返回全部，与 SQL 路径 LIMIT 0 返回空集分叉；统一 ``is not None`` 判定（排序下推分支 limit=0 循环首轮即 break）。 |
 
-### SEC — 安全（43 项）
+### SEC — 安全（49 项）
 
 | 新编号 | 旧编号 | 处数 | 语义（代表性首处） |
 |---|---|---|---|
 | `SEC-001` | `SEC-001` | 2 | # CSV 列数硬上限（SEC-001）：先 ``list(reader)`` 物化行前校验 header 列数，防止单行 |
 | `SEC-002` | `SEC-002` | 3 | 除 TTL 外校验 key_epoch（SEC-002）：改密轮换密钥后，旧 epoch 派生的报告即便在 |
-| `SEC-003` | `SEC-003` | 11 | （SEC-003 威胁边界：明文可读意味着本地有读权限者可重算签名伪造安全配置，如把 |
+| `SEC-003` | `SEC-003` | 16 | （SEC-003 威胁边界：明文可读意味着本地有读权限者可重算签名伪造安全配置，如把 |
 | `SEC-004` | `SEC-004` | 2 | 重定向位置文件（SEC-004）。 |
 | `SEC-005` | `SEC-005` | 3 | # 全量逐行断言加密列（SEC-005）：_assert_encrypted 仅做 O(1) ``cb2:`` 前缀检查， |
 | `SEC-006` | `SEC-006` | 2 | # 备份校验的字符串型加密字段→明文长度上限映射，派生自 models 单一事实源（SEC-006）： |
 | `SEC-007` | `SEC-007` | 1 | # SEC-007：此处把公开默认分类名以明文写入 name_enc 列，是有意为之——schema_manager |
 | `SEC-008` | `SEC-008` | 8 | 把清洗点前移到入库边界（SEC-008）：导入阶段统一对受影响文本字段转义，使后续 |
-| `SEC-009` | `SEC-009` | 2 | # mid-word 误匹配（donkey=…），中文关键词（密码/密钥/令牌）不受影响。SEC-009 补充 |
+| `SEC-009` | `SEC-009` | 3 | # mid-word 误匹配（donkey=…），中文关键词（密码/密钥/令牌）不受影响。SEC-009 补充 |
 | `SEC-010` | `SEC-010` | 5 | （SEC-010）：让高敏感路径（清空回收站/改密/恢复/解锁）感知旧密文/明文可能 |
 | `SEC-011` | `SEC-011` | 1 | # SEC-011：id 反查须在 _auto_commit() 之前完成——插入与反查在同一隐式事务内 |
 | `SEC-012` | `SEC-013` | 1 | # 与 entry_repository._row_to_entry 一致向上传播（SEC-012），让调用方 |
@@ -239,13 +262,13 @@
 | `SEC-021` | — | 1 | Windows ``_load_dpapi_integrity_key`` 检测到 pre-SEC-003 明文 config.key（合法长度但未 DPAPI 封装）时，重新经 DPAPI 封装原子覆盖写回，完成一次性升级迁移，消除明文密钥原样保留的泄漏面。（已退役：项目未发布不存在 pre-SEC-003 遗留形态，迁移分支经 SEC-052 删除、非 DPAPI 封装一律按损坏处理；残留 1 处引用即 config_key_store 的退役注记。） |
 | `SEC-027` | — | 3 | 恢复流程 finally 直接置空 ``_DecryptedPayload.plaintext/.data`` 字段（``del`` 局部别名不释放调用方持有的引用），明文在 WAL checkpoint/purge 收尾期间不再驻留。 |
 | `SEC-028` | — | 4 | ``atomic_write`` 临时文件名加 urandom 随机后缀 + opener ``O_EXCL``（POSIX 叠加 ``O_NOFOLLOW``），消除可预测名 unlink→open 窗口的 symlink 植入竞态。 |
-| `SEC-029` | — | 7 | RateLimiter 状态文件包 HMAC-SHA256 签名行（复用 config 完整性密钥），验签失败按最高阶梯保守锁定并自愈重写，堵住「改写合法 JSON 归零计数」的绕过。 |
-| `SEC-030` | — | 14 | 承载用户/导入数据的 QLabel 统一经 create_plain_text_label 工厂固定 PlainText（默认 AutoText 会被启发式判富文本：伪造信任样式、`<` 开头密码显示被吞、本地 SVG 解析链触达）；URL 标签的 RichText+转义路径保留。第三轮补齐：主窗列表标题（分类名 setText）、密码历史 changed_at 时间标签；TOTP 验证码标签评估为纯数字生成值安全不动。 |
+| `SEC-029` | — | 9 | RateLimiter 状态文件包 HMAC-SHA256 签名行（复用 config 完整性密钥），验签失败按最高阶梯保守锁定并自愈重写，堵住「改写合法 JSON 归零计数」的绕过。 |
+| `SEC-030` | — | 12 | 承载用户/导入数据的 QLabel 统一经 create_plain_text_label 工厂固定 PlainText（默认 AutoText 会被启发式判富文本：伪造信任样式、`<` 开头密码显示被吞、本地 SVG 解析链触达）；URL 标签的 RichText+转义路径保留。第三轮补齐：主窗列表标题（分类名 setText）、密码历史 changed_at 时间标签；TOTP 验证码标签评估为纯数字生成值安全不动。 |
 | `SEC-031` | — | 4 | 确认密码常量时间比较统一 PasswordService.passwords_match 门面（utf-8 encode），四处调用点收编，防 QL-019 同型漏 encode 复发。 |
-| `SEC-039` | — | 7 | CSV 含密码导出对 password/totp_secret 列跳过公式前缀转义（与 SEC-008 导入侧「不清洗密钥字段」决策对称）；导入侧 password 列不再 strip。 |
+| `SEC-039` | — | 8 | CSV 含密码导出对 password/totp_secret 列跳过公式前缀转义（与 SEC-008 导入侧「不清洗密钥字段」决策对称）；导入侧 password 列不再 strip。UI 侧（import_export_dialog.export_warning_text）在 CSV+包含密码的确认警告中向用户明示该有意豁免。 |
 | `SEC-040` | — | 3 | _try_incremental_update 二次校验改比快照 epoch（原比实时 epoch，跨 epoch 重填会把旧密钥指纹并入新缓存——当前 UI 时序不可达的防御纵深）。 |
 | `SEC-041` | — | 19 | 摘要缓存回写增加写入方世代守卫（data_epoch）：跨恢复的旧 worker 不能把恢复前明文写入重臂后的新 epoch 缓存。 |
-| `SEC-042` | — | 2 | RateLimiter 无签名降级时状态完全不落盘（消除「无签名状态文件」这一下次会话被误判篡改的形态；降级近乎不可达，跨会话计数丢失可接受）。 |
+| `SEC-042` | — | 3 | RateLimiter 无签名降级时状态完全不落盘（消除「无签名状态文件」这一下次会话被误判篡改的形态；降级近乎不可达，跨会话计数丢失可接受）。 |
 | `SEC-043` | — | 11 | SEC-041 的 data_epoch 写入方世代守卫全读路径接入：非搜索列表/get_recent_summaries/get_entry 详情（含 decrypt_summary/decrypt_entry 透传与 ViewDecryptCacheProtocol 声明）、SecurityAnalyzer._make_summary 调用链（full_analysis/_classify_entry/_try_incremental_update）、decrypt_category_name 均在锁内快照世代传入，堵「跨恢复后旧明文植入新 epoch 缓存」的四条遗留漏点。 |
 | `SEC-044` | — | 6 | TOTP secret 缓存回写世代守卫：resolve_totp_secret 解密前锁内采样 epoch+version、回写前双重复查（TOTP 定时器是真实并发读者）；store_totp 增可选 data_epoch 复查（未提供保持无条件落缓存，既有调用方无跨世代窗口）。 |
 | `SEC-045` | — | 1 | 导入侧公式注入清洗扩至 custom_fields 非 password 类型的 name/value（password 值豁免保持密钥完整性，与 SEC-039 决策对称），补齐 SEC-008「复制/导出无需各自防护」声明对该字段的不变量。 |
@@ -257,5 +280,11 @@
 | `SEC-051` | — | 0（decrypter_template.html、tests） | 解密器 CSP meta（default-src 'none' + 内联 script/style + wasm-unsafe-eval + data: 图标）：esc() 转义之外的第二层 XSS 约束，封死外联加载与表单/嵌入通道。 |
 | `SEC-052` | — | 4 | 删除 pre-SEC-003 明文 config.key 迁移分支，非 DPAPI 封装一律按损坏处理（SEC-021 退役）；写侧配套见 SEC-055。 |
 | `SEC-053` | — | 5 | CategoryManager 明文分类缓存接入锁定/epoch 轮换清零回调。 |
-| `SEC-054` | — | 4 | TOTP preloaded 预热写入补写入方世代守卫（SEC-044 漏点）。 |
-| `SEC-055` | — | 5 | Windows DPAPI protect 失败时不再回退写明文 32 字节 config.key（读侧 SEC-052 只认 DPAPI 封装，该文件下次启动必被判损坏 → 假完整性告警 + 敏感键回退 + RateLimiter 签名失配降级最大锁定）：_store_dpapi_integrity_key 返回 False 不落盘，load_or_create 的 win32 分支保持内存密钥运行本会话并记 CRITICAL（下次启动重新生成，签名失配告警与日志共同如实反映「密钥未能安全持久化」）；非 Windows 明文回退链不变。 |
+| `SEC-054` | — | 14 | TOTP preloaded 预热写入补写入方世代守卫（SEC-044 漏点）；残余窗口彻底闭合：EntryManager 新增 get_entry_with_epoch 随 entry 携带读锁内快照世代（get_entry 薄委托丢弃世代），detail_panel.show_entry 增 data_epoch 透传并记录 _current_data_epoch 供 force 重建（主题切换持旧条目重显）复用——「解密后→预热前」窗口内恢复轮换世代时旧 secret 被缓存守卫拒收，主路径与 force 路径均不误判为零间隙。data_epoch 后改必传签名（无默认值）并增 current_data_epoch 只读 property 供 force 重建回传：「未传时现时快照 key_epoch」的最弱回退分支删除——漏传调用方原会编译通过却静默走弱分支，重开本编号关闭的窗口。 |
+| `SEC-055` | — | 8 | Windows DPAPI protect 失败时不再回退写明文 32 字节 config.key（读侧 SEC-052 只认 DPAPI 封装，该文件下次启动必被判损坏 → 假完整性告警 + 敏感键回退 + RateLimiter 签名失配降级最大锁定）：_store_dpapi_integrity_key 返回 False 不落盘，load_or_create 的 win32 分支保持内存密钥运行本会话并记 CRITICAL（下次启动重新生成，签名失配告警与日志共同如实反映「密钥未能安全持久化」）；非 Windows 明文回退链不变。 |
+| `SEC-056` | — | 1 | _parse_changed_utc 解析失败日志只记 crypto_id 不记 changed_at_str 明文值——解密后字段值不入日志，对齐「只记 id」纪律。 |
+| `SEC-057` | — | 7 | 会话级临时密钥标记 session_only（ConfigKeyStore 置位、ConfigManager 透出、RateLimiter 消费）：Windows DPAPI protect 失败（SEC-055 降级）产生仅本会话有效的内存密钥，限流器此前仍以其签名状态落盘——下次启动密钥重新生成 → 签名失配按 SEC-029 保守分支降级最高阶梯锁定（15 次/600 秒），DPAPI 持续故障时每次启动误锁 10 分钟；现 _resolve_signing_key 对 session_only 返回 None 走 SEC-042 不落盘路径（仅内存限流、不建哨兵，下次按首次使用处理）。 |
+| `SEC-058` | — | 1 | 自动备份调度三键（last_auto_backup_at/auto_backup_interval_hours/auto_backup_retention）纳入 _INTEGRITY_SENSITIVE_KEYS：last 被篡改为远期合法 ISO 使 is_auto_backup_due 恒 False、interval 拉满 168h 同为「自动备份静默停摆」通道（用户只见完整性告警却无从知晓备份停止），retention 压低收缩回滚快照保有量；完整性失败回退默认即恢复调度。 |
+| `SEC-059` | — | 2 | SecureRotatingFileHandler：标准 doRollover 以进程 umask 重建新 baseFilename（POSIX 0644 世界可读），启动时的一次 secure_file 只覆盖首个文件；覆写轮转后对当前文件与全部轮转备份重新 secure_file（strict=False 降级不崩），configure_logging 启动 glob 一并收紧既有遗留备份。 |
+| `SEC-060` | — | 1 | 日志脱敏关键词补充 nonce/salt/title/url/notes/tags：均为加密列对应明文或其派生输入（nonce/salt 是密文/密钥派生参数，title/url/notes/tags 是条目元数据），与 password 同级敏感（防未来误写纵深，当前无调用点命中）。 |
+| `SEC-061` | — | 3 | validate_file_path 的 Windows 分支补保留设备名（CON/PRN/AUX/NUL/COM1-9/LPT1-9，按组件 stem 大小写不敏感整词匹配，含 CON.txt 带扩展名与尾随空格/点形态）与 NTFS 备用数据流冒号拒绝（剥 \\?\ / \\.\ 前缀与盘符首冒号后任何残留 ':'）；非 Windows 不检查（POSIX 合法字符，按 sys.platform 分支）；错误文案固定不回显用户输入。补强：\\.\ 设备命名空间仅放行「首组件为盘符且带后续路径」形态（\\.\C:\data\file.txt），\\.\PhysicalDrive0/\\.\Serial0/裸卷 \\.\C: 等设备对象本体拒绝——该前缀正是无冒号 Win32 设备对象命名空间，剥前缀后的残留冒号/保留名检查对其全放行。当前到达路径不可利用，属中央路径安全边界的未来功能纵深。 |

@@ -13,7 +13,6 @@ DB 与并发写有竞态（读到部分提交状态），故改为必传并移�
 """
 
 import json
-import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -31,8 +30,6 @@ from .payload import (
     PAYLOAD_TOP_OVERHEAD_BYTES,
 )
 from .validator import MAX_BACKUP_ENTRIES, MAX_HISTORY_PER_ENTRY
-
-logger = logging.getLogger(__name__)
 
 # portable dict 中的时间戳字段（模板以空串占位，估算按实际长度补齐）。
 _ENTRY_TIMESTAMP_FIELDS = ("created_at", "updated_at", "deleted_at", "password_changed_at")
@@ -162,7 +159,8 @@ def collect_portable_data(
     raw_entries: list[RawEntry],
     history_rows: list[PasswordHistory],
     categories: list[dict[str, Any]],
-    progress: Callable[[int, int], None] | None = None,
+    entries_progress: Callable[[int, int], None] | None = None,
+    history_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any] | None:
     """收集备份数据：解密所有字段为明文，构建可移植字典。
 
@@ -171,8 +169,10 @@ def collect_portable_data(
     自读 DB 回退以避免与并发写竞态读到部分提交状态——MAINT-015 必传化原则的同款
     应用）。返回嵌套项值类型混合，故标注
     ``dict[str, Any]``（结构由 validate_restore_data 校验）。
-    ``progress``（PERF-083，恢复点创建路径专用）：按已解密条目数上报原始
-    ``(done, total)`` 计数，加权映射由调用方完成；正式备份路径不传（全程无进度 UI）。
+    ``entries_progress``（PERF-083，恢复点创建路径专用）：按已解密条目数上报原始
+    ``(done, total)`` 计数，加权映射由调用方完成；``history_progress``（PERF-089）
+    覆盖其后的历史解密段（此前整段无上报，进度在条目终值后冻结至序列化）。正式
+    备份路径均不传（全程无进度 UI）。
     """
     # 基于明文长度的增量估算（PERF-068）：避免逐条 json.dumps 双重序列化开销，
     # 顶层结构开销常量一次性计入。
@@ -185,7 +185,7 @@ def collect_portable_data(
             cancel_check,
             estimated_size,
             raw_entries,
-            progress,
+            entries_progress,
         )
         history = collect_portable_history(
             key,
@@ -193,6 +193,7 @@ def collect_portable_data(
             entry_count,
             estimated_size,
             history_rows,
+            history_progress,
         )
     except _BackupCancelled:
         return None
@@ -249,17 +250,21 @@ def collect_portable_history(
     entry_count: int,
     estimated_size: int,
     history_rows: list[PasswordHistory],
+    progress: Callable[[int, int], None] | None = None,
 ) -> list[dict[str, Any]]:
     """采集并解密密码历史，返回历史记录列表。
 
     ``estimated_size`` 入参参与 payload 上限校验，累计值不再返回（无调用方使用，QL-010）；
     ``entry_count`` 用于历史上限校验。``history_rows`` 锁内预读后必传（见模块头
-    「备份锁外解密契约」），解密循环锁外运行。
+    「备份锁外解密契约」），解密循环锁外运行。``progress``（PERF-089）按已解密历史
+    条数每 ``PROGRESS_REPORT_EVERY`` 条节流上报原始 ``(done, total)`` 计数、终值恒
+    上报，加权映射由调用方完成。
     """
     if len(history_rows) > entry_count * MAX_HISTORY_PER_ENTRY:
         raise PayloadTooLargeError("密码历史数量超出限制")
     history: list[dict[str, Any]] = []
-    for history_row in history_rows:
+    total = len(history_rows)
+    for done, history_row in enumerate(history_rows, start=1):
         if cancel_check and cancel_check():
             raise _BackupCancelled
         try:
@@ -292,4 +297,6 @@ def collect_portable_history(
             + len(history_row.changed_at.encode("utf-8"))
         )
         check_payload_limit(estimated_size)
+        if progress is not None and should_report_progress(done, total):
+            progress(done, total)
     return history

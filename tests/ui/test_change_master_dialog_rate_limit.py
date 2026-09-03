@@ -8,6 +8,7 @@
 限流器经构造注入（ARCH-043），测试直接传入内存态实例（无状态文件）。
 """
 
+from src.business.managers.vault_lifecycle import CHANGE_AUTH_FAILED_MESSAGE
 from src.business.services.rate_limiter import RateLimiter
 
 
@@ -33,8 +34,8 @@ class TestChangeMasterDialogRateLimit:
         """返回 False（认证失败，唯一语义）应计入失败计数。"""
         dialog = _make_dialog(qapp, tmp_path, monkeypatch)
         try:
-            dialog._on_change_done((False, "当前主密码错误"))
-            assert dialog._rate_limiter._fail_count == 1
+            dialog._on_change_done((False, CHANGE_AUTH_FAILED_MESSAGE))
+            assert dialog._rate_limiter.fail_count == 1
         finally:
             dialog.deleteLater()
 
@@ -44,7 +45,7 @@ class TestChangeMasterDialogRateLimit:
         try:
             dialog._rate_limiter.record_failure()  # 此前已有一次认证失败
             dialog._on_change_error("数据库操作失败，请稍后重试。")
-            assert dialog._rate_limiter._fail_count == 1  # 计数未增加
+            assert dialog._rate_limiter.fail_count == 1  # 计数未增加
         finally:
             dialog.deleteLater()
 
@@ -58,6 +59,6 @@ class TestChangeMasterDialogRateLimit:
         dialog = _make_dialog(qapp, tmp_path, monkeypatch)
         try:
             dialog._on_change_done((False, "Password authentification échouée (i18n)"))
-            assert dialog._rate_limiter._fail_count == 1
+            assert dialog._rate_limiter.fail_count == 1
         finally:
             dialog.deleteLater()

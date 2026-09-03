@@ -44,7 +44,6 @@ from ..resources.constants import (
     BTN_COPY,
     MAX_TAG_DISPLAY,
     MS_FEEDBACK,
-    PWD_MASK,
     PWD_VISIBLE_SECONDS_DEFAULT,
 )
 from ..resources.icons import (
@@ -52,8 +51,6 @@ from ..resources.icons import (
     COPY,
     DELETE,
     EDIT,
-    EYE,
-    LOCK,
     SHARE,
     STAR,
     STAR_OUTLINE,
@@ -64,7 +61,7 @@ from ..resources.strings import entry_type_icon, entry_type_label
 from ..resources.theme_colors import c, get_strength_color
 from .custom_fields_renderer import CustomFieldsRenderer
 from .password_history_widget import PasswordHistoryWidget
-from .secret_field import SecretFieldEnv, make_secret_field_row
+from .secret_field import SecretFieldEnv, SharedHideTimer, make_secret_field_row
 from .totp_widget import TOTPWidget
 from .widgets import clear_layout, create_icon_button, create_plain_text_label, disconnect_all
 
@@ -78,11 +75,14 @@ class DetailPanel(QWidget):
     """密码条目详情面板。
 
     安全说明，受 CPython 运行时限制：
-    - 明文密码以 Python `str` 形式存储在 `self._current_password` 及闭包中。
+    - 敏感字段明文（含主密码）以 Python `str` 形式存储在间接引用字典
+      `self._secret_values_main` 及字段行闭包中（MAINT-103：主密码原独立的
+      `self._current_password` 引用收编入同一字典）。
     - Python 字符串不可变，`mark_secret_discarded` 无法覆写原始对象内存。
-    - `_clear_content` 通过置空引用缩短敏感数据的驻留时间。
-    - 对主密码字段，`_toggle` 闭包从 `self._current_password` 读取而非直接
-      捕获值，使 `_clear_content` 清空后闭包同样读到空值。
+    - `_clear_content` 通过清空间接引用字典缩短敏感数据的驻留时间；字段行
+      闭包经字典读取，清空后闭包读到空值。
+    - 主密码字段行经 `SharedHideTimer` 共享单定时器自动掩码（同屏单显式），
+      切换条目/锁定时经 `stop()` 先掩码当前显式行再停止计时。
     """
 
     edit_requested = pyqtSignal(int)
@@ -109,13 +109,17 @@ class DetailPanel(QWidget):
         self._config = config
         self._signal_connections: list[tuple[pyqtBoundSignal, Callable[..., Any]]] = []
         self._current_entry: Entry | None = None
-        self._pwd_hide_timer = QTimer(self)
-        self._pwd_hide_timer.setSingleShot(True)
-        self._pwd_hide_timer.timeout.connect(self._auto_hide_password)
-        self._pwd_label_ref: QLabel | None = None
-        self._show_btn_ref: QPushButton | None = None
-        self._current_password = ""
-        # 主条目中非主密码敏感字段的间接引用字典，自定义字段由 `renderer` 管理
+        # 当前展示条目的数据世代（SEC-054）：与 _current_entry 同刻记录，经
+        # current_data_epoch property 只读透出，force 重建（主题切换持旧条目重显）
+        # 时由调用方回传 show_entry 复用——entry 的敏感字段解密于该世代，
+        # TOTP 预热写入据此复查。
+        self._current_data_epoch: str | None = None
+        # 主密码字段的共享单定时器显隐协调器（MAINT-103）：全局一个 QTimer、
+        # 同屏单显式，替代原 _pwd_hide_timer + _pwd_label_ref/_show_btn_ref 专属
+        # 实现；切换条目/锁定时经 stop() 掩码当前显式行并停止计时。
+        self._pwd_hide = SharedHideTimer(self)
+        # 主条目敏感字段（含主密码，按标签名键控）的间接引用字典，自定义字段由
+        # `renderer` 管理
         self._secret_values_main: dict[str, str] = {}
         # 非主密码敏感字段与自定义字段的自动掩码定时器，持久且可取消，
         # 便于 `_clear_content` 统一停止并清空（历史密码定时器由 `PasswordHistoryWidget` 自管）。
@@ -232,12 +236,48 @@ class DetailPanel(QWidget):
         """当前展示的条目，只读访问。"""
         return self._current_entry
 
-    def show_entry(self, entry: Entry, *, force: bool = False) -> None:
+    @property
+    def holds_secret_values(self) -> bool:
+        """主条目敏感字段间接引用字典是否仍持有明文（测试观察用，MAINT-095）。
+
+        锁定清理守护据此断言敏感明文已随 ``_secret_values_main`` 清空（MAINT-103：
+        主密码原独立的 ``_current_password`` 引用已收编入该字典）；只暴露布尔而非
+        字典本体，观察面本身不扩散明文。
+        """
+        return bool(self._secret_values_main)
+
+    @property
+    def current_data_epoch(self) -> str | None:
+        """当前展示条目的数据世代（SEC-054），只读访问。
+
+        供 force 重建的调用方（主题切换持旧条目重显）回传 ``show_entry`` 的
+        ``data_epoch``——面板不再内置「未传时另行快照 key_epoch」的回退分支：
+        该最弱分支（现时快照）恰是新调用方漏传时的默认落点，SEC-054 关闭的
+        「旧世代 TOTP secret 植入新世代缓存」窗口会对其重开，故 ``data_epoch``
+        改为必传、由类型系统强制调用方显式抉择（主路径传 ``get_entry_with_epoch``
+        带出的世代，force 重建传本 property 复用的记录世代）。
+        """
+        return self._current_data_epoch
+
+    def show_entry(
+        self,
+        entry: Entry,
+        *,
+        force: bool = False,
+        data_epoch: str | None,
+    ) -> None:
         """显示条目详情。
 
         Args:
             entry: 要显示的条目
             force: 强制重建，主题切换时需要刷新内联样式
+            data_epoch: **必传**。entry 敏感字段的解密世代（SEC-054 窗口闭合）：
+                主路径由 entry_actions_controller 经 ``get_entry_with_epoch`` 从
+                读锁内带出，「解密后→预热前」窗口内发生恢复轮换时旧世代 secret
+                被 TOTP 预热守卫拒收；force 重建同一条目时传
+                ``self.current_data_epoch`` 复用初次展示记录的世代。无默认值是
+                有意的：回退「现时快照 key_epoch」的最弱分支曾是漏传调用方的
+                静默默认落点（SEC-054 关闭的窗口对其重开），类型系统强制显式抉择。
         """
         if (
             not force
@@ -247,12 +287,9 @@ class DetailPanel(QWidget):
         ):
             return
         logger.debug("显示条目详情: id=%d", entry.id)
-        # 在接收条目的最早时点快照数据世代（SEC-054）：entry 的敏感字段（含
-        # totp_secret）解密于该世代，TOTP 预热写入据此复查——「解密后→预热前」
-        # 窗口内发生恢复重臂新世代时，旧世代 secret 不落新世代缓存。快照越早窗口
-        # 越窄：主路径（get_entry→show_entry 同步栈）为零间隙，仅 force 重建等
-        # 持旧条目重显的路径残留理论窗口（数据本已过期，刷新列表即收敛）。
-        data_epoch = self._entry_mgr.key_epoch if self._entry_mgr is not None else None
+        # 世代由调用方显式传入并随条目同刻记录（SEC-054）；「未传时现时快照
+        # key_epoch」的最弱分支已随必传签名删除（见 current_data_epoch 说明）。
+        self._current_data_epoch = data_epoch
         self._prepare_display(entry)
         self._update_header_and_actions(entry)
         self._content_layout.addLayout(self._build_tags_section(entry))
@@ -269,7 +306,9 @@ class DetailPanel(QWidget):
         if self._current_entry is not None and self._current_entry.id != entry.id:
             self._evict_current_totp()
         self._current_entry = entry
-        self._pwd_hide_timer.stop()
+        # stop() 顺带掩码当前显式主密码行（若有）：共享单定时器模式下 label 引用
+        # 由协调器持有，_clear_content 不再单独掩码（MAINT-103）。
+        self._pwd_hide.stop()
         self._totp_widget.stop()
         self._clear_content()
         if self._empty_label is not None:
@@ -357,11 +396,11 @@ class DetailPanel(QWidget):
             url_label.setOpenExternalLinks(True)
         return url_label
 
-    def _render_totp_and_history(self, entry: Entry, *, data_epoch: str | None = None) -> None:
+    def _render_totp_and_history(self, entry: Entry, *, data_epoch: str | None) -> None:
         """启动 TOTP 显示与密码历史延迟加载 stub。
 
-        data_epoch 为 show_entry 时点快照的数据世代（SEC-054），随 preloaded secret
-        透传给 TOTP 预热写入做世代复查。
+        data_epoch 为 show_entry 收到的数据世代（SEC-054，调用方必传），随
+        preloaded secret 透传给 TOTP 预热写入做世代复查。
         """
         if entry.has_totp and entry.id and self._entry_mgr is not None:
             self._totp_widget.start(
@@ -538,87 +577,31 @@ class DetailPanel(QWidget):
     ) -> tuple[QLabel, QWidget]:
         """创建敏感字段行，默认掩码，附带显示/隐藏与复制按钮。
 
+        全部经共享工厂构建（MAINT-103：主密码原内联手写三件套收编），明文按
+        label 键存入 _secret_values_main，切换/锁定时统一清零。
+
         Args:
             label: 字段名称
             value: 字段值
-            main_password: 仅用于主密码字段，追踪引用并使用全局自动隐藏定时器
+            main_password: 仅用于主密码字段——注入共享单定时器（同屏单显式、
+                切换条目时经 ``_pwd_hide.stop()`` 掩码收缩明文驻留）；其余敏感
+                字段每行独立 QTimer，可同时揭示多行
         """
-        if not main_password:
-            # 非主密码敏感字段复用共享构建逻辑（与 CustomFieldsRenderer 一致），
-            # 明文按 label 键存入 _secret_values_main，切换/锁定时统一清零。
-            return make_secret_field_row(
-                SecretFieldEnv(
-                    store=self._secret_values_main,
-                    timers=self._field_hide_timers,
-                    parent_widget=self,
-                    get_pwd_visible_ms=self._get_pwd_visible_ms,
-                    on_copy=self._copy_with_feedback,
-                    on_copy_feedback=self.copy_feedback.emit,
-                ),
-                label,
-                value,
-                store_key=label,
-            )
-        # 主密码字段：使用全局 _pwd_hide_timer 与 _current_password 独立引用，
-        # 不复用共享逻辑（共享逻辑为每行使用独立 QTimer）。
-        name_label = QLabel(f"{label}：")
-        name_label.setObjectName("fieldLabel")
-
-        row_widget = QWidget()
-        row_layout = QHBoxLayout(row_widget)
-        row_layout.setContentsMargins(0, 0, 0, 0)
-
-        # 揭示后的明文密码可能以 `<` 开头，PlainText 保证显示与复制一致（SEC-030）
-        val_label = create_plain_text_label(PWD_MASK, "secretValue")
-        row_layout.addWidget(val_label, 1)
-
-        show_btn = QPushButton()
-        set_icon(show_btn, EYE)
-        show_btn.setObjectName("iconBtn")
-        show_btn.setFixedSize(*BTN_COPY)
-        show_btn.setToolTip("显示/隐藏")
-
-        self._pwd_label_ref = val_label
-        self._show_btn_ref = show_btn
-        self._current_password = value
-
-        def _toggle(
-            _checked: bool = False, lbl: QLabel = val_label, btn: QPushButton = show_btn
-        ) -> None:
-            # `_clear_content` 经 `deleteLater` 异步销毁控件；销毁窗口期内若仍有挂起的
-            # `clicked` 事件触发闭包，操作已删除的 C++ 对象会抛 `RuntimeError`。守卫
-            # 避免该竞态，与 `_signal_connections` 在 `secure_clear` 时显式断开的设计互补。
-            if sip.isdeleted(lbl) or sip.isdeleted(btn):
-                return
-            pwd = self._current_password
-            if lbl.text() == PWD_MASK:
-                lbl.setText(pwd)
-                set_icon(btn, LOCK)
-                self._pwd_hide_timer.start(self._get_pwd_visible_ms())
-            else:
-                lbl.setText(PWD_MASK)
-                set_icon(btn, EYE)
-                self._pwd_hide_timer.stop()
-
-        show_btn.clicked.connect(_toggle)
-        row_layout.addWidget(show_btn)
-
-        copy_btn = QPushButton()
-        set_icon(copy_btn, COPY)
-        copy_btn.setObjectName("iconBtn")
-        copy_btn.setFixedSize(*BTN_COPY)
-        copy_btn.setToolTip("复制密码")
-
-        def _copy_secret(_checked: bool = False, btn: QPushButton = copy_btn) -> None:
-            if sip.isdeleted(btn):
-                return
-            self._copy_with_feedback(btn, self._current_password)
-
-        copy_btn.clicked.connect(_copy_secret)
-        copy_btn.clicked.connect(self.copy_feedback.emit)
-        row_layout.addWidget(copy_btn)
-
-        return name_label, row_widget
+        return make_secret_field_row(
+            SecretFieldEnv(
+                store=self._secret_values_main,
+                timers=self._field_hide_timers,
+                parent_widget=self,
+                get_pwd_visible_ms=self._get_pwd_visible_ms,
+                on_copy=self._copy_with_feedback,
+                on_copy_feedback=self.copy_feedback.emit,
+                # 共享单定时器模式仅主密码行注入（None 走每行独立定时器默认模式）
+                shared_hide=self._pwd_hide if main_password else None,
+            ),
+            label,
+            value,
+            store_key=label,
+        )
 
     def _get_pwd_visible_ms(self) -> int:
         """获取密码显示自动隐藏的毫秒数。"""
@@ -628,18 +611,6 @@ class DetailPanel(QWidget):
                 self._config.get_safe(CFG_PASSWORD_VISIBLE_SECONDS, PWD_VISIBLE_SECONDS_DEFAULT)
             )
         return seconds * 1000
-
-    def _auto_hide_password(self) -> None:
-        # 与 `_toggle` 一致的销毁守卫：`_clear_content` 经 `deleteLater` 异步销毁控件，
-        # 此定时器回调可能在销毁后触发，操作已删除的 C++ 对象会抛 `RuntimeError`。
-        # `None` 守卫覆盖 `_clear_content` 已置空引用的情况，`sip.isdeleted` 覆盖引用仍
-        # 指向但 C++ 对象已销毁的情况（`deleteLater` 异步生效期间）。
-        if self._pwd_label_ref is None or self._show_btn_ref is None:
-            return
-        if sip.isdeleted(self._pwd_label_ref) or sip.isdeleted(self._show_btn_ref):
-            return
-        self._pwd_label_ref.setText(PWD_MASK)
-        set_icon(self._show_btn_ref, EYE)
 
     def _copy(self, text: str) -> None:
         self._clipboard.copy_text(text)
@@ -662,9 +633,11 @@ class DetailPanel(QWidget):
 
     def _clear_content(self) -> None:
         """清除详情面板内容，安全擦除敏感数据。"""
-        # 停止所有自动掩码定时器，避免清除后对已销毁控件触发回调。
+        # 停止所有自动掩码定时器，避免清除后对已销毁控件触发回调。主密码的共享
+        # 单定时器经 stop() 顺带掩码当前显式行（MAINT-103：label 引用由协调器
+        # 持有，此处无需单独掩码），deleteLater 异步销毁前明文已收缩。
         self._totp_widget.stop()
-        self._pwd_hide_timer.stop()
+        self._pwd_hide.stop()
         for timer in self._field_hide_timers:
             timer.stop()
             timer.deleteLater()
@@ -674,7 +647,7 @@ class DetailPanel(QWidget):
             timer.stop()
             timer.deleteLater()
         self._copy_feedback_timers.clear()
-        # 安全擦除主条目字段间接引用中的敏感值
+        # 安全擦除主条目字段间接引用中的敏感值（含主密码，清空后字段行闭包读到空值）
         for k in list(self._secret_values_main):
             mark_secret_discarded(self._secret_values_main[k])
         self._secret_values_main.clear()
@@ -682,13 +655,6 @@ class DetailPanel(QWidget):
         self._totp_widget.clear()
         self._history_widget.clear()
         self._fields_renderer.clear()
-        mark_secret_discarded(self._current_password)
-        self._current_password = ""
-        # 先清空主密码 label 明文再置空引用，避免 `deleteLater` 异步销毁前明文驻留。
-        if self._pwd_label_ref is not None:
-            self._pwd_label_ref.setText(PWD_MASK)
-        self._pwd_label_ref = None
-        self._show_btn_ref = None
         # `_empty_label` 为构造时一次创建的常驻控件，从布局中取出避免被
         # `_clear_layout` 的 `deleteLater` 销毁，从而 `show_empty` 可直接复用。
         if self._empty_label is not None:
@@ -723,6 +689,9 @@ class DetailPanel(QWidget):
         self._evict_current_totp()
         self._clear_content()
         self._current_entry = None
+        # 世代随条目一同清空（SEC-054）：空状态无「当前条目的解密世代」可言，
+        # 残留旧值会在下一次 show_entry 的 force 复用判定前形成无主状态。
+        self._current_data_epoch = None
         self._title_label.setText("选择一个条目查看详情")
         self._edit_btn.hide()
         self._share_btn.hide()

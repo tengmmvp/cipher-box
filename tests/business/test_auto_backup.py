@@ -15,7 +15,7 @@ def test_maybe_auto_backup_disabled(vault, vault_config):
     mgr = make_backup_manager(vault)
     vault_config.set("auto_backup_enabled", False)
 
-    ok, err = mgr.maybe_auto_backup(vault_config, force=False)
+    ok, err = mgr.maybe_auto_backup(force=False)
 
     assert ok and err == ""
     assert _snapshots(vault_config) == []
@@ -26,7 +26,7 @@ def test_maybe_auto_backup_force_bypasses_disabled_setting(vault, vault_config):
     mgr = make_backup_manager(vault)
     vault_config.set("auto_backup_enabled", False)
 
-    ok, err = mgr.maybe_auto_backup(vault_config, force=True)
+    ok, err = mgr.maybe_auto_backup(force=True)
 
     assert ok, err
     assert len(_snapshots(vault_config)) == 1
@@ -37,7 +37,7 @@ def test_maybe_auto_backup_force_creates_snapshot(vault, vault_config):
     mgr = make_backup_manager(vault)
     vault_config.set("auto_backup_enabled", True)
 
-    ok, err = mgr.maybe_auto_backup(vault_config, force=True)
+    ok, err = mgr.maybe_auto_backup(force=True)
 
     assert ok, err
     assert len(_snapshots(vault_config)) == 1
@@ -49,12 +49,12 @@ def test_maybe_auto_backup_interval_skip(vault, vault_config):
     vault_config.set("auto_backup_enabled", True)
     vault_config.set("auto_backup_interval_hours", 24)
 
-    ok, _ = mgr.maybe_auto_backup(vault_config, force=True)
+    ok, _ = mgr.maybe_auto_backup(force=True)
     assert ok
     assert len(_snapshots(vault_config)) == 1
 
     # 刚备份过，elapsed 接近 0 < 24h，应跳过
-    ok2, _ = mgr.maybe_auto_backup(vault_config, force=False)
+    ok2, _ = mgr.maybe_auto_backup(force=False)
     assert ok2
     assert len(_snapshots(vault_config)) == 1
 
@@ -70,7 +70,7 @@ def test_maybe_auto_backup_retention(vault, vault_config):
     for i in range(4):
         (backup_dir / f"cipherbox_snapshot_2023010{i}_000000.cbox").write_bytes(b"x")
 
-    ok, _ = mgr.maybe_auto_backup(vault_config, force=True)
+    ok, _ = mgr.maybe_auto_backup(force=True)
 
     assert ok
     # force 新建一份当前时间戳快照后，retention 清理使总数收敛到 2
@@ -90,7 +90,7 @@ def test_maybe_auto_backup_cancelled(vault, vault_config):
     # 添加条目使全量解密循环执行，cancel_check 才有机会被检查触发
     make_entry_manager(vault).add_entry(Entry(title="t", username="u", password="p"))
 
-    ok, err = mgr.maybe_auto_backup(vault_config, force=True, cancel_check=lambda: True)
+    ok, err = mgr.maybe_auto_backup(force=True, cancel_check=lambda: True)
 
     assert not ok
     assert "取消" in err
@@ -110,7 +110,7 @@ def test_maybe_auto_backup_preserves_integrity_warning(vault, vault_config):
     # 模拟本会话加载时检出篡改：告警置位（save 默认语义会将其清零）
     vault_config._integrity_warning = True  # noqa: SLF001
 
-    ok, err = mgr.maybe_auto_backup(vault_config, force=True)
+    ok, err = mgr.maybe_auto_backup(force=True)
 
     assert ok and err == ""
     assert len(_snapshots(vault_config)) == 1

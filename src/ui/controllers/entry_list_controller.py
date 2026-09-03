@@ -9,8 +9,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from ...business.managers.entry_manager import entry_sort_key
 from ...business.services.entry_search_match import matches_search, matches_tag
+from ...business.services.entry_sorting import entry_sort_key
 from ...config import CFG_OLD_PASSWORD_WARNING_DAYS
 from ..resources.constants import (
     MAX_SEARCH_RESULTS_DISPLAY,
@@ -54,9 +54,10 @@ class EntryListController:
     def sort_entries(self, entries: list[Entry], sort_index: int) -> list[Entry]:
         """对条目列表排序。
 
-        键函数消费 business 侧导出的 :func:`entry_sort_key`（MAINT-091 单一事实源，
-        与 manager 内存排序路径/SQL 下推共用键语义）——原本地 4 键实现与
-        get_entry_summaries 各一份，漂移会使 UI 重排序与下推序不一致。
+        键函数消费 services 层导出的 :func:`entry_sort_key`（MAINT-091 单一事实源，
+        MAINT-104 迁 services/entry_sorting；与 manager 内存排序路径/SQL 下推共用
+        键语义）——原本地 4 键实现与 get_entry_summaries 各一份，漂移会使 UI 重排序
+        与下推序不一致。
 
         Args:
             entries: 待排序条目列表。

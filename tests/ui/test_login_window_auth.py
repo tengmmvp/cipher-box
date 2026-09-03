@@ -9,6 +9,7 @@
 
 from unittest.mock import MagicMock
 
+from src.business.managers.vault_lifecycle import LOGIN_AUTH_FAILED_MESSAGE
 from src.ui.dialogs.login_window import LoginWindow
 
 
@@ -39,7 +40,7 @@ class TestLoginWindowAuthGlue:
         # 限流器经构造注入（ARCH-043），测试直接注入 mock 驱动状态机断言
         dialog = LoginWindow(_make_vault(tmp_path), limiter)  # type: ignore[arg-type]
         try:
-            dialog._on_auth_result(False, "主密码错误")
+            dialog._on_auth_result(False, LOGIN_AUTH_FAILED_MESSAGE)
             limiter.record_failure.assert_called_once()
             assert "等待 30 秒" in dialog._message_label.text()
         finally:
@@ -51,9 +52,9 @@ class TestLoginWindowAuthGlue:
         limiter.record_failure.return_value = 0
         dialog = LoginWindow(_make_vault(tmp_path), limiter)  # type: ignore[arg-type]
         try:
-            dialog._on_auth_result(False, "主密码错误")
+            dialog._on_auth_result(False, LOGIN_AUTH_FAILED_MESSAGE)
             limiter.record_failure.assert_called_once()
-            assert dialog._message_label.text() == "主密码错误"
+            assert dialog._message_label.text() == LOGIN_AUTH_FAILED_MESSAGE
         finally:
             dialog.close()
 

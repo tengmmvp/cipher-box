@@ -14,7 +14,6 @@ from PyQt6.QtWidgets import QStyle, QStyleOptionViewItem
 
 from src.models import Entry
 from src.ui.components.entry_list_widget import (
-    FAVORITE_MARKER,
     EntryItemDelegate,
     EntryListModel,
 )
@@ -36,6 +35,13 @@ def _entry(**overrides) -> Entry:
 
 def _paint_one(delegate: EntryItemDelegate, entry: Entry, *, selected: bool, width=360) -> None:
     """在离屏 QPixmap 上对单个条目执行一次 delegate.paint。"""
+    _paint_pixmap(delegate, entry, selected=selected, width=width)
+
+
+def _paint_pixmap(
+    delegate: EntryItemDelegate, entry: Entry, *, selected: bool, width=360
+) -> QPixmap:
+    """执行一次 delegate.paint 并返回画布（供像素级比对）。"""
     pixmap = QPixmap(width, EntryItemDelegate.ROW_HEIGHT)
     pixmap.fill(QColor(0, 0, 0, 0))
     option = QStyleOptionViewItem()
@@ -49,6 +55,7 @@ def _paint_one(delegate: EntryItemDelegate, entry: Entry, *, selected: bool, wid
         delegate.paint(painter, option, model.index(0, 0))
     finally:
         painter.end()
+    return pixmap
 
 
 @pytest.fixture
@@ -98,14 +105,21 @@ class TestPaintSmoke:
         assert "accent" in delegate._color_cache
 
     def test_favorite_marker_prefixed_in_title(self, delegate):
-        """收藏条目标题带 ★ 前缀（FAVORITE_MARKER 与标题拼接，渲染不抛）。"""
-        assert FAVORITE_MARKER == "★ "
-        _paint_one(delegate, _entry(is_favorite=True), selected=False)
+        """收藏条目标题带 ★ 前缀（行为断言：星标改变实际渲染像素）。"""
+        plain = _paint_pixmap(delegate, _entry(is_favorite=False), selected=False).toImage()
+        favorite = _paint_pixmap(delegate, _entry(is_favorite=True), selected=False).toImage()
+        # 同一 delegate/主题下唯一差异是标题前缀星标——像素不同证明 FAVORITE_MARKER
+        # 真实进入渲染（替代原 ``FAVORITE_MARKER == "★ "`` 的源码镜像恒真式）
+        assert favorite != plain
+        assert "bg_card" in delegate._color_cache  # 两次渲染均真实执行
 
     def test_minimal_entry_paints_without_error(self, delegate):
         """空字段条目（无标题/无副标题素材）走「(无标题)/无额外信息」兜底，不抛。"""
         entry = Entry(password_present=False)
         _paint_one(delegate, entry, selected=False)
+        # 兜底路径仍完成整卡绘制（背景与两级文字颜色均被请求）
+        assert "bg_card" in delegate._color_cache
+        assert "text_secondary" in delegate._color_cache
 
     def test_missing_entry_falls_back_to_parent_paint(self, delegate, qapp):
         """index 取不到 Entry（data 为 None）时回退父类绘制，不抛异常。"""
@@ -118,6 +132,8 @@ class TestPaintSmoke:
             delegate.paint(painter, option, model.index(0, 0))
         finally:
             painter.end()
+        # 父类绘制不经 delegate 的颜色缓存——零键证明未误入自绘分支
+        assert not delegate._color_cache
 
     def test_none_painter_is_early_return(self, delegate, qapp):
         """painter 为 None 时早退（Qt 信号形态防御），不抛异常。"""
@@ -125,10 +141,14 @@ class TestPaintSmoke:
         model = EntryListModel()
         model.set_entries([_entry()])
         delegate.paint(None, option, model.index(0, 0))
+        # 早退发生在任何绘制请求之前——零键证明
+        assert not delegate._color_cache
 
     def test_narrow_width_keeps_minimum_text_width(self, delegate):
         """极窄行宽触发 text_width 下限 40px 分支，不抛异常。"""
         _paint_one(delegate, _entry(), selected=False, width=12)
+        # 40px 下限不阻断整卡绘制（背景/文字照常请求）
+        assert "bg_card" in delegate._color_cache
 
 
 class TestColorFontCache:

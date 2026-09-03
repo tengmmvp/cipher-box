@@ -95,6 +95,8 @@ class TestSelectDebounce:
         ctrl.set_locked(True)
         ctrl.do_select_entry()
         ctrl._entry_mgr.get_entry.assert_not_called()
+        # 详情主路径改走携带世代的获取（SEC-054），守卫断言同步覆盖
+        ctrl._entry_mgr.get_entry_with_epoch.assert_not_called()
 
     def test_do_select_entry_none_pending_noop(self, qapp):
         """无 pending 选中时 do_select_entry 空操作（不取条目）。"""
@@ -102,6 +104,7 @@ class TestSelectDebounce:
         _setup(ctrl)
         ctrl.do_select_entry()
         ctrl._entry_mgr.get_entry.assert_not_called()
+        ctrl._entry_mgr.get_entry_with_epoch.assert_not_called()
 
     def test_do_select_entry_pending_mismatch_clears_detail(self, qapp):
         """pending 行与列表当前选中不符（后台重建）时清空详情面板，不取条目。"""
@@ -112,6 +115,7 @@ class TestSelectDebounce:
         ctrl.do_select_entry()
         detail_panel.show_empty.assert_called_once()
         ctrl._entry_mgr.get_entry.assert_not_called()
+        ctrl._entry_mgr.get_entry_with_epoch.assert_not_called()
 
 
 class TestRequireUnlocked:

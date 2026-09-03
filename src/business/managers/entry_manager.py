@@ -14,13 +14,19 @@ import uuid
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from .vault_manager import VaultManager
 
 from ...crypto.password_generator import PasswordGenerator
-from ...database.types import EntryQuery, SearchRow, VaultDataStore, VerifyMode
+from ...database.types import (
+    ORDER_BY_FIELDS,
+    EntryQuery,
+    SearchRow,
+    VaultDataStore,
+    VerifyMode,
+)
 from ...exceptions import (
     DecryptionError,
     EntryIntegrityError,
@@ -41,6 +47,7 @@ from ..services.crypto_utils import (
 )
 from ..services.entry_batch_writer import should_report_progress
 from ..services.entry_search_match import matches_search_lower
+from ..services.entry_sorting import SortKeySource, entry_sort_key
 from ..services.entry_validation import validate_plain_entry
 from ..services.entry_view_decryption import EntryViewDecryptor
 from ..services.password_history_service import PasswordHistoryService
@@ -51,36 +58,6 @@ from .entry_cache import EntryCacheManager, SearchMetadata
 from .entry_change_bus import EntryChangeBus
 
 logger = logging.getLogger(__name__)
-
-
-class EntrySortKeySource(Protocol):
-    """排序键字段的最小协议（MAINT-091）：明文 Entry 与窄投影适配行同时满足。"""
-
-    @property
-    def title(self) -> str: ...
-
-    @property
-    def password_strength(self) -> int | None: ...
-
-    @property
-    def created_at(self) -> str: ...
-
-    @property
-    def updated_at(self) -> str: ...
-
-
-class _SortKeySource(NamedTuple):
-    """内存排序路径的排序键源（MAINT-091）：以 Entry 同名字段形态聚合窄投影行与摘要 meta。
-
-    title 取 meta.title_lower（已小写，经 entry_sort_key 再 lower 幂等），其余三键
-    来自 SearchRow 的明文列——使「窄投影+meta 排序」与「宽行 Entry 排序」共用同一
-    键函数，消除 4 键排序在 business/UI 的双实现漂移面。
-    """
-
-    title: str
-    password_strength: int | None
-    created_at: str
-    updated_at: str
 
 
 class _SummaryRead(NamedTuple):
@@ -95,25 +72,6 @@ class _SummaryRead(NamedTuple):
     raw_entries: list[RawEntry]
     key: bytes
     data_epoch: str | None
-
-
-def entry_sort_key(field: str) -> Callable[[EntrySortKeySource], str | int]:
-    """按字段返回条目排序键提取器（单一事实源，MAINT-091）。
-
-    消费方：本模块内存排序路径（窄投影经 :class:`_SortKeySource` 适配）与 UI 的
-    ``EntryListController.sort_entries``——此前同一套 4 键逻辑在两处各一份，键语义
-    漂移会使 SQL 下推序与 UI 重排序不一致。未知字段回退 ``updated_at``，与
-    ``get_entry_summaries`` 内存路径的原回退分支一致；``title`` 键为小写形式
-    （与 meta.title_lower 同源）。
-    """
-    if field == "title":
-        return lambda e: (e.title or "").lower()
-    if field == "password_strength":
-        # password_strength 可能为 None（未评估），统一回退 0，避免与 int 混排抛 TypeError。
-        return lambda e: e.password_strength or 0
-    if field == "created_at":
-        return lambda e: e.created_at or ""
-    return lambda e: e.updated_at or ""
 
 
 class EntryManager:
@@ -453,16 +411,19 @@ class EntryManager:
         # read 前快照 key_epoch，事务内复查，防止 read-modify-write 期间改密
         # 导致 add_password_history 写入旧密钥密文到已被重写的历史表。
         pre_epoch = self.key_epoch
+        # 条目更新可能修改 totp_secret，失效该条目的 TOTP secret 缓存，
+        # 下次 TotpService.get_state / generate_cached 重新解密。须在写库**前**
+        # 执行（QL-070）：「写库 → pop」窗口内 TOTP 定时器会命中缓存的旧 secret
+        # 生成过期验证码；pop 只推进 TOTP 域失效版本（QL-070 分域，见 entry_cache），
+        # 不影响紧随其后的差分世代快照（expected_version 读主域版本）。时序由
+        # TestTotpInvalidateOrdering 以调用顺序 spy 守护。
+        self._cache.pop_totp(entry.id)
         # 差分世代快照同刻捕获（QL-065）：提交后的标签差分不得应用于「并发失效+
         # 重建」后的缓存（重建已含编辑后的 tags，再减旧加新即双扣）。
         expected_version = self._cache.invalidate_version
         raw = self.db.get_entry(entry.id)
         if raw is None:
             return
-
-        # 条目更新可能修改 totp_secret，失效该条目的 TOTP secret 缓存，
-        # 下次 TotpService.get_state / generate_cached 重新解密。
-        self._cache.pop_totp(entry.id)
 
         new_pwd_enc, password_changed = self.prepare_password_update(entry, raw)
         password_changed_at = self.resolve_password_changed_at(
@@ -601,8 +562,17 @@ class EntryManager:
         if invalidate_category_counts:
             self._category_mgr.invalidate_entry_counts_cache()
         if old_tags is not None:
-            self._cache.apply_tag_delta(old_tags, new_tags, expected_version=expected_version)
-            tags_changed = False
+            # 差分被世代守卫放弃（或缓存未填充）时保守整表失效（QL-070）：
+            # apply_tag_delta 返回是否应用——False 时 tags_changed 必须为 True，
+            # 否则既未差分也未失效，_tags_cache 残留窗口前的旧计数。旧行为恒
+            # tags_changed=False，正确性依赖随后 apply_change（默认
+            # tags_changed=True 经 notify 路径时）恰好整表失效的未声明不变量
+            # 巧合收敛；缓存未填充（None）场景下该「巧合」不成立（置 None 是
+            # no-op，但此时本就无陈旧数据，保守分支亦无损）。
+            applied = self._cache.apply_tag_delta(
+                old_tags, new_tags, expected_version=expected_version
+            )
+            tags_changed = not applied
         else:
             tags_changed = True
         self._change_bus.notify(
@@ -670,12 +640,14 @@ class EntryManager:
         if raw is None:
             return False
         tags = self._decrypt_tags_for_delta(raw)
+        # TOTP 缓存失效先于写库（QL-070 时序，理由见 update_entry）：「写库 → pop」
+        # 窗口内定时器命中旧 secret；pop 只推进 TOTP 域版本，不影响主域差分快照。
+        self._cache.pop_totp(entry_id)
         # 差分世代快照在软删除前捕获（QL-065）：提交后的 -1 差分不得应用于
         # 「并发失效+基于新库重建」后的缓存（重建已不含被删条目标签，再扣即双扣）。
         expected_version = self._cache.invalidate_version
         if not self._vault.db.soft_delete_entry(entry_id):
             return False
-        self._cache.pop_totp(entry_id)
         # 单条增量通知（PERF-079）：分析器重读该条见 is_deleted=1 构造移除差分
         # （按缓存成员资格下调 total 并移出弱/重复/过期名单），其余 N-1 条的解密
         # 与指纹结果复用；标签计数 -1 差分与分类计数显式失效（结构性维度经
@@ -715,12 +687,16 @@ class EntryManager:
     def permanent_delete_entry(self, entry_id: int) -> None:
         """永久删除条目。"""
         raw = self._read_raw_for_delta(entry_id)
+        # TOTP 缓存失效先于写库（QL-070 时序，理由见 update_entry）：pop 只推进
+        # TOTP 域版本，不影响主域差分快照（条目不存在时 pop 为幂等 no-op，仅多
+        # 一次 TOTP 域版本推进，无正确性影响）。时序由 TestTotpInvalidateOrdering
+        # 以调用顺序 spy 守护。
+        self._cache.pop_totp(entry_id)
         # 差分世代快照在物理删除前捕获（QL-065，语义同 delete_entry）。
         expected_version = self._cache.invalidate_version
         tags = self._decrypt_tags_for_delta(raw) if raw is not None else ""
         was_active = raw is not None and not raw.is_deleted
         self._vault.db.permanent_delete_entry(entry_id)
-        self._cache.pop_totp(entry_id)
         # 回收站路径的永久删除作用于已软删除条目（was_active=False）：分析/标签/
         # 计数缓存在软删除时已差分移除，此处增量通知对已移除条目是幂等 no-op。
         # 直接物理删除活跃条目的调用形态（was_active=True）则补齐差分（PERF-079）。
@@ -749,7 +725,17 @@ class EntryManager:
         """
         self._vault.db.empty_trash()
         self._cache.clear_totp()
-        self._change_bus.notify()
+        # 通知降级为纯旁路语义（PERF-088）：回收站条目不在活跃分析集合——软删除时
+        # 已按 PERF-079 增量差分移出 SecurityAnalyzer 缓存与标签计数，物理清空不
+        # 改变活跃集合，故 password_changed/metadata_changed=False：
+        # - SecurityAnalyzer.invalidate_cache 对双 False 直接返回，跳过整库 O(n)
+        #   重解密重算（原零参 notify 默认双 True 触发状态栏 worker 全量重算）；
+        # - category_mgr 的计数订阅同样跳过（get_category_entry_counts 过滤
+        #   is_deleted=0，回收站条目本就不计入分类计数）。
+        # 其余失效面不受降级影响：apply_change 仍整体执行（tags_changed/
+        #   clear_summaries 默认 True + 推进 version），摘要/标签缓存与投影行集
+        # 缓存（PERF-086）照常失效，回收站（deleted_only）视图的行集正确性保持。
+        self._change_bus.notify(password_changed=False, metadata_changed=False)
         # 数据已提交，WAL 截断失败非致命（仅旧密文残留收缩失败）；与改密/恢复/解锁路径
         # 对称地降级为告警，避免截断异常冒泡使 UI 显示模糊错误（secure_checkpoint 失败
         # 上抛 DatabaseError，见 SEC-010）。
@@ -763,6 +749,21 @@ class EntryManager:
 
         读路径经 :meth:`epoch_guarded_read` 守卫（ARCH-005）：with 块内仅读 raw、解密移
         锁外（与摘要路径 PERF-001 一致）；epoch 不一致时返回 None，调用方据此跳过。
+
+        实现（SEC-054 闭合）委托 :meth:`get_entry_with_epoch` 后丢弃世代。
+        """
+        entry, _data_epoch = self.get_entry_with_epoch(entry_id)
+        return entry
+
+    def get_entry_with_epoch(self, entry_id: int) -> tuple[Entry | None, str | None]:
+        """获取并解密单个条目，随行携带解密世代 ``(entry, data_epoch)``。
+
+        与 :meth:`get_entry` 同一读路径（epoch 守卫 + 锁内快照 key/世代 + 锁外解密），
+        区别仅在于把锁内快照的 ``data_epoch`` 一并返回（SEC-054 残余窗口闭合）：
+        消费方（detail_panel 的 TOTP 预热）需要「entry 敏感字段解密时所处世代」——
+        世代从锁内带出后，「解密后→预热前」窗口内发生恢复轮换时，旧世代 secret
+        被缓存守卫拒收；在 show_entry 调用点另行快照 ``key_epoch`` 会把该窗口
+        误判为零间隙。其余不消费世代的调用方继续用 :meth:`get_entry`。
         """
         try:
             with self._vault.epoch_guarded_read():
@@ -774,10 +775,10 @@ class EntryManager:
                 # 分类名缓存回写退回缓存侧采样，跨世代后旧明文可植入新 epoch 缓存。
                 data_epoch = self._vault.key_epoch
         except VaultKeyEpochMismatchError:
-            return None
+            return None, None
         if raw is None:
-            return None
-        return self.decrypt_entry(raw, key=key, data_epoch=data_epoch)
+            return None, None
+        return self.decrypt_entry(raw, key=key, data_epoch=data_epoch), data_epoch
 
     def get_entry_summaries(
         self,
@@ -797,16 +798,24 @@ class EntryManager:
             ``limit`` 的生效方式（PERF-078 后统一）：
             - 无搜索且排序为 SQL 白名单字段/默认复合序：``limit`` 经
               ``ORDER BY ... LIMIT`` 下推 SQL（PERF-073）。
-            - 搜索非空或标题序（内存路径）：匹配/收集必须全量（加密字段不可先截断
-              后过滤），排序在内存按 meta/窄行键完成后取前 ``limit``——仅这前 N 条
-              回查宽行与构建摘要，语义与 SQL「ORDER BY ... LIMIT」同构。``limit``
-              为 None 时返回全部（内存全量回查，既有调用方语义不变）。
+            - 搜索非空或不可 SQL 下推的排序（内存路径）：匹配/收集必须全量（加密字段
+              不可先截断后过滤），排序在内存按 meta/窄行键完成后取前 ``limit``——
+              仅这前 N 条回查宽行与构建摘要，语义与 SQL「ORDER BY ... LIMIT`` 同构；
+              排序可 SQL 下推且 ``limit`` 非 None 时走排序下推分支（PERF-087，投影
+              查询带 ORDER BY、匹配循环凑满即止，跳过内存排序）。下推的 SQL 序带
+              并列裁决键（排序列 + is_favorite DESC, updated_at DESC），与内存稳定
+              排序继承的复合序一致——并列 + limit 截断边界上两路径选出同一集合与
+              同一序。
+            - ``limit`` 为 None 返回全部（内存全量回查，既有调用方语义不变）；
+              ``limit=0`` 两路径一致返回空集（QL-072 统一：此前内存路径的
+              ``if limit`` 视 0 为 falsy 跳过截断返回全部，与 SQL 路径 LIMIT 0
+              返回空集语义分叉）。
 
         ``order_by``/``order_desc``（PERF-073/078）：``database.types.ORDER_BY_FIELDS``
-        白名单字段 + 无搜索 → SQL 下推；``"title"``（密文列不可 SQL 排序）或搜索
-        非空 → 内存排序（title 键为缓存的 meta.title_lower，其余键为窄投影明文列），
-        截断集合=排序序前 N。``None``（默认）走复合序（内存路径下即窄投影的 SQL
-        序，不重排）。
+        白名单字段 + 无搜索 → SQL 下推；白名单外的排序（如 ``"title"``，密文列不可
+        SQL 排序）或搜索非空 → 内存排序（title 键为缓存的 meta.title_lower，其余键
+        为窄投影明文列），截断集合=排序序前 N。``None``（默认）走复合序（内存路径
+        下即窄投影的 SQL 序，不重排）。
 
         读路径经 :meth:`epoch_guarded_read` 守卫（ARCH-005）：改密窗口内 epoch 不一致时
         返回空列表，触发 UI 经变更回调刷新。锁定期 :class:`VaultLockedError` 仍正常传播。
@@ -817,19 +826,44 @@ class EntryManager:
         :meth:`_summaries_via_search_projection` / :meth:`_summaries_from_raw_rows`
         构建摘要，逐块自原 190 行单体方法搬运，语义零变化。
         """
-        # 路径分流（PERF-078）：搜索路径与标题序（title 密文列不可 SQL 排序）走
-        # 「窄投影全量 → 内存 meta 排序 → 仅前 limit 回查宽行」；其余（无搜索 +
-        # SQL 白名单字段/默认复合序）维持 PERF-073 的 SQL ``ORDER BY ... LIMIT``
-        # 下推宽行路径。
-        in_memory_path = bool(search) or order_by == "title"
+        # 路径分流（PERF-078；ARCH-051 白名单驱动）：搜索路径与不可 SQL 下推的排序
+        # （ORDER_BY_FIELDS 之外的密文字段，如 title）走「窄投影全量 → 内存 meta
+        # 排序 → 仅前 limit 回查宽行」；其余（无搜索 + SQL 白名单字段/默认复合序）
+        # 维持 PERF-073 的 SQL ``ORDER BY ... LIMIT`` 下推宽行路径。此前硬编码
+        # ``order_by == "title"`` 与 ORDER_BY_FIELDS 构成双源——白名单新增字段时
+        # 本判定不自动跟随（新增可下推字段会被误判为 SQL 路径之外的第三态）；
+        # 改为白名单否定式后，「不可下推」集合自动继承单一事实源。
+        in_memory_path = bool(search) or (order_by is not None and order_by not in ORDER_BY_FIELDS)
         sql_pushdown = not in_memory_path
+        # 内存路径的排序下推（PERF-087）：order_by 属 SQL 白名单且 limit 非 None 时，
+        # 投影查询下推 ORDER BY，行集即目标序——匹配循环按序扫描凑满 limit 即 break，
+        # 跳过 O(n log n) 的全量收集+内存排序（50k 库内存排序 ~100ms）。语义同构
+        # 论证：「近期更新」等带 limit 的视图用户意图即「最新匹配的前 N」，与
+        # 「全量收集 → 内存排序 → 取前 N」选出同一集合与同一序。等价性含并列裁决
+        # （PERF-087）：SQL 序带固定 tie-breaker（ORDER BY <列> <方向>, is_favorite
+        # DESC, updated_at DESC，见 entry_repository._entry_query_clauses），与内存
+        # 稳定排序继承的复合序逐层一致——排序键同值并列时（强度刻度 0-4 并列常见、
+        # 批量导入 created_at 同刻），截断边界上的入选集合与「全量收集→稳定排序→
+        # 截断」完全相同；不带裁决键的引擎内序会在并列+limit 处选出分叉的集合。
+        order_pushdown = (
+            in_memory_path
+            and limit is not None
+            and order_by is not None
+            and order_by in ORDER_BY_FIELDS
+        )
         # SQL 路径的 limit 直接下推；内存路径的 limit 在排序后截断（匹配必须全量，
-        # 截断在排序后语义等价于 SQL「ORDER BY ... LIMIT」的前 N）。
+        # 截断在排序后语义等价于 SQL「ORDER BY ... LIMIT」的前 N；排序下推分支的
+        # 截断由匹配循环的提前终止承担）。
         sql_limit = limit if sql_pushdown else None
         # 列表（无搜索词）传 LENIENT：逐行 HMAC 验签并标记篡改条目（不抛异常），使列表
         # 能检测非加密元数据篡改（is_favorite/category_id/password_strength/deleted_at）。
         # _view_decryptor.decrypt_summary 将 raw.integrity_error 透传到 summary，列表
         # delegate 据此显示完整性警示。
+        # 进读块前先固定本批缓存 epoch（PERF-086 前移，原在锁外解密前）：首次调用
+        # 的重臂（清空+推进 version）若发生在投影拉取**之后**，会把本次刚回填的投影
+        # 行集一并清掉，首次调用自废缓存；前移后拉取的版本快照已含重臂推进，回填
+        # 可存活。逐条目不再重复校验（同批 epoch 不可能变化）的既有语义不变。
+        self._cache.invalidate_if_epoch_changed()
         try:
             with self._vault.epoch_guarded_read():
                 query = EntryQuery(
@@ -837,11 +871,11 @@ class EntryManager:
                     category_id=category_id,
                     favorite_only=favorite_only,
                     limit=sql_limit,
-                    # 字段序下推（PERF-073）：与 limit 配套，截断集合按用户所选排序
-                    # 取前 N（复合序截断 + 非默认排序会丢排序序窗口外的条目）。
-                    # 内存路径恒传 None——SQL 层保持复合序作为内存排序的稳定基数
+                    # 字段序下推（PERF-073/087）：SQL 路径与内存路径的排序下推分支
+                    # 都把白名单字段序传入查询（后者的截断由循环提前终止承担）；
+                    # 其余内存路径恒传 None——SQL 层保持复合序作为内存排序的稳定基数
                     # （同键条目的相对序继承复合序，与 SQL 字段序的稳定语义一致）。
-                    order_by=order_by if sql_pushdown else None,
+                    order_by=order_by if (sql_pushdown or order_pushdown) else None,
                     order_desc=order_desc,
                     verify=VerifyMode.LENIENT,
                 )
@@ -852,7 +886,25 @@ class EntryManager:
                     # 排序键。投影无验签（不含签名载荷列），回查完整行时经
                     # get_entries_by_ids 的 LENIENT 验签补偿；未命中/未截断行不验签的
                     # 取舍与 PERF-019 声明一致（篡改检测由无搜索词的全量列表刷新覆盖）。
-                    search_rows = self.db.get_entries_search_projection(query)
+                    # 行集经投影缓存复用（PERF-086）：行集仅取决于过滤三元组与排序
+                    # 规格、与搜索词无关，暖态重复搜索免重拉；键的排序段与查询实际
+                    # 下推的排序一致（未下推时规范化为 (None, True) 复合序，避免同义
+                    # 键占多个缓存槽），有序行集与无序行集因消费方对行序敏感（排序
+                    # 下推分支依赖行序提前终止）不可混存同一键。
+                    projection_order: tuple[str | None, bool] = (
+                        (order_by, order_desc) if order_pushdown else (None, True)
+                    )
+                    projection_key = (
+                        deleted_only,
+                        category_id,
+                        favorite_only,
+                        projection_order[0],
+                        projection_order[1],
+                    )
+                    search_rows = self._cache.search_projection_rows(
+                        projection_key,
+                        lambda: self.db.get_entries_search_projection(query),
+                    )
                     raw_entries = []
                 else:
                     search_rows = []
@@ -867,9 +919,8 @@ class EntryManager:
                 # data_epoch 守卫，PERF-074 重写时曾掉落、PERF-078 复核补齐）。
                 data_epoch = self._vault.key_epoch
             # 解密移出 db_lock（PERF-001）：with 块内仅读 raw（持锁快速），锁外逐条解密，
-            # 释放 db_lock 供 TOTP 定时器读与写入。循环外一次性 invalidate_if_epoch_changed
-            # 固定本批缓存 epoch，循环内走无校验路径避免每条目重复加锁取 epoch。
-            self._cache.invalidate_if_epoch_changed()
+            # 释放 db_lock 供 TOTP 定时器读与写入。epoch 已在读块前固定（见方法头
+            # PERF-086 前移注释），循环内走无校验路径避免每条目重复加锁取 epoch。
             read = _SummaryRead(
                 search_rows=search_rows,
                 raw_entries=raw_entries,
@@ -884,6 +935,7 @@ class EntryManager:
                     order_desc=order_desc,
                     limit=limit,
                     cancel_check=cancel_check,
+                    pre_sorted=order_pushdown,
                 )
             else:
                 summaries = self._summaries_from_raw_rows(read, cancel_check)
@@ -901,36 +953,47 @@ class EntryManager:
         order_desc: bool,
         limit: int | None,
         cancel_check: Callable[[], bool] | None,
+        pre_sorted: bool = False,
     ) -> list[Entry]:
-        """内存路径（搜索/标题序）的摘要构建（MAINT-092 自 get_entry_summaries 拆出）。
+        """内存路径（搜索/不可下推排序）的摘要构建（MAINT-092 自 get_entry_summaries 拆出）。
 
         「窄投影全量 → 匹配 → 内存 meta 排序 → 前 limit 回查宽行 → 构建」逐块
-        搬运自原单体方法，语义零变化；各块的 PERF/SEC 决策注释随块迁移。
+        搬运自原单体方法；各块的 PERF/SEC 决策注释随块迁移。``pre_sorted=True``
+        （PERF-087 排序下推分支）时行集已按 SQL 白名单序排好，匹配循环凑满
+        ``limit`` 即提前终止，跳过内存排序与截断。
         """
         key = read.key
         data_epoch = read.data_epoch
         selected: list[tuple[SearchRow, SearchMetadata]] = []
-        for row in read.search_rows:
-            if cancel_check and cancel_check():
-                break
-            # 一次取完整 SearchMetadata，匹配与排序键共用，省第二次缓存查询
-            # （PERF-016）。data_epoch 传锁内快照世代，回写守卫据此拒收跨世代
-            # 解密结果（SEC-041）。
-            meta = self._cache.cached_search_metadata_full(row, key=key, data_epoch=data_epoch)
-            if search:
-                # 匹配检查前移到回查/摘要构建之前（PERF-018）：仅命中条目进入
-                # 排序与回查（meta 已含匹配所需小写形式）。
-                if not matches_search_lower(
-                    (
-                        meta.title_lower,
-                        meta.username_lower,
-                        meta.url_lower,
-                        meta.tags_lower,
-                    ),
-                    search,
-                ):
-                    continue
-            selected.append((row, meta))
+        # 批量摘要会话（PERF-086）：一次持锁快照命中集、循环内零锁取 meta、退出
+        # 一次回写，替代逐行 cached_search_metadata_full 的 N 次 RLock 往返。
+        # data_epoch 语义不变（SEC-041）：会话进入时作为整批回写的世代守卫。
+        with self._cache.search_metadata_batch(key=key, data_epoch=data_epoch) as batch:
+            for row in read.search_rows:
+                if cancel_check and cancel_check():
+                    break
+                # 提前终止（PERF-087）：行集已按目标序排好（pre_sorted）时，凑满
+                # limit 个命中即停——limit=0 时首次循环即跳出（与 SQL 路径 LIMIT 0
+                # 返回空集的语义对齐，QL-072）。
+                if pre_sorted and limit is not None and len(selected) >= limit:
+                    break
+                # 一次取完整 SearchMetadata，匹配与排序键共用，省第二次缓存查询
+                # （PERF-016）。
+                meta = batch.get(row)
+                if search:
+                    # 匹配检查前移到回查/摘要构建之前（PERF-018）：仅命中条目进入
+                    # 排序与回查（meta 已含匹配所需小写形式）。
+                    if not matches_search_lower(
+                        (
+                            meta.title_lower,
+                            meta.username_lower,
+                            meta.url_lower,
+                            meta.tags_lower,
+                        ),
+                        search,
+                    ):
+                        continue
+                selected.append((row, meta))
         # 内存排序（PERF-078）：title 序的键在 meta.title_lower（缓存已有，
         # UI 的 (e.title or "").lower() 与其同源），其余键来自窄投影的明文列
         # ——排序无需宽行 Entry。原「标题序需重构 UI 排序数据流、暂受 1.76s」
@@ -938,18 +1001,20 @@ class EntryManager:
         # 165.9ms → meta 排序+前 1000 回查 53.8ms（3.1×，50k 等比外推
         # ~1.7s → ~0.5s）。order_by 为 None（搜索调用方未指定排序）时不重排
         # ——窄投影的 SQL 复合序（is_favorite DESC, updated_at DESC）即默认
-        # 视图序，稳定排序继承之。
-        if order_by is not None:
-            # 键函数单一事实源（MAINT-091）：窄投影行+meta 经 _SortKeySource 适配为
-            # Entry 同名属性形态，与 UI 的 sort_entries 共用 entry_sort_key——此前
-            # 4 键逻辑在本方法与 UI 各一份（title 键直接取 meta.title_lower 已小写，
-            # 经 entry_sort_key 再 .lower() 幂等，语义等价）。
+        # 视图序，稳定排序继承之。排序下推分支（pre_sorted）行集已按目标序
+        # 排好，跳过重排。
+        if order_by is not None and not pre_sorted:
+            # 键函数单一事实源（MAINT-091，模块归属 MAINT-104 迁 services/entry_sorting）：
+            # 窄投影行+meta 经 SortKeySource 适配为 Entry 同名属性形态，与 UI 的
+            # sort_entries 共用 entry_sort_key——此前 4 键逻辑在本方法与 UI 各一份
+            # （title 键直接取 meta.title_lower 已小写，经 entry_sort_key 再 .lower()
+            # 幂等，语义等价）。
             key_of = entry_sort_key(order_by)
 
             def sort_key(item: tuple[SearchRow, SearchMetadata]) -> str | int:
                 row_i, meta_i = item
                 return key_of(
-                    _SortKeySource(
+                    SortKeySource(
                         meta_i.title_lower,
                         row_i.password_strength,
                         row_i.created_at,
@@ -962,8 +1027,10 @@ class EntryManager:
         # 才与「ORDER BY ... LIMIT」语义同构——原实现收集全部命中后**全量回查**
         # 才在出口截断，宽搜索词（单字符命中 20k）时 836ms 反超旧宽行直拉且
         # 双份驻留；现仅回查/构建前 limit 条（5k 全命中实测 187.7ms →
-        # 50.6ms，3.7×）。
-        if limit:
+        # 50.6ms，3.7×）。判定统一为 ``is not None``（QL-072）：limit=0 截断为
+        # 空集（此前 ``if limit`` 视 0 为 falsy 跳过截断返回全部，与 SQL 路径
+        # LIMIT 0 语义分叉）；pre_sorted 分支的截断已由循环提前终止承担。
+        if limit is not None and not pre_sorted:
             selected = selected[:limit]
         # 回查完整行（PERF-074）：LENIENT 验签在 db 层 _row_to_entry 完成
         # （替代原 PERF-067 的就地验签——窄投影后宽行不再物化，回查是摘要

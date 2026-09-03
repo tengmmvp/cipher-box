@@ -6,7 +6,6 @@
 EntryRepository 所在的编排层承担。
 """
 
-import logging
 import sqlite3
 import threading
 
@@ -18,8 +17,6 @@ from .types import (
     ConnectionProvider,
     ReEncryptedHistory,
 )
-
-logger = logging.getLogger(__name__)
 
 # 密码历史 JOIN 条目 crypto_id 的基础查询，供 get_password_history /
 # get_all_password_history / get_all_password_history_batch 复用。

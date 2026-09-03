@@ -121,6 +121,54 @@ class TestSecretFieldPlainText:
         assert val_label.text() == secret
 
 
+class TestCopySecretRaceGuard:
+    """敏感字段复制路径的 ``sip.isdeleted`` 竞态守卫（MAINT-103 回归）。
+
+    收敛进共享工厂时复制路径一度丢失守卫（同工厂 ``_mask_row``/``_toggle`` 均有）：
+    点击复制后同事件循环周期内按钮被 ``deleteLater``（切换条目 force 重建/锁定
+    清理）而挂起 ``clicked`` 事件仍投递时，对已删 C++ 对象写反馈图标抛
+    ``RuntimeError``——PyQt6 槽内未捕获异常直接 qFatal 中止应用。
+    """
+
+    def _make_env(self, host: QWidget, copied: list) -> SecretFieldEnv[str]:
+        """构造记录型复制的共享环境（on_copy 捕获调用，不触真实剪贴板）。"""
+        return SecretFieldEnv(
+            store={"api": "secret-value"},
+            timers=[],
+            parent_widget=host,
+            get_pwd_visible_ms=lambda: 60_000,
+            on_copy=lambda btn, text: copied.append((btn, text)),
+            on_copy_feedback=lambda: None,
+        )
+
+    def test_copy_secret_skips_deleted_button(self, qapp):
+        """按钮 C++ 对象销毁后触发复制处理闭包：静默跳过，不抛 RuntimeError。"""
+        from PyQt6 import sip
+
+        from src.ui.components import secret_field
+
+        host = QWidget()
+        copied: list = []
+        env = self._make_env(host, copied)
+        _name, row = make_secret_field_row(env, "API Key", "secret-value", "api")
+        copy_btn = next(btn for btn in row.findChildren(QPushButton) if btn.toolTip() == "复制密码")
+
+        # 正常路径经真实信号连线触发：工厂构建的闭包已连接 clicked
+        copy_btn.click()
+        assert copied == [(copy_btn, "secret-value")]
+
+        # 确定性销毁按钮 C++ 对象（sip.delete 等价「父窗口直接销毁子控件」，
+        # deleteLater 的 DeferredDelete 推进在测试环境下不确定，见 QL-032 先例）
+        sip.delete(copy_btn)
+        assert sip.isdeleted(copy_btn)
+
+        handler = secret_field._make_copy_secret(env, "api", copy_btn)
+        handler()  # 不应抛 RuntimeError / 崩溃
+
+        # 守卫跳过：销毁后不再触达 on_copy（反馈图标写入随守卫一并跳过）
+        assert len(copied) == 1
+
+
 class TestCustomFieldsPlainText:
     """自定义字段渲染器的字段名/字段值 PlainText 契约。"""
 

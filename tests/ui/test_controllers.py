@@ -59,7 +59,7 @@ class TestSortEntries:
 
 
 class TestEntrySortKey:
-    """entry_sort_key 单一事实源守护（MAINT-091）。
+    """entry_sort_key 单一事实源守护（MAINT-091，模块归属 MAINT-104 迁 services/entry_sorting）。
 
     键语义须与旧双实现的任一份逐字段等价（title 小写、password_strength None→0、
     created_at/updated_at 空串回退、未知字段回退 updated_at）——键漂移会使
@@ -74,7 +74,7 @@ class TestEntrySortKey:
 
     def test_title_key_lowercases(self):
         """title 键为小写形式（与 meta.title_lower 同源语义）。"""
-        from src.business.managers.entry_manager import entry_sort_key
+        from src.business.services.entry_sorting import entry_sort_key
 
         key = entry_sort_key("title")
         assert key(self._src(title="BaR")) == "bar"
@@ -82,7 +82,7 @@ class TestEntrySortKey:
 
     def test_password_strength_key_defaults_zero(self):
         """password_strength 键 None/0 统一回退 0，不与 int 混排抛 TypeError。"""
-        from src.business.managers.entry_manager import entry_sort_key
+        from src.business.services.entry_sorting import entry_sort_key
 
         key = entry_sort_key("password_strength")
         assert key(self._src(password_strength=None)) == 0
@@ -91,7 +91,7 @@ class TestEntrySortKey:
 
     def test_timestamp_keys_fallback_empty(self):
         """created_at/updated_at 键空值回退空串。"""
-        from src.business.managers.entry_manager import entry_sort_key
+        from src.business.services.entry_sorting import entry_sort_key
 
         assert entry_sort_key("created_at")(self._src(created_at="2026-01-01")) == "2026-01-01"
         assert entry_sort_key("created_at")(self._src()) == ""
@@ -100,7 +100,7 @@ class TestEntrySortKey:
 
     def test_unknown_field_falls_back_to_updated_at(self):
         """未知字段回退 updated_at 键（与 manager 内存路径的回退分支一致）。"""
-        from src.business.managers.entry_manager import entry_sort_key
+        from src.business.services.entry_sorting import entry_sort_key
 
         src = self._src(updated_at="2026-03-03")
         assert entry_sort_key("nonexistent")(src) == entry_sort_key("updated_at")(src)
@@ -365,35 +365,29 @@ class TestFetchRecent:
             order_desc=True,
         )
 
-    def test_search_with_limit_returns_newest_n(self, tmp_path):
+    def test_search_with_limit_returns_newest_n(self, make_vault_env):
         """端到端（真实 vault）：搜索 + limit 返回最新 N 条（updated_at 降序），
         行为与原「全量拉取 + UI sort + [:N]」同构（PERF-081 回归守护）。"""
         from datetime import UTC, datetime, timedelta
 
         from src.models import Entry
-        from tests.helpers import make_entry_manager, make_test_config, make_vault
 
-        vault = make_vault(make_test_config(str(tmp_path)))
-        vault.initialize("test_password_12345")
-        try:
-            entry_mgr = make_entry_manager(vault)
-            base = datetime(2026, 8, 20, 10, 0, 0, tzinfo=UTC)
-            for i in range(23):
-                entry_mgr.add_entry(
-                    Entry(
-                        title=f"条目-{i:02d}",
-                        username="u",
-                        password="pass1",
-                        entry_type="login",
-                        created_at=base.isoformat(),
-                        updated_at=(base + timedelta(minutes=i)).isoformat(),
-                    )
+        entry_mgr = make_vault_env().entry_mgr
+        base = datetime(2026, 8, 20, 10, 0, 0, tzinfo=UTC)
+        for i in range(23):
+            entry_mgr.add_entry(
+                Entry(
+                    title=f"条目-{i:02d}",
+                    username="u",
+                    password="pass1",
+                    entry_type="login",
+                    created_at=base.isoformat(),
+                    updated_at=(base + timedelta(minutes=i)).isoformat(),
                 )
-            ctrl = EntryListController(entry_mgr, MagicMock(), MagicMock())
-            result, _label = ctrl.fetch_recent("条目")
-            # RECENT_ENTRY_LIMIT=20：最新 20 条按 updated_at 降序（条目-22 … 条目-03）
-            assert len(result) == 20
-            assert [e.title for e in result[:3]] == ["条目-22", "条目-21", "条目-20"]
-            assert result[-1].title == "条目-03"
-        finally:
-            vault.close()
+            )
+        ctrl = EntryListController(entry_mgr, MagicMock(), MagicMock())
+        result, _label = ctrl.fetch_recent("条目")
+        # RECENT_ENTRY_LIMIT=20：最新 20 条按 updated_at 降序（条目-22 … 条目-03）
+        assert len(result) == 20
+        assert [e.title for e in result[:3]] == ["条目-22", "条目-21", "条目-20"]
+        assert result[-1].title == "条目-03"

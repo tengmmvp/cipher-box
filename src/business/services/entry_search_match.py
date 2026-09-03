@@ -4,18 +4,21 @@
 SENSITIVE_ENCRYPTED_FIELDS 单一事实源」本是两个职责域，混驻稀释 crypto_utils
 的加密守护面。消费方：UI 的 entry_list_controller（搜索/标签过滤）、
 EntryManager 搜索热路径（matches_search_lower 复用预计算小写值，PERF-074）。
+两个谓词的入参契约均为明文 Entry（ARCH-050）：密文态 RawEntry 不在合法输入域。
 """
 
 from __future__ import annotations
 
-from ...models import Entry, RawEntry
+from ...models import Entry
 
 
-def matches_search(entry: Entry | RawEntry, query: str) -> bool:
+def matches_search(entry: Entry, query: str) -> bool:
     """检查条目是否匹配搜索关键词（大小写不敏感，搜 title/username/url/tags）。
 
     Args:
-        entry: 待匹配的明文 Entry 摘要。生产路径不应传入 RawEntry。
+        entry: 待匹配的明文 Entry 摘要。签名收窄为仅 Entry（ARCH-050）：RawEntry
+            的可搜索字段是密文，对其做明文子串匹配无意义，签名层面的联合类型
+            反而暗示这是合法用法；调用方须先解密为 Entry 再匹配。
         query: 搜索关键词，空串匹配所有。
     """
     if not query:

@@ -1,13 +1,19 @@
 """TrayIcon 系统托盘组件测试（零覆盖补齐，离屏冒烟 + 行为）。
 
 offscreen/无托盘环境下 ``isSystemTrayAvailable`` 为 False，构造与信号连接
-仍应正常；图标绘制经纯函数 ``_create_icon`` 直接断言。
+仍应正常；图标绘制经纯函数 ``_create_icon`` 直接断言（QImage 逐像素比对——
+offscreen 下 devicePixelRatio 恒 1，pixmap→image 对比确定性成立）。
 """
 
 from PyQt6.QtGui import QColor, QIcon
 
 from src.ui.components.tray_icon import TrayIcon
 from src.ui.resources.theme_colors import c
+
+
+def _icon_image(icon: QIcon):
+    """取 QIcon 的 32px QImage（同尺寸采样，供逐像素比对）。"""
+    return icon.pixmap(32, 32).toImage()
 
 
 class TestTrayIcon:
@@ -23,25 +29,43 @@ class TestTrayIcon:
     def test_set_locked_true_switches_state(self, qapp):
         """锁定态切换图标与提示文案（LOCK 文字缩写）。"""
         tray = TrayIcon()
+        unlocked_image = _icon_image(tray.icon())
         tray.set_locked(True)
         assert tray.toolTip() == "CipherBox（已锁定）"
+        # 图标真实切换：与解锁态像素不同，且等于 LOCK（灰底 L）规格图标
+        locked_image = _icon_image(tray.icon())
+        assert locked_image != unlocked_image
+        assert locked_image == _icon_image(TrayIcon._create_icon(QColor(c("text_muted")), "LOCK"))
 
     def test_set_locked_false_restores(self, qapp):
         """解锁态恢复默认图标与提示。"""
         tray = TrayIcon()
+        unlocked_image = _icon_image(tray.icon())
         tray.set_locked(True)
         tray.set_locked(False)
         assert tray.toolTip() == "CipherBox"
+        # 图标恢复：与锁定态不同、与初始解锁态逐像素一致
+        restored_image = _icon_image(tray.icon())
+        assert restored_image == unlocked_image
+        assert restored_image != _icon_image(TrayIcon._create_icon(QColor(c("text_muted")), "LOCK"))
 
     def test_create_icon_truncates_long_text(self, qapp):
         """长文字（如 LOCK，len>2）缩写为首字符（32px 画布防溢出裁剪）。"""
-        icon = TrayIcon._create_icon(QColor(c("brand")), "LOCK")
+        color = QColor(c("brand"))
+        icon = TrayIcon._create_icon(color, "LOCK")
         assert not icon.isNull()
+        # 截断行为断言：LOCK 与其首字符 L 产物逐像素一致（未截断则 4 字符溢出裁剪
+        # 且字号分支不同，像素必不相同）
+        assert _icon_image(icon) == _icon_image(TrayIcon._create_icon(color, "L"))
+        # 对照：与双字符（走 12px 字号分支）产物确有差异，证明对比非恒真
+        assert _icon_image(icon) != _icon_image(TrayIcon._create_icon(color, "CL"))
 
     def test_create_icon_accepts_color_name(self, qapp):
         """color 参数兼容 str 形态（历史调用路径）。"""
         icon = TrayIcon._create_icon(QColor(c("brand")).name(), "C")
         assert not icon.isNull()
+        # str 与 QColor 入参产物一致（历史路径等价性）
+        assert _icon_image(icon) == _icon_image(TrayIcon._create_icon(QColor(c("brand")), "C"))
 
     def test_double_click_emits_show_window(self, qapp):
         """双击激活发射 show_window 信号（唤出主窗口）。"""
@@ -84,7 +108,12 @@ class TestTrayIcon:
         # 分隔符行动作 text 为空串，过滤后按序断言三项
         actions = [a for a in menu.actions() if isinstance(a, QAction) and a.text()]
         assert [a.text() for a in actions] == ["显示主窗口", "锁定保险库", "退出"]
-        for action in actions:
-            action.trigger()
-
-        assert shown and locked and quitted
+        # 逐项配对：每个菜单动作只转发自己的信号，不串发其它信号
+        show_action, lock_action, quit_action = actions
+        show_action.trigger()
+        assert shown == [1] and locked == [] and quitted == []
+        lock_action.trigger()
+        assert locked == [1] and quitted == []
+        quit_action.trigger()
+        assert quitted == [1]
+        assert shown == [1] and locked == [1]

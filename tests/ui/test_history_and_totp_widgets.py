@@ -126,7 +126,8 @@ class TestPasswordHistoryWidget:
 
         group = _history_group(layout)
         assert [lbl.text() for lbl in w._pwd_labels] == [PWD_MASK] * 3  # 初始掩码
-        assert w._history_passwords == ["secret-0", "secret-1", "secret-2"]
+        # 间接引用按行号键控（MAINT-103 复用共享工厂后 list 收编为 dict）
+        assert w._history_passwords == {0: "secret-0", 1: "secret-1", 2: "secret-2"}
         # 解密输出 dict 中的明文副本被显式 pop 收缩驻留面
         assert all("password" not in d for d in mgr._decrypted_outputs[0])
         # 时间标签按记录渲染（排除同分组内的掩码密码 QLabel）
@@ -202,7 +203,7 @@ class TestPasswordHistoryWidget:
         w._own_timers[0].timeout.emit()  # 直接触发超时回调（稳定于真实等待）
 
         assert w._pwd_labels[0].text() == PWD_MASK
-        assert w._history_passwords == ["k-0"]  # 槽位保留：可再次揭示
+        assert w._history_passwords == {0: "k-0"}  # 槽位保留：可再次揭示
         show_btns[0].click()
         assert w._pwd_labels[0].text() == "k-0"
 
@@ -269,7 +270,7 @@ class TestPasswordHistoryWidget:
         assert all(not t.isActive() for t in timers)  # 定时器停：到期回调不再触达旧控件
         assert w._own_timers == []
         assert labels[0].text() == PWD_MASK  # deleteLater 异步销毁前明文已擦除
-        assert w._history_passwords == []
+        assert w._history_passwords == {}
         assert w._entry_mgr is None
         qapp.processEvents()  # 推进事件循环验证无残留定时器崩溃
 
@@ -291,7 +292,7 @@ class TestPasswordHistoryWidget:
 
         assert not timer_a.isActive()  # 旧定时器不复活
         assert len(w._own_timers) == 2  # 新行各自新定时器
-        assert w._history_passwords == ["b-0", "b-1"]
+        assert w._history_passwords == {0: "b-0", 1: "b-1"}
         assert w._pwd_labels[0].text() == PWD_MASK
         qapp.processEvents()  # 交错销毁/重建后推进事件循环不崩溃
 

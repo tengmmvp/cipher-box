@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ...business.managers.vault_lifecycle import LOGIN_AUTH_FAILED_MESSAGE
 from ...business.services.password_service import PasswordService
 from ...business.services.rate_limiter import RateLimiter
 
@@ -272,7 +273,9 @@ class LoginWindow(WorkerBackedDialog):
             error_default = "初始化失败，请重试"
         else:
             action = self._vault.unlock
-            error_default = "主密码错误"
+            # 解锁失败的空文案兜底同引业务层常量（ARCH-049 收编：原第四处同值字面量，
+            # 与 vault_lifecycle 的 unlock 返回文案单一事实源）。
+            error_default = LOGIN_AUTH_FAILED_MESSAGE
 
         # 主密码派生使用 Argon2id（内存硬化 KDF），耗时较高，需在后台线程执行避免冻结 UI
         self._start_auth(action, password, error_default)

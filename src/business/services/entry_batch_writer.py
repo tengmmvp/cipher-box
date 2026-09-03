@@ -12,7 +12,7 @@ EntryManager 的加密/落库原语（``build_encrypted_entry`` 等公开协作 
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, TypeVar
 
 from ...crypto.password_generator import PasswordGenerator
 from ...exceptions import (
@@ -41,8 +41,9 @@ PROGRESS_REPORT_EVERY = 100
 
 # 写入分块大小（PERF-065）：progress 提供时按此分块调用 add_entries_batch，供写入
 # 阶段上报中间进度。分块间仍处调用方 epoch_guarded_transaction 内（_auto_commit 在
-# 活动事务内为 no-op），全有或全无语义不变。
-_WRITE_PROGRESS_CHUNK = 500
+# 活动事务内为 no-op），全有或全无语义不变。PERF-089 随 backup/rebuilder 复用去掉
+# 下划线前缀成为公开常量（跨模块消费的分块阈值不再是本模块私有细节）。
+WRITE_PROGRESS_CHUNK = 500
 
 
 def should_report_progress(done: int, total: int) -> bool:
@@ -71,6 +72,39 @@ def phase_progress(done: int, total: int, start: int, end: int) -> int:
     if done <= 0:
         return start
     return start + (end - start) * done // total
+
+
+_RowT = TypeVar("_RowT")
+_ResultT = TypeVar("_ResultT")
+
+
+def write_chunks(
+    rows: list[_RowT],
+    write_fn: Callable[[list[_RowT]], _ResultT],
+    *,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> list[_ResultT]:
+    """按 ``WRITE_PROGRESS_CHUNK`` 分块写入并逐块上报，返回各块的写入结果列表（MAINT-106）。
+
+    write_new_entries / write_overwrite_updates / backup rebuilder.restore_entries
+    三处逐字节相同的分块循环（仅 ``write_fn`` 与结果合并策略不同，后者由调用方
+    对返回的各块结果自行合并）收敛为单一原语：``on_progress`` 提供时按块调用
+    ``write_fn`` 并上报 ``(done, total)``；未提供时整批单次调用（既有调用方的
+    原路径，不引入无进度场景的多余分块）。分块间仍处调用方事务/epoch 守卫内，
+    全有或全无语义不变；``WRITE_PROGRESS_CHUNK`` 调用时从模块属性解析，保持
+    测试 monkeypatch 该常量的可达性。
+    """
+    if on_progress is None:
+        return [write_fn(rows)]
+    total = len(rows)
+    done = 0
+    results: list[_ResultT] = []
+    for start in range(0, total, WRITE_PROGRESS_CHUNK):
+        chunk = rows[start : start + WRITE_PROGRESS_CHUNK]
+        results.append(write_fn(chunk))
+        done += len(chunk)
+        on_progress(done, total)
+    return results
 
 
 class BatchUpdateItem(NamedTuple):
@@ -156,23 +190,19 @@ def write_new_entries(
     ``notify_batch_change`` 统一发一次（PERF-022 移除已成死分支的 notify 参数：
     唯一生产调用方始终传 notify=False，逐条/空批次通知路径不再存在）。
 
-    ``progress``（PERF-065）：提供时按 ``_WRITE_PROGRESS_CHUNK`` 分块写入并逐块
+    ``progress``（PERF-065）：提供时按 ``WRITE_PROGRESS_CHUNK`` 分块写入并逐块
     上报 ``(done, total)``，消除写入阶段（50k 库实测 2.85s）进度条冻结；分块间
     仍处调用方 epoch 守卫事务内，原子性与持久化语义不变。未提供时保持单次
-    executemany 原路径（既有调用方零改动）。
+    executemany 原路径（既有调用方零改动）。分块循环经 :func:`write_chunks`
+    共享原语（MAINT-106，与覆盖写入/恢复重建共用同一份）。
     """
     if not enc_entries:
         return
-    if progress is None:
-        entry_mgr.db.add_entries_batch(enc_entries, preserve_metadata=preserve)
-        return
-    total = len(enc_entries)
-    done = 0
-    for start in range(0, total, _WRITE_PROGRESS_CHUNK):
-        chunk = enc_entries[start : start + _WRITE_PROGRESS_CHUNK]
-        entry_mgr.db.add_entries_batch(chunk, preserve_metadata=preserve)
-        done += len(chunk)
-        progress(done, total)
+    write_chunks(
+        enc_entries,
+        lambda chunk: entry_mgr.db.add_entries_batch(chunk, preserve_metadata=preserve),
+        on_progress=progress,
+    )
 
 
 def prepare_overwrite_updates(
@@ -267,9 +297,10 @@ def write_overwrite_updates(
     逐条 SAVEPOINT 提交留下的部分成功不一致状态（导入可整体重试）。``pre_epoch`` 由
     调用方在锁外加密前快照并传入——纵深防御「写入期间改密」，不匹配则中止导入。
 
-    ``progress``（PERF-069）：提供时按 ``_WRITE_PROGRESS_CHUNK`` 分块调用
+    ``progress``（PERF-069）：提供时按 ``WRITE_PROGRESS_CHUNK`` 分块调用
     update_overwrite_batch 并逐块上报 ``(done, total)``（与 write_new_entries 同款，
-    分块仍处调用方事务内，原子性不变）；密码历史分组写入计入终值。
+    分块仍处调用方事务内，原子性不变，循环体经 :func:`write_chunks` 共享——
+    MAINT-106）；密码历史分组写入计入终值。
     """
     if not prepared:
         return 0
@@ -277,16 +308,11 @@ def write_overwrite_updates(
         raise VaultKeyEpochMismatchError(
             "更新期间检测到密钥变更（改密/锁定），已中止以防写入旧密钥密文"
         )
-    total = len(prepared)
-    if progress is None:
-        entry_mgr.db.update_overwrite_batch([item.enc_entry for item in prepared])
-    else:
-        done = 0
-        for start in range(0, total, _WRITE_PROGRESS_CHUNK):
-            chunk = prepared[start : start + _WRITE_PROGRESS_CHUNK]
-            entry_mgr.db.update_overwrite_batch([item.enc_entry for item in chunk])
-            done += len(chunk)
-            progress(done, total)
+    write_chunks(
+        prepared,
+        lambda chunk: entry_mgr.db.update_overwrite_batch([item.enc_entry for item in chunk]),
+        on_progress=progress,
+    )
     # 批量密码历史：按 entry_id 分组，每组一次 add_password_history_batch（INSERT + 单次
     # 截断），changed_at 用与条目一致的 password_changed_at 避免微秒级时序倒置。
     history_by_entry: dict[int, list[tuple[str, str]]] = {}
@@ -304,10 +330,12 @@ __all__ = [
     "BatchUpdateItem",
     "PreparedUpdate",
     "PROGRESS_REPORT_EVERY",
+    "WRITE_PROGRESS_CHUNK",
     "encrypt_new_entries",
     "phase_progress",
     "prepare_overwrite_updates",
     "should_report_progress",
+    "write_chunks",
     "write_new_entries",
     "write_overwrite_updates",
 ]

@@ -86,26 +86,32 @@ class TestCancelAllWorkers:
 
 
 class TestHostEmergencyCancelWorkers:
-    """host emergency_cancel_workers 编排：auto_backup + list_refresh 委托。"""
+    """host emergency_cancel_workers 编排：auto_backup + list_refresh 委托。
 
-    def _make_host(self):
-        from src.ui.windows.main_window import MainWindow
+    host 经 ``main_window_factory.make_main_window`` 真实构造（替代原
+    ``MainWindow.__new__`` 手工布线——半初始化对象上未布线属性缺失，新增依赖只能
+    靠 AttributeError 兜底发现），再把两个协作 controller 覆写为 MagicMock 探针
+    （实例属性赋值遮蔽工厂构造的真实实例）。
+    """
 
-        mw = MainWindow.__new__(MainWindow)
+    def _make_host(self, qapp, tmp_path):
+        from tests.ui.main_window_factory import make_main_window
+
+        mw, _ctx = make_main_window(tmp_path)
         mw._auto_backup = MagicMock()
         mw._list_refresh = MagicMock()
         return mw
 
-    def test_delegates_cancel_to_list_refresh_and_auto_backup(self):
+    def test_delegates_cancel_to_list_refresh_and_auto_backup(self, qapp, tmp_path):
         """无超时参数时，仅委托 ``auto_backup.cancel`` 与 ``list_refresh.cancel_all_workers``，不调 ``wait_workers``。"""
-        mw = self._make_host()
+        mw = self._make_host(qapp, tmp_path)
         mw.emergency_cancel_workers()
         mw._auto_backup.cancel.assert_called_once()
         mw._list_refresh.cancel_all_workers.assert_called_once()
         mw._list_refresh.wait_workers.assert_not_called()
 
-    def test_waits_when_timeout_positive(self):
+    def test_waits_when_timeout_positive(self, qapp, tmp_path):
         """传正 ``wait_timeout_ms`` 时，额外委托 ``list_refresh.wait_workers`` 等待 worker 收尾。"""
-        mw = self._make_host()
+        mw = self._make_host(qapp, tmp_path)
         mw.emergency_cancel_workers(wait_timeout_ms=400)
         mw._list_refresh.wait_workers.assert_called_once_with(400)

@@ -40,11 +40,14 @@ class SensitiveDataFilter(logging.Filter):
         # SEC-019：关键词后可选引号 ([\'"]?) 捕获并在替换串回填，覆盖 dict/dataclass
         # repr 的 'password': ... 形态——repr 中 key 带引号，原 \s*[:=] 因引号挡在 key 与
         # 冒号间而漏匹配；捕获引号使 \1\2 回填，避免 'password=[REDACTED] 引号不平衡。
+        # SEC-060：补齐条目元数据与密码学参数关键词（nonce/salt/title/url/notes/tags）——
+        # 均为加密列对应明文或其派生输入，误写日志时与 password 同级敏感（防未来误写纵深）。
         (
             re.compile(
                 r"(?i)(?<![A-Za-z])(password|pwd|passwd|passphrase|passcode|secret"
                 r"|token|api[_-]?key|key"
                 r"|username|user[_-]?name|card[_-]?(?:number|holder|cvv|cvc)|cvv|cvc"
+                r"|nonce|salt|title|url|notes|tags"
                 r'|密码|密钥|令牌|口令)([\'"]?)\s*[:=]\s*.+'
             ),
             r"\1\2=[REDACTED]",
@@ -92,18 +95,42 @@ class RedactingFormatter(logging.Formatter):
         return SensitiveDataFilter.redact(super().formatException(ei))
 
 
+class SecureRotatingFileHandler(RotatingFileHandler):
+    """轮转后重新收紧文件权限的 RotatingFileHandler（SEC-059）。
+
+    标准实现 ``doRollover`` 以进程 umask 重建新的 ``baseFilename``（POSIX 默认
+    0644 世界可读），启动时的一次 :func:`secure_file` 只覆盖首个文件——轮转产生
+    的每个新文件都回退宽松权限。覆写 ``doRollover`` 在轮转完成后对当前文件与
+    全部轮转备份重新 :func:`secure_file`；``strict=False`` 降级告警不抛出，日志
+    轮转绝不因权限收紧失败而中断记录（与启动路径的降级语义一致）。
+    """
+
+    def doRollover(self) -> None:
+        super().doRollover()
+        # 当前文件：doRollover 内 _open() 以默认 umask 重建，须重新收紧
+        secure_file(Path(self.baseFilename), strict=False)
+        # 轮转备份：正常路径保留既有权限，但重收紧幂等且覆盖「升级前权限宽松的
+        # 既有备份被滚动改名后仍宽松」的形态
+        for index in range(1, self.backupCount + 1):
+            backup = Path(f"{self.baseFilename}.{index}")
+            if backup.exists():
+                secure_file(backup, strict=False)
+
+
 def configure_logging(data_dir: Path) -> None:
     """配置应用日志，使用轮转文件 handler，仅记录运行状态。"""
     log_dir = data_dir / "logs"
     secure_directory(log_dir)
     log_path = log_dir / "cipherbox.log"
-    handler = RotatingFileHandler(
+    handler = SecureRotatingFileHandler(
         log_path,
         maxBytes=1_000_000,
         backupCount=3,
         encoding="utf-8",
     )
-    secure_file(log_path)
+    # 启动即收紧当前日志与既有轮转备份（含升级前权限宽松的遗留文件，SEC-059）
+    for existing in sorted(log_dir.glob(f"{log_path.name}*")):
+        secure_file(existing, strict=False)
     handler.setFormatter(
         RedactingFormatter(
             # 含 threadName：BackgroundWorker 在子线程执行，调试锁定时序/worker 与主线程日志交织时线程名是关键定位信息。

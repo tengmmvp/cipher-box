@@ -145,10 +145,17 @@ def get_ui_int_range(key: str) -> tuple[int, int]:
 
 # 完整性校验失败时必须回退默认的键集合：安全下限整型键 + backup_directory
 # （可能被篡改诱导明文备份落入攻击者可读目录）+ security_sentinels
-# （由 RateLimiter 据完整性失败保守降级，不采信被篡改登记）。
+# （由 RateLimiter 据完整性失败保守降级，不采信被篡改登记）+ 自动备份调度三键
+# （SEC-058：last_auto_backup_at 篡改为远期合法 ISO 使 is_auto_backup_due 恒
+# False、interval_hours 拉满 168h 拉长间隔——均可使自动备份「静默停摆」，用户只见
+# 完整性告警却无从知晓备份已停；retention 压低收缩回滚快照保有量。回退默认即
+# 恢复调度，代价仅是完整性失败会话内丢失个性化间隔设置）。
 _INTEGRITY_SENSITIVE_KEYS: set[str] = set(_SECURITY_MINIMUMS) | {
     CFG_BACKUP_DIRECTORY,
     CFG_SECURITY_SENTINELS,
+    CFG_LAST_AUTO_BACKUP_AT,
+    CFG_AUTO_BACKUP_INTERVAL_HOURS,
+    CFG_AUTO_BACKUP_RETENTION,
 }
 _BOOL_KEYS = {
     CFG_DEFAULT_UPPERCASE,
@@ -307,6 +314,17 @@ class ConfigManager:
         config.json 同一密钥体系，注入方持有 ConfigManager 即可，无需感知密钥链。
         """
         return self._integrity_key
+
+    @property
+    def session_only(self) -> bool:
+        """签名密钥是否为会话级临时密钥（SEC-057，经 ConfigKeyStore 透出）。
+
+        True 表示 Windows DPAPI protect 失败、密钥未能持久化（SEC-055 降级）——本
+        会话签名的任何落盘内容下次启动都会因密钥重新生成而失配。签名落盘方（如
+        RateLimiter）据此拒绝以临时密钥签名落盘，消除「DPAPI 持续故障 → 每次启动
+        签名失配误判篡改 → 降级最高阶梯误锁」的可用性代价。
+        """
+        return self._key_store.session_only
 
     @property
     def data_dir(self) -> Path:

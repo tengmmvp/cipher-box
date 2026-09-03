@@ -34,7 +34,8 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
     （`PasswordHistoryService`）。
   - `CategoryManager`：分类的加密 CRUD、名称唯一性与缓存失效编排；组合根显式
     创建并注入 EntryManager（MAINT-015），经其 `categories` property 暴露。
-  - `EntryCacheManager`：摘要/分类名/标签/TOTP secret 多级缓存（LRU + epoch 失效）。
+  - `EntryCacheManager`：摘要/分类名/标签/TOTP secret/搜索投影行集多级缓存
+    （LRU + epoch 失效）。
   - `EntryChangeBus`：统一「变更→缓存失效→回调」管线，支持 crypto_id 单条精细失效。
   - `ImportExportManager`：CSV/JSON/浏览器导入导出，格式解析拆分至 `managers/importers/`
     策略类（JSON/CSV/KeePass/Bitwarden 各一）；导入写入由 `_import_entries` 把加密移出
@@ -49,9 +50,13 @@ Business 层按「有状态编排」与「无状态服务」分为两个子包�
     `entry_validation`、`password_service`、`card_validation`（二者切断 UI→Crypto
     跨层依赖的业务门面）、`url_hygiene`（URL scheme 卫生清洗纯函数，导入与共享包共用）。
   - 条目子域：`totp_service`、`password_history_service`、`entry_batch_writer`（导入
-    批量写入加密/落库编排，从 EntryManager 下沉，经 entry_mgr 参数注入加密原语）、
+    批量写入加密/落库编排，从 EntryManager 下沉，经 entry_mgr 参数注入加密原语；兼
+    进度契约单一事实源：`phase_progress`/`should_report_progress` 供导入/导出/恢复
+    各 worker 消费，MAINT-099）、
     `entry_search_match`（列表搜索与标签过滤的匹配谓词纯函数，UI 过滤与
-    EntryManager 搜索热路径共用）、`entry_view_decryption`（视图构造原语
+    EntryManager 搜索热路径共用）、`entry_sorting`（条目排序键提取器纯函数，
+    UI 重排序与 EntryManager 内存排序共用单一事实源，MAINT-104 迁出 managers）、
+    `entry_view_decryption`（视图构造原语
     `copy_entry_fields`/`build_entry_summary` + `EntryViewDecryptor` 三视图解密）、
     `entry_type_schema`（5 种条目类型的字段 schema 注册表单一事实源，供
     entry_dialog / custom_fields_renderer / import_export 等消费）。
@@ -189,8 +194,11 @@ HMAC-SHA256 签名（`metadata_mac` 列）：
 - **签名密钥封装**：签名密钥按平台三级链存储（加载/存储下沉
   `src/config_key_store.py`，MAINT-020）：Windows 经 DPAPI（当前用户凭据）封装于
   `config.key`；macOS/Linux 经 keyring 存入系统密钥链（Keychain / Secret
-  Service）；平台存储不可用（headless Linux / CI、keyring 未安装或后端失败）时
-  回退明文 0600 `config.key` 并记 ERROR 使降级可见，不阻断启动。封装使密钥即便
+  Service）；非 Windows 平台存储不可用（headless Linux / CI、keyring 未安装或
+  后端失败）时回退明文 0600 `config.key` 并记 ERROR 使降级可见，不阻断启动。
+  Windows DPAPI protect 失败时不落盘（明文文件下次启动必被判损坏，SEC-052/055），
+  内存密钥仅本会话有效并记 CRITICAL；该会话级密钥经 `session_only` 标记透出，
+  签名落盘方（RateLimiter）据此拒绝以临时密钥签名落盘（SEC-057）。封装使密钥即便
   被同权限进程读取也无法在别处解密重算签名，收缩「本地攻击者读 config.key
   重算签名绕过配置完整性」的攻击面。残余限制：DPAPI 仅防「窃取文件后离线重算」，
   不防「能以当前用户身份运行代码的攻击者」（其可直接调 `CryptProtectData`

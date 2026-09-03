@@ -19,8 +19,10 @@ Python 运行时下的根本约束。
 - **风险**：进程崩溃 dump（Windows Error Reporting、第三方崩溃收集器）在退出路径
   未完成 GC 时，可能包含上一次解锁密钥的 AESGCM C 层副本。
 - **缓解**：缓存容量上限 `_MAX_CACHE_SIZE = 2`（仅容纳改密瞬间的旧+新双密钥窗口），
-  最小化驻留副本数量；`lock()` / 改密后显式 `clear_cache()`，完整 `gc.collect()`
-  经短延迟后台线程执行（引用释放即时生效，回收延后一个短窗口以免锁定 UI 卡顿）。
+  最小化驻留副本数量；`lock()` / 改密后显式 `clear_cache()`，随后在调用线程（锁定
+  即 GUI 线程）同步执行完整 `gc.collect()`。曾改经后台 Timer 延迟执行以免锁定卡顿，
+  已撤销（PERF-084）：gc 可能 finalize 引用循环中的无父 QObject，非 GUI 线程删除
+  C++ 对象违反 Qt 线程亲和。
 - **残余风险**：CPython 无法从 Python 层强制释放 C 层内存。
 
 ### 1.2 不可变 `bytes` 密钥副本无法原地清零

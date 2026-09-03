@@ -212,6 +212,46 @@ class TestImportWiring:
         assert dlg._worker_is_export is False
 
 
+class TestCsvFormulaExemptionHint:
+    """CSV 含密钥导出的公式注入豁免提示接线（SEC-039 取舍的用户告知）。
+
+    提示经 ``export_warning_text`` 拼入含密码导出的二次确认警告：仅「CSV +
+    包含密码」触发；JSON 格式的警告与不含密码路径的 information 提示均不出现。
+    """
+
+    def test_csv_with_password_warning_contains_formula_note(self, qapp, wired):
+        """CSV + 包含密码：警告文案含公式解析提示。"""
+        dlg, _, _ = _make_dialog()
+        dlg._include_pwd_radio.setChecked(True)
+        dlg._format_combo.setCurrentIndex(1)  # CSV
+
+        dlg._do_export("/tmp/cipherbox_export.csv")
+
+        assert wired["warning"]
+        assert any("公式" in str(arg) for arg in wired["warning"][0])
+
+    def test_json_with_password_warning_has_no_formula_note(self, qapp, wired):
+        """JSON + 包含密码：警告仍弹出但无公式提示（豁免仅 CSV 密钥列）。"""
+        dlg, _, _ = _make_dialog()
+        dlg._include_pwd_radio.setChecked(True)
+
+        dlg._do_export("/tmp/cipherbox_export.json")
+
+        assert wired["warning"]
+        assert not any("公式" in str(arg) for arg in wired["warning"][0])
+
+    def test_csv_without_password_does_not_warn_formula(self, qapp, wired):
+        """CSV + 不含密码：走 information 提示，无公式提示（密钥列已被移除）。"""
+        dlg, _, _ = _make_dialog()
+        dlg._format_combo.setCurrentIndex(1)  # CSV，默认「不包含密码」
+
+        dlg._do_export("/tmp/cipherbox_export.csv")
+
+        assert wired["info"]
+        assert "warning" not in wired
+        assert not any("公式" in str(arg) for arg in wired["info"][0])
+
+
 class TestWorkerErrorPaths:
     """worker 错误路径：异常文案呈现失败状态，busy 复位，对话框不崩溃。"""
 

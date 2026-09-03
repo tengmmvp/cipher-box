@@ -2,6 +2,13 @@
 
 覆盖剪贴板复制与读取、自动清空计时器启停、取消清空、仅清空匹配内容以避免
 误清用户后续复制，以及空字符串不触发清空等核心行为。
+
+MAINT-095 豁免说明：``_last_text_hash`` / ``_timer.isActive`` 的直读属**白盒安全
+属性守护**——「复制后 hash 已设置（仅清本会话写入内容）/ 定时器已启动（密码不会
+无限期驻留）/ 空串不设置 hash」是明文残留防护的内部不变量，无公开观察面；为观测
+而暴露 hash 本体或定时器会扩大敏感状态暴露面，故保留私有直读（豁免于「测试断言
+内部状态须走观察 property」判据）。可走公开面的操作（teardown 停表 → cancel、
+主动清空 → clear_now）一律用公开 API。
 """
 
 import hmac
@@ -63,7 +70,8 @@ class TestClipboardManager:
 
     def teardown_method(self):
         # 停止单次定时器，避免跨测试到期回调清空共享系统剪贴板污染其他测试
-        self.mgr._timer.stop()
+        # （公开 cancel() 等价 _timer.stop，MAINT-095）
+        self.mgr.cancel()
 
     # ---- 基础复制与获取 ----
 
@@ -76,6 +84,7 @@ class TestClipboardManager:
         assert clipboard is not None
         assert _read_system_clipboard() == text
         expected_hash = hmac.digest(_CLIPBOARD_HMAC_KEY, text.encode("utf-8"), "sha256")
+        # 白盒豁免（见模块 docstring）：hash 已设置是「仅清本会话写入内容」的前提
         assert self.mgr._last_text_hash == expected_hash
 
     # ---- 自动清空计时器 ----
@@ -85,8 +94,9 @@ class TestClipboardManager:
         self.mgr.clear_seconds = 5
         self.mgr.copy_text("secret")
 
+        # 白盒豁免（见模块 docstring）：定时器启动是「密码不会无限期驻留」的守护
         assert self.mgr._timer.isActive(), "Timer should be active after copy"
-        self.mgr._timer.stop()
+        self.mgr.cancel()
 
     # ---- 取消清空 ----
 
@@ -95,6 +105,7 @@ class TestClipboardManager:
         self.mgr.clear_seconds = 10
         self.mgr.copy_text("secret")
 
+        # 白盒豁免（见模块 docstring）：定时器启停状态无公开观察面
         assert self.mgr._timer.isActive()
         self.mgr.cancel()
         assert not self.mgr._timer.isActive(), "Timer should be stopped after cancel"
@@ -111,8 +122,8 @@ class TestClipboardManager:
         assert clipboard is not None
         clipboard.setText("user_typed_something_else")
 
-        # 手动触发清空回调
-        self.mgr._clear_clipboard()
+        # 手动触发清空回调（公开 clear_now 即锁定清理路径的实际入口，MAINT-095）
+        self.mgr.clear_now()
 
         # 剪贴板应保留用户手动复制的内容，不被误清
         assert clipboard.text() == "user_typed_something_else"
@@ -123,7 +134,8 @@ class TestClipboardManager:
         """复制空字符串不触发清空定时器。"""
         self.mgr.copy_text("")
 
-        # _last_text_hash 应保持初始空值，未被设置
+        # _last_text_hash 应保持初始空值，未被设置（白盒豁免，见模块 docstring：
+        # 「空串不设 hash」是后续 clear 判定的安全前提）
         assert self.mgr._last_text_hash == b""
         assert not self.mgr._timer.isActive()
 
