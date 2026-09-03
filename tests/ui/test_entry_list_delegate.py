@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import QStyle, QStyleOptionViewItem
 
 from src.models import Entry
 from src.ui.components.entry_list_widget import (
+    FAVORITE_MARKER,
     EntryItemDelegate,
     EntryListModel,
 )
@@ -56,6 +57,48 @@ def _paint_pixmap(
     finally:
         painter.end()
     return pixmap
+
+
+class _DrawTextSpy:
+    """包装真实 ``QPainter`` 并记录全部 ``drawText`` 的文本实参，其余调用透传。
+
+    供与字体环境无关的确定性断言（CI 的 Windows runner 上 ``★`` 字形可能渲染为
+    空白，像素级比对会环境敏感失败；文本实参在任何字体环境下都如实反映
+    delegate 传入的绘制内容）。
+    """
+
+    def __init__(self, painter: QPainter) -> None:
+        self._painter = painter
+        self.texts: list[str] = []
+
+    def __getattr__(self, name: str):
+        return getattr(self._painter, name)
+
+    def drawText(self, *args) -> None:
+        """记录本次调用的全部 str 实参（各重载的文本参数均为 str，几何/flags 不是）。"""
+        self.texts.extend(arg for arg in args if isinstance(arg, str))
+        self._painter.drawText(*args)
+
+
+def _paint_with_text_spy(
+    delegate: EntryItemDelegate, entry: Entry, *, selected: bool, width=360
+) -> _DrawTextSpy:
+    """执行一次真实离屏 delegate.paint，返回记录 drawText 文本的 spy。"""
+    pixmap = QPixmap(width, EntryItemDelegate.ROW_HEIGHT)
+    pixmap.fill(QColor(0, 0, 0, 0))
+    option = QStyleOptionViewItem()
+    option.rect = pixmap.rect()
+    if selected:
+        option.state = QStyle.StateFlag.State_Selected
+    model = EntryListModel()
+    model.set_entries([entry])
+    painter = QPainter(pixmap)
+    spy = _DrawTextSpy(painter)
+    try:
+        delegate.paint(spy, option, model.index(0, 0))
+    finally:
+        painter.end()
+    return spy
 
 
 @pytest.fixture
@@ -105,12 +148,18 @@ class TestPaintSmoke:
         assert "accent" in delegate._color_cache
 
     def test_favorite_marker_prefixed_in_title(self, delegate):
-        """收藏条目标题带 ★ 前缀（行为断言：星标改变实际渲染像素）。"""
-        plain = _paint_pixmap(delegate, _entry(is_favorite=False), selected=False).toImage()
-        favorite = _paint_pixmap(delegate, _entry(is_favorite=True), selected=False).toImage()
-        # 同一 delegate/主题下唯一差异是标题前缀星标——像素不同证明 FAVORITE_MARKER
-        # 真实进入渲染（替代原 ``FAVORITE_MARKER == "★ "`` 的源码镜像恒真式）
-        assert favorite != plain
+        """收藏条目标题带 ★ 前缀（行为断言：星标真实进入 drawText 的标题文本）。
+
+        经 spy 断言绘制文本而非像素：CI 的 Windows runner 上 ``★`` 字形可能渲染
+        为空白，像素比对环境敏感；``ElideRight`` 省略恒保留首字符，文本断言在
+        任何字体环境下确定成立（替代原 ``FAVORITE_MARKER == "★ "`` 的源码镜像
+        恒真式）。
+        """
+        favorite = _paint_with_text_spy(delegate, _entry(is_favorite=True), selected=False)
+        plain = _paint_with_text_spy(delegate, _entry(is_favorite=False), selected=False)
+        star = FAVORITE_MARKER[0]
+        assert any(text.startswith(star) for text in favorite.texts)
+        assert not any(text.startswith(star) for text in plain.texts)
         assert "bg_card" in delegate._color_cache  # 两次渲染均真实执行
 
     def test_minimal_entry_paints_without_error(self, delegate):
