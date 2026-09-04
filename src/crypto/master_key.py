@@ -5,7 +5,6 @@
 令牌）确认密码正确性——伪造需先完成 Argon2id 派生，成本远高于利用此硬编码常量。
 """
 
-import hmac
 import logging
 import os
 from typing import NamedTuple
@@ -16,6 +15,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDFExpand
 
 from ..utils.memory import secure_zero_buffer
+from ..utils.secure_compare import constant_time_mac_equals
 from .encryption import EncryptionEngine
 
 logger = logging.getLogger(__name__)
@@ -250,7 +250,9 @@ class MasterKeyManager:
         returned = False
         try:
             decrypted = EncryptionEngine.decrypt(verify_token, key, VERIFY_AAD)
-            if hmac.compare_digest(decrypted, VERIFY_PLAINTEXT):
+            # SEC-074（对齐 SEC-071 单一比较入口）：比较器对非 ASCII 明文短路 False，
+            # 避免裸 compare_digest 抛 TypeError 逃出 except ValueError 捕获面。
+            if constant_time_mac_equals(decrypted, VERIFY_PLAINTEXT):
                 returned = True
                 return key
             logger.debug("主密码验证失败：验证令牌明文不匹配（令牌可能损坏）")

@@ -403,6 +403,13 @@ class WorkerBackedDialog(QDialog):
         """
         return True
 
+    def is_irreversible_running(self) -> bool:
+        """是否存在运行中的不可逆 worker（已启动、运行中且 ``_cancel_on_close`` 为 False）。
+
+        closeEvent 拒关守卫与 MainWindow 锁定/退出检测共用（MAINT-123）。
+        """
+        return self._worker is not None and self._worker.isRunning() and not self._cancel_on_close()
+
     def _before_reject(self) -> None:
         """等待 worker 前的钩子（如请求 vault 取消），默认无操作。
 
@@ -449,12 +456,7 @@ class WorkerBackedDialog(QDialog):
 
     def closeEvent(self, a0: QCloseEvent | None) -> None:
         """不可取消 worker 运行时拒绝关闭，避免中断写入副作用。"""
-        if (
-            a0 is not None
-            and self._worker is not None
-            and self._worker.isRunning()
-            and not self._cancel_on_close()
-        ):
+        if a0 is not None and self.is_irreversible_running():
             self._on_close_blocked()
             a0.ignore()
             return

@@ -19,6 +19,7 @@ from .business.composition import (
     build_vault,
 )
 from .business.services.backup.purge import purge_restore_points
+from .business.services.error_messages import to_user_message
 from .config import CFG_THEME, DEFAULT_THEME, ConfigManager
 from .logging_config import configure_logging
 from .ui.dialogs.login_window import LoginWindow
@@ -197,7 +198,20 @@ class CipherBoxApp:
 
         # 登录限流器经组合根工厂创建注入（ARCH-043）：每次登录窗口构造各建一个，
         # 生命周期与窗口一致，跨会话退避状态经状态文件恢复。
-        login = LoginWindow(self._vault, build_login_rate_limiter(self._config))
+        # ARCH-061：构造经 ensure_db_open 触发库结构校验，损坏库异常在此抛出，
+        # 兜底翻译为弹窗后干净退出（对齐主窗构造失败分支，捕获面同为 Exception 全量）。
+        try:
+            login = LoginWindow(self._vault, build_login_rate_limiter(self._config))
+        except Exception as exc:
+            logger.error("登录窗口构造失败", exc_info=True)
+            QMessageBox.critical(
+                None,
+                "启动失败",
+                "登录窗口初始化失败：" + to_user_message(exc, default="请查看日志文件或重新安装。"),
+            )
+            self._running = False
+            self._app.quit()
+            return
 
         def on_login() -> None:
             first_show = self._main_window is None
@@ -250,6 +264,10 @@ class CipherBoxApp:
         login.deleteLater()
         if result != LoginWindow.DialogCode.Accepted:
             self._running = False
+            # ARCH-062：quit() 不触发 closeEvent，经主窗公共包装补齐退出清理
+            # （与托盘退出对称，锁定态下各步幂等）；无主窗（首启即关）时仅退出。
+            if self._main_window is not None:
+                self._main_window.perform_exit_cleanup()
             self._app.quit()
 
     def _on_lock(self) -> None:

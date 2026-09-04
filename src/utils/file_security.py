@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ._platform import IS_WINDOWS
-from .win_acl import _restrict_windows_acl
+from .win_acl import restrict_windows_acl
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ def secure_directory(path: Path, *, strict: bool = False) -> Path:
                 raise
             logger.warning("无法限制目录权限：%s", path, exc_info=True)
     if IS_WINDOWS:
-        _restrict_windows_acl(path, True, strict=strict)
+        restrict_windows_acl(path, True, strict=strict)
     return path
 
 
@@ -81,7 +81,7 @@ def secure_file(path: Path, *, strict: bool = False) -> Path:
                 raise
             logger.warning("无法限制文件权限：%s", path, exc_info=True)
     if IS_WINDOWS:
-        _restrict_windows_acl(path, False, strict=strict)
+        restrict_windows_acl(path, False, strict=strict)
     return path
 
 

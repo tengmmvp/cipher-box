@@ -9,6 +9,10 @@ rate_limiter 内联 isascii 守卫（两份手抄），vault_lifecycle 与 metad
 告警被抑制，或直接逃出调用方 ``except VaultIntegrityError`` 的捕获面。比较器
 统一前置守卫；全部 MAC 比较站点须经此入口，不得在 call-site 内联展开（纪律
 先例：PasswordService.passwords_match 的 SEC-031）。
+
+纪律豁免（QL-081）：本入口面向 str 形态的 MAC/签名比较；bytes 形态的摘要比较
+（如 ``src/ui/utils/clipboard`` 的哈希比对）无非 ASCII ``TypeError`` 风险，直接
+使用 ``hmac.compare_digest`` 属有意豁免。
 """
 
 import hmac

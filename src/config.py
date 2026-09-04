@@ -54,6 +54,8 @@ OLD_PASSWORD_WARNING_DAYS_DEFAULT = 90
 MAX_WINDOW_GEOMETRY_BYTES = 256
 # 主题默认值（light/dark）：DEFAULT_CONFIG 与 UI 兜底共用的单一事实源。
 DEFAULT_THEME = "light"
+# 非默认主题标识：'light'/'dark' 字面量单一事实源，校验集与 UI THEME_DARK 均派生（MAINT-123）。
+THEME_DARK = "dark"
 
 # 配置键名常量（MAINT-005 单一事实源）：DEFAULT_CONFIG / _INT_SPECS / _BOOL_KEYS /
 # Literal 类型别名及所有调用方均引用这些常量，键名重命名只需改此处。命名约定 CFG_<UPPER_SNAKE>。
@@ -259,7 +261,7 @@ def _validate_sentinels(value: Any) -> bool:
 
 # 具体键校验派发表（QL-016）：替代长 if-elif 降 _is_valid 圈复杂度；集合键 _INT_RANGES/_BOOL_KEYS 在 _is_valid 内联判断。
 _KEY_VALIDATORS: Final[dict[str, Callable[[Any], bool]]] = {
-    CFG_THEME: lambda v: isinstance(v, str) and v in {"light", "dark"},
+    CFG_THEME: lambda v: isinstance(v, str) and v in {DEFAULT_THEME, THEME_DARK},
     CFG_SORT_FIELD: lambda v: (
         isinstance(v, str) and v in {"title", "updated_at", "created_at", "password_strength"}
     ),

@@ -3,9 +3,10 @@
 从 EntryManager 下沉的查询读族（同类先例：MAINT-021 视图解密族下沉、MAINT-104
 排序键纯函数迁出 managers）。读路径的公共骨架——「进读块前固定缓存 epoch（PERF-086）
 → ``epoch_guarded_read`` 锁内拉行集 + 同刻快照 key/世代（PERF-001/SEC-041）→ 锁外
-解密/内存排序/截断/构建」——与写路径（CRUD/加密/变更通知/失效）在 EntryManager 内
-界限清晰但长期共处，随两族各自增长拆出：EntryManager 聚焦写路径与加密原语，公开
-查询方法保持薄委托，调用方/UI/测试零改动。
+解密/内存排序/截断/构建」——经 :meth:`EntryQueryService._guarded_snapshot` 统一
+收口（MAINT-120），与写路径（CRUD/加密/变更通知/失效）在 EntryManager 内
+界限清晰但长期共处，随两族各自增长拆出：
+EntryManager 聚焦写路径与加密原语，公开查询方法保持薄委托，调用方/UI/测试零改动。
 
 模块成员：
 
@@ -25,7 +26,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import AbstractContextManager
-from typing import TYPE_CHECKING, NamedTuple, Protocol
+from typing import TYPE_CHECKING, NamedTuple, Protocol, TypeVar
 
 if TYPE_CHECKING:
     # vault 维持 TYPE_CHECKING 具体类（ARCH-039 显式决策，对齐 security_analyzer /
@@ -61,6 +62,14 @@ from .entry_view_decryption import EntryViewDecryptor, SearchMetadata
 # :func:`projection_cache_key`——纯数据类型（零 managers 依赖）随消费方归位，
 # entry_cache 经 managers→services 正向 import 引用。
 ProjectionCacheKey = tuple[bool, int | None, bool, str | None, bool]
+
+# 守卫读骨架辅助（MAINT-120）的载荷类型参数：fetch 返回形态由调用方自定义。
+_T = TypeVar("_T")
+
+# 摘要行循环的批量会话阈值：小行集逐行走单条摘要入口（µs 级锁往返），免付会话
+# 入口对整个摘要缓存的全量快照拷贝（50k 暖库 ~1-2ms 且阻塞并发）；近期更新
+# （limit=20）等小行集远低于该值，全量列表/搜索/去重（行集≈全库）远高于。
+_SUMMARY_BATCH_MIN_ROWS = 128
 
 
 def projection_cache_key(query: EntryQuery) -> ProjectionCacheKey:
@@ -119,13 +128,13 @@ class _MetadataBatchView(Protocol):
     """批量摘要读取会话的最小视图：查询服务仅消费 ``get`` 单成员。
 
     实现方 :class:`entry_cache._SearchMetadataBatch`（PERF-086 会话）经结构化满足
-    ——参数 ``SearchRow`` 满足其 ``SearchRowSource`` 协议入参（NamedTuple 结构满足
-    只读属性协议），返回的 :class:`SearchMetadata` 本就在 services 域（ARCH-053），
-    services 不反向 import managers 的会话实现类。参数名 ``raw_entry`` 与实现方
-    一致：pyright 按名匹配协议成员参数，改名即失配。
+    ——参数 ``SearchRow | RawEntry`` 均满足其 ``SearchRowSource`` 协议入参
+    （PERF-098 摘要行循环传完整密文行）；返回的 :class:`SearchMetadata` 本就在
+    services 域（ARCH-053），services 不反向 import managers 的会话实现类。
+    参数名 ``raw_entry`` 与实现方一致：pyright 按名匹配协议成员参数，改名即失配。
     """
 
-    def get(self, raw_entry: SearchRow) -> SearchMetadata: ...
+    def get(self, raw_entry: SearchRow | RawEntry) -> SearchMetadata: ...
 
 
 class QueryCacheProtocol(Protocol):
@@ -242,18 +251,37 @@ class EntryQueryService:
     def _key(self) -> bytes:
         return require_vault_key(self._vault)
 
+    def _guarded_snapshot(self, fetch: Callable[[], _T]) -> _T | None:
+        """查询读族的守卫读骨架统一收口（MAINT-120）。
+
+        进读块前固定缓存 epoch（PERF-086/ARCH-056 位置约束：重臂须在拉取之前，
+        否则会清掉本次刚回填的投影行集），再在 ``epoch_guarded_read`` 锁内执行
+        ``fetch`` 并同刻快照 key/data_epoch（PERF-001/SEC-041），载荷形态由调用方
+        自定义。失配返回 :data:`None`，调用方一行早退返回空视图（ARCH-005 改密
+        窗口）；``get_entries_for_export`` 有意不走本辅助——导出失配向上传播报错
+        而非静默空结果。锁定期 :class:`VaultLockedError` 不在归一范围，正常传播。
+        """
+        # 进读块前先固定本批缓存 epoch（PERF-086，位置语义见方法 docstring）。
+        self._cache.invalidate_if_epoch_changed()
+        try:
+            with self._vault.epoch_guarded_read():
+                return fetch()
+        except VaultKeyEpochMismatchError:
+            return None
+
     def get_entry_with_epoch(self, entry_id: int) -> EntryRead:
         """获取并解密单个条目，随行携带解密世代与 TOTP 域版本（:class:`EntryRead`）。
 
-        与 ``get_entry`` 同一读路径（epoch 守卫 + 锁内快照 key/世代 + 锁外解密），
-        区别仅在于把锁内快照的 ``data_epoch``（SEC-054 残余窗口闭合）与
-        ``data_version``（SEC-063 b 层：TOTP 域失效版本的解密时点快照）一并返回：
-        消费方（detail_panel 的 TOTP 预热）需要「entry 敏感字段解密时所处世代/版本」
-        ——世代与版本从锁内带出后，「解密后→预热前」窗口内发生恢复轮换（改 epoch）
-        或单条 TOTP 失效（pop_totp 不改 epoch、仅推进 TOTP 域版本）时，旧 secret
-        分别被 store_totp 的世代/版本守卫拒收；在 show_entry 调用点另行快照会把
-        该窗口误判为零间隙。其余不消费世代/版本的调用方继续用 ``get_entry``
-        （宿主薄委托，丢弃世代与版本）。
+        与 ``get_entry`` 同一读路径（epoch 守卫 + 锁内快照 key/世代 + 锁外解密，
+        骨架经 :meth:`_guarded_snapshot` MAINT-120 收口），区别仅在于把锁内快照的
+        ``data_epoch``（SEC-054 残余窗口闭合）与 ``data_version``（SEC-063 b 层：
+        TOTP 域失效版本的解密时点快照）一并返回：消费方（detail_panel 的 TOTP
+        预热）需要「entry 敏感字段解密时所处世代/版本」——世代与版本从锁内带出后，
+        「解密后→预热前」窗口内发生恢复轮换（改 epoch）或单条 TOTP 失效
+        （pop_totp 不改 epoch、仅推进 TOTP 域版本）时，旧 secret 分别被 store_totp
+        的世代/版本守卫拒收；在 show_entry 调用点另行快照会把该窗口误判为零间隙。
+        其余不消费世代/版本的调用方继续用 ``get_entry``（宿主薄委托，丢弃世代与
+        版本）。
 
         详情读 LENIENT + 列表标记一致性（QL-077 半应用的补齐）：取行走
         ``get_entries_by_ids``（LENIENT 验签）而非 ``db.get_entry``（STRICT）——
@@ -264,24 +292,28 @@ class EntryQueryService:
         警示并禁用编辑/共享，与列表路径的标记语义一致（取径先例：
         EntryManager._read_raw_for_delta 的同款论证）。
         """
-        try:
-            with self._vault.epoch_guarded_read():
-                # 取行走 LENIENT 验签（理由见方法 docstring）：篡改行标记
-                # integrity_error 随 entry 透传，不抛入 Qt 槽。
-                rows = self._db.get_entries_by_ids([entry_id])
-                raw = rows[0] if rows else None
-                # PERF-001 并发修补（M3）：锁内快照主密钥，锁外解密用快照（语义见 _decrypt_field）。
-                key = self._key
-                # SEC-043 写入方世代：详情路径同样快照世代传入缓存回写（语义见
-                # get_entry_summaries 处注释）——此前仅搜索分支接入，详情的摘要/
-                # 分类名缓存回写退回缓存侧采样，跨世代后旧明文可植入新 epoch 缓存。
-                data_epoch = self._vault.key_epoch
-                # SEC-063 b 层：TOTP 域版本与 raw/key/epoch 同刻快照——store_totp 的
-                # 版本守卫据此拒收「解密 → 预热」窗口内被 pop_totp 失效的旧 secret
-                # （pop 不改 epoch，SEC-054 的世代守卫对该失效盲）。
-                data_version = self._cache.totp_invalidate_version
-        except VaultKeyEpochMismatchError:
+
+        def fetch() -> tuple[RawEntry | None, bytes, str | None, int | None]:
+            # 取行走 LENIENT 验签（理由见方法 docstring）：篡改行标记
+            # integrity_error 随 entry 透传，不抛入 Qt 槽。
+            rows = self._db.get_entries_by_ids([entry_id])
+            raw = rows[0] if rows else None
+            # PERF-001 并发修补（M3）：锁内快照主密钥，锁外解密用快照（语义见 _decrypt_field）。
+            key = self._key
+            # SEC-043 写入方世代：详情路径同样快照世代传入缓存回写（语义见
+            # get_entry_summaries 处注释）——此前仅搜索分支接入，详情的摘要/
+            # 分类名缓存回写退回缓存侧采样，跨世代后旧明文可植入新 epoch 缓存。
+            data_epoch = self._vault.key_epoch
+            # SEC-063 b 层：TOTP 域版本与 raw/key/epoch 同刻快照——store_totp 的
+            # 版本守卫据此拒收「解密 → 预热」窗口内被 pop_totp 失效的旧 secret
+            # （pop 不改 epoch，SEC-054 的世代守卫对该失效盲）。
+            data_version = self._cache.totp_invalidate_version
+            return raw, key, data_epoch, data_version
+
+        snapshot = self._guarded_snapshot(fetch)
+        if snapshot is None:
             return EntryRead(None, None, None)
+        raw, key, data_epoch, data_version = snapshot
         if raw is None:
             return EntryRead(None, None, None)
         entry = self._view_decryptor.decrypt_entry(raw, key=key, data_epoch=data_epoch)
@@ -369,85 +401,81 @@ class EntryQueryService:
         # 能检测非加密元数据篡改（is_favorite/category_id/password_strength/deleted_at）。
         # _view_decryptor.decrypt_summary 将 raw.integrity_error 透传到 summary，列表
         # delegate 据此显示完整性警示。
-        # 进读块前先固定本批缓存 epoch（PERF-086 前移，原在锁外解密前）：首次调用
-        # 的重臂（清空+推进 version）若发生在投影拉取**之后**，会把本次刚回填的投影
-        # 行集一并清掉，首次调用自废缓存；前移后拉取的版本快照已含重臂推进，回填
-        # 可存活。逐条目不再重复校验（同批 epoch 不可能变化）的既有语义不变。
-        self._cache.invalidate_if_epoch_changed()
-        try:
-            with self._vault.epoch_guarded_read():
-                query = EntryQuery(
-                    deleted_only=deleted_only,
-                    category_id=category_id,
-                    favorite_only=favorite_only,
-                    limit=sql_limit,
-                    # 字段序下推（PERF-073/087）：SQL 路径与内存路径的排序下推分支
-                    # 都把白名单字段序传入查询（后者的截断由循环提前终止承担）；
-                    # 其余内存路径恒传 None——SQL 层保持复合序作为内存排序的稳定基数
-                    # （同键条目的相对序继承复合序，与 SQL 字段序的稳定语义一致）。
-                    order_by=order_by if (sql_pushdown or order_pushdown) else None,
-                    order_desc=order_desc,
-                    # 并列裁决键仅搜索的排序下推分支需要（PERF-090）：该分支依赖
-                    # 「行集序 == 内存稳定排序序」的等价性（PERF-087）；SQL 直连
-                    # 路径（sql_pushdown，与 order_pushdown 互斥）无内存对等路径，
-                    # 追加裁决键只会在 updated_at 序上破坏索引下推、纯付 filesort
-                    # 成本。
-                    tie_break_order=order_pushdown,
-                    verify=VerifyMode.LENIENT,
-                )
-                if in_memory_path:
-                    # 窄投影拉取（PERF-074/078）：宽行（e.* + 24 字段 RawEntry 构造）是
-                    # 温态主导成本（50k 库实测 656ms，同条件窄投影仅 102ms）；搜索只需
-                    # 4 个摘要密文字段做小写匹配，标题序只需 meta.title_lower + 行明文
-                    # 排序键。投影无验签（不含签名载荷列），回查完整行时经
-                    # get_entries_by_ids 的 LENIENT 验签补偿；未命中/未截断行不验签的
-                    # 取舍与 PERF-019 声明一致（篡改检测由无搜索词的全量列表刷新覆盖）。
-                    # 行集经投影缓存复用（PERF-086）：行集仅取决于过滤三元组与排序
-                    # 规格、与搜索词无关，暖态重复搜索免重拉。键构造收敛至
-                    # projection_cache_key（ARCH-052）单一函数：从本 query 显式提取
-                    # 影响行集/行序的维度（未下推排序已在 query 构造点规范化为
-                    # order_by=None 的复合序），有序行集与无序行集因消费方对行序敏感
-                    # （排序下推分支依赖行序提前终止）不可混存同一键。
-                    search_rows = self._cache.search_projection_rows(
-                        projection_cache_key(query),
-                        lambda: self._db.get_entries_search_projection(query),
-                    )
-                    raw_entries = []
-                else:
-                    search_rows = []
-                    raw_entries = self._db.get_entries(query)
-                # PERF-001 并发修补（M3）：锁内快照主密钥，锁外解密用快照（语义见 _decrypt_field）。
-                key = self._key
-                # SEC-041/043 写入方世代：与 raw/key 同刻快照 epoch，供摘要/分类名缓存
-                # 回写守卫——后台 worker 在恢复提交（invalidate_all → 新读路径重臂新
-                # epoch）后未被取消时，其旧 raw+旧密钥的解密结果不得写入新世代缓存
-                # （跨世代 grafting 会把恢复前明文持久污染进新缓存）。该快照覆盖本方法
-                # 全部分支（含搜索分支的 decrypt_summary meta 路径——分类名解密经
-                # data_epoch 守卫，PERF-074 重写时曾掉落、PERF-078 复核补齐）。
-                data_epoch = self._vault.key_epoch
-            # 解密移出 db_lock（PERF-001）：with 块内仅读 raw（持锁快速），锁外逐条解密，
-            # 释放 db_lock 供 TOTP 定时器读与写入。epoch 已在读块前固定（见方法头
-            # PERF-086 前移注释），循环内走无校验路径避免每条目重复加锁取 epoch。
-            read = _SummaryRead(
-                search_rows=search_rows,
-                raw_entries=raw_entries,
-                key=key,
-                data_epoch=data_epoch,
+        # 守卫读骨架经 _guarded_snapshot 统一承载（MAINT-120，PERF-086 位置约束见
+        # 其 docstring）；epoch 失配时整批返回空列表，触发 UI 经变更回调刷新。
+
+        def fetch() -> _SummaryRead:
+            query = EntryQuery(
+                deleted_only=deleted_only,
+                category_id=category_id,
+                favorite_only=favorite_only,
+                limit=sql_limit,
+                # 字段序下推（PERF-073/087）：SQL 路径与内存路径的排序下推分支
+                # 都把白名单字段序传入查询（后者的截断由循环提前终止承担）；
+                # 其余内存路径恒传 None——SQL 层保持复合序作为内存排序的稳定基数
+                # （同键条目的相对序继承复合序，与 SQL 字段序的稳定语义一致）。
+                order_by=order_by if (sql_pushdown or order_pushdown) else None,
+                order_desc=order_desc,
+                # 并列裁决键仅搜索的排序下推分支需要（PERF-090）：该分支依赖
+                # 「行集序 == 内存稳定排序序」的等价性（PERF-087）；SQL 直连
+                # 路径（sql_pushdown，与 order_pushdown 互斥）无内存对等路径，
+                # 追加裁决键只会在 updated_at 序上破坏索引下推、纯付 filesort
+                # 成本。
+                tie_break_order=order_pushdown,
+                verify=VerifyMode.LENIENT,
             )
             if in_memory_path:
-                summaries = self._summaries_via_search_projection(
-                    read,
-                    search=search,
-                    order_by=order_by,
-                    order_desc=order_desc,
-                    limit=limit,
-                    cancel_check=cancel_check,
-                    pre_sorted=order_pushdown,
+                # 窄投影拉取（PERF-074/078）：宽行（e.* + 24 字段 RawEntry 构造）是
+                # 温态主导成本（50k 库实测 656ms，同条件窄投影仅 102ms）；搜索只需
+                # 4 个摘要密文字段做小写匹配，标题序只需 meta.title_lower + 行明文
+                # 排序键。投影无验签（不含签名载荷列），回查完整行时经
+                # get_entries_by_ids 的 LENIENT 验签补偿；未命中/未截断行不验签的
+                # 取舍与 PERF-019 声明一致（篡改检测由无搜索词的全量列表刷新覆盖）。
+                # 行集经投影缓存复用（PERF-086）：行集仅取决于过滤三元组与排序
+                # 规格、与搜索词无关，暖态重复搜索免重拉。键构造收敛至
+                # projection_cache_key（ARCH-052）单一函数：从本 query 显式提取
+                # 影响行集/行序的维度（未下推排序已在 query 构造点规范化为
+                # order_by=None 的复合序），有序行集与无序行集因消费方对行序敏感
+                # （排序下推分支依赖行序提前终止）不可混存同一键。
+                search_rows = self._cache.search_projection_rows(
+                    projection_cache_key(query),
+                    lambda: self._db.get_entries_search_projection(query),
                 )
+                raw_entries = []
             else:
-                summaries = self._summaries_from_raw_rows(read, cancel_check)
-        except VaultKeyEpochMismatchError:
-            return []
+                search_rows = []
+                raw_entries = self._db.get_entries(query)
+            # PERF-001 并发修补（M3）：锁内快照主密钥，锁外解密用快照（语义见 _decrypt_field）。
+            # SEC-041/043 写入方世代：与 raw/key 同刻快照 epoch，供摘要/分类名缓存
+            # 回写守卫——后台 worker 在恢复提交（invalidate_all → 新读路径重臂新
+            # epoch）后未被取消时，其旧 raw+旧密钥的解密结果不得写入新世代缓存
+            # （跨世代 grafting 会把恢复前明文持久污染进新缓存）。该快照覆盖本方法
+            # 全部分支（含搜索分支的 decrypt_summary meta 路径——分类名解密经
+            # data_epoch 守卫，PERF-074 重写时曾掉落、PERF-078 复核补齐）。
+            return _SummaryRead(
+                search_rows=search_rows,
+                raw_entries=raw_entries,
+                key=self._key,
+                data_epoch=self._vault.key_epoch,
+            )
+
+        read = self._guarded_snapshot(fetch)
+        if read is None:
+            return []  # epoch 失配归一空列表，UI 经变更回调刷新
+        # 解密移出 db_lock（PERF-001）：读块内仅拉行集，锁外逐条解密；循环内经
+        # 批量摘要会话取 meta 避免每条目重复加锁。
+        if in_memory_path:
+            summaries = self._summaries_via_search_projection(
+                read,
+                search=search,
+                order_by=order_by,
+                order_desc=order_desc,
+                limit=limit,
+                cancel_check=cancel_check,
+                pre_sorted=order_pushdown,
+            )
+        else:
+            summaries = self._summaries_from_raw_rows(read, cancel_check)
         # 内存路径的 limit 已在排序后截断（回查与构建仅前 limit 条），无出口二次截断。
         return summaries
 
@@ -473,7 +501,7 @@ class EntryQueryService:
         data_epoch = read.data_epoch
         selected: list[tuple[SearchRow, SearchMetadata]] = []
         # 批量摘要会话（PERF-086）：一次持锁快照命中集、循环内零锁取 meta、退出
-        # 一次回写，替代逐行 cached_search_metadata_full 的 N 次 RLock 往返。
+        # 一次回写，替代逐行单条摘要入口的 N 次 RLock 往返。
         # data_epoch 语义不变（SEC-041）：会话进入时作为整批回写的世代守卫。
         with self._cache.search_metadata_batch(key=key, data_epoch=data_epoch) as batch:
             for row in read.search_rows:
@@ -490,6 +518,8 @@ class EntryQueryService:
                 if search:
                     # 匹配检查前移到回查/摘要构建之前（PERF-018）：仅命中条目进入
                     # 排序与回查（meta 已含匹配所需小写形式）。
+                    # 匹配元组保持 4 元组形态（PERF-100）：matches_search_lower 是
+                    # UI 与查询服务共用的纯函数，签名不耦合 SearchMetadata。
                     if not matches_search_lower(
                         (
                             meta.title_lower,
@@ -564,7 +594,6 @@ class EntryQueryService:
             summaries.append(
                 self._view_decryptor.decrypt_summary(
                     full,
-                    skip_epoch_check=True,
                     key=key,
                     meta=meta,
                     # data_epoch 透传（PERF-078 修复 PERF-074 的回归）：meta 路径
@@ -581,22 +610,38 @@ class EntryQueryService:
         read: _SummaryRead,
         cancel_check: Callable[[], bool] | None,
     ) -> list[Entry]:
-        """SQL 下推路径（无搜索+白名单字段序）的摘要构建（MAINT-092 自 get_entry_summaries 拆出）。"""
+        """SQL 下推路径（无搜索+白名单字段序）的摘要构建（MAINT-092 自 get_entry_summaries 拆出）。
+
+        行数分流：超过 :data:`_SUMMARY_BATCH_MIN_ROWS` 才进批量摘要会话（PERF-098，
+        对齐搜索路径）摊销逐行锁；小行集逐行走 meta=None 的单条摘要入口（failed
+        同步回写，完整性警示首轮可见），不付会话入口的全量快照拷贝。
+        """
         summaries = []
-        for raw in read.raw_entries:
-            if cancel_check and cancel_check():
-                break
-            # 非搜索分支同样透传锁内快照世代（SEC-043）：此前 meta=None 走
-            # 缓存侧采样，跨世代后旧明文可植入新 epoch 缓存（与搜索分支
-            # 的差异是 SEC-041 的遗留漏点，本处补齐）。
-            summaries.append(
-                self._view_decryptor.decrypt_summary(
-                    raw,
-                    skip_epoch_check=True,
-                    key=read.key,
-                    data_epoch=read.data_epoch,
+        if len(read.raw_entries) <= _SUMMARY_BATCH_MIN_ROWS:
+            for raw in read.raw_entries:
+                if cancel_check and cancel_check():
+                    break
+                summaries.append(
+                    self._view_decryptor.decrypt_summary(
+                        raw, key=read.key, data_epoch=read.data_epoch
+                    )
                 )
-            )
+            return summaries
+        # 非搜索分支同样透传锁内快照世代（SEC-043，补齐 SEC-041 仅接搜索分支的
+        # 漏点）：会话进入时作为整批回写的世代守卫，拒收跨世代旧明文写入新
+        # epoch 缓存。
+        with self._cache.search_metadata_batch(key=read.key, data_epoch=read.data_epoch) as batch:
+            for raw in read.raw_entries:
+                if cancel_check and cancel_check():
+                    break
+                summaries.append(
+                    self._view_decryptor.decrypt_summary(
+                        raw,
+                        key=read.key,
+                        meta=batch.get(raw),
+                        data_epoch=read.data_epoch,
+                    )
+                )
         return summaries
 
     def get_recent_summaries(self, limit: int = DEFAULT_RECENT_SUMMARIES_LIMIT) -> list[Entry]:
@@ -610,48 +655,51 @@ class EntryQueryService:
             limit: 返回条目数上限。
 
         读路径经 ``epoch_guarded_read`` 守卫（ARCH-005）：改密窗口内 epoch 不一致时
-        返回空列表，触发 UI 经变更回调刷新。
+        返回空列表，触发 UI 经变更回调刷新。守卫读骨架经 :meth:`_guarded_snapshot`
+        统一承载（MAINT-120，含 PERF-086/ARCH-056 位置约束）。
         """
         if limit <= 0:
             return []
-        # 进读块前先固定本批缓存 epoch（ARCH-056 对齐 get_entry_summaries 的位置
-        # 模式，原在锁外解密前）：本路径虽不消费投影行集缓存，但摘要构建的
-        # decrypt_summary 回写（分类名缓存等）与其它读路径共用同一 epoch 臂，
-        # 「读块后 invalidate」的模式分裂会误导后来者在新读路径复制旧位置——
-        # 前移统一后，任何读路径首次调用的重臂（清空+推进 version）都发生在其
-        # 拉取/解密之前，不废自己刚回填的缓存（PERF-086 的前移论证同源）。
-        self._cache.invalidate_if_epoch_changed()
-        try:
-            with self._vault.epoch_guarded_read():
-                raw_entries = self._db.get_entries(
-                    # 字段序下推（PERF-073）：updated_at DESC 明文表达，替代原
-                    # sort_by_updated 布尔单字段特例。纯单列序不附加并列裁决键
-                    # （PERF-090）：本路径无内存对等路径，裁决键只会把
-                    # idx_entries_active_updated 的索引序下推退化为 filesort。
-                    EntryQuery(
-                        order_by="updated_at",
-                        limit=limit,
-                        verify=VerifyMode.LENIENT,
-                    ),
-                )
-                # PERF-001 并发修补（M3）：锁内快照主密钥，锁外解密用快照（语义见 _decrypt_field）。
-                key = self._key
-                # SEC-043 写入方世代：近期更新视图同样快照世代传入缓存回写（语义见
-                # get_entry_summaries 处注释），补齐 SEC-041 仅接搜索分支的遗留漏点。
-                data_epoch = self._vault.key_epoch
-            # 解密移出 db_lock（PERF-001），与 get_entry_summaries 一致；用锁内快照 key
-            # 解密。epoch 已在读块前固定（见上方 ARCH-056 注释），此处不再重复校验。
+
+        def fetch() -> tuple[list[RawEntry], bytes, str | None]:
+            raw_entries = self._db.get_entries(
+                # 字段序下推（PERF-073）：updated_at DESC 明文表达，替代原
+                # sort_by_updated 布尔单字段特例。纯单列序不附加并列裁决键
+                # （PERF-090）：本路径无内存对等路径，裁决键只会把
+                # idx_entries_active_updated 的索引序下推退化为 filesort。
+                EntryQuery(
+                    order_by="updated_at",
+                    limit=limit,
+                    verify=VerifyMode.LENIENT,
+                ),
+            )
+            # PERF-001 并发修补（M3）：锁内快照主密钥，锁外解密用快照（语义见 _decrypt_field）。
+            # SEC-043 写入方世代：近期更新视图同样快照世代传入缓存回写（语义见
+            # get_entry_summaries 处注释），补齐 SEC-041 仅接搜索分支的遗留漏点。
+            return raw_entries, self._key, self._vault.key_epoch
+
+        snapshot = self._guarded_snapshot(fetch)
+        if snapshot is None:
+            return []
+        raw_entries, key, data_epoch = snapshot
+        # 解密移出 db_lock（PERF-001），用锁内快照 key 解密；行数分流：limit 下推后
+        # 行集通常很小（默认 20），逐行走 meta=None 单条摘要入口免付会话入口的
+        # 全量快照拷贝，大行集经批量摘要会话摊销锁往返（PERF-098）。
+        if len(raw_entries) <= _SUMMARY_BATCH_MIN_ROWS:
+            return [
+                self._view_decryptor.decrypt_summary(raw, key=key, data_epoch=data_epoch)
+                for raw in raw_entries
+            ]
+        with self._cache.search_metadata_batch(key=key, data_epoch=data_epoch) as batch:
             return [
                 self._view_decryptor.decrypt_summary(
-                    entry,
-                    skip_epoch_check=True,
+                    raw,
                     key=key,
+                    meta=batch.get(raw),
                     data_epoch=data_epoch,
                 )
-                for entry in raw_entries
+                for raw in raw_entries
             ]
-        except VaultKeyEpochMismatchError:
-            return []
 
     def get_entry_dedup_index(self) -> list[tuple[str, str, int]]:
         """导入去重对照所需的 ``(title, username, id)`` 明文索引（PERF-075）。
@@ -676,38 +724,35 @@ class EntryQueryService:
         失效是正确性要求而非损耗）。
 
         去重对照取「未删除」条目（与原实现一致）：回收站条目不参与覆盖判定，
-        导入同名条目仍走新增而非覆盖已删条目。invalidate_if_epoch_changed
-        前移至读块前（对齐 get_entry_summaries 的 PERF-086 前移论证：首次调用
-        的 epoch 重臂若发生在投影拉取之后，会把本次刚回填的投影行集一并清掉）。
+        导入同名条目仍走新增而非覆盖已删条目。
 
-        读路径经 ``epoch_guarded_read`` 守卫，语义与 ``get_entry_summaries``
+        读路径经 ``epoch_guarded_read`` 守卫（经 :meth:`_guarded_snapshot`
+        MAINT-120 收口，含 PERF-086 位置约束），语义与 ``get_entry_summaries``
         一致（改密窗口内 epoch 不一致时返回空列表）。
         """
-        # 进读块前先固定本批缓存 epoch（PERF-086 前移，语义见 docstring）。
-        self._cache.invalidate_if_epoch_changed()
-        try:
-            with self._vault.epoch_guarded_read():
-                query = EntryQuery(include_deleted=False)
-                rows = self._cache.search_projection_rows(
-                    projection_cache_key(query),
-                    lambda: self._db.get_entries_search_projection(query),
-                )
-                key = self._key
-                data_epoch = self._vault.key_epoch
-            result: list[tuple[str, str, int]] = []
-            # 批量摘要会话（PERF-094）：对齐搜索路径（_summaries_via_search_
-            # projection）的同款调用形态——原逐行 cached_search_metadata_full
-            # 每行 2 次 RLock 往返（命中读 + move_to_end），50k 逐行实测 ~78ms；
-            # 会话把锁开销摊销为进出各一次持锁（快照命中集 + 整批守卫回写）。
-            with self._cache.search_metadata_batch(key=key, data_epoch=data_epoch) as batch:
-                for row in rows:
-                    if row.id is None:
-                        continue
-                    meta = batch.get(row)
-                    result.append((meta.title, meta.username, row.id))
-            return result
-        except VaultKeyEpochMismatchError:
+
+        def fetch() -> tuple[list[SearchRow], bytes, str | None]:
+            query = EntryQuery(include_deleted=False)
+            rows = self._cache.search_projection_rows(
+                projection_cache_key(query),
+                lambda: self._db.get_entries_search_projection(query),
+            )
+            return rows, self._key, self._vault.key_epoch
+
+        snapshot = self._guarded_snapshot(fetch)
+        if snapshot is None:
             return []
+        rows, key, data_epoch = snapshot
+        result: list[tuple[str, str, int]] = []
+        # 批量摘要会话（PERF-094）：对齐搜索路径的调用形态，锁开销摊销为进出
+        # 各一次持锁（快照命中集 + 整批守卫回写）。
+        with self._cache.search_metadata_batch(key=key, data_epoch=data_epoch) as batch:
+            for row in rows:
+                if row.id is None:
+                    continue
+                meta = batch.get(row)
+                result.append((meta.title, meta.username, row.id))
+        return result
 
     def get_entries_for_export(
         self,
@@ -731,8 +776,12 @@ class EntryQueryService:
 
         读路径经 ``epoch_guarded_read`` 守卫（ARCH-005）：改密窗口内 epoch 不一致时
         抛 :class:`VaultKeyEpochMismatchError` 让导出 worker 据此报错（导出为用户主动
-        操作，空结果会误导用户认为成功导出 0 条，故向上传播而非返回空）。
+        操作，空结果会误导用户认为成功导出 0 条，故向上传播而非返回空——故本方法
+        有意不走 ``_guarded_snapshot`` 的失配归一）。
         """
+        # 全量物化维持现状（PERF-103）：导出为低频显式操作，密文宽行与解密 Entry
+        # 双份驻留的峰值可接受；流式分批需重排进度契约与读守卫锁语义，收益
+        # 不成比例。
         with self._vault.epoch_guarded_read():
             raw_entries = self._db.get_entries(EntryQuery(include_deleted=False))
             # PERF-001 并发修补（M3）：锁内快照主密钥，锁外解密用快照（语义见 _decrypt_field）。

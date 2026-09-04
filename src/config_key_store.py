@@ -106,7 +106,7 @@ class ConfigKeyStore:
         绝不阻断启动。
         """
         # strict=False：启动路径绝不阻断。Windows SID 解析失败（EDR/企业策略禁用
-        # whoami）时 _restrict_windows_acl 会抛 OSError 致启动崩溃，违背本方法
+        # whoami）时 restrict_windows_acl 会抛 OSError 致启动崩溃，违背本方法
         # 「绝不阻断启动」契约。权限加固失败降级（warning）而非阻断启动。
         secure_directory(self._data_dir, strict=False)
         key = self._load_secure_integrity_key()

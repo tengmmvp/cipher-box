@@ -160,6 +160,23 @@ def test_entries_table_columns_single_source():
     )
 
 
+def test_entry_signature_payload_keys_match_column_getters():
+    """签名载荷键族与 entries 列集一致（除 metadata_mac，加 id）（SEC-073 补充守护）。
+
+    _PAYLOAD_ROW_ATTRS 手拷贝列名，新增/改名非加密列漏改会使签名载荷不跟随——
+    全库验签失配或新列脱离 MAC 保护，漂移在此立即失败。
+    """
+    from src.business.services.metadata_signer import _PAYLOAD_ROW_ATTRS
+    from src.database.entry_repository import _ENTRY_COLUMN_GETTERS
+
+    expected = (set(_ENTRY_COLUMN_GETTERS) - {"metadata_mac"}) | {"id"}
+    assert set(_PAYLOAD_ROW_ATTRS) == expected, (
+        "签名载荷键族与 entries 列集漂移："
+        f"仅载荷键={set(_PAYLOAD_ROW_ATTRS) - expected}，"
+        f"仅列集键={expected - set(_PAYLOAD_ROW_ATTRS)}"
+    )
+
+
 def test_entry_query_rejects_conflicting_deleted_flags():
     """EntryQuery 拒绝 deleted_only 与 include_deleted 同时为 True（互斥校验）。"""
     from src.database.types import EntryQuery
@@ -210,8 +227,8 @@ def test_strict_decrypt_paths_cover_all_sensitive_fields(vault, entry_mgr, make_
     assert raw is not None
     key = require_vault_key(vault)
 
-    # 路径 1：导出 Entry 组装
-    exported = entry_mgr.decrypt_entry_for_export(raw, include_secrets=True)
+    # 路径 1：导出 Entry 组装（直调视图解密器，与生产链路一致，MAINT-118）
+    exported = entry_mgr._view_decryptor.decrypt_entry_for_export(raw, include_secrets=True)
     # 路径 2：备份/恢复 portable dict
     portable = decrypt_entry_to_portable_dict(raw, key, include_secrets=True)
 
@@ -230,7 +247,9 @@ def test_strict_decrypt_paths_cover_all_sensitive_fields(vault, entry_mgr, make_
     }
 
     # include_secrets=False：password/totp_secret 不解密（空串），其余字段仍覆盖
-    exported_no_secrets = entry_mgr.decrypt_entry_for_export(raw, include_secrets=False)
+    exported_no_secrets = entry_mgr._view_decryptor.decrypt_entry_for_export(
+        raw, include_secrets=False
+    )
     portable_no_secrets = decrypt_entry_to_portable_dict(raw, key, include_secrets=False)
     for result in (exported_no_secrets.password, portable_no_secrets["password"]):
         assert result == ""

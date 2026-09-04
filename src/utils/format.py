@@ -1,9 +1,12 @@
 """公共格式化工具 — 全项目统一的时间戳格式与本地化展示。
 
 ``utc_now_iso`` 提供 aware UTC ISO 8601 字符串作为数据库时间戳单一格式；
-``format_datetime`` 将其转换为本地时区的可读形式供 UI 展示。属零上层依赖共享层。
+``format_datetime`` 将其转换为本地时区的可读形式供 UI 展示；
+``timestamped_suffix`` 构造「UTC 时间戳 + 随机后缀」的文件名后缀干，供备份与
+共享包两域文件命名共用（QL-082）。属零上层依赖共享层。
 """
 
+import uuid
 from datetime import UTC, datetime
 
 
@@ -14,6 +17,19 @@ def utc_now_iso(now: datetime | None = None) -> str:
     生产路径不传，保持实时取值。
     """
     return (now if now is not None else datetime.now(UTC)).isoformat()
+
+
+def timestamped_suffix(now: datetime | None = None) -> str:
+    """返回「UTC 时间戳_8 位随机 hex」的文件名后缀干，供备份与共享包两域共用（QL-082）。
+
+    微秒精度 + 随机后缀保证快速连续生成不重名；返回值不含前缀与扩展名，
+    调用方按域拼接。
+
+    Args:
+        now: 可注入时钟（aware datetime），供测试；生产路径不传。
+    """
+    stamp = (now if now is not None else datetime.now(UTC)).strftime("%Y%m%d_%H%M%S_%f")
+    return f"{stamp}_{uuid.uuid4().hex[:8]}"
 
 
 def format_datetime(iso_str: str) -> str:

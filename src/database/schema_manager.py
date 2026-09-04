@@ -229,10 +229,18 @@ class SchemaManager:
                     if name not in existing_indexes
                 ]
                 for index_name, table, columns, is_unique in missing:
-                    cursor.execute(
-                        f"CREATE {'UNIQUE ' if is_unique else ''}INDEX IF NOT EXISTS "  # nosec B608 - 硬编码常量
-                        f"{index_name} ON {table}({', '.join(columns)})"
-                    )
+                    try:
+                        cursor.execute(
+                            f"CREATE {'UNIQUE ' if is_unique else ''}INDEX IF NOT EXISTS "  # nosec B608 - 硬编码常量
+                            f"{index_name} ON {table}({', '.join(columns)})"
+                        )
+                    except sqlite3.IntegrityError as exc:
+                        # QL-080 补正：仅数据违规（如重复 crypto_id）译为 SchemaError；
+                        # OperationalError（磁盘满/外部写锁超时）按原样传播，避免误报
+                        # 「结构损坏」误导用户（传播契约未见测试钉住，靠本注释声明）。
+                        raise SchemaError(
+                            f"数据库结构损坏，无法补建索引 {index_name}：{exc}"
+                        ) from exc
                 if missing:
                     self._auto_commit()
                 self._validate_current_schema(cursor)
@@ -347,7 +355,6 @@ class SchemaManager:
             raise SchemaError(f"不支持的数据库格式：{actual}")
         return False
 
-    @staticmethod
     @staticmethod
     def _validate_table_structure(cursor: sqlite3.Cursor) -> None:
         """校验全部表结构（列四元组）与预期一致，不符抛 :class:`SchemaError`。

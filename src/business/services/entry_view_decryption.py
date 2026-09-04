@@ -149,8 +149,8 @@ class ViewDecryptCacheProtocol(Protocol):
 
     对齐 :class:`TotpCacheProtocol` 的模式（ARCH-032）：``EntryCacheManager`` 自然
     满足此协议，构造时注入，services 子包运行时不 import managers，守住分层方向。
-    协议面以实际使用为准——``cached_search_metadata_full`` 属搜索热路径
-    （EntryManager 消费），不在本协议内。
+    协议面以实际使用为准——批量摘要路径经 ``search_metadata_batch`` 会话取 meta
+    （MAINT-119 后唯一的批量入口），不在本协议内。
 
     ``data_epoch``（SEC-041/043 写入方世代）：各解密方法的可选世代参数，实现方
     （EntryCacheManager）以调用方锁内快照的世代守卫缓存回写，拒收跨世代解密结果。
@@ -164,16 +164,6 @@ class ViewDecryptCacheProtocol(Protocol):
         data_epoch: str | None = None,
     ) -> tuple[str, str, str, str]:
         """解密并缓存 title/username/url/tags（单条路径，含 epoch 校验）。"""
-        ...
-
-    def search_metadata_for_analysis(
-        self,
-        raw_entry: RawEntry,
-        *,
-        key: bytes | None = None,
-        data_epoch: str | None = None,
-    ) -> tuple[str, str, str, str]:
-        """批量循环路径的摘要解密（无逐条 epoch 校验，调用方循环外已失效缓存）。"""
         ...
 
     def get_failed_fields(self, crypto_id: str) -> set[str]:
@@ -464,7 +454,6 @@ class EntryViewDecryptor:
         self,
         raw_entry: RawEntry,
         *,
-        skip_epoch_check: bool = False,
         key: bytes | None = None,
         meta: SearchMetadata | None = None,
         data_epoch: str | None = None,
@@ -475,9 +464,6 @@ class EntryViewDecryptor:
         摘要不包含 password/totp_secret/notes/custom_fields 等高敏字段；
         epoch 变化、锁定或条目更新时缓存立即失效。
 
-        skip_epoch_check=True 跳过单条 epoch 校验，供批量循环路径复用——调用方
-        须在循环外已调用缓存失效，避免每条目重复加锁。
-
         ``key`` 语义见 :meth:`_decrypt_field`（PERF-001 并发修补）：锁外解密期间改密
         activate 后用快照而非实时 ``self._key`` 解密本批旧密文，避免 GCM 认证失败、
         错误摘要以新 epoch 写入缓存持续污染。
@@ -486,16 +472,17 @@ class EntryViewDecryptor:
         世代）：调用方（列表/近期更新等批量路径）锁内快照的世代，透传摘要/分类名
         缓存作回写守卫——meta 提供时摘要缓存不经本方法，仅分类名缓存受守卫。
 
-        ``meta``：调用方预取的完整 :class:`SearchMetadata`，提供则跳过内部缓存查询
-        （搜索热路径一次取 meta 供摘要与小写匹配共用，PERF-016）。
+        ``meta``：调用方预取的完整 :class:`SearchMetadata`，提供则跳过内部缓存查询；
+        大行集批量路径经 ``search_metadata_batch`` 会话取 meta 传入（PERF-016/098，
+        跳过校验的批量入口已移除），不传 meta 的路径（单条与小行集循环）走
+        :meth:`ViewDecryptCacheProtocol.cached_search_metadata`（自带 epoch 校验、
+        failed 同步回写）。
         """
         if meta is not None:
             title, username, url, tags = meta.title, meta.username, meta.url, meta.tags
         else:
-            title, username, url, tags = (
-                self._cache.search_metadata_for_analysis(raw_entry, key=key, data_epoch=data_epoch)
-                if skip_epoch_check
-                else self._cache.cached_search_metadata(raw_entry, key=key, data_epoch=data_epoch)
+            title, username, url, tags = self._cache.cached_search_metadata(
+                raw_entry, key=key, data_epoch=data_epoch
             )
         # 失败字段集经 cache 锁内采样，避免与并发失效的 .clear() 竞态。
         failed = self._cache.get_failed_fields(raw_entry.crypto_id)

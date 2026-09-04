@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import base64
-import hmac
 import logging
 import os
 import time
@@ -37,8 +36,10 @@ from ...utils.memory import secure_zero_buffer
 from ...utils.secure_compare import constant_time_mac_equals
 from ..services.backup.purge import purge_snapshot_backups
 from ..services.crypto_utils import encrypt_plaintext_category_names
+from ..services.db_checkpoint import safe_checkpoint
 from ..services.error_messages import to_user_message
 from ..services.metadata_signer import MetadataSigner
+from ..services.password_service import PasswordService
 from ..services.re_encryption import ReEncryptionService
 from ..services.vault_meta_keys import (
     KDF_MEMORY_COST_KEY,
@@ -92,10 +93,12 @@ class VaultLifecycleOrchestrator:
     def _read_kdf_params(meta: dict[str, str | None]) -> KdfParams:
         """从 vault_meta 解析 Argon2id 参数，缺失或非法时抛 VaultLockedError。"""
         try:
+            # ignore 依据（QL-079）：meta 值为 str | None，None/非数字的转换异常
+            # 由下方 except 归一为 VaultLockedError。
             return KdfParams(
-                int(meta[KDF_TIME_COST_KEY]),  # type: ignore[arg-type]
-                int(meta[KDF_MEMORY_COST_KEY]),  # type: ignore[arg-type]
-                int(meta[KDF_PARALLELISM_KEY]),  # type: ignore[arg-type]
+                int(meta[KDF_TIME_COST_KEY]),  # type: ignore[arg-type]  # 值可为 None，由下方 except 兜底
+                int(meta[KDF_MEMORY_COST_KEY]),  # type: ignore[arg-type]  # 值可为 None，由下方 except 兜底
+                int(meta[KDF_PARALLELISM_KEY]),  # type: ignore[arg-type]  # 值可为 None，由下方 except 兜底
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise VaultLockedError("保险库缺少密钥派生参数") from exc
@@ -227,10 +230,9 @@ class VaultLifecycleOrchestrator:
             # secure_checkpoint 失败时 -wal 残留——恢复不轮换主密钥，残留页由当前
             # 主密钥加密，持主密钥+WAL 者可解出恢复前旧明文）。失败非致命（数据已
             # 可读），下次解锁重试。
-            try:
-                self._db.secure_checkpoint()
-            except Exception:
-                logger.warning("解锁后 WAL 安全截断失败（非致命）", exc_info=True)
+            # 数据已可读，截断失败非致命（下次解锁重试）；QL-079 收窄元组收敛于
+            # safe_checkpoint 单一事实源。
+            safe_checkpoint(self._db, "解锁后 WAL 安全截断失败（非致命）")
             logger.info("解锁完成 (%.1fms)", (time.monotonic() - t0) * 1000)
             return True, ""
         except CipherBoxError:
@@ -350,10 +352,9 @@ class VaultLifecycleOrchestrator:
             if not valid:
                 raise MasterPasswordPolicyError(error)
             # 常量时间比较新旧主密码，避免明文密码比较的时序侧信道（短路比较会随首个
-            # 不同字符提前返回，泄露前缀信息）。encode('utf-8')：主密码可含 Unicode（如
-            # 中文），hmac.compare_digest 对 str 仅接受 ASCII，非 ASCII 直接比较会抛
-            # TypeError。
-            if hmac.compare_digest(old_password.encode("utf-8"), new_password.encode("utf-8")):
+            # 不同字符提前返回，泄露前缀信息）。经 PasswordService.passwords_match
+            # 统一比较（QL-079 收编 SEC-031/QL-019 单一事实源），调用方不得内联展开。
+            if PasswordService.passwords_match(old_password, new_password):
                 raise MasterPasswordPolicyError("新密码不能与当前主密码相同")
             meta = self._db.get_meta_batch(
                 [
@@ -546,12 +547,9 @@ class VaultLifecycleOrchestrator:
                 len(failed_purges),
                 ", ".join(str(p) for p in failed_purges),
             )
-        # WAL 截断在事务提交之后执行；数据已落盘，截断失败非致命，单独捕获避免
-        # 其异常冒泡导致 UI 显示模糊错误，而事务其实已成功。
-        try:
-            self._db.secure_checkpoint()
-        except Exception:
-            logger.warning("改密后 WAL 安全截断失败（非致命）", exc_info=True)
+        # WAL 截断在事务提交之后执行；数据已落盘，截断失败非致命，经 safe_checkpoint
+        # 降级为告警避免异常冒泡使已成功的事务向 UI 报错。
+        safe_checkpoint(self._db, "改密后 WAL 安全截断失败（非致命）")
         return failed_purges
 
     def _handle_re_encrypt_failure(self) -> None:

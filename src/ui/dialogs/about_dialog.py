@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
 
 from ... import __app_name__, __version__
 from ..components.widgets import setup_dialog_flags
-from ..resources.constants import BTN_DIALOG, DIALOG_ABOUT_MIN_SIZE
+from ..resources.constants import BTN_DIALOG, DIALOG_ABOUT_MIN_SIZE, DIALOG_CONTENT_MARGINS
 from ..resources.icons import draw_logo_pixmap
 from ..resources.theme_colors import c
 
@@ -33,7 +33,7 @@ class AboutDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
-        layout.setContentsMargins(36, 30, 36, 30)
+        layout.setContentsMargins(*DIALOG_CONTENT_MARGINS)
 
         pixmap = draw_logo_pixmap(size=64, font_size=28)
 

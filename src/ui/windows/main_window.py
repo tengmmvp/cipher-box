@@ -627,15 +627,15 @@ class MainWindow(QMainWindow):
         self._auto_backup.shutdown()
 
     def _has_irreversible_running_worker(self) -> bool:
-        """检测是否存在运行中的不可中断对话框 worker（恢复/导入等有写入副作用）。"""
+        """检测是否存在运行中的不可中断对话框 worker（恢复/导入等有写入副作用）。
+
+        经 :meth:`WorkerBackedDialog.is_irreversible_running` 公共谓词判定（MAINT-123）。
+        """
         app = QApplication.instance()
         if app is None:
             return False
         return any(
-            isinstance(widget, WorkerBackedDialog)
-            and widget._worker is not None
-            and widget._worker.isRunning()
-            and not widget._cancel_on_close()
+            isinstance(widget, WorkerBackedDialog) and widget.is_irreversible_running()
             for widget in QApplication.topLevelWidgets()
         )
 
@@ -713,10 +713,19 @@ class MainWindow(QMainWindow):
         if self._tray:
             self._tray.hide()
 
-    def _quit_app(self) -> None:
-        # 持久化窗口状态：QApplication.quit() 不触发 closeEvent，须显式保存。
+    def perform_exit_cleanup(self) -> None:
+        """非 closeEvent 退出路径的公共退出清理入口（ARCH-062）。
+
+        ``QApplication.quit()`` 不触发 ``closeEvent``，本方法收拢与 ``_quit_app``
+        相同的「持久化 → 清理」序列供 app 层复用（锁定态下各子步骤幂等）；
+        quit 本身由调用方触发。
+        """
         self._persist_window_state()
         self._perform_exit_cleanup()
+
+    def _quit_app(self) -> None:
+        # quit 不触发 closeEvent，复用 ARCH-062 公共入口避免与 app 层退出序列漂移。
+        self.perform_exit_cleanup()
         QApplication.quit()
 
     # ========== 主题刷新 ==========

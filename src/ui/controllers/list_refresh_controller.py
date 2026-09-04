@@ -230,7 +230,7 @@ class ListRefreshController:
         view.tag_combo.clear()
         view.tag_combo.blockSignals(False)
         # 安全分析与条目缓存失效不在此调用（ARCH-012）：组合根
-        # （business/composition.py 的 register_on_lock）已把 security.invalidate_cache
+        # （business/composition.py 的 register_on_lock）已把 security.invalidate_caches
         # 与 entry_mgr.invalidate_caches 注册为 vault 锁定回调，prepare_for_lock 之后
         # 的 vault.lock() 必然触发，此处重复调用是双触发。UI 只清自身的
         # _cached_categories/_cached_tag_names（加密分类名/标签名缓存的持有方是本控制器）。
@@ -730,7 +730,7 @@ class ListRefreshController:
     # ========== 事件处理 ==========
 
     def _invalidate_security_cache(self) -> None:
-        self._security.invalidate_cache()
+        self._security.invalidate_caches()
 
     def refresh_all_data(self) -> None:
         """全量刷新：分类 + 标签 + 条目 + 安全摘要。

@@ -21,7 +21,7 @@ from src.business.managers.entry_manager import EntryManager
 from src.business.services.entry_queries import projection_cache_key
 from src.crypto.password_generator import PasswordGenerator
 from src.database.types import EntryQuery, VerifyMode
-from src.exceptions import VaultKeyEpochMismatchError
+from src.exceptions import DecryptionError, VaultKeyEpochMismatchError
 from src.models import CIPHERTEXT_PREFIX, CustomField
 from tests.helpers import decrypt_all_entries
 
@@ -381,7 +381,10 @@ class TestViewDecryptionDelegation:
     """视图解密下沉（MAINT-021）：公开 API 薄委托 EntryViewDecryptor 的接线守护。"""
 
     def test_public_decrypt_apis_match_view_decryptor(self, entry_mgr, make_entry):
-        """decrypt_entry / decrypt_entry_for_export 与解密器直调结果逐字段一致。"""
+        """decrypt_entry 公开薄委托与解密器直调结果逐字段一致。
+
+        export 公开委托已删除（MAINT-118），此处直调解密器验证 export 模式。
+        """
         entry_id = entry_mgr.add_entry(make_entry(notes="n1", totp_secret="JBSWY3DPEHPK3PXP"))
         raw = entry_mgr.db.get_entry(entry_id)
         assert raw is not None
@@ -390,11 +393,7 @@ class TestViewDecryptionDelegation:
         direct = entry_mgr._view_decryptor.decrypt_entry(raw)
         assert detail == direct
 
-        exported = entry_mgr.decrypt_entry_for_export(raw, include_secrets=True)
-        direct_export = entry_mgr._view_decryptor.decrypt_entry_for_export(
-            raw, include_secrets=True
-        )
-        assert exported == direct_export
+        exported = entry_mgr._view_decryptor.decrypt_entry_for_export(raw, include_secrets=True)
         assert exported.notes == "n1"
         assert exported.totp_secret == "JBSWY3DPEHPK3PXP"
 
@@ -820,7 +819,7 @@ class TestEmptyTrashBypassNotification:
         from src.business.services.security_analyzer import SecurityAnalyzer
 
         analyzer = SecurityAnalyzer(entry_mgr._vault, entry_mgr.cache)
-        entry_mgr.register_on_change(analyzer.invalidate_cache)
+        entry_mgr.register_on_change(analyzer.invalidate_caches)
 
         entry_id = entry_mgr.add_entry(make_entry(title="待清理", password="weak"))
         entry_mgr.delete_entry(entry_id)  # 软删除：增量差分移出分析集合
@@ -1184,26 +1183,122 @@ class TestDedupIndexProjectionCache:
     def test_dedup_uses_batch_session_zero_per_row_locks(self, entry_mgr, make_entry, monkeypatch):
         """去重循环改经批量摘要会话（PERF-094）：冷/暖两态均零逐行锁往返。
 
-        原实现逐行调 cached_search_metadata_full（每行 2 次 RLock：命中读 +
-        move_to_end，50k 逐行实测 ~78ms）；接 _SearchMetadataBatch 会话后锁开销
-        摊销为进出各一次持锁，逐行路径零调用（对齐搜索路径的同款调用形态，
-        暖缓存下连续导入免逐行锁）。
+        批量会话把锁开销摊销为进出各一次持锁；monkeypatch 锚定公开单条入口
+        cached_search_metadata（MAINT-119 收敛后唯一单条形态），断言逐行零调用。
         """
         entry_mgr.add_entry(make_entry(title="Alpha", username="u1"))
         entry_mgr.add_entry(make_entry(title="Beta", username="u2"))
 
         calls: list[object] = []
-        original = entry_mgr.cache.cached_search_metadata_full
+        original = entry_mgr.cache.cached_search_metadata
 
         def _spy(*args, **kwargs):
             calls.append(args)
             return original(*args, **kwargs)
 
-        monkeypatch.setattr(entry_mgr.cache, "cached_search_metadata_full", _spy)
+        monkeypatch.setattr(entry_mgr.cache, "cached_search_metadata", _spy)
 
         index_cold = entry_mgr.get_entry_dedup_index()  # 冷：会话内解密入缓存
         index_warm = entry_mgr.get_entry_dedup_index()  # 暖：快照命中集全命中
 
         assert sorted((t, u) for t, u, _i in index_cold) == [("Alpha", "u1"), ("Beta", "u2")]
         assert index_warm == index_cold  # 行为等价：暖缓存结果与冷路径一致
-        assert calls == []  # 逐行路径零调用（批量会话不走 cached_search_metadata_full）
+        assert calls == []  # 逐行路径零调用（批量会话不走单条摘要入口）
+
+
+class TestColdCacheIntegrityMarkingFirstRound:
+    """冷缓存 + 摘要解密失败：首轮 summary 即带 integrity_error（PERF-098 补正）。
+
+    批量摘要会话的 failed 集曾延迟到会话 __exit__ 才整批回写，而 decrypt_summary
+    内 get_failed_fields 是实时缓存读——冷缓存首轮渲染取不到刚发生的失败，
+    integrity_error 漏标一轮（旧单条路径为同步回写）。经 monkeypatch 仅令 title
+    解密失败（DB 行与 HMAC 保持有效），隔离 failed 集通道、不经 raw.integrity_error。
+    """
+
+    @staticmethod
+    def _fail_title_decrypt(monkeypatch):
+        """令摘要 title 字段解密失败，行与签名保持有效（失败仅来自 GCM 层）。"""
+        import src.business.managers.entry_cache as entry_cache_module
+
+        real_decrypt = entry_cache_module._decrypt_field_impl
+
+        def _failing_title(encrypted, key, crypto_id, field_name, *, strict=False):
+            if field_name == "title":
+                raise DecryptionError("GCM 认证失败（模拟）")
+            return real_decrypt(encrypted, key, crypto_id, field_name, strict=strict)
+
+        monkeypatch.setattr(entry_cache_module, "_decrypt_field_impl", _failing_title)
+
+    def _setup_corrupted(self, entry_mgr, make_entry, monkeypatch) -> int:
+        """两条条目（其一 title 解密失败）+ 清空摘要缓存构造冷缓存，返回损坏条目 id。"""
+        self._fail_title_decrypt(monkeypatch)
+        entry_id = entry_mgr.add_entry(
+            make_entry(title="损坏标题", username="victim", password="p")
+        )
+        entry_mgr.add_entry(make_entry(title="正常条目", username="other", password="p"))
+        entry_mgr.cache.invalidate_all()
+        return entry_id
+
+    @staticmethod
+    def _force_batch_branch(monkeypatch) -> None:
+        """把批量会话阈值压到 0，强制小行集也走会话分支。"""
+        from src.business.services import entry_queries as entry_queries_module
+
+        monkeypatch.setattr(entry_queries_module, "_SUMMARY_BATCH_MIN_ROWS", 0)
+
+    def test_recent_summaries_small_rows_marks_first_round(
+        self, entry_mgr, make_entry, monkeypatch
+    ):
+        """近期更新（默认 limit=20 ≤ 阈值，单条路径）：首轮即标记。"""
+        entry_id = self._setup_corrupted(entry_mgr, make_entry, monkeypatch)
+
+        summaries = entry_mgr.get_recent_summaries()
+
+        corrupted = next(s for s in summaries if s.id == entry_id)
+        assert corrupted.integrity_error is True
+        assert corrupted.title == ""  # 失败回退空串
+        assert "标题" in corrupted.integrity_message
+
+    def test_recent_summaries_batch_session_marks_first_round(
+        self, entry_mgr, make_entry, monkeypatch
+    ):
+        """近期更新走批量会话分支（阈值压 0）：失败即时回写使首轮仍标记。"""
+        self._force_batch_branch(monkeypatch)
+        entry_id = self._setup_corrupted(entry_mgr, make_entry, monkeypatch)
+
+        summaries = entry_mgr.get_recent_summaries()
+
+        corrupted = next(s for s in summaries if s.id == entry_id)
+        assert corrupted.integrity_error is True
+        assert "标题" in corrupted.integrity_message
+
+    def test_list_summaries_small_rows_marks_first_round(self, entry_mgr, make_entry, monkeypatch):
+        """无搜索列表（小行集单条路径）：首轮即标记。"""
+        entry_id = self._setup_corrupted(entry_mgr, make_entry, monkeypatch)
+
+        summaries = entry_mgr.get_entry_summaries()
+
+        corrupted = next(s for s in summaries if s.id == entry_id)
+        assert corrupted.integrity_error is True
+
+    def test_list_summaries_batch_session_marks_first_round(
+        self, entry_mgr, make_entry, monkeypatch
+    ):
+        """无搜索列表走批量会话分支（阈值压 0）：首轮仍标记。"""
+        self._force_batch_branch(monkeypatch)
+        entry_id = self._setup_corrupted(entry_mgr, make_entry, monkeypatch)
+
+        summaries = entry_mgr.get_entry_summaries()
+
+        corrupted = next(s for s in summaries if s.id == entry_id)
+        assert corrupted.integrity_error is True
+
+    def test_search_summaries_marks_first_round(self, entry_mgr, make_entry, monkeypatch):
+        """搜索路径（恒走批量会话）：失败即时回写使首轮标记（修复前该路径同型漏标）。"""
+        entry_id = self._setup_corrupted(entry_mgr, make_entry, monkeypatch)
+
+        # title 解密失败不再可搜，按未损坏的 username 命中该行
+        summaries = entry_mgr.get_entry_summaries(search="victim")
+
+        corrupted = next(s for s in summaries if s.id == entry_id)
+        assert corrupted.integrity_error is True

@@ -3,6 +3,8 @@
 import hashlib
 import hmac
 import json
+from collections.abc import Mapping
+from typing import Any
 
 from ...exceptions import VaultIntegrityError, VaultLockedError
 from ...models import Category, RawEntry
@@ -28,6 +30,31 @@ SIGNATURE_ENCRYPTED_FIELD_ORDER = ("username", "password", "notes", "totp_secret
 
 # vault_meta 完整性签名覆盖键集的 re-export 落点（见文件头注释）。
 VAULT_META_SIGNED_KEYS = vault_meta_keys.VAULT_META_SIGNED_KEYS
+
+# 签名载荷行键 → RawEntry 属性（SEC-073 补充守护）：键族与 entry_repository
+# _ENTRY_COLUMN_GETTERS 列集（除 metadata_mac、加 id）经 test_field_consistency
+# 比对，新增/改名列漂移即测试失败，防新列脱离 MAC 保护。
+_PAYLOAD_ROW_ATTRS: dict[str, str] = {
+    "id": "id",
+    "crypto_id": "crypto_id",
+    "title_enc": "title",
+    "username_enc": "username",
+    "password_enc": "password",
+    "url_enc": "url",
+    "category_id": "category_id",
+    "tags_enc": "tags",
+    "notes_enc": "notes",
+    "custom_fields_enc": "custom_fields_db_value",
+    "is_favorite": "is_favorite",
+    "is_deleted": "is_deleted",
+    "password_strength": "password_strength",
+    "entry_type": "entry_type",
+    "totp_secret_enc": "totp_secret",
+    "created_at": "created_at",
+    "updated_at": "updated_at",
+    "deleted_at": "deleted_at",
+    "password_changed_at": "password_changed_at",
+}
 
 
 class MetadataSigner:
@@ -104,19 +131,43 @@ class MetadataSigner:
         finally:
             secure_zero_buffer(dk)
 
-    def sign(self, entry: RawEntry) -> str:
+    def sign(self, entry: RawEntry | Mapping[str, Any]) -> str:
         """计算条目元数据 HMAC 签名，使用预计算的域密钥。
+
+        Args:
+            entry: 条目对象；或以 entries 表列名为键（如 ``title_enc``）的行字典
+                ——后者分发至 :meth:`sign_entry_from_row`（PERF-101，db 层批量
+                重签免 RawEntry 物化）。
 
         Raises:
             VaultLockedError: 域密钥未设置（保险库未解锁）。
         """
+        if not isinstance(entry, RawEntry):
+            return self.sign_entry_from_row(entry)
+        return self._sign_payload(self._payload(entry))
+
+    def sign_entry_from_row(self, row: Mapping[str, Any]) -> str:
+        """从数据库行字典直接计算条目签名，跳过 RawEntry 物化（PERF-101）。
+
+        供 db 层 ``clear_category_signatures`` 批量重签（持 db_lock + 活动事务的
+        O(N) 循环）省去逐条物化开销。载荷渲染与 :meth:`_payload` 收敛于同一渲染器
+        （:meth:`_payload_from_row`），保证同一持久化行经两路径签出的 metadata_mac
+        字节一致。
+
+        Args:
+            row: 以 entries 表列名为键的行字典（额外键被忽略，如 JOIN 的
+                ``category_name``）。
+
+        Raises:
+            VaultLockedError: 域密钥未设置（保险库未解锁）。
+        """
+        return self._sign_payload(MetadataSigner._payload_from_row(row))
+
+    def _sign_payload(self, payload: bytes) -> str:
+        """锁检查 + HMAC 的单一原语（SEC-073 补正）：条目签名公开入口共用，锁文案单点。"""
         if self._domain_key is None:
             raise VaultLockedError("保险库未解锁，无法签名条目元数据")
-        return hmac.new(
-            self._domain_key,
-            self._payload(entry),
-            hashlib.sha256,
-        ).hexdigest()
+        return hmac.new(self._domain_key, payload, hashlib.sha256).hexdigest()
 
     def sign_with_domain_key(self, entry: RawEntry, domain_key: bytes | bytearray) -> str:
         """直接用预计算的域密钥签名，跳过密钥派生。供 ReEncryptionService 批量重加密避免每条重复派生。
@@ -214,7 +265,7 @@ class MetadataSigner:
 
     @staticmethod
     def _payload(entry: RawEntry) -> bytes:
-        """构造签名载荷。
+        """构造签名载荷（RawEntry 路径）：属性取值组成行字典后交共用渲染器。
 
         Note:
             载荷不含 ``key_epoch``：跨 epoch 隔离由域密钥本身提供（域密钥从主密钥
@@ -225,29 +276,46 @@ class MetadataSigner:
             无感使用泄露的旧密码。纯本地防御需在保险库外记录全局单调 revision 最高值，
             但该记录同样在本地可被篡改；本地优先应用下 DB 写权限攻击者通常已有更高权限
             （可改可执行文件/读内存密钥），故此项作为已知边界接受，不做部分有效的防御。
+
+            SEC-073：``id`` 纳入载荷——不含 id 时整行复制改 id 或两行互换 id
+            （重定向 password_history 等外键数据）均不破坏验签，纳入后必致验签失败。
+            条目插入路径以预分配显式 id 携带最终 mac 一次性落库（见
+            entry_repository._signed_insert_row）。
+        """
+        return MetadataSigner._payload_from_row(
+            {column: getattr(entry, attr) for column, attr in _PAYLOAD_ROW_ATTRS.items()}
+        )
+
+    @staticmethod
+    def _payload_from_row(row: Mapping[str, Any]) -> bytes:
+        """从 entries 列名行字典渲染签名载荷（两签名路径的单一渲染器）。
+
+        取值胁迫与 entry_repository._row_to_entry 一致（可空列 ``or ""``、bool 列
+        ``bool()``），保证同一持久化行经两路径产出字节相同的载荷；额外键（如
+        JOIN 的 category_name）被忽略。
         """
         data = {
-            "crypto_id": entry.crypto_id,
-            "title": entry.title,
-            "url": entry.url,
-            "category_id": entry.category_id,
-            "tags": entry.tags,
-            "is_favorite": bool(entry.is_favorite),
-            "is_deleted": bool(entry.is_deleted),
-            "password_strength": entry.password_strength,
-            "entry_type": entry.entry_type,
-            "created_at": entry.created_at,
-            "updated_at": entry.updated_at,
-            "deleted_at": entry.deleted_at,
-            "password_changed_at": entry.password_changed_at,
+            "id": row["id"],
+            "crypto_id": row["crypto_id"],
+            "title": row["title_enc"],
+            "url": row["url_enc"] or "",
+            "category_id": row["category_id"],
+            "tags": row["tags_enc"] or "",
+            "is_favorite": bool(row["is_favorite"]),
+            "is_deleted": bool(row["is_deleted"]),
+            "password_strength": row["password_strength"],
+            "entry_type": row["entry_type"],
+            "created_at": row["created_at"] or "",
+            "updated_at": row["updated_at"] or "",
+            "deleted_at": row["deleted_at"] or "",
+            "password_changed_at": row["password_changed_at"] or "",
         }
         # 绑定加密字段密文到签名，防密文置换或回滚。长度前缀拼接避免固定分隔符
         # 在未来加密格式下产生歧义载荷。
-        enc_parts = [
-            entry.custom_fields_db_value if field == "custom_fields" else getattr(entry, field)
-            for field in SIGNATURE_ENCRYPTED_FIELD_ORDER
-        ]
-        enc_concat = "".join(f"{len(p)}:{p}" for p in enc_parts)
+        enc_concat = "".join(
+            f"{len(p)}:{p}"
+            for p in (row[f"{field}_enc"] or "" for field in SIGNATURE_ENCRYPTED_FIELD_ORDER)
+        )
         data["_enc_hash"] = hashlib.sha256(enc_concat.encode("utf-8")).hexdigest()
         return MetadataSigner._canonical_json_bytes(data)
 

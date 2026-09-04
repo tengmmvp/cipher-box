@@ -104,10 +104,11 @@ def _entry_column_values(entry: RawEntry, columns: Sequence[str]) -> tuple[objec
     return tuple(_ENTRY_COLUMN_GETTERS[column](entry) for column in columns)
 
 
-# 写入用 INSERT：add_entry 写入全部列，列序与 _ENTRY_COLUMNS 一致。
-_INSERT_ENTRY_SQL = (
-    f"INSERT INTO entries ({', '.join(_ENTRY_COLUMNS)}) "  # nosec B608 - 列名硬编码
-    f"VALUES ({', '.join('?' for _ in _ENTRY_COLUMNS)})"
+# 写入用 INSERT：携带预分配显式 id 与最终 metadata_mac 一次性落库（PERF-101 补正），
+# 列序 = id + _ENTRY_COLUMNS，add_entry 与 add_entries_batch 共用。
+_INSERT_ENTRY_WITH_ID_SQL = (
+    f"INSERT INTO entries (id, {', '.join(_ENTRY_COLUMNS)}) "  # nosec B608 - 列名硬编码
+    f"VALUES ({', '.join('?' for _ in range(len(_ENTRY_COLUMNS) + 1))})"
 )
 
 # update_entry 不写 is_deleted/deleted_at/created_at：删除状态仅由
@@ -253,7 +254,12 @@ class EntryRepository:
     def _auto_commit(self) -> None:
         return self._mgr.auto_commit()
 
-    def _sign_entry(self, entry: RawEntry) -> str:
+    def _sign_entry(self, entry: RawEntry | Mapping[str, Any]) -> str:
+        """签名委托：RawEntry 常规路径，或 DB 列名行字典直签（PERF-101，跳过物化）。
+
+        签名器缺席的回退取值单点在 DatabaseManager._sign_entry（SEC-073 补正），
+        本层纯委托不自行推断签名器是否装配。
+        """
         return self._mgr.sign_entry(entry)
 
     @property
@@ -423,6 +429,18 @@ class EntryRepository:
         ).fetchone()
         return self._row_to_entry(row) if row else None
 
+    @_db_operation
+    def entry_exists(self, entry_id: int) -> bool:
+        """轻量存在性探测（PERF-099）：``SELECT 1`` 单列判定，替代宽行拉取与验签。
+
+        不滤软删除态（语义与 ``get_entry(entry_id) is None`` 对齐，可否操作由调用方决定）。
+        """
+        row = self._conn.execute(
+            "SELECT 1 FROM entries WHERE id=?",  # nosec B608 - 参数绑定
+            (entry_id,),
+        ).fetchone()
+        return row is not None
+
     def _normalize_for_insert(
         self,
         entry: RawEntry,
@@ -430,11 +448,14 @@ class EntryRepository:
         now: str,
         preserve_metadata: bool,
     ) -> RawEntry:
-        """填充 INSERT 所需的默认字段(crypto_id/时间戳/删除状态/签名)。
+        """填充 INSERT 所需的默认字段(crypto_id/时间戳/删除状态)。
 
         add_entry 与 add_entries_batch 共用。password_changed_at 回退到 created_at
         （"未改过密码即创建时间"），而非 updated_at/now，避免导入/恢复时用导入时刻
         覆盖历史时间。RawEntry 为 frozen，返回经 replace 的新实例，调用方须承接。
+
+        不计算 metadata_mac（SEC-073）：载荷含 id，由调用方在预分配 id 后经
+        _signed_insert_row 重签入 INSERT。
         """
         crypto_id = entry.crypto_id or uuid.uuid4().hex
         created_at = entry.created_at or now
@@ -444,7 +465,7 @@ class EntryRepository:
         # created_at 上一行已保证非空（entry.created_at or now），此处回退到 created_at
         # 即可（与 docstring 一致），无需再兜底 now。
         password_changed_at = entry.password_changed_at or created_at
-        entry = replace(
+        return replace(
             entry,
             crypto_id=crypto_id,
             created_at=created_at,
@@ -453,27 +474,54 @@ class EntryRepository:
             deleted_at=deleted_at,
             password_changed_at=password_changed_at,
         )
-        return replace(entry, metadata_mac=self._sign_entry(entry))
+
+    def _next_entry_id(self) -> int:
+        """预分配起始 id：max(sqlite_sequence.seq, MAX(id)) + 1，锁内调用。
+
+        entries.id 为 INTEGER PRIMARY KEY AUTOINCREMENT，显式赋更大 id 会推进
+        sqlite_sequence、auto 取号随之续接，单调不回退语义不变；seq 与 max 并取
+        防御外部库 seq 落后。失败回滚时 seq 随事务一并还原。
+        """
+        row = self._conn.execute(
+            "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='entries'), 0), "
+            "COALESCE((SELECT MAX(id) FROM entries), 0)"
+        ).fetchone()
+        return max(int(row[0]), int(row[1])) + 1
+
+    def _signed_insert_row(self, entry: RawEntry, new_id: int) -> tuple[object, ...]:
+        """预分配 id 并重签的单一落点（SEC-073）：返回携带最终 mac 的 INSERT 参数元组。
+
+        两插入路径共用——mac 在 INSERT 前算就，新插入路径无从跳过重签落库
+        不可验签行。
+        """
+        entry = replace(entry, id=new_id)
+        entry = replace(entry, metadata_mac=self._sign_entry(entry))
+        return (new_id, *self._entry_insert_params(entry))
 
     @_db_write
     def add_entry(self, entry: RawEntry, preserve_metadata: bool = False) -> int:
-        """添加条目，返回 ID。"""
+        """添加条目，返回 ID。
+
+        SEC-073/PERF-101 补正：锁内预分配显式 id，INSERT 直接携带最终 metadata_mac
+        一次性落库，无插入后回填。
+        """
         self._assert_entry_encrypted_fields(entry)
         entry = self._normalize_for_insert(
             entry,
             now=utc_now_iso(),
             preserve_metadata=preserve_metadata,
         )
+        new_id = self._next_entry_id()
         try:
-            cursor = self._conn.execute(
-                _INSERT_ENTRY_SQL,
-                self._entry_insert_params(entry),
+            self._conn.execute(
+                _INSERT_ENTRY_WITH_ID_SQL,
+                self._signed_insert_row(entry, new_id),
             )
         except sqlite3.IntegrityError as exc:
             # 归一化为领域异常并按文案分流 FK/NOT NULL/唯一，真实 sqlite 文案随 {exc} 附出。
             raise _classify_entry_integrity_error("条目写入", exc) from exc
         self._auto_commit()
-        return cursor.lastrowid or 0
+        return new_id
 
     @_db_write
     def add_entries_batch(
@@ -484,10 +532,11 @@ class EntryRepository:
     ) -> dict[str, int]:
         """批量添加条目（恢复路径专用），返回 ``{crypto_id: new_id}``。
 
-        逐条计算 ``metadata_mac`` 后用 ``executemany`` 一次性 INSERT，将 N 次单独
-        INSERT+commit（每次 fsync）合并为 1 次 executemany+1 次 commit，缩短恢复
-        长事务持锁时间（否则 UI 冻结）。``executemany`` 不返回逐条 lastrowid，故
-        按 ``crypto_id`` 反查 ``id`` 建立映射，供调用方关联旧 entry_id。
+        PERF-101 补正：锁内预分配连续显式 id 后单次 ``executemany`` 携带最终
+        metadata_mac 落库——消除插入后全量按 PK UPDATE 重写（50k 条目秒级 + WAL
+        双版本）与 crypto_id 反查，缩短恢复长事务持锁时间（否则 UI 冻结）。失败
+        回滚由 ``_db_write``（standalone）/外层 transaction() 统一承担，id 分配随
+        事务一并还原。
 
         Args:
             entries: 待写入的 RawEntry 列表（加密字段须已加密）。
@@ -496,9 +545,10 @@ class EntryRepository:
         if not entries:
             return {}
         now = utc_now_iso()
-        params = []
-        normalized: list[RawEntry] = []
-        for entry in entries:
+        next_id = self._next_entry_id()
+        params: list[tuple[object, ...]] = []
+        id_map: dict[str, int] = {}
+        for offset, entry in enumerate(entries):
             # 恢复数据来自外部备份，逐条断言加密列防明文落库（与 add_entry 一致，
             # 恢复低频全量写入，逐条断言开销可接受）。
             self._assert_entry_encrypted_fields(entry)
@@ -507,28 +557,13 @@ class EntryRepository:
                 now=now,
                 preserve_metadata=preserve_metadata,
             )
-            params.append(self._entry_insert_params(entry))
-            normalized.append(entry)
+            new_id = next_id + offset
+            params.append(self._signed_insert_row(entry, new_id))
+            id_map[entry.crypto_id] = new_id
         try:
-            self._conn.executemany(_INSERT_ENTRY_SQL, params)
+            self._conn.executemany(_INSERT_ENTRY_WITH_ID_SQL, params)
         except sqlite3.IntegrityError as exc:
             raise _classify_entry_integrity_error("批量条目写入", exc) from exc
-        # SEC-011：id 反查须在 _auto_commit() 之前完成——插入与反查在同一隐式事务内
-        # （见 _db_write 装饰器），保证反查瞬时 IO 失败时条目尚未落库（standalone 写由
-        # 装饰器回滚隐式事务；显式事务由外层 transaction() 统一回滚），避免「已提交但
-        # 调用方收到异常」的部分状态。executemany 不提供逐条 lastrowid，按 crypto_id
-        # 反查 id；按 _ID_BATCH_SIZE 分批，避免 >999 条目时 IN(...) 超出 SQLite 主机变量上限。
-        crypto_ids = [entry.crypto_id for entry in normalized]
-        id_map: dict[str, int] = {}
-        for start in range(0, len(crypto_ids), _ID_BATCH_SIZE):
-            batch = crypto_ids[start : start + _ID_BATCH_SIZE]
-            placeholders = ",".join("?" for _ in batch)
-            rows = self._conn.execute(
-                f"SELECT id, crypto_id FROM entries WHERE crypto_id IN ({placeholders})",  # nosec B608
-                batch,
-            ).fetchall()
-            for row in rows:
-                id_map[row[1]] = row[0]
         self._auto_commit()
         return id_map
 
@@ -843,9 +878,8 @@ class EntryRepository:
         须已持锁并处活动事务内，保证 SELECT 与 executemany UPDATE 的原子性与跨表
         一致性。入口断言将此契约升级为运行期检查。
 
-        已知取舍（性能）：持锁下对全部条目逐条 ``_row_to_entry`` + ``_sign_entry``
-        （HMAC）是 O(N) Python 循环，大分类下会阻塞其他数据库访问。彻底优化需
-        ``MetadataSigner`` 提供批量签名接口；删除分类是低频操作，阻塞窗口可接受。
+        PERF-101：行字典直签消除逐条 RawEntry 物化，大分类下每行仅剩 dict 转换
+        与单次 HMAC。
         """
         if not self.in_transaction:
             raise TransactionError(
@@ -857,10 +891,10 @@ class EntryRepository:
         ).fetchall()
         update_data = []
         for row in rows:
-            entry = self._row_to_entry(row, verify=VerifyMode.SKIP)
-            entry = replace(entry, category_id=None)
-            entry = replace(entry, metadata_mac=self._sign_entry(entry))
-            update_data.append((entry.metadata_mac, entry.id))
+            row_values = dict(row)
+            # 解关联后的签名载荷形态：category_id 置空与持久化行（SET NULL）对齐。
+            row_values["category_id"] = None
+            update_data.append((self._sign_entry(row_values), row_values["id"]))
         if update_data:
             self._conn.executemany(
                 "UPDATE entries SET category_id=NULL, metadata_mac=? WHERE id=?",

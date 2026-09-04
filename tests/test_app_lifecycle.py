@@ -6,7 +6,9 @@ QApplication/日志/QLockFile 副作用，手动注入 mock 状态；``LoginWind
 ``on_login`` 闭包直接调用，避免驱动真实登录事件循环。覆盖：
 
 - ``run()``：主题应用、退出码透传、单实例锁失败短路、KeyboardInterrupt 兜底清理；
-- ``_show_login``：登录成功构造并显示主窗、登录取消退出、首显完整性告警分支；
+- ``_show_login``：登录成功构造并显示主窗、登录取消退出、首显完整性告警分支、
+  登录窗构造失败（损坏库）弹窗后干净退出（ARCH-061）、锁定后取消退出补齐主窗
+  退出清理（ARCH-062）；
 - ``_on_lock``：隐藏 → prepare_for_lock → vault.lock → 重回登录的顺序与主窗复用；
 - ``_install_crash_handlers`` / ``notify``：excepthook 替换与级联、清理失败不外抛、
   slot 异常兜底返回 False。
@@ -221,6 +223,55 @@ class TestLoginFlow:
         mw_ctor.assert_not_called()
         assert app._app._has("quit")
         assert instances[0].exec_calls == 1
+
+    def test_login_rejected_after_lock_runs_exit_cleanup_before_quit(self, monkeypatch):
+        """锁定后登录窗被拒绝：quit 前经主窗公共包装补齐退出清理（ARCH-062）。"""
+        app = _make_app()
+        app._running = True
+        instances = _install_scripted_login(monkeypatch, [_ACCEPTED, _REJECTED])
+        mw_ctor, _ctx = _install_main_window(monkeypatch)
+
+        app._show_login()
+        _trigger_login_success(instances[0])
+        mw = mw_ctor.return_value
+        order: list = []
+        mw.perform_exit_cleanup.side_effect = lambda: order.append("cleanup")
+        monkeypatch.setattr(app._app, "quit", lambda: order.append("quit"))
+
+        app._on_lock()  # 锁定 → 第二个登录窗被拒 → 退出
+
+        assert order == ["cleanup", "quit"]  # 清理先于 quit
+        assert app._running is False
+
+    def test_login_window_construction_failure_shows_critical_and_quits(self, monkeypatch):
+        """登录窗构造抛 SchemaError（损坏库）：翻译文案弹窗后干净退出，不外抛（ARCH-061）。"""
+        from src.exceptions import SchemaError
+
+        app = _make_app()
+        app._running = True
+
+        class _FailingLogin:
+            """LoginWindow 桩：构造即抛 SchemaError（模拟损坏库打开失败）。"""
+
+            DialogCode = QDialog.DialogCode
+
+            def __init__(self, vault, config):
+                raise SchemaError("cipherbox-schema 标识不匹配")
+
+        monkeypatch.setattr(f"{_APP_MODULE}.LoginWindow", _FailingLogin)
+        criticals: list = []
+        monkeypatch.setattr(
+            f"{_APP_MODULE}.QMessageBox.critical", lambda *a, **k: criticals.append(a)
+        )
+
+        app._show_login()  # 不得外抛
+
+        assert len(criticals) == 1
+        assert criticals[0][1] == "启动失败"
+        # 文案含 to_user_message 对 SchemaError 的固定中文映射
+        assert "数据库结构异常" in criticals[0][2]
+        assert app._running is False
+        assert app._app._has("quit")
 
     @staticmethod
     def _prepare_first_show(monkeypatch, reason: str):

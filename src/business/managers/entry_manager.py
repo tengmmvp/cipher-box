@@ -39,6 +39,7 @@ from ..services.crypto_utils import (
     encrypt_field as _encrypt_field_impl,
     require_vault_key,
 )
+from ..services.db_checkpoint import safe_checkpoint
 from ..services.entry_queries import EntryQueryService, EntryRead
 from ..services.entry_validation import validate_plain_entry
 from ..services.entry_view_decryption import EntryViewDecryptor
@@ -53,7 +54,13 @@ logger = logging.getLogger(__name__)
 
 
 class EntryManager:
-    """管理密码条目的加密、解密和 CRUD 操作。"""
+    """管理密码条目的加密、解密和 CRUD 操作。
+
+    现存 6 个「收窄转发」薄委托（MAINT-122）：MAINT-021 的 ``decrypt_entry`` 与
+    MAINT-116 的查询读族五方法（export 委托已随 MAINT-118 删除），为下沉时调用方
+    零改动的过渡保留；退役路径是经 property 或 BusinessContext 公开
+    ``EntryQueryService``、消费方迁移后删除对应委托，新增查询直接落在查询服务。
+    """
 
     def __init__(
         self,
@@ -293,29 +300,6 @@ class EntryManager:
         实现委托 :class:`EntryViewDecryptor.decrypt_entry`（MAINT-021 下沉）。
         """
         return self._view_decryptor.decrypt_entry(raw_entry, key=key, data_epoch=data_epoch)
-
-    def decrypt_entry_for_export(
-        self,
-        raw_entry: RawEntry,
-        include_secrets: bool = False,
-        *,
-        key: bytes | None = None,
-        data_epoch: str | None = None,
-    ) -> Entry:
-        """仅解密导出所需字段，默认不让密码与 TOTP 进入内存结果。
-
-        任何完整性/解密失败立即抛 :class:`DecryptionError`（拒绝导出损坏数据）；
-        ``include_secrets=False`` 时跳过 password/totp_secret 解密。
-
-        ``key`` 语义见 :meth:`_decrypt_field`（PERF-001 并发修补）。
-        ``data_epoch`` 语义同 :meth:`decrypt_entry`（SEC-049 补齐 export 链）：
-        分类名缓存回写守卫据此拒收跨世代解密结果。
-
-        实现委托 :class:`EntryViewDecryptor.decrypt_entry_for_export`（MAINT-021 下沉）。
-        """
-        return self._view_decryptor.decrypt_entry_for_export(
-            raw_entry, include_secrets=include_secrets, key=key, data_epoch=data_epoch
-        )
 
     # ---- 单条写路径纪律（集中声明；bulk 写路径同款约束见 entry_batch_writer）----
     # 「写路径遗漏 per-site 失效」目前无结构强制（SEC-063 seam 只覆盖事务写），
@@ -778,7 +762,7 @@ class EntryManager:
         # 通知降级为纯旁路语义（PERF-088）：回收站条目不在活跃分析集合——软删除时
         # 已按 PERF-079 增量差分移出 SecurityAnalyzer 缓存与标签计数，物理清空不
         # 改变活跃集合，故 password_changed/metadata_changed=False：
-        # - SecurityAnalyzer.invalidate_cache 对双 False 直接返回，跳过整库 O(n)
+        # - SecurityAnalyzer.invalidate_caches 对双 False 直接返回，跳过整库 O(n)
         #   重解密重算（原零参 notify 默认双 True 触发状态栏 worker 全量重算）；
         # - category_mgr 的计数订阅同样跳过（get_category_entry_counts 过滤
         #   is_deleted=0，回收站条目本就不计入分类计数）。
@@ -786,13 +770,10 @@ class EntryManager:
         #   clear_summaries 默认 True + 推进 version），摘要/标签缓存与投影行集
         # 缓存（PERF-086）照常失效，回收站（deleted_only）视图的行集正确性保持。
         self._change_bus.notify(password_changed=False, metadata_changed=False)
-        # 数据已提交，WAL 截断失败非致命（仅旧密文残留收缩失败）；与改密/恢复/解锁路径
-        # 对称地降级为告警，避免截断异常冒泡使 UI 显示模糊错误（secure_checkpoint 失败
-        # 上抛 DatabaseError，见 SEC-010）。
-        try:
-            self._vault.db.secure_checkpoint()
-        except Exception:
-            logger.warning("清空回收站后 WAL 安全截断失败（非致命）", exc_info=True)
+        # 数据已提交，截断失败非致命；与改密/恢复/解锁路径共用 safe_checkpoint 降级
+        # （QL-079 收窄元组的单一事实源，此处曾漏写 OSError 致 ACL 失败在物理删除
+        # 成功后仍报硬错误）。
+        safe_checkpoint(self._vault.db, "清空回收站后 WAL 安全截断失败（非致命）")
 
     def get_entry(self, entry_id: int) -> Entry | None:
         """获取并解密单个条目。
@@ -885,12 +866,15 @@ class EntryManager:
         not-found 前置读检查在事务外（SEC-063 演进，空事务不触发 seam）：原先
         早退在 with 块内，条目不存在也会空提交——统一失效 seam 在提交后无条件
         触发，清空全部 TOTP 缓存并推进全局水位（展示中条目下一 tick 重解密一次，
-        churn-only）。前置检查本身无需事务：``get_entry`` 是 ``@_db_operation``
+        churn-only）。前置检查本身无需事务：``entry_exists`` 是 ``@_db_operation``
         持锁纯读；toggle 的读-改-写原子性仍由事务内复读承担，前置检查与事务
         开闸间条目被并发删除的罕见竞态由事务内 ``raw is None`` 分支兜底（该
         竞态路径的空提交如实触发 seam——并发删除本就应失效 TOTP 缓存）。
+
+        前置检查走轻量 EXISTS 探测（PERF-099，原为 ``get_entry``）：存在性判定
+        无需宽行读取与 STRICT 验签，读-改-写仍由事务内复读承担；错误语义不变。
         """
-        if self._vault.db.get_entry(entry_id) is None:
+        if not self._vault.db.entry_exists(entry_id):
             return None
         with self._vault.epoch_guarded_transaction(operation="切换收藏"):
             raw = self._vault.db.get_entry(entry_id)

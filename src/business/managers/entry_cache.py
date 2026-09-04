@@ -6,6 +6,12 @@
 
 约定：锁内不调用数据库方法或变更回调，避免与 db 事务锁构成顺序反转死锁。
 
+结构观察（ARCH-060）：六域缓存 + 双域失效版本（QL-070 分域）+ TOTP 条目粒度
+水位（SEC-063）共存于单一 ``EntryCacheManager``，由单一 ``_cache_lock`` 统一
+失效——单锁使跨域整体失效（apply_change / invalidate_all）在单次临界区内完成；
+按域拆分管理器前须先论证锁拆分顺序（pop_totp / apply_tag_delta 的 QL-069/
+QL-070 失效语义已各自独立），未论证前维持单类单锁形态。
+
 线程模型约束（ARCH-054，跨模块集中声明）：**TOTP secret 的解密与缓存回写
 （TotpService.generate_cached / get_state 经 resolve_totp_secret / store_totp）
 必须留在 GUI 线程**（TOTPWidget 的 QTimer 驱动）。理由：pop_totp 的失效防护
@@ -58,14 +64,12 @@ from ..services.entry_view_decryption import SearchMetadata
 # 超出上限（理论上仅极端入库规模）时淘汰最久未访问项。
 _MAX_SEARCH_METADATA_CACHE_SIZE = MAX_ENTRIES_LIMIT
 
-# 搜索投影缓存键容量上限（PERF-086）：键=(deleted_only, category_id,
-# favorite_only, order_by, order_desc) 组合。典型常驻组合为主视图当前排序 +
-# 近期更新视图（updated_at DESC）+ 回收站视图各占一键，上限 4 覆盖工作集。
-# 内存依据：单键最坏 = 条目数上限（50k）行 SearchRow，全密文 + 5 个明文定位/
-# 排序列，实测规模 ~20MB/50k 行——密文行无明文驻留顾虑（AES-GCM 密文不可检索，
-# 泄漏面等价于 db 文件本身），且仅在接近条目数上限的库才达到该量级，常规库
-# （≤5k 条）单键 ~2MB；超限按 LRU 淘汰整键（行集整体失效，粒度即键）。
-_MAX_PROJECTION_CACHE_KEYS = 4
+# 搜索投影缓存键容量上限（PERF-086；PERF-096 自 4 提升至 8）：键为
+# (deleted_only, category_id, favorite_only, order_by, order_desc) 组合，UI 8 种
+# 排序交叉多视图可产出 >4 个常用键——容量 4 时排序切换触发 LRU 颠簸，被逐出键
+# 重拉整行集正是 PERF-086 要消除的成本；密文行泄漏面等价于 db 文件，容量 8
+# 内存上界可控；超限按 LRU 淘汰整键。
+_MAX_PROJECTION_CACHE_KEYS = 8
 
 # 投影缓存键类型（PERF-086）的 home 在 services/entry_queries（MAINT-116 随
 # 查询族迁移，ARCH-053 先例：唯一 services 消费方即键构造函数
@@ -158,6 +162,11 @@ class _SearchMetadataBatch:
     （并发写 notify / 恢复重臂）都会使整批丢弃——比单条路径「失效前行已回写」更
     保守（失效是低频事件，丢弃只损失缓存填充、下次重解密，正确性无损）。
 
+    failed 即时回写：``decrypt_summary`` 内 ``get_failed_fields`` 是实时缓存读，
+    解密失败若延迟到会话退出才可见，冷缓存首轮渲染会漏标 integrity_error 一轮
+    （单条路径为同步回写）；故 ``get`` 内失败非空时即刻持锁守卫回写失败集，meta
+    仍随整批退出回写（守卫口径与单条路径一致，失效后不留陈旧失败记录）。
+
     LRU 语义取舍：批量命中**不**推进 recency（不 move_to_end）。LRU 仅在缓存超出
     ``_MAX_SEARCH_METADATA_CACHE_SIZE``（= 条目数上限）时才产生淘汰，应用自身以
     该上限约束入库，超限仅理论场景；其最坏后果是超限库中批量扫描命中的行提前被
@@ -166,11 +175,13 @@ class _SearchMetadataBatch:
 
     def __init__(
         self,
+        host: "EntryCacheManager",
         snapshot: dict[str, SearchMetadata],
         entry_epoch: str | None,
         entry_version: int,
         decrypt_key: bytes,
     ):
+        self._host = host
         self._snapshot = snapshot
         self._entry_epoch = entry_epoch
         self._entry_version = entry_version
@@ -184,7 +195,24 @@ class _SearchMetadataBatch:
             return cached
         meta, failed = _decrypt_search_metadata(raw_entry, self._decrypt_key)
         self._pending.append((raw_entry.crypto_id, meta, failed))
+        if failed:
+            # 失败集即时回写：get_failed_fields 是实时读，延迟到会话退出会漏标
+            # 冷缓存首轮的 integrity_error（对齐单条路径的同步回写时机）。
+            with self._host._cache_lock:
+                if (
+                    self._host._cache_epoch == self._entry_epoch
+                    and self._host._invalidate_version == self._entry_version
+                ):
+                    self._host._search_metadata_failed[raw_entry.crypto_id] = failed
         return meta
+
+    @property
+    def pending(self) -> list[tuple[str, SearchMetadata, set[str]]]:
+        """待回写的 (crypto_id, meta, failed) 列表（宿主回读收口，MAINT-119）。
+
+        回写只消费不修改，返回内部列表引用即可；对外暴露时须改为拷贝。
+        """
+        return self._pending
 
 
 class EntryCacheManager:
@@ -368,10 +396,11 @@ class EntryCacheManager:
     ) -> tuple[str, str, str, str]:
         """解密并缓存列表/搜索所需的 title、username、url、tags（单条路径）。
 
-        取缓存前校验 epoch。批量循环路径应改用 :meth:`_cached_search_metadata_no_check`
-        并在循环外调用一次 :meth:`invalidate_if_epoch_changed`，避免每条目重复
-        加锁取 epoch——同一批 raw 在单次列表/搜索调用内 epoch 不可能变化
-        （调用方事务内已固定），逐条校验属冗余的 N 次 RLock + epoch 查询。
+        摘要取值入口选择（MAINT-119 收敛）：单条与小行集循环路径（行数不超过
+        entry_queries 的批量会话阈值）用本方法（自带前置
+        :meth:`invalidate_if_epoch_changed` 校验、failed 同步回写）；大行集批量
+        循环用 :meth:`search_metadata_batch` 会话（原批量侧公开变体已随
+        PERF-094/098 迁移删除）。
 
         ``key`` 为 PERF-001 并发修补（M3）：调用方（如 :meth:`EntryManager.get_entry`
         经 ``decrypt_entry`` 视图解密）在 ``epoch_guarded_read`` with 块内快照的主密钥。
@@ -383,9 +412,8 @@ class EntryCacheManager:
         ``data_epoch`` 语义见 :meth:`_cached_search_metadata_no_check`（SEC-041 写入方
         世代守卫）。
 
-        返回明文原形 4 元组；小写形式与原形一同缓存在 :class:`SearchMetadata`
-        （经 :meth:`cached_search_metadata_full` 一次取用），避免 matches_search
-        每条目实时 .lower()。
+        返回明文原形 4 元组；小写形式与原形一同缓存在 :class:`SearchMetadata`，
+        避免 matches_search 每条目实时 .lower()。
         """
         self.invalidate_if_epoch_changed()
         meta = self._cached_search_metadata_no_check(raw_entry, key=key, data_epoch=data_epoch)
@@ -470,15 +498,20 @@ class EntryCacheManager:
         持锁快照命中集（dict 拷贝）替代逐行 RLock + move_to_end（50k 行实测 ~78ms），
         退出时一次持锁回写 pending（epoch + version 整批守卫，语义同
         :meth:`_cached_search_metadata_no_check` 的单条双守卫；try/finally 包 yield，
-        正常退出、循环 break/return 与 with 体抛异常退出均执行回写）。
+        正常退出、循环 break/return 与 with 体抛异常退出均执行回写）；解密失败的
+        failed 集在 ``get`` 内即时守卫回写（实时性语义见类 docstring）。
         ``key``/``data_epoch`` 语义与单条路径一致（PERF-001/SEC-041）；调用方须在
         进入前调用 ``invalidate_if_epoch_changed`` 固定本批世代。
         """
         with self._cache_lock:
-            snapshot = dict(self._search_metadata_cache)
+            # 会话隔离快照（PERF-097）：拷贝是循环内零锁读的前提——快照与会话起点
+            # 的 (epoch, version) 采样配对成同一世代视图，整批守卫回写据此成立；
+            # 空缓存跳过拷贝。
+            snapshot = dict(self._search_metadata_cache) if self._search_metadata_cache else {}
             entry_epoch = data_epoch if data_epoch is not None else self._cache_epoch
             entry_version = self._invalidate_version
         batch = _SearchMetadataBatch(
+            self,
             snapshot,
             entry_epoch,
             entry_version,
@@ -494,7 +527,7 @@ class EntryCacheManager:
             # 原因无关）。finally 内不得 return/raise（会吞掉/替换原异常）：pending
             # 为空时跳过回写块自然结束；回写段为纯 dict/list 操作，若极端情况下再
             # 抛异常，Python 隐式异常链（__context__）会保留原异常上下文。
-            if batch._pending:
+            if batch.pending:
                 with self._cache_lock:
                     # epoch + version 整批守卫：批量解密窗口内的任何失效使整批丢弃
                     # （见 _SearchMetadataBatch 类 docstring 的保守性论证）。
@@ -502,7 +535,7 @@ class EntryCacheManager:
                         self._cache_epoch == entry_epoch
                         and self._invalidate_version == entry_version
                     ):
-                        for cid, meta, failed in batch._pending:
+                        for cid, meta, failed in batch.pending:
                             self._search_metadata_cache[cid] = meta
                             self._search_metadata_cache.move_to_end(cid)
                             self._writeback_failed_and_evict(cid, failed)
@@ -548,50 +581,6 @@ class EntryCacheManager:
                 while len(self._projection_cache) > _MAX_PROJECTION_CACHE_KEYS:
                     self._projection_cache.popitem(last=False)
         return list(rows)
-
-    def search_metadata_for_analysis(
-        self,
-        raw_entry: SearchRowSource,
-        *,
-        key: bytes | None = None,
-        data_epoch: str | None = None,
-    ) -> tuple[str, str, str, str]:
-        """供批量分析路径复用的摘要解密（公开入口，无逐条 epoch 校验）。
-
-        :meth:`_cached_search_metadata_no_check` 的公开版本，供 services 层
-        （如 :class:`SecurityAnalyzer`）批量循环复用，使 services 不必跨层访问
-        managers 的私有方法，守住分层方向（services 不反向耦合 managers
-        内部实现）。调用方须在循环外调用 :meth:`invalidate_if_epoch_changed`。
-
-        ``key`` 语义见 :meth:`cached_search_metadata`（PERF-001 并发修补）；
-        services 层的非并发调用方不传 key，保持实时 ``self._key`` 行为。
-        ``data_epoch`` 语义见 :meth:`_cached_search_metadata_no_check`（SEC-041）。
-
-        返回明文原形 4 元组（取自 :class:`SearchMetadata` 前 4 字段）。
-        """
-        meta = self._cached_search_metadata_no_check(raw_entry, key=key, data_epoch=data_epoch)
-        return (meta.title, meta.username, meta.url, meta.tags)
-
-    def cached_search_metadata_full(
-        self,
-        raw_entry: SearchRowSource,
-        *,
-        key: bytes | None = None,
-        data_epoch: str | None = None,
-    ) -> SearchMetadata:
-        """返回完整 :class:`SearchMetadata`（原形 + 小写），供调用方一次取用复用。
-
-        搜索热路径经此一次取完整 meta，摘要构建（原形 4 字段）与搜索匹配（小写 4 字段）
-        共用，省去分别调 :meth:`search_metadata_for_analysis` 与独立小写入口的第二次
-        缓存查询（PERF-016；独立小写入口 search_lower_no_check 已随 MAINT-102 删除，
-        全库零调用且其能力为本方法后 4 字段的子集）。调用方须在循环外已调用
-        ``invalidate_if_epoch_changed``。
-
-        ``key`` 语义见 :meth:`cached_search_metadata`（PERF-001 并发修补）；
-        ``data_epoch`` 语义见 :meth:`_cached_search_metadata_no_check`（SEC-041）——
-        搜索 worker 经 :meth:`EntryManager.get_entry_summaries` 传入锁内快照世代。
-        """
-        return self._cached_search_metadata_no_check(raw_entry, key=key, data_epoch=data_epoch)
 
     def get_failed_fields(self, crypto_id: str) -> set[str]:
         """取某条目摘要解密失败的字段集（锁内采样，返回拷贝）。

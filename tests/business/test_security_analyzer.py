@@ -116,10 +116,10 @@ def test_matches_search_empty_query_always_matches():
 class TestIncrementalCacheInvalidation:
     """单条条目变更的增量报告更新（PERF-021）。
 
-    change_bus 回调携带 crypto_id 后，SecurityAnalyzer.invalidate_cache 走单条
+    change_bus 回调携带 crypto_id 后，SecurityAnalyzer.invalidate_caches 走单条
     增量路径：仅重读/重分类该条并重算聚合计数，其余条目的解密与 HMAC 指纹结果
     复用（不再整库重算）。经 build_business_context 以生产连线（change_bus →
-    invalidate_cache）驱动，避免绕过注册路径的假阳性。
+    invalidate_caches）驱动，避免绕过注册路径的假阳性。
     """
 
     @pytest.fixture
@@ -685,7 +685,7 @@ class TestIncrementalNoFingerprintSentinel:
 
 
 class TestIncrementalClockInjection:
-    """invalidate_cache 的 now 注入在增量路径真实生效（QL-057 守护）。
+    """invalidate_caches 的 now 注入在增量路径真实生效（QL-057 守护）。
 
     原缺陷：``_apply_reclassified_entry`` 硬编码 ``datetime.now(UTC)``，测试注入
     时钟时增量路径与全量路径（full_analysis/_refilter_cache 均可注入）行为分叉，
@@ -721,7 +721,7 @@ class TestIncrementalClockInjection:
         assert raw_e is not None
         # 注入 400 天后的时钟做增量更新：50+400=450 天前 > 90 天 → 应计入过期
         future = now + timedelta(days=400)
-        ctx.security.invalidate_cache(crypto_id=raw_e.crypto_id, now=future)
+        ctx.security.invalidate_caches(crypto_id=raw_e.crypto_id, now=future)
 
         followup = ctx.security.get_or_compute_report(days=90)
         assert followup["old"] == 1, "注入时钟须被增量路径消费（硬编码 now 的回归）"

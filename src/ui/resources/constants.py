@@ -6,6 +6,7 @@ from ...config import (
     CFG_PASSWORD_VISIBLE_SECONDS,
     DEFAULT_CONFIG,
     DEFAULT_THEME,
+    THEME_DARK as _THEME_DARK,
 )
 from ...models import DEFAULT_RECENT_SUMMARIES_LIMIT
 
@@ -70,7 +71,7 @@ SIDEBAR_ICON_SIZE_SMALL = (22, 22)  # 侧边栏小号图标按钮尺寸（如「
 FILTER_MAX_HEIGHT = 240
 SPLITTER_SIZES = [200, 380, 420]
 
-# ---------- 对话框最小尺寸 ----------
+# ---------- 对话框尺寸与边距 ----------
 DIALOG_BACKUP_MIN_SIZE = (460, 300)
 DIALOG_IMPORT_EXPORT_MIN_SIZE = (480, 360)
 DIALOG_CHANGE_MASTER_MIN_SIZE = (420, 420)
@@ -81,6 +82,9 @@ DIALOG_SETTINGS_MIN_SIZE = (520, 480)
 DIALOG_CATEGORY_MIN_SIZE = (420, 420)
 DIALOG_SHARE_MIN_SIZE = (520, 560)
 DIALOG_ABOUT_MIN_SIZE = (400, 340)
+# 对话框内容区统一外边距（左、上、右、下）单一事实源（MAINT-123）；
+# login_window 的相近值语义独立，不并入。
+DIALOG_CONTENT_MARGINS = (36, 30, 36, 30)
 
 # ---------- Toast 布局 ----------
 TOAST_WIDTH = 320  # Toast 通知宽度，单位像素
@@ -145,8 +149,7 @@ SERVER_PORT_MIN = 1
 SERVER_PORT_MAX = 65535
 
 # ---------- 主题标识 ----------
-# 主题字符串单例：'light'/'dark' 字面量归 config 所有。THEME_LIGHT 直接派生自
-# config.DEFAULT_THEME（ARCH-035），消除「同值双源」漂移；THEME_DARK 无 config 侧
-# 常量（DEFAULT_THEME 恒为 light），保留字面量。
+# 主题字符串单例：'light'/'dark' 字面量归 config 所有，THEME_LIGHT/THEME_DARK
+# 均直接派生（ARCH-035 / MAINT-123），消除「同值双源」漂移。
 THEME_LIGHT = DEFAULT_THEME
-THEME_DARK = "dark"
+THEME_DARK = _THEME_DARK

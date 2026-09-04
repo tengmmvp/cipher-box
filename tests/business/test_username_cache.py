@@ -1,9 +1,9 @@
 """测试 EntryManager 搜索元数据缓存的 epoch 失效行为。
 
-缓存预置经公开入口 ``cached_search_metadata_full``（monkeypatch 模块级解密原语
-绕过真实密码学，与既有 LRU 用例同范式），断言经 ``search_metadata_cached_ids`` /
-``cache_epoch`` / ``get_failed_fields`` 观察面（MAINT-095），不再直读直写
-``_search_metadata_cache`` / ``_cache_epoch`` 内部结构。
+缓存预置经批量摘要会话 ``search_metadata_batch`` 的 ``get``（MAINT-119 后唯一
+返回完整 SearchMetadata 的入口；monkeypatch 模块级解密原语绕过真实密码学），
+断言经 ``search_metadata_cached_ids`` / ``cache_epoch`` / ``get_failed_fields``
+观察面（MAINT-095），不直读内部结构。
 """
 
 from types import SimpleNamespace
@@ -57,9 +57,10 @@ class TestSearchMetadataCacheEpochInvalidation:
         _fake_decrypt(monkeypatch)
         mgr = make_entry_manager(vault)
         cache = mgr.cache
-        # 在 epoch_v1 世代下经公开入口填充缓存
+        # 在 epoch_v1 世代下经批量摘要会话填充缓存（会话退出时守卫回写）
         cache.invalidate_if_epoch_changed()  # 重臂 _cache_epoch=epoch_v1
-        meta = cache.cached_search_metadata_full(_row("id1"), key=b"k" * 32, data_epoch="epoch_v1")
+        with cache.search_metadata_batch(key=b"k" * 32, data_epoch="epoch_v1") as batch:
+            meta = batch.get(_row("id1"))
         assert meta.title == "title_plain_id1"
         assert cache.search_metadata_cached_ids == frozenset({"id1"})
 
@@ -82,7 +83,8 @@ class TestSearchMetadataCacheEpochInvalidation:
         cache = mgr.cache
         # None 世代下仍可填充（entry_epoch 回退缓存侧采样 None，守卫 None==None 放行）
         cache.invalidate_if_epoch_changed()
-        cache.cached_search_metadata_full(_row("id1"), key=b"k" * 32, data_epoch=None)
+        with cache.search_metadata_batch(key=b"k" * 32, data_epoch=None) as batch:
+            batch.get(_row("id1"))
         assert cache.search_metadata_cached_ids == frozenset({"id1"})
 
         cache.invalidate_if_epoch_changed()
@@ -98,7 +100,8 @@ class TestSearchMetadataCacheEpochInvalidation:
         mgr = make_entry_manager(vault)
         cache = mgr.cache
         cache.invalidate_if_epoch_changed()
-        cache.cached_search_metadata_full(_row("id1"), key=b"k" * 32, data_epoch="same_epoch")
+        with cache.search_metadata_batch(key=b"k" * 32, data_epoch="same_epoch") as batch:
+            batch.get(_row("id1"))
 
         cache.invalidate_if_epoch_changed()
 
@@ -111,7 +114,8 @@ class TestSearchMetadataCacheEpochInvalidation:
         mgr = make_entry_manager(vault)
         cache = mgr.cache
         cache.invalidate_if_epoch_changed()
-        cache.cached_search_metadata_full(_row("id1"), key=b"k" * 32, data_epoch="epoch_v1")
+        with cache.search_metadata_batch(key=b"k" * 32, data_epoch="epoch_v1") as batch:
+            batch.get(_row("id1"))
         assert cache.search_metadata_cached_ids == frozenset({"id1"})
         assert cache.get_failed_fields("id1") == {"username"}
 
@@ -131,7 +135,8 @@ class TestFailedFieldsCacheSemantics:
         mgr = make_entry_manager(vault)
         cache = mgr.cache
         cache.invalidate_if_epoch_changed()
-        cache.cached_search_metadata_full(_row("id1"), key=b"k" * 32, data_epoch="epoch_v1")
+        with cache.search_metadata_batch(key=b"k" * 32, data_epoch="epoch_v1") as batch:
+            batch.get(_row("id1"))
 
         failed = cache.get_failed_fields("id1")
         failed.add("password")  # 原地修改
@@ -165,10 +170,53 @@ class TestFailedFieldsCacheSemantics:
         cache = mgr.cache
         cache.invalidate_if_epoch_changed()  # 重臂 _cache_epoch=e1
 
-        cache.cached_search_metadata_full(_row("id1"), key=b"k" * 32, data_epoch="e1")
-        cache.cached_search_metadata_full(_row("id2"), key=b"k" * 32, data_epoch="e1")
+        cache.cached_search_metadata(_row("id1"), key=b"k" * 32, data_epoch="e1")
+        cache.cached_search_metadata(_row("id2"), key=b"k" * 32, data_epoch="e1")
 
         # 容量 1：id1 被淘汰，failed 记录应联动清理
         assert cache.search_metadata_cached_ids == frozenset({"id2"})
         assert cache.get_failed_fields("id1") == set()
         assert cache.get_failed_fields("id2") == {"title"}
+
+
+class TestBatchFailedImmediateWriteback:
+    """批量会话 failed 集的即时回写（PERF-098 补正）。
+
+    decrypt_summary 内 get_failed_fields 是实时缓存读，failed 若延迟到会话
+    __exit__ 整批回写，冷缓存首轮渲染会漏标 integrity_error 一轮——get 内
+    即时守卫回写后，会话进行中即可见。
+    """
+
+    def test_failed_visible_before_session_exit(self, vault_with_epoch, monkeypatch):
+        """会话内 get 后、退出前即可读到 failed（meta 仍待整批回写）。"""
+        vault, _epoch = vault_with_epoch
+        _fake_decrypt(monkeypatch, fail_fields=frozenset({"title"}))
+        mgr = make_entry_manager(vault)
+        cache = mgr.cache
+        cache.invalidate_if_epoch_changed()
+
+        with cache.search_metadata_batch(key=b"k" * 32, data_epoch="epoch_v1") as batch:
+            meta = batch.get(_row("id1"))
+            assert meta.title == ""  # 失败回退空串
+            assert cache.get_failed_fields("id1") == {"title"}  # 会话内即已可读
+            assert cache.search_metadata_cached_ids == frozenset()  # meta 仍待整批回写
+
+        assert cache.search_metadata_cached_ids == frozenset({"id1"})  # 退出整批回写
+
+    def test_failed_immediate_write_rejected_after_invalidation(
+        self, vault_with_epoch, monkeypatch
+    ):
+        """会话中段失效（version 推进）：即时回写被守卫拒收，不留记录。"""
+        vault, _epoch = vault_with_epoch
+        _fake_decrypt(monkeypatch, fail_fields=frozenset({"title"}))
+        mgr = make_entry_manager(vault)
+        cache = mgr.cache
+        cache.invalidate_if_epoch_changed()
+
+        with cache.search_metadata_batch(key=b"k" * 32, data_epoch="epoch_v1") as batch:
+            cache.apply_change(crypto_id="other")  # 会话中段并发写失效
+            meta = batch.get(_row("id1"))
+            assert meta.title == ""
+            assert cache.get_failed_fields("id1") == set()  # 守卫拒收即时回写
+
+        assert cache.search_metadata_cached_ids == frozenset()  # 整批回写同样拒收

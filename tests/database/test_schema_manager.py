@@ -307,3 +307,30 @@ class TestExistingDatabaseIndexBackfill:
         finally:
             second.close()
             second.close()
+
+    def test_backfill_duplicate_crypto_id_raises_schema_error(self, tmp_path):
+        """QL-080：既有库存在重复 crypto_id 时，UNIQUE 索引补建失败归一为 SchemaError。
+
+        数据层违规只在 CREATE UNIQUE INDEX 时暴露，须翻译为含索引名的结构损坏文案。
+        """
+        db_path = tmp_path / "dup-crypto-id.db"
+        _create_valid_db(db_path)
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("DROP INDEX idx_entries_crypto_id")
+            # 列均有 DEFAULT，最小行即可；两条同 crypto_id 行仅在索引缺失时合法
+            conn.executemany(
+                "INSERT INTO entries (crypto_id, title_enc, metadata_mac) VALUES (?, ?, ?)",
+                [("dup-crypto", "cb2:t", "mac"), ("dup-crypto", "cb2:t", "mac")],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        db = DatabaseManager(db_path, test_mode=True)
+        db.open()
+        try:
+            with pytest.raises(SchemaError, match="无法补建索引"):
+                db.init_tables()
+        finally:
+            db.close()

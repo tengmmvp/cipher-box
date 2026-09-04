@@ -8,7 +8,7 @@ MainWindow._apply_theme 触发）。线程安全：PyQt6 单线程 UI，所有 c
 
 import logging
 
-from ...config import DEFAULT_THEME
+from ...config import DEFAULT_THEME, THEME_DARK
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +187,7 @@ _current_colors = dict(LIGHT_COLORS)
 
 def get_colors(theme: str = "") -> dict[str, str]:
     """获取指定主题的颜色字典。"""
-    if theme == "dark":
+    if theme == THEME_DARK:
         return dict(DARK_COLORS)
     return dict(LIGHT_COLORS)
 
@@ -196,7 +196,7 @@ def set_theme(theme: str) -> None:
     """设置当前主题。"""
     global _current_theme, _current_colors
     _current_theme = theme
-    _current_colors = dict(DARK_COLORS) if theme == "dark" else dict(LIGHT_COLORS)
+    _current_colors = dict(DARK_COLORS) if theme == THEME_DARK else dict(LIGHT_COLORS)
 
 
 def c(key: str) -> str:

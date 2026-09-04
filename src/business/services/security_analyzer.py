@@ -64,21 +64,22 @@ class AnalysisCacheProtocol(Protocol):
     对齐 :class:`TotpCacheProtocol` 模式（ARCH-039）：``EntryCacheManager`` 自然满足
     此协议，构造时注入。协议面以本类实际消费为准（4 成员），services 子包运行时
     不 import managers，守住分层方向；测试替身按协议构造即可（MagicMock 天然满足
-    结构协议）。
+    结构协议）。摘要取值经单条入口 ``cached_search_metadata``（MAINT-119 收敛后
+    唯一的公开单条入口）。
     """
 
     def invalidate_if_epoch_changed(self) -> None:
         """key_epoch 变化时清空摘要缓存；分析循环外调用以守卫过期数据。"""
         ...
 
-    def search_metadata_for_analysis(
+    def cached_search_metadata(
         self,
         raw_entry: RawEntry,
         *,
         key: bytes | None = None,
         data_epoch: str | None = None,
     ) -> tuple[str, str, str, str]:
-        """批量分析路径的摘要解密（title/username/url/tags 明文原形）。"""
+        """解密并缓存 title/username/url/tags 明文原形（单条路径，含 epoch 校验）。"""
         ...
 
     def get_failed_fields(self, crypto_id: str) -> set[str]:
@@ -184,7 +185,7 @@ class SecurityAnalyzer:
 
     缓存分层：基础分析覆盖弱密码与重复密码（不依赖 days）；days 变化时仅重过滤过期
     条目，避免重复解密全部密码。命中仅校验 key_epoch 与 TTL；条目增删由
-    EntryManager 主动 invalidate_cache 失效，TTL 兜底。
+    EntryManager 主动 invalidate_caches 失效，TTL 兜底。
     """
 
     def __init__(
@@ -202,7 +203,7 @@ class SecurityAnalyzer:
         self._analysis_cache: _SecurityReportInternal | None = None
         self._analysis_cache_time: float = 0
         self._analysis_cache_days: int = 0
-        # 失效世代计数（PERF-080 补全）：invalidate_cache 的全量失效路径在清缓存
+        # 失效世代计数（PERF-080 补全）：invalidate_caches 的全量失效路径在清缓存
         # 同时递增；full_analysis 在飞期间发生过失效即世代不一致，其结果拒绝写回
         # 缓存（详见 _cached_analysis 写回守卫）。持 _cache_lock 读写。
         self._invalidated_generation = 0
@@ -245,10 +246,9 @@ class SecurityAnalyzer:
         透传摘要/分类名缓存作回写守卫——分析 worker 在恢复重臂新世代后回写时，
         守卫拒收跨世代解密结果（语义见 EntryCacheManager._cached_search_metadata_no_check）。
         """
-        # 循环外已 invalidate_if_epoch_changed，此处经无校验入口避免每条重复加锁。
-        title, username, url, tags = self._cache.search_metadata_for_analysis(
-            raw, data_epoch=data_epoch
-        )
+        # 摘要取值经单条入口（MAINT-119 收敛）：自带 epoch 校验，full_analysis 持
+        # vault_write_lock 期间 epoch 不变，无额外加锁开销。
+        title, username, url, tags = self._cache.cached_search_metadata(raw, data_epoch=data_epoch)
         if self._cache.get_failed_fields(raw.crypto_id):
             raise EntryIntegrityError(f"条目 {raw.crypto_id} 摘要字段解密失败")
         summary = build_entry_summary(raw, username)
@@ -362,7 +362,7 @@ class SecurityAnalyzer:
     ) -> SecurityReport:
         """带缓存的安全分析，基础分析不依赖 days。
 
-        命中仅校验 key_epoch 与 TTL；条目增删改由 EntryManager 主动 invalidate_cache
+        命中仅校验 key_epoch 与 TTL；条目增删改由 EntryManager 主动 invalidate_caches
         失效，TTL 兜底。key_epoch 校验保证改密后缓存失效（密码指纹依赖旧主密钥）。
         full_analysis 在飞期间的全量失效经失效世代守卫拒收其写回（PERF-080 补全），
         防过期报告以 fresh TTL 污染缓存。days 变化仅从 ``_summaries_with_dates``
@@ -429,7 +429,7 @@ class SecurityAnalyzer:
         """返回仍有效的缓存报告，无缓存或已过期返回 None。days 变化仅重过滤过期条目。
 
         除 TTL 外校验 key_epoch（SEC-002）：改密轮换密钥后，旧 epoch 派生的报告即便在
-        invalidate_cache 未及时触发的并发窗口内也不复用，避免锁定/改密后旧明文摘要驻留。
+        invalidate_caches 未及时触发的并发窗口内也不复用，避免锁定/改密后旧明文摘要驻留。
         """
         with self._cache_lock:
             cached = self._analysis_cache
@@ -502,7 +502,7 @@ class SecurityAnalyzer:
             and cached.get("_key_epoch") == epoch
         )
 
-    def invalidate_cache(
+    def invalidate_caches(
         self,
         password_changed: bool = True,
         metadata_changed: bool = True,
@@ -511,6 +511,10 @@ class SecurityAnalyzer:
         now: datetime | None = None,
     ) -> None:
         """清除分析缓存，下次访问时重新计算。
+
+        命名（MAINT-121）：复数形态 ``invalidate_caches`` 与
+        ``EntryManager.invalidate_caches`` / ``CategoryManager.invalidate_caches``
+        对齐——本类同样持多套缓存态。
 
         仅当安全相关维度变更时失效，避免纯旁路变更（如 ``is_favorite`` 切换、分类
         调整）触发整库重解密：
@@ -816,6 +820,11 @@ class SecurityAnalyzer:
         """
         # 全量分析持有主密钥并逐条解密，整个敏感生命周期持 vault_write_lock，
         # 使 lock() 须等分析释放密钥后才能清零，避免后台 Worker 超时后仍持密钥。
+        #
+        # 触发频次取舍（PERF-102，维持现状）：每次解锁后状态栏 worker 走一次全量
+        # 分析（锁定清密钥与缓存后 TTL 必为空）。跨锁定保留缓存不可行——指纹绑定
+        # 主密钥（_password_fingerprint），保留即跨密钥世代污染重复检测分组；等待
+        # 上界已由取消探针封顶（见 _CANCEL_CHECK_MASK 与 PERF-092）。
         #
         # 持锁取舍（PERF-092，评估后维持全程持锁）：曾评估「锁内快照 entries+key、
         # 锁外分类」的锁拆分——正确性守卫确已齐备（_cached_analysis 写回的 epoch+

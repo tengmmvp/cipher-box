@@ -1,7 +1,7 @@
 """Windows SID 解析与 ACL 收紧 — 子进程封装与 ctypes 直调链（MAINT-117 拆分自 file_security）。
 
 Unix 侧权限加固走 ``os.chmod``（见 :mod:`src.utils.file_security` 的
-secure_file/secure_directory），本模块承载 Windows 侧收紧：``_restrict_windows_acl``
+secure_file/secure_directory），本模块承载 Windows 侧收紧：``restrict_windows_acl``
 把文件/目录收紧为当前用户独占，经 ``file_security`` 消费。默认路径为 ctypes 进程内
 直调（进程令牌取 SID + SetNamedSecurityInfoW，PERF-077），whoami/icacls 子进程链
 保留为失败回退；模块内含用户 SID 缓存与已收紧对象的 LRU 缓存（避免 atomic_write 的
@@ -381,7 +381,7 @@ def _restrict_windows_acl_via_api(path: Path, is_directory: bool, sid: str) -> N
         kernel32.LocalFree(psid)
 
 
-def _restrict_windows_acl(
+def restrict_windows_acl(
     path: Path,
     is_directory: bool,
     *,
@@ -389,15 +389,13 @@ def _restrict_windows_acl(
 ) -> None:
     """限制文件或目录的 ACL 权限为当前用户独占访问（ctypes 优先，PERF-077）。
 
-    供 :mod:`src.utils.file_security` 的 secure_file/secure_directory 消费——
-    file_security 以 ``from .win_acl import _restrict_windows_acl`` 在自身命名空间
-    **直接绑定**本名，注入契约如实化：patch 本模块的 ``_restrict_windows_acl``
-    不影响 file_security 的调用（其命名空间持有独立绑定），测试对 file_security
-    链路注入失败须 patch 消费方绑定 ``src.utils.file_security._restrict_windows_acl``
-    （tests/utils/test_file_security.py 的实际形态）；仅测试本模块内部分支（如
-    ctypes 失败回退 icacls）时 patch 本模块名称有效——调用经本模块命名空间解析
-    （tests/utils/test_win_acl.py 的形态）。本函数为无实例状态的模块级函数，
-    不存在实例级替换面。
+    供 :mod:`src.utils.file_security` 的 secure_file/secure_directory 消费。注入
+    契约：file_security 经 ``from .win_acl import restrict_windows_acl`` 持有独立
+    绑定——测试 file_security 链路须 patch 消费方名
+    ``src.utils.file_security.restrict_windows_acl``，仅测试本模块内部分支（如
+    ctypes 回退 icacls）时 patch 本模块名有效。本函数为无实例状态的模块级函数，
+    无实例级替换面；名称无下划线前缀为跨模块公开契约（MAINT-124，对齐
+    PERF-089 先例）。
     """
     sid = _windows_user_sid()
     if not sid:

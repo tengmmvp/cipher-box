@@ -88,7 +88,7 @@ class TestWindowsAclCtypesPath:
             lambda *a, **k: (_ for _ in ()).throw(OSError("ctypes 不可用")),
         )
         with caplog.at_level(logging.DEBUG):
-            win_acl._restrict_windows_acl(target, False)
+            win_acl.restrict_windows_acl(target, False)
         assert "ctypes ACL 收紧失败，回退 icacls 子进程" in caplog.text
         # 回退路径的可用性保底达成：icacls 读回存在含 F 权限的授权行（当前用户
         # 可全权访问文件）。显式/继承形态依赖环境 ACL 基线，不在回退测试断言。

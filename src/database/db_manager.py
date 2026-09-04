@@ -14,10 +14,10 @@ import logging
 import sqlite3
 import threading
 import time as _time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from ..exceptions import DatabaseError, TransactionError
 from ..models import CIPHERTEXT_PREFIX, Category, PasswordHistory, RawEntry
@@ -65,9 +65,9 @@ _PRAGMAS = (
 # 签名/验证函数的类型协议
 @runtime_checkable
 class EntrySigner(Protocol):
-    """条目元数据 HMAC 签名回调协议：传入条目返回 ``metadata_mac``。"""
+    """条目元数据 HMAC 签名回调协议：传入条目或 DB 列名行字典返回 ``metadata_mac``。"""
 
-    def __call__(self, entry: RawEntry) -> str: ...
+    def __call__(self, entry: RawEntry | Mapping[str, Any]) -> str: ...
 
 
 @runtime_checkable
@@ -158,7 +158,7 @@ class DatabaseManager:
     def auto_commit(self) -> None:
         self._auto_commit()
 
-    def sign_entry(self, entry: RawEntry) -> str:
+    def sign_entry(self, entry: RawEntry | Mapping[str, object]) -> str:
         return self._sign_entry(entry)
 
     def sign_category(self, category: Category) -> str:
@@ -512,9 +512,12 @@ class DatabaseManager:
                     f"（{prefix} 前缀后须为 base64 密文），请通过 EntryManager 操作条目"
                 )
 
-    def _sign_entry(self, entry: RawEntry) -> str:
+    def _sign_entry(self, entry: RawEntry | Mapping[str, object]) -> str:
         if self._entry_signer:
             return self._entry_signer(entry)
+        # 签名器缺席的回退取值单点（SEC-073 补正）：RawEntry 属性与行字典键同取行内现 mac。
+        if isinstance(entry, Mapping):
+            return str(entry.get("metadata_mac") or "")
         return entry.metadata_mac
 
     def _sign_category(self, category: Category) -> str:
@@ -571,6 +574,9 @@ class DatabaseManager:
 
     def get_entry(self, entry_id: int) -> RawEntry | None:
         return self._entry_repo.get_entry(entry_id)
+
+    def entry_exists(self, entry_id: int) -> bool:
+        return self._entry_repo.entry_exists(entry_id)
 
     def add_entry(self, entry: RawEntry, preserve_metadata: bool = False) -> int:
         return self._entry_repo.add_entry(entry, preserve_metadata=preserve_metadata)

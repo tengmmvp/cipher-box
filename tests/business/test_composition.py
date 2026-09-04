@@ -82,7 +82,7 @@ def test_change_callback_invalidates_security_cache(make_vault_env):
     ctx, vault = _make_ctx(make_vault_env)
     ctx.security.get_or_compute_report()  # 填充安全分析缓存（公开入口）
     assert ctx.security.get_cached_counts() is not None
-    # add_entry → change_bus.notify → security.invalidate_cache（经注册回调）
+    # add_entry → change_bus.notify → security.invalidate_caches（经注册回调）
     ctx.entry_mgr.add_entry(Entry(title="t2", username="u2", password="pw789012"))
     # 增量更新生效：缓存存活且 total 即时 +1（漏注册回调时残留 total=0）
     counts = ctx.security.get_cached_counts()
@@ -95,7 +95,7 @@ def test_toggle_favorite_preserves_security_cache(make_vault_env):
 
     is_favorite 不进入 weak/duplicate/old 的判定或展示，toggle_favorite 经
     change_bus.notify(password_changed=False, metadata_changed=False) 通知，
-    SecurityAnalyzer.invalidate_cache 据此跳过失效——避免大库下每次收藏切换
+    SecurityAnalyzer.invalidate_caches 据此跳过失效——避免大库下每次收藏切换
     触发整库重解密（PERF 回归守护）。
     """
     ctx, vault = _make_ctx(make_vault_env)
@@ -105,7 +105,7 @@ def test_toggle_favorite_preserves_security_cache(make_vault_env):
 
     ctx.entry_mgr.toggle_favorite(entry_id)  # 纯旁路变更
 
-    # 缓存保留：invalidate_cache(False, False) 直接返回，未触发重算
+    # 缓存保留：invalidate_caches(False, False) 直接返回，未触发重算
     assert ctx.security.get_cached_counts() is not None
 
 

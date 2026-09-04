@@ -222,7 +222,7 @@ class TestExportSkipsSecretDecryption:
 
 
 class TestDecryptEntryForExport:
-    """decrypt_entry_for_export 公开 API 直接验证。"""
+    """decrypt_entry_for_export 直接验证（MAINT-118 后经视图解密器直调，与生产链路一致）。"""
 
     def test_decrypt_entry_for_export_roundtrip(self, entry_mgr, make_entry):
         """对库内 raw 条目直接解密导出，往返一致。"""
@@ -230,7 +230,7 @@ class TestDecryptEntryForExport:
         raw = entry_mgr.db.get_entry(entry_id)
         assert raw is not None
 
-        entry = entry_mgr.decrypt_entry_for_export(raw, include_secrets=True)
+        entry = entry_mgr._view_decryptor.decrypt_entry_for_export(raw, include_secrets=True)
 
         assert entry.title == "直解"
         assert entry.password == "Direct-123!"
@@ -241,7 +241,7 @@ class TestDecryptEntryForExport:
         raw = entry_mgr.db.get_entry(entry_id)
         assert raw is not None
 
-        entry = entry_mgr.decrypt_entry_for_export(raw)
+        entry = entry_mgr._view_decryptor.decrypt_entry_for_export(raw)
 
         assert entry.password == ""
 
@@ -253,7 +253,7 @@ class TestDecryptEntryForExport:
         assert raw is not None
 
         with pytest.raises(DecryptionError):
-            entry_mgr.decrypt_entry_for_export(raw, include_secrets=False)
+            entry_mgr._view_decryptor.decrypt_entry_for_export(raw, include_secrets=False)
 
 
 class TestExportDecryptProgress:

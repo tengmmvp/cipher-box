@@ -39,6 +39,12 @@ _STATE_SIG_PREFIX = "#__sig__:"
 LOGIN_RATE_LIMIT_FILENAME = "login_rate_limit.json"
 CHANGE_MASTER_RATE_LIMIT_FILENAME = "change_master_rate_limit.json"
 
+# 读侧 remaining_seconds 封顶（SEC-075）：SEC-064 降级会话按面值采信的值可被
+# 伪造为超大值造成近乎永久锁定，封顶使伪造上限与合法最高阶梯同量级，不改变
+# SEC-064 按面值采信、不误锁的权衡本体。取 2 倍而非 1 倍：不截断「合法最高档
+# 锁定期间重启」的跨会话剩余秒数。
+_REMAINING_SECONDS_CAP = RATE_LIMITS[-1][1] * 2
+
 
 def _split_state_signature(raw_text: str) -> tuple[str, str]:
     """分离状态文件末尾签名行，返回 (JSON 文本, 签名 hex)；无签名行返回 (原文, "")。
@@ -310,11 +316,13 @@ class RateLimiter:
             # 经 remaining_seconds 在当前 monotonic 重算到期点，抵抗系统时钟回拨
             # （格式理据见 _save_state）。旧版以 time.time() 绝对时间戳持久化的状态
             # 文件无此字段，落入 except 分支降级最高阶梯锁定后以新格式重写。
-            self._lock_until = (
-                time.monotonic() + remaining_seconds if remaining_seconds > 0 else 0.0
-            )
-        except (OSError, ValueError, json.JSONDecodeError, AttributeError):
+            # SEC-075 读侧封顶：降级会话按面值采信，防伪造超大值造成永久锁定。
+            capped_seconds = min(remaining_seconds, _REMAINING_SECONDS_CAP)
+            self._lock_until = time.monotonic() + capped_seconds if capped_seconds > 0 else 0.0
+        except (ValueError, AttributeError):
             # 状态损坏时按最高阶梯短暂锁定，避免删除/破坏状态文件直接绕过限流。
+            # 捕获面收窄（QL-079）：本块为纯内存解析不产生 OSError；AttributeError
+            # 可达——JSON 合法但非对象形态（列表/null/数字）时 data.get 失败。
             self._apply_max_lockdown()
 
     def _save_state(self) -> None:

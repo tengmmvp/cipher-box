@@ -78,6 +78,7 @@ from ..services.backup.validator import (
     validate_restore_data,
 )
 from ..services.crypto_utils import require_vault_key
+from ..services.db_checkpoint import safe_checkpoint
 from ..services.entry_batch_writer import ProgressSegment, segment_progress
 from ..services.error_messages import to_user_message
 from ..services.metadata_signer import VAULT_META_SIGNED_KEYS, MetadataSigner
@@ -713,12 +714,8 @@ class BackupRestoreManager:
         # 密文，由当前主密钥加密（恢复不轮换主密钥，与改密路径残留旧密钥不同），持当前
         # 主密钥与 WAL 文件者可恢复这些旧明文。须在事务外显式截断（事务内
         # secure_checkpoint 会跳过）；失败非致命（数据已提交完整），纳入返回警告让降级可见。
-        try:
-            self._vault.db.secure_checkpoint()
-            return True
-        except Exception:
-            logger.warning("恢复后 WAL 安全截断失败", exc_info=True)
-            return False
+        # QL-079 收窄元组（DatabaseError + OSError）收敛于 safe_checkpoint 单一事实源。
+        return safe_checkpoint(self._vault.db, "恢复后 WAL 安全截断失败")
 
     def _assemble_restore_result(
         self,

@@ -1,7 +1,7 @@
 """share_paths 文件名配对契约测试。
 
-钉住「两文件同名干 + 不同扩展名」契约，避免日后误改 ``_SHARE_NAME_TS_FORMAT`` 或
-扩展名常量时仅靠 create_share_package 慢路径捕获。
+钉住「两文件同名干 + 不同扩展名」契约，避免日后误改 ``src.utils.format.timestamped_suffix``
+或扩展名常量时仅靠 create_share_package 慢路径捕获。
 """
 
 from src.business.services.share.paths import (

@@ -36,6 +36,7 @@ from ..components.workers import BackgroundWorker
 from ..resources.constants import (
     BTN_DIALOG,
     DIALOG_CHANGE_MASTER_MIN_SIZE,
+    DIALOG_CONTENT_MARGINS,
     PWD_TOGGLE_AUTO_HIDE_SECONDS,
 )
 from ..resources.strings import DLG_TITLE_ERROR, DLG_TITLE_SUCCESS
@@ -82,7 +83,7 @@ class ChangeMasterDialog(WorkerBackedDialog):
 
         layout = QVBoxLayout(self)
         layout.setSpacing(14)
-        layout.setContentsMargins(36, 30, 36, 30)
+        layout.setContentsMargins(*DIALOG_CONTENT_MARGINS)
         # _build_* 分块构建（MAINT-094，对齐 entry_dialog 模式）：标题 → 三段密码输入 →
         # 强度/提示 → 按钮行，纯机械搬移不改控件树与行为。
         self._build_header(layout)

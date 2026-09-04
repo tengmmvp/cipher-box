@@ -237,7 +237,7 @@ class TestSecureFile:
             raise OSError("permission denied")
 
         if os.name == "nt":
-            monkeypatch.setattr("src.utils.file_security._restrict_windows_acl", _fail)
+            monkeypatch.setattr("src.utils.file_security.restrict_windows_acl", _fail)
         else:
             monkeypatch.setattr("src.utils.file_security.os.chmod", _fail)
 

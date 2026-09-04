@@ -203,17 +203,15 @@ def _make_encrypted_entry(crypto_id: str, title: str) -> RawEntry:
 
 
 def test_add_entries_batch_happy_path_crosses_paging(secure_db):
-    """add_entries_batch 插入 >1000 条（跨 _ID_BATCH_SIZE=500 分页边界），全部落库可读。
+    """add_entries_batch 插入 >1000 条，全部落库可读。
 
-    1001 = 2*_ID_BATCH_SIZE + 1，反查 {crypto_id: id} 映射需分 3 批 IN 查询。
-    验证：映射覆盖全部输入条目、值均为正整数（非 None）、全量落库可读、
-    抽样首/中/尾三条（跨分页边界）的密文可解密回原明文。
+    验证：返回的 {crypto_id: id} 映射覆盖全部输入条目、值均为正整数（预分配 id 单段式，
+    SEC-073）、全量落库可读、抽样首/中/尾三条的密文可解密回原明文。
     """
     entries = [_make_encrypted_entry(crypto_id=f"c{i:05d}", title=f"标题{i}") for i in range(1001)]
     id_map = secure_db.add_entries_batch(entries)
 
-    # 映射完整性：键集 == 输入 crypto_id 集，值全为正整数（executemany 不返回逐条
-    # lastrowid，实现按 crypto_id 反查 id；分批 IN 查询不得遗漏）
+    # 映射完整性：键集 == 输入 crypto_id 集，值全为正整数（预分配 id 随行携带返回）
     assert set(id_map) == {e.crypto_id for e in entries}
     assert len(id_map) == 1001
     assert all(isinstance(v, int) and v > 0 for v in id_map.values())

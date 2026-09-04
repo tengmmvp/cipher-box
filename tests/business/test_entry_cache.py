@@ -261,7 +261,9 @@ class TestWriterEpochGuard:
         cache.invalidate_if_epoch_changed()
         epoch = cache._vault.key_epoch
 
-        meta = cache.cached_search_metadata_full(raw, data_epoch=epoch)
+        # 经批量摘要会话取完整 meta（MAINT-119 后唯一返回 SearchMetadata 的入口）
+        with cache.search_metadata_batch(data_epoch=epoch) as batch:
+            meta = batch.get(raw)
         assert meta.title == "T"
         assert raw.crypto_id in cache._search_metadata_cache
 
@@ -942,8 +944,10 @@ class TestDecryptTagsForDelta:
 
         monkeypatch.setattr(entry_cache_module, "_decrypt_field_impl", _failing_tags_decrypt)
         # 列表路径填充摘要缓存：tags 解密失败回退空串并记入 failed 集
+        # （经批量摘要会话取完整 meta，MAINT-119 后唯一返回 SearchMetadata 的入口）
         raw = entry_mgr.db.get_entries(EntryQuery())[0]
-        meta = cache.cached_search_metadata_full(raw)
+        with cache.search_metadata_batch() as batch:
+            meta = batch.get(raw)
         assert meta.tags == ""
         assert "tags" in cache.get_failed_fields(raw.crypto_id)
 

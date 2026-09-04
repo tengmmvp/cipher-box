@@ -10,7 +10,7 @@ import os
 import pytest
 
 from src.crypto.encryption import EncryptionEngine
-from src.crypto.master_key import KdfParams, MasterKeyManager
+from src.crypto.master_key import VERIFY_AAD, KdfParams, MasterKeyManager
 from src.crypto.password_generator import PasswordGenerator
 from src.exceptions import DecryptionError
 
@@ -93,6 +93,19 @@ def test_wrong_password():
     salt, verify_token, _ = MasterKeyManager.create("correct_password")
     key = MasterKeyManager.verify("wrong_password", salt, verify_token)
     assert key is None
+
+
+def test_verify_non_ascii_decrypted_plaintext_returns_none():
+    """SEC-074：令牌可解密但明文非 ASCII 时 verify 返回 None，不抛 TypeError。
+
+    裸 compare_digest 会抛 TypeError 逃出 except ValueError 捕获面；比较器
+    （SEC-071 单一入口）归一为「验证失败」。
+    """
+    password = "test_password_123"
+    salt = os.urandom(32)
+    key = MasterKeyManager.derive_key(password, salt)
+    forged_token = EncryptionEngine.encrypt("被篡改的非 ASCII 明文", key, VERIFY_AAD)
+    assert MasterKeyManager.verify(password, salt, forged_token) is None
 
 
 def test_change_password():

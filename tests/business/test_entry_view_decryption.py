@@ -13,7 +13,7 @@ from src.business.services.entry_view_decryption import build_entry_summary
 
 def _reference_two_step(decryptor, raw_entry):
     """旧两步参考实现：build_entry_summary + replace 覆盖（PERF-063 合并前行为）。"""
-    title, username, url, tags = decryptor._cache.search_metadata_for_analysis(raw_entry)
+    title, username, url, tags = decryptor._cache.cached_search_metadata(raw_entry)
     summary = build_entry_summary(raw_entry, username)
     category_name = decryptor._cache.decrypt_category_name(
         raw_entry.category_id,

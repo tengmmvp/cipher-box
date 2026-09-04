@@ -6,6 +6,7 @@ import os
 import pytest
 
 from src.business.services.metadata_signer import (
+    _PAYLOAD_ROW_ATTRS,
     VAULT_META_SIGNED_KEYS,
     MetadataSigner,
 )
@@ -354,3 +355,173 @@ def test_verify_category_no_mac_raises_integrity_error():
 
     with pytest.raises(VaultIntegrityError, match="缺少元数据完整性签名"):
         signer.verify_category(category)
+
+
+# SEC-073：id 纳入条目签名载荷——整行克隆/换 id 形态不得再通过验签。
+
+
+def test_verify_detects_row_clone_with_changed_id():
+    """SEC-073：整行克隆（含合法签名）仅改 numeric id 后验签失败。
+
+    id 不入载荷时整行克隆或两行互换 id 均不破坏验签，入载荷后必致失败。
+    """
+    signer = MetadataSigner(domain_key=MetadataSigner.compute_domain_key(b"test-key-clone"))
+    entry = _make_entry(id=7, password="cb2:cipher")
+    entry = dataclasses.replace(entry, metadata_mac=signer.sign(entry))
+
+    # 同载荷不同 id → 签名不同（id 确实进入载荷）
+    assert signer.sign(dataclasses.replace(entry, id=8)) != entry.metadata_mac
+
+    # 整行克隆仅改 id：旧签名在新 id 下验签失败
+    clone = dataclasses.replace(entry, id=99)
+    with pytest.raises(VaultIntegrityError):
+        signer.verify(clone)
+
+    # 原 id 下验签仍通过（正对照，非全域失效）
+    signer.verify(entry)
+
+
+# PERF-101：行字典直签路径（sign_entry_from_row / sign 的 Mapping 分发）。
+
+
+def _make_row(entry: RawEntry, **overrides) -> dict:
+    """把 RawEntry 转成 entries 表列名键的行字典（sqlite3 行形态），供行直签测试。
+
+    bool 列转 int 0/1、可空列以 None 模拟，检验取值胁迫与 RawEntry 路径一致。
+    """
+    row = {
+        "id": entry.id,
+        "crypto_id": entry.crypto_id,
+        "title_enc": entry.title,
+        "username_enc": entry.username,
+        "password_enc": entry.password,
+        "url_enc": entry.url,
+        "category_id": entry.category_id,
+        "tags_enc": entry.tags,
+        "notes_enc": entry.notes,
+        "custom_fields_enc": entry.custom_fields,
+        "is_favorite": int(entry.is_favorite),
+        "is_deleted": int(entry.is_deleted),
+        "password_strength": entry.password_strength,
+        "entry_type": entry.entry_type,
+        "totp_secret_enc": entry.totp_secret,
+        "created_at": entry.created_at,
+        "updated_at": entry.updated_at,
+        "deleted_at": entry.deleted_at,
+        "password_changed_at": entry.password_changed_at,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_sign_entry_from_row_matches_entry_path():
+    """PERF-101：行字典直签与 RawEntry 路径对同一逻辑行产出相同签名。
+
+    clear_category_signatures 写回的行直签 mac 经读取验签（RawEntry 路径）复核，
+    两路径载荷必须字节一致；覆盖 bool→int、可空列 None 的行形态差异。
+    """
+    signer = MetadataSigner(domain_key=MetadataSigner.compute_domain_key(b"test-key-row"))
+    entry = _make_entry(
+        id=42,
+        username="cb2:u",
+        password="cb2:p",
+        notes="cb2:n",
+        totp_secret="cb2:t",
+        custom_fields="cb2:cf",
+        is_favorite=True,
+        category_id=3,
+    )
+
+    assert signer.sign_entry_from_row(_make_row(entry)) == signer.sign(entry)
+    # sqlite 形态：bool→int；可空密文列 None 与 "" 同载荷（or "" 胁迫一致）
+    assert signer.sign_entry_from_row(_make_row(entry, url_enc=None)) == signer.sign(
+        dataclasses.replace(entry, url="")
+    )
+
+    # 载荷随行值变化（非恒等签名）：篡改行密文后签名不同
+    assert signer.sign_entry_from_row(_make_row(entry, password_enc="cb2:x")) != signer.sign(entry)
+
+
+def test_sign_dispatches_mapping_to_row_path():
+    """PERF-101：sign() 收到行字典（Mapping）时分发到行直签路径。
+
+    db 层注入的 EntrySigner 回调传行字典，分发落点须与显式调用一致。
+    """
+    signer = MetadataSigner(domain_key=MetadataSigner.compute_domain_key(b"test-key-dispatch"))
+    row = _make_row(_make_entry(id=5))
+
+    assert signer.sign(row) == signer.sign_entry_from_row(row)
+
+
+def test_sign_entry_from_row_without_domain_key_raises():
+    """PERF-101：行直签在域密钥未设置时与 sign() 同抛 VaultLockedError。"""
+    signer = MetadataSigner()  # domain_key 为 None
+    row = _make_row(_make_entry(id=1))
+
+    with pytest.raises(VaultLockedError):
+        signer.sign_entry_from_row(row)
+
+
+@pytest.mark.parametrize("key", sorted(_PAYLOAD_ROW_ATTRS))
+def test_signature_payload_binds_each_payload_key(key):
+    """SEC-073 补充守护：篡改任一载荷键值 → 签名必变。
+
+    键集一致性（_PAYLOAD_ROW_ATTRS vs 列集）在 test_field_consistency 守护；本测试
+    锚定渲染器 _payload_from_row 消费全部键——新载荷键被渲染器静默忽略（脱离 MAC
+    保护）在此立即失败。
+    """
+    signer = MetadataSigner(domain_key=MetadataSigner.compute_domain_key(b"test-key-bindcols"))
+    row = _make_row(_make_entry(id=11, password="cb2:p"))
+    baseline = signer.sign_entry_from_row(row)
+
+    value = row[key]
+    row[key] = value + 1 if isinstance(value, int) else "mutated" if value is None else f"{value}-x"
+    assert signer.sign_entry_from_row(row) != baseline
+
+
+def test_clear_category_signatures_resigns_entries_for_null_category(tmp_path):
+    """PERF-101 + SEC-073 集成：删除分类后条目 category_id 置空且行直签 mac 可验。
+
+    行直签写回的 mac 经 get_entry STRICT 验签（RawEntry 路径）复核，守护两路径
+    载荷一致与 id 插入回填。
+    """
+    from src.database.db_manager import DatabaseManager
+
+    signer = MetadataSigner()
+    signer.set_domain_key(MetadataSigner.compute_domain_key(b"test-key-clear-cat"))
+    db = DatabaseManager(tmp_path / "clear-cat.db", test_mode=True)
+    db.set_entry_integrity_handlers(signer.sign, signer.verify)
+    db.open()
+    db.init_tables()
+    try:
+        cat = Category(
+            name="cb2:cat",
+            icon_char="[DIR]",
+            color="#111111",
+            sort_order=99,
+            created_at="2025-01-01T00:00:00",
+        )
+        cat_id = db.add_category(cat)
+        entry_ids = [
+            db.add_entry(
+                _make_entry(
+                    crypto_id=f"cb2-cid-{i}",
+                    title=f"cb2:t{i}",
+                    password=f"cb2:p{i}",
+                    category_id=cat_id,
+                )
+            )
+            for i in range(3)
+        ]
+
+        db.delete_category(cat_id)
+
+        for entry_id in entry_ids:
+            # get_entry 默认 STRICT：category_id 置空 + 行直签/插入回填 mac 任一
+            # 失配都会在此抛 VaultIntegrityError
+            entry = db.get_entry(entry_id)
+            assert entry is not None
+            assert entry.category_id is None
+            assert entry.metadata_mac != ""
+    finally:
+        db.close()

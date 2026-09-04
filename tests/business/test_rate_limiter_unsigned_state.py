@@ -187,6 +187,43 @@ class TestUnsignedStateFileTrustedAtFaceValue:
         assert rl.fail_count == RATE_LIMITS[-1][0]
         assert rl.check() is not None
 
+    def test_forged_huge_remaining_seconds_capped(self, tmp_path):
+        """SEC-075：伪造超大 remaining_seconds 的无签名状态文件 → 读侧封顶。
+
+        面值采信（SEC-064）可被伪造为近乎永久锁定；封顶取合法最高档秒数的 2 倍，
+        不改变诚实降级本体、仅封顶其后果。
+        """
+        import time
+
+        from src.business.services.rate_limiter import _REMAINING_SECONDS_CAP
+        from src.config import RATE_LIMITS
+
+        assert _REMAINING_SECONDS_CAP == RATE_LIMITS[-1][1] * 2  # 封顶值钉住契约
+
+        state = tmp_path / "login_rate_limit.json"
+        state.write_text('{"fail_count": 2, "remaining_seconds": 1e12}', encoding="utf-8")
+
+        rl = RateLimiter(state)  # 无 config → SEC-064 降级会话按面值采信
+        assert rl._signing_key is None
+
+        remaining = rl._lock_until - time.monotonic()
+        assert 0 < remaining <= _REMAINING_SECONDS_CAP
+        assert rl.check() is not None  # 仍锁定（面值采信），但时长已封顶
+
+    def test_in_cap_remaining_seconds_not_truncated(self, tmp_path):
+        """对照：封顶内的合法剩余秒数按面值完整生效，诚实状态不被截断。"""
+        import time
+
+        state = tmp_path / "login_rate_limit.json"
+        state.write_text('{"fail_count": 2, "remaining_seconds": 30}', encoding="utf-8")
+
+        # 构造前后自采 monotonic 样本夹逼：断言余量不随 CI 调度停顿缩水。
+        t0 = time.monotonic()
+        rl = RateLimiter(state)
+        t1 = time.monotonic()
+
+        assert t0 + 29 < rl._lock_until <= t1 + 30
+
     def test_signed_state_with_valid_key_still_trusted(self, tmp_path, monkeypatch):
         """对照：签名密钥可用时，合法签名的既有状态照常加载（守卫不误伤正常路径）。"""
         import hashlib
